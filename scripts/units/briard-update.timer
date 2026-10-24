@@ -8,5 +8,9 @@ Description=briard update check (daily, in the small hours, following stable)
 OnCalendar=*-*-* 03:00:00
 RandomizedDelaySec=3h
 Persistent=true
+# And after every boot: a run cut short between its swap and its verdict (a power cut, a reboot) is
+# reverted by the next run, which this brings to within the spread above of the boot rather than
+# to the next night.
+OnBootSec=5min
 [Install]
 WantedBy=timers.target

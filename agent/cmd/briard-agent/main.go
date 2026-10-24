@@ -103,7 +103,8 @@ func runInternal(args []string) {
 	fs := flag.NewFlagSet("briard-agent", flag.ExitOnError)
 	reportCard := fs.Bool("report-card", false, "check whether this machine can run briard, then exit (0 = yes, 1 = no, with reasons)")
 	fetchInstall := fs.String("fetch-install", "", "download and verify the signed release (briard + vm chains) into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_RELEASE, BRIARD_KEYRING)")
-	fetchUpdate := fs.String("fetch-update", "", "resolve <target> (stable, latest, or a release id) on the channel, stage + arm this node's agent if due, then exit -- the frozen update unit's verb (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING, UPDATE_BASE, UPDATE_RUN_DIR)")
+	update := fs.String("update", "", "update this node to <target> (stable, latest, or a release id) -- fetch, verify, stage, stop the agent, swap, start, commit or revert -- then exit; the frozen update unit's verb (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING, UPDATE_BASE, UPDATE_RUN_DIR)")
+	fetchUpdate := fs.String("fetch-update", "", "the update verb of an install that predates --update: refused, naming the reinstall")
 	stageManifest := fs.String("stage-manifest", "", "describe the artifacts in <dir> into <dir>/manifest.json and exit -- the release pipeline's manifest writer (with --chain, --platform, --release)")
 	stageChain := fs.String("chain", "", "with --stage-manifest: the release chain the directory belongs to (briard, vm)")
 	stagePlatform := fs.String("platform", "", "with --stage-manifest: the platform arm within the chain (linux-amd64, windows-amd64 on briard; amd64 on vm)")
@@ -164,18 +165,29 @@ func runInternal(args []string) {
 		return
 	}
 
-	// The frozen update unit's verb. The unit runs it on a FRESH binary it just
-	// pulled from the channel, never on the committed one -- so this is the suspect side doing
-	// the verified fetch, and the one line it prints last on stdout is the unit's verdict (the
-	// unit relays it to whoever started the run: the cloud's directive, the timer's journal, or
-	// `briard update`). Host-only, like --fetch-install.
-	if *fetchUpdate != "" {
-		line, err := runFetchUpdate(ctx, *fetchUpdate)
+	// The frozen update unit's verb. The unit runs it on a FRESH binary it just pulled from the
+	// channel, never on the committed one, so this is the release's own agent doing the whole
+	// update. The one line it prints on stdout is the verdict, failure included, which the unit
+	// relays to whoever started the run (`briard update`, the timer's result, the agent's alerter);
+	// the log goes to stderr, the unit's journal. Host-only, like --fetch-install.
+	if *update != "" {
+		line, err := runUpdate(ctx, *update)
 		if err != nil {
-			log.Fatalf("fetch-update: %v", err)
+			log.Printf("update: %v", err)
+			fmt.Fprintln(os.Stdout, err.Error())
+			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stdout, line)
 		return
+	}
+	// AN INSTALL THAT PREDATES --update asks for this flag, from a frozen script no release can
+	// reach. The other half of what it expects -- its own commit scripts, an agent that restarts
+	// itself -- is gone from this release, so the node cannot be updated to it, only reinstalled
+	// (the alpha's answer to a node it cannot carry). Said in the line the old script relays to
+	// its alerter, rather than as a usage dump.
+	if *fetchUpdate != "" {
+		fmt.Fprintln(os.Stdout, "this node's update scripts predate the release it was offered; reinstall briard to keep updating")
+		os.Exit(1)
 	}
 
 	// The guest unit's ExecStop (platform.launchArgs writes the line; systemd runs it). On a host

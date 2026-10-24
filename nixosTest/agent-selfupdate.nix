@@ -1,150 +1,65 @@
-# The host-agent self-update PIVOT — a frozen, agent-independent commit/revert
-# mechanism gated purely by systemd `Type=notify` — and the frozen UPDATE UNIT
-# below the agent that feeds it. This test proves both hermetically (a single VM, NO nested
-# guest): it installs the frozen briard-agent.service + briard-update.service and the three dumb
-# wrapper scripts, then drives stand-in trial binaries (nixosTest/briard-selfupdate-stub) through
-# them and asserts the commit-or-revert outcome.
+# The host-agent SELF-UPDATE, end to end on one VM (no nested guest): the frozen update unit
+# below the agent pulls a fresh agent from the channel's pointer, and THAT binary's `--update`
+# does the whole procedure -- verify, stage, smoke-test a staged qemu, stop the agent through its
+# ordinary stop path, swap by rename, start it and watch it reach READY, then commit, or revert.
+# Stand-in candidates (nixosTest/briard-selfupdate-stub) decide whether the started agent
+# reaches READY and how it stops; everything else is the real thing.
 #
-# The layout is flat — two on-disk binaries, their manifests, and ephemeral tmpfs flags/messages:
-#   /var/lib/briard/briard-agent        committed binary ExecStart runs (seeded on install)
-#   /var/lib/briard/briard-agent.next   staged candidate on the SAME fs → commit = rename(2)
-#   /var/lib/briard/manifest.json       the committed release's signed manifest (+ .next beside it)
-#   /var/lib/briard/briard-net-wrap     the launch shim, cattle riding with the agent (+ .next)
-#   /var/lib/briard/qemu -> qemu-<rel>/ a LINK to the committed qemu tree (+ qemu.next, a link)
-#   /run/briard/update                  tmpfs flag: "an update is armed — trial .next this boot"
-#   /run/briard/trial                   tmpfs marker: "this boot IS a trial — commit on success"
-#   /run/briard/update-target|-result   the two messages between a trigger and the update unit
+# The layout is flat, every move a rename on one filesystem:
+#   /var/lib/briard/briard-agent        the committed binary the service runs
+#   /var/lib/briard/manifest.json       the committed release's signed manifest
+#   /var/lib/briard/briard-net-wrap     the launch shim, cattle riding with the agent
+#   /var/lib/briard/qemu -> qemu-<rel>/ a LINK to the committed qemu tree
+#   /var/lib/briard/<entry>.next|.prev  staged, or displaced and not yet committed
+#   /run/briard/update-target|-result   the target message in, the run's verdict out
 #
-# Why `Type=notify` IS the whole gate: the trial binary sends READY=1 only when healthy, so
-# systemd treats the start as "succeeded" only then → ExecStartPost/briard-commit runs only
-# on success. A crash OR a silent up-but-unhealthy hang (which never enters `failed`, so
-# OnFailure= alone can't catch it) trips TimeoutStartSec → start fails → no commit. Revert is
-# implicit + timerless: the trigger is single-use, so the next start finds no flag and
-# briard-exec falls back to the committed binary.
+# The update unit runs the SHIPPED scripts/agent/briard-update with one line changed (its base
+# directory: this rig runs nothing at /opt/briard), so there is no second copy of its logic to
+# drift. The channel is the real tree served by the stub's http.FileServer, the manifests are
+# written by the REAL `--stage-manifest`, the pointer's bootstrap is the REAL agent, and the
+# artifact it swaps in is a stub candidate -- that one divergence (the pointer's briard-agent and
+# the versioned briard-agent are different bytes) is what makes the procedure drivable without a
+# nested guest; publish-release.sh verify refuses it on a real channel. install-macvtap.nix
+# proves the shipped units and script on a real install.
 #
-# Why the FETCH lives below the agent (scenarios 5-8): the updater must not be shipped by the
-# thing it updates. briard-update.service pulls a FRESH agent from the channel's pointer and
-# lets THAT binary do the Ed25519-verified fetch (`--fetch-update`), stage and arm — so a fetch
-# bug in the committed binary cannot prevent its own replacement. Here the channel is the real
-# tree served by the stub's http.FileServer, the manifests are written by the REAL
-# `--stage-manifest`, the pointer's bootstrap is the REAL agent, and the artifact it stages is a
-# stub candidate (so the pivot can still be driven through crash/hang). That one divergence —
-# the pointer's briard-agent and the versioned briard-agent are different bytes — is what makes
-# the mechanism testable without a nested guest; publish-release.sh verify refuses it on a real
-# channel. install-macvtap.nix proves the SHIPPED scripts and units on a real install.
-#
-# The HOST BUNDLE (scenarios 5, 8, 9): a release is {agent, net-wrap, qemu}, staged as
-# .next siblings and committed TOGETHER by briard-commit (qemu via `mv -T` of a link), with only
-# the entries whose hash changed fetched. The stub candidates send READY without a smoke test,
-# so this file proves the stage/commit/discard mechanics; the candidate's smoke test of a staged
-# qemu on a real tree is install-macvtap.nix's, on the real agent.
+# The qemu bundle a release ships is a tree whose bin/qemu-system-x86_64 execs a real qemu, so
+# the updater's smoke test boots a real scratch machine (TCG); a bundle whose qemu only prints
+# a word is the release that does not run on this host.
 #
 # Hermetic (one VM, TCG-friendly), so it rides the tier. Run one:
 #   nix build .#tests.agent-selfupdate -L
 { pkgs, stub, agent }:
 let
-  agentBin = "/var/lib/briard/briard-agent";
-  nextBin = "/var/lib/briard/briard-agent.next";
-  manifest = "/var/lib/briard/manifest.json";
-  nextManifest = "/var/lib/briard/manifest.json.next";
-  netWrap = "/var/lib/briard/briard-net-wrap";
-  nextNetWrap = "/var/lib/briard/briard-net-wrap.next";
-  qemuLink = "/var/lib/briard/qemu";
-  nextQemu = "/var/lib/briard/qemu.next";
-  updateFlag = "/run/briard/update";
-  trialMarker = "/run/briard/trial";
-  targetMsg = "/run/briard/update-target";
+  base = "/var/lib/briard";
+  agentBin = "${base}/briard-agent";
+  manifest = "${base}/manifest.json";
+  netWrap = "${base}/briard-net-wrap";
+  qemuLink = "${base}/qemu";
   resultMsg = "/run/briard/update-result";
+  failureMsg = "/run/briard/update-failure";
   stubExe = "${stub}/bin/briard-selfupdate-stub";
   realAgent = "${agent}/bin/briard-agent";
+  qemu = pkgs.qemu_test;
   channel = "http://127.0.0.1:8099";
-  # A "binary" on disk is a tiny script that execs the stub in a given mode/identity. The
-  # frozen briard-exec just execs the path, so the mode has to live IN the file — and the
-  # `exec` keeps the PID, so the stub's READY=1 comes from MAINPID (NotifyAccess=main, exactly
-  # like the real agent). The identity string is what the test greps to prove which binary won.
+  # A "binary" on disk is a tiny script that execs the stub in a given mode/identity. The unit
+  # just execs the path, so the mode has to live IN the file -- and the `exec` keeps the PID, so
+  # the stub's READY=1 comes from MAINPID (NotifyAccess=main, exactly like the real agent). The
+  # identity string is what the test greps to prove which binary ran.
   candidate = mode: id: pkgs.writeShellScript "briard-agent-${mode}${pkgs.lib.optionalString (id != "") "-${id}"}" ''
     exec ${stubExe} ${mode} ${id}
   '';
-  readyV1 = candidate "ready" "v1"; # the initial committed binary
-  readyV2 = candidate "ready" "v2"; # a good update
-  readyV3 = candidate "ready" "v3"; # a good update used only in the power-loss case
-  readyV4 = candidate "ready" "v4"; # the artifact the channel's release ships
+  slowV1 = candidate "slowstop" "v1"; # the committed agent at install: it takes 8s to stop
+  readyV2 = candidate "ready" "v2"; # a good agent, run directly in the interrupted-run case
+  readyV4 = candidate "ready" "v4"; # the artifact the channel's stable release ships
   evilCand = candidate "ready" "evil"; # different bytes than the signed manifest pins (tamper)
-  crashCand = candidate "crash" ""; # exits 1 immediately → start fails → revert
-  hangCand = candidate "hang" ""; # blocks without READY → TimeoutStartSec → revert
-  # The three frozen wrappers — dumb shell, agent-INDEPENDENT (a bug in the volatile agent can
-  # never wedge the update mechanism). The SHIPPED ones are scripts/agent/*, and they hard-code the
-  # install layout; these are the same LOGIC over this rig's own paths, because the rig
-  # runs nothing at /opt/briard. Change one, change both -- and install-macvtap is what proves the
-  # shipped files themselves, on a real install.
-  briardExec = pkgs.writeShellScript "briard-exec" ''
-    set -eu
-    if [ -e ${updateFlag} ]; then
-        mv ${updateFlag} ${trialMarker}   # consume SINGLE-USE (rename, not delete): a crash
-        exec ${nextBin}                   #   can't re-trial forever, and briard-commit can
-    else                                  #   still tell a trial boot from a normal one
-        rm -f ${trialMarker}              # discard a failed trial's marker — this IS the revert
-        # ...and the set that marker was the verdict on: a non-trial start with staged
-        # files present is by the invariant the aftermath of a failed trial, or of an arm that /run
-        # could not keep across a reboot. Both leave a candidate nothing can ever trial.
-        rm -f ${nextBin} ${nextManifest} ${nextNetWrap} ${nextQemu}
-        rm -f ${updateFlag}               # an arm that appeared mid-delete: see the shipped picker
-        exec ${agentBin}
-    fi
-  '';
-  briardCommit = pkgs.writeShellScript "briard-commit" ''
-    set -eu
-    if [ -e ${trialMarker} ]; then
-        mv ${nextBin} ${agentBin}         # atomic same-fs commit
-        if [ -e ${nextManifest} ]; then   # the candidate's manifest commits WITH it
-            mv ${nextManifest} ${manifest}
-        fi
-        if [ -e ${nextNetWrap} ]; then    # the rest of the bundle, each existence-guarded
-            mv -T ${nextNetWrap} ${netWrap}
-        fi
-        if [ -L ${nextQemu} ]; then       # -T: rename the LINK, never move it into the old tree
-            mv -T ${nextQemu} ${qemuLink}
-        fi
-        rm -f ${trialMarker}
-    fi
-  '';
-  briardUpdate = pkgs.writeShellScript "briard-update" ''
-    set -eu
-    CHANNEL=${channel}
-    KEYRING=/etc/briard/keyring.pem
-    BASE=/var/lib/briard
-    RUN=/run/briard
-    GRACE=5400
-    report() { printf '%s\n' "$*" | tee "$RUN/update-result"; }
-    if [ -e "$RUN/update" ]; then
-        age=$(( $(date +%s) - $(stat -c %Y "$RUN/update") ))
-        if [ "$age" -ge "$GRACE" ]; then
-            systemctl restart briard-agent.service
-            report "forced the restart: an update had been armed for ''${age}s"
-        else
-            report "an update is already armed; the agent restarts itself at its next safe point (or now: systemctl restart briard-agent)"
-        fi
-        exit 0
-    fi
-    target=stable
-    if [ -f "$RUN/update-target" ]; then
-        target=$(head -n1 "$RUN/update-target")
-        rm -f "$RUN/update-target"
-    fi
-    tmp=$(mktemp -d "$BASE/.update.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
-    url="$CHANNEL/briard/$target/linux-amd64/briard-agent"
-    if command -v curl >/dev/null 2>&1; then curl -fsSL "$url" -o "$tmp/briard-agent"
-    elif command -v wget >/dev/null 2>&1; then wget -qO "$tmp/briard-agent" "$url"
-    else report "need curl or wget to fetch $url"; exit 1; fi || { report "could not fetch a bootstrap agent from $url"; exit 1; }
-    chmod +x "$tmp/briard-agent"
-    set +e
-    out=$(BRIARD_CHANNEL_URL="$CHANNEL" BRIARD_KEYRING="$KEYRING" UPDATE_BASE="$BASE" UPDATE_RUN_DIR="$RUN" \
-        "$tmp/briard-agent" --fetch-update "$target" 2>&1)
-    rc=$?
-    set -e
-    printf '%s\n' "$out" >&2
-    report "$(printf '%s\n' "$out" | tail -n1)"
-    exit $rc
+  crashCand = candidate "crash" ""; # exits 1 at once: the start fails, the updater reverts
+  hangCand = candidate "hang" ""; # never READY: TimeoutStartSec fails the start, the updater reverts
+  # The SHIPPED update script, its base directory moved to this rig's. The grep makes the
+  # substitution fail the build rather than leave the rig driving /opt/briard.
+  briardUpdate = pkgs.runCommand "briard-update" { } ''
+    sed 's|^BASE=/opt/briard/agent$|BASE=${base}|' ${../scripts/agent/briard-update} > $out
+    grep -q '^BASE=${base}$' $out
+    chmod +x $out
   '';
 in
 pkgs.testers.runNixOSTest {
@@ -154,50 +69,51 @@ pkgs.testers.runNixOSTest {
   nodes.machine =
     { ... }:
     {
-      # The tmpfs decision flags live under /run/briard (cleared on every boot — that is what
-      # makes a power loss mid-trial revert to the committed binary for free); the two binaries
-      # under /var/lib/briard persist. Neither is a systemd Runtime/StateDirectory: those would
-      # be wiped/recreated across the unit's own stop→start and clobber an externally-armed flag.
+      virtualisation.memorySize = 1536; # the smoke test boots a 128 MB scratch machine
       systemd.tmpfiles.rules = [
-        "d /var/lib/briard 0755 root root -"
+        "d ${base} 0755 root root -"
         "d /run/briard 0755 root root -"
       ];
-      # curl: the frozen update script's bootstrap pull. tar + zstd: the test publishes a qemu
-      # bundle the way the release script does, and the update verb unpacks it with tar(1).
-      environment.systemPackages = [ pkgs.curl pkgs.gnutar pkgs.zstd ];
+      # curl: the update script's bootstrap pull. tar + zstd: the test publishes a qemu bundle the
+      # way the release script does, and the update verb unpacks it with tar(1). qemu: what the
+      # good bundle's qemu execs, so it must be in this VM's store.
+      environment.systemPackages = [ pkgs.curl pkgs.gnutar pkgs.zstd qemu ];
 
-      # The FROZEN pivot: it does not self-update (changing it is a rare base-install update),
-      # so bugs in the volatile agent can't touch the mechanism. Type=notify + ExecStartPost is
-      # the entire gate. wantedBy=[] so the testScript controls start ordering after seeding.
+      # The agent's unit, as shipped in every line the update depends on: Type=notify, READY from
+      # the main process, the start bound, a restart on failure only (a clean exit on SIGTERM must
+      # not bring a stopped agent back), and no start limiter (a failed candidate followed by its
+      # revert is a burst of starts). TimeoutStopSec is SHORTER than the slowstop agent takes to
+      # stop: a stop that reached it would kill the agent, so a clean stop proves the updater's
+      # own patience. TimeoutStartSec is short so the hang case resolves in seconds; the
+      # mechanism (the start fails, the updater reverts) is the same at any value.
       systemd.services.briard-agent = {
-        description = "Briard host agent (self-update pivot)";
+        description = "Briard host agent (self-update rig)";
         wantedBy = [ ];
+        startLimitIntervalSec = 0;
         serviceConfig = {
           Type = "notify";
-          NotifyAccess = "main"; # the trial binary signals READY from MAINPID, as the agent does
-          # Production uses TimeoutStartSec=30, and it bounds a CONFIG READ rather than a
-          # convergence: READY moved to loop entry, because a supervisor's readiness is not
-          # the health of the thing it supervises. Shortened further here so the up-but-unhealthy
-          # HANG assertion resolves in seconds; the mechanism it exercises (timeout trips → start
-          # fails → no commit) is identical at any value.
+          NotifyAccess = "main";
           TimeoutStartSec = 15;
-          ExecStart = "${briardExec}"; # pick committed vs trial binary
-          ExecStartPost = "${briardCommit}"; # runs ONLY after READY=1 → commit on success
-          Restart = "always";
+          TimeoutStopSec = 5;
+          ExecStart = agentBin;
+          Restart = "on-failure";
           RestartSec = 1;
-          StartLimitIntervalSec = 0; # one failed trial then a revert must never latch as dead
         };
       };
-      # The FROZEN update unit: a oneshot, not templated — `systemctl start` blocks on
-      # it and a start against a running job merges, so it is its own mutual exclusion. The
-      # timer that fires it nightly in production is not under test here; every trigger is a
-      # `systemctl start` of this unit, and that is what the script below receives.
+      # The update unit: a oneshot, not templated -- `systemctl start` blocks on it and a start
+      # against a running job merges, so it is its own mutual exclusion. The timer that fires it
+      # in production is not under test here; every trigger is a `systemctl start` of this unit.
+      # CHANNEL_URL and UPDATE_KEYRING are what config.env delivers on a real node; ACCEL is the
+      # node's own setting, which the smoke test boots its scratch machine with.
       systemd.services.briard-update = {
         description = "briard update (the frozen unit below the agent)";
         wantedBy = [ ];
-        # curl: the bootstrap pull; tar: the verb unpacks the qemu bundle with tar(1). install.sh's
-        # unit sets an explicit PATH that reaches both for the same reason.
         path = [ pkgs.curl pkgs.gnutar ];
+        environment = {
+          CHANNEL_URL = channel;
+          UPDATE_KEYRING = "/etc/briard/keyring.pem";
+          ACCEL = "tcg";
+        };
         serviceConfig = {
           Type = "oneshot";
           ExecStart = "${briardUpdate}";
@@ -208,101 +124,39 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     machine.wait_for_unit("multi-user.target")
 
-    def committed():
-        return machine.succeed("cat ${agentBin}")
-
-    def arm(candidate_store_path):
-        # Stage a candidate + arm the trigger, exactly as the update verb does
-        # (selfupdate.StageNext + Arm) — an atomic install then the tmpfs flag.
-        machine.succeed(f"install -m755 {candidate_store_path} ${nextBin}")
-        machine.succeed("touch ${updateFlag}")
-
     def invocation():
         return machine.succeed("systemctl show -p InvocationID --value briard-agent.service").strip()
 
-    # Seed the committed binary (install-time) and start the frozen unit on it.
-    machine.succeed("install -m755 ${readyV1} ${agentBin}")
+    def verdict():
+        return machine.succeed("cat ${resultMsg}").strip()
+
+    def leftovers():
+        return machine.succeed("ls -a ${base} | grep -E '[.](next|prev)$' || true").strip()
+
+    def last_id():
+        # The identity of the agent that started most recently, from its own announcement.
+        return machine.succeed("journalctl -u briard-agent -o cat | grep 'briard-selfupdate-stub mode=' | tail -1").strip()
+
+    # Seed the committed binary (install-time) and start the unit on it.
+    machine.succeed("install -m755 ${slowV1} ${agentBin}")
     machine.systemctl("start briard-agent.service")
     machine.wait_for_unit("briard-agent.service")
-    assert " v1" in committed(), f"seed failed, committed={committed()!r}"
-    print("seeded + started on committed v1")
 
-    # === 1) A GOOD update COMMITS: briard-agent.next → briard-agent, guest untouched. ===
-    arm("${readyV2}")
-    machine.succeed("systemctl restart briard-agent.service")
-    machine.wait_for_unit("briard-agent.service")
-    machine.wait_until_succeeds("grep -q ' v2' ${agentBin}", timeout=30)
-    machine.succeed("journalctl -u briard-agent | grep -q 'mode=ready id=v2'")  # the trial actually ran
-    machine.fail("test -e ${nextBin}")     # candidate was renamed away → committed
-    machine.fail("test -e ${trialMarker}") # briard-commit cleared it
-    assert " v2" in committed(), f"good update did NOT commit, committed={committed()!r}"
-    print("1) good update committed v2")
-
-    # === 2) A CRASH-looping candidate REVERTS: no READY → start fails → no commit. ===
-    arm("${crashCand}")
-    machine.succeed("systemctl restart briard-agent.service || true")  # the trial start fails
-    # Restart=always revives the unit; with the flag consumed, briard-exec runs the committed v2.
-    machine.wait_for_unit("briard-agent.service", timeout=60)
-    machine.wait_until_succeeds("grep -q ' v2' ${agentBin}", timeout=30)
-    machine.succeed("journalctl -u briard-agent | grep -q 'mode=crash'")  # the crash candidate ran
-    machine.fail("test -e ${nextBin}")   # NOT committed, and the revert boot discarded it
-    assert " v2" in committed(), f"crash candidate was wrongly committed, committed={committed()!r}"
-    assert "crash" not in committed(), f"crash candidate leaked into committed, committed={committed()!r}"
-    print("2) crash candidate reverted to v2")
-
-    # === 3) An up-but-UNHEALTHY HANG REVERTS: never READY → TimeoutStartSec trips (the case
-    #        OnFailure= alone can't catch, because a hang never enters `failed`). ===
-    arm("${hangCand}")
-    machine.succeed("systemctl restart briard-agent.service || true")
-    # Prove it was the TIMEOUT (not a crash) that failed the start, then that it reverted.
-    machine.wait_until_succeeds("journalctl -u briard-agent | grep -qi 'timed out'", timeout=60)
-    machine.succeed("journalctl -u briard-agent | grep -q 'mode=hang'")  # the hang candidate ran
-    machine.wait_for_unit("briard-agent.service", timeout=60)
-    machine.wait_until_succeeds("grep -q ' v2' ${agentBin}", timeout=30)
-    machine.fail("test -e ${nextBin}")   # NOT committed, and the revert boot discarded it
-    assert " v2" in committed(), f"hang candidate was wrongly committed, committed={committed()!r}"
-    print("3) hang candidate reverted to v2 via TimeoutStartSec")
-
-    # === 4) POWER LOSS mid-arm REVERTS, and no revert code runs: the tmpfs decision flag is
-    #        gone at boot, so briard-exec simply runs the committed binary. Deterministic —
-    #        armed but never trialed, so no race against a would-be-good candidate committing. ===
-    machine.succeed("install -m755 ${readyV3} ${nextBin}")
-    machine.succeed("touch ${updateFlag}")  # armed
-    machine.succeed("systemctl stop briard-agent.service")
-    machine.succeed("rm -rf /run/briard")   # a reboot clears tmpfs...
-    machine.succeed("mkdir -p /run/briard") # ...and tmpfiles recreates it empty
-    machine.systemctl("start briard-agent.service")
-    machine.wait_for_unit("briard-agent.service")
-    assert " v2" in committed(), f"power loss did not revert, committed={committed()!r}"
-    machine.fail("grep -q ' v3' ${agentBin}")  # the armed-but-lost update never committed
-    # The armed-but-lost set is DISCARDED by the picker: the arm lived in tmpfs, so
-    # nothing can ever trial these files again, and until this they sat there until a later fetch
-    # happened to overwrite them -- which this test used to paper over with its own `rm` below.
-    machine.fail("test -e ${nextBin}")
-    machine.fail("test -e ${trialMarker}")     # no trial marker → no revert code path ran
-    print("4) power loss mid-arm ran committed v2, no commit, no revert code")
-
-    # === 5) THE UPDATE UNIT BELOW THE AGENT: with no target message (the timer's
-    #        case) the unit follows `stable`, pulls the FRESH bootstrap from the pointer, and
-    #        that binary verifies the manifest, fetches the artifact from the VERSIONED
-    #        directory, stages it beside its manifest and ARMS — and does not restart anything.
-    #        Then the forcing backstop: a young arm is left alone, an old one is forced. ===
-    V4 = "v3.20990906.aaaaaaa"
-    machine.succeed("mkdir -p /etc/briard /srv/briard/latest/linux-amd64 /srv/briard/stable/linux-amd64")
+    # The channel: a keyring, a launch shim, two qemu bundles tarred the way publish-release.sh
+    # does it (so the same bytes republish to the same hash, which the hash-skip rides on). The
+    # good one's qemu is a real one; the bad one's prints a word and exits.
+    machine.succeed("mkdir -p /etc/briard /srv/briard")
     machine.succeed("${stubExe} keygen /root/release.key /etc/briard/keyring.pem")
-    # The rest of the host bundle: a launch shim, and a qemu "bundle" -- a tree with a
-    # bin/qemu-system-x86_64 (a stand-in script; the stub candidates never run it) and a
-    # PROVENANCE file, tarred and compressed exactly the way publish-release.sh does, so the same
-    # bytes republish to the same hash (which is what the hash-skip in 8 and 9 rides on).
     machine.succeed("printf '#!/bin/sh\\nexec \"$@\"\\n' > /root/net-wrap && chmod 755 /root/net-wrap")
-    def bundle(name, provenance):
-        machine.succeed(f"mkdir -p /root/{name}/bin && printf '#!/bin/sh\\necho QEMU\\n' > /root/{name}/bin/qemu-system-x86_64 && chmod 755 /root/{name}/bin/qemu-system-x86_64")
-        machine.succeed(f"printf '%s\\n' '{provenance}' > /root/{name}/PROVENANCE")
+    def bundle(name, qemu_bin, provenance):
+        machine.succeed(f"mkdir -p /root/{name}/bin /root/{name}/share && printf '%s\\n' '{provenance}' > /root/{name}/PROVENANCE")
+        machine.succeed(f"printf '#!/bin/sh\\n%s\\n' '{qemu_bin}' > /root/{name}/bin/qemu-system-x86_64 && chmod 755 /root/{name}/bin/qemu-system-x86_64")
+        machine.succeed(f"ln -sfn ${qemu}/share/qemu /root/{name}/share/qemu")
         machine.succeed(f"tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C /root/{name} . | zstd -q -3 -o /root/{name}.tar.zst")
-    bundle("bundle", "the first qemu")
-    bundle("bundle2", "a second qemu")
+    bundle("good", 'exec ${qemu}/bin/qemu-system-x86_64 "$@"', "a qemu that runs here")
+    bundle("bad", "echo QEMU", "a qemu that does not")
 
-    def publish(version, artifact, pointers=("latest", "stable"), qemu="bundle"):
+    def publish(version, artifact, pointers=("latest", "stable"), qemu="good"):
         # One release of the host chain's linux arm, the way publish-release.sh lays it: the
         # artifacts under the versioned directory, a manifest written by the REAL writer, a
         # detached signature, and the pointers as byte-copies carrying the REAL agent as the
@@ -316,6 +170,7 @@ pkgs.testers.runNixOSTest {
             machine.succeed(f"mkdir -p /srv/briard/{p}/linux-amd64 && cp {d}/manifest.json {d}/manifest.json.sig /srv/briard/{p}/linux-amd64/")
             machine.succeed(f"install -m755 ${realAgent} /srv/briard/{p}/linux-amd64/briard-agent")
 
+    V4 = "v3.20990906.aaaaaaa"
     publish(V4, "${readyV4}")
     # The node's installed release: an OLDER date, so stable is ahead of it.
     machine.succeed(
@@ -324,168 +179,137 @@ pkgs.testers.runNixOSTest {
     machine.succeed("systemd-run --unit=release-httpd --collect ${stubExe} serve 127.0.0.1:8099 /srv")
     machine.wait_until_succeeds("curl -sf ${channel}/briard/stable/linux-amd64/manifest.json -o /dev/null", timeout=30)
 
-    inv_before = invocation()
-    machine.fail("test -e ${targetMsg}")
-    machine.succeed("systemctl start briard-update.service")   # blocks: a oneshot
-    result = machine.succeed("cat ${resultMsg}").strip()
-    assert f"staged {V4} (agent, net-wrap, qemu), armed" in result, f"unexpected result: {result!r}"
-    machine.succeed("test -e ${nextBin}")
-    machine.succeed("cmp ${nextBin} ${readyV4}")             # the VERSIONED artifact, not the bootstrap
-    machine.succeed(f"cmp ${nextManifest} /srv/briard/{V4}/linux-amd64/manifest.json")  # its manifest beside it
-    # The rest of the bundle, staged beside them: the shim as a file, qemu as a
-    # RELATIVE link to the tree the verb unpacked from the verified tarball.
-    machine.succeed("cmp ${nextNetWrap} /root/net-wrap")
-    assert machine.succeed("readlink ${nextQemu}").strip() == f"qemu-{V4}", "qemu.next does not link to this release's tree"
-    machine.succeed(f"test -x /var/lib/briard/qemu-{V4}/bin/qemu-system-x86_64")
-    machine.succeed(f"cmp /var/lib/briard/qemu-{V4}/PROVENANCE /root/bundle/PROVENANCE")
-    machine.fail("test -e ${qemuLink}")                       # nothing committed yet
-    machine.succeed("test -e ${updateFlag}")                  # armed…
-    assert invocation() == inv_before, "the update unit restarted the agent itself; it must only arm"
-    machine.succeed("test ! -e ${targetMsg}")
-    machine.succeed("! ls -a /var/lib/briard | grep -q '^\\.update'")  # the bootstrap + unpack temp dirs are gone
-    print(f"5a) the unit staged + armed the whole bundle of {V4} from stable without restarting anything")
-
-    # A second run while armed, young: left to the agent's safe point; nothing restarted.
-    machine.succeed("rm -f ${resultMsg}")
+    # === 1) THE TIMER'S PATH, A GOOD RELEASE: with no target message the unit follows stable;
+    #        the fresh bootstrap verifies and stages the whole bundle, smoke-tests the staged qemu,
+    #        stops the agent -- WAITING for it to finish, past the unit's own TimeoutStopSec --
+    #        swaps, starts the new agent, sees READY and commits. One blocking `systemctl start`. ===
+    inv = invocation()
     machine.succeed("systemctl start briard-update.service")
-    result = machine.succeed("cat ${resultMsg}").strip()
-    assert "already armed" in result, f"unexpected result: {result!r}"
-    assert invocation() == inv_before, "a young arm was forced"
-    # Aged past the grace: forced. The stub agent has no safe point of its own, which is
-    # exactly the case the backstop exists for.
-    machine.succeed("touch -d '-2 hours' ${updateFlag}")
-    machine.succeed("systemctl start briard-update.service")
-    result = machine.succeed("cat ${resultMsg}").strip()
-    assert "forced the restart" in result, f"unexpected result: {result!r}"
-    machine.wait_for_unit("briard-agent.service")
-    machine.wait_until_succeeds("grep -q ' v4' ${agentBin}", timeout=30)
-    assert invocation() != inv_before, "the forced restart did not happen"
-    machine.fail("test -e ${nextBin}")
-    machine.fail("test -e ${nextManifest}")
-    machine.succeed(f"cmp ${manifest} /srv/briard/{V4}/linux-amd64/manifest.json")  # committed WITH its manifest
-    assert " v4" in committed(), f"the fetched release did NOT commit, committed={committed()!r}"
-    # ...and the bundle committed in the same burst: the shim moved onto its name, the qemu LINK
-    # was renamed over (`mv -T`) rather than dropped inside a tree, and no .next survives.
-    machine.fail("test -e ${nextNetWrap}")
+    assert verdict() == f"ok updated to {V4} (agent, net-wrap, qemu)", f"unexpected verdict: {verdict()!r}"
+    machine.succeed("cmp ${agentBin} ${readyV4}")                     # the VERSIONED artifact, not the bootstrap
+    machine.succeed(f"cmp ${manifest} /srv/briard/{V4}/linux-amd64/manifest.json")
     machine.succeed("cmp ${netWrap} /root/net-wrap")
-    machine.fail("test -e ${nextQemu}")
-    machine.succeed("test -L ${qemuLink}")
-    assert machine.succeed("readlink ${qemuLink}").strip() == f"qemu-{V4}", "qemu was not committed as a link to the new tree"
-    machine.succeed("test -x ${qemuLink}/bin/qemu-system-x86_64")  # the public path resolves through it
-    print(f"5b) young arm left alone, old arm forced, {V4} committed with its manifest, shim and qemu link")
+    assert machine.succeed("readlink ${qemuLink}").strip() == f"qemu-{V4}", "qemu was not swapped to this release's tree"
+    machine.succeed(f"cmp ${base}/qemu-{V4}/PROVENANCE /root/good/PROVENANCE")
+    assert leftovers() == "", f"a committed update left {leftovers()!r}"
+    machine.succeed("journalctl -u briard-update | grep -q 'qemu smoke test: scratch machine running'")
+    # THE STOP WAS THE AGENT'S OWN: it finished its act (the file it leaves on the way out) and
+    # was never killed, though it took longer than the unit's TimeoutStopSec would have allowed.
+    machine.succeed("test -e /run/briard/drained-v1")
+    machine.succeed("journalctl -u briard-agent -o cat | grep -q 'id=v1: stopped cleanly'")
+    machine.fail("journalctl -u briard-agent | grep -qiE 'timed out|SIGKILL'")
+    assert "mode=ready id=v4" in last_id(), f"the started agent is not v4: {last_id()!r}"
+    machine.succeed("systemctl is-active briard-agent.service")
+    assert invocation() != inv, "the agent was never restarted"
+    machine.succeed("! ls -a ${base} | grep -q '^[.]update'")         # the bootstrap + unpack temp dirs are gone
+    print(f"1) stable {V4}: staged, smoke-tested, stopped with patience, swapped, started, committed")
 
-    # === 6) `briard update` — the human trigger, on the REAL agent binary, through the
-    #        same unit: a message in, the unit's verdict out, no admin socket. Up to date → a
-    #        no-op that says so and bounces nothing. ===
-    inv_before = invocation()
-    out = machine.succeed("${realAgent} update -base /var/lib/briard -run /run/briard").strip()
+    # === 2) `briard update` -- the human trigger, on the REAL agent binary, through the same
+    #        unit. Up to date: a no-op that says so and touches nothing. The verdict stays on
+    #        disk: the alerter reads it too. ===
+    inv = invocation()
+    out = machine.succeed("${realAgent} update -base ${base} -run /run/briard").strip()
     assert f"already at {V4}" in out, f"unexpected CLI output: {out!r}"
-    machine.fail("test -e ${resultMsg}")   # the CLI consumed its result
-    machine.fail("test -e ${targetMsg}")   # and the unit consumed its target
-    machine.fail("test -e ${updateFlag}")
-    assert invocation() == inv_before, "an up-to-date `briard update` bounced the agent"
-    print("6) briard update: already at the target, nothing armed, nothing restarted")
+    assert verdict().startswith(f"ok already at {V4}"), f"the verdict was not left: {verdict()!r}"
+    machine.fail("test -e /run/briard/update-target")                  # the unit consumed its target
+    assert invocation() == inv, "an up-to-date `briard update` bounced the agent"
+    print("2) briard update: already at the target, nothing stopped, the verdict left for the alerter")
 
-    # === 7) REFUSE-AND-STAY through the unit: a release whose served bytes differ from what
-    #        its signed manifest pins is refused by the fresh bootstrap's hash check — nothing
-    #        staged, nothing armed, the verdict names it, the CLI exits non-zero.
-    #        The refusal must actually fire. ===
+    # === 3) REFUSE-AND-STAY: a release whose served bytes differ from what its signed manifest
+    #        pins is refused by the fresh bootstrap's hash check, and an unsigned pointer before
+    #        anything is fetched -- nothing staged, nothing stopped, the verdict says failed. ===
     V5 = "v3.20990907.bbbbbbb"
     publish(V5, "${readyV4}", pointers=("latest",))
     machine.succeed(f"install -m755 ${evilCand} /srv/briard/{V5}/linux-amd64/briard-agent")  # tamper AFTER signing
-    # ⚠️ THE DEFAULT IS `stable`, AND HERE IT IS OBSERVABLE ON THE REAL BINARY:
-    # V5 sits at `latest` alone, so the bare verb must not reach it at all. Before the default
-    # moved, this very line is what fetched the tampered bytes -- which is why the refusals
-    # below now have to name `latest` on purpose, and why this assertion goes first: a default
-    # that silently drifted back would make every refusal under it fire for the wrong reason.
-    out = machine.succeed("${realAgent} update -base /var/lib/briard -run /run/briard").strip()
+    # ⚠️ THE DEFAULT IS `stable`: V5 sits at `latest` alone, so the bare verb must not reach it.
+    out = machine.succeed("${realAgent} update -base ${base} -run /run/briard").strip()
     assert f"already at {V4}" in out, f"the bare verb did not take stable: {out!r}"
-    machine.fail("test -e ${nextBin}")
-    machine.fail("${realAgent} update -to latest -base /var/lib/briard -run /run/briard")
+    machine.fail("${realAgent} update -to latest -base ${base} -run /run/briard")
     machine.succeed("journalctl -u briard-update | grep -q 'does not match the signed manifest'")
-    machine.fail("test -e ${nextBin}")
-    machine.fail("test -e ${updateFlag}")
-    assert " v4" in committed(), f"a refused update changed the committed binary, committed={committed()!r}"
-    # An UNSIGNED pointer (signature removed) is refused before anything is fetched.
+    assert verdict().startswith("failed "), f"a refusal left {verdict()!r}"
     machine.succeed("rm /srv/briard/latest/linux-amd64/manifest.json.sig")
-    machine.fail("${realAgent} update -to latest -base /var/lib/briard -run /run/briard")
-    machine.fail("test -e ${nextBin}")
-    assert " v4" in committed(), f"an unsigned manifest changed the committed binary, committed={committed()!r}"
-    print("7) the bare verb stayed on stable; tampered artifact + unsigned manifest at `latest` refused through the unit — committed v4 kept")
+    machine.fail("${realAgent} update -to latest -base ${base} -run /run/briard")
+    machine.succeed("cmp ${agentBin} ${readyV4}")
+    assert leftovers() == "", f"a refused update left {leftovers()!r}"
+    assert invocation() == inv, "a refused update stopped the agent"
+    print("3) tampered artifact + unsigned manifest at `latest` refused; nothing staged, nothing stopped")
 
-    # === 8) THE FLOOR: an exact pin OLDER than stable is refused loudly; the same pin is
-    #        accepted once stable is moved down to it (the failable control). ===
-    #        An EXACT target's bootstrap is pulled from its versioned directory (there is no
-    #        pointer to duplicate it under), so this release's artifact must be the real agent:
-    #        the stub divergence explained in the header only works through a pointer.
-    OLD = "v3.20990201.ccccccc"
-    publish(OLD, "${realAgent}", pointers=())
-    # THE REFUSAL'S OWN WORDS, not just a non-zero exit.
-    # `fail` passes on ANY non-zero exit -- a missing release, an unreadable manifest, a verb that
-    # no longer exists -- so the exit code alone cannot say the FLOOR is what refused. Asserting
-    # the CLI's own output is what distinguishes "refused because it is below stable" from
-    # "failed for some other reason and the journal happened to carry the phrase from earlier".
-    out = machine.fail(f"${realAgent} update -to {OLD} -base /var/lib/briard -run /run/briard 2>&1")
-    assert "older than stable" in out, f"the pin failed, but not on the stable floor: {out!r}"
-    # And the unit's own verdict reached the journal: this refusal travels through the frozen
-    # updater, so the line an operator greps for at 2am has to be there and not only on a console.
-    machine.wait_until_succeeds("journalctl -u briard-update | grep -q 'older than stable'", timeout=30)
-    machine.fail("test -e ${nextBin}")
-    machine.succeed(f"cp /srv/briard/{OLD}/linux-amd64/manifest.json /srv/briard/{OLD}/linux-amd64/manifest.json.sig /srv/briard/stable/linux-amd64/")
-    out = machine.succeed(f"${realAgent} update -to {OLD} -base /var/lib/briard -run /run/briard").strip()
-    # DOWNLOAD ONLY WHAT CHANGED: this release ships the same shim and qemu bytes the
-    # installed manifest ({V4}'s) pins, so neither is fetched or staged -- the agent alone moves.
-    assert f"staged {OLD} (agent), armed" in out, f"a pin at the moved floor was refused, or fetched more than changed: {out!r}"
-    machine.succeed("cmp ${nextBin} ${realAgent}")
-    machine.fail("test -e ${nextNetWrap}")
-    machine.fail("test -e ${nextQemu}")
-    machine.fail(f"test -e /var/lib/briard/qemu-{OLD}")
-    print("8) a pin below stable refused; accepted once stable moved to it (downgrade to the floor), and only the agent was fetched")
+    # === 4) A QEMU THAT DOES NOT RUN HERE refuses its release BEFORE ANYTHING STOPS: the smoke
+    #        test is the updater's, at stage time, so the agent never notices. ===
+    V6 = "v3.20990908.ccccccc"
+    publish(V6, "${readyV2}", pointers=("latest",), qemu="bad")
+    out = machine.fail("${realAgent} update -to latest -base ${base} -run /run/briard 2>&1")
+    assert "refused on this host: qemu smoke test" in out, f"the release failed, but not on its qemu: {out!r}"
+    assert invocation() == inv, "a release refused at stage time stopped the agent"
+    assert machine.succeed("readlink ${qemuLink}").strip() == f"qemu-{V4}", "a refused qemu was swapped in"
+    machine.succeed("cmp ${agentBin} ${readyV4}")
+    assert leftovers() == "", f"a refused release left {leftovers()!r}"
+    print(f"4) {V6}'s qemu failed its smoke test: refused with nothing touched")
 
-    # === 9) A FAILED TRIAL DISCARDS THE BUNDLE IT STAGED, AND THE NEXT RELEASE CANNOT INHERIT IT:
-    #        a release with a NEW qemu whose agent crashes reverts whole -- the
-    #        committed qemu link never moves, and the revert boot drops the staged LINK while
-    #        keeping the extracted TREE (the expensive half, reusable on a retry). A later release
-    #        that does NOT change qemu would have dropped a stale qemu.next before staging anyway,
-    #        so the commit that follows can never pair this agent with that qemu by either route.
-    #        Both being true is the point.
-    machine.succeed("rm -f ${nextBin} ${nextManifest} ${updateFlag}")  # un-arm scenario 8's pin
-    V9 = "v3.20990908.ddddddd"
-    publish(V9, "${crashCand}", pointers=("latest",), qemu="bundle2")
-    out = machine.succeed("${realAgent} update -to latest -base /var/lib/briard -run /run/briard").strip()
-    assert f"staged {V9} (agent, qemu), armed" in out, f"unexpected: {out!r}"   # the shim is unchanged
-    assert machine.succeed("readlink ${nextQemu}").strip() == f"qemu-{V9}"
-    machine.succeed(f"cmp /var/lib/briard/qemu-{V9}/PROVENANCE /root/bundle2/PROVENANCE")
-    machine.succeed("systemctl restart briard-agent.service || true")  # the trial crashes
-    machine.wait_for_unit("briard-agent.service", timeout=60)
-    machine.wait_until_succeeds("grep -q ' v4' ${agentBin}", timeout=30)
-    assert " v4" in committed(), f"a crashing candidate committed: {committed()!r}"
-    assert machine.succeed("readlink ${qemuLink}").strip() == f"qemu-{V4}", "the qemu link moved on a FAILED trial"
-    # The refused set is DISCARDED by the revert boot rather than left lying. The staged
-    # LINK goes; the extracted TREE stays, which is the half that must survive -- it is the
-    # expensive one, and a retry of this release reuses it by name instead of pulling it again.
-    machine.fail("test -e ${nextQemu}")
-    machine.succeed(f"test -d /var/lib/briard/qemu-{V9}")
+    # === 5) A CANDIDATE THAT CRASHES is reverted whole: the start fails, the committed release
+    #        goes back and starts, and the reason waits for the agent that came back. ===
+    V7 = "v3.20990909.ddddddd"
+    publish(V7, "${crashCand}", pointers=("latest",))
+    out = machine.fail("${realAgent} update -to latest -base ${base} -run /run/briard 2>&1")
+    assert "did not start on this host and was reverted" in out, f"unexpected: {out!r}"
+    machine.succeed("journalctl -u briard-agent -o cat | grep -q 'mode=crash'")   # the candidate really ran
+    machine.succeed(f"journalctl -u briard-update | grep -q 'update: staged {V7} (agent)'")  # shim and qemu unchanged: not fetched
+    machine.succeed("cmp ${agentBin} ${readyV4}")
     machine.succeed(f"cmp ${manifest} /srv/briard/{V4}/linux-amd64/manifest.json")
-    machine.fail("test -e ${updateFlag}")
-    print(f"9a) {V9}'s trial crashed: reverted whole, qemu link still {V4}'s, its staged link discarded")
+    assert leftovers() == "", f"a reverted update left {leftovers()!r}"
+    machine.succeed(f"grep -q '^{V7} ' ${failureMsg}")                 # left for the agent to escalate
+    assert "mode=ready id=v4" in last_id(), f"the agent after the revert is not v4: {last_id()!r}"
+    machine.succeed("systemctl is-active briard-agent.service")
+    print(f"5) {V7} crashed at start: reverted to {V4}, which is running")
 
-    V10 = "v3.20990909.eeeeeee"
-    publish(V10, "${readyV2}", pointers=("latest",))   # back on the FIRST bundle == the installed one
-    out = machine.succeed("${realAgent} update -to latest -base /var/lib/briard -run /run/briard").strip()
-    assert f"staged {V10} (agent), armed" in out, f"unexpected: {out!r}"
-    # Still gone before this release is armed. It was the revert boot that removed it; the
-    # fetch would have too (DiscardNextBundle), and both being true is the point -- neither is the
-    # only thing standing between a stale link and a partial commit.
-    machine.fail("test -e ${nextQemu}")
-    machine.succeed(f"test -d /var/lib/briard/qemu-{V9}")  # the tree is not the verb's to remove
-    machine.succeed("systemctl restart briard-agent.service")
-    machine.wait_for_unit("briard-agent.service")
-    machine.wait_until_succeeds("grep -q ' v2' ${agentBin}", timeout=30)
-    assert machine.succeed("readlink ${qemuLink}").strip() == f"qemu-{V4}", "the commit paired this agent with a qemu it did not ship"
-    machine.succeed(f"cmp ${manifest} /srv/briard/{V10}/linux-amd64/manifest.json")
-    print(f"9b) {V10} discarded the stale qemu.next and committed on {V4}'s qemu, as its manifest says")
+    # === 6) A CANDIDATE THAT HANGS before READY: TimeoutStartSec fails the start (the case a crash
+    #        detector alone would miss), and it is reverted the same way. ===
+    V8 = "v3.20990910.eeeeeee"
+    publish(V8, "${hangCand}", pointers=("latest",))
+    out = machine.fail("${realAgent} update -to latest -base ${base} -run /run/briard 2>&1")
+    assert "did not start on this host and was reverted" in out, f"unexpected: {out!r}"
+    machine.succeed("journalctl -u briard-agent -o cat | grep -q 'mode=hang'")
+    machine.succeed("journalctl -u briard-agent | grep -qi 'timed out'")
+    machine.succeed("cmp ${agentBin} ${readyV4}")
+    assert leftovers() == "", f"a reverted update left {leftovers()!r}"
+    assert "mode=ready id=v4" in last_id(), f"the agent after the revert is not v4: {last_id()!r}"
+    print(f"6) {V8} hung before READY: reverted to {V4}")
 
-    print("the frozen Type=notify pivot commits good updates and reverts broken or lost ones; the frozen unit below the agent fetches, verifies, stages, arms, forces late, and refuses tampered, unsigned or below-floor releases; the host bundle stages and commits as one, fetching only what changed")
+    # === 7) A RUN KILLED BETWEEN ITS STOP AND ITS COMMIT -- a power cut, a reboot -- leaves the
+    #        candidate in place and the committed agent beside it as .prev. The next run reverts
+    #        that before it decides anything. Here the node then runs the uncommitted candidate,
+    #        as it would after the boot that follows a cut. ===
+    machine.succeed("systemctl stop briard-agent.service")
+    machine.succeed("mv ${agentBin} ${agentBin}.prev && install -m755 ${readyV2} ${agentBin}")
+    machine.succeed("systemctl start briard-agent.service")
+    assert "mode=ready id=v2" in last_id(), "the interrupted state is not what the test set up"
+    machine.succeed("systemctl start briard-update.service")           # the timer's path: stable is V4
+    assert verdict().startswith(f"ok already at {V4}"), f"unexpected verdict: {verdict()!r}"
+    machine.succeed("journalctl -u briard-update | grep -q 'stopped between its swap and its verdict; reverting it'")
+    machine.succeed("cmp ${agentBin} ${readyV4}")
+    assert leftovers() == "", f"the reconcile left {leftovers()!r}"
+    assert "mode=ready id=v4" in last_id(), f"the agent after the reconcile is not v4: {last_id()!r}"
+    print("7) a run cut between swap and commit was reverted by the next run")
+
+    # === 8) THE FLOOR: an exact pin OLDER than stable is refused loudly, nothing stopped; the
+    #        same pin, once stable is moved down to it, goes past the decision (the failable
+    #        control). An exact target's bootstrap is pulled from its versioned directory, so its
+    #        artifact is the real agent -- which, started bare, prints its help and never sends
+    #        READY, so the run that follows is one more revert. ===
+    OLD = "v3.20990201.fffffff"
+    publish(OLD, "${realAgent}", pointers=())
+    inv = invocation()
+    out = machine.fail(f"${realAgent} update -to {OLD} -base ${base} -run /run/briard 2>&1")
+    assert "older than stable" in out, f"the pin failed, but not on the stable floor: {out!r}"
+    assert invocation() == inv, "a pin below the floor stopped the agent"
+    machine.succeed(f"cp /srv/briard/{OLD}/linux-amd64/manifest.json /srv/briard/{OLD}/linux-amd64/manifest.json.sig /srv/briard/stable/linux-amd64/")
+    out = machine.fail(f"${realAgent} update -to {OLD} -base ${base} -run /run/briard 2>&1")
+    assert "older than stable" not in out and "reverted" in out, f"a pin at the moved floor was refused: {out!r}"
+    machine.succeed(f"journalctl -u briard-update | grep -q 'update: staged {OLD} (agent)'")
+    machine.succeed("cmp ${agentBin} ${readyV4}")
+    machine.succeed("systemctl is-active briard-agent.service")
+    print("8) a pin below stable refused; at the moved floor it went past the decision")
+
+    print("the update unit below the agent fetches, verifies, stages, smoke-tests, stops with patience, swaps, starts and commits a good release; it reverts a candidate that crashes or hangs and a run cut mid-swap, and refuses a tampered, unsigned, below-floor or not-runnable-here release with nothing stopped")
   '';
 }

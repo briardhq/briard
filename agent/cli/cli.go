@@ -165,9 +165,9 @@ var commands = []command{
 		synopsis: "update briard's own software, or with -vm the VM it runs apps in, from the release channel now",
 		detail: "Both resolve `stable` (-to takes latest, dev or an exact id). Bare, it updates every briard\n" +
 			"binary this machine runs, inside the VM as well as out: it starts the same update unit the\n" +
-			"nightly timer and the cloud use and prints how it ended: already at the target, staged and\n" +
-			"armed (the agent restarts itself at its next safe point; `systemctl restart briard-agent`\n" +
-			"applies it now), or refused and why; it works even when the agent is down. -vm asks the\n" +
+			"nightly timer and the cloud use and prints how it ended: already at the target, updated\n" +
+			"(the agent is stopped once it finishes what it is doing, swapped, started and kept only if it\n" +
+			"starts), or refused and why; it works even when the agent is down. -vm asks the\n" +
 			"agent to move the OS to the release's closure, health-gated, and reports the outcome.",
 		run: runUpdate, probe: []string{"-h"},
 	},

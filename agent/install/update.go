@@ -12,30 +12,29 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"briard.io/agent/selfupdate"
 	"briard.io/shared/atomicfile"
 )
 
-// THE UPDATE VERB. `briard-agent --fetch-update <target>` is the narrowed fetch the
-// frozen update unit runs — on a FRESH binary it just pulled from the target's pointer, never on
-// the committed one, so a fetch/verify/manifest bug in the running agent cannot prevent its own
-// replacement (install.sh's bootstrap pattern, on a timer). Everything here is therefore the
-// SUSPECT side's job: resolve the target, decide against the installed manifest, fetch and
-// verify the agent artifact, stage it beside its manifest, arm the trial — and STOP. It never
-// restarts anything: the running agent restarts itself at its safe point, and the unit's
-// forcing after a grace is the backstop. That separation is what keeps "the case where forcing
-// is risky" and "the case where forcing happens" from ever overlapping.
+// THE UPDATE VERB. `briard-agent --update <target>` is the whole self-update, run by the frozen
+// update unit on a FRESH binary it just pulled from the target's pointer, never on the committed
+// one, so a fetch/verify/manifest bug in the running agent cannot prevent its own replacement
+// (install.sh's bootstrap pattern, on a timer). One process, in order: reconcile a run that died
+// mid-swap, decide against the installed manifest, fetch and verify, stage, smoke-test a staged
+// qemu, stop the agent through its ordinary stop path, swap, start and watch it reach READY, then
+// commit -- or revert and leave the reason for the agent that comes back. The running agent
+// carries no update logic: its stop path is the safe point.
 //
-// Scope is the BRIARD BUNDLE: the agent, the guest launch shim and the qemu tree move
-// as one release, staged as .next siblings and committed together by briard-commit. Only
-// entries whose sha256 differs from the installed manifest's are fetched -- a JSON compare, no
-// hashing of the 86 MB qemu tree -- which is what keeps a daily tick at the agent's ~9 MB
-// rather than the bundle's ~28 MB, and is safe by construction: an identical hash is an
-// identical artifact, so a skipped qemu is still the pairing the release was tested with.
-// A staged qemu is smoke-tested by the CANDIDATE before it sends READY (host.Run), so a
-// release that does not run on this host refuses itself whole and the pivot lands back on
-// the combination that was tested, never on agent N with qemu N-1.
+// Scope is the BRIARD BUNDLE: the agent, the guest launch shim, the qemu tree and the guest
+// bundle move as one release, staged as .next siblings and swapped together. Only entries whose
+// sha256 differs from the installed manifest's are fetched -- a JSON compare, no hashing of the
+// 86 MB qemu tree -- which is what keeps a daily tick at the agent's ~9 MB rather than the
+// bundle's ~28 MB, and is safe by construction: an identical hash is an identical artifact, so a
+// skipped qemu is still the pairing the release was tested with. A staged qemu is smoke-tested
+// by THIS binary -- the release's own agent -- before anything is stopped, so a release that does
+// not run on this host is refused at no cost, and the node never lands on agent N with qemu N-1.
 
 // The three artifacts of the briard bundle, by the names the manifest (and install.sh) use.
 // Anything else a briard manifest may one day carry is left to the release that knows it.
@@ -220,17 +219,30 @@ func dateOf(id string) (int64, error) {
 	return n, nil
 }
 
-// Update is one run of the verb: resolve target on the fetcher's chain/platform, decide against
-// the installed manifest, and stage + arm the changed parts of the briard bundle when due.
+// StopPatience is how long the updater waits for the agent to finish an act in flight before the
+// stop is forced: an install's whole budget, with room, and well inside the update unit's own
+// TimeoutStartSec.
+const StopPatience = 30 * time.Minute
+
+// Update is one run of the verb. The three service verbs are the OS's (platform.StopService,
+// StartService, SmokeTest on Linux), handed in so the procedure reads and tests the same on
+// every system.
 type Update struct {
 	Fetcher *Fetcher
 	Layout  selfupdate.Layout
 	Logf    func(string, ...any)
+	// Stop stops the agent through its ordinary stop path, forcing it after patience (0: at once).
+	Stop func(ctx context.Context, patience time.Duration) error
+	// Start starts the agent and returns once it reported READY, or with why it did not.
+	Start func(ctx context.Context) error
+	// Smoke proves a staged qemu tree runs on this host.
+	Smoke func(ctx context.Context, tree string) error
 }
 
-// Run returns the one line the run ended on — "already at …" or "staged …, armed" — and an
-// error for a refusal (bad pin, bad signature, tampered artifact), in which case nothing was
-// staged and nothing armed (refuse-and-stay).
+// Run returns the one line the run ended on — "already at …" or "updated to …" — and an error
+// for a refusal (bad pin, bad signature, tampered artifact, a qemu that does not run here), in
+// which case nothing was swapped (refuse-and-stay), or for a candidate that did not start, in
+// which case the committed release is back in place and running.
 func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	logf := u.Logf
 	if logf == nil {
@@ -238,6 +250,9 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	}
 	if !validSegment(target) {
 		return "", fmt.Errorf("install: bad release target %q", target)
+	}
+	if err := u.reconcile(ctx, logf); err != nil {
+		return "", err
 	}
 	want, wantBytes, err := u.Fetcher.fetchManifest(ctx, target)
 	if err != nil {
@@ -280,8 +295,8 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 		a := &want.Artifacts[i]
 		switch a.Name {
 		case artifactAgent:
-			// Never hash-skipped: the candidate is what the trial RUNS, and its id is baked into
-			// it, so on a real release the skip could not fire anyway.
+			// Never hash-skipped: the candidate is what the swap starts, its id is baked into
+			// it (so on a real release the skip could not fire anyway), and its .prev is the trial marker.
 			if err := u.Fetcher.fetchArtifact(ctx, from, tmp, *a); err != nil {
 				return "", err
 			}
@@ -308,7 +323,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 				continue
 			}
 			if _, err := os.Stat(tree); err == nil {
-				// Left by an earlier run of this same release (a failed trial, most likely):
+				// Left by an earlier run of this same release (a reverted one, most likely):
 				// complete by construction, since a tree appears only by rename.
 				logf("update: reusing the extracted qemu tree %s", filepath.Base(tree))
 			} else {
@@ -323,7 +338,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 			qemuTree = tree
 		case artifactGuest:
 			// The guest bundle rides exactly qemu's mechanics: one extracted tree per
-			// release, a `.next` link the frozen commit moves, hash-skipped when unchanged.
+			// release, a `.next` link the swap moves, hash-skipped when unchanged.
 			if unchanged(have, *a) {
 				logf("update: %s unchanged since %s; not fetched", a.Name, have.Version)
 				continue
@@ -353,7 +368,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	}
 
 	// STAGE. Whatever an earlier run staged of the bundle goes first, so the only .next
-	// siblings briard-commit can find are this release's; then each verified file lands whole
+	// siblings the swap can find are this release's; then each verified file lands whole
 	// (write + fsync + rename) beside the one it replaces.
 	if err := u.Layout.DiscardNextBundle(); err != nil {
 		return "", fmt.Errorf("install: discard stale candidates: %w", err)
@@ -383,11 +398,99 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	if err := u.Layout.StageNextManifest(wantBytes); err != nil {
 		return "", fmt.Errorf("install: stage manifest: %w", err)
 	}
-	if err := u.Layout.Arm(); err != nil {
-		return "", fmt.Errorf("install: arm: %w", err)
+	logf("update: staged %s (%s)", want.Version, strings.Join(staged, ", "))
+
+	// THE QEMU QUESTION, ANSWERED BEFORE ANYTHING STOPS. This binary is the release's own agent,
+	// so the pairing proven is agent N with qemu N, and a refusal
+	// costs the household nothing: the staged set goes, nothing was touched. The question is not
+	// "is this qemu good" but "does release N work on this host" (a missing lib, an old glibc, an
+	// absent device model), and no is a reason to refuse the release.
+	if qemuTree != "" {
+		logf("update: smoke-testing the staged qemu %s", filepath.Base(qemuTree))
+		if err := u.Smoke(ctx, qemuTree); err != nil {
+			u.discard(logf)
+			return "", fmt.Errorf("host bundle %s refused on this host: %w", want.Version, err)
+		}
 	}
-	return fmt.Sprintf("staged %s (%s), armed — the agent restarts itself at its next safe point (or now: systemctl restart briard-agent)",
-		want.Version, strings.Join(staged, ", ")), nil
+
+	// THE STOP IS THE SAFE POINT. The agent's ordinary stop path refuses new acts, finishes the one
+	// in flight and exits; the patience is for that act, and only past it is the stop forced.
+	logf("update: stopping the agent (it finishes any act in flight first)")
+	if err := u.Stop(ctx, StopPatience); err != nil {
+		u.discard(logf)
+		if serr := u.Start(ctx); serr != nil {
+			logf("update: the agent did not come back after a failed stop: %v", serr)
+		}
+		return "", fmt.Errorf("install: stop the agent: %w", err)
+	}
+	moved, err := u.Layout.Swap()
+	if err == nil {
+		logf("update: swapped in %s (%s); starting it", want.Version, strings.Join(moved, ", "))
+		err = u.Start(ctx)
+	}
+	if err != nil {
+		return "", u.revert(ctx, want.Version, err, logf)
+	}
+	if err := u.Layout.Commit(); err != nil {
+		// The new release is running and READY; what failed is deleting what it displaced. A
+		// .prev left behind is finished by the next run's reconcile (Commit is idempotent).
+		logf("update: %s is running, but the commit did not finish (%v); the next run finishes it", want.Version, err)
+	}
+	return fmt.Sprintf("updated to %s (%s)", want.Version, strings.Join(staged, ", ")), nil
+}
+
+// revert puts the committed release back after a candidate that did not start (or a swap that
+// failed part-way), starts it, and leaves the reason for that agent to escalate: the run has no
+// notifier, and the agent that comes back is the one that can still report.
+func (u *Update) revert(ctx context.Context, version string, cause error, logf func(string, ...any)) error {
+	logf("update: %s did not start (%v); reverting", version, cause)
+	if err := u.Stop(ctx, 0); err != nil {
+		logf("update: stopping the candidate: %v", err)
+	}
+	back, err := u.Layout.Revert()
+	if err != nil {
+		return fmt.Errorf("install: %s did not start (%v), and the revert failed after putting back %v: %w", version, cause, back, err)
+	}
+	u.discard(logf)
+	if werr := u.Layout.WriteFailure(version, cause.Error()); werr != nil {
+		logf("update: could not leave the failure for the agent (%v)", werr)
+	}
+	if err := u.Start(ctx); err != nil {
+		return fmt.Errorf("install: %s did not start (%v); reverted, but the previous agent did not start either: %w", version, cause, err)
+	}
+	return fmt.Errorf("host bundle %s did not start on this host and was reverted: %w", version, cause)
+}
+
+// reconcile settles what an earlier run left mid-procedure, before this run decides anything. The
+// agent's .prev means that run stopped between its swap and its verdict -- a power cut, a reboot,
+// a killed unit -- so its candidate is reverted (Layout.Interrupted). Other .prev without the
+// agent's are the tail of a commit, finished here. Stale .next go at staging.
+func (u *Update) reconcile(ctx context.Context, logf func(string, ...any)) error {
+	if !u.Layout.Interrupted() {
+		return u.Layout.Commit()
+	}
+	logf("update: an earlier run stopped between its swap and its verdict; reverting it")
+	if err := u.Stop(ctx, StopPatience); err != nil {
+		return fmt.Errorf("install: stop the agent to revert an interrupted update: %w", err)
+	}
+	back, err := u.Layout.Revert()
+	if err != nil {
+		return fmt.Errorf("install: revert an interrupted update (put back %v): %w", back, err)
+	}
+	u.discard(logf)
+	logf("update: put back %s; starting the agent", strings.Join(back, ", "))
+	if err := u.Start(ctx); err != nil {
+		return fmt.Errorf("install: reverted an interrupted update, but the agent did not start: %w", err)
+	}
+	return nil
+}
+
+// discard drops every staged .next, logging rather than failing: a .next left behind is inert,
+// and the next run's staging drops it anyway.
+func (u *Update) discard(logf func(string, ...any)) {
+	if err := u.Layout.DiscardNextBundle(); err != nil {
+		logf("update: could not discard the staged set (%v); the next run does", err)
+	}
 }
 
 // unchanged reports whether the installed manifest pins a.Name at the same sha256 the target

@@ -1,16 +1,18 @@
-// Command briard-selfupdate-stub is a TEST-ONLY harness for the self-update pivot and the
+// Command briard-selfupdate-stub is a TEST-ONLY harness for the self-update and the
 // signed-channel serving (nixosTest/agent-selfupdate.nix), built by nixosTest/selfupdate-stub.nix.
 // It is not shipped with the product — it exists only so the mechanism can be exercised
 // hermetically, without a full nested-VM guest bring-up.
 //
-// It has two roles. As the TRIAL binary it stands in for the one piece of *agent* code in the
-// update loop — deciding whether to signal systemd readiness:
+// It has two roles. As the CANDIDATE binary it stands in for the one piece of *agent* code the
+// update depends on — whether it signals systemd readiness, and how it stops:
 //
-//	ready [id]  send READY=1 (from THIS pid, so NotifyAccess=main accepts it, exactly as the real
-//	            agent does on healthy convergence) then block → systemd considers the unit started
-//	            → ExecStartPost/briard-commit runs → briard-agent.next committed
-//	    crash   exit 1 immediately → start fails → ExecStartPost never runs → revert
-//	    hang    block WITHOUT sending READY → TimeoutStartSec trips → start fails → revert
+//	ready [id]     send READY=1 (from THIS pid, so NotifyAccess=main accepts it, exactly as the
+//	               real agent does at loop entry) then block → the updater's start succeeds →
+//	               the swap is committed
+//	slowstop [id]  as ready, but on SIGTERM it takes a few seconds to finish (an act in flight)
+//	               and leaves /run/briard/drained-<id> before exiting cleanly
+//	    crash      exit 1 immediately → the start fails → the updater reverts
+//	    hang       block WITHOUT sending READY → TimeoutStartSec trips → the updater reverts
 //
 // As the HARNESS it drives the REAL briard.io/agent/selfupdate + briard.io/shared/sdnotify
 // against a live HTTP server and $NOTIFY_SOCKET (the unit tests only use fakes):
@@ -29,6 +31,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"briard.io/shared/sdnotify"
@@ -47,12 +51,12 @@ func main() {
 		sign(args[1:])
 	case "serve":
 		serve(args[1:])
-	default: // ready / crash / hang — the trial binary
+	default: // ready / slowstop / crash / hang — the candidate
 		trial(args)
 	}
 }
 
-// trial is the stand-in agent the frozen briard-exec wrapper runs (ready/crash/hang).
+// trial is the stand-in agent the service runs (ready/slowstop/crash/hang).
 func trial(args []string) {
 	mode := "ready"
 	if len(args) > 0 {
@@ -62,7 +66,7 @@ func trial(args []string) {
 	if len(args) > 1 {
 		id = args[1]
 	}
-	// Announce on stderr → the journal, so the test can prove the trial binary actually ran
+	// Announce on stderr → the journal, so the test can prove the candidate actually ran
 	// (a non-vacuous revert proof) before the mechanism reverts it.
 	fmt.Fprintf(os.Stderr, "briard-selfupdate-stub mode=%s id=%s\n", mode, id)
 	switch mode {
@@ -70,6 +74,20 @@ func trial(args []string) {
 		os.Exit(1)
 	case "hang":
 		block() // never READY: TimeoutStartSec must catch the up-but-unhealthy hang
+	case "slowstop":
+		// The real agent finishes its act in flight on SIGTERM before it exits; a stop that
+		// waits for that is the updater's, one that kills it at TimeoutStopSec is not.
+		term := make(chan os.Signal, 1)
+		signal.Notify(term, syscall.SIGTERM)
+		if err := sdnotify.Ready(); err != nil {
+			os.Exit(2)
+		}
+		<-term
+		fmt.Fprintf(os.Stderr, "briard-selfupdate-stub id=%s: stopping, finishing the act in flight\n", id)
+		time.Sleep(8 * time.Second)
+		must(os.WriteFile("/run/briard/drained-"+id, nil, 0o644))
+		fmt.Fprintf(os.Stderr, "briard-selfupdate-stub id=%s: stopped cleanly\n", id)
+		os.Exit(0)
 	default: // "ready"
 		if err := sdnotify.Ready(); err != nil {
 			fmt.Fprintf(os.Stderr, "briard-selfupdate-stub: sd_notify READY failed: %v\n", err)
@@ -115,7 +133,7 @@ func serve(a []string) {
 	must(http.ListenAndServe(a[0], http.FileServer(http.Dir(a[1]))))
 }
 
-// block sleeps forever — the healthy agent stays up; systemd's Restart=always never fires in
+// block sleeps forever — the healthy agent stays up; systemd's Restart= never fires in
 // steady state. (A bare select{} would panic as an all-goroutines-asleep deadlock.)
 func block() {
 	for {

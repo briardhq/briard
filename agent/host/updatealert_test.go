@@ -2,41 +2,38 @@ package host
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"briard.io/agent/selfupdate"
 	"briard.io/shared/notify"
 )
 
-// newTestUpdateAlerter builds an alerter over a scripted systemd and a temp run dir, behind
-// an alert store (the alerter asserts every reading; the store is what makes it an edge). The
-// readings are consumed one per observe; running past the end repeats the last, so a test can
-// say "and then it stays that way" without padding the script.
-func newTestUpdateAlerter(t *testing.T, n notify.Notifier, readings ...string) (*updateAlerter, *selfupdate.Layout, *[]string) {
+// newTestUpdateAlerter builds an alerter over a temp run dir and a fixed clock, behind an alert
+// store (the alerter asserts every reading; the store is what makes it an edge).
+func newTestUpdateAlerter(t *testing.T, n notify.Notifier) (*updateAlerter, *selfupdate.Layout, *time.Time) {
 	t.Helper()
-	run := t.TempDir()
-	lay := selfupdate.New(t.TempDir(), run)
-	var trail []string
-	i := 0
-	logf := func(f string, v ...any) { trail = append(trail, fmt.Sprintf(f, v...)) }
+	lay := selfupdate.New(t.TempDir(), t.TempDir())
+	logf := func(f string, v ...any) { t.Logf(f, v...) }
 	st := newAlertStore(filepath.Join(t.TempDir(), "alerts.json"), n, logf)
 	a := newUpdateAlerter(st, "n1", lay, logf)
-	a.state = func(string) (string, error) {
-		s := readings[i]
-		if i < len(readings)-1 {
-			i++
-		}
-		if s == "ERR" {
-			return "", errors.New("systemctl: connection refused")
-		}
-		return s, nil
+	now := a.start
+	a.now = func() time.Time { return now }
+	return a, &lay, &now
+}
+
+// result leaves a run's verdict the way the update script does, finished at `at`.
+func result(t *testing.T, lay *selfupdate.Layout, line string, at time.Time) {
+	t.Helper()
+	if err := os.WriteFile(lay.ResultPath(), []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	return a, &lay, &trail
+	if err := os.Chtimes(lay.ResultPath(), at, at); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func levels(as []notify.Alert) string {
@@ -51,23 +48,14 @@ func levels(as []notify.Alert) string {
 // recovered when it updates again. Same no-fatigue shape as the redundancy alerter.
 func TestUpdateAlerterEdges(t *testing.T) {
 	fn := &fakeNotifier{}
-	a, _, _ := newTestUpdateAlerter(t, fn, "inactive", "inactive", "failed", "failed", "failed", "inactive")
+	a, lay, now := newTestUpdateAlerter(t, fn)
 	ctx := context.Background()
-
-	a.observe(ctx) // healthy
-	a.observe(ctx) // steady healthy
-	if len(fn.alerts) != 0 {
-		t.Fatalf("no alert expected while updates work, got %+v", fn.alerts)
+	for _, step := range []string{"ok already at v1", "ok already at v1", "failed could not fetch", "failed could not fetch", "failed could not fetch", "ok updated to v2"} {
+		result(t, lay, step, *now)
+		a.observe(ctx)
 	}
-	a.observe(ctx) // the run failed -> warning
-	a.observe(ctx) // still failing -- must NOT re-fire
-	a.observe(ctx)
-	if got := levels(fn.alerts); got != "open" {
-		t.Fatalf("expected exactly one open across a steady failure, got %q (%+v)", got, fn.alerts)
-	}
-	a.observe(ctx) // updating again -> resolved
 	if got := levels(fn.alerts); got != "open,resolved" {
-		t.Fatalf("expected open then resolved, got %q", got)
+		t.Fatalf("expected exactly one open across a steady failure, then resolved, got %q (%+v)", got, fn.alerts)
 	}
 }
 
@@ -78,88 +66,61 @@ func TestUpdateAlerterEdges(t *testing.T) {
 // test is what fails when somebody adds that symmetry back.
 func TestUpdateAlerterFiresOnTheFirstReading(t *testing.T) {
 	fn := &fakeNotifier{}
-	a, _, _ := newTestUpdateAlerter(t, fn, "failed")
+	a, lay, now := newTestUpdateAlerter(t, fn)
+	result(t, lay, "failed could not fetch a bootstrap agent", *now)
 	a.observe(context.Background())
 	if got := levels(fn.alerts); got != "open" {
-		t.Fatalf("a first reading of `failed` must warn (no priming), got %q", got)
-	}
-}
-
-// A query that failed is not an answer about the unit, in EITHER direction: it must not be read
-// as healthy (which would swallow the next warning) nor as failing (which would invent one).
-func TestUpdateAlerterHoldsOnQueryError(t *testing.T) {
-	fn := &fakeNotifier{}
-	a, _, trail := newTestUpdateAlerter(t, fn, "ERR", "failed")
-	ctx := context.Background()
-	a.observe(ctx)
-	if len(fn.alerts) != 0 {
-		t.Fatalf("a failed query must not fire, got %+v", fn.alerts)
-	}
-
-	if len(*trail) == 0 {
-		t.Fatal("a failed query must leave a line in the journal")
-	}
-	a.observe(ctx) // the real reading still gets through
-	if got := levels(fn.alerts); got != "open" {
-		t.Fatalf("expected the warning after the query recovered, got %q", got)
-	}
-}
-
-// A run in flight has no verdict yet, and neither does a state this code has never heard of.
-// Both hold, and holding must not consume the transition that follows.
-func TestUpdateAlerterHoldsWhileRunning(t *testing.T) {
-	for _, state := range []string{"activating", "deactivating", "active", "reloading", ""} {
-		t.Run(state, func(t *testing.T) {
-			fn := &fakeNotifier{}
-			a, _, _ := newTestUpdateAlerter(t, fn, state, "failed")
-			ctx := context.Background()
-			a.observe(ctx)
-			if len(fn.alerts) != 0 {
-				t.Fatalf("%q has no verdict and must not fire, got %+v", state, fn.alerts)
-			}
-			a.observe(ctx)
-			if got := levels(fn.alerts); got != "open" {
-				t.Fatalf("the verdict after %q must still fire, got %q", state, got)
-			}
-		})
+		t.Fatalf("a first reading of a failed run must warn (no priming), got %q", got)
 	}
 }
 
 // The remedy lives in the update run's own last line -- for a floored node, the refusal that
 // says in so many words that it must be reinstalled. The warning must carry it, and must leave
-// the message on disk: the CLI and the cloud consume that file, this one only reads it.
+// the verdict on disk: the CLI reads it too.
 func TestUpdateAlerterCarriesTheRunsLastLine(t *testing.T) {
 	fn := &fakeNotifier{}
-	a, lay, _ := newTestUpdateAlerter(t, fn, "failed")
+	a, lay, now := newTestUpdateAlerter(t, fn)
 	line := "install: this node is too old to upgrade to that release: installed v3.20260910.64a7834 is older than v3.20260921.5d18301's min_upgrade_from v3.20260920.ec4d22a — this node cannot be upgraded to it and must be reinstalled"
-	if err := os.WriteFile(lay.ResultPath(), []byte(line+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	result(t, lay, "failed "+line, *now)
 	a.observe(context.Background())
-	if len(fn.alerts) != 1 {
-		t.Fatalf("expected one alert, got %+v", fn.alerts)
-	}
-	if !strings.Contains(fn.alerts[0].Body, "must be reinstalled") {
-		t.Fatalf("the alert must carry the run's own remedy, got %q", fn.alerts[0].Body)
+	if len(fn.alerts) != 1 || !strings.Contains(fn.alerts[0].Body, "The update run said: "+line) {
+		t.Fatalf("the alert must carry the run's own remedy, got %+v", fn.alerts)
 	}
 	if _, err := os.Stat(lay.ResultPath()); err != nil {
-		t.Fatalf("the result message must survive being read: %v", err)
+		t.Fatalf("the verdict must survive being read: %v", err)
 	}
 }
 
-// Missing that message is not a reason to stay quiet: the node has still stopped updating.
-func TestUpdateAlerterWarnsWithoutAResultLine(t *testing.T) {
+// No run yet is not a verdict while the agent is young -- a fresh boot has none until the timer's
+// boot run -- but two days without one is the node having stopped updating.
+func TestUpdateAlerterNoRunAtAll(t *testing.T) {
 	fn := &fakeNotifier{}
-	a, lay, _ := newTestUpdateAlerter(t, fn, "failed")
-	if _, err := os.Stat(lay.ResultPath()); err == nil {
-		t.Fatal("precondition: no result message")
-	}
+	a, _, now := newTestUpdateAlerter(t, fn)
 	a.observe(context.Background())
-	if got := levels(fn.alerts); got != "open" {
-		t.Fatalf("expected a warning with no result line, got %q", got)
+	if len(fn.alerts) != 0 {
+		t.Fatalf("no run since a fresh start must hold, got %+v", fn.alerts)
 	}
-	if !strings.Contains(fn.alerts[0].Body, "n1") {
-		t.Fatalf("the alert must still name the node, got %q", fn.alerts[0].Body)
+	*now = now.Add(updateStaleAfter + time.Minute)
+	a.observe(context.Background())
+	if got := levels(fn.alerts); got != "open" || !strings.Contains(fn.alerts[0].Body, "n1") {
+		t.Fatalf("two days without a run must warn and name the node, got %+v", fn.alerts)
+	}
+}
+
+// A good verdict that is two days old is a node whose runs stopped finishing: the timer gone, the
+// unit wedged. It warns, saying since when; a fresh good run clears it.
+func TestUpdateAlerterStaleVerdict(t *testing.T) {
+	fn := &fakeNotifier{}
+	a, lay, now := newTestUpdateAlerter(t, fn)
+	result(t, lay, "ok already at v1", now.Add(-updateStaleAfter-time.Hour))
+	a.observe(context.Background())
+	if got := levels(fn.alerts); got != "open" || !strings.Contains(fn.alerts[0].Body, "No update check has finished since") {
+		t.Fatalf("a stale verdict must warn, got %+v", fn.alerts)
+	}
+	result(t, lay, "ok already at v1", *now)
+	a.observe(context.Background())
+	if got := levels(fn.alerts); got != "open,resolved" {
+		t.Fatalf("a fresh run must clear it, got %q", got)
 	}
 }
 
@@ -167,7 +128,8 @@ func TestUpdateAlerterWarnsWithoutAResultLine(t *testing.T) {
 // alert store is then the whole of the alert -- it must still be recorded there, where
 // `briard alerts` reads it.
 func TestUpdateAlerterRecordsWithNoNotifier(t *testing.T) {
-	a, _, _ := newTestUpdateAlerter(t, nil, "failed")
+	a, lay, now := newTestUpdateAlerter(t, nil)
+	result(t, lay, "failed could not fetch", *now)
 	a.observe(context.Background())
 	recs, err := ReadAlerts(a.n.(*alertStore).path)
 	if err != nil {
@@ -175,17 +137,5 @@ func TestUpdateAlerterRecordsWithNoNotifier(t *testing.T) {
 	}
 	if open := notify.OpenNow(recs); len(open) != 1 || open[0].Key != "updates" {
 		t.Fatalf("a nil notifier must still leave the alert in the store, got %+v", recs)
-	}
-}
-
-// The alerter reads the FROZEN unit, not the agent's own. Naming the wrong one would watch the
-// thing that is running this code and never report the thing that replaces it.
-func TestUpdateAlerterWatchesTheFrozenUnit(t *testing.T) {
-	a, _, _ := newTestUpdateAlerter(t, nil, "inactive")
-	if a.unit != selfupdate.DefaultUpdateUnit {
-		t.Fatalf("alerter watches %q, want the frozen update unit %q", a.unit, selfupdate.DefaultUpdateUnit)
-	}
-	if filepath.Base(a.unit) == "briard-agent.service" {
-		t.Fatal("that is the agent's own unit, not the updater")
 	}
 }

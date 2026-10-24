@@ -50,13 +50,11 @@ let
     mkdir -p "$out/qemu"
     cp ${agent}/bin/briard-agent "$out/briard-agent"
     cp ${../scripts/briard-net-wrap.sh} "$out/briard-net-wrap"
-    # The units and the agent's three frozen scripts, shipped verbatim: install.sh copies
+    # The units and the agent's frozen update script, shipped verbatim: install.sh copies
     # them out of staging rather than writing them, so a staging dir without them is one it refuses.
     cp ${../scripts/units/briard-agent.service}  "$out/briard-agent.service"
     cp ${../scripts/units/briard-update.service} "$out/briard-update.service"
     cp ${../scripts/units/briard-update.timer}   "$out/briard-update.timer"
-    cp ${../scripts/agent/briard-exec}    "$out/briard-exec"
-    cp ${../scripts/agent/briard-commit}  "$out/briard-commit"
     cp ${../scripts/agent/briard-update}  "$out/briard-update"
     cp -r ${qemuBundle}/. "$out/qemu/"
     # THE GUEST BUNDLE: the briard binaries the host pushes into the guest at

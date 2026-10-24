@@ -37,28 +37,22 @@ func (f *fakeUpgrader) WriteCert(_ context.Context, cert, key string) error {
 	return f.err
 }
 
-// fakeSelfUpdater records the agent-update the dispatch drives, without a real unit,
-// keyring, or systemd. triggered records the version handed to the update unit; armed/current
-// are configurable.
+// fakeSelfUpdater records the agent-update the dispatch drives, without a real unit or systemd.
+// triggered records the version handed to the update unit; current is configurable.
 type fakeSelfUpdater struct {
 	triggered  string
-	triggerErr error  // non-nil -> the unit refused (a bad pin / bad signature / failed fetch)
+	triggerErr error  // non-nil -> the unit could not be started
 	current    string // the running version, for the idempotency check
-	restarted  bool
-	isArmed    bool
 }
 
 func (s *fakeSelfUpdater) Trigger(_ context.Context, version string) (string, error) {
 	if s.triggerErr != nil {
-		return s.triggerErr.Error(), s.triggerErr
+		return "", s.triggerErr
 	}
 	s.triggered = version
-	s.isArmed = true
-	return "staged " + version + ", armed", nil
+	return "update run started", nil
 }
-func (s *fakeSelfUpdater) Armed() bool                   { return s.isArmed }
-func (s *fakeSelfUpdater) Current() string               { return s.current }
-func (s *fakeSelfUpdater) Restart(context.Context) error { s.restarted = true; return nil }
+func (s *fakeSelfUpdater) Current() string { return s.current }
 
 func TestApplyDirective(t *testing.T) {
 	var logs []string
@@ -107,9 +101,9 @@ func TestApplyDirectiveCertNoKeySkips(t *testing.T) {
 	}
 }
 
-// An agent-update directive hands the offered version to the update unit below the agent. A
-// staged update reports done (the host loop then restarts to trial it); convergence is
-// confirmed later via NodeStatus.AgentVersion, not this outcome.
+// An agent-update directive hands the offered version to the update unit below the agent and
+// reports done once the run is started -- the run stops this agent, so it cannot wait on it;
+// convergence is confirmed later via NodeStatus.AgentVersion, not this outcome.
 func TestApplyDirectiveAgentUpdateTriggersTheUnit(t *testing.T) {
 	su := &fakeSelfUpdater{current: "v1"}
 	payload, _ := json.Marshal(api.AgentUpdate{Version: "v2"})
@@ -123,11 +117,10 @@ func TestApplyDirectiveAgentUpdateTriggersTheUnit(t *testing.T) {
 	}
 }
 
-// The load-bearing negative: a refused update (a pin below the floor, a bad signature, a failed
-// fetch) reports FAILED carrying the unit's own line, and escalates -- and nothing was staged,
-// so the running binary is kept.
+// The load-bearing negative: an update unit that cannot be started reports FAILED with why, and
+// escalates -- the running binary is kept.
 func TestApplyDirectiveAgentUpdateRefusedEscalates(t *testing.T) {
-	su := &fakeSelfUpdater{current: "v1", triggerErr: fmt.Errorf("v0 is older than stable v1 — move stable to go there")}
+	su := &fakeSelfUpdater{current: "v1", triggerErr: fmt.Errorf("start briard-update.service: exit status 5 (Unit briard-update.service not found.)")}
 	fn := &fakeNotifier{}
 	payload, _ := json.Marshal(api.AgentUpdate{Version: "v0"})
 	o := applyDirective(context.Background(), api.Directive{ID: "u", Kind: api.DirectiveAgentUpdate, Payload: string(payload)},
@@ -135,11 +128,11 @@ func TestApplyDirectiveAgentUpdateRefusedEscalates(t *testing.T) {
 	if o.State != api.OutcomeFailed {
 		t.Fatalf("a refused update outcome = %+v, want failed", o)
 	}
-	if !strings.Contains(o.Detail, "older than stable") {
-		t.Errorf("the outcome does not carry the unit's verdict: %+v", o)
+	if !strings.Contains(o.Detail, "not found") {
+		t.Errorf("the outcome does not say why: %+v", o)
 	}
-	if su.triggered != "" || su.isArmed {
-		t.Error("a refused update staged/armed something -- refuse-and-stay violated")
+	if su.triggered != "" {
+		t.Error("an update that could not start was recorded as triggered")
 	}
 	if len(fn.alerts) != 1 || fn.alerts[0].Kind != notify.Event {
 		t.Errorf("a refused self-update must escalate one event, got %+v", fn.alerts)

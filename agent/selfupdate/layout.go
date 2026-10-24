@@ -1,47 +1,37 @@
-// Package selfupdate holds the on-disk half of the host-agent self-update mechanism:
-// a flat two-binary layout the frozen systemd wrappers act on.
+// Package selfupdate holds the on-disk half of the host-agent self-update: a flat layout the
+// updater moves by rename.
 //
-//	<base>/briard-agent        the COMMITTED binary — what ExecStart runs (mutable state, seeded
+//	<base>/briard-agent        the COMMITTED binary -- what the service runs (mutable state, seeded
 //	                           on install, since a /nix/store path can't be overwritten in place)
-//	<base>/briard-agent.next   a staged candidate on the SAME filesystem, so the commit the
-//	                           briard-commit wrapper does is a single atomic rename(2)
-//	<base>/manifest.json       the signed manifest of the committed release — what an update
+//	<base>/manifest.json       the signed manifest of the committed release -- what an update
 //	                           compares the channel against
-//	<base>/manifest.json.next  the candidate's manifest, committed beside it by the same wrapper
 //	<base>/briard-net-wrap     the guest launch shim, cattle that rides with the agent
-//	<base>/briard-net-wrap.next
-//	<base>/qemu                a SYMLINK to the committed qemu tree, qemu-<release>/ beside it —
-//	                           so committing qemu is one rename(2) of a link, never a recursive
-//	                           delete near a frozen script, and N-1 stays on disk for free
-//	<base>/qemu.next           the staged link, committed by the same wrapper with `mv -T`
-//	<base>/qemu-<release>/     one extracted qemu bundle per release (bin/ lib/ share/)
-//	<run>/update               tmpfs flag: "an update is armed — trial briard-agent.next this boot";
-//	                           its mtime is armed-at, which the frozen update unit reads
-//	<run>/trial                tmpfs marker: "this boot IS a trial — commit briard-agent.next on success"
-//	<run>/update-target        a MESSAGE to the update unit: which release to converge to
-//	<run>/update-result        a MESSAGE back: the one line the unit's run ended on
-//	<run>/update-failure       a MESSAGE from a trial that refused its own release (the staged
-//	                           qemu failed its smoke test) to the agent that comes back after it
+//	<base>/qemu                a SYMLINK to the committed qemu tree, qemu-<release>/ beside it --
+//	                           so moving qemu is a rename of a link, never a recursive delete, and
+//	                           N-1 stays on disk for free
+//	<base>/guest               the same, for the guest bundle (guest-<release>/)
+//	<base>/<entry>.next        fetched and verified, not yet in place
+//	<base>/<entry>.prev        displaced by a swap, not yet committed
+//	<run>/update-target        a MESSAGE to the update run: which release to converge to
+//	<run>/update-result        the last run's verdict: ok or failed, then its one line
+//	<run>/update-failure       a MESSAGE from a reverted run to the agent that comes back after it
 //
-// The commit and revert are dumb, frozen, agent-INDEPENDENT shell wrappers
-// (briard-exec / briard-commit) + systemd `Type=notify` — so a bug in the volatile agent
-// can never wedge the update mechanism. The FETCH is likewise below the agent: a
-// frozen oneshot (briard-update.service) pulls a fresh agent from the channel and lets THAT
-// binary do the verified fetch, so a fetch bug in the running agent cannot prevent its own
-// replacement. This package is therefore small: it owns only what the *proven* side does —
-// atomically STAGE the candidate bundle (write + fsync, so it is durable before any commit),
-// ARM the trial, and pass the messages. It deliberately does NOT implement commit or revert
-// (those are the wrappers), keeping the pivot out of Go.
+// ONE PROCESS DOES THE WHOLE UPDATE: the candidate binary's --update, run by the frozen update
+// unit from a fresh download (agent/install.Update). It stages each changed entry as <entry>.next,
+// stops the agent, SWAPS (the committed entry to .prev, .next onto the committed name), starts the
+// agent and watches it reach READY, then COMMITS by deleting every .prev -- or REVERTS by renaming
+// each .prev back. Names never change, so every path that reaches the agent by name stays valid;
+// every move is a rename on one filesystem, so a torn entry cannot exist.
 //
-// The bundle moves as ONE release: whatever of {agent, manifest, net-wrap, qemu} a
-// release changed is staged as `.next` siblings, and briard-commit commits every `.next` it
-// finds, each existence-guarded — a partial set is the normal case (an unchanged artifact is
-// not re-fetched), not an error. All-or-nothing is the point: a trial that fails leaves every
-// `.next` staged and inert, so the node lands back on a combination that WAS tested, never on
-// agent N with qemu N-1.
+// THE AGENT'S .prev IS THE TRIAL MARKER. Every run stages the agent, so a swap moves it first and a
+// commit deletes its .prev first, while a revert puts it back last: "the agent's .prev exists"
+// therefore means exactly "a run stopped between its swap and its verdict", and the next run
+// reverts it (Interrupted). One rule, no flag, no state file.
 //
-// The messages are written by one side and read-and-unlinked by the other, so nothing
-// accumulates a lifecycle: a target that was consumed is gone, a result that was read is gone.
+// The bundle moves as ONE release: whatever of {agent, manifest, net-wrap, qemu, guest} a release
+// changed is staged, and a partial set is the normal case (an unchanged artifact is not
+// re-fetched). A revert puts every displaced entry back, so the node lands on a combination that
+// WAS tested, never on agent N with qemu N-1.
 package selfupdate
 
 import (
@@ -54,28 +44,31 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"briard.io/shared/atomicfile"
 )
 
 // DefaultBase is the agent's state dir (alongside assignment.json etc., host.ConfigFromEnv);
 // the committed binary and its staged candidate both live here so a commit is a same-fs rename.
 const DefaultBase = "/var/lib/briard"
 
-// DefaultRunDir is the tmpfs dir holding the ephemeral trial flags — cleared on every boot,
-// which is what makes a power loss mid-trial revert to the committed binary for free.
+// DefaultRunDir is the tmpfs dir the update messages pass through. Nothing in it decides a swap:
+// that state is the .prev entries under Base, which a power cut cannot clear.
 const DefaultRunDir = "/run/briard"
 
-// DefaultUpdateUnit is the frozen oneshot that fetches below the agent; every trigger — the
-// cloud's directive, the timer, `briard update` — is a `systemctl start` of it, and systemd
+// DefaultUpdateUnit is the frozen oneshot that runs the update below the agent; every trigger —
+// the cloud's directive, the timer, `briard update` — is a `systemctl start` of it, and systemd
 // merging a start into a running job is what makes the unit its own mutual exclusion.
 const DefaultUpdateUnit = "briard-update.service"
+
+// DefaultAgentUnit is the service the updater stops, swaps under and starts again.
+const DefaultAgentUnit = "briard-agent.service"
 
 const (
 	agentName    = "briard-agent"
 	nextName     = "briard-agent.next"
 	manifestName = "manifest.json"
 	nextManifest = "manifest.json.next"
-	updateFlag   = "update"
-	trialFlag    = "trial"
 	targetName   = "update-target"
 	resultName   = "update-result"
 	failureName  = "update-failure"
@@ -85,16 +78,22 @@ const (
 	nextQEMULink = "qemu.next"
 	qemuTree     = "qemu-" // + release id: one extracted bundle per release, beside the link
 	// The guest bundle -- the binaries the host dresses its guest with -- rides the
-	// same mechanics: one extracted tree per release, a link the frozen commit moves with -T.
+	// same mechanics: one extracted tree per release, a link the swap moves.
 	guestLink     = "guest"
 	nextGuestLink = "guest.next"
 	guestTree     = "guest-"
+	nextSuffix    = ".next"
+	prevSuffix    = ".prev"
 )
+
+// entries are the names a swap moves, in swap order. The agent goes first: every run stages it,
+// so its .prev is on disk before any other entry moves, which is what makes it the trial marker.
+var entries = []string{agentName, manifestName, netWrapName, qemuLink, guestLink}
 
 // Layout resolves the self-update paths under a state base + a tmpfs run dir.
 type Layout struct {
-	Base   string // committed binary + staged candidate live here (same filesystem)
-	RunDir string // tmpfs; the trial/commit decision flags and the two messages live here
+	Base   string // the committed entries, their .next and .prev (one filesystem)
+	RunDir string // tmpfs; the update messages live here
 }
 
 // New returns a Layout, defaulting empty fields to DefaultBase / DefaultRunDir.
@@ -108,47 +107,44 @@ func New(base, runDir string) Layout {
 	return Layout{Base: filepath.Clean(base), RunDir: filepath.Clean(runDir)}
 }
 
-// AgentPath is the committed binary the systemd unit runs by default (via briard-exec).
+// AgentPath is the committed binary the service runs.
 func (l Layout) AgentPath() string { return filepath.Join(l.Base, agentName) }
 
-// NextPath is the staged candidate — same directory as AgentPath, so committing it is an
-// atomic rename(2) (briard-commit does the rename; this package only writes the file).
+// NextPath is the staged candidate — same directory as AgentPath, so the swap is a rename(2).
 func (l Layout) NextPath() string { return filepath.Join(l.Base, nextName) }
 
+// PrevPath is the committed agent a swap displaced: present only between a swap and its verdict.
+func (l Layout) PrevPath() string { return filepath.Join(l.Base, agentName+prevSuffix) }
+
 // ManifestPath / NextManifestPath are the committed release's signed manifest and the staged
-// candidate's, committed together by briard-commit (existence-guarded, so a node installed
-// before manifests were kept simply has none until its first update).
+// candidate's, swapped together with the agent (existence-guarded, so a node installed before
+// manifests were kept simply has none until its first update).
 func (l Layout) ManifestPath() string     { return filepath.Join(l.Base, manifestName) }
 func (l Layout) NextManifestPath() string { return filepath.Join(l.Base, nextManifest) }
 
-// UpdateFlagPath / TrialMarkerPath are the tmpfs decision flags (see the package doc).
-func (l Layout) UpdateFlagPath() string  { return filepath.Join(l.RunDir, updateFlag) }
-func (l Layout) TrialMarkerPath() string { return filepath.Join(l.RunDir, trialFlag) }
-
 // TargetPath / ResultPath are the two messages between a trigger and the update unit;
-// FailurePath is the one from a trial back to the agent that replaces it.
+// FailurePath is the one from a reverted run to the agent that comes back after it.
 func (l Layout) TargetPath() string  { return filepath.Join(l.RunDir, targetName) }
 func (l Layout) ResultPath() string  { return filepath.Join(l.RunDir, resultName) }
 func (l Layout) FailurePath() string { return filepath.Join(l.RunDir, failureName) }
 
 // NetWrapPath / NextNetWrapPath are the guest launch shim and its staged candidate. The shim's
 // contract is with the AGENT (the fd-passing argv both sides agree on), so it must never
-// straddle a release boundary: it commits with the agent, in the same rename burst.
+// straddle a release boundary: it is swapped with the agent, in the same rename burst.
 func (l Layout) NetWrapPath() string     { return filepath.Join(l.Base, netWrapName) }
 func (l Layout) NextNetWrapPath() string { return filepath.Join(l.Base, nextNetWrap) }
 
 // QEMUPath / NextQEMUPath are the committed and staged LINKS to a qemu tree; QEMUTree is where
 // the tree for one release lives. The link is what the agent's QEMU/QEMU_DATADIR point through
 // (install.sh keeps the public /opt/briard/qemu path as a link onto QEMUPath, because the
-// bundle bakes that prefix into its ELF interpreter), so the commit is one rename of a link.
+// bundle bakes that prefix into its ELF interpreter), so moving it is a rename of a link.
 func (l Layout) QEMUPath() string               { return filepath.Join(l.Base, qemuLink) }
 func (l Layout) NextQEMUPath() string           { return filepath.Join(l.Base, nextQEMULink) }
 func (l Layout) QEMUTree(release string) string { return filepath.Join(l.Base, qemuTree+release) }
 
 // StageNext atomically writes the candidate binary to agent.next (temp file in the same
-// directory, fsync, rename), mode 0755 — durable on disk BEFORE it can ever be committed, so
-// the briard-commit rename is safe against a power loss. It does NOT arm the
-// trial: a staged agent.next is inert until Arm() + a restart. Idempotent (overwrites).
+// directory, fsync, rename), mode 0755 — durable on disk BEFORE it can ever be swapped in, so
+// the swap is safe against a power loss. Idempotent (overwrites).
 //
 // The temp name is unique per call rather than a fixed `.tmp`: with the fetch now run by a
 // unit rather than the agent, two writers are at least conceivable (a directive and a timer
@@ -161,7 +157,7 @@ func (l Layout) StageNext(src io.Reader) error {
 }
 
 // StageNextManifest writes the candidate's signed manifest beside it, the same way — so the
-// commit moves both and the node's idea of "which release am I" stays with the binary it runs.
+// swap moves both and the node's idea of "which release am I" stays with the binary it runs.
 func (l Layout) StageNextManifest(manifest []byte) error {
 	return atomicWrite(l.NextManifestPath(), 0o644, func(f *os.File) error {
 		_, err := f.Write(manifest)
@@ -180,14 +176,14 @@ func (l Layout) StageNextNetWrap(src io.Reader) error {
 // StageNextQEMU points qemu.next at an extracted tree under Base (tmp link + rename, so the
 // staged link is never half-written). The target is RELATIVE — the tree's basename — so the
 // layout stays addressable from Base alone. It does not check the tree's contents: that is the
-// trial's smoke test, run by the candidate agent before it sends READY.
+// updater's smoke test, run before anything is swapped.
 func (l Layout) StageNextQEMU(tree string) error {
 	return l.stageTreeLink(tree, qemuTree, l.NextQEMUPath(), nextQEMULink)
 }
 
 // stageTreeLink points `link` at an extracted `<prefix><release>` tree under Base, atomically:
 // the link is made in a temp dir and renamed over any existing one. Shared by the qemu and the
-// guest bundle; the frozen commit moves each `.next` link with `mv -T`.
+// guest bundle.
 func (l Layout) stageTreeLink(tree, prefix, link, linkName string) error {
 	if filepath.Dir(tree) != l.Base || !strings.HasPrefix(filepath.Base(tree), prefix) {
 		return fmt.Errorf("selfupdate: tree %s is not a %s* directory under %s", tree, prefix, l.Base)
@@ -211,8 +207,7 @@ func (l Layout) stageTreeLink(tree, prefix, link, linkName string) error {
 	return os.Remove(tmp)
 }
 
-// The guest bundle's tree and links: the same shape as qemu's, and the same commit --
-// briard-commit renames guest.next onto guest with -T after READY.
+// The guest bundle's tree and links: the same shape as qemu's, swapped the same way.
 func (l Layout) GuestPath() string                  { return filepath.Join(l.Base, guestLink) }
 func (l Layout) NextGuestPath() string              { return filepath.Join(l.Base, nextGuestLink) }
 func (l Layout) GuestTree(release string) string    { return filepath.Join(l.Base, guestTree+release) }
@@ -301,14 +296,6 @@ func (l Layout) GuestReverted() (string, bool) {
 	return r, r != ""
 }
 
-// NextQEMUStaged reports whether a qemu link is staged. The candidate agent runs its smoke test
-// only when this is true AND the boot is a trial — a staged-and-refused qemu stays on disk
-// inert, and must not make every later start of the committed agent pay (or fail) the test.
-func (l Layout) NextQEMUStaged() bool {
-	_, err := os.Lstat(l.NextQEMUPath())
-	return err == nil
-}
-
 // CommittedQEMUTree / NextQEMUTree resolve the two links to absolute tree paths; ok is false
 // when the link is absent.
 func (l Layout) CommittedQEMUTree() (string, bool) { return l.qemuTarget(l.QEMUPath()) }
@@ -325,15 +312,14 @@ func (l Layout) qemuTarget(link string) (string, bool) {
 	return filepath.Clean(t), true
 }
 
-// DiscardNextBundle removes a staged net-wrap and qemu link left by an earlier run — a trial
-// that failed, or a release the node never got round to trialling. The update verb calls it
-// before staging a release, so a release that did NOT change qemu is never paired with a
-// stale qemu.next from one that did: the commit moves every .next it finds, and the only
-// .next that may exist are the ones THIS release staged. The agent and manifest need no such
-// step; every run re-stages both.
+// DiscardNextBundle removes every staged .next -- a run that stopped before its swap, or a
+// release refused at stage time. The update verb calls it before staging, so a release that did
+// NOT change qemu is never paired with a stale qemu.next from one that did: the swap moves every
+// .next it finds, and the only .next that may exist are the ones THIS release staged. A staged
+// tree is left where it is: only its link goes.
 func (l Layout) DiscardNextBundle() error {
-	for _, p := range []string{l.NextNetWrapPath(), l.NextQEMUPath(), l.NextGuestPath()} {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+	for _, e := range entries {
+		if err := os.Remove(filepath.Join(l.Base, e+nextSuffix)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -412,51 +398,94 @@ func (l Layout) NextStaged() bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
-// Arm writes the update flag so the next start trials agent.next (briard-exec renames it to
-// the trial marker, single-use). It refuses to arm without a staged candidate — arming an
-// absent agent.next would trial a missing binary and needlessly bounce the agent.
-func (l Layout) Arm() error {
+func present(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
+}
+
+// Swap puts every staged entry in place: the committed entry renamed to .prev, the .next renamed
+// onto its name. It returns the entries it moved. The agent moves first and the directory is
+// flushed after it, so on disk the agent's .prev exists before any other entry has moved: a run
+// that dies from here on is found by Interrupted and reverted whole. Refused without a staged
+// agent, which every run stages -- a swap without one would have no trial marker.
+func (l Layout) Swap() ([]string, error) {
 	if !l.NextStaged() {
-		return fmt.Errorf("selfupdate: arm: no staged agent.next to trial")
+		return nil, fmt.Errorf("selfupdate: swap: no staged %s", nextName)
 	}
-	if err := os.MkdirAll(l.RunDir, 0o755); err != nil {
-		return err
+	var moved []string
+	for _, e := range entries {
+		cur := filepath.Join(l.Base, e)
+		next := cur + nextSuffix
+		if !present(next) {
+			continue
+		}
+		if present(cur) {
+			if err := os.Rename(cur, cur+prevSuffix); err != nil {
+				return moved, err
+			}
+		}
+		if err := os.Rename(next, cur); err != nil {
+			return moved, err
+		}
+		moved = append(moved, e)
+		if e == agentName {
+			if err := atomicfile.SyncDir(l.Base); err != nil {
+				return moved, err
+			}
+		}
 	}
-	f, err := os.OpenFile(l.UpdateFlagPath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	return f.Close()
+	return moved, atomicfile.SyncDir(l.Base)
 }
 
-// Armed reports whether an update trial is armed (the update flag is present).
-func (l Layout) Armed() bool {
-	_, err := os.Stat(l.UpdateFlagPath())
-	return err == nil
-}
+// Interrupted reports whether a run stopped between its swap and its verdict: the agent's .prev
+// is on disk. The next run reverts it before anything else (agent/install.Update).
+func (l Layout) Interrupted() bool { return present(l.PrevPath()) }
 
-// ArmedSince returns when the trial was armed (the flag's mtime) and whether one is armed at
-// all. The frozen update unit reads the same mtime with stat(1); this is the Go side of that
-// one contract.
-func (l Layout) ArmedSince() (time.Time, bool) {
-	fi, err := os.Stat(l.UpdateFlagPath())
-	if err != nil {
-		return time.Time{}, false
+// Revert puts every displaced entry back over the candidate that replaced it, and returns the
+// entries it restored. The agent goes back LAST, after a flush, so a revert cut short still
+// reads as Interrupted and is simply repeated. A candidate entry with nothing displaced behind it
+// (a name the committed release did not have) stays, inert.
+func (l Layout) Revert() ([]string, error) {
+	var back []string
+	for i := len(entries) - 1; i >= 0; i-- {
+		cur := filepath.Join(l.Base, entries[i])
+		if !present(cur + prevSuffix) {
+			continue
+		}
+		if entries[i] == agentName {
+			if err := atomicfile.SyncDir(l.Base); err != nil {
+				return back, err
+			}
+		}
+		if err := os.Rename(cur+prevSuffix, cur); err != nil {
+			return back, err
+		}
+		back = append(back, entries[i])
 	}
-	return fi.ModTime(), true
+	return back, atomicfile.SyncDir(l.Base)
 }
 
-// InTrial reports whether THIS boot is a trial: briard-exec renamed the update flag to the
-// trial marker before exec'ing the candidate, and briard-commit removes it only after READY.
-// It is what scopes the qemu smoke test to the candidate's own start.
-func (l Layout) InTrial() bool {
-	_, err := os.Stat(l.TrialMarkerPath())
-	return err == nil
+// Commit makes the swap final by deleting every .prev. The agent's goes FIRST, flushed, so a
+// commit cut short is never read as Interrupted: a .prev left without the agent's is the tail of
+// a commit, and Commit finishes it. A displaced tree link goes; its tree stays until a guest
+// launch prunes it.
+func (l Layout) Commit() error {
+	for i, e := range entries {
+		if err := os.Remove(filepath.Join(l.Base, e+prevSuffix)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if i == 0 {
+			if err := atomicfile.SyncDir(l.Base); err != nil {
+				return err
+			}
+		}
+	}
+	return atomicfile.SyncDir(l.Base)
 }
 
-// WriteFailure is the trial's last word before it exits without READY: which release refused
-// itself and why. The agent that comes back after the revert takes it and escalates — the
-// trial cannot, because failing the start is the whole mechanism and nothing of it survives.
+// WriteFailure is a reverted run's last word: which release failed to start and why. The agent
+// that comes back after the revert takes it and escalates -- the run itself has no notifier, and
+// the agent is the one that can still report.
 func (l Layout) WriteFailure(release, reason string) error {
 	if err := os.MkdirAll(l.RunDir, 0o755); err != nil {
 		return err
@@ -467,7 +496,7 @@ func (l Layout) WriteFailure(release, reason string) error {
 	})
 }
 
-// TakeFailure reads and unlinks a trial's failure message; ok is false when there is none.
+// TakeFailure reads and unlinks a reverted run's failure message; ok is false when there is none.
 func (l Layout) TakeFailure() (release, reason string, ok bool) {
 	b, err := os.ReadFile(l.FailurePath())
 	if err != nil {
@@ -495,35 +524,61 @@ func (l Layout) WriteTarget(target string) error {
 	})
 }
 
-// TakeResult reads and unlinks the unit's result line; "" when there is none.
-func (l Layout) TakeResult() string {
-	b, err := os.ReadFile(l.ResultPath())
-	if err != nil {
-		return ""
-	}
-	os.Remove(l.ResultPath())
-	return strings.TrimSpace(string(b))
+// Result is the last update run's verdict, as the frozen update script left it: one line,
+// `ok <line>` or `failed <line>`, written at every exit of the run.
+type Result struct {
+	OK   bool
+	Line string
+	At   time.Time // when the run ended (the file's mtime)
 }
 
-// Trigger runs one update check against target and returns the line the unit ended on: it
-// writes the target message, starts the frozen unit and BLOCKS on it (`systemctl start` waits
-// for a oneshot), then takes the result. A non-zero unit exit surfaces as an error carrying
-// that same line, so a bad pin looks like one — the outcome the cloud sees is the unit's own
-// verdict, and the CLI prints the same words.
+// ReadResult reads the last run's verdict WITHOUT consuming it: the CLI reads the run it waited
+// on, and the update alerter reads whatever run came last, so neither may take it from the
+// other. ok is false when no run has left one since boot (the run dir is tmpfs).
+func (l Layout) ReadResult() (Result, bool) {
+	fi, err := os.Stat(l.ResultPath())
+	if err != nil {
+		return Result{}, false
+	}
+	b, err := os.ReadFile(l.ResultPath())
+	if err != nil {
+		return Result{}, false
+	}
+	word, line, _ := strings.Cut(strings.TrimSpace(string(b)), " ")
+	return Result{OK: word == "ok", Line: line, At: fi.ModTime()}, true
+}
+
+// Trigger starts one update run against target: it writes the target message and starts the
+// frozen unit. With wait, it BLOCKS on the run (`systemctl start` waits for a oneshot) and
+// returns the line that run ended on, a failed run surfacing as an error carrying that same
+// line, so a bad pin looks like one. Without wait it returns once the run is queued: the
+// agent's own trigger must not wait, because the run it starts stops that agent, and the stop
+// waits for the act that is waiting on the run.
 //
 // It is deliberately NOT an injector over the admin socket: the case the timer and the CLI
 // exist for is the agent being down, and the cloud's handler uses this same path so there is
 // one way to start an update, not two.
-func (l Layout) Trigger(ctx context.Context, unit, target string) (string, error) {
+func (l Layout) Trigger(ctx context.Context, unit, target string, wait bool) (string, error) {
 	if unit == "" {
 		unit = DefaultUpdateUnit
 	}
 	if err := l.WriteTarget(target); err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, "systemctl", "start", unit)
-	out, runErr := cmd.CombinedOutput()
-	result := l.TakeResult()
+	if !wait {
+		if out, err := exec.CommandContext(ctx, "systemctl", "start", "--no-block", unit).CombinedOutput(); err != nil {
+			return "", fmt.Errorf("start %s: %w (%s)", unit, err, strings.TrimSpace(string(out)))
+		}
+		return "update run started (journalctl -u " + unit + ")", nil
+	}
+	// A result older than this start is an earlier run's, never this one's. A second of slack
+	// for a coarse clock: a run takes far longer than that to reach its verdict.
+	started := time.Now().Add(-time.Second)
+	out, runErr := exec.CommandContext(ctx, "systemctl", "start", unit).CombinedOutput()
+	result := ""
+	if r, ok := l.ReadResult(); ok && r.At.After(started) {
+		result = r.Line
+	}
 	if runErr != nil {
 		if result == "" {
 			result = strings.TrimSpace(string(out))

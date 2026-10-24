@@ -25,7 +25,7 @@ func stagingDir(t *testing.T, skip ...string) string {
 			t.Fatal(err)
 		}
 	}
-	for _, f := range []string{"briard-agent", "briard-net-wrap", "briard-exec", "briard-commit", "briard-update",
+	for _, f := range []string{"briard-agent", "briard-net-wrap", "briard-update",
 		"briard-agent.service", "briard-update.service", "briard-update.timer", "nixos.qcow2"} {
 		if !slices.Contains(skip, f) {
 			write(f, f+" bytes", 0o555)
@@ -72,8 +72,6 @@ func TestInstallLaysTheStagingDirDown(t *testing.T) {
 	files := map[string]os.FileMode{
 		"opt/agent/briard-agent":                 0o755,
 		"opt/agent/briard-net-wrap":              0o755,
-		"opt/agent/briard-exec":                  0o755,
-		"opt/agent/briard-commit":                0o755,
 		"opt/agent/briard-update":                0o755,
 		"units/briard-agent.service":             0o644,
 		"units/briard-update.service":            0o644,
@@ -126,7 +124,7 @@ func TestInstallLaysTheStagingDirDown(t *testing.T) {
 // one this host cannot run briard from, and the error names what is missing.
 func TestInstallRefusesAnIncompleteStagingDir(t *testing.T) {
 	t.Setenv("SUDO_USER", "")
-	for _, missing := range []string{"briard-net-wrap", "briard-commit", "briard-update.timer"} {
+	for _, missing := range []string{"briard-net-wrap", "briard-update", "briard-update.timer"} {
 		src, r := stagingDir(t, missing), testRoots(t)
 		if err := os.MkdirAll(filepath.Join(r.prefix, "agent"), 0o755); err != nil {
 			t.Fatal(err)

@@ -456,11 +456,9 @@ stage)
 	install -m0644 scripts/units/briard-agent.service   "$H/briard-agent.service"
 	install -m0644 scripts/units/briard-update.service  "$H/briard-update.service"
 	install -m0644 scripts/units/briard-update.timer    "$H/briard-update.timer"
-	# The agent's three frozen scripts, same reasoning: self-update's pivot pair and the updater,
+	# The agent's frozen update script, same reasoning: the update launcher,
 	# shipped verbatim rather than rendered by install.sh. 0755 -- the manifest records a
-	# mode only when it is not the 0644 default, and these are run.
-	install -m0755 scripts/agent/briard-exec    "$H/briard-exec"
-	install -m0755 scripts/agent/briard-commit  "$H/briard-commit"
+	# mode only when it is not the 0644 default, and this is run.
 	install -m0755 scripts/agent/briard-update  "$H/briard-update"
 	# qemu-bundle is a DIRECTORY in the store (bin/ lib/ share/ PROVENANCE) and the contract
 	# wants one file, so it is tarred here.
@@ -477,7 +475,7 @@ stage)
 	# refuses to install.
 	#
 	# It sits in the briard chain's linux-amd64 arm, which buys it exactly the three things shipping verbatim bought
-	# the frozen scripts and the units: versioned, diffable, and covered by the release signature.
+	# the frozen script and the units: versioned, diffable, and covered by the release signature.
 	# It is ALSO byte-copied to the channel root -- but only by `promote`, never by `publish`. The
 	# root URL is what the advertised one-liner fetches on every `stable` install, so writing it
 	# at publish time was the one thing that made publishing a release a live change to what

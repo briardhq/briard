@@ -12,7 +12,7 @@ import (
 )
 
 // layDownOS is the Linux tail of the layout: the fd-passing launch wrapper, `briard` on $PATH,
-// the three frozen scripts, config.env and the systemd units.
+// the frozen update script, config.env and the systemd units.
 func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(string, ...any)) error {
 	agentDir := filepath.Join(r.prefix, "agent")
 	// <prefix>/qemu is the PUBLIC path, a fixed link onto the moving agent/qemu: the Linux bundle
@@ -28,8 +28,7 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 		return err
 	}
 	// The macvtap launch wrapper -- the fd-passing shim the agent runs as the guest unit's
-	// ExecStart. Cattle that rides with the agent: an update stages briard-net-wrap.next beside it
-	// for briard-commit to move.
+	// ExecStart. Cattle that rides with the agent: an update swaps it with the agent.
 	netWrap := ""
 	if _, err := os.Stat(filepath.Join(hostSrc, "briard-net-wrap")); err == nil {
 		netWrap = filepath.Join(agentDir, "briard-net-wrap")
@@ -56,19 +55,17 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 		return errors.New("the briard-net-wrap wrapper is absent from staging; the guest cannot be given a NIC")
 	}
 
-	// THE AGENT'S THREE FROZEN SCRIPTS, copied out of the verified set. briard-exec and
-	// briard-commit are self-update's on-disk pivot; briard-update is the fetch, which must not be
-	// shipped by the thing it updates. Frozen means dumb, agent-INDEPENDENT shell, so a bug in the
-	// volatile agent cannot wedge the mechanism that replaces it; shipped means they are signed
-	// artifacts of the host chain, covered by the same manifest as the binary they start.
-	say("installing the agent's scripts")
-	for _, s := range []string{"briard-exec", "briard-commit", "briard-update"} {
-		if !exists(filepath.Join(hostSrc, s)) {
-			return fmt.Errorf("%s is absent from staging; this release cannot be installed", s)
-		}
-		if err := installFile(filepath.Join(hostSrc, s), filepath.Join(agentDir, s), 0o755); err != nil {
-			return err
-		}
+	// THE AGENT'S FROZEN SCRIPT, copied out of the verified set: briard-update launches the
+	// update, which must not be shipped by the thing it updates. Frozen means dumb,
+	// agent-INDEPENDENT shell, so a bug in the volatile agent cannot wedge the mechanism that
+	// replaces it; shipped means it is a signed artifact of the host chain, covered by the same
+	// manifest as the binary it fetches.
+	say("installing the agent's update script")
+	if !exists(filepath.Join(hostSrc, "briard-update")) {
+		return errors.New("briard-update is absent from staging; this release cannot be installed")
+	}
+	if err := installFile(filepath.Join(hostSrc, "briard-update"), filepath.Join(agentDir, "briard-update"), 0o755); err != nil {
+		return err
 	}
 	if err := r.writeConfig(ctx, r.bundleLines(netWrap), say); err != nil {
 		return err

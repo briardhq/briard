@@ -42,11 +42,12 @@ import (
 // (it is Run's, like pendingOutcomes): an act that spans a channel bounce finishes on the client
 // it started with and still reports through here.
 type actLane struct {
-	mu      sync.Mutex
-	busy    string          // the kind of the act in flight, "" when none
-	sent    map[string]bool // IDs sent off the loop whose result the loop has not drained yet
-	done    chan struct{}   // closed when the act in flight ends; Run waits on it for a relauncher
-	results chan actResult
+	mu       sync.Mutex
+	busy     string          // the kind of the act in flight, "" when none
+	sent     map[string]bool // IDs sent off the loop whose result the loop has not drained yet
+	done     chan struct{}   // closed when the act in flight ends; Run waits on it for a relauncher
+	results  chan actResult
+	stopping bool // the agent is stopping: no new act (stopAfter)
 }
 
 // actResult is a directive's outcome on its way back to the loop, with what the loop needs to
@@ -119,6 +120,9 @@ func (a *actLane) inFlight() bool {
 func (a *actLane) claim(kind string) (held string, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.stopping {
+		return "stop of this agent", false
+	}
 	if a.busy != "" {
 		return a.busy, false
 	}
@@ -236,4 +240,31 @@ func (cfg *Config) finish(res actResult, pending *[]api.DirectiveOutcome, logf f
 		*pending = append(*pending, res.o)
 	}
 	cfg.adoptInstalledServices(res.d, res.o, logf)
+}
+
+// stopAfter is the stop path, and what makes a stop the self-update's safe point: it returns the
+// context the loop and its acts run on, which ends when parent ends AND the act in flight has
+// finished. From parent's end the lane refuses every new act, so the stop ends between acts; until
+// the act ends the loop keeps running -- beating, and talking to the guest, whose deadman counts
+// the host's silence -- exactly as it did while the act ran. Bounded by the act's own budget and,
+// above it, by the service manager's stop timeout. nil-safe: without a lane it is parent.
+func (a *actLane) stopAfter(parent context.Context, logf func(string, ...any)) context.Context {
+	if a == nil {
+		return parent
+	}
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	go func() {
+		<-parent.Done()
+		a.mu.Lock()
+		a.stopping = true
+		kind, done := a.busy, a.done
+		a.mu.Unlock()
+		if kind != "" {
+			logf("stopping: finishing the %s in flight first; no new acts", kind)
+			<-done
+			logf("stopping: the %s finished", kind)
+		}
+		cancel()
+	}()
+	return ctx
 }

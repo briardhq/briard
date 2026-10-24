@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -92,9 +93,34 @@ func TestDecide(t *testing.T) {
 	}
 }
 
+// fakeAgent stands in for the service the updater stops and starts and for the qemu smoke test:
+// it records every call, and fails where a test tells it to.
+type fakeAgent struct {
+	stops    []time.Duration // the patience of each stop, in order
+	starts   int
+	startErr []error // the result of each start, in order; nil past the end
+	stopErr  error
+	smoked   []string
+	smokeErr error
+}
+
+func (f *fakeAgent) wire(u *Update) {
+	u.Stop = func(_ context.Context, p time.Duration) error { f.stops = append(f.stops, p); return f.stopErr }
+	u.Start = func(context.Context) error {
+		i := f.starts
+		f.starts++
+		if i < len(f.startErr) {
+			return f.startErr[i]
+		}
+		return nil
+	}
+	u.Smoke = func(_ context.Context, tree string) error { f.smoked = append(f.smoked, tree); return f.smokeErr }
+}
+
 // updateFixture is a channel plus a layout to stage into: a fresh Base (same fs as the
-// candidate) and RunDir, with the installed manifest optionally seeded.
-func updateFixture(t *testing.T, c *channel, installed []byte) (*Update, selfupdate.Layout) {
+// candidate) and RunDir, with the installed manifest optionally seeded and a committed agent
+// in place, as an install leaves it.
+func updateFixture(t *testing.T, c *channel, installed []byte) (*Update, selfupdate.Layout, *fakeAgent) {
 	t.Helper()
 	base := t.TempDir()
 	l := selfupdate.New(base, filepath.Join(t.TempDir(), "run"))
@@ -103,13 +129,23 @@ func updateFixture(t *testing.T, c *channel, installed []byte) (*Update, selfupd
 			t.Fatal(err)
 		}
 	}
-	return &Update{Fetcher: c.fetcher(), Layout: l}, l
+	if err := os.WriteFile(l.AgentPath(), []byte("the committed agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	u, f := &Update{Fetcher: c.fetcher(), Layout: l}, &fakeAgent{}
+	f.wire(u)
+	return u, l, f
 }
 
+// assertNothingStaged: a refused run staged nothing, swapped nothing and left the committed
+// agent where it was.
 func assertNothingStaged(t *testing.T, l selfupdate.Layout) {
 	t.Helper()
-	if l.NextStaged() || l.Armed() {
-		t.Error("a refused update staged or armed something — refuse-and-stay violated")
+	if l.NextStaged() || l.Interrupted() {
+		t.Error("a refused update staged or swapped something — refuse-and-stay violated")
+	}
+	if b, _ := os.ReadFile(l.AgentPath()); string(b) != "the committed agent" {
+		t.Errorf("a refused update replaced the committed agent with %q", b)
 	}
 	if _, err := os.Stat(l.NextManifestPath()); !os.IsNotExist(err) {
 		t.Error("a refused update left a candidate manifest")
@@ -122,33 +158,47 @@ func assertNothingStaged(t *testing.T, l selfupdate.Layout) {
 	}
 }
 
+// committed reports whether the run left the candidate agent committed: in place under its name,
+// nothing staged or displaced beside it.
+func committed(t *testing.T, l selfupdate.Layout) bool {
+	t.Helper()
+	b, _ := os.ReadFile(l.AgentPath())
+	ents, _ := os.ReadDir(l.Base)
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".next") || strings.HasSuffix(e.Name(), ".prev") {
+			t.Errorf("%s survived the run", e.Name())
+		}
+	}
+	return string(b) == "the briard-agent static binary"
+}
+
 // The happy path: a node with no installed manifest asks for `latest`; the agent artifact is
-// fetched from the versioned directory, verified, staged beside its manifest, and armed — and
-// nothing is restarted (the verb has no such power).
-func TestUpdateStagesAndArms(t *testing.T) {
+// fetched from the versioned directory, verified and staged beside its manifest; the agent is
+// stopped with the full patience, the candidate swapped in and started, and the swap committed.
+func TestUpdateSwapsStartsAndCommits(t *testing.T) {
 	c := goodChannel(t)
-	u, l := updateFixture(t, c, nil)
+	u, l, f := updateFixture(t, c, nil)
 	line, err := u.Run(context.Background(), TargetLatest)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if !strings.Contains(line, "staged "+testVersion) || !strings.Contains(line, "armed") {
+	if line != "updated to "+testVersion+" (agent)" {
 		t.Errorf("result line = %q", line)
 	}
-	got, err := os.ReadFile(l.NextPath())
-	if err != nil || string(got) != "the briard-agent static binary" {
-		t.Fatalf("agent.next = %q, %v", got, err)
+	if !committed(t, l) {
+		t.Fatal("the candidate is not the committed agent")
 	}
-	fi, _ := os.Stat(l.NextPath())
-	if fi.Mode().Perm() != 0o755 {
-		t.Errorf("agent.next mode = %o, want 0755", fi.Mode().Perm())
+	if fi, _ := os.Stat(l.AgentPath()); fi.Mode().Perm() != 0o755 {
+		t.Errorf("agent mode = %o, want 0755", fi.Mode().Perm())
 	}
-	nm, err := os.ReadFile(l.NextManifestPath())
-	if err != nil || !bytes.Equal(nm, c.bodies[pointerPath(ManifestName)]) {
-		t.Errorf("manifest.json.next is not the verified bytes (%v)", err)
+	if m, err := os.ReadFile(l.ManifestPath()); err != nil || !bytes.Equal(m, c.bodies[pointerPath(ManifestName)]) {
+		t.Errorf("the committed manifest is not the verified bytes (%v)", err)
 	}
-	if !l.Armed() {
-		t.Error("not armed")
+	if len(f.stops) != 1 || f.stops[0] != StopPatience || f.starts != 1 {
+		t.Errorf("stops %v, starts %d; want one patient stop and one start", f.stops, f.starts)
+	}
+	if len(f.smoked) != 0 {
+		t.Error("smoke-tested a qemu the release did not ship")
 	}
 	// Artifacts the verb does not know (a guest image here, a plain tarball) are left alone.
 	for _, n := range []string{"nixos.qcow2", "qemu-bundle.tar"} {
@@ -157,6 +207,100 @@ func TestUpdateStagesAndArms(t *testing.T) {
 		}
 	}
 	assertNoOrphans(t, l)
+}
+
+// A candidate that does not start is reverted whole: the committed release goes back, the old
+// agent is started, and the reason waits for it to escalate.
+func TestUpdateRevertsACandidateThatDoesNotStart(t *testing.T) {
+	c := bundleChannel(t, "new qemu")
+	u, l, f := updateFixture(t, c, nil)
+	os.MkdirAll(l.QEMUTree("v3.20260101.0000000"), 0o755)
+	os.Symlink("qemu-v3.20260101.0000000", l.QEMUPath())
+	os.WriteFile(l.ManifestPath(), []byte("the committed manifest"), 0o644)
+	f.startErr = []error{errors.New("start briard-agent.service: exit status 1: panic: boom")}
+	_, err := u.Run(context.Background(), TargetLatest)
+	if err == nil || !strings.Contains(err.Error(), "did not start on this host and was reverted") || !strings.Contains(err.Error(), "panic: boom") {
+		t.Fatalf("err = %v", err)
+	}
+	if b, _ := os.ReadFile(l.AgentPath()); string(b) != "the committed agent" {
+		t.Errorf("agent after the revert = %q", b)
+	}
+	if b, _ := os.ReadFile(l.ManifestPath()); string(b) != "the committed manifest" {
+		t.Errorf("manifest after the revert = %q", b)
+	}
+	if tree, _ := l.CommittedQEMUTree(); tree != l.QEMUTree("v3.20260101.0000000") {
+		t.Errorf("qemu after the revert -> %s", tree)
+	}
+	if l.Interrupted() || l.NextStaged() {
+		t.Error("the revert left a .prev or a .next")
+	}
+	if rel, reason, ok := l.TakeFailure(); !ok || rel != testVersion || !strings.Contains(reason, "panic: boom") {
+		t.Errorf("failure left for the agent = %q, %q, %v", rel, reason, ok)
+	}
+	if len(f.stops) != 2 || f.stops[0] != StopPatience || f.stops[1] != 0 || f.starts != 2 {
+		t.Errorf("stops %v, starts %d; want the patient stop, the candidate's stop, two starts", f.stops, f.starts)
+	}
+}
+
+// A staged qemu that does not run here refuses the release before anything stops: nothing is
+// swapped, the staged set is gone, and the agent was never touched.
+func TestUpdateRefusesAQEMUThatFailsItsSmokeTest(t *testing.T) {
+	c := bundleChannel(t, "bad qemu")
+	u, l, f := updateFixture(t, c, nil)
+	f.smokeErr = errors.New("qemu smoke test: -version: exit status 1")
+	_, err := u.Run(context.Background(), TargetLatest)
+	if err == nil || !strings.Contains(err.Error(), "refused on this host: qemu smoke test") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(f.smoked) != 1 || f.smoked[0] != l.QEMUTree(testVersion) {
+		t.Errorf("smoke-tested %v, want the staged tree", f.smoked)
+	}
+	assertNothingStaged(t, l)
+	assertBundleNotStaged(t, l)
+	if len(f.stops) != 0 || f.starts != 0 {
+		t.Errorf("a refused release stopped (%v) or started (%d) the agent", f.stops, f.starts)
+	}
+}
+
+// A run that died between its swap and its verdict is reverted by the next run, before that run
+// decides anything: here the reverted release is the target, so the run then has nothing to do.
+func TestUpdateRevertsAnInterruptedRun(t *testing.T) {
+	c := goodChannel(t)
+	u, l, f := updateFixture(t, c, []byte("the candidate's manifest"))
+	os.Rename(l.AgentPath(), l.PrevPath())
+	os.WriteFile(l.AgentPath(), []byte("a candidate never committed"), 0o755)
+	os.WriteFile(l.ManifestPath()+".prev", c.bodies[pointerPath(ManifestName)], 0o644)
+	line, err := u.Run(context.Background(), TargetLatest)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(line, "already at "+testVersion) {
+		t.Errorf("result line = %q (the revert did not restore the committed manifest)", line)
+	}
+	if b, _ := os.ReadFile(l.AgentPath()); string(b) != "the committed agent" {
+		t.Errorf("agent after the reconcile = %q", b)
+	}
+	if l.Interrupted() {
+		t.Error("still Interrupted after the reconcile")
+	}
+	if len(f.stops) != 1 || f.stops[0] != StopPatience || f.starts != 1 {
+		t.Errorf("stops %v, starts %d; want one patient stop and one start", f.stops, f.starts)
+	}
+}
+
+// A stop that fails swaps nothing: the staged set goes and the agent is started again, in case
+// the stop got as far as stopping it.
+func TestUpdateSwapsNothingWhenTheStopFails(t *testing.T) {
+	c := goodChannel(t)
+	u, l, f := updateFixture(t, c, nil)
+	f.stopErr = errors.New("ask briard-agent.service to stop: exit status 1")
+	if _, err := u.Run(context.Background(), TargetLatest); err == nil {
+		t.Fatal("a failed stop was not an error")
+	}
+	assertNothingStaged(t, l)
+	if f.starts != 1 {
+		t.Errorf("starts = %d, want the agent started again", f.starts)
+	}
 }
 
 func assertNoOrphans(t *testing.T, l selfupdate.Layout) {
@@ -169,11 +313,11 @@ func assertNoOrphans(t *testing.T, l selfupdate.Layout) {
 	}
 }
 
-// An installed manifest equal to the target is a no-op: nothing staged, nothing armed, and the
+// An installed manifest equal to the target is a no-op: nothing staged, nothing stopped, and the
 // line says so — `briard update` on an up-to-date node must not bounce the agent.
 func TestUpdateIsANoOpAtTheTarget(t *testing.T) {
 	c := goodChannel(t)
-	u, l := updateFixture(t, c, c.bodies[pointerPath(ManifestName)])
+	u, l, _ := updateFixture(t, c, c.bodies[pointerPath(ManifestName)])
 	line, err := u.Run(context.Background(), TargetLatest)
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -193,7 +337,7 @@ func TestUpdateStableOrdersOnTheDate(t *testing.T) {
 		c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformHost+"/"+n] = c.bodies[pointerPath(n)]
 	}
 	pinned, _ := json.Marshal(man(ChainBriard, PlatformHost, "v3.20260930.fffffff"))
-	u, l := updateFixture(t, c, pinned)
+	u, l, _ := updateFixture(t, c, pinned)
 	line, err := u.Run(context.Background(), TargetStable)
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -204,11 +348,11 @@ func TestUpdateStableOrdersOnTheDate(t *testing.T) {
 	assertNothingStaged(t, l)
 
 	older, _ := json.Marshal(man(ChainBriard, PlatformHost, "v3.20260101.0000000"))
-	u2, l2 := updateFixture(t, c, older)
+	u2, l2, _ := updateFixture(t, c, older)
 	if _, err := u2.Run(context.Background(), TargetStable); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if !l2.Armed() {
+	if !committed(t, l2) {
 		t.Error("a node behind stable was not moved forward")
 	}
 }
@@ -227,7 +371,7 @@ func TestUpdateRefusesAPinBelowStable(t *testing.T) {
 	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformHost+"/"+ManifestName] = mb
 	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformHost+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
 	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformHost+"/briard-agent"] = agent
-	u, l := updateFixture(t, c, c.bodies[pointerPath(ManifestName)])
+	u, l, _ := updateFixture(t, c, c.bodies[pointerPath(ManifestName)])
 	_, err := u.Run(context.Background(), oldV)
 	if !errors.Is(err, ErrBelowFloor) {
 		t.Fatalf("err = %v, want ErrBelowFloor", err)
@@ -240,17 +384,17 @@ func TestUpdateRefusesAPinBelowStable(t *testing.T) {
 	if _, err := u.Run(context.Background(), oldV); err != nil {
 		t.Fatalf("a pin at the moved floor was refused: %v", err)
 	}
-	if !l.Armed() {
-		t.Error("downgrade to the floor did not arm")
+	if b, _ := os.ReadFile(l.AgentPath()); string(b) != "an old agent" || l.Interrupted() {
+		t.Error("downgrade to the floor did not commit")
 	}
 }
 
 // A tampered agent artifact is refused after the manifest verified: nothing staged, nothing
-// armed.
+// swapped.
 func TestUpdateRefusesATamperedAgent(t *testing.T) {
 	c := goodChannel(t)
 	c.bodies[releasePath("briard-agent")] = []byte("not the signed bytes")
-	u, l := updateFixture(t, c, nil)
+	u, l, _ := updateFixture(t, c, nil)
 	_, err := u.Run(context.Background(), TargetLatest)
 	if !errors.Is(err, ErrArtifactMismatch) {
 		t.Fatalf("err = %v, want ErrArtifactMismatch", err)
@@ -261,7 +405,7 @@ func TestUpdateRefusesATamperedAgent(t *testing.T) {
 // An id the channel does not carry fails the run loudly (a 404 is not a no-op).
 func TestUpdateRefusesAnUnknownPin(t *testing.T) {
 	c := goodChannel(t)
-	u, l := updateFixture(t, c, nil)
+	u, l, _ := updateFixture(t, c, nil)
 	if _, err := u.Run(context.Background(), "v3.20990101.nothere"); err == nil {
 		t.Fatal("an unknown pin was accepted")
 	}
@@ -315,42 +459,43 @@ func tarZst(t *testing.T, files map[string]string) []byte {
 	return zb.Bytes()
 }
 
+// assertBundleNotStaged: neither net-wrap nor qemu was staged or swapped in. Every fixture that
+// calls it starts with neither committed, so either name existing is this run's doing.
 func assertBundleNotStaged(t *testing.T, l selfupdate.Layout) {
 	t.Helper()
-	if l.NextQEMUStaged() {
-		t.Error("qemu.next is staged")
-	}
-	if _, err := os.Lstat(l.NextNetWrapPath()); !os.IsNotExist(err) {
-		t.Error("briard-net-wrap.next is staged")
+	for _, p := range []string{l.NextQEMUPath(), l.QEMUPath(), l.NextNetWrapPath(), l.NetWrapPath()} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("%s exists", filepath.Base(p))
+		}
 	}
 }
 
 // The whole bundle: with no installed manifest every artifact is fetched; the
-// net-wrap stages beside the agent, the qemu tarball is verified, expanded and extracted into
-// qemu-<version>/ and qemu.next links to it (relative), the manifest rides along, and the
-// result line names what was staged.
-func TestUpdateStagesTheWholeBundle(t *testing.T) {
+// net-wrap is swapped in beside the agent, the qemu tarball is verified, expanded and extracted
+// into qemu-<version>/ and the qemu link moves to it (relative), the manifest rides along, and the
+// result line names what moved.
+func TestUpdateSwapsTheWholeBundle(t *testing.T) {
 	c := bundleChannel(t, "prefix=/opt/briard/qemu")
-	u, l := updateFixture(t, c, nil)
+	u, l, _ := updateFixture(t, c, nil)
 	line, err := u.Run(context.Background(), TargetLatest)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if !strings.Contains(line, "staged "+testVersion+" (agent, net-wrap, qemu), armed") {
+	if !strings.Contains(line, "updated to "+testVersion+" (agent, net-wrap, qemu)") {
 		t.Errorf("result line = %q", line)
 	}
-	if b, err := os.ReadFile(l.NextNetWrapPath()); err != nil || !strings.HasPrefix(string(b), "#!/bin/sh") {
-		t.Errorf("net-wrap.next = %q, %v", b, err)
+	if b, err := os.ReadFile(l.NetWrapPath()); err != nil || !strings.HasPrefix(string(b), "#!/bin/sh") {
+		t.Errorf("net-wrap = %q, %v", b, err)
 	}
-	if fi, _ := os.Stat(l.NextNetWrapPath()); fi == nil || fi.Mode().Perm() != 0o755 {
-		t.Errorf("net-wrap.next is not 0755: %v", fi)
+	if fi, _ := os.Stat(l.NetWrapPath()); fi == nil || fi.Mode().Perm() != 0o755 {
+		t.Errorf("net-wrap is not 0755: %v", fi)
 	}
-	tree, ok := l.NextQEMUTree()
+	tree, ok := l.CommittedQEMUTree()
 	if !ok || tree != l.QEMUTree(testVersion) {
-		t.Fatalf("qemu.next -> %q, %v; want %s", tree, ok, l.QEMUTree(testVersion))
+		t.Fatalf("qemu -> %q, %v; want %s", tree, ok, l.QEMUTree(testVersion))
 	}
-	if target, _ := os.Readlink(l.NextQEMUPath()); target != "qemu-"+testVersion {
-		t.Errorf("qemu.next target = %q, want the relative qemu-%s", target, testVersion)
+	if target, _ := os.Readlink(l.QEMUPath()); target != "qemu-"+testVersion {
+		t.Errorf("qemu target = %q, want the relative qemu-%s", target, testVersion)
 	}
 	if b, err := os.ReadFile(filepath.Join(tree, "PROVENANCE")); err != nil || string(b) != "prefix=/opt/briard/qemu" {
 		t.Errorf("extracted PROVENANCE = %q, %v", b, err)
@@ -361,8 +506,8 @@ func TestUpdateStagesTheWholeBundle(t *testing.T) {
 	if fi, _ := os.Stat(tree); fi.Mode().Perm() != 0o755 {
 		t.Errorf("tree mode = %o, want 0755", fi.Mode().Perm())
 	}
-	if !l.NextStaged() || !l.Armed() {
-		t.Error("agent not staged or not armed")
+	if !committed(t, l) {
+		t.Error("agent not committed")
 	}
 	// The tarball itself does not linger anywhere under Base.
 	for _, n := range []string{artifactQEMU, strings.TrimSuffix(artifactQEMU, ".zst")} {
@@ -385,16 +530,16 @@ func TestUpdateFetchesOnlyWhatChanged(t *testing.T) {
 	ib, _ := json.Marshal(installed)
 	c.missing[releasePath(artifactNetWrap)] = true
 	c.missing[releasePath(artifactQEMU)] = true
-	u, l := updateFixture(t, c, ib)
+	u, l, _ := updateFixture(t, c, ib)
 	line, err := u.Run(context.Background(), TargetLatest)
 	if err != nil {
 		t.Fatalf("an unchanged net-wrap/qemu was fetched (or worse): %v", err)
 	}
-	if !strings.Contains(line, "staged "+testVersion+" (agent), armed") {
+	if !strings.Contains(line, "updated to "+testVersion+" (agent)") {
 		t.Errorf("result line = %q", line)
 	}
-	if !l.NextStaged() {
-		t.Error("agent not staged")
+	if !committed(t, l) {
+		t.Error("agent not committed")
 	}
 	assertBundleNotStaged(t, l)
 	if _, err := os.Stat(l.QEMUTree(testVersion)); !os.IsNotExist(err) {
@@ -402,9 +547,9 @@ func TestUpdateFetchesOnlyWhatChanged(t *testing.T) {
 	}
 }
 
-// A stale bundle candidate -- qemu.next and net-wrap.next left by a release whose trial
-// failed -- is dropped before a release that does NOT change them is staged; otherwise
-// briard-commit would pair this agent with that qemu, a combination nothing tested.
+// A stale bundle candidate -- qemu.next and net-wrap.next left by a run that never swapped
+// -- is dropped before a release that does NOT change them is staged; otherwise the swap
+// would pair this agent with that qemu, a combination nothing tested.
 func TestUpdateDropsAStaleBundleCandidate(t *testing.T) {
 	c := bundleChannel(t, "same")
 	var target Manifest
@@ -412,7 +557,7 @@ func TestUpdateDropsAStaleBundleCandidate(t *testing.T) {
 	installed := target
 	installed.Version = "v3.20260101.0000000"
 	ib, _ := json.Marshal(installed)
-	u, l := updateFixture(t, c, ib)
+	u, l, _ := updateFixture(t, c, ib)
 	stale := l.QEMUTree("v3.20260201.5ta1e00")
 	os.MkdirAll(stale, 0o755)
 	if err := l.StageNextQEMU(stale); err != nil {
@@ -430,15 +575,15 @@ func TestUpdateDropsAStaleBundleCandidate(t *testing.T) {
 	}
 }
 
-// A tree already extracted for this version (a failed trial's) is reused without a fetch, and
+// A tree already extracted for this version (a reverted run's) is reused without a fetch, and
 // a qemu link already committed at this version stages nothing for qemu.
 func TestUpdateReusesAnExtractedQEMUTree(t *testing.T) {
 	c := bundleChannel(t, "fresh")
 	c.missing[releasePath(artifactQEMU)] = true // a fetch would fail loudly
-	u, l := updateFixture(t, c, nil)
+	u, l, _ := updateFixture(t, c, nil)
 	tree := l.QEMUTree(testVersion)
 	os.MkdirAll(tree, 0o755)
-	os.WriteFile(filepath.Join(tree, "PROVENANCE"), []byte("from the failed trial"), 0o644)
+	os.WriteFile(filepath.Join(tree, "PROVENANCE"), []byte("from the reverted run"), 0o644)
 	line, err := u.Run(context.Background(), TargetLatest)
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -446,33 +591,33 @@ func TestUpdateReusesAnExtractedQEMUTree(t *testing.T) {
 	if !strings.Contains(line, "(agent, net-wrap, qemu)") {
 		t.Errorf("result line = %q", line)
 	}
-	if got, _ := l.NextQEMUTree(); got != tree {
-		t.Errorf("qemu.next -> %q, want the reused %s", got, tree)
+	if got, _ := l.CommittedQEMUTree(); got != tree {
+		t.Errorf("qemu -> %q, want the reused %s", got, tree)
 	}
-	if b, _ := os.ReadFile(filepath.Join(tree, "PROVENANCE")); string(b) != "from the failed trial" {
+	if b, _ := os.ReadFile(filepath.Join(tree, "PROVENANCE")); string(b) != "from the reverted run" {
 		t.Error("the existing tree was replaced rather than reused")
 	}
 
 	// Committed at this version already (a node whose manifest was lost): qemu is left alone.
-	u2, l2 := updateFixture(t, c, nil)
+	u2, l2, _ := updateFixture(t, c, nil)
 	os.MkdirAll(l2.QEMUTree(testVersion), 0o755)
 	os.Symlink("qemu-"+testVersion, l2.QEMUPath())
 	line, err = u2.Run(context.Background(), TargetLatest)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if !strings.Contains(line, "(agent, net-wrap)") || l2.NextQEMUStaged() {
+	if got, _ := l2.CommittedQEMUTree(); !strings.Contains(line, "(agent, net-wrap)") || got != l2.QEMUTree(testVersion) {
 		t.Errorf("a committed qemu was re-staged: %q", line)
 	}
 }
 
 // Refuse-and-stay covers the bundle: a tampered qemu tarball (fetched AFTER the agent) leaves
-// no agent.next, no net-wrap.next, no qemu.next, no tree and no arm. And a tarball that
+// no agent.next, no net-wrap.next, no qemu.next, no tree and nothing swapped. And a tarball that
 // verifies but will not unpack is refused the same way.
 func TestUpdateRefusesATamperedOrBrokenBundle(t *testing.T) {
 	c := bundleChannel(t, "x")
 	c.bodies[releasePath(artifactQEMU)] = []byte("not the signed bytes")
-	u, l := updateFixture(t, c, nil)
+	u, l, _ := updateFixture(t, c, nil)
 	if _, err := u.Run(context.Background(), TargetLatest); !errors.Is(err, ErrArtifactMismatch) {
 		t.Fatalf("err = %v, want ErrArtifactMismatch", err)
 	}
@@ -502,7 +647,7 @@ func TestUpdateRefusesATamperedOrBrokenBundle(t *testing.T) {
 		c2.bodies[p+sigSuffix] = ed25519.Sign(c2.priv, mb)
 	}
 	c2.bodies[releasePath(artifactQEMU)] = zb.Bytes()
-	u2, l2 := updateFixture(t, c2, nil)
+	u2, l2, _ := updateFixture(t, c2, nil)
 	_, err := u2.Run(context.Background(), TargetLatest)
 	if err == nil || !strings.Contains(err.Error(), "unpack") {
 		t.Fatalf("err = %v, want an unpack refusal", err)

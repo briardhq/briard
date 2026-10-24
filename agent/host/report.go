@@ -87,17 +87,12 @@ type upgrader interface {
 
 // selfUpdater is the slice of the host-agent self-update the agent-update directive drives
 // -- narrow so the dispatch is unit-testable without a real binary/systemd. Trigger hands the
-// offered version to the frozen update unit BELOW the agent and blocks on its one-line
-// verdict: the unit pulls a fresh agent from the channel and lets that binary fetch, verify,
-// stage and arm (refuse-and-stay on a bad pin or signature: current kept, the line says why).
-// The host loop then triggers Restart once the outcome is acked, so the Type=notify pivot
-// trials it (Armed reports whether a trial is pending -- a flag the agent honours but did not
-// create). Current is the running agent version, so a re-offer of the same version is an
-// idempotent no-op.
+// offered version to the frozen update unit BELOW the agent and returns once the run is started:
+// that run fetches, verifies, stops this agent, swaps and starts the new one, and its verdict is
+// the update result the alerter reads. Current is the running agent version, so a re-offer of the
+// same version is an idempotent no-op.
 type selfUpdater interface {
 	Trigger(ctx context.Context, version string) (string, error)
-	Armed() bool
-	Restart(ctx context.Context) error
 	Current() string
 }
 
@@ -192,25 +187,21 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 			logf("directive agent-update: already running %s; nothing to do", u.Version)
 			return done // idempotent: a re-offer of the running version is a no-op
 		}
-		// THE CLOUD TRIGGER: write the target and start the frozen unit, which pulls a
-		// fresh agent from the channel and lets THAT binary fetch, verify, stage and arm -- so a
-		// fetch bug in this running binary cannot prevent its own replacement. `systemctl start`
-		// blocks on the oneshot, bounded here; staging is atomic, so a timeout can't leave a
-		// torn slot. The unit's one-line verdict IS this directive's outcome: a pin below the
-		// floor or a bad signature fails the run loudly and returns as a failed directive.
-		sctx, cancel := wd.budget(ctx, 10*time.Minute)
+		// THE CLOUD TRIGGER: write the target and start the frozen unit, which pulls a fresh agent
+		// from the channel and lets THAT binary run the update -- so a fetch bug in this running
+		// binary cannot prevent its own replacement. Started, not waited on: the run stops this
+		// agent, and the stop finishes the act in flight first, which would be this one. So the
+		// outcome is "started"; whether the node moved is NodeStatus.AgentVersion, and a run that
+		// refused is the update result the alerter reports.
+		sctx, cancel := wd.budget(ctx, 30*time.Second)
 		defer cancel()
 		logf("directive kind=agent-update: converging to %s via the update unit", u.Version)
 		line, err := su.Trigger(sctx, u.Version)
 		if err != nil {
-			// Refuse-and-stay: the running binary is kept; the line says why.
-			logf("directive agent-update refused (current kept): %v", err)
+			logf("directive agent-update: could not start the update unit: %v", err)
 			escalate(ctx, n, logf, "briard-agent", "agent self-update", u.Version, err)
 			return failed(err.Error())
 		}
-		// Staged + armed (or already there). The host loop restarts the unit once this outcome
-		// is acked and the pivot trials it; convergence is confirmed via
-		// NodeStatus.AgentVersion, not here.
 		logf("directive agent-update: %s", line)
 		return done
 	default:

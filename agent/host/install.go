@@ -163,10 +163,10 @@ func (r installRoots) layDown(ctx context.Context, hostSrc, guestSrc string, say
 	}
 
 	// THE QEMU TREE, REACHED THROUGH A LINK. One extracted bundle per release lives at
-	// agent/qemu-<release>/ -- inside the directory the frozen pivot commits in -- and agent/qemu
+	// agent/qemu-<release>/ -- inside the directory self-update swaps in -- and agent/qemu
 	// is a symlink to the current one. An update extracts the next release's tree beside it and
-	// stages qemu.next as a link; briard-commit commits qemu with ONE rename of that link, so no
-	// recursive delete ever runs near a frozen script.
+	// stages qemu.next as a link; the swap moves qemu by renaming links, so no
+	// recursive delete ever runs near the committed tree.
 	//
 	// The tree is named by the installed release when a manifest is present, so a later pin back to
 	// it reuses the tree; the local staging path has no manifest and gets a fixed name. (On Linux
@@ -190,8 +190,8 @@ func (r installRoots) layDown(ctx context.Context, hostSrc, guestSrc string, say
 	}
 
 	// THE GUEST BUNDLE: the briard binaries the guest runs, shipped in the host chain and pushed
-	// into the guest by the agent at every bring-up. Same tree-and-link shape as qemu, same commit
-	// (briard-commit moves guest.next with -T). Existence-guarded: a channel without one leaves the
+	// into the guest by the agent at every bring-up. Same tree-and-link shape as qemu, same swap.
+	// Existence-guarded: a channel without one leaves the
 	// guest on the image's firmware -- which REFUSES every non-firmware verb, so an install that
 	// finds a bundle must land it.
 	if bundle := filepath.Join(hostSrc, "guest-bundle.tar"); exists(bundle) {

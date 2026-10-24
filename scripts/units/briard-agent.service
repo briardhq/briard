@@ -11,7 +11,7 @@
 [Unit]
 Description=briard host agent (single node)
 # ⚠️ [Unit], not [Service]: systemd ignores it in the wrong section and says so on every start. A
-# failed trial followed by its revert must never latch the unit as dead -- the revert path is by
+# failed update followed by its revert must never latch the unit as dead -- the revert path is by
 # construction a burst of rapid start failures, which would trip the start limiter and leave the
 # node down for the one reason self-update exists to avoid.
 StartLimitIntervalSec=0
@@ -51,10 +51,9 @@ NotifyAccess=main
 # It deliberately does NOT have to cover BringUpBudget: the agent signals ready before it brings
 # the guest up, which is what lets the watchdog cover bring-up and the recovery ladder instead of
 # arming only after a node first converges (an agent whose guest never converges would otherwise
-# never arm one at all). What it DOES cover, on a trial boot that staged a new qemu, is the
-# candidate's smoke test of that qemu -- a scratch machine booted and killed on first
-# sign of life, bounded by its own 20s so the agent can still write down WHY it refused before
-# the start fails; this window is sized to sit comfortably above that, not to a config read.
+# never arm one at all). It is also self-update's whole gate: the updater swaps a candidate in,
+# starts this unit, and commits only if the start succeeds -- a candidate that will not exec,
+# panics, or hangs before loop entry fails it here and is reverted.
 TimeoutStartSec=60
 # The watchdog: systemd kills the unit if the agent stops sending WATCHDOG=1 for this long, and
 # Restart= brings it back. Sized by the longest GAP between pings, not by the longest thing the
@@ -63,22 +62,20 @@ TimeoutStartSec=60
 # systemd derives from this line) is the agent's only source for its ping interval, so this number
 # has exactly one definition.
 WatchdogSec=20
-# Self-update's on-disk half. ExecStart is the frozen picker, not the agent: it chooses the
-# committed binary or an armed candidate. ExecStartPost is the commit, and systemd runs it ONLY
-# after READY=1 -- which IS the gate. A candidate that will not exec, panics, or hangs before loop
-# entry never sends READY, so the start fails, the commit never runs, and the next start finds the
-# single-use flag already consumed and falls back to the committed binary. The revert is implicit
-# and timerless; nothing has to remember to undo anything. (UPDATE_BASE, the directory the agent
-# stages INTO, is in config.env with the rest of the values; the wrappers bake it themselves.)
-ExecStart=/opt/briard/agent/briard-exec
-ExecStartPost=/opt/briard/agent/briard-commit
+# The committed binary, run directly. Self-update moves it by rename beneath this name (the
+# updater, briard-update.service), so the line never changes; `run` is the daemon subcommand,
+# since a bare invocation prints the help. (UPDATE_BASE, the directory the updater swaps in, is in
+# config.env with the rest of the values.)
+ExecStart=/opt/briard/agent/briard-agent run
 Restart=on-failure
 RestartSec=3
-# Explicit, because the default (90s) is shorter than the operations a stop can interrupt.
-# SIGTERM already unwinds cooperatively (signal.NotifyContext), but the recovery and rollback legs
-# run on deliberately DETACHED contexts so they cannot be cancelled halfway, and rebootGuest alone
-# budgets BringUpBudget+3*shutdownGrace. At 90s a forced restart SIGKILLs the agent partway through
-# a recovery -- the one moment the machine can least afford it.
+# Explicit, because the default (90s) is shorter than the operations a stop waits for. SIGTERM
+# unwinds cooperatively (signal.NotifyContext) and then FINISHES the act in flight, which runs on a
+# context a stop does not cancel; the recovery and rollback legs on the loop run on DETACHED
+# contexts too, so they cannot be cancelled halfway, and rebootGuest alone budgets
+# BringUpBudget+3*shutdownGrace. At 90s a forced stop SIGKILLs the agent partway through
+# a recovery -- the one moment the machine can least afford it. Self-update does not wait on this
+# bound: it asks the agent to stop with a SIGTERM of its own and waits longer (StopPatience).
 TimeoutStopSec=600
 [Install]
 WantedBy=multi-user.target

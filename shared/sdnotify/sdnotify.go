@@ -55,7 +55,7 @@ var adopted atomic.Pointer[string]
 //
 // SAFE ONLY BECAUSE NOTHING RE-EXECS. A successor started from this process would find no
 // NOTIFY_SOCKET, never signal, and hang until TimeoutStartSec. The agent never re-execs itself
-// (no syscall.Exec in the tree; briard-exec is systemd's ExecStart — a fresh process, handed the
+// (no syscall.Exec in the tree; the agent is systemd's ExecStart — a fresh process, handed the
 // variable fresh). Check that still holds before calling this from anywhere new.
 func Adopt() {
 	sock := os.Getenv("NOTIFY_SOCKET")

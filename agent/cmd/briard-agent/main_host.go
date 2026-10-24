@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"briard.io/agent/host"
 	"briard.io/agent/install"
@@ -65,12 +66,11 @@ func runFetchInstall(ctx context.Context, dest string) error {
 	return install.FetchRelease(ctx, base, release, kr, dest, log.Printf)
 }
 
-// runFetchUpdate is the update unit's verb: resolve target on the briard chain, decide
-// against the installed manifest, stage + arm the agent if due, and return the one line the run
-// ended on. The layout comes from the same env the agent unit carries (UPDATE_BASE /
-// UPDATE_RUN_DIR), which the frozen unit passes through -- so the candidate lands exactly where
-// briard-exec looks for it.
-func runFetchUpdate(ctx context.Context, target string) (string, error) {
+// runUpdate is the update unit's verb: the whole self-update (install.Update), run on the fresh
+// binary the unit just pulled. The layout comes from the env the unit passes through (UPDATE_BASE /
+// UPDATE_RUN_DIR), and the smoke test's accelerator and CPU from the node's own config, so the
+// staged qemu is proven the way this node launches its guest.
+func runUpdate(ctx context.Context, target string) (string, error) {
 	base := os.Getenv("BRIARD_CHANNEL_URL")
 	if base == "" {
 		return "", errors.New("BRIARD_CHANNEL_URL unset (the release channel root URL)")
@@ -87,10 +87,19 @@ func runFetchUpdate(ctx context.Context, target string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	cfg := host.ConfigFromEnv()
+	unit := selfupdate.DefaultAgentUnit
 	u := &install.Update{
 		Fetcher: &install.Fetcher{BaseURL: base, Chain: install.ChainBriard, Platform: install.PlatformHost, Keyring: kr, Logf: log.Printf},
 		Layout:  selfupdate.New(os.Getenv("UPDATE_BASE"), os.Getenv("UPDATE_RUN_DIR")),
 		Logf:    log.Printf,
+		Stop: func(ctx context.Context, patience time.Duration) error {
+			return platform.StopService(ctx, unit, patience, log.Printf)
+		},
+		Start: func(ctx context.Context) error { return platform.StartService(ctx, unit) },
+		Smoke: func(ctx context.Context, tree string) error {
+			return platform.SmokeTest(ctx, tree, cfg.Accel, cfg.CPUModel, log.Printf)
+		},
 	}
 	return u.Run(ctx, target)
 }

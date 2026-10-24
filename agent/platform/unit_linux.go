@@ -2,7 +2,9 @@ package platform
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -72,3 +74,56 @@ func unitTransient(fragment string) bool {
 // unitStamp is where systemd records when a Persistent= timer last fired -- state it writes on the
 // unit's behalf, which outlives the unit file unless someone removes it.
 func unitStamp(unit string) string { return "/var/lib/systemd/timers/stamp-" + unit }
+
+// StopService stops a long-running service through its ORDINARY stop path and waits, with
+// patience, for it to finish what it is doing: SIGTERM to the main process alone, so the
+// service's TimeoutStopSec is not the bound (raising that would hold every shutdown), then a poll
+// until that process is gone, then `systemctl stop` -- instant once it has exited, it also
+// cancels a restart the exit queued, and past the patience it is the force (TimeoutStopSec, then
+// SIGKILL). patience 0 is that plain stop alone. The self-update's stop: the agent drains its act
+// lane on SIGTERM, so "stopped" means "stopped between acts".
+func StopService(ctx context.Context, unit string, patience time.Duration, logf func(string, ...any)) error {
+	pid, err := unitShow(unit, "MainPID")
+	if err != nil {
+		return fmt.Errorf("read %s's main process: %w", unit, err)
+	}
+	if pid != "" && pid != "0" && patience > 0 {
+		if out, err := exec.CommandContext(ctx, "systemctl", "kill", "--signal=SIGTERM", "--kill-whom=main", unit).CombinedOutput(); err != nil {
+			return fmt.Errorf("ask %s to stop: %w (%s)", unit, err, strings.TrimSpace(string(out)))
+		}
+		deadline := time.Now().Add(patience)
+		for {
+			if now, err := unitShow(unit, "MainPID"); err == nil && now != pid {
+				break
+			}
+			if time.Now().After(deadline) {
+				logf("%s did not stop within %s; forcing the stop", unit, patience)
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+			}
+		}
+	}
+	if out, err := exec.CommandContext(ctx, "systemctl", "stop", unit).CombinedOutput(); err != nil {
+		return fmt.Errorf("stop %s: %w (%s)", unit, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// StartService starts a Type=notify service and returns once it reported READY, or, when the
+// start failed (TimeoutStartSec included), an error carrying the service's last lines since the
+// start: the reason a candidate did not start is what its revert has to report.
+func StartService(ctx context.Context, unit string) error {
+	since := "@" + strconv.FormatInt(time.Now().Unix(), 10)
+	out, err := exec.CommandContext(ctx, "systemctl", "start", unit).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if tail, terr := exec.CommandContext(ctx, "journalctl", "-u", unit, "--since", since, "-n", "5", "-o", "cat", "--no-pager").Output(); terr == nil && len(strings.TrimSpace(string(tail))) > 0 {
+		out = tail
+	}
+	return fmt.Errorf("start %s: %w: %s", unit, err, strings.Join(strings.Fields(strings.ReplaceAll(string(out), "\n", " | ")), " "))
+}

@@ -6,50 +6,39 @@ import (
 	"briard.io/agent/selfupdate"
 )
 
-// hostSelfUpdater is the production selfUpdater. It is a FLAG-WATCHER plus a
-// trigger: the fetch, verify and stage happen below the agent, in the frozen update unit and the
-// fresh binary it pulls, so this type keeps only what the running agent must still do -- hand a
-// cloud directive's version to that unit, notice an armed candidate, and restart itself at its
-// safe point (DETACHED, through the Type=notify pivot).
+// hostSelfUpdater is the production selfUpdater: a TRIGGER and nothing else. The whole update
+// -- fetch, verify, stage, stop, swap, start, commit or revert -- runs below the agent, in the
+// frozen update unit and the fresh binary it pulls, so the running agent's part is to hand a cloud
+// directive's version to that unit. Its stop path is the update's safe point, and it needs no
+// code here to be one.
 //
-// It is NO LONGER KEYRING-GATED, and that is a trust-boundary change rather than a relocation:
-// the keyring now gates the unit's fetch, and the agent honours an arm flag it did
-// not create and cannot verify. That is correct -- verification already happened upstream, on
-// bytes the unit staged under the same keyring this agent used to hold -- and it is what lets
-// the timer path work on a node whose agent is wedged, which is the case the whole design exists
-// for. What the agent can still refuse is a directive naming a version it is already running.
+// It is NOT KEYRING-GATED: the keyring gates the unit's fetch, on bytes this agent never holds.
+// That is what lets the timer path work on a node whose agent is wedged, which is the case the
+// whole design exists for. What the agent can still refuse is a directive naming a version it is
+// already running.
 type hostSelfUpdater struct {
 	layout  selfupdate.Layout
-	unit    string // the agent's own unit, restarted to trial a candidate
-	update  string // the frozen update unit, started to fetch one
+	update  string // the frozen update unit, started to run one
 	version string
-	restart func(ctx context.Context, unit string) error // overridable in tests
 }
 
 // newSelfUpdater builds the host selfUpdater from config. Never nil: with the fetch below the
 // agent there is no keyring to be missing here.
 func (cfg Config) newSelfUpdater() selfUpdater {
-	unit := cfg.UpdateUnit
-	if unit == "" {
-		unit = "briard-agent.service"
-	}
 	return &hostSelfUpdater{
 		layout:  selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir),
-		unit:    unit,
 		update:  selfupdate.DefaultUpdateUnit,
 		version: cfg.Version,
-		restart: restartSelf,
 	}
 }
 
-// Trigger is the cloud trigger: the target as a message, one `systemctl start` of the
-// frozen unit, its one-line verdict back.
+// Trigger is the cloud trigger: the target as a message and the frozen unit started, WITHOUT
+// waiting for it -- the run it starts stops this agent, and the stop waits for the act that would
+// be waiting on the run.
 func (h *hostSelfUpdater) Trigger(ctx context.Context, version string) (string, error) {
-	return h.layout.Trigger(ctx, h.update, version)
+	return h.layout.Trigger(ctx, h.update, version, false)
 }
 
-func (h *hostSelfUpdater) Armed() bool                       { return h.layout.Armed() }
-func (h *hostSelfUpdater) Current() string                   { return h.version }
-func (h *hostSelfUpdater) Restart(ctx context.Context) error { return h.restart(ctx, h.unit) }
+func (h *hostSelfUpdater) Current() string { return h.version }
 
 var _ selfUpdater = (*hostSelfUpdater)(nil)

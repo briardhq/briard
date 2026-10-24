@@ -302,13 +302,12 @@ func ConfigFromEnv() Config {
 		// UPDATE_KEYRING points at a PEM file of trusted Ed25519 release public keys. It gates
 		// the signed CATALOG (service install), not self-update any more: the
 		// agent's own update is fetched and verified by the frozen unit below it, under the same
-		// keyring file, and the agent only watches the arm flag. Base/RunDir/Unit default in
+		// keyring file, and the agent only starts that unit. Base/RunDir default in
 		// newSelfUpdater. Version is baked at build time (buildVersion), overridable by env for
 		// tests -- it is the running binary's own id, so a committed update reports the new one.
 		UpdateKeyring: readFileOrNil(env("UPDATE_KEYRING", filepath.Join(prefixDir, "keyring.pem"))),
 		UpdateBase:    env("UPDATE_BASE", filepath.Join(prefixDir, "agent")),
 		UpdateRunDir:  env("UPDATE_RUN_DIR", runDir),
-		UpdateUnit:    os.Getenv("UPDATE_UNIT"),
 		Version:       env("AGENT_VERSION", buildVersion),
 	}
 	if role == model.RoleDiskless {

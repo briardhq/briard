@@ -13,7 +13,7 @@
 # not been dressed.
 #
 # This module is the guest-side half of that -- the PICKER, and the files it chooses between. It
-# is the same shape as the host's own pivot (scripts/install.sh briard-exec / briard-commit)
+# is the same idea as the host's own self-update (a .next beside the committed binary)
 # minus the commit, which the agent does itself (see below):
 #
 #   <bin>/<name>.next    a pushed binary, verified by the firmware (sha256 over the whole file)

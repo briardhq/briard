@@ -76,44 +76,169 @@ func TestStageNextIsIdempotentOverwrite(t *testing.T) {
 	}
 }
 
-func TestArmRequiresStagedCandidate(t *testing.T) {
-	l := newLayout(t)
-	os.MkdirAll(l.Base, 0o755)
-	if err := l.Arm(); err == nil {
-		t.Error("Arm without a staged agent.next must fail (else it trials a missing binary)")
-	}
-	if l.Armed() {
-		t.Error("Armed() true after a failed Arm")
-	}
-}
-
-func TestArmSetsUpdateFlag(t *testing.T) {
-	l := newLayout(t)
-	os.MkdirAll(l.Base, 0o755)
-	if err := l.StageNext(strings.NewReader("X")); err != nil {
+// seed lays a committed release (agent, manifest, net-wrap, a qemu link) and stages a candidate
+// for each, the way an install and then a run leave them.
+func seed(t *testing.T, l Layout) {
+	t.Helper()
+	if err := os.MkdirAll(l.Base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if l.Armed() {
-		t.Error("Armed() true before Arm")
+	for _, rel := range []string{"v1", "v2"} {
+		if err := os.MkdirAll(l.QEMUTree(rel), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := l.Arm(); err != nil {
-		t.Fatalf("Arm: %v", err)
+	for name, body := range map[string]string{"briard-agent": "agent v1", "manifest.json": "m v1", "briard-net-wrap": "wrap v1"} {
+		if err := os.WriteFile(filepath.Join(l.Base, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if !l.Armed() {
-		t.Error("Armed() false after Arm")
+	if err := os.Symlink("qemu-v1", l.QEMUPath()); err != nil {
+		t.Fatal(err)
 	}
-	// The flag lives in the tmpfs run dir (cleared on reboot -> power-loss revert for free).
-	if filepath.Dir(l.UpdateFlagPath()) != l.RunDir {
-		t.Errorf("update flag %s not under RunDir %s", l.UpdateFlagPath(), l.RunDir)
+	if err := l.StageNext(strings.NewReader("agent v2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.StageNextManifest([]byte("m v2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.StageNextNetWrap(strings.NewReader("wrap v2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.StageNextQEMU(l.QEMUTree("v2")); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// The tmpfs flags and the on-disk binaries live on separate trees — the invariant behind
-// power-loss safety (decisions ephemeral, binaries durable).
-func TestFlagsAreSeparateFromBinaries(t *testing.T) {
+func read(t *testing.T, p string) string {
+	t.Helper()
+	if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		s, _ := os.Readlink(p)
+		return s
+	}
+	b, _ := os.ReadFile(p)
+	return string(b)
+}
+
+// The swap puts every staged entry under its committed name and keeps the displaced one as
+// .prev; the agent's .prev is the trial marker, and a commit removes every .prev.
+func TestSwapThenCommit(t *testing.T) {
 	l := newLayout(t)
-	if strings.HasPrefix(l.UpdateFlagPath(), l.Base) || strings.HasPrefix(l.TrialMarkerPath(), l.Base) {
-		t.Errorf("trial flags must not live under the state base (they must be ephemeral tmpfs)")
+	seed(t, l)
+	if l.Interrupted() {
+		t.Fatal("Interrupted before any swap")
+	}
+	moved, err := l.Swap()
+	if err != nil {
+		t.Fatalf("Swap: %v", err)
+	}
+	if strings.Join(moved, " ") != "briard-agent manifest.json briard-net-wrap qemu" {
+		t.Errorf("moved %v", moved)
+	}
+	if read(t, l.AgentPath()) != "agent v2" || read(t, l.QEMUPath()) != "qemu-v2" || read(t, l.NetWrapPath()) != "wrap v2" {
+		t.Error("the candidate is not in place after the swap")
+	}
+	if read(t, l.PrevPath()) != "agent v1" || read(t, l.QEMUPath()+".prev") != "qemu-v1" {
+		t.Error("the displaced entries were not kept as .prev")
+	}
+	if !l.Interrupted() {
+		t.Error("a swap without a verdict is not reported Interrupted")
+	}
+	if err := l.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	ents, _ := os.ReadDir(l.Base)
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".prev") || strings.HasSuffix(e.Name(), ".next") {
+			t.Errorf("%s survived the commit", e.Name())
+		}
+	}
+	if l.Interrupted() {
+		t.Error("Interrupted after the commit")
+	}
+	if _, err := os.Stat(l.QEMUTree("v1")); err != nil {
+		t.Error("the commit removed the displaced tree; only its link goes")
+	}
+}
+
+// A revert puts every displaced entry back over the candidate, and the node is exactly the
+// committed release again.
+func TestSwapThenRevert(t *testing.T) {
+	l := newLayout(t)
+	seed(t, l)
+	if _, err := l.Swap(); err != nil {
+		t.Fatal(err)
+	}
+	back, err := l.Revert()
+	if err != nil {
+		t.Fatalf("Revert: %v", err)
+	}
+	if back[len(back)-1] != "briard-agent" {
+		t.Errorf("the agent was not put back last: %v", back)
+	}
+	if read(t, l.AgentPath()) != "agent v1" || read(t, l.ManifestPath()) != "m v1" ||
+		read(t, l.NetWrapPath()) != "wrap v1" || read(t, l.QEMUPath()) != "qemu-v1" {
+		t.Error("the revert did not restore the committed release")
+	}
+	if l.Interrupted() {
+		t.Error("Interrupted after a revert")
+	}
+}
+
+// A swap without a staged agent is refused: the agent's .prev is the only trial marker, and a
+// swap that moved anything without it could never be found and reverted.
+func TestSwapRefusesWithoutAStagedAgent(t *testing.T) {
+	l := newLayout(t)
+	seed(t, l)
+	os.Remove(l.NextPath())
+	if _, err := l.Swap(); err == nil {
+		t.Fatal("swapped with no staged agent")
+	}
+	if read(t, l.QEMUPath()) != "qemu-v1" {
+		t.Error("a refused swap moved qemu")
+	}
+}
+
+// A commit cut short after the agent's .prev went is not read as Interrupted, and a second
+// Commit finishes it: reverting the remaining entries would pair the new agent with old parts.
+func TestACommitCutShortIsFinishedNotReverted(t *testing.T) {
+	l := newLayout(t)
+	seed(t, l)
+	if _, err := l.Swap(); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(l.PrevPath()) // the commit got this far
+	if l.Interrupted() {
+		t.Fatal("a commit cut short reads as an interrupted swap")
+	}
+	if err := l.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, l.QEMUPath()) != "qemu-v2" {
+		t.Error("finishing the commit moved qemu back")
+	}
+	if _, err := os.Lstat(l.QEMUPath() + ".prev"); !os.IsNotExist(err) {
+		t.Error("qemu.prev survived the finished commit")
+	}
+}
+
+// The run's verdict is read, never consumed: the CLI and the alerter both read it.
+func TestResultIsReadNotTaken(t *testing.T) {
+	l := newLayout(t)
+	if _, ok := l.ReadResult(); ok {
+		t.Fatal("a result with none written")
+	}
+	os.MkdirAll(l.RunDir, 0o755)
+	os.WriteFile(l.ResultPath(), []byte("failed could not fetch a bootstrap agent\n"), 0o644)
+	for range 2 {
+		r, ok := l.ReadResult()
+		if !ok || r.OK || r.Line != "could not fetch a bootstrap agent" || r.At.IsZero() {
+			t.Errorf("ReadResult = %+v, %v", r, ok)
+		}
+	}
+	os.WriteFile(l.ResultPath(), []byte("ok already at v3.20260906.aaaaaaa\n"), 0o644)
+	if r, _ := l.ReadResult(); !r.OK || r.Line != "already at v3.20260906.aaaaaaa" {
+		t.Errorf("ReadResult = %+v", r)
 	}
 }
 
@@ -131,7 +256,7 @@ func TestBundleStagesNetWrapAndAQEMULink(t *testing.T) {
 	if fi, err := os.Stat(l.NextNetWrapPath()); err != nil || fi.Mode().Perm()&0o111 == 0 {
 		t.Fatalf("net-wrap.next = %v, %v (want an executable)", fi, err)
 	}
-	if l.NextQEMUStaged() {
+	if _, staged := l.NextQEMUTree(); staged {
 		t.Fatal("qemu.next reported staged before anything was staged")
 	}
 	for _, rel := range []string{"v1", "v2"} {
@@ -142,7 +267,7 @@ func TestBundleStagesNetWrapAndAQEMULink(t *testing.T) {
 			t.Fatalf("StageNextQEMU(%s): %v", rel, err)
 		}
 	}
-	if !l.NextQEMUStaged() {
+	if _, staged := l.NextQEMUTree(); !staged {
 		t.Fatal("qemu.next not staged")
 	}
 	if target, _ := os.Readlink(l.NextQEMUPath()); target != "qemu-v2" {
@@ -177,7 +302,7 @@ func TestBundleStagesNetWrapAndAQEMULink(t *testing.T) {
 	if err := l.DiscardNextBundle(); err != nil {
 		t.Fatal(err)
 	}
-	if l.NextQEMUStaged() {
+	if _, staged := l.NextQEMUTree(); staged {
 		t.Error("qemu.next survived DiscardNextBundle")
 	}
 	if _, err := os.Lstat(l.NextNetWrapPath()); !os.IsNotExist(err) {
@@ -199,7 +324,7 @@ func TestPruneQEMUTreesKeepsCommittedAndStaged(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(l.Base, "qemu-notadir"), nil, 0o644)
 	os.MkdirAll(filepath.Join(l.Base, "services"), 0o755)
-	if err := os.Symlink("qemu-cur", l.QEMUPath()); err != nil { // as briard-commit leaves it
+	if err := os.Symlink("qemu-cur", l.QEMUPath()); err != nil { // as a swap leaves it
 		t.Fatal(err)
 	}
 	if err := l.StageNextQEMU(l.QEMUTree("next")); err != nil {
@@ -264,7 +389,7 @@ func TestTheGoodGuestIsAnIdThePrunerKeeps(t *testing.T) {
 	}
 }
 
-// The trial's failure message: written by the candidate, taken (read + unlinked) once by the
+// A reverted run's failure message: written by the updater, taken (read + unlinked) once by the
 // agent that comes back, and gone thereafter.
 func TestFailureMessageIsTakenOnce(t *testing.T) {
 	l := newLayout(t)
@@ -280,13 +405,5 @@ func TestFailureMessageIsTakenOnce(t *testing.T) {
 	}
 	if _, _, ok := l.TakeFailure(); ok {
 		t.Error("the failure message survived being taken")
-	}
-	if l.InTrial() {
-		t.Error("InTrial with no trial marker")
-	}
-	os.MkdirAll(l.RunDir, 0o755)
-	os.WriteFile(l.TrialMarkerPath(), nil, 0o644)
-	if !l.InTrial() {
-		t.Error("InTrial false with the marker present")
 	}
 }

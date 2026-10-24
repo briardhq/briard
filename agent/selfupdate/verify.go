@@ -35,7 +35,7 @@ var ErrBadSignature = errors.New("selfupdate: signature does not verify against 
 //     and its public key joins the ring; agents trust the union, no flag-day.
 //
 // The ring itself is part of the frozen base install, not something the volatile agent can
-// rewrite — same trust boundary as the pivot (a compromised agent must not be able to widen
+// rewrite — same trust boundary as the update launcher (a compromised agent must not be able to widen
 // what it will accept).
 type Keyring struct {
 	keys []ed25519.PublicKey

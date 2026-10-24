@@ -67,8 +67,6 @@ let
     install -m0644 ${../scripts/units/briard-agent.service}  "$H/briard-agent.service"
     install -m0644 ${../scripts/units/briard-update.service} "$H/briard-update.service"
     install -m0644 ${../scripts/units/briard-update.timer}   "$H/briard-update.timer"
-    install -m0755 ${../scripts/agent/briard-exec}    "$H/briard-exec"
-    install -m0755 ${../scripts/agent/briard-commit}  "$H/briard-commit"
     install -m0755 ${../scripts/agent/briard-update}  "$H/briard-update"
     # Deterministic tar, same flags as the release script: the bundle is a directory in the store
     # and the channel contract wants one file.
@@ -1260,18 +1258,11 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"ip route get {moved} | grep -q briard-priv0")
     print(f"the host route followed the lease from {vip} to {moved}, leaving nothing behind")
 
-    # ---- THE SELF-UPDATE PIVOT, ON THE UNIT install.sh ACTUALLY WROTE ---------------------
-    # agent-selfupdate.nix proves this mechanism on a unit it constructs ITSELF, and that is
-    # exactly the gap: it stayed green while the SHIPPED install had the Go half
-    # switched on (a keyring is bundled, so newSelfUpdater builds a live updater) and none of the
-    # on-disk half it acts through. An agent-update staged a binary into a directory the unit did
-    # not run from, armed a flag nothing consumed, restarted onto the same binary and reported
-    # success -- and, since nothing cleared the flag, did it again every cycle.
-    # So these assertions deliberately read the INSTALLED unit and drive the INSTALLED wrappers
-    # (a test that builds its own environment does not
-    # prove the shipped one).
-    host.succeed("test -x /opt/briard/agent/briard-exec")
-    host.succeed("test -x /opt/briard/agent/briard-commit")
+    # ---- SELF-UPDATE, ON THE UNITS AND THE SCRIPT THE INSTALL ACTUALLY LAID -----------------
+    # agent-selfupdate.nix proves the procedure on units it constructs ITSELF, and that is exactly
+    # the gap this closes: a rig that builds its own environment does not prove the shipped one. So
+    # these assertions read the INSTALLED units and script, and the updates further down run through
+    # them.
     host.succeed("test -x /opt/briard/agent/briard-agent")
 
     # THE UNITS WERE COPIED OUT OF THE VERIFIED SET, NOT RENDERED. Byte-identical to what
@@ -1281,32 +1272,28 @@ pkgs.testers.runNixOSTest {
     # verified against the signed manifest before install.sh ever saw it.
     for u in ("briard-agent.service", "briard-update.service", "briard-update.timer"):
         host.succeed(f"cmp /run/systemd/system/{u} /srv/briard/{V}/linux-amd64/{u}")
-    # ...and so were the agent's three frozen scripts. Same claim, and the one that matters most
-    # for these: they are what performs a self-update, so "the file on disk is the file that was
-    # signed" is the property the whole pivot rests on.
-    for s in ("briard-exec", "briard-commit", "briard-update"):
-        host.succeed(f"cmp /opt/briard/agent/{s} /srv/briard/{V}/linux-amd64/{s}")
-        host.succeed(f"test -x /opt/briard/agent/{s}")
-    print("the units and the agent's scripts are byte-identical to the signed channel's")
+    # ...and so was the agent's frozen update script. Same claim, and the one that matters most
+    # for it: it launches every self-update, so "the file on disk is the file that was signed" is
+    # the property the whole update rests on.
+    host.succeed(f"cmp /opt/briard/agent/briard-update /srv/briard/{V}/linux-amd64/briard-update")
+    host.succeed("test -x /opt/briard/agent/briard-update")
+    print("the units and the agent's update script are byte-identical to the signed channel's")
 
     unit = host.succeed("systemctl cat briard-agent.service")
     for want in (
         "Type=notify",
-        "ExecStart=/opt/briard/agent/briard-exec",
-        "ExecStartPost=/opt/briard/agent/briard-commit",
-        # A failed trial is by construction a burst of rapid start failures; without this it can
-        # trip systemd's start limiter and leave the node down for the one reason self-update
-        # exists to avoid.
+        # The committed binary, directly: the updater swaps it by rename beneath this name.
+        "ExecStart=/opt/briard/agent/briard-agent run",
+        # A failed update followed by its revert is a burst of starts; without this it can trip
+        # systemd's start limiter and leave the node down for the one reason self-update exists
+        # to avoid.
         "StartLimitIntervalSec=0",
     ):
-        assert want in unit, f"the shipped unit is missing {want!r} — self-update has no on-disk half"
-    # The third leg: the layout the agent stages into must BE the directory ExecStart runs from. A
-    # default of /var/lib/briard under a unit that runs out of /opt makes a commit a
-    # cross-filesystem rename at best and a no-op at worst. The default moved into config.go,
-    # so what is asserted is the FROZEN WRAPPERS' own baked path: they are what performs
-    # the rename, and it is their agreement with ExecStart that the leg is actually about.
-    for w in ("briard-exec", "briard-commit"):
-        host.succeed(f"grep -q '/opt/briard/agent/briard-agent' /opt/briard/agent/{w}")
+        assert want in unit, f"the shipped unit is missing {want!r}"
+    # The third leg: the directory the updater swaps in must BE the one ExecStart runs from, or a
+    # swap is a cross-filesystem rename at best and a no-op at worst. The update script bakes it.
+    host.succeed("grep -q '^BASE=/opt/briard/agent$' /opt/briard/agent/briard-update")
+    host.succeed("systemctl cat briard-update.timer | grep -q '^OnBootSec='")
 
     # ---- THE NETWORK IS THE AGENT'S ----------------------------------------------------------
     # No generated script, no oneshot unit, and -- the part that took the node dark when it
@@ -1356,41 +1343,6 @@ pkgs.testers.runNixOSTest {
     # the state disk attached by serial, the VIP answering on the LAN -- came from config.env or
     # from nowhere.
 
-    # A GOOD UPDATE COMMITS. The candidate is a copy of the running agent, so it genuinely reaches
-    # READY rather than standing in for something that would. The proof is the rename: briard-commit
-    # moves .next onto the committed path and clears the marker, so both flags end up gone.
-    host.succeed("cp -a /opt/briard/agent/briard-agent /opt/briard/agent/briard-agent.next")
-    host.succeed("touch /run/briard/update")
-    host.succeed("systemctl restart briard-agent.service")
-    host.wait_until_succeeds("test ! -e /opt/briard/agent/briard-agent.next", timeout=120)
-    host.succeed("test ! -e /run/briard/trial")
-    host.succeed("test ! -e /run/briard/update")
-    host.succeed("systemctl is-active briard-agent.service")
-    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
-
-    # A BROKEN UPDATE REVERTS, timerlessly. The flag is single-use, so the restart that follows the
-    # failed start finds none and falls back to the committed binary. Nothing has to remember to
-    # undo anything -- the property that lets the pivot stay frozen.
-    host.succeed("sha256sum /opt/briard/agent/briard-agent > /tmp/committed.sha")
-    host.succeed(
-        "printf '#!/bin/sh\\nexit 1\\n' > /opt/briard/agent/briard-agent.next && "
-        "chmod +x /opt/briard/agent/briard-agent.next"
-    )
-    host.succeed("touch /run/briard/update")
-    # The start itself FAILS -- that is the gate doing its job -- so systemctl returns non-zero.
-    host.succeed("systemctl restart briard-agent.service || true")
-    host.wait_until_succeeds("systemctl is-active briard-agent.service", timeout=180)
-    host.succeed("sha256sum -c /tmp/committed.sha")             # came back on the COMMITTED binary
-    # The broken candidate was not committed -- which the line above already proves -- and now
-    # the revert boot also DISCARDS it, so it cannot sit there until some later fetch
-    # happens to overwrite it. This used to assert the opposite and then `rm` the file by hand two
-    # lines down, which is the leftover being recognised as litter without being called one.
-    host.fail("test -e /opt/briard/agent/briard-agent.next")
-    host.succeed("test ! -e /run/briard/trial")                 # and cannot be re-trialled
-    host.succeed("test ! -e /run/briard/update")
-    client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
-    print("the shipped unit commits a good agent update and reverts a broken one")
-
     # THE SHIPPED UPDATE UNIT BELOW THE AGENT. agent-selfupdate.nix proves the
     # mechanism with stub candidates; this proves install.sh SHIPPED it: the frozen script, the
     # oneshot, the enabled timer, the installed manifests the verb compares against, and one
@@ -1419,14 +1371,15 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"grep -q '\"version\":\"{GV}\"' /opt/briard/guest-image/manifest.json")
     out = host.succeed("/opt/briard/agent/briard-agent update").strip()
     assert f"already at {V}" in out, f"briard update said: {out!r}"
-    host.succeed("test ! -e /run/briard/update && test ! -e /run/briard/update-target && test ! -e /run/briard/update-result")
+    host.succeed("test ! -e /run/briard/update-target")                        # the unit consumed its target
+    host.succeed(f"grep -q '^ok already at {V}' /run/briard/update-result")  # the verdict stays, for the alerter
     host.fail("/opt/briard/agent/briard-agent update -to v3.20990101.nothere")
     host.succeed("journalctl -u briard-update | grep -q 'could not fetch a bootstrap agent'")
     print("the shipped update unit, timer and CLI round-trip against the channel; an unknown pin fails loudly")
 
     # ---- A NODE THAT HAS STOPPED UPDATING SAYS SO ---------------------------------------------
-    # Everything above reached the unit through a TRIGGER -- the CLI, and on a managed node the
-    # cloud's directive -- and a trigger hands the verdict to whoever asked for it. The TIMER does
+    # Everything above reached the unit through the CLI, which hands the verdict to whoever typed
+    # it. The TIMER does
     # not, and the timer is the whole of updating on a standalone home: it starts the unit
     # directly, so a failed run ends in that unit's journal and nothing on the node reads it. A
     # household that had silently stopped updating looked exactly like one that was current, which
@@ -1434,14 +1387,12 @@ pkgs.testers.runNixOSTest {
     #
     # The failure is induced on the TIMER'S OWN PATH, not the CLI's, and the difference is the
     # point: `systemctl start` with no target message is literally what briard-update.timer does,
-    # nobody calls TakeResult, and the run's last line is therefore still on disk afterwards.
-    # Driving it through `briard update` instead would consume that message and quietly test a
-    # path that already had a reader.
+    # and the verdict it leaves is the one the agent reads.
     host.succeed("systemctl reset-failed briard-update.service && rm -f /run/briard/update-result")
     host.succeed("mv /srv/briard/stable/linux-amd64/briard-agent /root/hidden-agent")
     host.fail("systemctl start briard-update.service")
     host.succeed("systemctl is-failed briard-update.service")
-    host.succeed("test -s /run/briard/update-result")   # the message with no consumer
+    host.succeed("grep -q '^failed could not fetch a bootstrap agent' /run/briard/update-result")
     #
     # ⚠️ THE ASSERTION IS THE ALERT, NOT THE FAILED RUN. `journalctl -u briard-update` was already
     # green further up and proves only that the updater complained to itself. What is new here is
@@ -1449,7 +1400,7 @@ pkgs.testers.runNixOSTest {
     # alert store, which `briard alerts` answers from. Asserted through the verb, on its OPEN
     # section: "stopped updating" is a condition, open until a run completes.
     #
-    # The agent is restarted because the watcher reads the unit at start and then on a slow
+    # The agent is restarted because the watcher reads the verdict at start and then on a slow
     # cadence, and an agent coming up onto a node that is ALREADY failing must report it: that is
     # the no-priming half of the design, and restarting is how this rig reaches it.
     host.succeed("systemctl restart briard-agent.service")
@@ -1474,21 +1425,25 @@ pkgs.testers.runNixOSTest {
     # ---- THE HOST BUNDLE ON THE SHIPPED LAYOUT ----------------------------------------------
     # qemu is reached through a LINK: the public /opt/briard/qemu (baked into the bundle's ELF
     # interpreter) is a fixed link onto /opt/briard/agent/qemu, which points at the installed
-    # release's tree inside the directory the frozen pivot commits in. The shipped commit script
-    # moves the link with `mv -T`, and the shipped unit's start window covers the smoke test.
+    # release's tree inside the directory self-update swaps in. The updater moves the link by
+    # rename, and smoke-tests a staged tree before it stops anything.
     host.succeed("test -L /opt/briard/qemu && test -L /opt/briard/agent/qemu")
     assert host.succeed("readlink /opt/briard/qemu").strip() == "agent/qemu"
     assert host.succeed("readlink /opt/briard/agent/qemu").strip() == f"qemu-{V}", "the installed tree is not named by its release"
     host.succeed(f"test -x /opt/briard/agent/qemu-{V}/bin/qemu-system-x86_64")
-    host.succeed("grep -q 'mv -T' /opt/briard/agent/briard-commit")
     host.succeed("systemctl cat briard-agent.service | grep -q '^TimeoutStartSec=60'")
     qpid_before = host.succeed("pgrep -f /opt/briard/qemu/bin/qemu-system-x86_64").strip().split()[0]
 
     # A release that CHANGES qemu -- the same bundle re-tarred with one file added, so the hash
-    # differs and the REAL agent must smoke-test a REAL qemu tree, through that tree's own loader
-    # (the binary's PT_INTERP names the committed prefix), before it commits. The agent bytes are
-    # the installed ones: what this proves is the bundle path, not a new agent.
-    def publish_pin(version, bundle_dir, guest_dir=None):
+    # differs and the updater must smoke-test a REAL qemu tree, through that tree's own loader
+    # (the binary's PT_INTERP names the committed prefix), before it stops the agent. The agent
+    # bytes are the installed ones: what this proves is the bundle path, not a new agent.
+    #
+    # `agent`, when given, is the versioned artifact in place of the installed agent, and `pointer`
+    # names a pointer the release is also published under, carrying the INSTALLED agent as its
+    # bootstrap -- the divergence agent-selfupdate.nix explains, which is the only way to swap in a
+    # candidate that is not itself a working updater.
+    def publish_pin(version, bundle_dir, guest_dir=None, agent=None, pointer=None):
         d = f"/srv/briard/{version}/linux-amd64"
         host.succeed(f"mkdir -p {d} && cp -L /srv/briard/{V}/linux-amd64/briard-agent /srv/briard/{V}/linux-amd64/briard-net-wrap {d}/")
         host.succeed(f"tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C {bundle_dir} . | zstd -q -3 -o {d}/qemu-bundle.tar.zst")
@@ -1499,61 +1454,76 @@ pkgs.testers.runNixOSTest {
         else:
             host.succeed(f"cp -L /srv/briard/{V}/linux-amd64/guest-bundle.tar.zst {d}/")
         host.succeed(f"chmod 0644 {d}/*.zst && {d}/briard-agent --stage-manifest {d} --chain briard --platform linux-amd64 --release {version} --vm {GV}")
+        if agent:
+            # The manifest above was written by the real agent over the real bytes; restage it over
+            # the candidate's, so the signature covers what is served.
+            host.succeed(f"install -m755 {agent} {d}/briard-agent && /srv/briard/{V}/linux-amd64/briard-agent --stage-manifest {d} --chain briard --platform linux-amd64 --release {version} --vm {GV}")
         host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
+        if pointer:
+            p = f"/srv/briard/{pointer}/linux-amd64"
+            host.succeed(f"mkdir -p {p} && cp {d}/manifest.json {d}/manifest.json.sig {p}/ && cp -L /srv/briard/{V}/linux-amd64/briard-agent {p}/briard-agent")
+    def agent_invocation():
+        return host.succeed("systemctl show -p InvocationID --value briard-agent.service").strip()
     V2 = "v3.20991230.b86b0000"
     host.succeed(f"mkdir -p /root/bundle2 && zstd -dc < /srv/briard/{V}/linux-amd64/qemu-bundle.tar.zst | tar -xf - -C /root/bundle2")
     host.succeed("echo b86b > /root/bundle2/PROVENANCE.b86b")
     publish_pin(V2, "/root/bundle2")
+    inv = agent_invocation()
     out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V2}").strip()
-    assert f"staged {V2} (agent, qemu), armed" in out, f"briard update said: {out!r}"   # net-wrap unchanged: not fetched
-    assert host.succeed("readlink /opt/briard/agent/qemu.next").strip() == f"qemu-{V2}"
-    host.succeed(f"test -e /opt/briard/agent/qemu-{V2}/PROVENANCE.b86b")
-    host.succeed("systemctl restart briard-agent.service")   # the trial: smoke test, READY, commit
-    host.wait_until_succeeds("test ! -e /opt/briard/agent/qemu.next", timeout=120)
+    assert out == f"updated to {V2} (agent, qemu)", f"briard update said: {out!r}"   # net-wrap unchanged: not fetched
+    assert agent_invocation() != inv, "the agent was not stopped and started by the update"
     host.succeed("systemctl is-active briard-agent.service")
-    host.succeed("journalctl -u briard-agent | grep -q 'scratch machine running'")
-    host.succeed("journalctl -u briard-agent | grep -q 'staged qemu passed its smoke test'")
-    assert host.succeed("readlink /opt/briard/agent/qemu").strip() == f"qemu-{V2}", "the qemu link did not move on commit"
+    host.succeed("journalctl -u briard-update | grep -q 'qemu smoke test: scratch machine running'")
+    assert host.succeed("readlink /opt/briard/agent/qemu").strip() == f"qemu-{V2}", "the qemu link did not move"
     host.succeed("test -e /opt/briard/qemu/PROVENANCE.b86b")   # the public path follows the link
     host.succeed(f"grep -q '\"version\":\"{V2}\"' /opt/briard/agent/manifest.json")
     host.succeed(f"test -d /opt/briard/agent/qemu-{V}")        # N-1 stays until a guest LAUNCH prunes it
+    host.succeed("! ls /opt/briard/agent | grep -E '[.](next|prev)$'")
     # The guest never noticed: the same qemu process, on the tree it was launched from, still serving.
     assert host.succeed("pgrep -f /opt/briard/qemu/bin/qemu-system-x86_64").strip().split()[0] == qpid_before, "the guest was relaunched by a qemu update"
     client.succeed(f"curl -fsS http://{moved}/healthz")
-    print(f"{V2}: the real agent smoke-tested the staged qemu and committed the bundle; the guest kept serving")
+    print(f"{V2}: the updater smoke-tested the staged qemu, swapped the bundle in and committed it; the guest kept serving")
 
-    # A release whose qemu does NOT run on this host refuses itself WHOLE: the trial fails before
-    # READY, the pivot reverts to the committed agent AND qemu (the tested pairing), the staged
-    # qemu stays inert, and the agent that comes back escalates what the trial wrote down.
-    # The smoke test must actually refuse, and be seen to.
+    # A release whose qemu does NOT run on this host is refused at stage time, WHOLE and before
+    # anything stops: the agent is never touched, the staged set is gone, and the run's verdict
+    # says why. The smoke test must actually refuse, and be seen to.
     V3 = "v3.20991231.b86bbad0"
     host.succeed("mkdir -p /root/bundle3/bin && printf '#!/bin/sh\\nexit 1\\n' > /root/bundle3/bin/qemu-system-x86_64 && chmod 755 /root/bundle3/bin/qemu-system-x86_64")
     publish_pin(V3, "/root/bundle3")
-    out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V3}").strip()
-    assert f"staged {V3} (agent, qemu), armed" in out, f"briard update said: {out!r}"
-    host.succeed("systemctl restart briard-agent.service || true")   # the trial refuses; the start FAILS
-    host.wait_until_succeeds("systemctl is-active briard-agent.service", timeout=180)
-    host.succeed("journalctl -u briard-agent | grep -q 'refused on this host: qemu smoke test: -version'")
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'host bundle update to .* failed and rolled back'", timeout=60)
-    host.fail("test -e /run/briard/update-failure")             # taken by the agent that came back
-    assert host.succeed("readlink /opt/briard/agent/qemu").strip() == f"qemu-{V2}", "a refused qemu was committed"
+    inv = agent_invocation()
+    out = host.fail(f"/opt/briard/agent/briard-agent update -to {V3} 2>&1")
+    assert "refused on this host: qemu smoke test: -version" in out, f"briard update said: {out!r}"
+    assert agent_invocation() == inv, "a release refused at stage time stopped the agent"
+    assert host.succeed("readlink /opt/briard/agent/qemu").strip() == f"qemu-{V2}", "a refused qemu was swapped in"
     host.succeed(f"grep -q '\"version\":\"{V2}\"' /opt/briard/agent/manifest.json")
-    host.fail("test -e /run/briard/trial && test -e /run/briard/update")
-    # ⚠️ THE REFUSED SET IS DISCARDED, not merely left inert (mirroring the guest picker's
-    # rule). This used to assert that qemu.next still POINTED at the refused release
-    # -- which was the observable form of "it was never used" at a time when nothing cleaned up.
-    # The property was always inertness, and gone is the stronger form of it: the revert boot is a
-    # non-trial start with staged files present, which is by the invariant the aftermath of a
-    # failed trial.
     for n in ("briard-agent", "manifest.json", "briard-net-wrap", "qemu", "guest"):
         host.fail(f"test -e /opt/briard/agent/{n}.next")
-    # ...and the EXTRACTED TREE survives, which is the half that must not be discarded: it is the
-    # expensive part (a downloaded, verified, unpacked bundle), and the fetch path reuses it by name
-    # on a retry of the same release rather than pulling it again. Deleting the link is not deleting
-    # the tree, and nothing said so before this line.
+    # ...and the EXTRACTED TREE survives: it is the expensive part (a downloaded, verified,
+    # unpacked bundle), and the fetch path reuses it by name on a retry of the same release rather
+    # than pulling it again. Deleting the link is not deleting the tree.
     host.succeed(f"test -d /opt/briard/agent/qemu-{V3}")
+    client.succeed(f"curl -fsS http://{moved}/healthz")
+    print(f"{V3}: a qemu that does not run here refused the whole release with the agent untouched")
+
+    # AN AGENT THAT DOES NOT START is reverted whole, on the shipped units: the swap puts it in,
+    # its start fails, the committed release goes back and starts, and the agent that comes back
+    # escalates what the run left it. Through `latest`, so the bootstrap is a working updater.
+    # The guest never noticed.
+    V3b = "v3.20991231.b86bdead"
+    host.succeed("printf '#!/bin/sh\\nexit 1\\n' > /root/dead-agent && chmod 755 /root/dead-agent")
+    publish_pin(V3b, "/root/bundle2", agent="/root/dead-agent", pointer="latest")
+    host.succeed("sha256sum /opt/briard/agent/briard-agent > /tmp/committed.sha")
+    out = host.fail("/opt/briard/agent/briard-agent update -to latest 2>&1")
+    assert "did not start on this host and was reverted" in out, f"briard update said: {out!r}"
+    host.succeed("sha256sum -c /tmp/committed.sha")
+    host.succeed(f"grep -q '\"version\":\"{V2}\"' /opt/briard/agent/manifest.json")
+    host.succeed("systemctl is-active briard-agent.service")
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'host bundle update to .* failed and rolled back'", timeout=120)
+    host.fail("test -e /run/briard/update-failure")             # taken by the agent that came back
+    host.succeed("! ls /opt/briard/agent | grep -E '[.](next|prev)$'")
+    assert host.succeed("pgrep -f /opt/briard/qemu/bin/qemu-system-x86_64").strip().split()[0] == qpid_before, "the guest was relaunched by a reverted update"
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
-    print(f"{V3}: a qemu that does not run here refused the whole release; back on {V2} with the guest serving")
+    print(f"{V3b}: an agent that does not start was reverted to {V2}; the guest kept serving")
 
     # ---- THE GUEST BUNDLE ON THE SHIPPED NODE ------------------------------------------------
     # Every briard binary the guest runs rides the briard chain: install.sh laid guest-<V>/bin/ and
@@ -1574,7 +1544,6 @@ pkgs.testers.runNixOSTest {
     assert host.succeed("readlink /opt/briard/agent/guest").strip() == f"guest-{V}", "the guest bundle tree is not named by its release"
     for b in ["briard-guest-agent", "briard-reverse-proxy", "briard-dashboard"]:
         host.succeed(f"test -x /opt/briard/agent/guest-{V}/bin/{b}")
-    host.succeed("grep -q 'guest.next' /opt/briard/agent/briard-commit")
     host.succeed(f"journalctl -u briard-agent | grep -q 'guest bundle: the guest runs its firmware; dressing it with {V}'")
     host.succeed(f"journalctl -u briard-agent | grep -q 'guest bundle: {V} staged, proven and activated'")
     assert dressed_count(V) >= 1, "the first bring-up never reported the guest dressed"
@@ -1651,9 +1620,7 @@ pkgs.testers.runNixOSTest {
     publish_pin(V4, "/root/bundle2", "/root/gbundle4")
     trials_before = console_count("briard-bin-exec: briard-guest-agent: TRIAL")
     out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V4}").strip()
-    assert f"staged {V4} (agent, guest), armed" in out, f"briard update said: {out!r}"   # qemu unchanged since V2: not fetched
-    host.succeed("systemctl restart briard-agent.service")
-    host.wait_until_succeeds("test ! -e /opt/briard/agent/guest.next", timeout=120)
+    assert out == f"updated to {V4} (agent, guest)", f"briard update said: {out!r}"   # qemu unchanged since V2: not fetched
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest bundle: PUSH REFUSED'", timeout=300)
     host.succeed("journalctl -u briard-agent | grep 'PUSH REFUSED' | grep -q 'briard-dashboard failed its test launch'")
     host.succeed(f"test \"$(cat /opt/briard/agent/guest.reverted)\" = {V4}")
@@ -1682,9 +1649,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("printf '#!/bin/sh\\ncase \"$1\" in --test-launch) echo ok; exit 0;; esac\\necho \"door: not today\" >&2\\nexit 1\\n' > /root/gbundle5/bin/briard-reverse-proxy && chmod 755 /root/gbundle5/bin/*")
     publish_pin(V5, "/root/bundle2", "/root/gbundle5")
     out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V5}").strip()
-    assert f"staged {V5} (agent, guest), armed" in out, f"briard update said: {out!r}"
-    host.succeed("systemctl restart briard-agent.service")
-    host.wait_until_succeeds("test ! -e /opt/briard/agent/guest.next", timeout=120)
+    assert out == f"updated to {V5} (agent, guest)", f"briard update said: {out!r}"
     assert host.succeed("readlink /opt/briard/agent/guest").strip() == f"guest-{V5}", "the guest link did not move on commit"
     host.wait_until_succeeds(f"journalctl -u briard-agent | grep -q 'guest bundle: {V5} staged, proven and activated'", timeout=300)
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest bundle: PUSH REVERTED'", timeout=300)

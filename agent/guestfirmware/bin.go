@@ -51,7 +51,7 @@ import (
 // The host reads the outcome in the next handshake's Bundle: the pushed release means the set
 // took; anything else means it was refused, recorded for good.
 //
-// Frozen contract: the verbs are versioned additively, like briard-exec.
+// Frozen contract: the verbs are versioned additively.
 const (
 	VerbBinStage    = "bin.stage"    // one chunk of a binary into <bin>/<name>.part; the last chunk verifies + renames to <name>.next
 	VerbBinTest     = "bin.test"     // run every named staged file with --test-launch; a failure discards the staged set

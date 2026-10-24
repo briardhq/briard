@@ -2,9 +2,6 @@ package host
 
 import (
 	"context"
-	"errors"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -69,7 +66,7 @@ func await(t *testing.T, what string, ch <-chan api.DirectiveOutcome, within tim
 // install, unnoticed until the budget expired -- cannot recur, because the tick that would notice
 // is still running.
 func TestAnActOffTheLoopLeavesItTicking(t *testing.T) {
-	cfg := armedConfig(t, false)
+	cfg := loopConfig(t)
 	cfg.FlockName = "brave-elf" // the dashboard pull names the page's address
 	cfg.acts = newActLane()
 	var cycles, handoffs int32
@@ -119,52 +116,81 @@ func TestAnActOffTheLoopLeavesItTicking(t *testing.T) {
 	}
 }
 
-// THE SAFE POINT ASKS THE LANE. An armed self-update candidate is not trialled while an act runs
-// off the loop -- the loop being free is no longer the proof that nothing is in flight -- and is
-// trialled once the act ends.
-func TestTheSafePointWaitsForAnActOffTheLoop(t *testing.T) {
-	cfg := armedConfig(t, false) // armed below, once the act is in flight: an armed loop trials on its first cycle
+// A STOP FINISHES THE ACT IN FLIGHT, which is what makes the stop the self-update's safe point.
+// The loop runs on: a held sync keeps the context the loop and the act share alive past the
+// stop, the loop keeps ticking (its beat, and the guest's deadman, depend on it), a new act is
+// refused, and the act completes -- "flushed", not cancelled. Only then does the loop end.
+func TestAStopFinishesTheActInFlight(t *testing.T) {
+	cfg := loopConfig(t)
 	cfg.acts = newActLane()
 	release := make(chan struct{})
 	var handoffs, cycles int32
 	g := actingGuest{fakeStatus: fakeStatus{qs: model.QuorumState{Primary: true, Quorate: true}}, release: release, handoffs: &handoffs, cycles: &cycles}
 	local := make(chan localRequest)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	var log []string
-	var mu chan struct{} = make(chan struct{}, 1)
-	logf := func(f string, a ...any) {
-		mu <- struct{}{}
-		log = append(log, strings.TrimSpace(f))
-		<-mu
-	}
-	snapshot := func() []string { mu <- struct{}{}; defer func() { <-mu }(); return append([]string(nil), log...) }
+	stop, signal := context.WithCancel(context.Background())
+	defer signal()
+	ctx := cfg.acts.stopAfter(stop, func(string, ...any) {})
 	done := make(chan error, 1)
 	go func() {
-		done <- cfg.observe(ctx, g, nil, nil, nil, nil, nil, nil, "", local, &[]api.DirectiveOutcome{}, logf)
+		done <- cfg.observe(ctx, g, nil, nil, nil, nil, nil, nil, "", local, &[]api.DirectiveOutcome{}, func(string, ...any) {})
 	}()
-
 	first := submit(local, api.DirectiveSync)
-	if err := os.WriteFile(filepath.Join(cfg.UpdateRunDir, "update"), nil, 0o644); err != nil {
-		t.Fatal(err)
+	for !cfg.acts.inFlight() {
+		time.Sleep(time.Millisecond)
 	}
-	time.Sleep(30 * time.Millisecond)
-	if trialled(snapshot()) {
-		t.Fatal("the candidate was trialled with an act in flight off the loop")
+	signal() // the stop
+	time.Sleep(10 * time.Millisecond)
+	before := atomic.LoadInt32(&cycles)
+	time.Sleep(20 * time.Millisecond)
+	if now := atomic.LoadInt32(&cycles); now <= before {
+		t.Fatalf("the loop stopped ticking while the act in flight was still running: %d cycles then, %d now", before, now)
+	}
+	if o := await(t, "an act during the stop", submit(local, api.DirectiveBackupRestore), time.Second); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "stop of this agent") {
+		t.Fatalf("an act during the stop = %+v, want refused", o)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the loop ended (%v) with the act still in flight", err)
+	default:
 	}
 	close(release)
-	await(t, "the released act", first, time.Second)
-	deadline := time.Now().Add(time.Second)
-	for !trialled(snapshot()) {
-		if time.Now().After(deadline) {
-			t.Fatal("the candidate was never trialled once the act ended")
+	if o := await(t, "the act in flight", first, time.Second); o.State != api.OutcomeDone || o.Detail != "flushed" {
+		t.Fatalf("the act in flight = %+v, want it finished (done/flushed), not cancelled by the stop", o)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(5 * time.Millisecond)
+	case <-time.After(time.Second):
+		t.Fatal("the loop never ended after the act did")
 	}
-	cancel()
-	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
-		t.Fatal(err)
+}
+
+// With nothing in flight a stop ends the loop at once.
+func TestAStopWithNothingInFlightIsImmediate(t *testing.T) {
+	a := newActLane()
+	stop, signal := context.WithCancel(context.Background())
+	ctx := a.stopAfter(stop, func(string, ...any) {})
+	signal()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("an idle lane held the stop")
 	}
+	if _, ok := a.claim(api.DirectiveSync); ok {
+		t.Fatal("an act was claimed after the stop")
+	}
+}
+
+// loopConfig builds an observe-loop Config over scratch update dirs.
+func loopConfig(t *testing.T) Config {
+	t.Helper()
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond}
+	cfg.Resource.Name = "r0"
+	cfg.UpdateBase = t.TempDir()
+	cfg.UpdateRunDir = t.TempDir()
+	return cfg
 }
 
 // heldUpgrader is an upgrader whose rescue blocks until released -- a relauncher in flight.
@@ -188,7 +214,7 @@ func (u heldUpgrader) RescueGuest(ctx context.Context) error {
 // refused busy, and the wait ends when the rescue does. Run's channel-down path reads exactly
 // this to wait instead of climbing the ladder on a channel the rescue is replacing.
 func TestARelauncherOffTheLoopIsWhatRunWaitsFor(t *testing.T) {
-	cfg := armedConfig(t, false)
+	cfg := loopConfig(t)
 	cfg.acts = newActLane()
 	cfg.UpgradeBudget = time.Minute
 	release := make(chan struct{})

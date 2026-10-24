@@ -384,14 +384,12 @@ type Config struct {
 	// Host-agent self-update. UpdateKeyring is the PEM bundle of trusted Ed25519
 	// release public keys the agent verifies an agent-update artifact against -- empty means
 	// self-update is OFF (an agent-update directive refuses, fail-closed). UpdateBase /
-	// UpdateRunDir locate the flat update slots (default selfupdate.Default*); UpdateUnit is the
-	// systemd unit restarted to trial a staged binary (default "briard-agent.service"). Version
+	// UpdateRunDir locate the flat update slots (default selfupdate.Default*). Version
 	// is this agent's running release id -- reported as NodeStatus.AgentVersion and used to make
 	// a re-offer of the running version an idempotent no-op.
 	UpdateKeyring []byte
 	UpdateBase    string
 	UpdateRunDir  string
-	UpdateUnit    string
 	Version       string
 
 	// beat is the systemd watchdog keep-alive, NOT configuration: Run builds it from the
@@ -591,29 +589,8 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 			res.Name, len(res.Peers), spec.Witness != nil)
 		cfg.Resource, cfg.Mesh = res, spec
 	}
-	// THE TRIAL'S OWN GATE: a candidate that brought a new qemu proves it runs on THIS
-	// host before it sends READY -- the binary execs, its libs resolve, the device models we
-	// depend on exist, a scratch machine reaches `running`. Only on a trial boot AND only with
-	// qemu.next staged: a refused qemu stays staged and inert, and must never make the committed
-	// agent's ordinary starts pay for (or fail) a boot. Failure is all-or-nothing by
-	// construction: no READY -> briard-commit never runs -> the pivot falls back to the old agent
-	// WITH the old qemu, a pairing that was tested; committing the agent alone would land on
-	// agent N + qemu N-1, which nobody ever tested. The question asked is not "is this qemu
-	// good" but "does release N work on this host" -- a missing lib, an old glibc, an absent
-	// device model -- and if the answer is no, refusing the release is right. The one line left
-	// behind is for the agent that comes back, which is the one that can still report.
+	// The update layout, read below for a reverted update's message to this agent.
 	layout := selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir)
-	if layout.InTrial() && layout.NextQEMUStaged() {
-		tree, _ := layout.NextQEMUTree()
-		logf("trial boot with a staged qemu: smoke-testing %s before READY", tree)
-		if err := platform.SmokeTest(ctx, tree, cfg.Accel, cfg.CPUModel, logf); err != nil {
-			if werr := layout.WriteFailure(cfg.Version, err.Error()); werr != nil {
-				logf("could not leave the trial's failure message (%v)", werr)
-			}
-			return fmt.Errorf("host bundle %s refused on this host: %w", cfg.Version, err)
-		}
-		logf("staged qemu passed its smoke test; committing the bundle")
-	}
 	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
 	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
 	// must not mean; see the sdnotify package doc for the two costs of that coupling, the fatal
@@ -828,9 +805,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	cfg.recordNetwork(ctx, logf)
 	// What building a Windows bridge cost the household's NIC, said once if it matters (fastnic.go).
 	cfg.checkFastNIC(ctx, n, logf)
-	// A trial that refused its own release could not report it -- failing the start IS
-	// the mechanism -- so it left one line, and the agent that came back after the revert says
-	// so. Taken once. The staged bundle stays on disk, inert, until the channel moves past it.
+	// An update this agent replaced and then got back from -- a candidate that did not start, a
+	// release refused on this host -- could not report it: the run has no notifier. It left one
+	// line, and the agent that came back after the revert says so. Taken once.
 	if release, reason, ok := layout.TakeFailure(); ok {
 		escalate(ctx, n, logf, "briard-agent", "host bundle update", release, errors.New(reason))
 	}
@@ -886,6 +863,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	// broken release rather than an occasional retry.
 	var pendingOutcomes []api.DirectiveOutcome
 	cfg.acts = newActLane() // outlives any one observe(), like pendingOutcomes: an act spans a channel bounce
+	// A stop ends between acts: from here the loop and its acts run until the stop AND the act in
+	// flight have both happened, and no act starts once the stop has (acts.go, stopAfter).
+	ctx = cfg.acts.stopAfter(ctx, logf)
 	cfg.sleep = &sleepAlerter{read: lastSleep, lid: lidAction, shutDown: fastStartup}
 	var recovery guestRecovery
 	for {
@@ -1705,32 +1685,6 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 					ds, err := rep.Report(rctx, req)
 					out <- reportResult{sent: len(req.Outcomes), csr: req.CSR, directives: ds, err: err}
 				}(reporting, req)
-			}
-		}
-		// AN ARMED CANDIDATE IS TRIALLED HERE, in the loop body rather than under `rep != nil`,
-		// where it once was. The arm flag is a LOCAL fact written by
-		// the frozen unit below the agent, so gating it on a cloud reporter made it unreachable
-		// on exactly the nodes that have none: a free install left a verified candidate staged
-		// until the updater's own grace forced a restart on a LATER timer tick, a day out. The
-		// nightly cadence belongs to the FETCH -- a fleet-wide question, hence the spread and
-		// the persistence -- and never described when to act on a candidate already staged.
-		//
-		// `len(*pending) == 0` is announce-before-act, unchanged: where a cloud exists it learns
-		// an outcome before the binary swaps, and a failed report keeps its outcomes pending, so
-		// this waits for them. On a standalone node it is vacuous by construction -- a local
-		// directive's outcome goes back to the CLI and is never appended -- which is what lets
-		// one gate serve both instead of a second call site under `rep == nil`.
-		//
-		// THIS IS THE SAFE POINT the CLI and the installer promise. Every leg that must not be
-		// interrupted and runs on the loop -- bring-up, recovery, a relaunching directive --
-		// runs to completion inside one iteration, so reaching this line proves none of those
-		// is in flight; the one kind of leg that runs OFF the loop (an act, acts.go) is asked
-		// directly. The restart is detached and the guest is re-adopted rather than
-		// relaunched, so acting now costs the household nothing.
-		if su != nil && su.Armed() && len(*pending) == 0 && !cfg.acts.inFlight() {
-			logf("agent-update: armed -- restarting to trial the staged binary")
-			if err := su.Restart(ctx); err != nil {
-				logf("agent-update: restart request failed (will retry next cycle): %v", err)
 			}
 		}
 	wait:

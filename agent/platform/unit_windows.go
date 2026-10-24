@@ -251,3 +251,11 @@ func unitsReload() ([]byte, error) { return nil, nil }
 func unitTransient(string) bool { return true }
 
 func unitStamp(string) string { return "" }
+
+// StopService and StartService are the self-update's stop and start. The Windows arm (SCM STOP
+// polled to STOPPED with the same patience, then the job kill; StartService polled to RUNNING) is
+// not built yet, so an update there is refused before anything is touched.
+func StopService(context.Context, string, time.Duration, func(string, ...any)) error {
+	return errors.ErrUnsupported
+}
+func StartService(context.Context, string) error { return errors.ErrUnsupported }

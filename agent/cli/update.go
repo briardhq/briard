@@ -73,7 +73,7 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	if !*vm {
 		l := selfupdate.New(*base, *run)
-		line, err := l.Trigger(ctx, *unit, *target)
+		line, err := l.Trigger(ctx, *unit, *target, true)
 		if err != nil {
 			fmt.Fprintf(stderr, "briard update: %s\n", line)
 			return 1

@@ -42,8 +42,6 @@ let
     cp ${../scripts/units/briard-agent.service}  "$out/briard-agent.service"
     cp ${../scripts/units/briard-update.service} "$out/briard-update.service"
     cp ${../scripts/units/briard-update.timer}   "$out/briard-update.timer"
-    cp ${../scripts/agent/briard-exec}    "$out/briard-exec"
-    cp ${../scripts/agent/briard-commit}  "$out/briard-commit"
     cp ${../scripts/agent/briard-update}  "$out/briard-update"
     cp -r ${qemuBundle}/. "$out/qemu/"
     tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
