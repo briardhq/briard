@@ -146,7 +146,7 @@ func (l Layout) QEMUTree(release string) string { return filepath.Join(l.Base, q
 // directory, fsync, rename), mode 0755 — durable on disk BEFORE it can ever be swapped in, so
 // the swap is safe against a power loss. Idempotent (overwrites).
 //
-// The temp name is unique per call rather than a fixed `.tmp`: with the fetch now run by a
+// The temp name is unique per call rather than a fixed `.tmp`: with the fetch run by a
 // unit rather than the agent, two writers are at least conceivable (a directive and a timer
 // tick merging late), and a fixed name would let them tear each other's candidate.
 func (l Layout) StageNext(src io.Reader) error {
