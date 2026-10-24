@@ -52,15 +52,28 @@ if (Test-Path "$Run\update-target") {
 	$target = ([IO.File]::ReadAllLines("$Run\update-target"))[0].Trim()
 	Remove-Item -Force "$Run\update-target"
 }
-# (2) A fresh agent FROM THE TARGET runs the update: never the committed binary, which the update
+# (2) A fresh agent FROM THE TARGET runs the update: never the committed file itself, which the update
 #     replaces. Under the prefix, which only SYSTEM and the administrators can write.
 $tmp = "$Prefix\.update." + [IO.Path]::GetRandomFileName()
 New-Item -ItemType Directory $tmp | Out-Null
 $rc = 1
 try {
+	#     Most runs find the target's agent byte-identical to the committed one, so curl asks for it
+	#     only if it differs: the channel's ETag for a pointer's file is its MD5, and a 304 means the
+	#     committed binary IS the target's, so its copy runs -- hashed after copying, so what runs
+	#     is what was compared. Any other ETag (an exact id's multipart upload) just downloads. The
+	#     header goes through a file: 5.1 passes a native argument's inner quotes unescaped.
 	$url = "$Channel/briard/$target/windows-amd64/briard-agent.exe"
-	& curl.exe -fsSL $url -o "$tmp\briard-agent.exe"
+	$hdr = @()
+	if (Test-Path "$Base\briard-agent.exe") {
+		Copy-Item "$Base\briard-agent.exe" "$tmp\have.exe"
+		$md5 = (Get-FileHash -Algorithm MD5 "$tmp\have.exe").Hash.ToLower()
+		[IO.File]::WriteAllText("$tmp\hdr", "If-None-Match: `"$md5`"`n")
+		$hdr = @('-H', "@$tmp\hdr")
+	}
+	$code = & curl.exe -fsSL @hdr -w '%{http_code}' $url -o "$tmp\briard-agent.exe"
 	if ($LASTEXITCODE -ne 0) { throw "could not fetch a bootstrap agent from $url" }
+	if ($code -eq '304') { Move-Item -Force "$tmp\have.exe" "$tmp\briard-agent.exe" }
 	# (3) Its log goes to the update log (stderr); its last stdout line is the verdict.
 	$env:BRIARD_CHANNEL_URL = $Channel
 	$env:BRIARD_KEYRING = $Keyring
