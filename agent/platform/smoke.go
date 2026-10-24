@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -43,7 +44,7 @@ func SmokeTest(ctx context.Context, tree, accel, cpu string, logf func(string, .
 	}
 	ctx, cancel := context.WithTimeout(ctx, smokeTimeout)
 	defer cancel()
-	bin := filepath.Join(tree, "bin", "qemu-system-x86_64")
+	bin := smokeBinary(tree)
 	run := smokeRunner(tree, bin)
 
 	out, err := run(ctx, "-version")
@@ -191,4 +192,12 @@ func firstLine(s string) string {
 		s = s[:i]
 	}
 	return s
+}
+
+// smokeBinary is the tree's qemu: under bin/ in the Linux bundle, at the root of the Windows one.
+func smokeBinary(tree string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(tree, "qemu-system-x86_64.exe")
+	}
+	return filepath.Join(tree, "bin", "qemu-system-x86_64")
 }

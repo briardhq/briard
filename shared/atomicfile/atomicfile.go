@@ -90,7 +90,11 @@ func SyncTree(root string) error {
 		if !d.IsDir() && !d.Type().IsRegular() {
 			return nil
 		}
-		f, err := os.Open(p)
+		open := openFile
+		if d.IsDir() {
+			open = openDir
+		}
+		f, err := open(p)
 		if err != nil {
 			return err
 		}

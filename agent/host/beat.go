@@ -148,6 +148,15 @@ func (b *beat) budget(ctx context.Context, d time.Duration) (context.Context, co
 	return bctx, cancel
 }
 
+// The Windows watchers' two numbers, which stand in there for the agent unit's on Linux and are
+// pinned to that unit's text by a test, so a change to one side alone is red: staleAfter is
+// WatchdogSec, how long the loop may go without a beat before it is a wedge, and startLimit is
+// TimeoutStartSec, how long the agent may take to report that it started.
+const (
+	staleAfter = 20 * time.Second
+	startLimit = 60 * time.Second
+)
+
 // misses is a watcher's count of its own ticks that saw no beat -- how the Windows watchers (the
 // in-process dumper and the warden) measure staleness, where systemd measures it on Linux.
 //

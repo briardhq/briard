@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"briard.io/agent/host"
 	"briard.io/agent/install"
@@ -88,15 +87,12 @@ func runUpdate(ctx context.Context, target string) (string, error) {
 		return "", err
 	}
 	cfg := host.ConfigFromEnv()
-	unit := selfupdate.DefaultAgentUnit
 	u := &install.Update{
 		Fetcher: &install.Fetcher{BaseURL: base, Chain: install.ChainBriard, Platform: install.PlatformHost, Keyring: kr, Logf: log.Printf},
 		Layout:  selfupdate.New(os.Getenv("UPDATE_BASE"), os.Getenv("UPDATE_RUN_DIR")),
 		Logf:    log.Printf,
-		Stop: func(ctx context.Context, patience time.Duration) error {
-			return platform.StopService(ctx, unit, patience, log.Printf)
-		},
-		Start: func(ctx context.Context) error { return platform.StartService(ctx, unit) },
+		Stop:    updateStop,
+		Start:   updateStart,
 		Smoke: func(ctx context.Context, tree string) error {
 			return platform.SmokeTest(ctx, tree, cfg.Accel, cfg.CPUModel, log.Printf)
 		},

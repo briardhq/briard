@@ -21,11 +21,13 @@ import (
 
 	"briard.io/agent/nic"
 	"briard.io/agent/platform"
+	"briard.io/agent/selfupdate"
 )
 
 // What the Windows install made (install.ps1 and layDownOS), and so what goes:
 //
-//   - the agent's service and the warden's, and the resume task install.ps1 registers for the closing;
+//   - the agent's service and the warden's, the update task, and the resume task install.ps1
+//     registers for the closing;
 //   - the bridge, with its member's checksum offload put back from the record, the TAP adapter by
 //     instance, the bridge's spanning-tree value, and the backup store's firewall rule;
 //   - the tree under %ProgramData%\briard, its bin on the system PATH, and its entry in Installed
@@ -71,6 +73,9 @@ func (cfg Config) removeServices(ctx context.Context, logf func(string, ...any))
 				return fmt.Errorf("deleting the %s service: %w", name, err)
 			}
 		}
+	}
+	if err := run(ctx, "schtasks", "/delete", "/tn", selfupdate.DefaultUpdateUnit, "/f"); err != nil {
+		logf("the update task: %v", err)
 	}
 	// Best-effort: absent is the common case, the closing having run and removed it.
 	_ = run(ctx, "schtasks", "/delete", "/tn", resumeTask, "/f")

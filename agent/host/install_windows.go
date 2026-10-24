@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -18,6 +20,7 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 
 	"briard.io/agent/nic"
+	"briard.io/agent/selfupdate"
 	"briard.io/shared/atomicfile"
 )
 
@@ -90,7 +93,8 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 		return err
 	}
 	// THE WARDEN, the agent's outside watcher (warden_windows.go): a COPY of this agent in a
-	// directory only an install writes, so a release never replaces the program that watches it.
+	// directory of its own, which an update replaces only once the agent it watches is up
+	// (StartWarden).
 	// Registered after the agent, so a failure here leaves an agent that runs, unwatched.
 	wexe := filepath.Join(r.prefix, "warden", wardenExe)
 	say("laying the warden at %s", wexe)
@@ -99,6 +103,21 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	}
 	if err := registerService(WardenName, wexe, "-warden", wardenConfig, 0, say); err != nil {
 		return err
+	}
+	// THE UPDATE LAUNCHER, copied out of the verified set, and the task that runs it: the Windows
+	// twin of briard-update and its timer. Frozen by necessity, as that script is -- it launches
+	// the replacement of the binary, so no release can be what fixes it -- and shipped, so it is a
+	// signed artifact covered by the same manifest as the binary it fetches.
+	say("installing the agent's update script and its task")
+	if !exists(filepath.Join(hostSrc, updateScript)) {
+		return errors.New(updateScript + " is absent from staging; this release cannot be installed")
+	}
+	script := filepath.Join(agentDir, updateScript)
+	if err := installFile(filepath.Join(hostSrc, updateScript), script, 0o644); err != nil {
+		return err
+	}
+	if err := r.registerUpdateTask(ctx, script); err != nil {
+		return fmt.Errorf("registering the update task: %w", err)
 	}
 	// THE ONE INBOUND HOLE: the guest dials the host's backup store. Scoped to this program and
 	// port rather than to a network profile, so the household's network category stays theirs.
@@ -500,4 +519,59 @@ func (r installRoots) osRoots() installRoots { return r }
 // is powered off cleanly, never killed. The restart the installer ends in starts it all again.
 func stopRunning(ctx context.Context, say func(string, ...any)) error {
 	return stopNode(ctx, ConfigFromEnv().QMPSock, say)
+}
+
+// updateScript is the frozen launcher the update task runs (scripts/agent/briard-update.ps1).
+const updateScript = "briard-update.ps1"
+
+// updateTaskXML is the update task, the Windows form of briard-update.timer + .service: daily at
+// 03:00 plus up to 3 h at random, and 5 minutes after every boot, so a run cut mid-swap -- by a
+// power cut or Windows Update's restart -- is put right the same morning; a missed run as soon as
+// the machine can (StartWhenAvailable, Persistent= there); as SYSTEM; one at a time (IgnoreNew --
+// a start while one runs is dropped, and whoever started it waits on that run's verdict); on
+// battery too; and stopped at the hour, as TimeoutStartSec=3600 stops the oneshot.
+const updateTaskXML = `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Keeps Briard up to date from its release channel</Description></RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-01T03:00:00</StartBoundary>
+      <RandomDelay>PT3H</RandomDelay>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+    </CalendarTrigger>
+    <BootTrigger><Delay>PT5M</Delay></BootTrigger>
+  </Triggers>
+  <Principals><Principal id="System"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+    <Priority>5</Priority>
+  </Settings>
+  <Actions Context="System">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%s"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+`
+
+// registerUpdateTask registers the update task to run script, replacing any earlier registration.
+// schtasks reads a task's full definition only as an XML file, UTF-16 as it declares.
+func (r installRoots) registerUpdateTask(ctx context.Context, script string) error {
+	u := utf16.Encode([]rune(fmt.Sprintf(updateTaskXML, script)))
+	b := make([]byte, 2, 2+2*len(u))
+	binary.LittleEndian.PutUint16(b, 0xfeff)
+	for _, c := range u {
+		b = binary.LittleEndian.AppendUint16(b, c)
+	}
+	def := filepath.Join(r.run, "briard-update-task.xml")
+	if err := os.WriteFile(def, b, 0o600); err != nil {
+		return err
+	}
+	defer os.Remove(def)
+	return run(ctx, "schtasks", "/create", "/tn", selfupdate.DefaultUpdateUnit, "/xml", def, "/f")
 }

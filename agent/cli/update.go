@@ -34,9 +34,9 @@ import (
 // api.Directive to the running agent over the admin socket; this chain must not, because the
 // case it exists for is the agent being DOWN -- an agent that cannot fetch its own replacement
 // is exactly what the unit below it is for. So it does what the cloud's handler and the timer
-// do, through the same door: leave the target as a message, `systemctl start` the oneshot
-// (which blocks), and print the one line the run ended on. The unit's exit status is the
-// verb's, for free.
+// do, through the same door: leave the target as a message, start the update unit (the oneshot
+// on Linux, the scheduled task on Windows), wait for its verdict, and print the one line the run
+// ended on.
 //
 // VM IS an injector, and correctly so: the guest OS is moved by the agent (stage
 // from the cache, switch or reboot, health-gate, commit or revert), so there is nothing to do
@@ -52,8 +52,8 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs := flag.NewFlagSet("briard update", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	vm := fs.Bool("vm", false, "update the VM briard runs apps in, instead of briard itself")
-	base := fs.String("base", envOr("UPDATE_BASE", "/opt/briard/agent"), "briard: where the committed agent lives")
-	run := fs.String("run", envOr("UPDATE_RUN_DIR", selfupdate.DefaultRunDir), "briard: the tmpfs dir the update messages pass through")
+	base := fs.String("base", envOr("UPDATE_BASE", selfupdate.DefaultBase), "briard: where the committed agent lives")
+	run := fs.String("run", envOr("UPDATE_RUN_DIR", selfupdate.DefaultRunDir), "briard: the dir the update messages pass through")
 	unit := fs.String("unit", selfupdate.DefaultUpdateUnit, "briard: the update unit to start")
 	sock := fs.String("sock", sockDefault(), "-vm: the agent's admin socket")
 	target := fs.String("to", install.TargetStable, "the release to converge to: stable, latest, dev, or an exact id")

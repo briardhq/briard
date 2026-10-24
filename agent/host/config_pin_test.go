@@ -36,3 +36,22 @@ func TestUpdateScriptDefaultsMatchTheAgents(t *testing.T) {
 		}
 	}
 }
+
+// The Windows twin, briard-update.ps1, carries the same second copy for the same reason. Its
+// keyring default derives from the Windows prefix, a constant this test cannot see off Windows, so
+// the channel is what is compared.
+func TestWindowsUpdateScriptDefaultsMatchTheAgents(t *testing.T) {
+	os.Unsetenv("CHANNEL_URL")
+	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "agent", "briard-update.ps1"))
+	if err != nil {
+		t.Fatalf("read the shipped updater: %v", err)
+	}
+	script := string(b)
+	for _, c := range []struct{ what, want string }{
+		{"channel", `else { '` + ConfigFromEnv().ChannelURL + `' }`},
+	} {
+		if !strings.Contains(script, c.want) {
+			t.Errorf("briard-update.ps1's %s default has drifted from the agent's; want %q", c.what, c.want)
+		}
+	}
+}

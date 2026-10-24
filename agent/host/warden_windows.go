@@ -2,32 +2,33 @@ package host
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
+
+	"briard.io/agent/platform"
 )
 
 // WardenName is the warden's name in the service manager.
 const WardenName = "briard-warden"
 
-// wardenExe is the warden's program: a copy of the agent laid by the install into its own
-// directory, which nothing but an install writes, so a release can never change the program that
-// watches it.
+// wardenExe is the warden's program: a copy of the agent in its own directory, laid by the install
+// and replaced by an update once the agent it watches is up (StartWarden).
 const wardenExe = "briard-warden.exe"
 
 // wardenAfter is how many beatless ticks end a running agent: past dumpAfter, so the agent's own
 // dump of every goroutine is written before its process is ended.
 const wardenAfter = dumpAfter + 2
 
-// startLimit is how long the agent may take to report RUNNING -- the Linux unit's TimeoutStartSec,
-// so a start means the same on both systems -- and startAfter is that in ticks.
-const (
-	startLimit = 60 * time.Second
-	startAfter = int(startLimit / beatTick)
-)
+// startAfter is startLimit (beat.go) in ticks.
+const startAfter = int(startLimit / beatTick)
 
 // Warden is the agent's outside watcher on Windows, the half of systemd's watchdog the service
 // manager does not give: it notices the ABSENCE of beats, which no goroutine inside the agent can
@@ -84,7 +85,7 @@ func Warden(ctx context.Context, logf func(string, ...any)) error {
 		if n := count.tick(time.Now(), beat || limit == 0); limit > 0 && n >= limit {
 			logf("warden: %s from %s for %d checks (%s) -- ending process %d for the service manager to restart",
 				why, ServiceName, n, (time.Duration(n) * beatTick).Round(time.Second), st.ProcessId)
-			if err := endProcess(st.ProcessId); err != nil {
+			if err := platform.EndProcess(st.ProcessId); err != nil {
 				logf("warden: ending process %d: %v", st.ProcessId, err)
 			}
 			count = misses{every: beatTick}
@@ -115,11 +116,103 @@ func agentStatus(m *mgr.Mgr) svc.Status {
 	return st
 }
 
-func endProcess(pid uint32) error {
-	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, pid)
-	if err != nil {
-		return err
+// THE WARDEN IS ONE MORE ENTRY of the self-update: its program is a copy of the agent, so an
+// update that moves the agent moves it too. It is stopped FIRST (StopWarden), before the agent,
+// so it does not count the agent's quiet as a wedge, and because its program must not be running
+// to be replaced; it is brought to the agent in place LAST (StartWarden), once the agent is up.
+// It is put back on its own when it does not start, and the agent never waits on it.
+
+// StopWarden stops the warden for an update.
+func StopWarden(ctx context.Context, logf func(string, ...any)) error {
+	return platform.StopService(ctx, WardenName, 0, logf)
+}
+
+// StartWarden starts the warden, first swapping its program for the agent in place when converge
+// is set and the two differ: the old copy to .prev, the agent copied in, started, and the .prev
+// deleted -- or, when the new one does not reach RUNNING, put back and started. Without converge
+// (the agent did not start, so what is in place is a candidate being reverted) the warden starts
+// as it is. A swap cut short is finished here: a .prev with no program is put back, a .prev
+// beside one is the tail of a commit.
+func StartWarden(ctx context.Context, converge bool, logf func(string, ...any)) error {
+	agent := filepath.Join(prefixDir, "agent", agentExe)
+	w := filepath.Join(prefixDir, "warden", wardenExe)
+	prev := w + ".prev"
+	if exists(prev) {
+		if !exists(w) {
+			if err := os.Rename(prev, w); err != nil {
+				return fmt.Errorf("putting the warden back: %w", err)
+			}
+		} else {
+			os.Remove(prev)
+		}
 	}
-	defer windows.CloseHandle(h)
-	return windows.TerminateProcess(h, 1)
+	if converge {
+		if same, err := sameFile(agent, w); err != nil {
+			logf("update: comparing the warden with the agent: %v; starting it as it is", err)
+		} else if !same {
+			return swapWarden(ctx, agent, w, logf)
+		}
+	}
+	return platform.StartService(ctx, WardenName)
+}
+
+func swapWarden(ctx context.Context, agent, w string, logf func(string, ...any)) error {
+	logf("update: the warden is a copy of an older agent; replacing it")
+	next, prev := w+".next", w+".prev"
+	if err := installFile(agent, next, 0o755); err != nil {
+		logf("update: copying the agent for the warden: %v; starting the old one", err)
+		return platform.StartService(ctx, WardenName)
+	}
+	if err := os.Rename(w, prev); err != nil {
+		os.Remove(next)
+		return fmt.Errorf("moving the old warden aside: %w", err)
+	}
+	if err := os.Rename(next, w); err != nil {
+		os.Rename(prev, w)
+		return fmt.Errorf("placing the new warden: %w", err)
+	}
+	err := platform.StartService(ctx, WardenName)
+	if err == nil {
+		os.Remove(prev)
+		return nil
+	}
+	logf("update: the new warden did not start (%v); putting the old one back", err)
+	if serr := platform.StopService(ctx, WardenName, 0, logf); serr != nil {
+		logf("update: stopping the new warden: %v", serr)
+	}
+	if rerr := os.Remove(w); rerr != nil {
+		return fmt.Errorf("the new warden did not start (%v), and it could not be removed: %w", err, rerr)
+	}
+	if rerr := os.Rename(prev, w); rerr != nil {
+		return fmt.Errorf("the new warden did not start (%v), and the old one could not be put back: %w", err, rerr)
+	}
+	return platform.StartService(ctx, WardenName)
+}
+
+// sameFile reports whether two files hold the same bytes.
+func sameFile(a, b string) (bool, error) {
+	ha, err := fileHash(a)
+	if err != nil {
+		return false, err
+	}
+	hb, err := fileHash(b)
+	if err != nil {
+		return false, err
+	}
+	return ha == hb, nil
+}
+
+func fileHash(p string) ([sha256.Size]byte, error) {
+	var sum [sha256.Size]byte
+	f, err := os.Open(p)
+	if err != nil {
+		return sum, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return sum, err
+	}
+	copy(sum[:], h.Sum(nil))
+	return sum, nil
 }

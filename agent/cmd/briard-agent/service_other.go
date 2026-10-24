@@ -3,8 +3,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
+	"time"
+
+	"briard.io/agent/platform"
+	"briard.io/agent/selfupdate"
 )
 
 // runService is false off Windows: systemd runs the agent as an ordinary process.
@@ -33,4 +39,15 @@ func tell(string, bool)   {}
 func runWarden() int {
 	fmt.Fprintln(os.Stderr, "briard: the warden is the Windows service's; systemd watches the agent here")
 	return 2
+}
+
+// updateStop and updateStart are the self-update's two service verbs (runUpdate): the agent
+// unit's ordinary stop, with patience, and its start to READY. systemd's watchdog needs nothing
+// of its own.
+func updateStop(ctx context.Context, patience time.Duration) error {
+	return platform.StopService(ctx, selfupdate.DefaultAgentUnit, patience, log.Printf)
+}
+
+func updateStart(ctx context.Context) error {
+	return platform.StartService(ctx, selfupdate.DefaultAgentUnit)
 }

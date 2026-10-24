@@ -9,13 +9,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// staleAfter is how long the loop may go without a beat before its goroutines are dumped -- the
-// Linux unit's WatchdogSec, so a wedge reads the same on both systems. The watchers tick at a
-// third of it and count in ticks (misses), so the dump comes at dumpAfter beatless ticks.
+// The watchers tick at a third of staleAfter (beat.go) and count in ticks (misses), so the dump
+// comes at dumpAfter beatless ticks.
 const (
-	staleAfter = 20 * time.Second
-	beatTick   = staleAfter / 3
-	dumpAfter  = 3
+	beatTick  = staleAfter / 3
+	dumpAfter = 3
 )
 
 // beatEventName is the named event the agent sets at every beat and the warden consumes at every

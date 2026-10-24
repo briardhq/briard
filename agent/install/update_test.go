@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,9 @@ import (
 
 	"briard.io/agent/selfupdate"
 )
+
+// unixModes is false on Windows, which keeps no exec bit or Unix mode to assert.
+const unixModes = runtime.GOOS != "windows"
 
 func man(chain, platform, version string) Manifest {
 	return Manifest{Chain: chain, Platform: platform, Version: version, Artifacts: []Entry{{Name: "briard-agent"}}}
@@ -188,7 +192,7 @@ func TestUpdateSwapsStartsAndCommits(t *testing.T) {
 	if !committed(t, l) {
 		t.Fatal("the candidate is not the committed agent")
 	}
-	if fi, _ := os.Stat(l.AgentPath()); fi.Mode().Perm() != 0o755 {
+	if fi, _ := os.Stat(l.AgentPath()); unixModes && fi.Mode().Perm() != 0o755 {
 		t.Errorf("agent mode = %o, want 0755", fi.Mode().Perm())
 	}
 	if m, err := os.ReadFile(l.ManifestPath()); err != nil || !bytes.Equal(m, c.bodies[pointerPath(ManifestName)]) {
@@ -367,10 +371,10 @@ func TestUpdateRefusesAPinBelowStable(t *testing.T) {
 	oldV := "v3.20250101.0ld0ld0"
 	agent := []byte("an old agent")
 	mb, _ := json.Marshal(Manifest{Chain: ChainBriard, Platform: PlatformHost, Version: oldV,
-		Artifacts: []Entry{{Name: "briard-agent", SHA256: sha(agent), Size: int64(len(agent)), Mode: 0o755}}})
+		Artifacts: []Entry{{Name: artifactAgent, SHA256: sha(agent), Size: int64(len(agent)), Mode: 0o755}}})
 	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformHost+"/"+ManifestName] = mb
 	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformHost+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
-	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformHost+"/briard-agent"] = agent
+	c.bodies[ChainBriard+"/"+oldV+"/"+PlatformHost+"/"+artifactAgent] = agent
 	u, l, _ := updateFixture(t, c, c.bodies[pointerPath(ManifestName)])
 	_, err := u.Run(context.Background(), oldV)
 	if !errors.Is(err, ErrBelowFloor) {
@@ -393,7 +397,7 @@ func TestUpdateRefusesAPinBelowStable(t *testing.T) {
 // swapped.
 func TestUpdateRefusesATamperedAgent(t *testing.T) {
 	c := goodChannel(t)
-	c.bodies[releasePath("briard-agent")] = []byte("not the signed bytes")
+	c.bodies[releasePath(artifactAgent)] = []byte("not the signed bytes")
 	u, l, _ := updateFixture(t, c, nil)
 	_, err := u.Run(context.Background(), TargetLatest)
 	if !errors.Is(err, ErrArtifactMismatch) {
@@ -487,7 +491,7 @@ func TestUpdateSwapsTheWholeBundle(t *testing.T) {
 	if b, err := os.ReadFile(l.NetWrapPath()); err != nil || !strings.HasPrefix(string(b), "#!/bin/sh") {
 		t.Errorf("net-wrap = %q, %v", b, err)
 	}
-	if fi, _ := os.Stat(l.NetWrapPath()); fi == nil || fi.Mode().Perm() != 0o755 {
+	if fi, _ := os.Stat(l.NetWrapPath()); fi == nil || (unixModes && fi.Mode().Perm() != 0o755) {
 		t.Errorf("net-wrap is not 0755: %v", fi)
 	}
 	tree, ok := l.CommittedQEMUTree()
@@ -500,10 +504,10 @@ func TestUpdateSwapsTheWholeBundle(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(tree, "PROVENANCE")); err != nil || string(b) != "prefix=/opt/briard/qemu" {
 		t.Errorf("extracted PROVENANCE = %q, %v", b, err)
 	}
-	if fi, err := os.Stat(filepath.Join(tree, "bin", "qemu-system-x86_64")); err != nil || fi.Mode().Perm()&0o111 == 0 {
+	if fi, err := os.Stat(filepath.Join(tree, "bin", "qemu-system-x86_64")); err != nil || (unixModes && fi.Mode().Perm()&0o111 == 0) {
 		t.Errorf("extracted qemu binary: %v, %v", fi, err)
 	}
-	if fi, _ := os.Stat(tree); fi.Mode().Perm() != 0o755 {
+	if fi, _ := os.Stat(tree); unixModes && fi.Mode().Perm() != 0o755 {
 		t.Errorf("tree mode = %o, want 0755", fi.Mode().Perm())
 	}
 	if !committed(t, l) {

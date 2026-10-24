@@ -40,7 +40,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -48,25 +47,12 @@ import (
 	"briard.io/shared/atomicfile"
 )
 
-// DefaultBase is the agent's state dir (alongside assignment.json etc., host.ConfigFromEnv);
-// the committed binary and its staged candidate both live here so a commit is a same-fs rename.
-const DefaultBase = "/var/lib/briard"
-
-// DefaultRunDir is the tmpfs dir the update messages pass through. Nothing in it decides a swap:
-// that state is the .prev entries under Base, which a power cut cannot clear.
-const DefaultRunDir = "/run/briard"
-
-// DefaultUpdateUnit is the frozen oneshot that runs the update below the agent; every trigger —
-// the cloud's directive, the timer, `briard update` — is a `systemctl start` of it, and systemd
-// merging a start into a running job is what makes the unit its own mutual exclusion.
-const DefaultUpdateUnit = "briard-update.service"
-
-// DefaultAgentUnit is the service the updater stops, swaps under and starts again.
-const DefaultAgentUnit = "briard-agent.service"
+// The defaults -- where the committed agent lives, where the update messages pass, the unit an
+// update runs as and the service it stops -- and the agent's own file name are per OS
+// (os_other.go, os_windows.go).
 
 const (
-	agentName    = "briard-agent"
-	nextName     = "briard-agent.next"
+	nextName     = agentName + nextSuffix
 	manifestName = "manifest.json"
 	nextManifest = "manifest.json.next"
 	targetName   = "update-target"
@@ -84,6 +70,7 @@ const (
 	guestTree     = "guest-"
 	nextSuffix    = ".next"
 	prevSuffix    = ".prev"
+	oldSuffix     = ".old" // the agent's .prev on its way out (Commit)
 )
 
 // entries are the names a swap moves, in swap order. The agent goes first: every run stages it,
@@ -182,8 +169,15 @@ func (l Layout) StageNextQEMU(tree string) error {
 }
 
 // stageTreeLink points `link` at an extracted `<prefix><release>` tree under Base, atomically:
-// the link is made in a temp dir and renamed over any existing one. Shared by the qemu and the
+// the link is made under a unique temp name and renamed into place. Shared by the qemu and the
 // guest bundle.
+//
+// THE TEMP LINK IS A SIBLING IN BASE, never in a subdirectory: Windows decides at creation
+// whether a link is a directory link by resolving its target from where the link is made, and
+// the relative target resolves only from Base. Made anywhere else it becomes a file link to a
+// directory, which nothing can open. Any earlier .next goes before the rename, since Windows
+// cannot rename a directory link over another; a staged link is inert until a swap moves it, so
+// no reader sees it missing.
 func (l Layout) stageTreeLink(tree, prefix, link, linkName string) error {
 	if filepath.Dir(tree) != l.Base || !strings.HasPrefix(filepath.Base(tree), prefix) {
 		return fmt.Errorf("selfupdate: tree %s is not a %s* directory under %s", tree, prefix, l.Base)
@@ -191,20 +185,27 @@ func (l Layout) stageTreeLink(tree, prefix, link, linkName string) error {
 	if fi, err := os.Stat(tree); err != nil || !fi.IsDir() {
 		return fmt.Errorf("selfupdate: tree %s is not a directory (%v)", tree, err)
 	}
-	tmp, err := os.MkdirTemp(l.Base, linkName+".*.tmp")
+	f, err := os.CreateTemp(l.Base, linkName+".*.tmp")
 	if err != nil {
 		return err
 	}
-	staged := filepath.Join(tmp, "link")
+	staged := f.Name()
+	f.Close()
+	if err := os.Remove(staged); err != nil { // the name is what was wanted, not the file
+		return err
+	}
 	if err := os.Symlink(filepath.Base(tree), staged); err != nil {
-		os.RemoveAll(tmp)
 		return err
 	}
-	if err := os.Rename(staged, link); err != nil { // replaces an existing link atomically
-		os.RemoveAll(tmp)
+	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+		os.Remove(staged)
 		return err
 	}
-	return os.Remove(tmp)
+	if err := os.Rename(staged, link); err != nil {
+		os.Remove(staged)
+		return err
+	}
+	return nil
 }
 
 // The guest bundle's tree and links: the same shape as qemu's, swapped the same way.
@@ -445,6 +446,10 @@ func (l Layout) Interrupted() bool { return present(l.PrevPath()) }
 // entries it restored. The agent goes back LAST, after a flush, so a revert cut short still
 // reads as Interrupted and is simply repeated. A candidate entry with nothing displaced behind it
 // (a name the committed release did not have) stays, inert.
+//
+// A candidate LINK is removed before its .prev goes back: Windows cannot rename a directory link
+// over another. Nothing reads the link while the agent is stopped, and a revert cut between the
+// two finds the name empty and the .prev still there, which it simply puts back.
 func (l Layout) Revert() ([]string, error) {
 	var back []string
 	for i := len(entries) - 1; i >= 0; i-- {
@@ -454,6 +459,11 @@ func (l Layout) Revert() ([]string, error) {
 		}
 		if entries[i] == agentName {
 			if err := atomicfile.SyncDir(l.Base); err != nil {
+				return back, err
+			}
+		}
+		if fi, err := os.Lstat(cur); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(cur); err != nil {
 				return back, err
 			}
 		}
@@ -469,15 +479,25 @@ func (l Layout) Revert() ([]string, error) {
 // commit cut short is never read as Interrupted: a .prev left without the agent's is the tail of
 // a commit, and Commit finishes it. A displaced tree link goes; its tree stays until a guest
 // launch prunes it.
+//
+// THE AGENT'S .prev IS RENAMED ASIDE, THEN DELETED. Windows refuses to delete a program that is
+// still running -- a `briard` command started before the swap runs the displaced binary -- but
+// renames one, and the trial marker must go either way: left in place, the next run would read
+// a committed update as an interrupted one and revert it. What cannot be deleted yet waits as
+// <agent>.old for the next commit.
 func (l Layout) Commit() error {
-	for i, e := range entries {
+	old := filepath.Join(l.Base, agentName+oldSuffix)
+	os.Remove(old) // a leftover from an earlier commit; still running, it stays
+	if err := os.Rename(l.PrevPath(), old); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := atomicfile.SyncDir(l.Base); err != nil {
+		return err
+	}
+	os.Remove(old)
+	for _, e := range entries[1:] {
 		if err := os.Remove(filepath.Join(l.Base, e+prevSuffix)); err != nil && !os.IsNotExist(err) {
 			return err
-		}
-		if i == 0 {
-			if err := atomicfile.SyncDir(l.Base); err != nil {
-				return err
-			}
 		}
 	}
 	return atomicfile.SyncDir(l.Base)
@@ -545,15 +565,18 @@ func (l Layout) ReadResult() (Result, bool) {
 		return Result{}, false
 	}
 	word, line, _ := strings.Cut(strings.TrimSpace(string(b)), " ")
+	if word != "ok" && word != "failed" {
+		return Result{}, false // a verdict still being written, or not one at all
+	}
 	return Result{OK: word == "ok", Line: line, At: fi.ModTime()}, true
 }
 
 // Trigger starts one update run against target: it writes the target message and starts the
-// frozen unit. With wait, it BLOCKS on the run (`systemctl start` waits for a oneshot) and
-// returns the line that run ended on, a failed run surfacing as an error carrying that same
-// line, so a bad pin looks like one. Without wait it returns once the run is queued: the
-// agent's own trigger must not wait, because the run it starts stops that agent, and the stop
-// waits for the act that is waiting on the run.
+// frozen unit. With wait, it BLOCKS on the run and returns the line that run ended on, a failed
+// run surfacing as an error carrying that same line, so a bad pin looks like one. Without wait it
+// returns once the run is queued: the agent's own trigger must not wait, because the run it starts
+// stops that agent, and the stop waits for the act that is waiting on the run. How a run is
+// started and waited on is the OS's (startRun).
 //
 // It is deliberately NOT an injector over the admin socket: the case the timer and the CLI
 // exist for is the agent being down, and the cloud's handler uses this same path so there is
@@ -565,16 +588,16 @@ func (l Layout) Trigger(ctx context.Context, unit, target string, wait bool) (st
 	if err := l.WriteTarget(target); err != nil {
 		return "", err
 	}
-	if !wait {
-		if out, err := exec.CommandContext(ctx, "systemctl", "start", "--no-block", unit).CombinedOutput(); err != nil {
-			return "", fmt.Errorf("start %s: %w (%s)", unit, err, strings.TrimSpace(string(out)))
-		}
-		return "update run started (journalctl -u " + unit + ")", nil
-	}
 	// A result older than this start is an earlier run's, never this one's. A second of slack
 	// for a coarse clock: a run takes far longer than that to reach its verdict.
 	started := time.Now().Add(-time.Second)
-	out, runErr := exec.CommandContext(ctx, "systemctl", "start", unit).CombinedOutput()
+	out, runErr := l.startRun(ctx, unit, wait, started)
+	if !wait {
+		if runErr != nil {
+			return "", fmt.Errorf("start %s: %w (%s)", unit, runErr, strings.TrimSpace(string(out)))
+		}
+		return "update run started (" + runLog(unit) + ")", nil
+	}
 	result := ""
 	if r, ok := l.ReadResult(); ok && r.At.After(started) {
 		result = r.Line
@@ -589,7 +612,7 @@ func (l Layout) Trigger(ctx context.Context, unit, target string, wait bool) (st
 		return result, errors.New(result)
 	}
 	if result == "" {
-		result = "update run finished without a result line (see journalctl -u " + unit + ")"
+		result = "update run finished without a result line (see " + runLog(unit) + ")"
 	}
 	return result, nil
 }

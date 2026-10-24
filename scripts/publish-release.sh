@@ -15,10 +15,10 @@
 #   briard/
 #     <version>/linux-amd64/            manifest.json(+.sig), briard-agent, briard-net-wrap,
 #                                       install.sh,
-#                                       briard-{exec,commit,update},
+#                                       briard-update,
 #                                       qemu-bundle.tar.zst, guest-bundle.tar.zst,
 #                                       briard-{agent,update}.service, briard-update.timer
-#     <version>/windows-amd64/          manifest.json(+.sig), briard-agent.exe, install.ps1,
+#     <version>/windows-amd64/          manifest.json(+.sig), briard-agent.exe, install.ps1, briard-update.ps1,
 #                                       qemu-bundle-windows.tar.zst, guest-bundle.tar.zst, tap-windows.exe
 #     latest/{linux,windows}-amd64/     manifest.json(+.sig), briard-agent / briard-agent.exe
 #     stable/{linux,windows}-amd64/     likewise
@@ -522,6 +522,8 @@ stage)
 	# arm and checks the same hash, so a Windows install touches one origin.
 	install -m0644 "$(out_of .#artifacts.tap-windows)" "$W/tap-windows.exe"
 	embed_keyring scripts/install.ps1 "$W/install.ps1"
+	# The update launcher, the windows arm's twin of briard-update: frozen, laid down by the install.
+	install -m0644 scripts/agent/briard-update.ps1 "$W/briard-update.ps1"
 	"$H/briard-agent" --stage-manifest "$W" --chain briard --platform "$WINDOWS_ARM" --release "$V" --vm "$GV" || die "writing the windows manifest failed"
 
 	# THE VM CHAIN: the OS image, its own series, per CPU, and staged ONLY when its

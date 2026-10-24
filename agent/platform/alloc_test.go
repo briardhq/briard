@@ -3,6 +3,7 @@ package platform
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -26,7 +27,7 @@ func TestAllocateThickReservesTheSpace(t *testing.T) {
 	if fi.Size() != size {
 		t.Errorf("size = %d, want %d", fi.Size(), size)
 	}
-	if perm := fi.Mode().Perm(); perm != 0o600 {
+	if perm := fi.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 { // no Unix modes on Windows
 		t.Errorf("mode = %04o, want 0600 -- the household's service data is root's business", perm)
 	}
 	if blocks := allocatedBytes(t, path); blocks < size {

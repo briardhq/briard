@@ -126,12 +126,12 @@ func goodChannel(t *testing.T) *channel {
 	guest := bytes.Repeat([]byte("guest-image-chunk;"), 4096) // ~72 KiB, streams through LimitReader/hash
 	qemu := []byte("qemu-bundle.tar contents")
 	bytesByName := map[string][]byte{
-		"briard-agent":    agent,
+		artifactAgent:     agent,
 		"nixos.qcow2":     guest,
 		"qemu-bundle.tar": qemu,
 	}
 	arts := []Entry{
-		{Name: "briard-agent", SHA256: sha(agent), Size: int64(len(agent)), Mode: 0o755},
+		{Name: artifactAgent, SHA256: sha(agent), Size: int64(len(agent)), Mode: 0o755},
 		{Name: "nixos.qcow2", SHA256: sha(guest), Size: int64(len(guest))},
 		{Name: "qemu-bundle.tar", SHA256: sha(qemu), Size: int64(len(qemu))},
 	}
@@ -171,7 +171,7 @@ func TestFetchVerifiedStagesTheSignedSet(t *testing.T) {
 	}
 	// Every artifact landed with the exact bytes and the declared mode.
 	for name, want := range map[string]string{
-		"briard-agent":    "the briard-agent static binary",
+		artifactAgent:     "the briard-agent static binary",
 		"qemu-bundle.tar": "qemu-bundle.tar contents",
 	} {
 		got, err := os.ReadFile(filepath.Join(dest, name))
@@ -182,7 +182,7 @@ func TestFetchVerifiedStagesTheSignedSet(t *testing.T) {
 			t.Errorf("staged %s = %q, want %q", name, got, want)
 		}
 	}
-	fi, err := os.Stat(filepath.Join(dest, "briard-agent"))
+	fi, err := os.Stat(filepath.Join(dest, artifactAgent))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +601,7 @@ func TestFetchVerifiedAcceptsAnExactVersionTarget(t *testing.T) {
 	if err := c.fetcher().FetchVerified(context.Background(), testVersion, dest); err != nil {
 		t.Fatalf("exact version target: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dest, "briard-agent")); err != nil {
+	if _, err := os.Stat(filepath.Join(dest, artifactAgent)); err != nil {
 		t.Errorf("agent not staged from the exact-version target: %v", err)
 	}
 }

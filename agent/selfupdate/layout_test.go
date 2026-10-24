@@ -3,6 +3,7 @@ package selfupdate
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -29,7 +30,7 @@ func TestStageNextWritesExecutableCandidateAtomically(t *testing.T) {
 		t.Errorf("agent.next = %q, want NEWBINARY", b)
 	}
 	fi, _ := os.Stat(l.NextPath())
-	if fi.Mode().Perm()&0o111 == 0 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0 { // Windows has no exec bit
 		t.Errorf("agent.next not executable: %v", fi.Mode())
 	}
 	if _, err := os.Stat(l.NextPath() + ".tmp"); !os.IsNotExist(err) {
@@ -88,7 +89,7 @@ func seed(t *testing.T, l Layout) {
 			t.Fatal(err)
 		}
 	}
-	for name, body := range map[string]string{"briard-agent": "agent v1", "manifest.json": "m v1", "briard-net-wrap": "wrap v1"} {
+	for name, body := range map[string]string{agentName: "agent v1", "manifest.json": "m v1", "briard-net-wrap": "wrap v1"} {
 		if err := os.WriteFile(filepath.Join(l.Base, name), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -132,7 +133,7 @@ func TestSwapThenCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Swap: %v", err)
 	}
-	if strings.Join(moved, " ") != "briard-agent manifest.json briard-net-wrap qemu" {
+	if strings.Join(moved, " ") != agentName+" manifest.json briard-net-wrap qemu" {
 		t.Errorf("moved %v", moved)
 	}
 	if read(t, l.AgentPath()) != "agent v2" || read(t, l.QEMUPath()) != "qemu-v2" || read(t, l.NetWrapPath()) != "wrap v2" {
@@ -173,7 +174,7 @@ func TestSwapThenRevert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Revert: %v", err)
 	}
-	if back[len(back)-1] != "briard-agent" {
+	if back[len(back)-1] != agentName {
 		t.Errorf("the agent was not put back last: %v", back)
 	}
 	if read(t, l.AgentPath()) != "agent v1" || read(t, l.ManifestPath()) != "m v1" ||
@@ -253,7 +254,7 @@ func TestBundleStagesNetWrapAndAQEMULink(t *testing.T) {
 	if err := l.StageNextNetWrap(strings.NewReader("#!/bin/sh\nexec qemu")); err != nil {
 		t.Fatalf("StageNextNetWrap: %v", err)
 	}
-	if fi, err := os.Stat(l.NextNetWrapPath()); err != nil || fi.Mode().Perm()&0o111 == 0 {
+	if fi, err := os.Stat(l.NextNetWrapPath()); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0) {
 		t.Fatalf("net-wrap.next = %v, %v (want an executable)", fi, err)
 	}
 	if _, staged := l.NextQEMUTree(); staged {
@@ -361,10 +362,19 @@ func TestTheGoodGuestIsAnIdThePrunerKeeps(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The link an older agent left, made the way it made it (a file link on Windows).
-	if err := l.stageTreeLink(l.GuestTree("old"), guestTree, l.GoodGuestPath(), goodGuest); err != nil {
+	// The link an older agent left, made the way it made it: in a temp subdirectory, then renamed
+	// into place -- a file link on Windows, where the relative target did not resolve.
+	sub := filepath.Join(l.Base, "old.tmp")
+	if err := os.Mkdir(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink("guest-old", filepath.Join(sub, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(sub, "link"), l.GoodGuestPath()); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(sub)
 	if err := os.Symlink("guest-cur", l.GuestPath()); err != nil {
 		t.Fatal(err)
 	}

@@ -36,12 +36,11 @@ import (
 // by THIS binary -- the release's own agent -- before anything is stopped, so a release that does
 // not run on this host is refused at no cost, and the node never lands on agent N with qemu N-1.
 
-// The three artifacts of the briard bundle, by the names the manifest (and install.sh) use.
-// Anything else a briard manifest may one day carry is left to the release that knows it.
+// The artifacts of the briard bundle, by the names the manifest uses; the agent's and the qemu
+// bundle's are per OS (update_other.go, update_windows.go). Anything else a briard manifest
+// carries -- an installer, a driver -- is left to whoever installs it.
 const (
-	artifactAgent   = "briard-agent"
-	artifactNetWrap = "briard-net-wrap"
-	artifactQEMU    = "qemu-bundle.tar.zst"
+	artifactNetWrap = "briard-net-wrap"      // Linux only: the Windows arm ships none
 	artifactGuest   = "guest-bundle.tar.zst" // the binaries the host dresses its guest with
 )
 
@@ -224,9 +223,9 @@ func dateOf(id string) (int64, error) {
 // TimeoutStartSec.
 const StopPatience = 30 * time.Minute
 
-// Update is one run of the verb. The three service verbs are the OS's (platform.StopService,
-// StartService, SmokeTest on Linux), handed in so the procedure reads and tests the same on
-// every system.
+// Update is one run of the verb. The three service verbs are the OS's (the agent's main wires
+// them: systemd's on Linux, the service manager's and the warden's on Windows), handed in so the
+// procedure reads and tests the same on every system.
 type Update struct {
 	Fetcher *Fetcher
 	Layout  selfupdate.Layout
@@ -518,9 +517,9 @@ func stageFile(src string, stage func(io.Reader) error) error {
 }
 
 // extractTree unpacks a verified qemu tarball into dest, which appears whole or not at all
-// (unpacked into a sibling temp dir, renamed into place). tar(1) rather than archive/tar:
-// install.sh unpacks this same tarball with it, and the update unit's PATH reaches it on
-// every host we install on -- one way to open the bundle, not two.
+// (unpacked into a sibling temp dir, renamed into place). tar(1) rather than archive/tar: the
+// install unpacks this same tarball with it, and every host we install on has one (Windows
+// ships tar.exe) -- one way to open the bundle, not two.
 func extractTree(ctx context.Context, tarball, dest string) error {
 	tmp, err := os.MkdirTemp(filepath.Dir(dest), ".update-tree-")
 	if err != nil {

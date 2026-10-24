@@ -7,6 +7,8 @@ import (
 	"briard.io/shared/api"
 	"context"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -244,5 +246,27 @@ func TestMissesCountsTicksNotTime(t *testing.T) {
 	// A tick a little late (scheduling jitter) is an ordinary tick, not a pause.
 	if n := step(every+every/2, false); n != 2 {
 		t.Fatalf("a slightly late tick reset the run (got %d, want 2)", n)
+	}
+}
+
+// The warden stands in for two of the agent unit's directives on Windows, and its numbers are
+// theirs: read from the shipped unit, so a change to either side alone is a red test.
+func TestTheWardenKeepsTheAgentUnitsNumbers(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "units", "briard-agent.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		key  string
+		want time.Duration
+	}{{"WatchdogSec", staleAfter}, {"TimeoutStartSec", startLimit}} {
+		m := regexp.MustCompile(`(?m)^` + c.key + `=(\d+)$`).FindSubmatch(b)
+		if m == nil {
+			t.Errorf("briard-agent.service sets no %s", c.key)
+			continue
+		}
+		if n, _ := strconv.Atoi(string(m[1])); time.Duration(n)*time.Second != c.want {
+			t.Errorf("briard-agent.service has %s=%s; the warden counts %s", c.key, m[1], c.want)
+		}
 	}
 }

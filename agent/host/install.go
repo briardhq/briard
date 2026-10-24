@@ -332,6 +332,11 @@ func installFile(src, dst string, mode os.FileMode) error {
 		os.Remove(tmp)
 		return fmt.Errorf("copy %s: %w", src, err)
 	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
 	if err := out.Close(); err != nil {
 		os.Remove(tmp)
 		return err

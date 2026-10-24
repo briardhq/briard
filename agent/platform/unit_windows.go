@@ -8,6 +8,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
 // The Windows side of the service-manager seam: a transient unit is a NAMED JOB OBJECT holding the
@@ -252,10 +254,136 @@ func unitTransient(string) bool { return true }
 
 func unitStamp(string) string { return "" }
 
-// StopService and StartService are the self-update's stop and start. The Windows arm (SCM STOP
-// polled to STOPPED with the same patience, then the job kill; StartService polled to RUNNING) is
-// not built yet, so an update there is refused before anything is touched.
-func StopService(context.Context, string, time.Duration, func(string, ...any)) error {
-	return errors.ErrUnsupported
+// serviceStopBound bounds a stop asked without patience: the candidate a revert stops, whose own
+// stop is seconds. serviceStartBound is the Linux agent unit's TimeoutStartSec, so a start that
+// fails there fails here too.
+const (
+	serviceStopBound  = 2 * time.Minute
+	serviceStartBound = 60 * time.Second
+)
+
+// StopService stops a service through its ORDINARY stop path and waits, with patience, for it to
+// finish what it is doing: the service manager's STOP, then a poll until the service reports
+// STOPPED. Past the patience -- or at once, for a service still starting, which takes no stop --
+// its process is ended. patience 0 is a plain stop, bounded by serviceStopBound. The
+// self-update's stop: the agent drains its act lane on STOP, so "stopped" means "stopped between
+// acts".
+//
+// ⚠️ AN ENDED PROCESS IS A FAILURE to the service manager, whose recovery starts the service
+// again 5 s later. Every caller swaps and starts within that, and a recovery start that finds the
+// service running is a no-op.
+func StopService(ctx context.Context, name string, patience time.Duration, logf func(string, ...any)) error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("the service manager: %w", err)
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(name)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", name, err)
+	}
+	defer s.Close()
+	bound := patience
+	if bound == 0 {
+		bound = serviceStopBound
+	}
+	if st, err := s.Query(); err == nil && st.State == svc.Stopped {
+		return nil
+	}
+	if _, err := s.Control(svc.Stop); err != nil {
+		logf("%s took no stop (%v); ending its process", name, err)
+		bound = 0
+	}
+	if stopped, err := waitStopped(ctx, s, bound); stopped || err != nil {
+		return err
+	}
+	st, err := s.Query()
+	if err != nil {
+		return fmt.Errorf("ask %s its state: %w", name, err)
+	}
+	if bound > 0 {
+		logf("%s did not stop within %s; ending its process", name, bound)
+	}
+	if st.ProcessId != 0 {
+		if err := EndProcess(st.ProcessId); err != nil {
+			return fmt.Errorf("end %s's process %d: %w", name, st.ProcessId, err)
+		}
+	}
+	stopped, err := waitStopped(ctx, s, unitStopGrace)
+	if err == nil && !stopped {
+		err = fmt.Errorf("%s has not stopped %s after its process was ended", name, unitStopGrace)
+	}
+	return err
 }
-func StartService(context.Context, string) error { return errors.ErrUnsupported }
+
+// waitStopped polls a service until it reports STOPPED or bound passes.
+func waitStopped(ctx context.Context, s *mgr.Service, bound time.Duration) (bool, error) {
+	deadline := time.Now().Add(bound)
+	for {
+		st, err := s.Query()
+		if err != nil {
+			return false, fmt.Errorf("ask %s its state: %w", s.Name, err)
+		}
+		if st.State == svc.Stopped {
+			return true, nil
+		}
+		if time.Now().After(deadline) {
+			return false, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// StartService starts a service and returns once it reported RUNNING -- for the agent, READY --
+// or with why it did not: it stopped again while starting, or was still starting at
+// serviceStartBound. A service already running counts as started.
+func StartService(ctx context.Context, name string) error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return fmt.Errorf("the service manager: %w", err)
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(name)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", name, err)
+	}
+	defer s.Close()
+	if err := s.Start(); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
+		return fmt.Errorf("start %s: %w", name, err)
+	}
+	deadline := time.Now().Add(serviceStartBound)
+	for {
+		st, err := s.Query()
+		if err != nil {
+			return fmt.Errorf("ask %s its state: %w", name, err)
+		}
+		switch st.State {
+		case svc.Running:
+			return nil
+		case svc.Stopped:
+			return fmt.Errorf("start %s: it stopped while starting (exit code %d)", name, st.Win32ExitCode)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("start %s: still starting after %s", name, serviceStartBound)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// EndProcess ends a process outright, as a kill does on Linux.
+func EndProcess(pid uint32) error {
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, pid)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(h)
+	return windows.TerminateProcess(h, 1)
+}

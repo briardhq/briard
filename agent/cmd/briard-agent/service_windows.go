@@ -86,8 +86,8 @@ func (wardenService) Execute(_ []string, req <-chan svc.ChangeRequest, status ch
 type agentService struct{}
 
 // Wait hints: how long the SCM is told the next status change may take. Start covers what the
-// agent does before READY (identity, a staged qemu's smoke test), and the warden ends a start
-// that outlasts it (host.startLimit); stop is re-sent on a rolling checkpoint while the stop is
+// agent does before READY (identity, its config), and the warden ends a start that outlasts it
+// (host.startLimit); stop is re-sent on a rolling checkpoint while the stop is
 // still making progress.
 const (
 	startHint = 60 * time.Second
@@ -349,4 +349,51 @@ func messageBox(text string, style uint32) int32 {
 	caption, _ := windows.UTF16PtrFromString("Briard")
 	ret, _ := windows.MessageBox(0, t, caption, style|windows.MB_SETFOREGROUND)
 	return ret
+}
+
+// updateStop and updateStart are the self-update's two service verbs (runUpdate), with the warden
+// as one more entry around the agent: stopped first, so it neither counts the agent's quiet as a
+// wedge nor runs the program about to be replaced, and brought to the agent in place last
+// (host.StartWarden). A warden that does not stop or start is logged, never the update's failure.
+func updateStop(ctx context.Context, patience time.Duration) error {
+	if err := host.StopWarden(ctx, log.Printf); err != nil {
+		log.Printf("update: stopping the warden: %v", err)
+	}
+	return platform.StopService(ctx, host.ServiceName, patience, log.Printf)
+}
+
+// updateStart starts the agent to RUNNING, then the warden. A failed start carries the agent's own
+// last lines since the start, which is what its revert reports.
+func updateStart(ctx context.Context) error {
+	mark := int64(0)
+	if fi, err := os.Stat(host.AgentLog()); err == nil {
+		mark = fi.Size()
+	}
+	err := platform.StartService(ctx, host.ServiceName)
+	if err != nil {
+		if tail := logTail(host.AgentLog(), mark, 5); tail != "" {
+			err = fmt.Errorf("%w: %s", err, tail)
+		}
+	}
+	if werr := host.StartWarden(ctx, err == nil, log.Printf); werr != nil {
+		log.Printf("update: the warden: %v", werr)
+	}
+	return err
+}
+
+// logTail is the last n lines written to path past offset (all of it, when the log rolled), on
+// one line.
+func logTail(path string, offset int64, n int) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if offset <= int64(len(b)) {
+		b = b[offset:]
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.TrimSpace(strings.Join(lines, " | "))
 }

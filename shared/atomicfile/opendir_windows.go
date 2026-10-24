@@ -22,3 +22,7 @@ func openDir(dir string) (*os.File, error) {
 	}
 	return os.NewFile(uintptr(h), dir), nil
 }
+
+// openFile opens a regular file for FlushFileBuffers, which refuses a read-only handle as it does
+// for a directory.
+func openFile(path string) (*os.File, error) { return os.OpenFile(path, os.O_WRONLY, 0) }
