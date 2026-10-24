@@ -1461,7 +1461,8 @@ pkgs.testers.runNixOSTest {
         host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
         if pointer:
             p = f"/srv/briard/{pointer}/linux-amd64"
-            host.succeed(f"mkdir -p {p} && cp {d}/manifest.json {d}/manifest.json.sig {p}/ && cp -L /srv/briard/{V}/linux-amd64/briard-agent {p}/briard-agent")
+            # The pointer's files may be links into the store (the channel set-up above): replace, never write through.
+            host.succeed(f"mkdir -p {p} && rm -f {p}/manifest.json {p}/manifest.json.sig {p}/briard-agent && cp {d}/manifest.json {d}/manifest.json.sig {p}/ && cp -L /srv/briard/{V}/linux-amd64/briard-agent {p}/briard-agent")
     def agent_invocation():
         return host.succeed("systemctl show -p InvocationID --value briard-agent.service").strip()
     V2 = "v3.20991230.b86b0000"
