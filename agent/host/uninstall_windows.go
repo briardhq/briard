@@ -52,6 +52,8 @@ const firewallRule = "Briard backup store"
 const serviceStopBound = 2 * time.Minute
 
 func (cfg Config) removeServices(ctx context.Context, logf func(string, ...any)) error {
+	// The node is down by now (Stop); what stopNode adds is the warden, which the agent's exit
+	// leaves running, and a re-check of the rest.
 	if err := stopNode(ctx, cfg.QMPSock, logf); err != nil {
 		return err
 	}

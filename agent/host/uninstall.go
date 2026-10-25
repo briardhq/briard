@@ -12,9 +12,12 @@
 // cattle/pet reinstall does (install-macvtap). Deleting it is the one destructive act here, and it
 // is gated on the explicit flag the CLI asks for, never implied.
 //
-// ORDER IS THE SAFETY. Services first, and a service that will not stop ends the uninstall there:
-// nothing is deleted from under a guest that is still running. The install tree goes last, because
-// it holds this very binary -- an uninstall that stopped half way can be run again.
+// ORDER IS THE SAFETY. The node down first, exactly as `briard stop` brings it down (Stop): the
+// act in flight aborted and named, the guest powered off cleanly -- or, with no agent answering,
+// the service and the guest stopped from here. Then the services, and a service that will not stop
+// ends the uninstall there: nothing is deleted from under a guest that is still running. The
+// install tree goes last, because it holds this very binary -- an uninstall that stopped half way
+// can be run again.
 package host
 
 import (
@@ -27,6 +30,9 @@ import (
 // Uninstall removes briard from this machine; deleteData also removes its pet state, the data
 // volume included. It returns the first thing it could not do, having said what it did.
 func (cfg Config) Uninstall(ctx context.Context, deleteData bool, logf func(string, ...any)) error {
+	if err := cfg.Stop(ctx, logf); err != nil {
+		return fmt.Errorf("stopping briard: %w -- nothing was removed; fix that and run this again", err)
+	}
 	if err := cfg.removeServices(ctx, logf); err != nil {
 		return fmt.Errorf("%w -- nothing else was removed; fix that and run this again", err)
 	}

@@ -191,7 +191,8 @@ var commands = []command{
 	{
 		name: "uninstall", args: "-yes [-delete-data]", group: groupRepair,
 		synopsis: "remove briard from this machine, keeping your data unless told otherwise",
-		detail: "Stops briard and the VM it runs your apps in (cleanly), and removes its services, network\n" +
+		detail: "Stops briard as `briard stop` does -- what it is doing aborted, the VM your apps run in\n" +
+			"powered off cleanly -- and removes its services, network\n" +
 			"devices, /opt/briard (C:\\ProgramData\\briard on Windows) and this command. /var/lib/briard\n" +
 			"(state under that folder on Windows) -- the data volume and this machine's identity -- is\n" +
 			"KEPT, so installing again picks up where it left off.\n\n" +
