@@ -62,7 +62,7 @@ func runFetchInstall(ctx context.Context, dest string) error {
 	if err != nil {
 		return err
 	}
-	return install.FetchRelease(ctx, base, release, kr, dest, log.Printf)
+	return install.FetchRelease(ctx, base, release, kr, dest, "", log.Printf)
 }
 
 // runUpdate is the update unit's verb: the whole self-update (install.Update), run on the fresh

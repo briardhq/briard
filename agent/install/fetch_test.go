@@ -651,3 +651,44 @@ func TestFetchVerifiedHandlesTheVMChain(t *testing.T) {
 		t.Fatalf("VM image not staged from vm/%s/%s/: %v", gv, PlatformVM, err)
 	}
 }
+
+// THE SKIP-WHAT-IS-VERIFIED RULE: a release whose vm pair is the image already installed fetches
+// the briard chain alone, and dest carries no vm set -- the install keeps the image it has. Any
+// other installed image, or none, fetches the pair as before.
+func TestFetchReleaseSkipsTheInstalledImage(t *testing.T) {
+	gv := "vm.20260905.abc1234"
+	img := []byte("guest image bytes")
+	agent := []byte("the briard-agent static binary")
+	c := newChannel(t, nil, nil)
+	sign := func(at string, m Manifest) {
+		mb, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.bodies[at+"/"+ManifestName] = mb
+		c.bodies[at+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
+	}
+	sign(ChainBriard+"/"+TargetStable+"/"+PlatformHost, Manifest{Chain: ChainBriard, Platform: PlatformHost, Version: testVersion, VM: gv,
+		Artifacts: []Entry{{Name: artifactAgent, SHA256: sha(agent), Size: int64(len(agent)), Mode: 0o755}}})
+	c.bodies[releasePath(artifactAgent)] = agent
+	sign(ChainVM+"/"+gv+"/"+PlatformVM, Manifest{Chain: ChainVM, Platform: PlatformVM, Version: gv,
+		Artifacts: []Entry{{Name: "nixos.qcow2", SHA256: sha(img), Size: int64(len(img))}}})
+	c.bodies[ChainVM+"/"+gv+"/"+PlatformVM+"/nixos.qcow2"] = img
+	base := c.serve()
+	for _, tc := range []struct {
+		have      string
+		wantImage bool
+	}{{"", true}, {"vm.20260801.0000000", true}, {gv, false}} {
+		dest := stagedFresh(t)
+		if err := FetchRelease(context.Background(), base, TargetStable, c.kr, dest, tc.have, t.Logf); err != nil {
+			t.Fatalf("installed %q: %v", tc.have, err)
+		}
+		if _, err := os.Stat(filepath.Join(dest, ChainBriard, artifactAgent)); err != nil {
+			t.Errorf("installed %q: the briard chain was not staged: %v", tc.have, err)
+		}
+		_, err := os.Stat(filepath.Join(dest, ChainVM, "nixos.qcow2"))
+		if got := err == nil; got != tc.wantImage {
+			t.Errorf("installed %q: image staged=%v, want %v", tc.have, got, tc.wantImage)
+		}
+	}
+}

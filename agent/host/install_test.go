@@ -187,3 +187,56 @@ func TestInstallWaitReadsTheRefusal(t *testing.T) {
 		t.Errorf("refusedLine on a healthy journal = %q", got)
 	}
 }
+
+// THE IMAGE IS THE ONE THING AN INSTALL MAY LEAVE OUT: a staging dir without it -- the Store's exe
+// -- installs everything else and leaves the image to the first start, and one over a node that
+// has an image keeps it. installedImage is the skip rule's input: the release of the image here,
+// by its manifest, and "" with no image or no manifest to say which.
+func TestInstallLeavesTheImageToTheFirstStart(t *testing.T) {
+	t.Setenv("SUDO_USER", "")
+	r := testRoots(t)
+	for _, d := range []string{filepath.Join(r.prefix, "agent"), r.state} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.layDown(context.Background(), stagingDir(t, "nixos.qcow2"), t.TempDir(), quiet); err != nil {
+		t.Fatalf("layDown without an image: %v", err)
+	}
+	if exists(r.imagePath()) || r.installedImage() != "" {
+		t.Fatalf("an image appeared from a staging dir that had none")
+	}
+	if !exists(filepath.Join(r.prefix, "agent", "briard-agent")) {
+		t.Fatal("the rest of the set was not laid down")
+	}
+
+	// An image with its manifest, as the first start lays it down; then a reinstall without one.
+	vm := t.TempDir()
+	if err := os.WriteFile(filepath.Join(vm, "nixos.qcow2"), []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vm, "manifest.json"), []byte(`{"chain":"vm","version":"vm.20261025.abc1234"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.layDownImage(vm, quiet); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.installedImage(); got != "vm.20261025.abc1234" {
+		t.Fatalf("installedImage = %q, want the laid-down release", got)
+	}
+	if !exists(filepath.Join(r.state, "guest-release.json")) {
+		t.Fatal("no node-local record of the guest release")
+	}
+	if err := r.layDown(context.Background(), stagingDir(t, "nixos.qcow2"), t.TempDir(), quiet); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.installedImage(); got != "vm.20261025.abc1234" {
+		t.Fatalf("after a reinstall without an image: installedImage = %q, want the image kept", got)
+	}
+	if err := os.Remove(filepath.Join(filepath.Dir(r.imagePath()), "manifest.json")); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.installedImage(); got != "" {
+		t.Fatalf("an image with no manifest: installedImage = %q, want \"\" (fetched again)", got)
+	}
+}

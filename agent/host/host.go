@@ -705,6 +705,12 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// cannot schedule this home and treats that as a fault, which is the honest outcome.
 	assignment := cloud.Resolve(ctx, rep, cfg.AssignmentCache,
 		api.NodeInfo{NodeName: cfg.Node, Role: cfg.Role, Timezone: localTimezone("/")}, logf)
+	// THE INSTALL'S UNFINISHED HALF (finish.go): an install that laid no guest image leaves the
+	// self-update and the image to this start, before anything needs the guest. One stat when the
+	// image is there. A stop while it waits -- the update it started, among others -- is clean.
+	if err := cfg.finishInstall(ctx, local, n, logf); err != nil {
+		return nil
+	}
 	// The host's side of the guest's L2 -- and the substrate fork, derived here from what the
 	// selected device turns out to be. AFTER READY on purpose (awaitNetwork says why), and it can
 	// block indefinitely on a node with no usable device, which is the point: waiting degraded and

@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -107,8 +108,9 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 		}
 		say("fetching + verifying the signed artifact set (briard/%s + vm) ...", release)
 		// Both chains, all-or-nothing: staging appears only once both have verified, so a
-		// briard bundle never lands without the VM image it was published beside.
-		if err := install.FetchRelease(ctx, channel, release, kr, staging, logf); err != nil {
+		// briard bundle never lands without the VM image it was published beside -- unless that
+		// image is the one installed here already, which is kept rather than fetched again.
+		if err := install.FetchRelease(ctx, channel, release, kr, staging, r.installedImage(), logf); err != nil {
 			return fmt.Errorf("artifact verification failed (%w); nothing installed", err)
 		}
 		hostSrc, guestSrc = filepath.Join(staging, install.ChainBriard), filepath.Join(staging, install.ChainVM)
@@ -209,35 +211,80 @@ func (r installRoots) layDown(ctx context.Context, hostSrc, guestSrc string, say
 			return err
 		}
 	}
-	image := filepath.Join(r.prefix, "guest-image", "nixos.qcow2")
-	if err := os.MkdirAll(filepath.Dir(image), 0o755); err != nil {
-		return err
-	}
-	if err := installFile(filepath.Join(guestSrc, "nixos.qcow2"), image, 0); err != nil {
-		return err
-	}
-	// THE INSTALLED MANIFESTS, one per chain, each beside what it describes: the exact signed bytes
-	// that verified, so the node can say which release it is on -- and so the update path can diff
-	// the target's manifest against it and fetch only what changed. Absent on the local staging
-	// path, which has no manifest to keep.
-	//
-	// The guest chain's third copy is the node-local RECORD of the release this node runs: pet
-	// state, beside the identity, because the guest itself knows only a closure path and the stable
-	// path orders on a release id. The copy under guest-image/ describes the IMAGE on disk; this one
-	// follows the running OS as updates land.
-	for _, m := range []struct{ src, dst string }{
-		{filepath.Join(hostSrc, install.ManifestName), filepath.Join(agentDir, install.ManifestName)},
-		{filepath.Join(guestSrc, install.ManifestName), filepath.Join(r.prefix, "guest-image", install.ManifestName)},
-		{filepath.Join(guestSrc, install.ManifestName), filepath.Join(r.state, "guest-release.json")},
-	} {
-		if !exists(m.src) {
-			continue
-		}
-		if err := installFile(m.src, m.dst, 0o644); err != nil {
+	// THE INSTALLED MANIFEST, beside what it describes: the exact signed bytes that verified, so
+	// the node can say which release it is on -- and so the update path can diff the target's
+	// manifest against it and fetch only what changed. Absent on a local staging path that carries
+	// none.
+	if m := filepath.Join(hostSrc, install.ManifestName); exists(m) {
+		if err := installFile(m, filepath.Join(agentDir, install.ManifestName), 0o644); err != nil {
 			return err
 		}
 	}
+	if err := r.layDownImage(guestSrc, say); err != nil {
+		return err
+	}
 	return r.layDownOS(ctx, hostSrc, say)
+}
+
+// imagePath is where the guest image lives (config.env's GUEST_IMAGE).
+func (r installRoots) imagePath() string {
+	return filepath.Join(r.prefix, "guest-image", "nixos.qcow2")
+}
+
+// installedImage is the vm release of the image installed here, by the manifest kept beside it;
+// "" when there is no image, or no manifest to say which it is -- either way it is fetched.
+func (r installRoots) installedImage() string {
+	if !exists(r.imagePath()) {
+		return ""
+	}
+	m, err := install.ReadManifest(filepath.Join(filepath.Dir(r.imagePath()), install.ManifestName))
+	if err != nil {
+		return ""
+	}
+	return m.Version
+}
+
+// layDownImage places the guest image from src -- the vm chain's verified set, or a caller's flat
+// staging dir -- with its manifest. THE ONE WAY THE IMAGE LANDS: the install calls it, and so
+// does the first start that fetches an image the install did not lay down (finish.go). A src
+// with no image is not a failure: the image installed here is kept, or, with none, the first
+// start fetches it -- the Store's exe may fetch nothing while it runs.
+//
+// The guest chain's manifest goes twice. The copy under guest-image/ describes the IMAGE on disk;
+// the one in the state dir is the node-local RECORD of the release this node runs, pet state,
+// because the guest itself knows only a closure path and the stable path orders on a release id
+// -- it follows the running OS as updates land.
+func (r installRoots) layDownImage(src string, say func(string, ...any)) error {
+	image := r.imagePath()
+	if !exists(filepath.Join(src, "nixos.qcow2")) {
+		if exists(image) {
+			say("keeping the guest image installed here")
+		} else {
+			say("no guest image in this install: briard's first start fetches it")
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(image), 0o755); err != nil {
+		return err
+	}
+	if err := installFile(filepath.Join(src, "nixos.qcow2"), image, 0); err != nil {
+		return err
+	}
+	m := filepath.Join(src, install.ManifestName)
+	if !exists(m) {
+		// A manifest left by the image this one replaced would vouch for the wrong bytes, and the
+		// skip rule (installedImage) believes it.
+		if err := os.Remove(filepath.Join(filepath.Dir(image), install.ManifestName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	for _, dst := range []string{filepath.Join(filepath.Dir(image), install.ManifestName), filepath.Join(r.state, "guest-release.json")} {
+		if err := installFile(m, dst, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // installEnvKey is an operator setting in the installer's environment: BRIARD_ + a config.env key.
@@ -278,7 +325,7 @@ func (r installRoots) writeConfig(ctx context.Context, bundle string, say func(s
 %sGUEST_IMAGE=%s
 DATA_DISK=%s
 STATE_DISK=%s
-`, bundle, filepath.Join(r.prefix, "guest-image", "nixos.qcow2"),
+`, bundle, r.imagePath(),
 		filepath.Join(r.state, "data.img"), filepath.Join(r.state, "state.img"))
 	if dir := backupFolder(ctx); dir != "" {
 		fmt.Fprintf(&b, "BACKUP_DIR=%s\n", dir)

@@ -523,16 +523,21 @@ func IsPointer(target string) bool {
 }
 
 // FetchRelease downloads + verifies the signed artifact sets of BOTH chains into dest: the
-// briard bundle (this binary's Linux arm) under dest/briard and the VM image under dest/vm, each
+// briard bundle (this binary's arm) under dest/briard and the VM image under dest/vm, each
 // beside the manifest that verified it. The vm release is the one the briard manifest NAMES: the
 // VM image is a function of its inputs and is re-published only when they change, so its id is
 // not derivable from the briard id, and the briard manifest is where the pairing lives. One
 // selector still installs one tested pair; it is just the briard side that resolves it.
 //
+// haveVM is the vm release whose image is already installed here ("" for none): when the briard
+// release names that one, the image is not fetched again and dest/vm is absent -- 400 MB a
+// reinstall would only copy over itself.
+//
 // All-or-nothing across the two chains as well as within each: dest appears only once both
 // have verified, so an install never sees a briard bundle without the VM image it was
-// published beside (briard/stable + vm/stable IS the tested pair, by construction).
-func FetchRelease(ctx context.Context, base, release string, kr *selfupdate.Keyring, dest string, logf func(string, ...any)) error {
+// published beside -- fetched, or already installed (briard/stable + vm/stable IS the tested
+// pair, by construction).
+func FetchRelease(ctx context.Context, base, release string, kr *selfupdate.Keyring, dest, haveVM string, logf func(string, ...any)) error {
 	if _, err := os.Stat(dest); err == nil {
 		return fmt.Errorf("staging dest %s already exists", dest)
 	}
@@ -557,9 +562,13 @@ func FetchRelease(ctx context.Context, base, release string, kr *selfupdate.Keyr
 	if bm.VM == "" {
 		return fmt.Errorf("briard release %s names no vm release -- published before releases carried one; the alpha reinstalls from a current channel", bm.Version)
 	}
-	vf := &Fetcher{BaseURL: base, Chain: ChainVM, Platform: PlatformVM, Keyring: kr, Logf: logf}
-	if err := vf.FetchVerified(ctx, bm.VM, filepath.Join(tmp, ChainVM)); err != nil {
-		return err
+	if bm.VM == haveVM {
+		logf("install: the guest image installed here is %s, the release's own; not fetched again", haveVM)
+	} else {
+		vf := &Fetcher{BaseURL: base, Chain: ChainVM, Platform: PlatformVM, Keyring: kr, Logf: logf}
+		if err := vf.FetchVerified(ctx, bm.VM, filepath.Join(tmp, ChainVM)); err != nil {
+			return err
+		}
 	}
 	if err := os.Rename(tmp, dest); err != nil {
 		return fmt.Errorf("place staging dir: %w", err)
