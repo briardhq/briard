@@ -75,11 +75,10 @@
       # gain members rather than be replaced, while `store` appears only on the private side.
       #
       # Wrapped in `run-here` at the point the merged set is formed, which matters: `allTests`,
-      # `.#tests.<name>` and `.#test-manifest`'s recorded outPaths all derive from `tags`, so
-      # marking the tests here is what keeps the paths the manifest NAMES identical to the paths a
-      # build produces. Marking a later copy would leave the manifest pointing at derivations
-      # nothing builds -- an invalidation that deletes the wrong paths, which is the exact shape
-      # of stale green the tier exists to refuse.
+      # `.#tests.<name>` and `.#test-manifest` all derive from `tags`, so marking the tests here
+      # is what makes every name for a test the derivation a build produces. Marking a later copy
+      # would leave one name pointing at derivations nothing builds -- an invalidation that
+      # deletes the wrong paths, which is the exact shape of stale green the tier exists to refuse.
       tags = import ./nixosTest/run-here.nix { inherit lib; } (tests.tags // lib.mapAttrs
         (n: g: (tests.tags.${n} or { }) // g)
         private.tags);
@@ -183,10 +182,10 @@
       # of hiding it behind an attribute that looks free.
       tests = allTests // (tags.debug or { });
 
-      # What the tier IS, as data: `tests.tsv` (name, tags, curated, nodes, memory, outPath) and
+      # What the tier IS, as data: `tests.tsv` (name, tags, curated, nodes, memory) and
       # `tags/<name>` member lists, including `tags/all` — the curated set `.#all` used to hold.
-      # Cheap to build (text files; it takes no test as an input), which is the whole point.
-      # farm's tier scheduler reads it to enumerate, cost and invalidate the suite.
+      # Cheap to build (text files; it takes no test as an input, and names no test's path),
+      # which is the whole point. farm's tier scheduler reads it to enumerate and cost the suite.
       test-manifest = import ./nixosTest/manifest.nix { pkgs = pkgsX; inherit tags; };
 
       # The cloud operator apps (`nix run .#regen-schema` / `.#backup-store` / `.#migrate-store`

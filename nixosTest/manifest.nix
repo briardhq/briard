@@ -8,11 +8,13 @@
 # guard cannot read the machine because flakes evaluate pure. So the data stays and the
 # buildability goes: `nix build .#all` is gone, and what it knew is a text file.
 #
-# ⚠️ NOTHING IN HERE MAY CARRY STRING CONTEXT. `t.outPath` is a string that REFERS to the test's
-# derivation, so a manifest built from it verbatim would take every test as a build input — the
-# exact trap this file removes, rebuilt one level down and harder to see. `discard` strips the
-# context off the assembled text, which is sound because an outPath is a pure function of the
-# derivation: this records the NAME of a path, it does not ask for the path.
+# ⚠️ NO OUTPATH, AND NOTHING IN HERE MAY CARRY STRING CONTEXT. A test's outPath is the one fact here
+# that costs a whole evaluation: naming it computes the test's entire derivation graph -- every
+# node's system, the guest image -- and for every test in one process that is ~26 GB, where the
+# rest of this file is ~4 GB. A consumer that needs the paths of the tests it RUNS evaluates those
+# one at a time. And a string that refers to a derivation would make the manifest take that
+# derivation as a build input -- the trap this file removes, rebuilt one level down -- so the
+# assembled text has its context discarded.
 #
 # WHY TSV AND NOT JSON. The only machine consumer is `lab/scripts/tier-concurrency.sh`, which is
 # awk throughout; a JSON nobody parses would be a second encoding of the same facts to keep in
@@ -41,7 +43,6 @@ let
     (if curated ? ${n} then "1" else "0")
     (toString (lib.length (nodesOf t)))
     (toString (lib.foldl' (a: c: a + c.virtualisation.memorySize) 0 (nodesOf t)))
-    t.outPath
   ];
 
   discard = builtins.unsafeDiscardStringContext;
