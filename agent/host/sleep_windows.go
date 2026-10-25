@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 	"time"
@@ -92,4 +93,20 @@ func fastStartup(since time.Time) bool {
 		since.UTC().Format("2006-01-02T15:04:05.000Z") + "']]]"
 	out, err := exec.CommandContext(ctx, "wevtutil", "qe", "System", q, "/rd:true", "/c:1", "/f:xml").Output()
 	return err == nil && strings.Contains(string(out), "<Data Name='BootType'>1</Data>")
+}
+
+// coldBootSince reports whether Windows has COLD-booted since t: a Kernel-Boot 27 of boot type 0.
+// A Fast Startup power-on (1) and a hibernate's resume (2) are not boots of the bridge
+// (restart.go), so neither counts. The inverse of fastStartup's query, every event since t rather
+// than the last, and here a failed read is an error, never a no: the gate proceeds on it.
+func coldBootSince(t time.Time) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	q := "/q:*[System[Provider[@Name='Microsoft-Windows-Kernel-Boot'] and EventID=27 and TimeCreated[@SystemTime>='" +
+		t.UTC().Format("2006-01-02T15:04:05.000Z") + "']]]"
+	out, err := exec.CommandContext(ctx, "wevtutil", "qe", "System", q, "/f:xml").Output()
+	if err != nil {
+		return false, fmt.Errorf("wevtutil: %w", err)
+	}
+	return strings.Contains(string(out), "<Data Name='BootType'>0</Data>"), nil
 }

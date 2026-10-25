@@ -550,6 +550,19 @@ type guestReader interface {
 // The guest is always stopped on return.
 func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr error) {
 	logf("%s", versionBanner(cfg.Version)) // name the running build before anything else
+	// Every alert this host raises goes through its store (alertstore.go), which records it and
+	// only then pushes it -- to ntfy if a topic URL is configured, else nowhere. A witness has
+	// no redundancy signal to report, but what it does raise is recorded like anyone else's.
+	var push notify.Notifier
+	if cfg.NotifyURL != "" {
+		push = notify.Ntfy(cfg.NotifyURL)
+	}
+	n := newAlertStore(AlertStorePath, push, logf)
+	// THE RESTART THE INSTALL OWES (restart.go), before anything: a node whose bridge has not been
+	// through a boot cannot carry the guest, and the start ends cleanly, saying so.
+	if cfg.restartGate(ctx, coldBootSince, n, logf) {
+		return nil
+	}
 	// THE WAY DOWN (stop.go). Whichever return ends Run, a context that ended as a shutdown powers
 	// the guest off on the way out, once nothing is left running to relaunch it, and returns nil:
 	// a clean exit is the one the service managers leave down.
@@ -799,14 +812,6 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// property of the NODE; what happens to run on top of it cannot decide whether the node can
 	// be updated. Service directives stay correctly refused: their own guard still reads spec.Name.
 	mgr := newOSUpgrade(cfg, g, client, guestCfg, logf)
-	// Every alert this host raises goes through its store (alertstore.go), which records it and
-	// only then pushes it -- to ntfy if a topic URL is configured, else nowhere. A witness has
-	// no redundancy signal to report, but what it does raise is recorded like anyone else's.
-	var push notify.Notifier
-	if cfg.NotifyURL != "" {
-		push = notify.Ntfy(cfg.NotifyURL)
-	}
-	n := newAlertStore(AlertStorePath, push, logf)
 	// Redundancy alerting: a data node warns when it loses a replica connection while still
 	// serving. A witness / single-node cluster has no redundancy signal.
 	var alerter *redundancyAlerter

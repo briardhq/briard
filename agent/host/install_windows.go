@@ -3,7 +3,6 @@ package host
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,7 +21,6 @@ import (
 	"briard.io/agent/nic"
 	"briard.io/agent/platform"
 	"briard.io/agent/selfupdate"
-	"briard.io/shared/atomicfile"
 )
 
 // ServiceName is the agent's name in the service manager: what the install registers and what the
@@ -35,10 +33,6 @@ const (
 	trayExe       = "briard-tray.exe"
 	qemuBundleTar = "qemu-bundle-windows.tar"
 )
-
-// bridgeRecord is where the bridge build's offload record is kept: pet state, because it is the
-// only copy of what this machine's NIC was set to before briard changed it.
-const bridgeRecord = "bridge.json"
 
 // layDownOS is the Windows tail of the layout. Everything here is something a systemd unit file or
 // the Linux installer does there, and a Windows install has no other place to do it: config.env,
@@ -316,8 +310,9 @@ func (r installRoots) onPath(exe string, say func(string, ...any)) error {
 }
 
 // buildBridge builds this machine's bridge over the household NIC -- the one holding the default
-// route, or BRIARD_NIC's -- and keeps what the build changed on it. On a reinstall the bridge is
-// already ours and the NIC is its member, and nothing changes.
+// route, or BRIARD_NIC's -- and keeps what the build changed on it, in the record that counts the
+// restart it owes (restart.go). On a reinstall the bridge is already ours and the NIC is its
+// member, and nothing changes.
 func (r installRoots) buildBridge(ctx context.Context, say func(string, ...any)) error {
 	sel := nic.Select(os.Getenv("BRIARD_NIC"), "")
 	member := sel.Dev
@@ -328,16 +323,12 @@ func (r installRoots) buildBridge(ctx context.Context, say func(string, ...any))
 		return fmt.Errorf("no network adapter to bridge: %s", sel.Fix())
 	}
 	say("building the network bridge over %s (the network drops for a moment)", member)
+	built := time.Now()
 	rec, err := nic.BuildBridge(ctx, member)
-	if rec != (nic.Offload{}) {
-		// Kept even when the build failed part-way: the offload may already have been changed.
-		b, merr := json.Marshal(rec)
-		if merr == nil {
-			merr = atomicfile.Write(filepath.Join(r.state, bridgeRecord), b, 0o600, 0o700)
-		}
-		if merr != nil {
-			say("WARNING: could not keep the record of %s's checksum offload (%v); it was %s", member, merr, rec.Value)
-		}
+	// Kept even when the build failed part-way: the offload may already have been changed, and
+	// the bridge object may already exist.
+	if merr := keepBuiltBridge(filepath.Join(r.state, bridgeRecord), rec, built); merr != nil {
+		say("WARNING: could not keep the bridge's record (%v); %s's checksum offload was %q", merr, member, rec.Value)
 	}
 	if err != nil {
 		return fmt.Errorf("building the bridge over %s: %w", member, err)
@@ -392,18 +383,13 @@ func (cfg Config) swapMember(ctx context.Context, bridge, to string, logf func(s
 
 func (cfg Config) swapMemberRecorded(ctx context.Context, bridge, to string, logf func(string, ...any)) error {
 	path := filepath.Join(filepath.Dir(cfg.AssignmentCache), bridgeRecord)
-	var prev nic.Offload
-	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, &prev)
-	}
-	rec, err := nic.SwapMember(ctx, bridge, to, prev)
+	have, _, _ := readBridgeRecord(path)
+	rec, err := nic.SwapMember(ctx, bridge, to, have.Offload)
 	if rec != (nic.Offload{}) {
-		// Kept even when the swap failed part-way: the offload may already have been changed.
-		b, merr := json.Marshal(rec)
-		if merr == nil {
-			merr = atomicfile.Write(path, b, 0o600, 0o700)
-		}
-		if merr != nil {
+		// Kept even when the swap failed part-way: the offload may already have been changed. The
+		// restart count is the bridge's, not the member's, and stays as it was.
+		have.Offload = rec
+		if merr := writeBridgeRecord(path, have); merr != nil {
 			logf("network: could not keep the record of %s's checksum offload (%v); it was %s", to, merr, rec.Value)
 		}
 	}

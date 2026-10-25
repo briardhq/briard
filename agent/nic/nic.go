@@ -358,3 +358,14 @@ func parseHostRoute(text, dev, dst string) bool {
 	}
 	return false
 }
+
+// Offload is what building the Windows bridge changed on the household's own NIC, recorded BEFORE
+// the change so that removing briard can put back what was there: keyed by the adapter's GUID (a
+// rename, ours or the user's, moves the name; the GUID stays) and stored as the registry value,
+// never the display string, which is localized. Declared for every platform so the host's record
+// of it reads and writes, and is tested, anywhere.
+type Offload struct {
+	GUID    string `json:"guid"`
+	Keyword string `json:"keyword"`
+	Value   string `json:"value"`
+}

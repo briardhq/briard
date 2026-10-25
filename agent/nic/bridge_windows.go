@@ -29,16 +29,6 @@ const (
 	TapName    = "Briard guest link"
 )
 
-// Offload is what building the bridge changed on the household's own NIC, recorded BEFORE the
-// change so that removing briard can put back what was there: keyed by the adapter's GUID (a
-// rename, ours or the user's, moves the name; the GUID stays) and stored as the registry value,
-// never the display string, which is localized.
-type Offload struct {
-	GUID    string `json:"guid"`
-	Keyword string `json:"keyword"`
-	Value   string `json:"value"`
-}
-
 // checksumOffload is the setting the bridge needs off on the member: bridge.sys emits IPv4 frames
 // with a zero header checksum when the member offloads it, and a Linux receiver drops them.
 const checksumOffload = "*IPChecksumOffloadIPv4"
