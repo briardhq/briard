@@ -88,7 +88,7 @@ func StopService(ctx context.Context, unit string, patience time.Duration, logf 
 		return fmt.Errorf("read %s's main process: %w", unit, err)
 	}
 	if pid != "" && pid != "0" && patience > 0 {
-		if out, err := exec.CommandContext(ctx, "systemctl", "kill", "--signal=SIGTERM", "--kill-whom=main", unit).CombinedOutput(); err != nil {
+		if out, err := exec.CommandContext(ctx, "systemctl", "kill", "--signal=SIGTERM", "--kill-who=main", unit).CombinedOutput(); err != nil {
 			return fmt.Errorf("ask %s to stop: %w (%s)", unit, err, strings.TrimSpace(string(out)))
 		}
 		deadline := time.Now().Add(patience)
