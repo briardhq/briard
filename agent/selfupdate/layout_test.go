@@ -417,3 +417,57 @@ func TestFailureMessageIsTakenOnce(t *testing.T) {
 		t.Error("the failure message survived being taken")
 	}
 }
+
+// A HELD .old DOES NOT TURN A COMMIT INTO A REVERT. A command still running the agent an earlier
+// commit parked aside holds that file: it can be neither deleted nor renamed over. A non-empty
+// directory under the fixed name stands in for it here, failing both the same way on every OS.
+// The commit must still take the trial marker away -- under its own name -- and leave the held
+// one for later, or the next run reads a working update as interrupted and reverts it.
+func TestACommitWithAHeldOldStillCommits(t *testing.T) {
+	l := newLayout(t)
+	seed(t, l)
+	held := filepath.Join(l.Base, agentName+oldSuffix)
+	if err := os.MkdirAll(filepath.Join(held, "in-use"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Swap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Commit(); err != nil {
+		t.Fatalf("Commit with a held .old: %v", err)
+	}
+	if l.Interrupted() {
+		t.Fatal("the agent's .prev survived the commit: the next run would revert a working update")
+	}
+	if _, err := os.Stat(held); err != nil {
+		t.Errorf("the held .old was taken from under its program: %v", err)
+	}
+}
+
+// Every commit sweeps the agents earlier commits parked aside, whatever they were named -- the
+// fixed name an older release used included -- once nothing runs them.
+func TestACommitSweepsEarlierOlds(t *testing.T) {
+	l := newLayout(t)
+	seed(t, l)
+	left := []string{agentName + oldSuffix, agentName + ".k2x9a1" + oldSuffix}
+	for _, n := range left {
+		if err := os.WriteFile(filepath.Join(l.Base, n), []byte("an agent nothing runs"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := l.Swap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	ents, _ := os.ReadDir(l.Base)
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), oldSuffix) {
+			t.Errorf("%s survived the commit", e.Name())
+		}
+	}
+	if read(t, l.AgentPath()) != "agent v2" {
+		t.Error("the sweep touched the committed agent")
+	}
+}

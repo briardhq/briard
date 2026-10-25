@@ -41,6 +41,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -484,10 +485,12 @@ func (l Layout) Revert() ([]string, error) {
 // still running -- a `briard` command started before the swap runs the displaced binary -- but
 // renames one, and the trial marker must go either way: left in place, the next run would read
 // a committed update as an interrupted one and revert it. What cannot be deleted yet waits as
-// <agent>.old for the next commit.
+// <agent>.<stamp>.old, and every commit sweeps what earlier ones left. THE NAME IS THE COMMIT'S
+// OWN: a fixed one is held by a command still running from two releases back, the rename onto it
+// fails, the .prev stays, and the next run reverts a working update.
 func (l Layout) Commit() error {
-	old := filepath.Join(l.Base, agentName+oldSuffix)
-	os.Remove(old) // a leftover from an earlier commit; still running, it stays
+	l.sweepOld() // leftovers from earlier commits; one still running stays
+	old := filepath.Join(l.Base, agentName+"."+strconv.FormatInt(time.Now().UnixNano(), 36)+oldSuffix)
 	if err := os.Rename(l.PrevPath(), old); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -501,6 +504,15 @@ func (l Layout) Commit() error {
 		}
 	}
 	return atomicfile.SyncDir(l.Base)
+}
+
+// sweepOld removes every agent a commit parked aside (Commit) that nothing runs any more; one a
+// program still runs stays for a later commit.
+func (l Layout) sweepOld() {
+	olds, _ := filepath.Glob(filepath.Join(l.Base, agentName+"*"+oldSuffix))
+	for _, p := range olds {
+		os.Remove(p)
+	}
 }
 
 // WriteFailure is a reverted run's last word: which release failed to start and why. The agent
