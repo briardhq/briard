@@ -32,6 +32,7 @@ import (
 //     instance, the bridge's spanning-tree value, and the backup store's firewall rule;
 //   - the tree under %ProgramData%\briard, its bin on the system PATH, and its entry in Installed
 //     apps;
+//   - the tray, running in its owner's session, and its Run value in that account's hive;
 //   - state\ under it, the pet -- KEPT unless the operator asks for it to go.
 //
 // The tap-windows6 driver package and the Hypervisor Platform stay: install.ps1 put them in place,
@@ -52,6 +53,7 @@ const firewallRule = "Briard backup store"
 const serviceStopBound = 2 * time.Minute
 
 func (cfg Config) removeServices(ctx context.Context, logf func(string, ...any)) error {
+	endTrays() // its program is in the tree that goes
 	// The node is down by now (Stop); what stopNode adds is the warden, which the agent's exit
 	// leaves running, and a re-check of the rest.
 	if err := stopNode(ctx, cfg.QMPSock, logf); err != nil {
@@ -187,6 +189,9 @@ func (cfg Config) removeFiles(deleteData bool, logf func(string, ...any)) error 
 	if err := registry.DeleteKey(registry.LOCAL_MACHINE, uninstallKey); err != nil && !errors.Is(err, registry.ErrNotExist) {
 		errs = append(errs, fmt.Errorf("taking briard off Installed apps: %w", err))
 	}
+	if err := cfg.offLogon(); err != nil {
+		errs = append(errs, fmt.Errorf("taking the icon off the install user's logon: %w", err))
+	}
 	entries, err := os.ReadDir(prefixDir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return errors.Join(append(errs, err)...)
@@ -302,4 +307,25 @@ func offPath(bin string) error {
 		return nil
 	}
 	return k.SetExpandStringValue("Path", strings.Join(kept, ";"))
+}
+
+// offLogon deletes the tray's Run value from the install user's hive (runAtLogon). Loaded while
+// that account is logged on -- the one uninstalling, as a rule; when it is not, the value stays,
+// naming a program that is gone, which Windows skips.
+func (cfg Config) offLogon() error {
+	if cfg.InstallUser == "" {
+		return nil
+	}
+	k, err := registry.OpenKey(registry.USERS, cfg.InstallUser+`\`+runKey, registry.SET_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	if err := k.DeleteValue(trayValue); err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return err
+	}
+	return nil
 }

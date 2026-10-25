@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -469,5 +470,46 @@ func TestACommitSweepsEarlierOlds(t *testing.T) {
 	}
 	if read(t, l.AgentPath()) != "agent v2" {
 		t.Error("the sweep touched the committed agent")
+	}
+}
+
+// A RUNNING TRAY DOES NOT FAIL A COMMIT. The tray runs the program the swap displaced until it moves
+// onto the new one, and Windows refuses to delete a running program but renames it -- a non-empty
+// directory stands in for it, refusing the delete the same way on every OS. The commit sets it
+// aside under its own .old and finishes; it goes at a later commit, once nothing runs it.
+func TestACommitWithARunningTrayStillCommits(t *testing.T) {
+	l := newLayout(t)
+	seed(t, l)
+	if err := os.WriteFile(l.TrayPath(), []byte("tray v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.StageNextTray(strings.NewReader("tray v2")); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := l.Swap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(moved, trayName) || read(t, l.TrayPath()) != "tray v2" {
+		t.Fatalf("the tray was not swapped: moved %v", moved)
+	}
+	prev := l.TrayPath() + prevSuffix
+	if err := os.Remove(prev); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(prev, "running"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Commit(); err != nil {
+		t.Fatalf("Commit with the displaced tray running: %v", err)
+	}
+	if present(prev) {
+		t.Error("the tray's .prev survived the commit")
+	}
+	if olds, _ := filepath.Glob(filepath.Join(l.Base, trayName+"*"+oldSuffix)); len(olds) != 1 {
+		t.Errorf("the running tray was not set aside under one .old: %v", olds)
+	}
+	if l.Interrupted() {
+		t.Error("Interrupted after the commit")
 	}
 }

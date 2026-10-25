@@ -32,6 +32,7 @@ const ServiceName = "briard-agent"
 // The file names the Windows arm ships under.
 const (
 	agentExe      = "briard-agent.exe"
+	trayExe       = "briard-tray.exe"
 	qemuBundleTar = "qemu-bundle-windows.tar"
 )
 
@@ -119,6 +120,18 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	}
 	if err := r.registerUpdateTask(ctx, script); err != nil {
 		return fmt.Errorf("registering the update task: %w", err)
+	}
+	// THE TRAY, started at the logon of the account that passed UAC by that account's own Run key,
+	// which Settings > Apps > Startup lists and switches off. It starts at the next logon, never
+	// from here: a program this elevated process started would run elevated, and so would the
+	// browser it opens. A SYSTEM install has no such account, and no tray.
+	say("installing the notification-area icon")
+	tray := filepath.Join(agentDir, trayExe)
+	if err := installFile(filepath.Join(hostSrc, trayExe), tray, 0o755); err != nil {
+		return fmt.Errorf("staging dir %s has no usable %s: %w", hostSrc, trayExe, err)
+	}
+	if err := runAtLogon(installUser(), tray); err != nil {
+		return fmt.Errorf("starting the icon at logon: %w", err)
 	}
 	// THE ONE INBOUND HOLE: the guest dials the host's backup store. Scoped to this program and
 	// port rather than to a network profile, so the household's network category stays theirs.
@@ -554,7 +567,55 @@ func (r installRoots) osRoots() installRoots { return r }
 // agent's own .exe, then a DLL of the qemu still running from the same release's tree). The guest
 // is powered off cleanly, never killed. The restart the installer ends in starts it all again.
 func stopRunning(ctx context.Context, say func(string, ...any)) error {
+	endTrays()
 	return stopNode(ctx, ConfigFromEnv().QMPSock, say)
+}
+
+// runKey is where an account's programs to start at its logon are named, under its own hive.
+const runKey = `Software\Microsoft\Windows\CurrentVersion\Run`
+
+// trayValue is the tray's name there, which Settings > Apps > Startup shows.
+const trayValue = "Briard"
+
+// runAtLogon names the tray in the install user's Run key, through HKEY_USERS by SID: the same key
+// the uninstall deletes from, whoever runs it. The hive is loaded, its owner being the one
+// installing. No install user: nothing.
+func runAtLogon(sid, exe string) error {
+	if sid == "" {
+		return nil
+	}
+	k, _, err := registry.CreateKey(registry.USERS, sid+`\`+runKey, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	return k.SetStringValue(trayValue, windows.EscapeArg(exe))
+}
+
+// endTrays ends every running tray, in every session, and waits for each to exit: a reinstall
+// lays its program down and an uninstall deletes it, and Windows refuses both while it runs.
+// Each starts again at its owner's next logon.
+func endTrays() {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(snap)
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	for err := windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		if !strings.EqualFold(windows.UTF16ToString(e.ExeFile[:]), trayExe) {
+			continue
+		}
+		h, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, e.ProcessID)
+		if err != nil {
+			continue
+		}
+		if windows.TerminateProcess(h, 0) == nil {
+			_, _ = windows.WaitForSingleObject(h, 10_000)
+		}
+		windows.CloseHandle(h)
+	}
 }
 
 // updateScript is the frozen launcher the update task runs (scripts/agent/briard-update.ps1).

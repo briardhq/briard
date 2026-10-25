@@ -41,6 +41,7 @@ import (
 // carries -- an installer, a driver -- is left to whoever installs it.
 const (
 	artifactNetWrap = "briard-net-wrap"      // Linux only: the Windows arm ships none
+	artifactTray    = "briard-tray.exe"      // Windows only: the notification-area icon
 	artifactGuest   = "guest-bundle.tar.zst" // the binaries the host dresses its guest with
 )
 
@@ -305,7 +306,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	}
 	defer os.RemoveAll(tmp)
 	from := path.Join(u.Fetcher.Chain, want.Version, u.Fetcher.Platform)
-	var agent, netWrap *Entry
+	var agent, netWrap, tray *Entry
 	guestTree := ""
 	qemuTree := ""
 	for i := range want.Artifacts {
@@ -327,6 +328,15 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 				return "", err
 			}
 			netWrap = a
+		case artifactTray:
+			if unchanged(have, *a) {
+				logf("update: %s unchanged since %s; not fetched", a.Name, have.Version)
+				continue
+			}
+			if err := u.Fetcher.fetchArtifact(ctx, from, tmp, *a); err != nil {
+				return "", err
+			}
+			tray = a
 		case artifactQEMU:
 			if unchanged(have, *a) {
 				logf("update: %s unchanged since %s; not fetched", a.Name, have.Version)
@@ -399,6 +409,12 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 			return "", fmt.Errorf("install: stage net-wrap: %w", err)
 		}
 		staged = append(staged, "net-wrap")
+	}
+	if tray != nil {
+		if err := stageFile(filepath.Join(tmp, tray.Name), u.Layout.StageNextTray); err != nil {
+			return "", fmt.Errorf("install: stage tray: %w", err)
+		}
+		staged = append(staged, "tray")
 	}
 	if qemuTree != "" {
 		if err := u.Layout.StageNextQEMU(qemuTree); err != nil {

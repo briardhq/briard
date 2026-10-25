@@ -560,6 +560,8 @@ in
     agent = agentPkg;
     # The Windows host agent, cross-compiled; staged into the release's windows-amd64 arm.
     agent-windows = pkgs.callPackage ../agent/package.nix { version = agentVersion; goos = "windows"; };
+    # The notification-area icon beside it, a GUI program: no console window opens at logon.
+    tray-windows = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-tray"; version = agentVersion; goos = "windows"; gui = true; };
     driver = driverPkg;
     qemu-bundle = qemuBundle.bundle; # the relocatable qemu the free-local installer ships
     # The Windows arm of the same thing: QEMU cross-built here from a pinned release over MSYS2's

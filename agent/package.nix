@@ -32,7 +32,8 @@
 # and os/user's pure-Go path are both fine -- the agent shells out to iproute2/systemd).
 # goos: "windows" cross-compiles the Windows host agent (briard-agent.exe) -- a plain Go cross build,
 # which is the whole reason the agent is pure Go. The ELF check below does not apply to a PE file.
-{ lib, buildGoModule, patchelf, subPackage ? "agent/cmd/briard-agent", version ? "0.0.0-dev", goos ? null }:
+# gui: a Windows GUI-subsystem program (the tray), which Windows starts without a console window.
+{ lib, buildGoModule, patchelf, subPackage ? "agent/cmd/briard-agent", version ? "0.0.0-dev", goos ? null, gui ? false }:
 buildGoModule {
   pname = baseNameOf subPackage;
   inherit version;
@@ -51,7 +52,7 @@ buildGoModule {
   dontStrip = goos != null;
   # Stamp the release id the agent reports as NodeStatus.AgentVersion and converges to on a
   # self-update. Overridable by a real release version at build time.
-  ldflags = [ "-X" "briard.io/agent/host.buildVersion=${version}" ];
+  ldflags = [ "-X" "briard.io/agent/host.buildVersion=${version}" ] ++ lib.optional gui "-H=windowsgui";
 
   # ...and PROVE it, at build time. Setting CGO_ENABLED is an intention; an ELF interpreter is a
   # fact, and it is the fact a stranger's kernel reads. A future dependency that quietly re-enables

@@ -18,7 +18,7 @@
 #                                       briard-update,
 #                                       qemu-bundle.tar.zst, guest-bundle.tar.zst,
 #                                       briard-{agent,update}.service, briard-update.timer
-#     <version>/windows-amd64/          manifest.json(+.sig), briard-agent.exe, install.ps1, briard-update.ps1,
+#     <version>/windows-amd64/          manifest.json(+.sig), briard-agent.exe, briard-tray.exe, install.ps1, briard-update.ps1,
 #                                       qemu-bundle-windows.tar.zst, guest-bundle.tar.zst, tap-windows.exe
 #     latest/{linux,windows}-amd64/     manifest.json(+.sig), briard-agent / briard-agent.exe
 #     stable/{linux,windows}-amd64/     likewise
@@ -517,6 +517,7 @@ stage)
 	# The Windows agent, and the guest bundle it pushes. The bundle's bytes are the Linux arm's --
 	# the guest is Linux whatever runs it -- copied so a Windows install fetches one arm, not two.
 	install -m0755 "$(out_of .#artifacts.agent-windows)/bin/windows_amd64/briard-agent.exe" "$W/briard-agent.exe"
+	install -m0755 "$(out_of .#artifacts.tray-windows)/bin/windows_amd64/briard-tray.exe" "$W/briard-tray.exe"
 	cp "$H/guest-bundle.tar.zst" "$W/guest-bundle.tar.zst"
 	# The TAP driver, OpenVPN's signed bytes pinned in the flake: the installer fetches it from this
 	# arm and checks the same hash, so a Windows install touches one origin.

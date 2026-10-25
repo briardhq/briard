@@ -1,0 +1,80 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io/fs"
+	"testing"
+
+	"briard.io/agent/host"
+)
+
+// Every reading the poll can make, and what the icon shows for it.
+func TestShow(t *testing.T) {
+	refused := fmt.Errorf("%w: %w", host.ErrNoAgent, fs.ErrPermission)
+	absent := fmt.Errorf("%w: no such file", host.ErrNoAgent)
+	for _, tc := range []struct {
+		name string
+		r    reading
+		want view
+	}{
+		{"serving", reading{status: host.LocalStatus{Serving: true}},
+			view{state: serving, tip: "Briard is running", action: "stop"}},
+		{"an open alert", reading{status: host.LocalStatus{Serving: true, Open: 1}},
+			view{state: degraded, tip: "1 alert needs your attention", action: "stop", open: 1}},
+		{"two", reading{status: host.LocalStatus{Open: 2}},
+			view{state: degraded, tip: "2 alerts need your attention", action: "stop", open: 2}},
+		{"not serving", reading{status: host.LocalStatus{}},
+			view{state: degraded, tip: "Briard is not serving right now", action: "stop"}},
+		{"updating", reading{status: host.LocalStatus{Serving: true, Updating: true, Open: 1}},
+			view{state: working, tip: "Briard is updating", action: "stop", open: 1}},
+		{"refused", reading{refusal: "this node has no usable network device: no wired or wireless adapter is up"},
+			view{state: degraded, tip: "this node has no usable network device: no wired or wireless adapter is up", action: "stop"}},
+		{"stopped", reading{err: absent, down: true},
+			view{state: stopped, tip: "Briard is stopped", action: "start"}},
+		{"stopped to be updated", reading{err: absent, down: true, update: true},
+			view{state: working, tip: "Briard is updating"}},
+		{"starting, no door yet", reading{err: absent},
+			view{state: working, tip: "Briard is starting"}},
+		{"bringing its VM up", reading{err: context.DeadlineExceeded},
+			view{state: working, tip: "Briard is starting"}},
+		{"another account's", reading{err: refused, down: true},
+			view{state: stopped, tip: "Briard was installed by another account on this computer"}},
+		{"stop asked, still up", reading{status: host.LocalStatus{Serving: true}, pending: "stop"},
+			view{state: working, tip: "Briard is stopping"}},
+		{"stop asked, door gone", reading{err: absent, pending: "stop"},
+			view{state: working, tip: "Briard is stopping"}},
+		{"stop landed", reading{err: absent, down: true, pending: "stop"},
+			view{state: stopped, tip: "Briard is stopped", action: "start"}},
+		{"start asked", reading{err: absent, down: true, pending: "start"},
+			view{state: working, tip: "Briard is starting"}},
+		{"start landed", reading{status: host.LocalStatus{Serving: true}, pending: "start"},
+			view{state: serving, tip: "Briard is running", action: "stop"}},
+	} {
+		if got := show(tc.r); got != tc.want {
+			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A toast is more alerts open than the last answer said -- never the first answer, never a poll
+// that got none, never fewer.
+func TestToast(t *testing.T) {
+	one := &host.LocalStatus{Open: 1}
+	for _, tc := range []struct {
+		name string
+		prev *host.LocalStatus
+		r    reading
+		want bool
+	}{
+		{"first answer", nil, reading{status: host.LocalStatus{Open: 3}}, false},
+		{"a new one", one, reading{status: host.LocalStatus{Open: 2}}, true},
+		{"same", one, reading{status: host.LocalStatus{Open: 1}}, false},
+		{"resolved", one, reading{status: host.LocalStatus{}}, false},
+		{"no answer", one, reading{err: host.ErrNoAgent, status: host.LocalStatus{Open: 5}}, false},
+	} {
+		if got := toast(tc.prev, tc.r); got != tc.want {
+			t.Errorf("%s: toast = %t, want %t", tc.name, got, tc.want)
+		}
+	}
+}

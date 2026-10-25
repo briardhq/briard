@@ -34,7 +34,7 @@ const (
 	defaultWitnessTap = ""
 
 	// openHint is how a person here asks for another one-time link.
-	openHint = "briard open, in a terminal opened as administrator"
+	openHint = "Open Briard, on the Briard icon in the taskbar -- or briard open, in a terminal"
 
 	// vipFixHint is the remedy a lease refusal names, with the prefix to fill in (lease.go).
 	vipFixHint = "run `briard config set vip <address>/%s` in a terminal opened as administrator"

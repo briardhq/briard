@@ -61,6 +61,8 @@ const (
 	failureName  = "update-failure"
 	netWrapName  = "briard-net-wrap"
 	nextNetWrap  = "briard-net-wrap.next"
+	trayName     = "briard-tray.exe" // Windows only: the notification-area icon
+	nextTray     = trayName + nextSuffix
 	qemuLink     = "qemu"
 	nextQEMULink = "qemu.next"
 	qemuTree     = "qemu-" // + release id: one extracted bundle per release, beside the link
@@ -76,7 +78,7 @@ const (
 
 // entries are the names a swap moves, in swap order. The agent goes first: every run stages it,
 // so its .prev is on disk before any other entry moves, which is what makes it the trial marker.
-var entries = []string{agentName, manifestName, netWrapName, qemuLink, guestLink}
+var entries = []string{agentName, manifestName, netWrapName, trayName, qemuLink, guestLink}
 
 // Layout resolves the self-update paths under a state base + a tmpfs run dir.
 type Layout struct {
@@ -122,6 +124,11 @@ func (l Layout) FailurePath() string { return filepath.Join(l.RunDir, failureNam
 func (l Layout) NetWrapPath() string     { return filepath.Join(l.Base, netWrapName) }
 func (l Layout) NextNetWrapPath() string { return filepath.Join(l.Base, nextNetWrap) }
 
+// TrayPath / NextTrayPath are the notification-area icon and its staged candidate, swapped with the
+// agent whose directives it speaks.
+func (l Layout) TrayPath() string     { return filepath.Join(l.Base, trayName) }
+func (l Layout) NextTrayPath() string { return filepath.Join(l.Base, nextTray) }
+
 // QEMUPath / NextQEMUPath are the committed and staged LINKS to a qemu tree; QEMUTree is where
 // the tree for one release lives. The link is what the agent's QEMU/QEMU_DATADIR point through
 // (install.sh keeps the public /opt/briard/qemu path as a link onto QEMUPath, because the
@@ -156,6 +163,14 @@ func (l Layout) StageNextManifest(manifest []byte) error {
 // StageNextNetWrap writes the candidate launch shim beside the agent's, the same way.
 func (l Layout) StageNextNetWrap(src io.Reader) error {
 	return atomicWrite(l.NextNetWrapPath(), 0o755, func(f *os.File) error {
+		_, err := io.Copy(f, src)
+		return err
+	})
+}
+
+// StageNextTray writes the candidate tray beside the agent's, the same way.
+func (l Layout) StageNextTray(src io.Reader) error {
+	return atomicWrite(l.NextTrayPath(), 0o755, func(f *os.File) error {
 		_, err := io.Copy(f, src)
 		return err
 	})
@@ -481,17 +496,18 @@ func (l Layout) Revert() ([]string, error) {
 // a commit, and Commit finishes it. A displaced tree link goes; its tree stays until a guest
 // launch prunes it.
 //
-// THE AGENT'S .prev IS RENAMED ASIDE, THEN DELETED. Windows refuses to delete a program that is
-// still running -- a `briard` command started before the swap runs the displaced binary -- but
-// renames one, and the trial marker must go either way: left in place, the next run would read
-// a committed update as an interrupted one and revert it. What cannot be deleted yet waits as
-// <agent>.<stamp>.old, and every commit sweeps what earlier ones left. THE NAME IS THE COMMIT'S
-// OWN: a fixed one is held by a command still running from two releases back, the rename onto it
-// fails, the .prev stays, and the next run reverts a working update.
+// A PROGRAM'S .prev IS RENAMED ASIDE, THEN DELETED. Windows refuses to delete a program that is
+// still running -- a `briard` command started before the swap runs the displaced agent, the tray
+// runs the displaced tray until it moves onto the new one -- but renames one, and the agent's
+// trial marker must go either way: left in place, the next run would read a committed update as
+// an interrupted one and revert it. What cannot be deleted yet waits as <program>.<stamp>.old,
+// and every commit sweeps what earlier ones left. THE NAME IS THE COMMIT'S OWN: a fixed one is
+// held by a command still running from two releases back, the rename onto it fails, the .prev
+// stays, and the next run reverts a working update.
 func (l Layout) Commit() error {
 	l.sweepOld() // leftovers from earlier commits; one still running stays
-	old := filepath.Join(l.Base, agentName+"."+strconv.FormatInt(time.Now().UnixNano(), 36)+oldSuffix)
-	if err := os.Rename(l.PrevPath(), old); err != nil && !os.IsNotExist(err) {
+	old, err := l.setAside(agentName)
+	if err != nil {
 		return err
 	}
 	if err := atomicfile.SyncDir(l.Base); err != nil {
@@ -499,6 +515,14 @@ func (l Layout) Commit() error {
 	}
 	os.Remove(old)
 	for _, e := range entries[1:] {
+		if e == trayName {
+			old, err := l.setAside(e)
+			if err != nil {
+				return err
+			}
+			os.Remove(old)
+			continue
+		}
 		if err := os.Remove(filepath.Join(l.Base, e+prevSuffix)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -506,12 +530,23 @@ func (l Layout) Commit() error {
 	return atomicfile.SyncDir(l.Base)
 }
 
-// sweepOld removes every agent a commit parked aside (Commit) that nothing runs any more; one a
-// program still runs stays for a later commit.
+// setAside renames a program's .prev to its <program>.<stamp>.old and returns that name.
+func (l Layout) setAside(program string) (string, error) {
+	old := filepath.Join(l.Base, program+"."+strconv.FormatInt(time.Now().UnixNano(), 36)+oldSuffix)
+	if err := os.Rename(filepath.Join(l.Base, program+prevSuffix), old); err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	return old, nil
+}
+
+// sweepOld removes every program a commit parked aside (Commit) that nothing runs any more; one
+// still running stays for a later commit.
 func (l Layout) sweepOld() {
-	olds, _ := filepath.Glob(filepath.Join(l.Base, agentName+"*"+oldSuffix))
-	for _, p := range olds {
-		os.Remove(p)
+	for _, program := range []string{agentName, trayName} {
+		olds, _ := filepath.Glob(filepath.Join(l.Base, program+"*"+oldSuffix))
+		for _, p := range olds {
+			os.Remove(p)
+		}
 	}
 }
 
