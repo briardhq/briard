@@ -464,7 +464,7 @@ func (u *Update) revert(ctx context.Context, version string, cause error, logf f
 	if err := u.Stop(ctx, 0); err != nil {
 		logf("update: stopping the candidate: %v", err)
 	}
-	back, err := u.Layout.Revert()
+	back, err := u.revertLayout(ctx, logf)
 	if err != nil {
 		return fmt.Errorf("install: %s did not start (%v), and the revert failed after putting back %v: %w", version, cause, back, err)
 	}
@@ -476,6 +476,38 @@ func (u *Update) revert(ctx context.Context, version string, cause error, logf f
 		return fmt.Errorf("install: %s did not start (%v); reverted, but the previous agent did not start either: %w", version, cause, err)
 	}
 	return fmt.Errorf("host bundle %s did not start on this host and was reverted: %w", version, cause)
+}
+
+// revertTries bounds the revert's retry, revertPause spaces it. The service manager may start the
+// stopped agent again under the revert -- on Windows its recovery restarts a candidate that failed
+// 5 s later -- and a rename that lands on the restarted program fails. A miss therefore stops the
+// agent again and reverts again, so a lost race costs a round rather than a night on the
+// candidate. Layout.Revert is safe to repeat: an entry it put back has no .prev left.
+const (
+	revertTries = 4
+	revertPause = time.Second
+)
+
+// revertLayout puts the committed release back (Layout.Revert), retrying a miss up to revertTries.
+// It returns every entry put back across the tries.
+func (u *Update) revertLayout(ctx context.Context, logf func(string, ...any)) ([]string, error) {
+	var all []string
+	for try := 1; ; try++ {
+		back, err := u.Layout.Revert()
+		all = append(all, back...)
+		if err == nil || try == revertTries {
+			return all, err
+		}
+		logf("update: the revert missed (%v); stopping the agent again and retrying (%d of %d)", err, try+1, revertTries)
+		select {
+		case <-ctx.Done():
+			return all, err
+		case <-time.After(revertPause):
+		}
+		if serr := u.Stop(ctx, 0); serr != nil {
+			logf("update: stopping the agent again: %v", serr)
+		}
+	}
 }
 
 // reconcile settles what an earlier run left mid-procedure, before this run decides anything. The
@@ -490,7 +522,7 @@ func (u *Update) reconcile(ctx context.Context, logf func(string, ...any)) error
 	if err := u.Stop(ctx, StopPatience); err != nil {
 		return fmt.Errorf("install: stop the agent to revert an interrupted update: %w", err)
 	}
-	back, err := u.Layout.Revert()
+	back, err := u.revertLayout(ctx, logf)
 	if err != nil {
 		return fmt.Errorf("install: revert an interrupted update (put back %v): %w", back, err)
 	}

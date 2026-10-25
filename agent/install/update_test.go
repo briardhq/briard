@@ -106,10 +106,17 @@ type fakeAgent struct {
 	stopErr  error
 	smoked   []string
 	smokeErr error
+	onStop   func(n int) // called after the n-th stop (1-based), to change what the stop left behind
 }
 
 func (f *fakeAgent) wire(u *Update) {
-	u.Stop = func(_ context.Context, p time.Duration) error { f.stops = append(f.stops, p); return f.stopErr }
+	u.Stop = func(_ context.Context, p time.Duration) error {
+		f.stops = append(f.stops, p)
+		if f.onStop != nil {
+			f.onStop(len(f.stops))
+		}
+		return f.stopErr
+	}
 	u.Start = func(context.Context) error {
 		i := f.starts
 		f.starts++
@@ -980,5 +987,74 @@ func TestUpdateDefersOnAStoppedNode(t *testing.T) {
 			}
 			assertNothingStaged(t, l)
 		})
+	}
+}
+
+// holdAgent stands in for a candidate the service manager started again under the revert: the
+// agent's name held, so the rename that puts the committed agent back fails (a non-empty
+// directory refuses it the way a running program does on Windows). release frees it.
+func holdAgent(t *testing.T, l selfupdate.Layout) (release func()) {
+	t.Helper()
+	if err := os.Remove(l.AgentPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(l.AgentPath(), "running"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return func() { os.RemoveAll(l.AgentPath()) }
+}
+
+// A REVERT THAT MISSES ONCE IS RETRIED, not left for the next night. The candidate does not
+// start; as its stop ends, something restarts it and holds the agent's name. The revert's first
+// pass misses, the run stops the agent again (which frees it) and the second pass puts the
+// committed agent back and starts it.
+func TestUpdateRetriesARevertThatMissed(t *testing.T) {
+	c := goodChannel(t)
+	u, l, f := updateFixture(t, c, nil)
+	f.startErr = []error{errors.New("start briard-agent.service: exit status 1")}
+	var release func()
+	f.onStop = func(n int) {
+		switch n {
+		case 2: // the candidate's stop, after which the recovery restarts it
+			release = holdAgent(t, l)
+		case 3: // the revert's own second stop
+			release()
+		}
+	}
+	_, err := u.Run(context.Background(), TargetLatest)
+	if err == nil || !strings.Contains(err.Error(), "did not start on this host and was reverted") {
+		t.Fatalf("err = %v, want the revert", err)
+	}
+	if b, _ := os.ReadFile(l.AgentPath()); string(b) != "the committed agent" {
+		t.Errorf("agent after the retried revert = %q", b)
+	}
+	if l.Interrupted() {
+		t.Error("the agent's .prev survived the retried revert")
+	}
+	if len(f.stops) != 3 || f.starts != 2 {
+		t.Errorf("stops %v, starts %d; want the patient stop, the candidate's, one retry's, and two starts", f.stops, f.starts)
+	}
+}
+
+// The retry is bounded: a name that stays held ends the run as a failed revert after
+// revertTries passes, with the .prev still on disk for the next run to finish.
+func TestUpdateGivesUpOnARevertThatKeepsMissing(t *testing.T) {
+	c := goodChannel(t)
+	u, l, f := updateFixture(t, c, nil)
+	f.startErr = []error{errors.New("start briard-agent.service: exit status 1")}
+	f.onStop = func(n int) {
+		if n == 2 {
+			holdAgent(t, l)
+		}
+	}
+	_, err := u.Run(context.Background(), TargetLatest)
+	if err == nil || !strings.Contains(err.Error(), "the revert failed") {
+		t.Fatalf("err = %v, want a failed revert", err)
+	}
+	if want := 2 + revertTries - 1; len(f.stops) != want {
+		t.Errorf("stops %d, want %d: the two of the run and one per retry", len(f.stops), want)
+	}
+	if !l.Interrupted() {
+		t.Error("a revert that gave up left no .prev: the next run could not finish it")
 	}
 }
