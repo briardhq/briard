@@ -26,6 +26,9 @@
 #   vm/
 #     <version>/amd64/                  manifest.json(+.sig), nixos.qcow2.zst
 #     {latest,stable,dev}/amd64/        manifest.json(+.sig)
+#   setup/
+#     <version>/briard-setup.exe        the Store's installer, carrying that release's windows arm; written once,
+#                                       outside both chains (`setup`)
 #
 # A CHAIN is a release line with its own version series: the briard bundle moves as
 # `v3.<date>.<rev>` on every publish; the guest OS as `vm.<date>.<inputs>` and ONLY WHEN ITS
@@ -138,6 +141,9 @@
 #                         briard/stable's. With a VERSION: that release where it was published,
 #                         both arms and the guest it pairs with, which is what a publish is
 #                         followed by while no pointer names it yet
+#   setup build VERSION   the Store's installer: VERSION's published windows arm, verified,
+#                         inside the briard-setup stub, at ./.release-setup/setup/VERSION/
+#   setup publish VERSION upload it to setup/VERSION/briard-setup.exe, once (needs the credential)
 #
 # Env:
 #   BRIARD_CHANNEL_URL  public read ROOT            (default https://get.briard.io)
@@ -1051,7 +1057,57 @@ verify)
 	say "$CHANNEL verifies end to end: every pointer signed, every artifact matching, the installers served at the root and pointing here"
 	;;
 
+setup)
+	# THE STORE'S INSTALLER, built from a release ALREADY PUBLISHED: its windows arm, fetched
+	# from the live channel and verified the way `verify` does, unpacked into the shape install.ps1
+	# installs from (BRIARD_ARTIFACTS: the qemu tree extracted, the guest bundle expanded), zipped
+	# and appended to the briard-setup stub. No guest image: the installed agent's first start
+	# fetches it. Run when the Store listing needs a new installer -- the upgrade floor moved past
+	# the one it embeds, or the TAP driver or the qemu bundle changed -- never per release: the
+	# Store never updates an installed node, our self-update does.
+	#
+	# `setup build` makes it locally, needing no credential, so it can be proven on a Windows
+	# machine first; `setup publish` uploads that file.
+	#
+	# ⚠️ ONE URL, ONE BINARY, FOREVER. The Store certifies the bytes at the URL it was given and
+	# re-certifies on its own if they move, so setup/<VERSION>/briard-setup.exe is written once
+	# and refused after. It lives outside both chains, so `gc` never collects it.
+	need curl; need sha256sum; need jq
+	V="${3:-}"; [ -n "$V" ] || die "usage: setup {build|publish} VERSION (the published release whose windows arm it carries)"
+	key="setup/$V/briard-setup.exe"
+	OUT="./.release-setup/$key"
+	case "$2" in
+	build) ;;
+	publish)
+		[ -f "$OUT" ] || die "no $OUT -- run \`setup build $V\` first"
+		[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE (see header)"
+		bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
+		! have_key "$bucket/$key" "$endpoint" || die "$key is already published, and the Store certified those bytes; a new installer is a new release"
+		aws s3 cp "$OUT" "$bucket/$key" --endpoint-url "$endpoint" --only-show-errors || die "uploading $key failed"
+		say "published $CHANNEL/$key ($(sha256sum "$OUT" | cut -d' ' -f1)) -- the URL the Store listing takes"
+		exit 0
+		;;
+	*) die "usage: setup {build|publish} VERSION" ;;
+	esac
+	PUB="${RELEASE_PUBKEY:-${RELEASE_SIGN_KEY:-}}"
+	[ -n "$PUB" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key"
+	tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+	verify_manifest_at "$CHANNEL/briard/$(sub "$V" "$WINDOWS_ARM")" briard "$WINDOWS_ARM" "$V"
+	A="$tmp/arm"; mkdir -p "$A/qemu"
+	for f in briard-agent.exe briard-tray.exe tap-windows.exe install.ps1 briard-update.ps1 manifest.json manifest.json.sig; do
+		install -m0644 "$tmp/$f" "$A/$f"
+	done
+	nix run nixpkgs#zstd -- -d -q "$tmp/qemu-bundle-windows.tar.zst" -o "$tmp/qemu.tar" || die "expanding the qemu bundle failed"
+	tar -xf "$tmp/qemu.tar" -C "$A/qemu"
+	nix run nixpkgs#zstd -- -d -q "$tmp/guest-bundle.tar.zst" -o "$A/guest-bundle.tar" || die "expanding the guest bundle failed"
+	(cd "$A" && nix run nixpkgs#zip -- -q -r -X "$tmp/payload.zip" .) || die "zipping the arm failed"
+	stub=$(nix build --no-link --print-out-paths .#artifacts.setup-windows)/bin/windows_amd64/briard-setup.exe
+	mkdir -p "$(dirname "$OUT")"
+	cat "$stub" "$tmp/payload.zip" > "$OUT"
+	say "built $OUT for $V: $(stat -c%s "$OUT") bytes, sha256 $(sha256sum "$OUT" | cut -d' ' -f1)"
+	;;
+
 *)
-	die "usage: publish-release.sh {stage|sign|publish|latest|promote|dev|gc|verify} [ARGS]  (see header)"
+	die "usage: publish-release.sh {stage|sign|publish|latest|promote|dev|gc|verify|setup} [ARGS]  (see header)"
 	;;
 esac

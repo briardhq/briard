@@ -143,3 +143,20 @@ func (cfg Config) restartGate(ctx context.Context, coldBoot func(time.Time) (boo
 	}
 	return false
 }
+
+// ExitRestartRequired is what `briard-agent install` exits with when the install owes the restart:
+// Windows' ERROR_SUCCESS_REBOOT_REQUIRED, the code an installer's caller -- the Store among them --
+// reads as "installed; restart to finish".
+const ExitRestartRequired = 3010
+
+// InstallOwesRestart is the install's last question: does the bridge it kept still owe the restart
+// the first start refuses without? The gate's own answer, asked of the same record; a read that
+// fails says no, as the gate proceeds on one. Always no on Linux, which keeps no such record.
+func InstallOwesRestart() bool {
+	rec, ok, err := readBridgeRecord(filepath.Join(stateDir, bridgeRecord))
+	if err != nil || !ok {
+		return false
+	}
+	owed, _, err := restartOwed(rec, coldBootSince)
+	return err == nil && owed
+}

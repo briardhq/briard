@@ -36,3 +36,5 @@
 # session that did not create it sweeps it in silently, which is how it got committed once
 # already (caught before any push). Stage named paths, not `-A`.
 .release/
+# ...and the Store installer `setup build` makes, for the same reasons.
+.release-setup/

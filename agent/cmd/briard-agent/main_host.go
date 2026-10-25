@@ -156,6 +156,10 @@ func runInstall(args []string) int {
 	if err := host.Install(ctx, say, log.Printf); err != nil {
 		return fail(err)
 	}
+	if host.InstallOwesRestart() {
+		say("installed; Windows must restart before briard can start")
+		return host.ExitRestartRequired
+	}
 	return 0
 }
 

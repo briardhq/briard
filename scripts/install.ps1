@@ -20,10 +20,16 @@
 # link, which runs at the first administrator logon after the restart. Adding something back here
 # means showing it has to happen before an agent can run.
 #
-# BRIARD_ARTIFACTS=<dir> installs from a local, already-verified staging dir (the rig). Unset = the
-# signed network fetch over the channel.
+# BRIARD_ARTIFACTS=<dir> installs from a local, already-verified staging dir (the rig, and the
+# Store's exe, which carries the windows-amd64 arm in itself). Unset = the signed network fetch over
+# the channel.
+#
+# -NoRestart is the exe's ending: no prompt and no restart, and the script's exit code says whether
+# the restart is owed -- 3010, Windows' "reboot required", which the Store turns into its own
+# restart message -- or not (0, and briard is started at once).
 #
 # Windows PowerShell 5.1 -- what every Windows Home ships -- so nothing newer is used here.
+param([switch]$NoRestart)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue' # Invoke-WebRequest's progress bar slows a download tenfold
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -85,7 +91,7 @@ function TapInstalled { @(Get-NetAdapter | Where-Object InterfaceDescription -li
 # `irm | iex` form has no file to re-run, so it re-fetches this script from the channel root; a
 # saved copy re-runs the copy.
 if (-not (IsAdmin)) {
-	$cmd = if ($PSCommandPath) { "& '$PSCommandPath'" } else { "irm $Channel/install.ps1 | iex" }
+	$cmd = if ($PSCommandPath) { "& '$PSCommandPath'" + $(if ($NoRestart) { ' -NoRestart' }) } else { "irm $Channel/install.ps1 | iex" }
 	Say 'asking for administrator rights (the install registers a service and builds a network bridge)'
 	Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $cmd
 	return
@@ -96,6 +102,16 @@ if (-not (IsAdmin)) {
 # agent's to fetch, AFTER its report card has admitted the machine. Asking before taking is what
 # lets a refusal say "nothing was installed" truthfully.
 $Boot = ''
+# The release keyring, on both paths: the network fetch verifies against it here, and on either path
+# the installed agent's own fetches do -- its self-updates, and the guest image its first start
+# fetches when the install laid none.
+New-Item -ItemType Directory -Force $Prefix | Out-Null
+if (-not (Test-Path $Keyring)) {
+	if ($RELEASE_KEYRING_PEM -notlike '*BEGIN PUBLIC KEY*') {
+		Die "no release keyring at $Keyring (the embedded key is a build placeholder; set BRIARD_UPDATE_KEYRING)"
+	}
+	Set-Content -Path $Keyring -Value $RELEASE_KEYRING_PEM -Encoding ascii
+}
 if ($env:BRIARD_ARTIFACTS) {
 	# Offline / rig path: the staging dir's own agent installs from it.
 	$Agent = "$env:BRIARD_ARTIFACTS\briard-agent.exe"
@@ -105,13 +121,6 @@ if ($env:BRIARD_ARTIFACTS) {
 	# this FIRST binary -- and let it fetch and verify the whole set against the bundled release
 	# keyring. The bootstrap only RUNS the verified fetch; what lands under the prefix is the
 	# Ed25519-verified set, so a compromised bootstrap cannot seed bad cattle.
-	New-Item -ItemType Directory -Force $Prefix | Out-Null
-	if (-not (Test-Path $Keyring)) {
-		if ($RELEASE_KEYRING_PEM -notlike '*BEGIN PUBLIC KEY*') {
-			Die "no release keyring at $Keyring (the embedded key is a build placeholder; set BRIARD_UPDATE_KEYRING)"
-		}
-		Set-Content -Path $Keyring -Value $RELEASE_KEYRING_PEM -Encoding ascii
-	}
 	Say "bootstrapping the installer agent from $Channel (briard/$Release) ..."
 	# Fetched from the TARGET's path, never a fixed one: the bootstrap is the binary that parses
 	# the manifest and lays the release down, and a stale one that cannot is exactly the
@@ -182,9 +191,11 @@ if ((Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform).State -
 #
 # The bootstrap goes either way: on a refusal it is the one thing we put down, and "nothing was
 # installed" must be true while it sits there; on success the verified agent has replaced it.
+#
+# 3010 is the agent saying the install is done and the bridge it built still owes the restart.
 $rc = Run $Agent install
 if ($Boot) { Remove-Item $Boot -ErrorAction SilentlyContinue }
-if ($rc -ne 0) { Die 'the install did not finish (the agent said why above)' }
+if ($rc -ne 0 -and $rc -ne 3010) { Die 'the install did not finish (the agent said why above)' }
 
 # ---- 4. the hand-over, after the restart ----------------------------------------------
 # The service starts by itself at boot. The closing -- the installed agent waiting for its own
@@ -200,6 +211,20 @@ Register-ScheduledTask -TaskName $ResumeTask -Force `
 	-Principal (New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Administrators' -RunLevel Highest) | Out-Null
 
 # ---- 5. the one restart ----------------------------------------------------------------
+# The exe's ending: say it, and leave the restart to whoever ran us -- the Store shows its own
+# restart message for 3010. Owing none (a reinstall over a node that has restarted since its
+# bridge was built), the node starts now, as the restart would have started it.
+if ($NoRestart) {
+	if ($rc -eq 3010) {
+		Say 'installed. Restart Windows to finish (Restart, not Shut down): Briard starts by itself afterwards.'
+		Say 'at the next logon it prints the link to your Briard page.'
+		exit 3010
+	}
+	$rc = Run $exe start
+	if ($rc -ne 0) { Die 'installed, but briard did not start (the agent said why above)' }
+	Say 'installed, and briard is starting.'
+	exit 0
+}
 # The bridge carries the guest only once Windows has started with it, and the hypervisor runs
 # only after a restart: one restart, asked for, never a shutdown (Fast Startup's resume is not a
 # start). Briard finishes on its own afterwards; the link appears when an administrator logs on.
