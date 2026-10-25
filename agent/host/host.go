@@ -428,6 +428,9 @@ type Config struct {
 	// acts runs the directives that leave the loop (acts.go). Machinery like beat; nil-safe, and
 	// nil means everything runs on the loop (tests). Set by Run.
 	acts *actLane
+	// down starts the node's shutdown (stop.go): it cancels Run's context with ErrShutdown. Set by
+	// Run; nil in tests that build a Config by hand.
+	down context.CancelCauseFunc
 	// sleep tells the household the machine slept (sleep.go). Set by Run, so it outlives observe():
 	// the resume it exists to report restarts the guest, which restarts observe, and an alerter made
 	// there would prime on the very wake it should tell. Nil in tests that build a Config by hand.
@@ -536,8 +539,20 @@ type guestReader interface {
 // Run boots the guest, drives bring-up to quorate primary (a witness just comes
 // up, it never promotes), then observes the node's status until ctx is cancelled.
 // The guest is always stopped on return.
-func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
+func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr error) {
 	logf("%s", versionBanner(cfg.Version)) // name the running build before anything else
+	// THE WAY DOWN (stop.go). Whichever return ends Run, a context that ended as a shutdown powers
+	// the guest off on the way out, once nothing is left running to relaunch it, and returns nil:
+	// a clean exit is the one the service managers leave down.
+	ctx, cfg.down = context.WithCancelCause(ctx)
+	node := ctx
+	defer cfg.down(nil)
+	defer func() {
+		if shuttingDown(node) {
+			cfg.shutDown(node, logf)
+			runErr = nil
+		}
+	}()
 	// The watchdog keep-alive, built before anything that could block so every operation below is
 	// covered. nil outside systemd. Set on the local cfg, which is the copy every call below takes.
 	cfg.beat = newBeat(logf)
@@ -729,8 +744,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) error {
 	defer client.Close()
 	// ...and kept from here on: the renewal outlives any one guest, like the lease it keeps.
 	go cfg.lease.run(ctx, logf)
-	// NOTE: no `defer g.Stop()` — an agent shutdown/restart must be transparent to the
-	// guest. g.Stop() is the explicit self-fence VM-destroy backstop,
+	// NOTE: no `defer g.Stop()` — an agent restart must be transparent to the guest, and the
+	// node's shutdown powers it off cleanly (stop.go), never kills it. g.Stop() is the explicit
+	// self-fence VM-destroy backstop,
 	// invoked only on a wedged guest (the host-side reboot ladder) or by the reboot
 	// path's rollback, which is about to revert the disk out from under it anyway.
 
@@ -1764,6 +1780,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveCasaClaim:     true, // the household claims its own name; the cloud never does
 	api.DirectiveCasaRecheck:   true, // ...and asks again whether its network resolves it
 	api.DirectiveConfigSet:     true, // ...and changes its own address
+	api.DirectiveStop:          true, // ...and brings its own node down
 }
 
 // Dispatch routes one directive to the subsystem that can act on it, and is the single place
@@ -1783,6 +1800,9 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectiveDoctor {
 		return cfg.applyDoctor(ctx, d, r, cs)
+	}
+	if d.Kind == api.DirectiveStop {
+		return cfg.applyStop(d, logf)
 	}
 	if d.Kind == api.DirectiveConfigSet {
 		// The backup's settings apply in place (backup.go).

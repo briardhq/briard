@@ -298,6 +298,8 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 		"config":    groupRepair,
 		"rescue":    groupRepair,
 		"update":    groupRepair,
+		"stop":      groupRepair, // the node down for a while, and back
+		"start":     groupRepair,
 		"uninstall": groupRepair,
 		"version":   groupRepair,
 		"directive": groupRepair,

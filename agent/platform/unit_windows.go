@@ -28,9 +28,8 @@ import (
 // tidy-looking flag, and on any other handle arrangement it kills the guest at an agent restart.
 //
 // What it has no equivalent of: ExecStop. A job is killed, never asked to stop. On Linux the clean
-// guest powerdown has to live on the unit because the agent cannot tell a restart from a shutdown;
-// on Windows the SCM tells the agent (a preshutdown notification), so the agent powers the guest
-// down itself and this layer only ever kills.
+// guest powerdown lives on the unit, so every stop of it -- the machine's, the agent's -- runs it;
+// here the agent powers the guest down itself (PowerOffGuest) and this layer only ever kills.
 
 // jobName is the kernel object a unit lives in. Global\ so the name is the same from any session --
 // the agent runs as a service in session 0, and an operator's shell is not in it.
@@ -386,4 +385,67 @@ func EndProcess(pid uint32) error {
 	}
 	defer windows.CloseHandle(h)
 	return windows.TerminateProcess(h, 1)
+}
+
+// guestExitBound bounds the wait for qemu's process to exit once its monitor has gone quiet.
+const guestExitBound = 30 * time.Second
+
+// PowerOffGuest stops the guest cleanly and returns once its process has exited: the powerdown
+// over the monitor, then the wait for the guest's job to empty. A QUIET MONITOR IS NOT AN EXITED
+// QEMU: qemu closes its socket on its way out, and a guest launched by an agent that stopped mid
+// bring-up has no monitor up yet at all. A caller may go on to delete or replace files that process
+// holds, so the kill is only the last resort past the bound. A job is killed, never stopped
+// (unitStop), so the clean half is this function's own.
+func PowerOffGuest(ctx context.Context, qmpSock string, logf func(string, ...any)) error {
+	gctx, cancel := context.WithTimeout(ctx, GuestShutdownGrace+15*time.Second)
+	defer cancel()
+	if err := ShutdownVM(gctx, qmpSock, GuestShutdownGrace); err != nil {
+		return err
+	}
+	if !unitIsActive(ctx, GuestUnit) {
+		return nil
+	}
+	logf("waiting for the guest's process to exit")
+	deadline := time.Now().Add(guestExitBound)
+	for unitIsActive(ctx, GuestUnit) {
+		if time.Now().After(deadline) {
+			logf("the guest's process has not exited %s after its powerdown; ending it", guestExitBound)
+			return RemoveUnit(GuestUnit)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
+// SystemState is "" here: the service manager tells the agent a shutdown is a shutdown
+// (PRESHUTDOWN), so nothing asks.
+func SystemState(context.Context) string { return "" }
+
+// ServiceStopped reports whether a service is down and staying down: STOPPED by a clean exit. A
+// non-zero exit is a failure, which the service's recovery starts again 5 s later.
+func ServiceStopped(name string) (bool, error) {
+	m, err := mgr.Connect()
+	if err != nil {
+		return false, fmt.Errorf("the service manager: %w", err)
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(name)
+	if err != nil {
+		return false, fmt.Errorf("open %s: %w", name, err)
+	}
+	defer s.Close()
+	st, err := s.Query()
+	if err != nil {
+		return false, fmt.Errorf("ask %s its state: %w", name, err)
+	}
+	return stoppedStatus(st), nil
+}
+
+// stoppedStatus is ServiceStopped's reading of a service's status.
+func stoppedStatus(st svc.Status) bool {
+	return st.State == svc.Stopped && st.Win32ExitCode == 0 && st.ServiceSpecificExitCode == 0
 }

@@ -30,11 +30,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"strings"
 	"time"
 
+	"briard.io/agent/host"
 	"briard.io/agent/quadlet"
 	"briard.io/shared/api"
 	"briard.io/shared/dashboard"
@@ -172,6 +172,23 @@ var commands = []command{
 		run: runUpdate, probe: []string{"-h"},
 	},
 	{
+		name: "stop", group: groupRepair,
+		synopsis: "bring briard and its VM down until `briard start` or the next boot",
+		detail: "For while you do something to this machine that briard should not be running for. What\n" +
+			"briard is doing is aborted and named, the VM your apps run in powers off cleanly, and the\n" +
+			"agent stops. While it is down nothing alerts -- the alerts come from the agent -- and the\n" +
+			"nightly update waits for `briard start`. Restarting the machine brings briard back too.\n" +
+			"With the agent not answering, it stops briard's service and its VM itself.",
+		run: runStop, probe: []string{"-h"},
+	},
+	{
+		name: "start", group: groupRepair,
+		synopsis: "bring briard back after `briard stop`",
+		detail: "Starts the agent, which starts the VM your apps run in. It returns once the agent has\n" +
+			"started; `briard doctor` says when your apps serve again.",
+		run: runStart, probe: []string{"-h"},
+	},
+	{
 		name: "uninstall", args: "-yes [-delete-data]", group: groupRepair,
 		synopsis: "remove briard from this machine, keeping your data unless told otherwise",
 		detail: "Stops briard and the VM it runs your apps in (cleanly), and removes its services, network\n" +
@@ -285,7 +302,7 @@ func usage(w io.Writer) {
 
 `+"`alerts`"+` reads this machine's alert record, `+"`logs`"+` its logs, `+"`version`"+` its records, and `+"`update`"+` starts a
 
-systemd unit; all four work even when the agent is down, and so does the machine's own half of `+"`doctor`"+`. The rest talk to the running briard-agent over its admin
+systemd unit; all four work even when the agent is down, and so do `+"`start`"+`, `+"`stop`"+` and the machine's own half of `+"`doctor`"+`. The rest talk to the running briard-agent over its admin
 socket (`+defaultSock+`, override with -sock or $ADMIN_SOCK). All of them need root.
 
 This machine does not notify anyone on its own unless it was configured to: `+"`briard alerts`"+`
@@ -594,29 +611,64 @@ func sockDefault() string {
 // mid-upgrade. Waiting is the honest behaviour; Ctrl-C is the operator's own escape. A caller
 // whose verb changes nothing (doctor) puts a deadline on ctx, and that is honoured.
 func submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOutcome, error) {
-	var zero api.DirectiveOutcome
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "unix", sock)
-	if err != nil {
+	o, err := host.Submit(ctx, sock, d)
+	if errors.Is(err, host.ErrNoAgent) {
 		// The two things actually wrong when this fails, named so the operator doesn't have to
 		// guess: the agent isn't up, or this isn't root.
-		return zero, fmt.Errorf("cannot reach the agent at %s (is briard-agent running? %s): %w", sock, privHint, err)
+		return o, fmt.Errorf("cannot reach the agent at %s (is briard-agent running? %s): %w", sock, privHint, err)
 	}
-	defer conn.Close()
-	if dl, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(dl)
+	return o, err
+}
+
+// runStop is `briard stop`, and runStart `briard start` (host.Stop, host.Start: the uninstall
+// brings the node down through the same function).
+func runStop(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("briard stop", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
+	if err := fs.Parse(args); err != nil {
+		return 2
 	}
-	if err := json.NewEncoder(conn).Encode(d); err != nil {
-		return zero, fmt.Errorf("submitting the directive: %w", err)
+	if fs.NArg() != 0 {
+		fmt.Fprint(stderr, "briard stop: takes no arguments\n")
+		return 2
 	}
-	var o api.DirectiveOutcome
-	if err := json.NewDecoder(conn).Decode(&o); err != nil {
-		if errors.Is(err, io.EOF) {
-			return zero, errors.New("the agent closed the connection without reporting an outcome")
+	cfg := host.ConfigFromEnv()
+	cfg.AdminSock = *sock
+	if err := cfg.Stop(ctx, sayTo(stdout)); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			err = fmt.Errorf("%w (%s)", err, privHint)
 		}
-		return zero, fmt.Errorf("reading the outcome: %w", err)
+		fmt.Fprintf(stderr, "briard stop: %v\n", err)
+		return 1
 	}
-	return o, nil
+	fmt.Fprintln(stdout, "briard is stopped: `briard start` brings it back, and so does the next boot")
+	return 0
+}
+
+func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("briard start", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprint(stderr, "briard start: takes no arguments\n")
+		return 2
+	}
+	if err := host.Start(ctx, sayTo(stdout)); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			err = fmt.Errorf("%w (%s)", err, privHint)
+		}
+		fmt.Fprintf(stderr, "briard start: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// sayTo is a verb's progress lines on w, one per call.
+func sayTo(w io.Writer) func(string, ...any) {
+	return func(format string, a ...any) { fmt.Fprintf(w, format+"\n", a...) }
 }
 
 // runDashboard is `briard open`: it asks the agent for a one-time link to the Briard page

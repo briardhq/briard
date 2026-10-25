@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows/svc"
 )
 
 // The property the Windows backend exists for, against the real kernel: a unit started by one
@@ -65,5 +67,27 @@ func TestUnitIsFoundByNameAfterTheLauncherLetsGo(t *testing.T) {
 			t.Fatalf("5s after the stop LoadState = %q, %v; want not-found (the name goes with the unit)", s, err)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// DOWN AND STAYING DOWN is STOPPED by a clean exit. A non-zero exit -- the agent's own error, a
+// process ended outright -- is a failure the recovery restarts 5 s later, and a service on its way
+// up or down is neither.
+func TestOnlyACleanlyStoppedServiceIsStopped(t *testing.T) {
+	for _, c := range []struct {
+		st   svc.Status
+		want bool
+	}{
+		{svc.Status{State: svc.Stopped}, true},
+		{svc.Status{State: svc.Stopped, Win32ExitCode: 1}, false},
+		{svc.Status{State: svc.Stopped, Win32ExitCode: 1067}, false}, // ERROR_PROCESS_ABORTED
+		{svc.Status{State: svc.Stopped, Win32ExitCode: 1066, ServiceSpecificExitCode: 3}, false},
+		{svc.Status{State: svc.StopPending}, false},
+		{svc.Status{State: svc.Running}, false},
+		{svc.Status{State: svc.StartPending}, false},
+	} {
+		if got := stoppedStatus(c.st); got != c.want {
+			t.Errorf("stoppedStatus(%+v) = %v, want %v", c.st, got, c.want)
+		}
 	}
 }

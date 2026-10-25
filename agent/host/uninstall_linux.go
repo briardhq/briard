@@ -8,6 +8,7 @@ import (
 
 	"briard.io/agent/nic"
 	"briard.io/agent/platform"
+	"briard.io/agent/selfupdate"
 )
 
 // What the Linux install made, and so what goes:
@@ -87,4 +88,13 @@ func (cfg Config) uninstallSpec() nic.Spec {
 		s.Addrs, s.Routes = ns.Addrs, ns.Routes
 	}
 	return s
+}
+
+// stopNode is `briard stop` with no agent to ask (Stop): the agent's unit stopped through the
+// manager, which also cancels a restart a crash queued, then the guest's clean stop.
+func stopNode(ctx context.Context, qmpSock string, logf func(string, ...any)) error {
+	if err := platform.StopService(ctx, selfupdate.DefaultAgentUnit, 0, logf); err != nil {
+		return err
+	}
+	return platform.PowerOffGuest(ctx, qmpSock, logf)
 }

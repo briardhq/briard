@@ -127,3 +127,45 @@ func StartService(ctx context.Context, unit string) error {
 	}
 	return fmt.Errorf("start %s: %w: %s", unit, err, strings.Join(strings.Fields(strings.ReplaceAll(string(out), "\n", " | ")), " "))
 }
+
+// PowerOffGuest stops the guest cleanly and returns once it is down: a PLAIN stop of its unit, the
+// one RemoveUnit makes, which runs the unit's ExecStop -- the powerdown over the monitor -- and
+// returns when the unit has stopped. Never Guest.Stop, which is the kill. During a machine
+// shutdown the manager has already queued the same stop, and this one joins it. A unit the manager
+// does not know has no guest to stop. The monitor socket is the Windows arm's; here the unit's
+// ExecStop names it.
+func PowerOffGuest(_ context.Context, _ string, _ func(string, ...any)) error {
+	load, err := unitShow(GuestUnit, "LoadState")
+	if err != nil {
+		return fmt.Errorf("platform: asking about %s: %w", GuestUnit, err)
+	}
+	if load == "not-found" {
+		return nil
+	}
+	return stopUnit(GuestUnit)
+}
+
+// SystemState is the manager's own word for where the machine is (`systemctl is-system-running`):
+// "stopping" for the whole of a shutdown or a reboot, from before it stops the first unit, "" when
+// it could not be asked. It exits non-zero for every state but "running", so the answer is read
+// whatever the exit status.
+func SystemState(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, "systemctl", "is-system-running").Output()
+	return strings.TrimSpace(string(out))
+}
+
+// ServiceStopped reports whether a service is down and staying down: stopped, or exited cleanly,
+// with no restart queued. A failed unit, and one waiting out its RestartSec (which reads
+// "activating"), are on their way back up or need someone, so neither is.
+func ServiceStopped(unit string) (bool, error) {
+	st, err := unitState(unit)
+	if err != nil {
+		return false, err
+	}
+	return stoppedState(st), nil
+}
+
+// stoppedState is ServiceStopped's reading of an ActiveState.
+func stoppedState(active string) bool { return active == "inactive" }

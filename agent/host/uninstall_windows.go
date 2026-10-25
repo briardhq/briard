@@ -83,7 +83,8 @@ func (cfg Config) removeServices(ctx context.Context, logf func(string, ...any))
 }
 
 // stopNode stops a running node for something that must not race it -- an uninstall, or a
-// reinstall laying files over the ones in use: the warden (its program is one of those files),
+// reinstall laying files over the ones in use -- and is `briard stop` with no agent to ask (Stop):
+// the warden (its program is one of those files),
 // then the agent's service (a stop leaves the guest running, for the next agent to re-adopt; here
 // nothing must re-adopt it), then the guest's clean powerdown. A job kill is not a stop on Windows
 // (unitStop), and the data volume a reinstall or a kept uninstall leaves behind is only worth
@@ -104,28 +105,9 @@ func stopNode(ctx context.Context, qmpSock string, logf func(string, ...any)) er
 	if agent {
 		logf("powering the guest off cleanly")
 	}
-	gctx, cancel := context.WithTimeout(ctx, platform.GuestShutdownGrace+15*time.Second)
-	defer cancel()
-	if err := platform.ShutdownVM(gctx, qmpSock, platform.GuestShutdownGrace); err != nil {
-		return err
-	}
-	// A QUIET MONITOR IS NOT AN EXITED QEMU: qemu closes its socket on its way out, and a guest
-	// launched by an agent that stopped mid bring-up has no monitor up yet at all. What follows
-	// deletes or replaces files that process holds, so wait for the guest's job to empty; the kill
-	// is only the last resort past the bound.
-	if !platform.Running(ctx, platform.QEMUSpec{}) {
-		return nil
-	}
-	logf("waiting for the guest's process to exit")
-	deadline := time.Now().Add(guestExitBound)
-	for platform.Running(ctx, platform.QEMUSpec{}) {
-		if time.Now().After(deadline) {
-			logf("the guest's process has not exited %s after its powerdown; ending it", guestExitBound)
-			return platform.RemoveUnit(platform.GuestUnit)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return nil
+	// What follows deletes or replaces files qemu holds, and PowerOffGuest returns once its
+	// process has exited.
+	return platform.PowerOffGuest(ctx, qmpSock, logf)
 }
 
 // stopService stops the named service and waits, bounded, until it has; it reports whether the
@@ -161,9 +143,6 @@ func stopService(m *mgr.Mgr, name string, logf func(string, ...any)) (bool, erro
 	}
 	return true, nil
 }
-
-// guestExitBound bounds the wait for qemu's process to exit once its monitor has gone quiet.
-const guestExitBound = 30 * time.Second
 
 func (cfg Config) removeNetwork(ctx context.Context, _ func(string, ...any)) error {
 	var errs []error

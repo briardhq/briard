@@ -18,6 +18,7 @@ import (
 
 	"briard.io/agent/cli"
 	"briard.io/agent/host"
+	"briard.io/agent/platform"
 	"briard.io/agent/reportcard"
 	"briard.io/shared/sdnotify"
 )
@@ -71,15 +72,26 @@ func runDaemon(args []string) {
 		return
 	}
 
-	// SIGTERM/SIGINT cancels the context so a `systemctl stop` is a clean shutdown rather than a
-	// kill: the host agent stops its guest.
+	// SIGTERM/SIGINT cancels the context so a `systemctl stop` is a clean stop rather than a kill:
+	// the agent finishes the act in flight and leaves its guest serving for the next agent. A
+	// SIGTERM while the machine is going down is the other stop, the node's shutdown (host.StopCause
+	// asks systemd which): the act aborted, the guest powered off cleanly.
 	//
 	// Note what installing this handler COSTS, because it is easy to miss: it removes Go's
 	// default "SIGTERM terminates the process". From here on, every path under this context is
 	// responsible for noticing cancellation itself, and a path parked in a blocking syscall
 	// notices nothing at all.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
+	ctx, stop := context.WithCancelCause(context.Background())
+	defer stop(nil)
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		if <-sigs == syscall.SIGTERM {
+			stop(host.StopCause(platform.SystemState(ctx)))
+			return
+		}
+		stop(nil)
+	}()
 
 	// Take the notify socket out of the environment before anything is exec'd, so the
 	// children this agent spawns cannot inherit it.

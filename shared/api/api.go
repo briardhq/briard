@@ -521,6 +521,10 @@ const (
 	//                        and a point from the ring are one path, and the restore is itself a
 	//                        row in the history that can be undone. Local-only: the household's
 	//                        data is the household's to put back.
+	DirectiveStop = "stop" // Payload empty. Bring this node down until it is started again or the
+	//                        machine next boots: the act in flight aborted (the outcome names it),
+	//                        the guest powered off cleanly, the agent exited. `briard stop`.
+	//                        Local-only: the household's machine is the household's to stop.
 )
 
 // BackupRestore is a DirectiveBackupRestore's payload: the service, and the night -- a restic

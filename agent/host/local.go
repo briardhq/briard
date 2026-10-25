@@ -21,6 +21,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	"briard.io/shared/api"
 )
@@ -114,7 +115,14 @@ func handleLocal(ctx context.Context, conn net.Conn, reqs chan<- localRequest, l
 	case o := <-resp:
 		writeOutcome(conn, o)
 	case <-ctx.Done():
-		writeOutcome(conn, failed("agent shut down before the directive was applied"))
+		// The stop directive ends this context and is answered a moment after: the loop that
+		// cancelled is the one that sends its outcome. A second covers that, and nothing else.
+		select {
+		case o := <-resp:
+			writeOutcome(conn, o)
+		case <-time.After(time.Second):
+			writeOutcome(conn, failed("agent shut down before the directive was applied"))
+		}
 	}
 }
 

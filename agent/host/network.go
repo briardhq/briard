@@ -389,6 +389,11 @@ func (cfg Config) waitTick(ctx context.Context, local <-chan localRequest, why s
 		case <-t.C:
 			return nil
 		case req := <-local:
+			// A stop is the one directive a node with no network still takes: going down needs none.
+			if req.d.Kind == api.DirectiveStop {
+				req.resp <- cfg.applyStop(req.d, logf)
+				continue
+			}
 			// REFUSED, IMMEDIATELY, WITH THE REASON. The alternative is what the channel does
 			// with no reader -- the CLI blocks until the agent exits, which is indistinguishable
 			// to the operator from the agent being wedged. The one moment they most need an

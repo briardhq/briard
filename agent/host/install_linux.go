@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"briard.io/agent/platform"
+	"briard.io/agent/selfupdate"
 )
 
 // layDownOS is the Linux tail of the layout: the fd-passing launch wrapper, `briard` on $PATH,
@@ -202,4 +205,10 @@ func (r installRoots) osRoots() installRoots {
 // swaps (nic.Uplink never asks for one here).
 func (cfg Config) swapMember(context.Context, string, string, func(string, ...any)) error {
 	return errors.New("no member swap on Linux")
+}
+
+// StartAgent starts the agent's unit and returns once it reported READY, or with why it did not:
+// `briard start`, and the self-update's start of its candidate.
+func StartAgent(ctx context.Context, _ func(string, ...any)) error {
+	return platform.StartService(ctx, selfupdate.DefaultAgentUnit)
 }

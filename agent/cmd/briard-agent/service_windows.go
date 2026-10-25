@@ -100,10 +100,11 @@ const (
 // agent started", never "the node is healthy" (sdnotify's package doc says why).
 //
 // STOP and PRESHUTDOWN are the two ways down, and the difference between them is the guest. A stop
-// is an agent restart or an update: the guest keeps serving and the next agent re-adopts it,
-// exactly as under systemd. A preshutdown is the machine going down, and is the one moment the
-// guest must be powered off cleanly -- on Linux that is the guest unit's ExecStop, because there
-// the agent cannot tell the two apart; here the SCM tells it.
+// is an agent restart or an update: the act in flight finishes, the guest keeps serving and the
+// next agent re-adopts it, exactly as under systemd. A preshutdown is the machine going down: the
+// agent's shutdown (host.ErrShutdown) aborts the act and powers the guest off cleanly before Run
+// returns, inside the time Windows gives it. The agent's own `briard stop` is the same shutdown,
+// and Run returning by itself with nil is how it ends here: a clean exit, which stays down.
 //
 // A resume is the third event, and it costs the guest a clean restart: a guest that slept with the
 // machine wakes with a stale clock and a lease the router may have given away, and a fresh boot
@@ -115,8 +116,8 @@ func (agentService) Execute(_ []string, req <-chan svc.ChangeRequest, status cha
 	if err := holdAwake(); err != nil {
 		log.Printf("service: cannot hold the machine awake, it may sleep while serving: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 	done := make(chan error, 1)
 	go func() { done <- runHost(ctx) }()
 	qmp := host.ConfigFromEnv().QMPSock
@@ -151,21 +152,11 @@ func (agentService) Execute(_ []string, req <-chan svc.ChangeRequest, status cha
 				}
 			case svc.Stop:
 				log.Printf("service: stop -- the guest keeps running for the next agent to re-adopt")
-				stopping(status, req, func() { cancel(); <-done })
+				stopping(status, req, func() { cancel(nil); <-done })
 				return false, 0
 			case svc.PreShutdown:
 				log.Printf("service: the machine is shutting down -- powering the guest off cleanly")
-				stopping(status, req, func() {
-					cancel()
-					<-done
-					sctx, scancel := context.WithTimeout(context.Background(), platform.GuestShutdownGrace+15*time.Second)
-					defer scancel()
-					if err := runGuestShutdown(sctx, qmp); err != nil {
-						log.Printf("service: guest shutdown: %v", err)
-						return
-					}
-					log.Printf("service: the guest powered off cleanly")
-				})
+				stopping(status, req, func() { cancel(host.ErrShutdown); <-done })
 				return false, 0
 			}
 		}
@@ -369,14 +360,11 @@ func updateStart(ctx context.Context) error {
 	if fi, err := os.Stat(host.AgentLog()); err == nil {
 		mark = fi.Size()
 	}
-	err := platform.StartService(ctx, host.ServiceName)
+	err := host.StartAgent(ctx, log.Printf)
 	if err != nil {
 		if tail := logTail(host.AgentLog(), mark, 5); tail != "" {
 			err = fmt.Errorf("%w: %s", err, tail)
 		}
-	}
-	if werr := host.StartWarden(ctx, err == nil, log.Printf); werr != nil {
-		log.Printf("update: the warden: %v", werr)
 	}
 	return err
 }

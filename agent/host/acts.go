@@ -242,12 +242,26 @@ func (cfg *Config) finish(res actResult, pending *[]api.DirectiveOutcome, logf f
 	cfg.adoptInstalledServices(res.d, res.o, logf)
 }
 
+// state reports the kind of the act in flight ("" when none) and whether the agent has begun to
+// stop. nil-safe like inFlight.
+func (a *actLane) state() (kind string, stopping bool) {
+	if a == nil {
+		return "", false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.busy, a.stopping
+}
+
 // stopAfter is the stop path, and what makes a stop the self-update's safe point: it returns the
 // context the loop and its acts run on, which ends when parent ends AND the act in flight has
 // finished. From parent's end the lane refuses every new act, so the stop ends between acts; until
 // the act ends the loop keeps running -- beating, and talking to the guest, whose deadman counts
 // the host's silence -- exactly as it did while the act ran. Bounded by the act's own budget and,
 // above it, by the service manager's stop timeout. nil-safe: without a lane it is parent.
+//
+// A SHUTDOWN IS THE OTHER STOP (stop.go): parent ended with ErrShutdown, the node is going down,
+// and the loop and the act in flight end at once, the act named as aborted.
 func (a *actLane) stopAfter(parent context.Context, logf func(string, ...any)) context.Context {
 	if a == nil {
 		return parent
@@ -259,7 +273,11 @@ func (a *actLane) stopAfter(parent context.Context, logf func(string, ...any)) c
 		a.stopping = true
 		kind, done := a.busy, a.done
 		a.mu.Unlock()
-		if kind != "" {
+		switch {
+		case kind == "":
+		case shuttingDown(parent):
+			logf("shutting down: aborting the %s in flight", kind)
+		default:
 			logf("stopping: finishing the %s in flight first; no new acts", kind)
 			<-done
 			logf("stopping: the %s finished", kind)

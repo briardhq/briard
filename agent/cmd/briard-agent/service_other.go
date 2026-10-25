@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"briard.io/agent/host"
 	"briard.io/agent/platform"
 	"briard.io/agent/selfupdate"
 )
@@ -49,5 +50,5 @@ func updateStop(ctx context.Context, patience time.Duration) error {
 }
 
 func updateStart(ctx context.Context) error {
-	return platform.StartService(ctx, selfupdate.DefaultAgentUnit)
+	return host.StartAgent(ctx, log.Printf)
 }

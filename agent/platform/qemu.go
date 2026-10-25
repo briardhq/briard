@@ -441,10 +441,10 @@ const guestStopTimeout = 75 * time.Second
 // itself.
 //
 // It belongs on the UNIT rather than in the agent's own SIGTERM handler, and that is the crux
-// rather than a preference: host.Run carries an explicit "no defer g.Stop()" because an agent
-// restart must be transparent to the guest, and the agent cannot tell "I am being restarted"
-// from "the machine is going down". systemd can, and does: it stops this unit for the second and
-// not for the first.
+// rather than a preference: an agent restart must be transparent to the guest, and the signal
+// alone does not say which stop it is. systemd stops this unit for a shutdown and not for a
+// restart, whatever the agent makes of its signal; and the agent's own way down
+// (PowerOffGuest) is a plain stop of this unit, so the powerdown is written once, here.
 //
 // No ExecStop without a monitor socket -- there is then no way to ask, and a unit that promises a
 // clean stop it cannot deliver is worse than one that promises nothing.

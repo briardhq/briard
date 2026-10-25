@@ -20,6 +20,7 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 
 	"briard.io/agent/nic"
+	"briard.io/agent/platform"
 	"briard.io/agent/selfupdate"
 	"briard.io/shared/atomicfile"
 )
@@ -574,4 +575,15 @@ func (r installRoots) registerUpdateTask(ctx context.Context, script string) err
 	}
 	defer os.Remove(def)
 	return run(ctx, "schtasks", "/create", "/tn", selfupdate.DefaultUpdateUnit, "/xml", def, "/f")
+}
+
+// StartAgent starts the agent's service to RUNNING, then the warden, brought to the agent in place
+// once the agent runs (StartWarden): `briard start`, and the self-update's start of its candidate.
+// A warden that does not start is logged, never the start's failure.
+func StartAgent(ctx context.Context, logf func(string, ...any)) error {
+	err := platform.StartService(ctx, ServiceName)
+	if werr := StartWarden(ctx, err == nil, logf); werr != nil {
+		logf("the warden: %v", werr)
+	}
+	return err
 }

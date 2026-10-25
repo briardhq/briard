@@ -70,8 +70,9 @@ ExecStart=/opt/briard/agent/briard-agent run
 Restart=on-failure
 RestartSec=3
 # Explicit, because the default (90s) is shorter than the operations a stop waits for. SIGTERM
-# unwinds cooperatively (signal.NotifyContext) and then FINISHES the act in flight, which runs on a
-# context a stop does not cancel; the recovery and rollback legs on the loop run on DETACHED
+# unwinds cooperatively and then FINISHES the act in flight, which runs on a context a stop does
+# not cancel (a SIGTERM during the machine's own shutdown aborts the act instead and powers the
+# guest off, which is seconds); the recovery and rollback legs on the loop run on DETACHED
 # contexts too, so they cannot be cancelled halfway, and rebootGuest alone budgets
 # BringUpBudget+3*shutdownGrace. At 90s a forced stop SIGKILLs the agent partway through
 # a recovery -- the one moment the machine can least afford it. Self-update does not wait on this
