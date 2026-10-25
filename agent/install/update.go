@@ -236,7 +236,14 @@ type Update struct {
 	Start func(ctx context.Context) error
 	// Smoke proves a staged qemu tree runs on this host.
 	Smoke func(ctx context.Context, tree string) error
+	// Stopped reports whether the agent's service is down and staying down -- `briard stop` -- in
+	// which case the run defers. nil never defers.
+	Stopped func(ctx context.Context) (bool, error)
 }
+
+// Deferred is the line a run ends on when briard was stopped: an answer, so the update's result
+// reads ok and nothing alerts, and the update happens on the first run after `briard start`.
+const Deferred = "deferred: briard is stopped"
 
 // Run returns the one line the run ended on — "already at …" or "updated to …" — and an error
 // for a refusal (bad pin, bad signature, tampered artifact, a qemu that does not run here), in
@@ -252,6 +259,17 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	}
 	if err := u.reconcile(ctx, logf); err != nil {
 		return "", err
+	}
+	// A NODE THE USER STOPPED STAYS STOPPED: the run would stop the stopped agent, swap, and start
+	// it -- the guest back at 03:00. A crashed node is not stopped (its service failed, or is
+	// restarting) and still updates, because the update may be its fix; so does a node whose state
+	// could not be read.
+	if u.Stopped != nil {
+		if down, err := u.Stopped(ctx); err != nil {
+			logf("update: could not tell whether briard was stopped (%v); updating", err)
+		} else if down {
+			return Deferred, nil
+		}
 	}
 	want, wantBytes, err := u.Fetcher.fetchManifest(ctx, target)
 	if err != nil {

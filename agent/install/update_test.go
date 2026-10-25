@@ -942,3 +942,43 @@ func armOf(chain string) string {
 	}
 	return PlatformHost
 }
+
+// A NODE THE USER STOPPED IS NOT UPDATED: the run ends on the deferral -- an answer, so nothing
+// alerts -- having stopped, started and staged nothing, so the guest is not brought back. A
+// running or crashed node (Stopped false) updates, and so does one whose state could not be read:
+// the update may be its fix.
+func TestUpdateDefersOnAStoppedNode(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		stopped bool
+		err     error
+		defers  bool
+	}{
+		{"stopped", true, nil, true},
+		{"running or crashed", false, nil, false},
+		{"unreadable", false, errors.New("the service manager did not answer"), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ch := goodChannel(t)
+			u, l, f := updateFixture(t, ch, nil)
+			u.Stopped = func(context.Context) (bool, error) { return c.stopped, c.err }
+			line, err := u.Run(context.Background(), TargetLatest)
+			if err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			if !c.defers {
+				if !committed(t, l) || f.starts != 1 {
+					t.Fatalf("line %q, starts %d: want the update made", line, f.starts)
+				}
+				return
+			}
+			if line != Deferred {
+				t.Errorf("result line = %q, want %q", line, Deferred)
+			}
+			if len(f.stops) != 0 || f.starts != 0 {
+				t.Errorf("stops %v, starts %d on a stopped node; want none", f.stops, f.starts)
+			}
+			assertNothingStaged(t, l)
+		})
+	}
+}

@@ -96,6 +96,7 @@ func runUpdate(ctx context.Context, target string) (string, error) {
 		Smoke: func(ctx context.Context, tree string) error {
 			return platform.SmokeTest(ctx, tree, cfg.Accel, cfg.CPUModel, log.Printf)
 		},
+		Stopped: func(context.Context) (bool, error) { return platform.ServiceStopped(selfupdate.DefaultAgentUnit) },
 	}
 	return u.Run(ctx, target)
 }
