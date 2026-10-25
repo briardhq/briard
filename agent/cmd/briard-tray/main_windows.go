@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
 	"io/fs"
-	"math"
 	"os"
 	"os/exec"
 	"runtime"
@@ -174,9 +174,8 @@ func main() {
 	self, _ := os.Stat(exe)
 
 	t = &tray{sock: host.ConfigFromEnv().AdminSock, wake: make(chan struct{}, 1)}
-	for s, c := range map[state][3]byte{serving: {0x2e, 0x9e, 0x44}, degraded: {0xe8, 0x9a, 0x1f},
-		stopped: {0x8a, 0x8a, 0x8a}, working: {0x3a, 0x7b, 0xd5}} {
-		t.icons[s] = disc(c)
+	for _, s := range []state{serving, degraded, stopped, working} {
+		t.icons[s] = icon(art(s))
 	}
 	created, _ := windows.UTF16PtrFromString("TaskbarCreated")
 	r, _, _ := registerWindowMessage.Call(uintptr(unsafe.Pointer(created)))
@@ -495,10 +494,9 @@ func copyUTF16(dst []uint16, s string) {
 	copy(dst, u)
 }
 
-// disc draws the icon: a filled disc in one colour on a clear ground, its edge smoothed by the
-// alpha channel, 32 px for Windows to scale.
-func disc(c [3]byte) windows.Handle {
-	const n = 32
+// icon makes a Windows icon of an image (art), for Windows to scale.
+func icon(img *image.NRGBA) windows.Handle {
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
 	hdr := struct {
 		Size                   uint32
 		Width, Height          int32
@@ -506,36 +504,27 @@ func disc(c [3]byte) windows.Handle {
 		Compression, SizeImage uint32
 		XPerMeter, YPerMeter   int32
 		ClrUsed, ClrImportant  uint32
-	}{Width: n, Height: -n, Planes: 1, BitCount: 32}
+	}{Width: int32(w), Height: -int32(h), Planes: 1, BitCount: 32}
 	hdr.Size = uint32(unsafe.Sizeof(hdr))
 	var bits unsafe.Pointer
 	color, _, _ := createDIBSection.Call(0, uintptr(unsafe.Pointer(&hdr)), 0, uintptr(unsafe.Pointer(&bits)), 0, 0)
 	if color == 0 || bits == nil {
 		return 0
 	}
-	px := unsafe.Slice((*byte)(bits), n*n*4)
-	for y := 0; y < n; y++ {
-		for x := 0; x < n; x++ {
-			dx, dy := float64(x)+0.5-n/2, float64(y)+0.5-n/2
-			a := 13.5 - math.Sqrt(dx*dx+dy*dy) // inside the radius: opaque; the last pixel: partial
-			if a > 1 {
-				a = 1
-			}
-			if a < 0 {
-				a = 0
-			}
-			i := (y*n + x) * 4
-			px[i], px[i+1], px[i+2], px[i+3] = c[2], c[1], c[0], byte(a*255)
-		}
+	// The DIB is BGRA, top-down, row after row as the image's Pix is.
+	px := unsafe.Slice((*byte)(bits), w*h*4)
+	for i := 0; i < len(px); i += 4 {
+		p := img.Pix[i : i+4]
+		px[i], px[i+1], px[i+2], px[i+3] = p[2], p[1], p[0], p[3]
 	}
-	mask, _, _ := createBitmap.Call(n, n, 1, 1, 0)
+	mask, _, _ := createBitmap.Call(uintptr(w), uintptr(h), 1, 1, 0)
 	info := struct {
 		Icon               int32
 		XHotspot, YHotspot uint32
 		Mask, Color        windows.Handle
 	}{Icon: 1, Mask: windows.Handle(mask), Color: windows.Handle(color)}
-	h, _, _ := createIconIndirect.Call(uintptr(unsafe.Pointer(&info)))
+	hicon, _, _ := createIconIndirect.Call(uintptr(unsafe.Pointer(&info)))
 	deleteObject.Call(mask)
 	deleteObject.Call(color)
-	return windows.Handle(h)
+	return windows.Handle(hicon)
 }
