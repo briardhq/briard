@@ -62,6 +62,13 @@ Run `sudo briard doctor` to check the machine, `sudo briard alerts` to see what 
 about, and `sudo briard logs` to read its logs (include these in a bug report).
 `sudo briard help` lists every command.
 
+## Taking it down for a while
+
+`sudo briard stop` brings Briard down: whatever it is doing is stopped, and the VM your apps run
+in powers off cleanly. `sudo briard start` brings it back, and so does restarting the machine.
+While Briard is stopped nothing warns you, because the warnings come from Briard itself, and the
+nightly update waits until it is started again.
+
 ## More
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): how it is built and why, and what it sends where.
