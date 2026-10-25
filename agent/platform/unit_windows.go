@@ -441,6 +441,20 @@ func PowerOffGuest(ctx context.Context, qmpSock string, logf func(string, ...any
 // (PRESHUTDOWN), so nothing asks.
 func SystemState(context.Context) string { return "" }
 
+// ServiceRunning reports whether a service is RUNNING.
+func ServiceRunning(name string) (bool, error) {
+	s, err := openService(name, windows.SERVICE_QUERY_STATUS)
+	if err != nil {
+		return false, err
+	}
+	defer s.Close()
+	st, err := s.Query()
+	if err != nil {
+		return false, fmt.Errorf("ask %s its state: %w", name, err)
+	}
+	return st.State == svc.Running, nil
+}
+
 // ServiceStopped reports whether a service is down and staying down: STOPPED by a clean exit. A
 // non-zero exit is a failure, which the service's recovery starts again 5 s later.
 func ServiceStopped(name string) (bool, error) {

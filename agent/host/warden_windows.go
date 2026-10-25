@@ -132,8 +132,14 @@ func StopWarden(ctx context.Context, logf func(string, ...any)) error {
 // deleted -- or, when the new one does not reach RUNNING, put back and started. Without converge
 // (the agent did not start, so what is in place is a candidate being reverted) the warden starts
 // as it is. A swap cut short is finished here: a .prev with no program is put back, a .prev
-// beside one is the tail of a commit.
+// beside one is the tail of a commit. A warden already RUNNING is left as it is: a running program
+// cannot be swapped (the update stops the warden before it starts the agent), and `briard stop`
+// leaves it up, so `briard start` -- from the install user's terminal too, which cannot read
+// warden\ -- finds it running.
 func StartWarden(ctx context.Context, converge bool, logf func(string, ...any)) error {
+	if running, err := platform.ServiceRunning(WardenName); err == nil && running {
+		return nil
+	}
 	agent := filepath.Join(prefixDir, "agent", agentExe)
 	w := filepath.Join(prefixDir, "warden", wardenExe)
 	prev := w + ".prev"
