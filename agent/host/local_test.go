@@ -50,7 +50,7 @@ func TestServeLocalRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reqs := make(chan localRequest)
-	go serveLocal(ctx, sock, reqs, quiet)
+	go serveLocal(ctx, sock, "", reqs, quiet)
 
 	// Stand in for the observe loop: apply one request, echo back a recognisable outcome.
 	var got api.Directive
@@ -87,7 +87,7 @@ func TestServeLocalRejectsBeforeTheLoop(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			reqs := make(chan localRequest, 1)
-			go serveLocal(ctx, sock, reqs, quiet)
+			go serveLocal(ctx, sock, "", reqs, quiet)
 
 			// A stand-in observe loop that ALWAYS answers, so a regression that lets a bad
 			// request through fails on the assertion below rather than hanging the suite on a
@@ -126,7 +126,7 @@ func TestServeLocalIsRootOnly(t *testing.T) {
 	sock := filepath.Join(testsock.Dir(t), "admin.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go serveLocal(ctx, sock, make(chan localRequest), quiet)
+	go serveLocal(ctx, sock, "", make(chan localRequest), quiet)
 
 	var st os.FileInfo
 	var err error
@@ -165,7 +165,7 @@ func TestServeLocalReplacesAStaleSocket(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reqs := make(chan localRequest)
-	go serveLocal(ctx, sock, reqs, quiet)
+	go serveLocal(ctx, sock, "", reqs, quiet)
 	go func() {
 		rq := <-reqs
 		rq.resp <- api.DirectiveOutcome{State: api.OutcomeDone}
@@ -179,7 +179,7 @@ func TestServeLocalReplacesAStaleSocket(t *testing.T) {
 func TestServeLocalDisabled(t *testing.T) {
 	dir := testsock.Dir(t)
 	done := make(chan struct{})
-	go func() { serveLocal(context.Background(), "", nil, quiet); close(done) }()
+	go func() { serveLocal(context.Background(), "", "", nil, quiet); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):

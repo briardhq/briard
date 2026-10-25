@@ -12,7 +12,9 @@
 // a node. The payoff is that a CLI which sees little production use cannot rot: it is a different
 // doorway onto a permanently hot path, exercised by every cloud-driven install.
 //
-// Root-only by construction: the socket is created 0600 and the agent runs as root.
+// Root-only by construction: the socket is created 0600 and the agent runs as root. On Windows the
+// socket's DACL is the same gate -- connect needs write on the socket file there too -- and admits
+// SYSTEM, Administrators and the install user's account alone (restrictDoor).
 package host
 
 import (
@@ -41,7 +43,7 @@ type localRequest struct {
 // and losing the CLI is an inconvenience where refusing to run would be an outage. That matters
 // most on a box where something else already holds the path — the door is worth strictly less
 // than the node.
-func serveLocal(ctx context.Context, sock string, reqs chan<- localRequest, logf func(string, ...any)) {
+func serveLocal(ctx context.Context, sock, owner string, reqs chan<- localRequest, logf func(string, ...any)) {
 	if sock == "" {
 		return // explicitly disabled
 	}
@@ -57,10 +59,10 @@ func serveLocal(ctx context.Context, sock string, reqs chan<- localRequest, logf
 		logf("admin socket: listen %s: %v (local CLI unavailable)", sock, err)
 		return
 	}
-	// Root-only. The bind honours the process umask, so an explicit chmod is the only way to
-	// know the mode; a door we cannot prove is shut is one we close.
-	if err := os.Chmod(sock, 0o600); err != nil {
-		logf("admin socket: chmod %s: %v (local CLI unavailable)", sock, err)
+	// Shut to all but the agent's own (restrictDoor), after every bind: the bind makes a new
+	// file. A door we cannot prove is shut is one we close.
+	if err := restrictDoor(sock, owner); err != nil {
+		logf("admin socket: restricting %s: %v (local CLI unavailable)", sock, err)
 		_ = ln.Close()
 		return
 	}

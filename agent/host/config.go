@@ -185,7 +185,8 @@ func ConfigFromEnv() Config {
 		QMPSock: env("QMP_SOCK", filepath.Join(runDir, "qmp", "guest.sock")),
 		// On by default, because an admin door only an expert can find is not a door.
 		// The CLI defaults to this same path (agent/cli); keep the two literals in step.
-		AdminSock: env("ADMIN_SOCK", filepath.Join(runDir, "admin.sock")),
+		AdminSock:   env("ADMIN_SOCK", filepath.Join(runDir, "admin.sock")),
+		InstallUser: os.Getenv("INSTALL_USER_SID"), // written by the install, from its own token
 		// The guest's admin port, beside the control socket it mirrors.
 		AdminPortSock: env("ADMIN_PORT_SOCK", adminPortSock),
 		// THE GUEST'S THREE NICS, by the name of the host device behind each. `declared` and not

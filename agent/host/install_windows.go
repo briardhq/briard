@@ -90,7 +90,7 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	// service behind, so the agent runs degraded at the next boot and says so -- the better
 	// leftover than the other order's, a bridge nobody runs on, and every step here is
 	// idempotent, so the re-run the failure asks for finds its own work done.
-	if err := registerService(ServiceName, exe, "run", agentConfig, preshutdownBudget, say); err != nil {
+	if err := registerService(ServiceName, exe, "run", agentConfig, preshutdownBudget, installUser(), say); err != nil {
 		return err
 	}
 	// THE WARDEN, the agent's outside watcher (warden_windows.go): a COPY of this agent in a
@@ -102,7 +102,7 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	if err := copyFile(exe, wexe); err != nil {
 		return fmt.Errorf("laying the warden: %w", err)
 	}
-	if err := registerService(WardenName, wexe, "-warden", wardenConfig, 0, say); err != nil {
+	if err := registerService(WardenName, wexe, "-warden", wardenConfig, 0, installUser(), say); err != nil {
 		return err
 	}
 	// THE UPDATE LAUNCHER, copied out of the verified set, and the task that runs it: the Windows
@@ -190,9 +190,10 @@ var (
 )
 
 // registerService registers a service with the service manager, or brings an existing
-// registration to this shape: automatic start, recovery that never gives up, and -- for the
-// agent, a non-zero preshutdown -- long enough at shutdown to power the guest off cleanly.
-func registerService(name, exe, arg string, c mgr.Config, preshutdown time.Duration, say func(string, ...any)) error {
+// registration to this shape: automatic start, recovery that never gives up, the install user's
+// account allowed to start and stop it, and -- for the agent, a non-zero preshutdown -- long
+// enough at shutdown to power the guest off cleanly.
+func registerService(name, exe, arg string, c mgr.Config, preshutdown time.Duration, user string, say func(string, ...any)) error {
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("the service manager: %w", err)
@@ -228,6 +229,29 @@ func registerService(name, exe, arg string, c mgr.Config, preshutdown time.Durat
 	if err := s.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
 		return fmt.Errorf("recovery on failure exits: %w", err)
 	}
+	// WHO MAY START AND STOP IT: what Windows gives a new service (serviceSDDL), plus START, STOP and
+	// QUERY_STATUS for the install user's account, so `briard start` works unelevated from the tray
+	// and that account's terminal. Set whole on every install, so a reinstall by another account,
+	// or by SYSTEM, leaves no earlier account's grant behind.
+	sddl := serviceSDDL
+	if user != "" {
+		sid, err := windows.StringToSid(user)
+		if err != nil {
+			return fmt.Errorf("the install user %q: %w", user, err)
+		}
+		sddl += "(A;;LCRPWP;;;" + sid.String() + ")"
+	}
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	if err := windows.SetSecurityInfo(s.Handle, windows.SE_SERVICE, windows.DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		return fmt.Errorf("who may start %s: %w", name, err)
+	}
 	// The preshutdown budget: the guest's clean powerdown runs inside it, and the default is too
 	// short to be sure of one.
 	if preshutdown == 0 {
@@ -239,6 +263,10 @@ func registerService(name, exe, arg string, c mgr.Config, preshutdown time.Durat
 	}
 	return nil
 }
+
+// serviceSDDL is the DACL Windows gives a service it creates (read off one with `sc sdshow`): SYSTEM
+// may run it, Administrators everything, and an interactive or service logon may ask its state.
+const serviceSDDL = "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)"
 
 // preshutdownBudget is how long Windows waits for the agent at shutdown: the guest's own powerdown
 // grace, its handover margin, and the agent's own stop, with room to spare.
@@ -447,7 +475,7 @@ func flushInstall(_ context.Context, say func(string, ...any)) error {
 // the state dir is used. An operator who named one (BRIARD_BACKUP_DIR, "" for off) is copied like
 // any other setting instead.
 func backupFolder(context.Context) string {
-	if _, set := os.LookupEnv("BRIARD_BACKUP_DIR"); set || isLocalSystem() {
+	if _, set := os.LookupEnv("BRIARD_BACKUP_DIR"); set || installUser() == "" {
 		return ""
 	}
 	docs, err := windows.KnownFolderPath(windows.FOLDERID_Documents, windows.KF_FLAG_DEFAULT)
@@ -461,11 +489,18 @@ func backupFolder(context.Context) string {
 	return dir
 }
 
-// isLocalSystem reports whether this process runs as SYSTEM rather than as a person; a token it
-// cannot read counts as SYSTEM, so the backup lands in the agent's own folder rather than a guess.
-func isLocalSystem() bool {
+// installUser is the SID of the account that passed UAC: the installer runs elevated AS that
+// account, so its token's user is the household's administrator, and the one account the admin door
+// and the services admit unelevated (restrictDoor, registerService) -- the tray, and `briard` in
+// that account's own terminal. SYSTEM (a remote or scripted install) is nobody: "", and both stay
+// SYSTEM's and the Administrators'. A token it cannot read counts as SYSTEM: nothing is granted, and
+// the backup lands in the agent's own folder (backupFolder), rather than a guess.
+func installUser() string {
 	u, err := windows.GetCurrentProcessToken().GetTokenUser()
-	return err != nil || u.User.Sid.IsWellKnown(windows.WinLocalSystemSid)
+	if err != nil || u.User.Sid.IsWellKnown(windows.WinLocalSystemSid) {
+		return ""
+	}
+	return u.User.Sid.String()
 }
 
 // openForUser does nothing on Windows: the installer runs elevated, and a browser started from it

@@ -131,7 +131,7 @@ func TestTheDoorAnswersAStopThatEndedItsContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reqs := make(chan localRequest)
-	go serveLocal(ctx, sock, reqs, quiet)
+	go serveLocal(ctx, sock, "", reqs, quiet)
 	go func() {
 		rq := <-reqs
 		cancel()

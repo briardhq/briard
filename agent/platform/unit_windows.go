@@ -337,18 +337,34 @@ func waitStopped(ctx context.Context, s *mgr.Service, bound time.Duration) (bool
 	}
 }
 
+// openService opens a service holding only the rights asked for, through a connection to the
+// service manager that asks only to connect: what the install user does unelevated -- `briard
+// start`, the wait after `briard stop` -- holds no more than the service grants that account, and
+// mgr.Connect's all-access is an administrator's alone.
+func openService(name string, access uint32) (*mgr.Service, error) {
+	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return nil, fmt.Errorf("the service manager: %w", err)
+	}
+	defer windows.CloseServiceHandle(m)
+	p, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.OpenService(m, p, access)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", name, err)
+	}
+	return &mgr.Service{Name: name, Handle: h}, nil
+}
+
 // StartService starts a service and returns once it reported RUNNING -- for the agent, READY --
 // or with why it did not: it stopped again while starting, or was still starting at
 // serviceStartBound. A service already running counts as started.
 func StartService(ctx context.Context, name string) error {
-	m, err := mgr.Connect()
+	s, err := openService(name, windows.SERVICE_START|windows.SERVICE_QUERY_STATUS)
 	if err != nil {
-		return fmt.Errorf("the service manager: %w", err)
-	}
-	defer m.Disconnect()
-	s, err := m.OpenService(name)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", name, err)
+		return err
 	}
 	defer s.Close()
 	if err := s.Start(); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
@@ -428,14 +444,9 @@ func SystemState(context.Context) string { return "" }
 // ServiceStopped reports whether a service is down and staying down: STOPPED by a clean exit. A
 // non-zero exit is a failure, which the service's recovery starts again 5 s later.
 func ServiceStopped(name string) (bool, error) {
-	m, err := mgr.Connect()
+	s, err := openService(name, windows.SERVICE_QUERY_STATUS)
 	if err != nil {
-		return false, fmt.Errorf("the service manager: %w", err)
-	}
-	defer m.Disconnect()
-	s, err := m.OpenService(name)
-	if err != nil {
-		return false, fmt.Errorf("open %s: %w", name, err)
+		return false, err
 	}
 	defer s.Close()
 	st, err := s.Query()

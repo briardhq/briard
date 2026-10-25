@@ -212,3 +212,6 @@ func (cfg Config) swapMember(context.Context, string, string, func(string, ...an
 func StartAgent(ctx context.Context, _ func(string, ...any)) error {
 	return platform.StartService(ctx, selfupdate.DefaultAgentUnit)
 }
+
+// installUser is nobody on Linux: the admin door is root's, and there is no tray.
+func installUser() string { return "" }

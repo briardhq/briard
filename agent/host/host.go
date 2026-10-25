@@ -151,6 +151,12 @@ type Config struct {
 	// Distinct from ControlSock in both direction and peer: that one is the agent DIALING the
 	// guest, this one is the agent LISTENING for an operator.
 	AdminSock string
+	// InstallUser is the SID of the account that installed this node on Windows -- the one that
+	// passed UAC -- and the one account the admin door and the agent's service admit unelevated
+	// (restrictDoor, registerService): the tray, and `briard` in that account's own terminal. ""
+	// keeps both to SYSTEM and Administrators, as a SYSTEM install leaves them. Unused on Linux,
+	// where the door is root's.
+	InstallUser string
 	// AdminPortSock is the host end of the GUEST's admin port: a second serial
 	// port qemu serves, which the guest's dashboard writes directives to and the agent answers
 	// -- the same injector semantics as AdminSock, over a wire only the host and this guest
@@ -639,7 +645,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// operator standing at the box needs the door open exactly when the node is degraded. The
 	// wait loop answers on this channel while it waits; the observe loop takes it over after.
 	local := make(chan localRequest)
-	go serveLocal(ctx, cfg.AdminSock, local, logf)
+	go serveLocal(ctx, cfg.AdminSock, cfg.InstallUser, local, logf)
 	// THE BACKUP STORE, up for the agent's whole life on every node: the guest that dials it is
 	// whichever is serving tonight. The fallback folder is the agent's own directory, so it is the
 	// one the agent makes; any other folder is the person's, and is never created here.

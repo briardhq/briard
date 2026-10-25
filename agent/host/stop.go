@@ -100,7 +100,7 @@ func Submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOut
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "unix", sock)
 	if err != nil {
-		return zero, fmt.Errorf("%w: %w", ErrNoAgent, err)
+		return zero, fmt.Errorf("%w: %w", ErrNoAgent, doorRefusal(err))
 	}
 	defer conn.Close()
 	if dl, ok := ctx.Deadline(); ok {

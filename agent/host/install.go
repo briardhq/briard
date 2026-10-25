@@ -284,6 +284,9 @@ STATE_DISK=%s
 		fmt.Fprintf(&b, "BACKUP_DIR=%s\n", dir)
 		say("nightly backups go to %s", dir)
 	}
+	if sid := installUser(); sid != "" {
+		fmt.Fprintf(&b, "INSTALL_USER_SID=%s\n", sid)
+	}
 	// The operator's own settings: EVERY BRIARD_* in the environment, prefix stripped, so
 	// `BRIARD_CPU=qemu64` becomes `CPU=qemu64` and the rule is one sentence rather than a table to
 	// keep in step with config.go. Sorted, so two installs given the same environment produce
