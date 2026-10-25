@@ -8,11 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"briard.io/agent/install"
 	"briard.io/internal/testsock"
 	"briard.io/shared/api"
+	"briard.io/shared/notify"
 )
 
 func quiet(string, ...any) {}
@@ -200,4 +203,53 @@ func touch(p string) error {
 		return err
 	}
 	return f.Close()
+}
+
+// The status directive answers from what the loop already holds, on each state the tray shows:
+// serving, degraded by an open alert (a resolved one does not count), updating, and a node whose
+// last tick was not healthy. A Config built by hand -- no lane, no store, no tick -- answers too.
+func TestStatusAnswersFromTheLastTick(t *testing.T) {
+	status := func(cfg Config, n notify.Notifier) LocalStatus {
+		t.Helper()
+		o := cfg.dispatch(context.Background(), api.Directive{ID: "s", Kind: api.DirectiveStatus}, originLocal, nil, nil, n, nil, nil, nil, quiet)
+		if o.State != api.OutcomeDone || o.ID != "s" {
+			t.Fatalf("status = %+v", o)
+		}
+		var st LocalStatus
+		if err := json.Unmarshal([]byte(o.Detail), &st); err != nil {
+			t.Fatalf("status detail %q: %v", o.Detail, err)
+		}
+		return st
+	}
+	if got := status(Config{}, nil); got != (LocalStatus{}) {
+		t.Errorf("a bare Config = %+v, want the zero answer", got)
+	}
+	cfg := Config{healthy: new(atomic.Bool), acts: newActLane()}
+	cfg.healthy.Store(true)
+	s := testStore(t, nil)
+	if got := status(cfg, s); got != (LocalStatus{Serving: true}) {
+		t.Errorf("serving = %+v", got)
+	}
+	for _, a := range []notify.Alert{open("disk", "low"), open("clock", "off"), resolved("clock"), event("slept")} {
+		if err := s.Notify(context.Background(), a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := status(cfg, s); got != (LocalStatus{Serving: true, Open: 1}) {
+		t.Errorf("degraded = %+v, want one open", got)
+	}
+	for kind, updating := range map[string]bool{api.DirectiveAgentUpdate: true, api.DirectiveUpgradeSystem: true,
+		install.DirectiveUpdateVM: true, api.DirectiveServiceInstall: false} {
+		if _, ok := cfg.acts.claim(kind); !ok {
+			t.Fatal("the lane is held")
+		}
+		if got := status(cfg, s); got.Updating != updating {
+			t.Errorf("with %s in flight, updating = %t, want %t", kind, got.Updating, updating)
+		}
+		cfg.acts.release()
+	}
+	cfg.healthy.Store(false)
+	if got := status(cfg, s); got.Serving {
+		t.Errorf("an unhealthy tick reads as serving: %+v", got)
+	}
 }

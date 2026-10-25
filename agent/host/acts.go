@@ -108,12 +108,17 @@ var (
 // inFlight reports whether an act is running off the loop. nil-safe: a loop built without a
 // lane (tests) runs everything on itself and never has one.
 func (a *actLane) inFlight() bool {
+	return a.kind() != ""
+}
+
+// kind is the kind of the act in flight, "" when none. nil-safe like inFlight.
+func (a *actLane) kind() string {
 	if a == nil {
-		return false
+		return ""
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.busy != ""
+	return a.busy
 }
 
 // claim takes the act slot for kind, or reports what holds it.

@@ -525,6 +525,11 @@ const (
 	//                        machine next boots: the act in flight aborted (the outcome names it),
 	//                        the guest powered off cleanly, the agent exited. `briard stop`.
 	//                        Local-only: the household's machine is the household's to stop.
+	DirectiveStatus = "status" // Payload empty. What the tray shows: whether the node served at its
+	//                        last tick, how many alerts are open, whether an update is in flight.
+	//                        Answered from the agent's last tick, never a guest round trip, so a
+	//                        poll costs the loop nothing. Outcome Detail = a JSON host.LocalStatus.
+	//                        Local-only: the answer is for the person at the machine, like doctor's.
 )
 
 // BackupRestore is a DirectiveBackupRestore's payload: the service, and the night -- a restic

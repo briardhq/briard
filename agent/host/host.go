@@ -434,6 +434,9 @@ type Config struct {
 	// acts runs the directives that leave the loop (acts.go). Machinery like beat; nil-safe, and
 	// nil means everything runs on the loop (tests). Set by Run.
 	acts *actLane
+	// healthy is the last tick's st.Healthy, which the status directive answers from (local.go).
+	// Machinery like beat; nil-safe. Set by Run, written by the observe loop only.
+	healthy *atomic.Bool
 	// down starts the node's shutdown (stop.go): it cancels Run's context with ErrShutdown. Set by
 	// Run; nil in tests that build a Config by hand.
 	down context.CancelCauseFunc
@@ -885,6 +888,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// broken release rather than an occasional retry.
 	var pendingOutcomes []api.DirectiveOutcome
 	cfg.acts = newActLane() // outlives any one observe(), like pendingOutcomes: an act spans a channel bounce
+	cfg.healthy = new(atomic.Bool)
 	// A stop ends between acts: from here the loop and its acts run until the stop AND the act in
 	// flight have both happened, and no act starts once the stop has (acts.go, stopAfter).
 	ctx = cfg.acts.stopAfter(ctx, logf)
@@ -1646,6 +1650,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy,
 			orDash(probe), orDash(serviceLog(st.Services)), orDash(st.GuestBundle), resourceLog(res),
 			time.Since(tickStart).Milliseconds())
+		if cfg.healthy != nil {
+			cfg.healthy.Store(st.Healthy)
+		}
 		alerter.observe(ctx, cl, time.Now()) // edge-triggered redundancy warning (nil-safe on witness/single-node)
 		cfg.beat.Beat()
 		if slices.Contains(episodeAsks, cycle) {
@@ -1787,6 +1794,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveCasaRecheck:   true, // ...and asks again whether its network resolves it
 	api.DirectiveConfigSet:     true, // ...and changes its own address
 	api.DirectiveStop:          true, // ...and brings its own node down
+	api.DirectiveStatus:        true, // ...and asks how it is, as doctor does
 }
 
 // Dispatch routes one directive to the subsystem that can act on it, and is the single place
@@ -1803,6 +1811,9 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectiveDebugArm || d.Kind == api.DirectiveDebugDisarm {
 		return cfg.applyDebugConsole(ctx, d, logf)
+	}
+	if d.Kind == api.DirectiveStatus {
+		return cfg.applyStatus(d, n)
 	}
 	if d.Kind == api.DirectiveDoctor {
 		return cfg.applyDoctor(ctx, d, r, cs)

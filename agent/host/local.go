@@ -25,7 +25,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"briard.io/agent/install"
 	"briard.io/shared/api"
+	"briard.io/shared/notify"
 )
 
 // localRequest is one CLI-submitted directive plus the channel its terminal outcome returns on.
@@ -132,4 +134,33 @@ func handleLocal(ctx context.Context, conn net.Conn, reqs chan<- localRequest, l
 // refused) the work either way — the outcome the cloud cares about rides its own path.
 func writeOutcome(conn net.Conn, o api.DirectiveOutcome) {
 	_ = json.NewEncoder(conn).Encode(o)
+}
+
+// LocalStatus is a status directive's answer, as JSON in the outcome's Detail: what the tray
+// shows. Everything in it is already in hand on the loop -- the last tick's health, the alert
+// store, the act lane -- so asking costs no read of the guest.
+type LocalStatus struct {
+	Serving  bool `json:"serving"`  // the last tick found the node healthy
+	Open     int  `json:"open"`     // alerts open now
+	Updating bool `json:"updating"` // an update of the agent, the guest's image or its OS is in flight
+}
+
+// updateKinds are the acts the tray calls an update.
+var updateKinds = map[string]bool{
+	api.DirectiveAgentUpdate:   true,
+	install.DirectiveUpdateVM:  true,
+	api.DirectiveUpgradeSystem: true,
+}
+
+func (cfg Config) applyStatus(d api.Directive, n notify.Notifier) api.DirectiveOutcome {
+	st := LocalStatus{Serving: cfg.healthy != nil && cfg.healthy.Load(), Updating: updateKinds[cfg.acts.kind()]}
+	if s, ok := n.(*alertStore); ok {
+		recs, _ := s.snapshot()
+		st.Open = len(notify.OpenNow(recs))
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: err.Error()}
+	}
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: string(b)}
 }

@@ -59,7 +59,7 @@ func TestLocalOnlyKindsAreRefusedFromTheCloud(t *testing.T) {
 // dangerous direction: it would be quietly reachable from the cloud. Every local-only kind is
 // asserted present by name, so deleting one from the table fails here rather than in the field.
 func TestDebugKindsAreClassifiedLocalOnly(t *testing.T) {
-	for _, kind := range []string{api.DirectiveDebugArm, api.DirectiveDebugDisarm, api.DirectiveDoctor} {
+	for _, kind := range []string{api.DirectiveDebugArm, api.DirectiveDebugDisarm, api.DirectiveDoctor, api.DirectiveStatus} {
 		if !localOnlyKinds[kind] {
 			t.Errorf("%q is dispatched but not in localOnlyKinds -- the cloud can reach it", kind)
 		}
