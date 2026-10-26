@@ -448,7 +448,10 @@ func makeWritable(context.Context, string) error { return nil }
 // bytes) does not get to depend on their answer.
 //
 // The running executable is skipped: it is the installer's bootstrap, written before it ran rather
-// than by the install, and Windows refuses a running image to a writer.
+// than by the install, and Windows refuses a running image to a writer. So is any other file
+// Windows refuses for a sharing violation -- a binary running from the tree, the tray in the
+// user's session at a first start's finish: nothing writes a running image, and every file the
+// install copies was flushed by installFile before its rename.
 func flushInstall(_ context.Context, say func(string, ...any)) error {
 	say("flushing the installed files to disk")
 	self, _ := os.Executable()
@@ -457,6 +460,9 @@ func flushInstall(_ context.Context, say func(string, ...any)) error {
 			return err
 		}
 		f, err := os.OpenFile(p, os.O_WRONLY, 0)
+		if errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}

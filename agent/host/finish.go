@@ -63,6 +63,13 @@ const (
 // finishAlertKey is the alert open while the finish waits.
 const finishAlertKey = "install-finish"
 
+// finishDone resolves it: asserted by the finish that laid the image, and at every start that finds
+// one, as every emitter asserts what it sees -- a finish that failed after the image landed, or an
+// agent stopped between the two, left it open, and no later start runs the finish that would close
+// it. The store drops a resolve for a key that is not open.
+var finishDone = notify.Alert{Key: finishAlertKey, Kind: notify.Resolved,
+	Title: "Briard: the install is finished", Body: "the guest image is in place, and Briard is starting."}
+
 // finishInstall is the first start's half of the install: a no-op on a node whose image is there.
 // It returns only once the image is laid down, or with ctx's error when the agent is stopped --
 // by the update it started, among others.
@@ -71,6 +78,9 @@ func (cfg Config) finishInstall(ctx context.Context, local <-chan localRequest, 
 		return nil
 	}
 	if _, err := os.Stat(cfg.GuestImage); !errors.Is(err, fs.ErrNotExist) {
+		if err == nil {
+			fireAlert(ctx, n, logf, finishDone)
+		}
 		return nil
 	}
 	logf("install: no guest image at %s; finishing the install -- the self-update to stable, then the image", cfg.GuestImage)
@@ -86,8 +96,7 @@ func (cfg Config) finishInstall(ctx context.Context, local <-chan localRequest, 
 			err = cfg.finishStep(ctx, local, imageFetchBound, "fetching the guest image", cfg.fetchImage, logf)
 		}
 		if err == nil {
-			fireAlert(ctx, n, logf, notify.Alert{Key: finishAlertKey, Kind: notify.Resolved,
-				Title: "Briard: the install is finished", Body: "the guest image is in place, and Briard is starting."})
+			fireAlert(ctx, n, logf, finishDone)
 			return nil
 		}
 		if ctx.Err() != nil {

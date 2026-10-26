@@ -14,6 +14,7 @@ import (
 
 	"briard.io/agent/install"
 	"briard.io/agent/selfupdate"
+	"briard.io/shared/notify"
 )
 
 // The wait a failed finish asks for is decided by what the next attempt would cost: the channel
@@ -110,5 +111,27 @@ func TestFrozenFetchFailedMatchesTheScripts(t *testing.T) {
 		if !strings.Contains(string(b), strings.TrimSpace(frozenFetchFailed)) {
 			t.Errorf("%s no longer says %q when it cannot fetch the target's agent", s, frozenFetchFailed)
 		}
+	}
+}
+
+// A start that finds the image asserts the finish resolved: a finish that failed after the image
+// landed left its alert open, and no later start runs the finish that would close it. One with no
+// image setting, or no image, says nothing here.
+func TestFinishInstallResolvesAtEveryStartWithTheImage(t *testing.T) {
+	dir := t.TempDir()
+	image := filepath.Join(dir, "nixos.qcow2")
+	if err := os.WriteFile(image, []byte("qcow2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeNotifier{}
+	if err := (Config{GuestImage: image}).finishInstall(context.Background(), nil, f, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.alerts) != 1 || f.alerts[0].Key != finishAlertKey || f.alerts[0].Kind != notify.Resolved {
+		t.Errorf("alerts = %+v, want one %s resolved", f.alerts, finishAlertKey)
+	}
+	f = &fakeNotifier{}
+	if err := (Config{}).finishInstall(context.Background(), nil, f, t.Logf); err != nil || len(f.alerts) != 0 {
+		t.Errorf("no image setting: err %v, alerts %+v; want neither", err, f.alerts)
 	}
 }
