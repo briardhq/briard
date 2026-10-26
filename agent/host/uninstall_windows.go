@@ -340,13 +340,24 @@ func (cfg Config) offLogon() error {
 	return nil
 }
 
+// tapProvider is the tap-windows6 driver package's provider, as its INF names it; tapService the
+// kernel service it registers.
+const (
+	tapProvider = "TAP-Windows Provider V9"
+	tapService  = "tap0901"
+)
+
+// tapGoneBound bounds the wait for the adapter list to forget the TAP adapter just removed.
+const tapGoneBound = 15 * time.Second
+
 // tapMarker is install.ps1's record that it installed the TAP driver package itself.
 const tapMarker = "tap-installed"
 
 // tapUninstallKey is the driver package's own Installed apps entry, its NSIS installer's.
 const tapUninstallKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TAP-Windows`
 
-// removeTapDriver removes the tap-windows6 driver package by its own uninstaller -- the TAP
+// removeTapDriver removes the tap-windows6 driver -- its own uninstaller, then the package in the
+// driver store and the service it registered; the TAP
 // adapter is gone by now (DestroyBridge) -- on a POSITIVE record that briard installed it: no
 // record, or one that cannot be read, keeps the driver, which may be another program's. Kept too
 // while any TAP adapter is left: something else uses the driver.
@@ -358,9 +369,19 @@ func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)
 		}
 		return fmt.Errorf("reading %s: %w -- the TAP driver was kept", marker, err)
 	}
-	if nic.TapInstalled() {
-		logf("kept the TAP driver: another TAP adapter on this machine still uses it")
-		return nil
+	// The adapter list still shows ours for a moment after its device is removed (measured on the
+	// rig: the removal returns, the next read still lists it), so one that stays past the bound is
+	// another program's.
+	for deadline := time.Now().Add(tapGoneBound); nic.TapInstalled(); {
+		if time.Now().After(deadline) {
+			logf("kept the TAP driver: another TAP adapter on this machine still uses it")
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, tapUninstallKey, registry.QUERY_VALUE)
 	if errors.Is(err, registry.ErrNotExist) {
@@ -388,6 +409,20 @@ func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("removing %s: %w", dir, err)
 	}
+	// What that uninstaller leaves (measured on the rig): the driver package in Windows' driver
+	// store, its .sys, and the driver's service entry. The package is found by its provider,
+	// which its INF names and no locale changes -- pnputil's own listing is translated.
+	out, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+		"Get-WindowsDriver -Online | Where-Object { $_.ProviderName -eq '"+tapProvider+"' } | ForEach-Object { $_.Driver }").Output()
+	if err != nil {
+		return fmt.Errorf("finding the TAP driver package: %w", err)
+	}
+	for _, inf := range strings.Fields(string(out)) {
+		if err := run(ctx, "pnputil", "/delete-driver", inf, "/uninstall"); err != nil {
+			return fmt.Errorf("removing the TAP driver package %s: %w", inf, err)
+		}
+	}
+	_ = run(ctx, "sc.exe", "delete", tapService) // best-effort: absent once the package took it
 	logf("removed the TAP driver briard installed")
 	return os.Remove(marker)
 }

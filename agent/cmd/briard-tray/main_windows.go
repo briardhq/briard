@@ -54,6 +54,8 @@ var (
 	getCursorPos          = user32.NewProc("GetCursorPos")
 	createIconIndirect    = user32.NewProc("CreateIconIndirect")
 	findWindow            = user32.NewProc("FindWindowW")
+	getWindowThreadPID    = user32.NewProc("GetWindowThreadProcessId")
+	allowSetForeground    = user32.NewProc("AllowSetForegroundWindow")
 	messageBox            = user32.NewProc("MessageBoxW")
 	shellNotifyIcon       = shell32.NewProc("Shell_NotifyIconW")
 	createDIBSection      = gdi32.NewProc("CreateDIBSection")
@@ -187,6 +189,11 @@ func main() {
 		if open {
 			class, _ := windows.UTF16PtrFromString("BriardTray")
 			if w, _, _ := findWindow.Call(uintptr(unsafe.Pointer(class)), 0); w != 0 {
+				// The person clicked THIS process, so only it may bring a window to the front; the
+				// running tray's message box would open behind whatever has the focus without it.
+				var pid uint32
+				getWindowThreadPID.Call(w, uintptr(unsafe.Pointer(&pid)))
+				allowSetForeground.Call(uintptr(pid))
 				postMessage.Call(w, msgLaunch, 0, 0)
 			}
 		}
