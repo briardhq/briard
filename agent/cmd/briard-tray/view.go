@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"time"
 
 	"briard.io/agent/host"
 )
@@ -99,4 +100,45 @@ func alerts(n int) string {
 // and a poll that got no answer neither raises nor clears one.
 func toast(prev *host.LocalStatus, r reading) bool {
 	return r.err == nil && prev != nil && r.status.Open > prev.Open
+}
+
+// launchBound is how long a Start menu click waits for the Briard page before saying why it has
+// not opened: the first start downloads the guest image, which is minutes on a slow line.
+const launchBound = 10 * time.Minute
+
+// step is what a Start menu click does next, decided against each poll (launch).
+type step int
+
+const (
+	waitFor  step = iota // keep waiting: Briard is starting, finishing its install, or updating
+	openPage             // Briard serves: open the page
+	startIt              // Briard is cleanly stopped: start it, once
+	failWith             // say why, in a message box, and stop waiting
+)
+
+// restartNote is what a click says when the start it made ended in a clean stop. That is the
+// restart gate's refusal: the gate is the one way the agent ends cleanly at its start, and every
+// other early end is an error, which the service manager restarts -- so a start that holds
+// is not stopped, and one that fails is not clean. The tray cannot read the gate's own record:
+// it lives where only the service and an elevated administrator can.
+const restartNote = "Windows has not restarted since Briard was installed. Restart Windows (Restart, " +
+	"not Shut down) to finish the install; Briard starts by itself afterwards."
+
+// launch is a Start menu click's next step after a poll: the page once Briard serves, a start if
+// it is cleanly stopped and this click has not started it, and words when it cannot go on.
+// started says this click's start has returned; waited is how long the click has waited.
+func launch(r reading, started bool, waited time.Duration) (step, string) {
+	switch {
+	case r.err != nil && errors.Is(r.err, fs.ErrPermission):
+		return failWith, "Briard was installed by another account on this computer, and only that account can open it here."
+	case r.err == nil && r.refusal == "" && r.status.Serving:
+		return openPage, ""
+	case r.err != nil && r.down && !r.update && started:
+		return failWith, restartNote
+	case r.err != nil && r.down && !r.update:
+		return startIt, ""
+	case waited > launchBound:
+		return failWith, "Briard is not ready after " + launchBound.String() + ": " + show(r).tip + ". Try again in a few minutes."
+	}
+	return waitFor, ""
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"strings"
 	"testing"
+	"time"
 
 	"briard.io/agent/host"
 )
@@ -75,6 +77,40 @@ func TestToast(t *testing.T) {
 	} {
 		if got := toast(tc.prev, tc.r); got != tc.want {
 			t.Errorf("%s: toast = %t, want %t", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A Start menu click, against every reading the poll can make: the page once Briard serves,
+// whatever else is open; one start of a cleanly stopped Briard, and the restart note when that
+// start ends in a clean stop; the other account's refusal at once; and patience for everything
+// in between, up to the bound.
+func TestLaunch(t *testing.T) {
+	refused := fmt.Errorf("%w: %w", host.ErrNoAgent, fs.ErrPermission)
+	absent := fmt.Errorf("%w: no such file", host.ErrNoAgent)
+	stopped := reading{err: absent, down: true}
+	for _, tc := range []struct {
+		name    string
+		r       reading
+		started bool
+		waited  time.Duration
+		want    step
+		says    string
+	}{
+		{"serving", reading{status: host.LocalStatus{Serving: true}}, false, 0, openPage, ""},
+		{"serving with an alert open", reading{status: host.LocalStatus{Serving: true, Open: 2}}, true, time.Minute, openPage, ""},
+		{"stopped", stopped, false, 0, startIt, ""},
+		{"stopped again after this click's start", stopped, true, 5 * time.Second, failWith, "Restart Windows"},
+		{"another account's", reading{err: refused}, false, 0, failWith, "another account"},
+		{"starting, not answering yet", reading{err: absent}, true, time.Minute, waitFor, ""},
+		{"the VM coming up", reading{status: host.LocalStatus{}}, true, 2 * time.Minute, waitFor, ""},
+		{"finishing its install", reading{refusal: "briard is finishing its install: fetching the guest image"}, true, 5 * time.Minute, waitFor, ""},
+		{"an update swapping it", reading{err: absent, down: true, update: true}, false, time.Minute, waitFor, ""},
+		{"still finishing at the bound", reading{refusal: "briard is finishing its install: fetching the guest image"}, true, launchBound + time.Second, failWith, "finishing its install"},
+	} {
+		got, says := launch(tc.r, tc.started, tc.waited)
+		if got != tc.want || !strings.Contains(says, tc.says) || (tc.says == "") != (says == "") {
+			t.Errorf("%s: launch = %v %q; want %v saying %q", tc.name, got, says, tc.want, tc.says)
 		}
 	}
 }

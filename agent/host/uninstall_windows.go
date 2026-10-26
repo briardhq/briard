@@ -32,7 +32,8 @@ import (
 //     instance, the bridge's spanning-tree value, and the backup store's firewall rule;
 //   - the tree under %ProgramData%\briard, its bin on the system PATH, and its entry in Installed
 //     apps;
-//   - the tray, running in its owner's session, and its Run value in that account's hive;
+//   - the tray, running in its owner's session, its Run value in that account's hive, and the
+//     all-users Start menu entry that runs it;
 //   - state\ under it, the pet -- KEPT unless the operator asks for it to go.
 //
 // The tap-windows6 driver package goes only when install.ps1 installed it (state\tap-installed)
@@ -195,6 +196,11 @@ func (cfg Config) removeFiles(deleteData bool, logf func(string, ...any)) error 
 	}
 	if err := cfg.offLogon(); err != nil {
 		errs = append(errs, fmt.Errorf("taking the icon off the install user's logon: %w", err))
+	}
+	if lnk, err := startMenuPath(); err != nil {
+		errs = append(errs, err)
+	} else if err := os.Remove(lnk); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		errs = append(errs, fmt.Errorf("taking briard off the Start menu: %w", err))
 	}
 	entries, err := os.ReadDir(prefixDir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {

@@ -18,9 +18,11 @@ import (
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc/mgr"
 
+	"briard.io/agent/hass"
 	"briard.io/agent/nic"
 	"briard.io/agent/platform"
 	"briard.io/agent/selfupdate"
+	"briard.io/shared/atomicfile"
 )
 
 // ServiceName is the agent's name in the service manager: what the install registers and what the
@@ -126,6 +128,13 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	}
 	if err := runAtLogon(installUser(), tray); err != nil {
 		return fmt.Errorf("starting the icon at logon: %w", err)
+	}
+	// THE START MENU ENTRY, every account's: "Briard" runs the tray with --open, which starts
+	// briard if it is stopped and opens the Briard page once it serves (or says why not). The
+	// tray is the program a person runs; the service never is.
+	say("adding Briard to the Start menu")
+	if err := startMenuEntry(ctx, tray, filepath.Join(agentDir, iconFile)); err != nil {
+		return fmt.Errorf("adding Briard to the Start menu: %w", err)
 	}
 	// THE ONE INBOUND HOLE: the guest dials the host's backup store. Scoped to this program and
 	// port rather than to a network profile, so the household's network category stays theirs.
@@ -694,4 +703,34 @@ func listVersion(version string) error {
 		return nil
 	}
 	return k.SetStringValue("DisplayVersion", version)
+}
+
+// startMenuPath is the all-users Start menu's entry for briard.
+func startMenuPath() (string, error) {
+	dir, err := windows.KnownFolderPath(windows.FOLDERID_CommonPrograms, 0)
+	if err != nil {
+		return "", fmt.Errorf("the all-users Start menu: %w", err)
+	}
+	return filepath.Join(dir, "Briard.lnk"), nil
+}
+
+// startMenuEntry lays the icon and the shortcut to the tray. The shortcut is written by Windows'
+// own shell object, through PowerShell, rather than by hand in its binary format.
+func startMenuEntry(ctx context.Context, tray, icon string) error {
+	ico, err := icoOf(hass.Mark())
+	if err != nil {
+		return err
+	}
+	if err := atomicfile.Write(icon, ico, 0o644, 0o755); err != nil {
+		return err
+	}
+	lnk, err := startMenuPath()
+	if err != nil {
+		return err
+	}
+	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	return run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+		"$s = (New-Object -ComObject WScript.Shell).CreateShortcut("+q(lnk)+"); "+
+			"$s.TargetPath = "+q(tray)+"; $s.Arguments = '--open'; $s.IconLocation = "+q(icon+",0")+"; "+
+			"$s.WorkingDirectory = "+q(filepath.Dir(tray))+"; $s.Description = 'Start Briard and open its page'; $s.Save()")
 }

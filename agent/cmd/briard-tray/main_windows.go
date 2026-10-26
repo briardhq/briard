@@ -53,6 +53,8 @@ var (
 	setForegroundWindow   = user32.NewProc("SetForegroundWindow")
 	getCursorPos          = user32.NewProc("GetCursorPos")
 	createIconIndirect    = user32.NewProc("CreateIconIndirect")
+	findWindow            = user32.NewProc("FindWindowW")
+	messageBox            = user32.NewProc("MessageBoxW")
 	shellNotifyIcon       = shell32.NewProc("Shell_NotifyIconW")
 	createDIBSection      = gdi32.NewProc("CreateDIBSection")
 	createBitmap          = gdi32.NewProc("CreateBitmap")
@@ -67,6 +69,11 @@ const (
 	wmApp         = 0x8000
 	msgIcon       = wmApp + 1 // the icon's callback
 	msgRead       = wmApp + 2 // the poll or an action has something to show
+	msgLaunch     = wmApp + 3 // a Start menu click, handed over by the instance it started
+
+	mbIconWarning   = 0x30
+	mbSetForeground = 0x10000
+	mbTopmost       = 0x40000
 
 	ninSelect           = 0x0400
 	ninKeySelect        = 0x0401
@@ -157,17 +164,32 @@ type tray struct {
 	pending string            // see reading.pending
 	toastN  int               // a toast to show: the open count it is about; 0 none
 	note    string            // a balloon to show: an action's failure, in words
+
+	// A Start menu click being carried out (launch): when it came, whether its start of briard
+	// is under way or has returned, and whether its "starting" balloon has been shown.
+	launchAt    time.Time
+	launchStart int // 0 none yet, 1 under way, 2 returned
+	launchNoted bool
 }
 
 var t *tray
 
 func main() {
 	runtime.LockOSThread()
+	// --open is the Start menu entry's: start briard if it is stopped and open the Briard page
+	// once it serves (launch). Without it -- the Run key at logon -- the icon only shows.
+	open := len(os.Args) > 1 && os.Args[1] == "--open"
 	// One per session: a second start at logon -- the Run key and a reinstall's own start, say --
-	// leaves the first in charge.
+	// leaves the first in charge, and a Start menu click is handed to it.
 	name, _ := windows.UTF16PtrFromString(`Local\briard-tray`)
 	mutex, err := windows.CreateMutex(nil, false, name)
 	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+		if open {
+			class, _ := windows.UTF16PtrFromString("BriardTray")
+			if w, _, _ := findWindow.Call(uintptr(unsafe.Pointer(class)), 0); w != 0 {
+				postMessage.Call(w, msgLaunch, 0, 0)
+			}
+		}
 		return
 	}
 	exe, _ := os.Executable()
@@ -186,6 +208,9 @@ func main() {
 	t.last = reading{err: host.ErrNoAgent}
 	t.add()
 	go t.poll(exe, self)
+	if open {
+		t.begin()
+	}
 
 	var m msg
 	for {
@@ -230,10 +255,13 @@ func wndProc(wnd windows.HWND, m uint32, wp, lp uintptr) uintptr {
 	case m == msgIcon:
 		switch lp & 0xffff {
 		case ninSelect, ninKeySelect, ninBalloonUserClick:
-			go t.open()
+			go t.openOr(t.say)
 		case wmContextMenu:
 			t.menu()
 		}
+		return 0
+	case m == msgLaunch:
+		t.begin()
 		return 0
 	case m == msgRead:
 		t.show()
@@ -333,7 +361,7 @@ func (t *tray) menu() {
 	postMessage.Call(uintptr(t.wnd), wmNull, 0, 0)
 	switch cmd {
 	case cmdOpen:
-		go t.open()
+		go t.openOr(t.say)
 	case cmdStop:
 		go t.act("stop")
 	case cmdStart:
@@ -341,29 +369,102 @@ func (t *tray) menu() {
 	}
 }
 
-// open asks the agent for a one-time link to the Briard page and opens it in this person's
+// openOr asks the agent for a one-time link to the Briard page and opens it in this person's
 // browser -- the tray is what runs as them, which is why it opens the link `briard open` prints.
-func (t *tray) open() {
+func (t *tray) openOr(say func(string)) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	payload, _ := json.Marshal(map[string]string{"name": displayName(), "username": os.Getenv("USERNAME"), "language": language()})
 	o, err := host.Submit(ctx, t.sock, api.Directive{Kind: api.DirectiveDashboard, Payload: string(payload)})
 	switch {
 	case errors.Is(err, fs.ErrPermission):
-		t.say("Briard was installed by another account on this computer, and only that account can open it here.")
+		say("Briard was installed by another account on this computer, and only that account can open it here.")
 	case errors.Is(err, host.ErrNoAgent):
-		t.say("Briard is not running. Start it from this icon's menu.")
+		say("Briard is not running. Start it from this icon's menu.")
 	case err != nil:
-		t.say("Briard did not answer: " + err.Error())
+		say("Briard did not answer: " + err.Error())
 	case o.State != api.OutcomeDone:
-		t.say(o.Detail)
+		say(o.Detail)
 	default:
 		link, _ := windows.UTF16PtrFromString(o.Detail)
 		verb, _ := windows.UTF16PtrFromString("open")
 		if err := windows.ShellExecute(windows.Handle(t.wnd), verb, link, nil, nil, windows.SW_SHOWNORMAL); err != nil {
-			t.say("Could not open the browser: " + err.Error())
+			say("Could not open the browser: " + err.Error())
 		}
 	}
+}
+
+// box is say for a Start menu click, whose person is waiting on it: a message box, which stays
+// until dismissed -- a balloon is a toast that closes by itself and is not shown at all under
+// Focus Assist.
+func box(s string) {
+	text, _ := windows.UTF16PtrFromString(s)
+	title, _ := windows.UTF16PtrFromString("Briard")
+	messageBox.Call(0, uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)), mbIconWarning|mbSetForeground|mbTopmost)
+}
+
+// begin takes a Start menu click. A second one while the first is being carried out joins it.
+func (t *tray) begin() {
+	t.mu.Lock()
+	if t.launchAt.IsZero() {
+		t.launchAt, t.launchStart, t.launchNoted = time.Now(), 0, false
+	}
+	t.mu.Unlock()
+	t.poke()
+}
+
+// launchStep carries a Start menu click one step on from a poll's reading (launch). The caller
+// holds t.mu.
+func (t *tray) launchStep(r reading) {
+	if t.launchAt.IsZero() || t.launchStart == 1 {
+		return
+	}
+	st, why := launch(r, t.launchStart == 2, time.Since(t.launchAt))
+	switch st {
+	case openPage:
+		t.launchAt = time.Time{}
+		go t.openOr(box)
+		return
+	case failWith:
+		t.launchAt = time.Time{}
+		if t.pending == "start" {
+			t.pending = ""
+		}
+		go box(why)
+		return
+	case startIt:
+		t.launchStart, t.pending = 1, "start"
+		go t.launchStartIt()
+	}
+	if !t.launchNoted {
+		t.launchNoted = true
+		t.note = "Briard is starting. Your Briard page opens when it is ready."
+	}
+}
+
+// launchStartIt is a click's one start of briard. A start the agent ends cleanly before the
+// service manager saw it run is returned all the same: the next poll reads the clean stop, which
+// is the restart gate's refusal, and says so (launch).
+func (t *tray) launchStartIt() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	err := host.Start(ctx, func(string, ...any) {})
+	if err != nil {
+		if down, _ := platform.ServiceStopped(selfupdate.DefaultAgentUnit); down {
+			err = nil
+		}
+	}
+	t.mu.Lock()
+	if err != nil {
+		t.launchAt, t.pending = time.Time{}, ""
+	} else {
+		t.launchStart = 2
+	}
+	t.mu.Unlock()
+	if err != nil {
+		box("Briard did not start: " + err.Error())
+	}
+	t.poke()
 }
 
 // act is Stop Briard or Start Briard: `briard stop`'s directive, `briard start`'s service start.
@@ -430,6 +531,7 @@ func (t *tray) poll(exe string, self os.FileInfo) {
 			t.prev = &s
 		}
 		t.last = r
+		t.launchStep(r)
 		t.mu.Unlock()
 		postMessage.Call(uintptr(t.wnd), msgRead, 0, 0)
 		if now, err := os.Stat(exe); err == nil && self != nil && !os.SameFile(self, now) && !exists(l.PrevPath()) {
