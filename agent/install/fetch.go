@@ -27,7 +27,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -136,6 +138,21 @@ var ErrWrongChain = errors.New("install: manifest is for a different chain or pl
 // ErrArtifactMismatch is returned when a downloaded artifact's SHA-256 or size does not match
 // the signed manifest — a tampered or truncated blob, refused without being committed.
 var ErrArtifactMismatch = errors.New("install: artifact does not match the signed manifest")
+
+// UnreachablePrefix opens the update's verdict line when the run failed for want of the channel
+// rather than for anything the channel said: the agent that finishes an install retries that
+// one in minutes and every other failure in an hour.
+const UnreachablePrefix = "could not reach the channel: "
+
+// Unreachable reports whether err is the network's -- a request that got no answer (no route, no
+// name, refused, timed out) or a body cut short -- and not a refusal of what was fetched. By the
+// error's TYPE, never net.Error: every deadline is one, and a candidate that timed out starting
+// is no network failure.
+func Unreachable(err error) bool {
+	var ue *url.Error
+	var oe *net.OpError
+	return errors.As(err, &ue) || errors.As(err, &oe) || errors.Is(err, io.ErrUnexpectedEOF)
+}
 
 // Entry pins one artifact in the manifest: Name is both the URL path element
 // (<root>/<chain>/<version>/<Name>) and the filename written under the staging dir; SHA256 is

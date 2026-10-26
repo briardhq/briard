@@ -130,7 +130,8 @@
 #                         (default: the version staged in the default DIR)
 #   promote  [VERSION]    copy <VERSION>'s manifests to `stable` on every chain and arm, and its
 #                         install.sh to the channel root
-#                         (default: whatever briard/latest names; refuses a same-date promotion)
+#                         (default: whatever briard/latest names; refuses a same-date promotion,
+#                         and an upgrade floor newer than the newest Store exe under setup/)
 #   dev      [DIR]        stage + sign + publish + move `dev`, in one run and with NO gate, then
 #                         delete the previous dev release unless stable/latest names it
 #                         (needs the key AND the credential; a HEAD on pushed main, like any id)
@@ -143,7 +144,8 @@
 #                         followed by while no pointer names it yet
 #   setup build VERSION   the Store's installer: VERSION's published windows arm, verified,
 #                         inside the briard-setup stub, at ./.release-setup/setup/VERSION/
-#   setup publish VERSION upload it to setup/VERSION/briard-setup.exe, once (needs the credential)
+#   setup publish VERSION upload it to setup/VERSION/briard-setup.exe, once (needs the credential;
+#                         refuses a VERSION older than stable's upgrade floor)
 #
 # Env:
 #   BRIARD_CHANNEL_URL  public read ROOT            (default https://get.briard.io)
@@ -744,6 +746,24 @@ promote)
 			if [ "$c" = briard ] && [ "$arm" = "$WINDOWS_ARM" ]; then
 				have_key "$bucket/$c/$rel/install.ps1" "$endpoint" ||
 					die "$c/$rel carries no install.ps1 — it was staged before the Windows installer was carried in the release; re-stage and publish it"
+				# THE STORE'S EXE STAYS UPGRADABLE. A Store install lays down the agent its exe
+				# carries, and that agent's first start updates it to stable -- which refuses an
+				# installed release older than stable's floor, so a floor past the exe leaves every
+				# new Store install unable to finish. The newest exe under setup/ is taken as the
+				# Store's: one is published only to be submitted. Listed with s3api, which answers
+				# an empty prefix with nothing rather than an error, so a failed listing stops here.
+				floor=$(curl -fsS "$CHANNEL/$c/$rel/manifest.json" | jq -r '.min_upgrade_from // ""') ||
+					die "cannot read $c/$rel/manifest.json for its upgrade floor"
+				exes=$(aws s3api list-objects-v2 --bucket "${bucket#s3://}" --prefix setup/ --delimiter / \
+					--endpoint-url "$endpoint" --query 'CommonPrefixes[].Prefix' --output text) ||
+					die "cannot list the published Store exes under setup/"
+				exe=$(printf '%s\n' $exes | sed -n 's|^setup/\(v[^/]*\)/$|\1|p' |
+					awk -F. '$2 > best { best = $2; id = $0 } END { print id }')
+				if [ -z "$exe" ]; then
+					say "no Store exe under setup/ yet — no floor to hold against it"
+				elif [ -n "$floor" ] && [ "$(date_of "$floor")" -gt "$(date_of "$exe")" ]; then
+					die "$c/$rel's upgrade floor $floor is newer than the Store's exe ($exe) — every Store install would be refused its first update; build and publish a newer exe (\`setup\`), submit it, then promote"
+				fi
 			fi
 			if curl -fsS "$CHANNEL/$c/$p/manifest.json" -o "$tmp/$tag.stable.json" 2>/dev/null; then
 				cur=$(jq -r .version "$tmp/$tag.stable.json")
@@ -1083,6 +1103,17 @@ setup)
 		[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE (see header)"
 		bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
 		! have_key "$bucket/$key" "$endpoint" || die "$key is already published, and the Store certified those bytes; a new installer is a new release"
+		# The other side of `promote`'s check: an exe older than stable's floor could never
+		# finish an install, since its first start is the update to stable.
+		# A failed read stops here; only a channel with no stable yet (404) has no floor to hold.
+		code=$(curl -sS -o "$OUT.stable.json" -w '%{http_code}' "$CHANNEL/briard/$(sub stable "$WINDOWS_ARM")/manifest.json") ||
+			die "cannot read stable's manifest for its upgrade floor"
+		case "$code" in 200 | 404) ;; *) die "stable's manifest answered $code" ;; esac
+		if [ "$code" = 200 ]; then
+			floor=$(jq -r '.min_upgrade_from // ""' "$OUT.stable.json"); rm -f "$OUT.stable.json"
+			[ -z "$floor" ] || [ "$(date_of "$floor")" -le "$(date_of "$V")" ] ||
+				die "$V is older than stable's upgrade floor $floor — its installs would be refused their first update; build the exe from a newer release"
+		fi
 		aws s3 cp "$OUT" "$bucket/$key" --endpoint-url "$endpoint" --only-show-errors || die "uploading $key failed"
 		say "published $CHANNEL/$key ($(sha256sum "$OUT" | cut -d' ' -f1)) -- the URL the Store listing takes"
 		exit 0

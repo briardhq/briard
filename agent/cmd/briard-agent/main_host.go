@@ -98,7 +98,11 @@ func runUpdate(ctx context.Context, target string) (string, error) {
 		},
 		Stopped: func(context.Context) (bool, error) { return platform.ServiceStopped(selfupdate.DefaultAgentUnit) },
 	}
-	return u.Run(ctx, target)
+	line, err := u.Run(ctx, target)
+	if err != nil && install.Unreachable(err) {
+		err = fmt.Errorf("%s%w", install.UnreachablePrefix, err)
+	}
+	return line, err
 }
 
 // runStageManifest writes dir/manifest.json describing the artifacts staged in dir as one

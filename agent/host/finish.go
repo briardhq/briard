@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"briard.io/agent/install"
@@ -28,12 +29,29 @@ import (
 //     installed: the vm release it names, fetched and verified, and nothing else.
 //
 // The trigger is a positive read -- the image is not there -- never a first-run flag, so a node
-// whose image went missing finishes the same way. No network, or the channel down, is a waiting
-// state with one alert, retried every finishRetry, never terminal. A release that fails to start
-// on this host is reverted by the update and tried again at the same cadence; the alert says why.
+// whose image went missing finishes the same way. A failure is a waiting state with one alert,
+// never terminal, and how long it waits is what the next attempt would cost:
+//
+//   - the channel could not be reached (no network, the channel down, a download cut short): the
+//     attempt cost nothing, and is repeated after finishRetryNet;
+//   - anything else -- a release that came down whole and was refused here, or swapped in and did
+//     not start and was reverted: only a newer release fixes it, and every attempt downloads it
+//     again, so it is repeated after finishRetryRefused.
+//
+// The wait is counted from the records the update leaves -- its verdict and a revert's failure --
+// never from a timer alone: a candidate that does not start ends THIS process, and the agent the
+// revert starts again is a new one, as is the one a restart of the service starts. Each reads
+// the records and waits out what is left.
 
-// finishRetry spaces the retries of a finish that failed.
-const finishRetry = time.Minute
+// finishRetryNet and finishRetryRefused space the retries of a finish that failed (above).
+const (
+	finishRetryNet     = 2 * time.Minute
+	finishRetryRefused = time.Hour
+)
+
+// frozenFetchFailed opens the frozen update scripts' verdict when they could not download the
+// target's agent: the one failure the run reports before any release code runs.
+const frozenFetchFailed = "could not fetch a bootstrap agent from "
 
 // updateVerdictBound bounds the wait for the update run's verdict, and imageFetchBound the image's
 // download: past either, the step has failed and is retried.
@@ -56,7 +74,13 @@ func (cfg Config) finishInstall(ctx context.Context, local <-chan localRequest, 
 		return nil
 	}
 	logf("install: no guest image at %s; finishing the install -- the self-update to stable, then the image", cfg.GuestImage)
+	wait, cause := finishHold(selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir), time.Now())
 	for {
+		if wait > 0 {
+			if err := cfg.finishHoldOff(ctx, local, n, wait, cause, logf); err != nil {
+				return err
+			}
+		}
 		err := cfg.finishStep(ctx, local, updateVerdictBound, "updating briard before its first start", cfg.awaitStableUpdate, logf)
 		if err == nil {
 			err = cfg.finishStep(ctx, local, imageFetchBound, "fetching the guest image", cfg.fetchImage, logf)
@@ -69,19 +93,68 @@ func (cfg Config) finishInstall(ctx context.Context, local <-chan localRequest, 
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		logf("install: could not finish the install (%v); retrying in %s", err, finishRetry)
-		fireAlert(ctx, n, logf, notify.Alert{Key: finishAlertKey, Kind: notify.Open, Severity: notify.Warning,
-			Title: "Briard: waiting to finish the install",
-			Body: "Briard's first start downloads the rest of the install from get.briard.io and could not: " + err.Error() +
-				". It tries again every minute; check this computer's internet connection."})
-		wake := make(chan struct{})
-		retry := time.AfterFunc(finishRetry, func() { close(wake) })
-		werr := cfg.finishWait(ctx, local, "waiting to retry: "+err.Error(), wake, logf)
-		retry.Stop()
-		if werr != nil {
-			return werr
+		wait, cause = retryAfter(err), err
+	}
+}
+
+// finishHoldOff waits out one hold with the alert open, saying why and when the next try is.
+func (cfg Config) finishHoldOff(ctx context.Context, local <-chan localRequest, n notify.Notifier, wait time.Duration, cause error, logf func(string, ...any)) error {
+	wait = wait.Round(time.Second)
+	logf("install: could not finish the install (%v); retrying in %s", cause, wait)
+	body := "Briard's first start downloads the rest of the install from get.briard.io and could not reach it: " + cause.Error() +
+		". It tries again in " + wait.String() + "; check this computer's internet connection."
+	if retryAfter(cause) == finishRetryRefused {
+		body = "Briard's first start downloaded the current release, and it could not be installed or started on this computer: " +
+			cause.Error() + ". It tries again in " + wait.String() + ", in case a fixed release has been published."
+	}
+	fireAlert(ctx, n, logf, notify.Alert{Key: finishAlertKey, Kind: notify.Open, Severity: notify.Warning,
+		Title: "Briard: waiting to finish the install", Body: body})
+	wake := make(chan struct{})
+	retry := time.AfterFunc(wait, func() { close(wake) })
+	defer retry.Stop()
+	return cfg.finishWait(ctx, local, "waiting to retry: "+cause.Error(), wake, logf)
+}
+
+// retryAfter is the wait a failed finish asks for: finishRetryNet when the channel could not be
+// reached -- this agent's own fetch, or the update run's verdict saying so -- and
+// finishRetryRefused for anything else.
+func retryAfter(err error) time.Duration {
+	s := err.Error()
+	if install.Unreachable(err) || strings.Contains(s, install.UnreachablePrefix) || strings.Contains(s, frozenFetchFailed) {
+		return finishRetryNet
+	}
+	return finishRetryRefused
+}
+
+// finishHold is what is left of the wait the update's records ask for, and why: a reverted
+// release's failure asks finishRetryRefused from when it was left, a failed verdict its own
+// class's wait from when it was written. Zero when neither asks for one.
+func finishHold(lay selfupdate.Layout, now time.Time) (time.Duration, error) {
+	var wait time.Duration
+	var cause error
+	if fi, err := os.Stat(lay.FailurePath()); err == nil {
+		if b, err := os.ReadFile(lay.FailurePath()); err == nil {
+			release, reason, _ := strings.Cut(strings.TrimSpace(string(b)), " ")
+			wait = left(finishRetryRefused, fi.ModTime(), now)
+			cause = fmt.Errorf("release %s did not start on this computer and was reverted: %s", release, reason)
 		}
 	}
+	if r, ok := lay.ReadResult(); ok && !r.OK {
+		err := fmt.Errorf("the update to stable failed: %s", r.Line)
+		if w := left(retryAfter(err), r.At, now); w > wait {
+			wait, cause = w, err
+		}
+	}
+	if wait == 0 {
+		return 0, nil
+	}
+	return wait, cause
+}
+
+// left is what remains of d counted from at: never below zero, nor above d when the clock was set
+// back past at.
+func left(d time.Duration, at, now time.Time) time.Duration {
+	return min(d, max(0, d-now.Sub(at)))
 }
 
 // finishStep runs one step OFF the loop, bounded, while the loop answers the local door: a stranger
