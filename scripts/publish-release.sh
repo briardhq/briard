@@ -1130,6 +1130,7 @@ setup)
 	done
 	nix run nixpkgs#zstd -- -d -q "$tmp/qemu-bundle-windows.tar.zst" -o "$tmp/qemu.tar" || die "expanding the qemu bundle failed"
 	tar -xf "$tmp/qemu.tar" -C "$A/qemu"
+	chmod -R u+w "$A/qemu" # the tree keeps the store's read-only modes, which the EXIT trap cannot remove
 	nix run nixpkgs#zstd -- -d -q "$tmp/guest-bundle.tar.zst" -o "$A/guest-bundle.tar" || die "expanding the guest bundle failed"
 	(cd "$A" && nix run nixpkgs#zip -- -q -r -X "$tmp/payload.zip" .) || die "zipping the arm failed"
 	stub=$(nix build --no-link --print-out-paths .#artifacts.setup-windows)/bin/windows_amd64/briard-setup.exe
