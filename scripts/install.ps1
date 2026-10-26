@@ -173,6 +173,11 @@ if (TapInstalled) {
 	if (-not $env:BRIARD_ARTIFACTS) { Remove-Item $exe }
 	if ($p.ExitCode -ne 0) { Die "the TAP driver installer exited $($p.ExitCode); nothing installed" }
 	if (-not (TapInstalled)) { Die 'the TAP driver installed but no TAP adapter appeared; nothing installed' }
+	# Said where it happened, and only there: the uninstall removes the driver package on this
+	# record alone, so one already on the machine -- another program's -- is never taken. Under
+	# state\, which an uninstall keeps and a reinstall finds.
+	New-Item -ItemType Directory -Force "$Prefix\state" | Out-Null
+	Set-Content -Path "$Prefix\state\tap-installed" -Value (Get-Date -Format o) -Encoding ascii
 }
 # The Windows Hypervisor Platform: what qemu accelerates the guest with (WHPX). Turned on here,
 # running only after the restart -- the same restart the bridge needs, so it costs nothing extra.

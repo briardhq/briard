@@ -215,3 +215,6 @@ func StartAgent(ctx context.Context, _ func(string, ...any)) error {
 
 // installUser is nobody on Linux: the admin door is root's, and there is no tray.
 func installUser() string { return "" }
+
+// listVersion has no Installed apps entry to keep current: a package manager's list is not ours.
+func listVersion(string) error { return nil }

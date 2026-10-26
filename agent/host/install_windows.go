@@ -154,8 +154,8 @@ const uninstallKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Briard
 // with the user's own rights, so the entry asks UAC to elevate the agent -- through PowerShell,
 // the one way to ask from a command line -- and the agent runs in a console of its own, where it
 // confirms and reports in windows (runUninstall). The quiet form is what a package manager runs,
-// elevated already. No version is listed: the agent updates itself, and a version written here
-// would go stale at the first update.
+// elevated already. The version listed is the running agent's, rewritten at every start
+// (listVersion): the agent updates itself, so one written only here would go stale.
 func registerUninstall(exe, prefix string) error {
 	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, uninstallKey, registry.SET_VALUE)
 	if err != nil {
@@ -164,6 +164,8 @@ func registerUninstall(exe, prefix string) error {
 	defer k.Close()
 	for _, v := range [][2]string{
 		{"DisplayName", "Briard"},
+		{"Publisher", "Briard"},
+		{"DisplayVersion", buildVersion},
 		{"DisplayIcon", exe},
 		{"InstallLocation", prefix},
 		{"UninstallString", `powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process -Verb RunAs -FilePath '` +
@@ -674,4 +676,22 @@ func StartAgent(ctx context.Context, logf func(string, ...any)) error {
 		logf("the warden: %v", werr)
 	}
 	return err
+}
+
+// listVersion keeps Installed apps' version the running agent's: the entry is the install's, and
+// an update that replaced the agent left the old number in it. Only an entry that exists is
+// written -- an agent run outside an install lists nothing.
+func listVersion(version string) error {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, uninstallKey, registry.QUERY_VALUE|registry.SET_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	if have, _, err := k.GetStringValue("DisplayVersion"); err == nil && have == version {
+		return nil
+	}
+	return k.SetStringValue("DisplayVersion", version)
 }

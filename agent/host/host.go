@@ -550,6 +550,9 @@ type guestReader interface {
 // The guest is always stopped on return.
 func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr error) {
 	logf("%s", versionBanner(cfg.Version)) // name the running build before anything else
+	if err := listVersion(cfg.Version); err != nil {
+		logf("could not list version %s in Installed apps: %v", cfg.Version, err)
+	}
 	// Every alert this host raises goes through its store (alertstore.go), which records it and
 	// only then pushes it -- to ntfy if a topic URL is configured, else nowhere. A witness has
 	// no redundancy signal to report, but what it does raise is recorded like anyone else's.

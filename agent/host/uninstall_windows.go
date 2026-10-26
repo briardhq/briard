@@ -35,8 +35,9 @@ import (
 //   - the tray, running in its owner's session, and its Run value in that account's hive;
 //   - state\ under it, the pet -- KEPT unless the operator asks for it to go.
 //
-// The tap-windows6 driver package and the Hypervisor Platform stay: install.ps1 put them in place,
-// and either may be serving something else on this machine by now.
+// The tap-windows6 driver package goes only when install.ps1 installed it (state\tap-installed)
+// and no other TAP adapter is left using it (removeTapDriver). The Hypervisor Platform stays:
+// turning it off needs a restart, and it may be serving something else on this machine by now.
 
 // deleteHint finishes the kept-data line with how to delete it by hand.
 const deleteHint = "`Remove-Item -Recurse -Force '%s'`, in a terminal opened as administrator, deletes them for good"
@@ -148,7 +149,7 @@ func stopService(m *mgr.Mgr, name string, logf func(string, ...any)) (bool, erro
 	return true, nil
 }
 
-func (cfg Config) removeNetwork(ctx context.Context, _ func(string, ...any)) error {
+func (cfg Config) removeNetwork(ctx context.Context, logf func(string, ...any)) error {
 	var errs []error
 	record := filepath.Join(cfg.stateDir(), bridgeRecord)
 	var rec nic.Offload
@@ -163,6 +164,9 @@ func (cfg Config) removeNetwork(ctx context.Context, _ func(string, ...any)) err
 		errs = append(errs, err)
 	} else if err := os.Remove(record); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		// Given back: kept, it would describe a change no longer made.
+		errs = append(errs, err)
+	}
+	if err := cfg.removeTapDriver(ctx, logf); err != nil {
 		errs = append(errs, err)
 	}
 	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\MsBridge`, registry.SET_VALUE); err == nil {
@@ -328,4 +332,56 @@ func (cfg Config) offLogon() error {
 		return err
 	}
 	return nil
+}
+
+// tapMarker is install.ps1's record that it installed the TAP driver package itself.
+const tapMarker = "tap-installed"
+
+// tapUninstallKey is the driver package's own Installed apps entry, its NSIS installer's.
+const tapUninstallKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TAP-Windows`
+
+// removeTapDriver removes the tap-windows6 driver package by its own uninstaller -- the TAP
+// adapter is gone by now (DestroyBridge) -- on a POSITIVE record that briard installed it: no
+// record, or one that cannot be read, keeps the driver, which may be another program's. Kept too
+// while any TAP adapter is left: something else uses the driver.
+func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)) error {
+	marker := filepath.Join(cfg.stateDir(), tapMarker)
+	if _, err := os.Stat(marker); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading %s: %w -- the TAP driver was kept", marker, err)
+	}
+	if nic.TapInstalled() {
+		logf("kept the TAP driver: another TAP adapter on this machine still uses it")
+		return nil
+	}
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, tapUninstallKey, registry.QUERY_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
+		return os.Remove(marker) // removed already, by someone else
+	}
+	if err != nil {
+		return fmt.Errorf("the TAP driver's Installed apps entry: %w", err)
+	}
+	cmd, _, err := k.GetStringValue("UninstallString")
+	k.Close()
+	if err != nil {
+		return fmt.Errorf("the TAP driver's uninstall command: %w", err)
+	}
+	exe := strings.Trim(cmd, `"`)
+	dir := filepath.Dir(exe)
+	// An NSIS uninstaller copies itself out and returns at once unless told where it lives with
+	// _?=, which must come last and unquoted even with spaces in it -- so the command line is
+	// written by hand rather than escaped argument by argument. Run in place, it cannot delete
+	// itself: the folder goes after.
+	c := exec.CommandContext(ctx, exe)
+	c.SysProcAttr = &syscall.SysProcAttr{CmdLine: windows.EscapeArg(exe) + " /S _?=" + dir}
+	if out, err := c.CombinedOutput(); err != nil {
+		return fmt.Errorf("the TAP driver's uninstaller: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("removing %s: %w", dir, err)
+	}
+	logf("removed the TAP driver briard installed")
+	return os.Remove(marker)
 }
