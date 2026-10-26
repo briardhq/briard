@@ -59,7 +59,7 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 	}
 	t, ok := tapAdapter(as)
 	if !ok {
-		return Offload{}, errors.New("no TAP adapter, or more than one: the tap-windows6 driver installs ours, at install")
+		return Offload{}, tapAmbiguity(tapCandidates(as))
 	}
 	// 1. THE RECORD, FIRST: after the change there is nothing left to read.
 	rec, err := offloadOff(ctx, m)
@@ -237,12 +237,7 @@ func tapAdapter(as []adapter) (adapter, bool) {
 	if a, ok := byName(as, TapName); ok {
 		return a, true
 	}
-	var found []adapter
-	for _, a := range as {
-		if a.name != "" && !a.filter && strings.HasPrefix(a.desc, tapDescription) && master(a.name) == "" {
-			found = append(found, a)
-		}
-	}
+	found := tapCandidates(as)
 	if len(found) != 1 {
 		return adapter{}, false
 	}
@@ -367,4 +362,32 @@ func DestroyBridge(ctx context.Context, rec Offload) error {
 		return fmt.Errorf("pnputil /remove-device %s: %s", id, firstLine(out, err))
 	}
 	return nil
+}
+
+// tapCandidates are the tap-windows6 adapters that could be ours: not a filter layer, not a bridge
+// member already.
+func tapCandidates(as []adapter) []adapter {
+	var found []adapter
+	for _, a := range as {
+		if a.name != "" && !a.filter && strings.HasPrefix(a.desc, tapDescription) && master(a.name) == "" {
+			found = append(found, a)
+		}
+	}
+	return found
+}
+
+// tapAmbiguity is the refusal when there is not exactly one candidate, with the way out: none is
+// an install that did not finish its driver step; several is never guessed between, since one may
+// be another program's VPN -- named, so the person can tell which.
+func tapAmbiguity(found []adapter) error {
+	if len(found) == 0 {
+		return errors.New("no TAP adapter: the tap-windows6 driver installs ours, at install; run the installer again")
+	}
+	names := make([]string, len(found))
+	for i, a := range found {
+		names[i] = fmt.Sprintf("%q (%s)", a.name, a.desc)
+	}
+	return fmt.Errorf("%d TAP adapters (%s), and briard will not pick one: one may be another program's VPN. "+
+		"Remove the ones nothing uses (Device Manager > Network adapters), or uninstall TAP-Windows from "+
+		"Installed apps if no VPN needs it, then install again", len(found), strings.Join(names, ", "))
 }

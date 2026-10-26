@@ -70,7 +70,10 @@ $TapDescription = 'TAP-Windows Adapter V9' # how the driver describes its adapte
 $ResumeTask = 'briard-install'
 
 function Say($m) { Write-Host "briard: $m" }
-function Die($m) { throw "briard: ERROR: $m" }
+function Die($m) { Unlock; throw "briard: ERROR: $m" }
+# The install lock (step 0), given back the moment this run stops: the one-liner's window stays
+# open after it, and a lock held by an open window would refuse the retry it asks for.
+function Unlock { if ($script:InstallLock) { try { $script:InstallLock.ReleaseMutex() } catch {}; $script:InstallLock = $null } }
 # Run a program of ours and return its exit code, its output shown as it comes. Its stderr is
 # merged and turned back into text: with this script's stderr redirected (a log, an ssh session)
 # PowerShell 5 wraps a program's stderr lines as error records, and under 'Stop' the first one
@@ -95,6 +98,24 @@ if (-not (IsAdmin)) {
 	Say 'asking for administrator rights (the install registers a service and builds a network bridge)'
 	Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $cmd
 	return
+}
+# ONE INSTALL AT A TIME, machine-wide. Two at once both find no TAP adapter and both run its
+# installer, which adds an adapter every time it runs -- two, seconds apart, and every install
+# after refuses the ambiguity. A second install stops here, before touching anything; from the
+# exe with Windows installers' code for "another installation is in progress", which the Store
+# maps to its own message. A lock left by a run that died is taken over.
+$script:InstallLock = New-Object System.Threading.Mutex($false, 'Global\briard-install')
+$held = $false
+try { $held = $script:InstallLock.WaitOne(0) }
+catch {
+	# PowerShell 5 wraps a .NET method's exception; the abandoned lock is the inner one.
+	if ($_.Exception.InnerException -is [System.Threading.AbandonedMutexException]) { $held = $true } else { throw }
+}
+if (-not $held) {
+	$script:InstallLock = $null
+	$m = 'another Briard install is already running on this computer: let it finish, and run this again only if it fails'
+	if ($NoRestart) { Say $m; exit 1618 }
+	Die $m
 }
 
 # ---- 1. the agent that installs ----------------------------------------------------
@@ -214,6 +235,8 @@ Register-ScheduledTask -TaskName $ResumeTask -Force `
 	-Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoExit -NoProfile -ExecutionPolicy Bypass -Command `"$resume`"") `
 	-Trigger (New-ScheduledTaskTrigger -AtLogOn) `
 	-Principal (New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Administrators' -RunLevel Highest) | Out-Null
+
+Unlock # installed: what follows is the ending, and a retry no longer races anything
 
 # ---- 5. the one restart ----------------------------------------------------------------
 # The exe's ending: say it, and leave the restart to whoever ran us -- the Store shows its own
