@@ -58,6 +58,7 @@ var (
 	allowSetForeground    = user32.NewProc("AllowSetForegroundWindow")
 	messageBox            = user32.NewProc("MessageBoxW")
 	shellNotifyIcon       = shell32.NewProc("Shell_NotifyIconW")
+	setAppID              = shell32.NewProc("SetCurrentProcessExplicitAppUserModelID")
 	createDIBSection      = gdi32.NewProc("CreateDIBSection")
 	createBitmap          = gdi32.NewProc("CreateBitmap")
 	deleteObject          = gdi32.NewProc("DeleteObject")
@@ -181,6 +182,11 @@ func main() {
 	// --open is the Start menu entry's: start briard if it is stopped and open the Briard page
 	// once it serves (launch). Without it -- the Run key at logon -- the icon only shows.
 	open := len(os.Args) > 1 && os.Args[1] == "--open"
+	// The Start menu shortcut's identity (host.AppID), declared before any window or icon: Windows
+	// then titles this process's notifications with the shortcut's name and icon, not the file name.
+	if id, err := windows.UTF16PtrFromString(host.AppID); err == nil {
+		setAppID.Call(uintptr(unsafe.Pointer(id)))
+	}
 	// One per session: a second start at logon -- the Run key and a reinstall's own start, say --
 	// leaves the first in charge, and a Start menu click is handed to it.
 	name, _ := windows.UTF16PtrFromString(`Local\briard-tray`)

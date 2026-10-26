@@ -714,8 +714,7 @@ func startMenuPath() (string, error) {
 	return filepath.Join(dir, "Briard.lnk"), nil
 }
 
-// startMenuEntry lays the icon and the shortcut to the tray. The shortcut is written by Windows'
-// own shell object, through PowerShell, rather than by hand in its binary format.
+// startMenuEntry lays the icon and the shortcut to the tray (writeShortcut).
 func startMenuEntry(ctx context.Context, tray, icon string) error {
 	ico, err := icoOf(hass.Mark())
 	if err != nil {
@@ -728,9 +727,5 @@ func startMenuEntry(ctx context.Context, tray, icon string) error {
 	if err != nil {
 		return err
 	}
-	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
-	return run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-		"$s = (New-Object -ComObject WScript.Shell).CreateShortcut("+q(lnk)+"); "+
-			"$s.TargetPath = "+q(tray)+"; $s.Arguments = '--open'; $s.IconLocation = "+q(icon+",0")+"; "+
-			"$s.WorkingDirectory = "+q(filepath.Dir(tray))+"; $s.Description = 'Start Briard and open its page'; $s.Save()")
+	return writeShortcut(lnk, tray, "--open", filepath.Dir(tray), icon, "Start Briard and open its page", AppID)
 }
