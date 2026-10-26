@@ -455,8 +455,9 @@ func ServiceRunning(name string) (bool, error) {
 	return st.State == svc.Running, nil
 }
 
-// ServiceStopped reports whether a service is down and staying down: STOPPED by a clean exit. A
-// non-zero exit is a failure, which the service's recovery starts again 5 s later.
+// ServiceStopped reports whether a service is down and staying down: STOPPED by a clean exit, or
+// never started since it was installed (the install leaves it so until the restart). A non-zero
+// exit is a failure, which the service's recovery starts again 5 s later.
 func ServiceStopped(name string) (bool, error) {
 	s, err := openService(name, windows.SERVICE_QUERY_STATUS)
 	if err != nil {
@@ -472,5 +473,6 @@ func ServiceStopped(name string) (bool, error) {
 
 // stoppedStatus is ServiceStopped's reading of a service's status.
 func stoppedStatus(st svc.Status) bool {
-	return st.State == svc.Stopped && st.Win32ExitCode == 0 && st.ServiceSpecificExitCode == 0
+	clean := st.Win32ExitCode == 0 || st.Win32ExitCode == uint32(windows.ERROR_SERVICE_NEVER_STARTED)
+	return st.State == svc.Stopped && clean && st.ServiceSpecificExitCode == 0
 }

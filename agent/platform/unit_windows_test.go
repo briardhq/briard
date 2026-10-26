@@ -72,13 +72,14 @@ func TestUnitIsFoundByNameAfterTheLauncherLetsGo(t *testing.T) {
 
 // DOWN AND STAYING DOWN is STOPPED by a clean exit. A non-zero exit -- the agent's own error, a
 // process ended outright -- is a failure the recovery restarts 5 s later, and a service on its way
-// up or down is neither.
+// up or down is neither. A service never started since its install is down too: nothing restarts it.
 func TestOnlyACleanlyStoppedServiceIsStopped(t *testing.T) {
 	for _, c := range []struct {
 		st   svc.Status
 		want bool
 	}{
 		{svc.Status{State: svc.Stopped}, true},
+		{svc.Status{State: svc.Stopped, Win32ExitCode: 1077}, true}, // ERROR_SERVICE_NEVER_STARTED: installed, not yet run
 		{svc.Status{State: svc.Stopped, Win32ExitCode: 1}, false},
 		{svc.Status{State: svc.Stopped, Win32ExitCode: 1067}, false}, // ERROR_PROCESS_ABORTED
 		{svc.Status{State: svc.Stopped, Win32ExitCode: 1066, ServiceSpecificExitCode: 3}, false},
