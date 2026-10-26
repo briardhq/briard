@@ -150,6 +150,8 @@
         # host script — not a nixosTest) provisions an ephemeral PG from the SAME pin the
         # store nixosTest + schema.sql drift-gate use (real PG in the soak).
         postgresql = pkgs.postgresql;
+        # The release pipeline's Authenticode signer (scripts/ssign.nix).
+        ssign = pkgs.callPackage ./scripts/ssign.nix { };
       });
 
       # The guest VM image: NixOS + DRBD 9 + drbd-reactor, and NO workload -- a service is

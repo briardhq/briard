@@ -155,6 +155,10 @@
 #   RELEASE_PUBKEY      PKIX PEM public key, for `verify` (default: alongside the private key)
 #   RELEASE_PURGE_URL   optional: CDN purge endpoint, POSTed a {"files":[...]} list after upload
 #   RELEASE_PURGE_TOKEN optional: bearer token for RELEASE_PURGE_URL (see purge_edge for why)
+#   CERTUM_EMAIL        the SimplySign account's e-mail -- required by `stage`/`dev`/`setup build`,
+#                       which Authenticode-sign every windows PE (see authenticode)
+#   CERTUM_OTP          the base32 seed of that account's one-time codes: a signing secret,
+#                       held like RELEASE_SIGN_KEY
 #
 # Run from the repo root. There is no second publish and no second trust root any more: the
 # guest OS travels as the signed image in this tree, verified by the release keyring the host
@@ -191,6 +195,33 @@ ossl() {
 	if command -v openssl >/dev/null 2>&1; then openssl "$@"; else nix run nixpkgs#openssl -- "$@"; fi
 }
 aws() { nix run nixpkgs#awscli2 -- "$@"; }
+# THE AUTHENTICODE SIGNATURE, Windows' own trust, never mixed with the channel's: the release
+# keyring signs manifests and is what nodes verify; this certificate signs the PE files Windows
+# evaluates -- every .exe and .dll of the windows arm we ship, and the Store exe. A PE that
+# already carries a signature keeps it (the TAP driver is OpenVPN's). Timestamped, so a
+# signature outlives the one-year certificate. The login is the SimplySign account's e-mail and
+# the seed of its one-time codes, CERTUM_EMAIL and CERTUM_OTP; without them the windows arm is
+# not staged at all, never staged unsigned. One ssign run signs a whole list on one login.
+pe_signed() { # file -- true when its security directory names a certificate table
+	local lfanew magic dirs
+	[ "$(head -c2 "$1")" = MZ ] || return 1
+	lfanew=$(od -An -tu4 -j60 -N4 "$1" | tr -d ' ')
+	magic=$(od -An -tx2 -j$((lfanew + 24)) -N2 "$1" | tr -d ' ')
+	case "$magic" in 020b) dirs=$((lfanew + 24 + 112)) ;; 010b) dirs=$((lfanew + 24 + 96)) ;; *) return 1 ;; esac
+	[ "$(od -An -tu4 -j$((dirs + 4 * 8 + 4)) -N4 "$1" | tr -d ' ')" -gt 0 ]
+}
+authenticode() { # file... -- signs each unsigned one in place, then refuses any left unsigned
+	local f todo=()
+	for f in "$@"; do pe_signed "$f" || todo+=("$f"); done
+	if [ "${#todo[@]}" -gt 0 ]; then
+		[ -n "${CERTUM_EMAIL:-}" ] && [ -n "${CERTUM_OTP:-}" ] ||
+			die "set CERTUM_EMAIL and CERTUM_OTP (the SimplySign login, from .env) -- a windows PE is never published unsigned"
+		"$(nix build --no-link --print-out-paths .#ssign)/bin/ssign" -n Briard -u https://briard.io "${todo[@]}" >&2 ||
+			die "Authenticode signing failed"
+	fi
+	for f in "$@"; do pe_signed "$f" || die "$f carries no Authenticode signature"; done
+	say "Authenticode: ${#todo[@]} signed, $(($# - ${#todo[@]})) already signed"
+}
 
 # The release id, and the dirty gate. Asked of the flake rather than recomputed here, so there
 # is exactly one definition of what a version is (flake.nix).
@@ -520,8 +551,6 @@ stage)
 	# name it the way the Linux one names `linux-amd64`. One path, run twice: no second protocol, no
 	# platform field on the wire beyond the manifest's own, and no client change on either side.
 	W="$DIR/briard/$V/$WINDOWS_ARM"; mkdir -p "$W"
-	dtar "$W/qemu-bundle-windows.tar" -C "$(out_of .#artifacts.qemu-bundle-windows)" .
-	zst "$W/qemu-bundle-windows.tar" "$W/qemu-bundle-windows.tar.zst"
 	# The Windows agent, and the guest bundle it pushes. The bundle's bytes are the Linux arm's --
 	# the guest is Linux whatever runs it -- copied so a Windows install fetches one arm, not two.
 	install -m0755 "$(out_of .#artifacts.agent-windows)/bin/windows_amd64/briard-agent.exe" "$W/briard-agent.exe"
@@ -530,6 +559,16 @@ stage)
 	# The TAP driver, OpenVPN's signed bytes pinned in the flake: the installer fetches it from this
 	# arm and checks the same hash, so a Windows install touches one origin.
 	install -m0644 "$(out_of .#artifacts.tap-windows)" "$W/tap-windows.exe"
+	# The qemu tree is signed before it is packed, so a copy out of the store, made writable; it
+	# lives under DIR, outside every versioned directory, so nothing uploads it and the next stage
+	# clears it.
+	Q="$DIR/.qemu-windows"
+	cp -r "$(out_of .#artifacts.qemu-bundle-windows)/." "$Q"; chmod -R u+w "$Q"
+	mapfile -t QPE < <(find "$Q" -type f \( -iname '*.exe' -o -iname '*.dll' \))
+	authenticode "$W/briard-agent.exe" "$W/briard-tray.exe" "$W/tap-windows.exe" "${QPE[@]}"
+	dtar "$W/qemu-bundle-windows.tar" -C "$Q" .
+	rm -rf "$Q"
+	zst "$W/qemu-bundle-windows.tar" "$W/qemu-bundle-windows.tar.zst"
 	embed_keyring scripts/install.ps1 "$W/install.ps1"
 	# The update launcher, the windows arm's twin of briard-update: frozen, laid down by the install.
 	install -m0644 scripts/agent/briard-update.ps1 "$W/briard-update.ps1"
@@ -1136,6 +1175,9 @@ setup)
 	stub=$(nix build --no-link --print-out-paths .#artifacts.setup-windows)/bin/windows_amd64/briard-setup.exe
 	mkdir -p "$(dirname "$OUT")"
 	cat "$stub" "$tmp/payload.zip" > "$OUT"
+	# Signed whole, after the payload is appended: the signature covers the payload, and the stub
+	# reads its payload up to where the signature begins.
+	authenticode "$OUT"
 	say "built $OUT for $V: $(stat -c%s "$OUT") bytes, sha256 $(sha256sum "$OUT" | cut -d' ' -f1)"
 	;;
 
