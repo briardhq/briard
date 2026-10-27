@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -16,10 +17,11 @@ import (
 )
 
 // TWO WAYS TO RUN, ONE INSTALL. Double-clicked, it opens a console that shows the install as it
-// goes and waits for Enter at the end. With /S -- the Store's silent switch -- nothing opens but
-// the UAC prompt. Either way it never restarts Windows: it ends with the script's exit code, 3010
-// when the restart is owed (the Store shows its own restart message for it), 0 when not, and
-// anything else is a failure. The whole output also goes to %TEMP%\briard-setup.log.
+// goes and, when the restart is owed, asks whether to restart now. With /S -- the Store's silent
+// switch -- nothing opens but the UAC prompt and it never restarts Windows. Either way it ends with
+// the script's exit code, 3010 when the restart is owed (the Store shows its own restart message
+// for it), 0 when not, and anything else is a failure. The whole output also goes to
+// %TEMP%\briard-setup.log.
 //
 // Not elevated, it relaunches itself elevated and returns that run's code: a program with no
 // manifest resource asks for UAC this way, as install.ps1 does.
@@ -54,22 +56,43 @@ func run() int {
 			out = io.MultiWriter(con, lf)
 		}
 	}
-	code := install(out)
+	code := runInstall(out)
 	if con != nil {
-		if code != 0 && code != 3010 {
+		switch code {
+		case 3010:
+			fmt.Fprint(con, "\nRestart now? [Y/n] ")
+			if a := strings.TrimSpace(readLine()); a == "" || strings.EqualFold(a[:1], "y") {
+				// install.ps1's own restart: Restart, never a shutdown -- Fast Startup's resume is
+				// not a start.
+				exec.Command(filepath.Join(os.Getenv("SystemRoot"), `System32\shutdown.exe`),
+					"/r", "/t", "5", "/c", "Briard: restarting once to finish the install").Run()
+				return code
+			}
+			fmt.Fprintln(con, "Restart Windows when you are ready (Restart, not Shut down): Briard starts by itself afterwards.")
+		case 0:
+		default:
 			fmt.Fprintf(con, "\nbriard: the install did not finish. Everything above is also in %s.\n", logPath)
 		}
 		fmt.Fprint(con, "\nPress Enter to close this window.")
-		if in, err := os.Open("CONIN$"); err == nil {
-			bufio.NewReader(in).ReadString('\n')
-			in.Close()
-		}
+		readLine()
 	}
 	return code
 }
 
-// install unpacks the arm this program carries and runs its install.ps1 over it.
-func install(out io.Writer) int {
+// readLine reads one line from the console.
+func readLine() string {
+	in, err := os.Open("CONIN$")
+	if err != nil {
+		return ""
+	}
+	defer in.Close()
+	s, _ := bufio.NewReader(in).ReadString('\n')
+	return s
+}
+
+// runInstall unpacks what this program carries and runs install.ps1: the carried arm's, or
+// stable's, fetched and verified (prepare).
+func runInstall(out io.Writer) int {
 	fail := func(err error) int { fmt.Fprintf(out, "briard: ERROR: %v\n", err); return 1 }
 	self, err := os.Executable()
 	if err != nil {
@@ -97,10 +120,14 @@ func install(out io.Writer) int {
 	if err := extract(z, dir); err != nil {
 		return fail(err)
 	}
+	env, err := prepare(context.Background(), dir, channel, func(f string, a ...any) { fmt.Fprintf(out, f+"\n", a...) })
+	if err != nil {
+		return fail(err)
+	}
 	// By its full path: an elevated program does not take powershell.exe from whatever PATH says.
 	ps := filepath.Join(os.Getenv("SystemRoot"), `System32\WindowsPowerShell\v1.0\powershell.exe`)
 	cmd := exec.Command(ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(dir, "install.ps1"), "-NoRestart")
-	cmd.Env = append(os.Environ(), "BRIARD_ARTIFACTS="+dir)
+	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdout, cmd.Stderr = out, out
 	// Its output comes through this program, so it needs no window of its own in either mode.
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}

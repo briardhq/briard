@@ -12,6 +12,8 @@
 #                                       `promote`; unsigned where it is SERVED, since
 #                                       the one-liner fetches it before any verification exists
 #   install.ps1                         likewise, of briard/stable/windows-amd64/install.ps1
+#   briard-setup.exe                    likewise, of briard/stable/windows-amd64/briard-setup.exe -- the
+#                                       download page's installer, which installs current stable
 #   briard/
 #     <version>/linux-amd64/            manifest.json(+.sig), briard-agent, briard-net-wrap,
 #                                       install.sh,
@@ -19,7 +21,8 @@
 #                                       qemu-bundle.tar.zst, guest-bundle.tar.zst,
 #                                       briard-{agent,update}.service, briard-update.timer
 #     <version>/windows-amd64/          manifest.json(+.sig), briard-agent.exe, briard-tray.exe, install.ps1, briard-update.ps1,
-#                                       qemu-bundle-windows.tar.zst, guest-bundle.tar.zst, tap-windows.exe
+#                                       qemu-bundle-windows.tar.zst, guest-bundle.tar.zst, tap-windows.exe,
+#                                       briard-setup.exe
 #     latest/{linux,windows}-amd64/     manifest.json(+.sig), briard-agent / briard-agent.exe
 #     stable/{linux,windows}-amd64/     likewise
 #     dev/{linux,windows}-amd64/        likewise -- the one ungated pointer (see `dev`)
@@ -27,7 +30,7 @@
 #     <version>/amd64/                  manifest.json(+.sig), nixos.qcow2.zst
 #     {latest,stable,dev}/amd64/        manifest.json(+.sig)
 #   setup/
-#     <version>/briard-setup.exe        the Store's installer, carrying that release's windows arm; written once,
+#     <version>/briard-store-setup.exe  the Store's installer, carrying that release's windows arm; written once,
 #                                       outside both chains (`setup`)
 #
 # A CHAIN is a release line with its own version series: the briard bundle moves as
@@ -129,7 +132,7 @@
 #                         of publishing, run once the gates have passed on that exact id
 #                         (default: the version staged in the default DIR)
 #   promote  [VERSION]    copy <VERSION>'s manifests to `stable` on every chain and arm, and its
-#                         install.sh to the channel root
+#                         installers (install.sh, install.ps1, briard-setup.exe) to the channel root
 #                         (default: whatever briard/latest names; refuses a same-date promotion,
 #                         and an upgrade floor newer than the newest Store exe under setup/)
 #   dev      [DIR]        stage + sign + publish + move `dev`, in one run and with NO gate, then
@@ -144,7 +147,7 @@
 #                         followed by while no pointer names it yet
 #   setup build VERSION   the Store's installer: VERSION's published windows arm, verified,
 #                         inside the briard-setup stub, at ./.release-setup/setup/VERSION/
-#   setup publish VERSION upload it to setup/VERSION/briard-setup.exe, once (needs the credential;
+#   setup publish VERSION upload it to setup/VERSION/briard-store-setup.exe, once (needs the credential;
 #                         refuses a VERSION older than stable's upgrade floor)
 #
 # Env:
@@ -565,7 +568,17 @@ stage)
 	Q="$DIR/.qemu-windows"
 	cp -r "$(out_of .#artifacts.qemu-bundle-windows)/." "$Q"; chmod -R u+w "$Q"
 	mapfile -t QPE < <(find "$Q" -type f \( -iname '*.exe' -o -iname '*.dll' \))
-	authenticode "$W/briard-agent.exe" "$W/briard-tray.exe" "$W/tap-windows.exe" "${QPE[@]}"
+	# THE DOWNLOAD PAGE'S INSTALLER: the briard-setup stub with only the release public key
+	# appended, so it verifies stable's manifest and the install.ps1 that names, and runs that --
+	# installing current stable whenever it runs, never its own release, as the one-liner does. Its
+	# own version matters only for its own code. Signed with the rest, after the key is appended, so
+	# the signature covers the key.
+	K="$DIR/.setup-web"; rm -rf "$K"; mkdir -p "$K"
+	install -m0644 "$RELEASE_PUBKEY" "$K/keyring.pem"
+	nix run nixpkgs#zip -- -q -j -X "$K/payload.zip" "$K/keyring.pem" || die "zipping the release key failed"
+	cat "$(out_of .#artifacts.setup-windows)/bin/windows_amd64/briard-setup.exe" "$K/payload.zip" > "$W/briard-setup.exe"
+	rm -rf "$K"
+	authenticode "$W/briard-agent.exe" "$W/briard-tray.exe" "$W/tap-windows.exe" "$W/briard-setup.exe" "${QPE[@]}"
 	dtar "$W/qemu-bundle-windows.tar" -C "$Q" .
 	rm -rf "$Q"
 	zst "$W/qemu-bundle-windows.tar" "$W/qemu-bundle-windows.tar.zst"
@@ -785,6 +798,8 @@ promote)
 			if [ "$c" = briard ] && [ "$arm" = "$WINDOWS_ARM" ]; then
 				have_key "$bucket/$c/$rel/install.ps1" "$endpoint" ||
 					die "$c/$rel carries no install.ps1 — it was staged before the Windows installer was carried in the release; re-stage and publish it"
+				have_key "$bucket/$c/$rel/briard-setup.exe" "$endpoint" ||
+					die "$c/$rel carries no briard-setup.exe — it was staged before the download page's installer was carried in the release; re-stage and publish it"
 				# THE STORE'S EXE STAYS UPGRADABLE. A Store install lays down the agent its exe
 				# carries, and that agent's first start updates it to stable -- which refuses an
 				# installed release older than stable's floor, so a floor past the exe leaves every
@@ -845,6 +860,8 @@ promote)
 	say "install.sh at the root -> briard/$V/$LINUX_ARM/install.sh"
 	copy_key "briard/$V/$WINDOWS_ARM/install.ps1" "$bucket" "install.ps1" "$endpoint"
 	say "install.ps1 at the root -> briard/$V/$WINDOWS_ARM/install.ps1"
+	copy_key "briard/$V/$WINDOWS_ARM/briard-setup.exe" "$bucket" "briard-setup.exe" "$endpoint"
+	say "briard-setup.exe at the root -> briard/$V/$WINDOWS_ARM/briard-setup.exe"
 	{
 		for c in $CHAINS; do
 			for arm in $(arms_of "$c"); do
@@ -853,6 +870,7 @@ promote)
 		done
 		echo "$CHANNEL/install.sh"
 		echo "$CHANNEL/install.ps1"
+		echo "$CHANNEL/briard-setup.exe"
 	} | purge_edge
 	say "promoted $V — now run: ./scripts/publish-release.sh verify"
 	;;
@@ -1098,20 +1116,23 @@ verify)
 		[ "$got" = "$want" ] ||
 			die "the root install.sh is NOT briard/stable/$LINUX_ARM/install.sh ($got != $want) — a promote that did not finish, or a hand-edited root"
 		say "install.sh at the root is briard/$sv/$LINUX_ARM/install.sh, byte for byte"
-		# The Windows installer, the same way -- but a stable from before it was carried is said,
-		# not failed: nothing is wrong with a channel whose root serves no installer for an arm its
-		# promoted release never had one for.
-		want=$(curl -fsS "$CHANNEL/briard/stable/$WINDOWS_ARM/manifest.json" |
-			jq -r '.artifacts[] | select(.name=="install.ps1") | .sha256') || die "cannot read briard/stable/$WINDOWS_ARM"
-		if [ -z "$want" ]; then
-			say "briard/stable ($sv) predates install.ps1 — the root serves no Windows installer yet"
-		else
-			curl -fsS "$CHANNEL/install.ps1" -o "$tmp/install.ps1" || die "install.ps1 is not fetchable at $CHANNEL/install.ps1"
-			got=$(sha256sum "$tmp/install.ps1" | cut -d' ' -f1)
+		# The Windows installers, the same way -- but a stable from before one was carried is said,
+		# not failed: nothing is wrong with a channel whose root serves no installer its promoted
+		# release never had.
+		curl -fsS "$CHANNEL/briard/stable/$WINDOWS_ARM/manifest.json" -o "$tmp/stable-windows.json" ||
+			die "cannot read briard/stable/$WINDOWS_ARM"
+		for f in install.ps1 briard-setup.exe; do
+			want=$(jq -r --arg f "$f" '.artifacts[] | select(.name==$f) | .sha256' "$tmp/stable-windows.json")
+			if [ -z "$want" ]; then
+				say "briard/stable ($sv) predates $f — the root serves none yet"
+				continue
+			fi
+			curl -fsS "$CHANNEL/$f" -o "$tmp/$f" || die "$f is not fetchable at $CHANNEL/$f"
+			got=$(sha256sum "$tmp/$f" | cut -d' ' -f1)
 			[ "$got" = "$want" ] ||
-				die "the root install.ps1 is NOT briard/stable/$WINDOWS_ARM/install.ps1 ($got != $want) — a promote that did not finish, or a hand-edited root"
-			say "install.ps1 at the root is briard/$sv/$WINDOWS_ARM/install.ps1, byte for byte"
-		fi
+				die "the root $f is NOT briard/stable/$WINDOWS_ARM/$f ($got != $want) — a promote that did not finish, or a hand-edited root"
+			say "$f at the root is briard/$sv/$WINDOWS_ARM/$f, byte for byte"
+		done
 	fi
 	say "$CHANNEL verifies end to end: every pointer signed, every artifact matching, the installers served at the root and pointing here"
 	;;
@@ -1129,11 +1150,12 @@ setup)
 	# machine first; `setup publish` uploads that file.
 	#
 	# ⚠️ ONE URL, ONE BINARY, FOREVER. The Store certifies the bytes at the URL it was given and
-	# re-certifies on its own if they move, so setup/<VERSION>/briard-setup.exe is written once
-	# and refused after. It lives outside both chains, so `gc` never collects it.
+	# re-certifies on its own if they move, so setup/<VERSION>/briard-store-setup.exe is written
+	# once and refused after. It lives outside both chains, so `gc` never collects it. Named apart
+	# from the download page's briard-setup.exe (`stage`): the same stub, a different program.
 	need curl; need sha256sum; need jq
 	V="${3:-}"; [ -n "$V" ] || die "usage: setup {build|publish} VERSION (the published release whose windows arm it carries)"
-	key="setup/$V/briard-setup.exe"
+	key="setup/$V/briard-store-setup.exe"
 	OUT="./.release-setup/$key"
 	case "$2" in
 	build) ;;
