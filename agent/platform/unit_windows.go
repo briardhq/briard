@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 	"unsafe"
 
@@ -31,9 +32,10 @@ import (
 // guest powerdown lives on the unit, so every stop of it -- the machine's, the agent's -- runs it;
 // here the agent powers the guest down itself (PowerOffGuest) and this layer only ever kills.
 
-// unitTail is the unit's last words: the tail of the file its output is appended to (the SCM
-// keeps no journal). The file outlives the launch, so an earlier launch's lines can stand at its
-// end until this one writes; "" with no file named.
+// unitTail is the unit's last words: the tail of the file its output goes to (the SCM keeps no
+// journal). The file is this launch's alone -- unitOutput rolls the previous one to `.prev` --
+// so a line the launch before wrote cannot stand in for this one's, which is the journal's
+// per-invocation reading on Linux; "" with no file named.
 func unitTail(_ context.Context, s QEMUSpec, n int) string {
 	if s.UnitLog == "" {
 		return ""
@@ -168,11 +170,19 @@ func startTransient(_ context.Context, args []string) ([]byte, error) {
 	return nil, nil
 }
 
-// unitOutput opens the unit's log for appending, inheritable, shared so a reader can open it while
-// the unit writes. No log named is NUL: the SCM keeps no journal to fall back on.
+// unitOutput opens the unit's log, inheritable, shared so a reader can open it while the unit
+// writes. No log named is NUL: the SCM keeps no journal to fall back on.
+//
+// ONE FILE PER LAUNCH: the one before is rolled to `.prev` first, one generation, the console
+// capture's own convention. The file is what unitTail reads for the guest's last words, and a
+// unit's output is read by the invocation that wrote it -- measured the other way, a relaunch
+// after a WHPX fatal exit carried that exit's line under the next guest's kernel panic. Best
+// effort: a roll that fails costs one stale line, never the launch.
 func unitOutput(path string) (windows.Handle, error) {
 	if path == "" {
 		path = "NUL"
+	} else {
+		_ = os.Rename(path, path+".prev")
 	}
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
