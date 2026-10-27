@@ -103,9 +103,22 @@ type diskFill struct {
 	by   time.Time
 }
 
-// startFill starts the fill on this copy of cfg, so nothing the start goes on to set races it.
+// startFill starts the fill on this copy of cfg, so nothing the start goes on to set races it. A
+// node whose disks are all there -- every start but the first -- has nothing to write, and makes
+// them here, ended before the start goes on.
 func (cfg Config) startFill(logf func(string, ...any)) *diskFill {
 	f := &diskFill{done: make(chan struct{}), by: time.Now().Add(provisionBudget)}
+	fresh := false
+	for _, p := range []string{cfg.DataDisk, cfg.StateDisk} {
+		if _, err := os.Lstat(p); p != "" && errors.Is(err, os.ErrNotExist) {
+			fresh = true
+		}
+	}
+	if !fresh {
+		f.err = cfg.provisionDisks(logf)
+		close(f.done)
+		return f
+	}
 	go func() { f.err = cfg.provisionDisks(logf); close(f.done) }()
 	return f
 }
@@ -119,7 +132,15 @@ func (cfg Config) startFill(logf func(string, ...any)) *diskFill {
 // beside the fill for as long as the budget. So the loop keeps beating, and a fill past its budget
 // ends the start with the error: the write takes no context, so nothing cuts it short, and the next
 // start discards the half-written file and writes it again (platform.AllocateThick).
+//
+// An ended fill is its result whatever else is ready: a stop that arrives with it does not make
+// disks that were made into ones that were not.
 func (cfg Config) joinFill(ctx context.Context, local <-chan localRequest, f *diskFill, logf func(string, ...any)) error {
+	select {
+	case <-f.done:
+		return f.err
+	default:
+	}
 	jctx, cancel := context.WithDeadline(ctx, f.by)
 	defer cancel()
 	if err := cfg.holdDoor(jctx, local, func() string { return "briard is making this node's disks" }, f.done, logf); err != nil {
