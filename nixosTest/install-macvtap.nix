@@ -1733,10 +1733,19 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds(f"journalctl -u briard-agent | grep 'Briard: guest bundle push failed' | tail -1 | grep -q '{V5}'", timeout=60)
     before = dressed_count(V)
     reverts = int(host.succeed("journalctl -u briard-agent | grep -c 'PUSH REVERTED' || true").strip())
+    relaunched = int(host.succeed("journalctl -u briard-agent | grep -c 'guest-recovery: guest relaunched and converged' || true").strip())
     host.succeed("systemctl stop briard-guest.service")
     host.wait_until_succeeds(f"journalctl -u briard-agent | grep -q '{V5} reverted before; dressing the guest with the last good bundle {V} instead'", timeout=600)
     host.wait_until_succeeds(f"[ $(journalctl -u briard-agent | grep -c 'guest bundle: the guest runs {V} (dressed)') -gt {before} ]", timeout=600)
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=600)
+    # THE LOOP IS BACK, NOT ONLY THE GUEST. The relaunch is the recovery ladder's, and the ladder
+    # answers the door until it returns -- refusing every verb with what it is doing -- so its own
+    # "converged" line is not yet a door the verbs below can use. What is: the observe loop's
+    # first status line after it. Counted, so an earlier relaunch's line cannot satisfy the wait,
+    # and never a bare CONVERGED, which every earlier bring-up already logged.
+    host.wait_until_succeeds(
+        f"[ $(journalctl -u briard-agent | grep -c 'guest-recovery: guest relaunched and converged') -gt {relaunched} ] && "
+        "journalctl -u briard-agent | grep -E 'guest-recovery: guest relaunched and converged|status node=' | tail -1 | grep -q 'status node='",
+        timeout=600)
     assert int(host.succeed("journalctl -u briard-agent | grep -c 'PUSH REVERTED' || true").strip()) == reverts, "the refused bundle was pushed again after a relaunch"
     host.wait_until_succeeds(f"journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'bundle={V}'", timeout=60)
     host.succeed(f"test -d /opt/briard/agent/guest-{V}")   # the good tree survives the launch's prune
