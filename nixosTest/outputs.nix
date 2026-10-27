@@ -254,7 +254,7 @@ let
   # script's -19: the format is what is under test, not the ratio, and two 1.2 GB images at
   # -19 would cost the rig minutes for nothing.
   guestChannel = pkgs.runCommand "briard-test-guest-channel" { nativeBuildInputs = [ pkgs.zstd ]; } ''
-    V=${agentVersion}; GV="vm.''${V#*.}"; GV2="vm.20991230.next0000"
+    V=${agentVersion}; GV="vm.''${V#*.}"; GV2="vm.99123000.next0000"
     A="$out/vm/$GV/amd64"; B="$out/vm/$GV2/amd64"; mkdir -p "$A" "$B"
     zstd -3 -q ${guestDisk}/nixos.qcow2     -o "$A/nixos.qcow2.zst"
     zstd -3 -q ${nextGuestDisk}/nixos.qcow2 -o "$B/nixos.qcow2.zst"

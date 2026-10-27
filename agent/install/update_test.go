@@ -75,6 +75,15 @@ func TestDecide(t *testing.T) {
 		{"a fresh install is never floored", TargetStable, *hostFloor(next, cur), nil, nil, true, nil},
 		{"no floor declared is the normal state", TargetStable, *host(next), host(old), nil, true, nil},
 		{"a floor with no date field is a malformed manifest, not a refusal", TargetStable, *hostFloor(next, "v3.dirty"), host(old), nil, false, ErrManifest},
+		// THE TWO FORMS OF THE DATE FIELD. A commit's YYMMDDHH sits above every older YYYYMMDD, so
+		// an agent on the old form takes the first new id as newer, a second release the same day
+		// orders after the first, and a floor or stable on the old form never blocks the new one.
+		{"a YYMMDDHH stable installs over a YYYYMMDD of the same day", TargetStable, *host("v3.26090514.eeeeeee"), host("v3.20260905.bbbbbbb"), nil, true, nil},
+		{"a later hour of the same day installs", TargetStable, *host("v3.26090515.fffffff"), host("v3.26090514.eeeeeee"), nil, true, nil},
+		{"the same hour is a no-op, as the same date was", TargetStable, *host("v3.26090514.fffffff"), host("v3.26090514.eeeeeee"), nil, false, nil},
+		{"a YYYYMMDD stable is behind a YYMMDDHH install", TargetStable, *host("v3.20991231.bbbbbbb"), host("v3.26090514.eeeeeee"), nil, false, nil},
+		{"a YYYYMMDD floor passes a YYMMDDHH install", TargetStable, *hostFloor("v3.26090515.fffffff", cur), host("v3.26090514.eeeeeee"), nil, true, nil},
+		{"a YYMMDDHH floor refuses a YYYYMMDD install", TargetStable, *hostFloor("v3.26090515.fffffff", "v3.26090514.eeeeeee"), host("v3.20260905.bbbbbbb"), nil, false, ErrTooOldToUpgrade},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, err := Decide(tc.target, tc.want, tc.have, tc.stable)
@@ -417,7 +426,7 @@ func TestUpdateRefusesATamperedAgent(t *testing.T) {
 func TestUpdateRefusesAnUnknownPin(t *testing.T) {
 	c := goodChannel(t)
 	u, l, _ := updateFixture(t, c, nil)
-	if _, err := u.Run(context.Background(), "v3.20990101.nothere"); err == nil {
+	if _, err := u.Run(context.Background(), "v3.99010100.nothere"); err == nil {
 		t.Fatal("an unknown pin was accepted")
 	}
 	assertNothingStaged(t, l)

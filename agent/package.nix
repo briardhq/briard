@@ -14,8 +14,8 @@
 # image bakes. Each is its own main, so what each links is an import graph the arch tests fence
 # rather than a build tag.
 #
-# version: the release id stamped into the binary. Shape `<epoch>.<commit-date>.<short-rev>`
-# — e.g. `v3.20260806.92d4eee` — computed in flake.nix from `self`, i.e. DERIVED FROM THE TREE and
+# version: the release id stamped into the binary. Shape `<epoch>.<commit-hour>.<short-rev>`
+# — e.g. `v3.26080614.92d4eee`, the hour YYMMDDHH in UTC — computed in flake.nix from `self`, i.e. DERIVED FROM THE TREE and
 # never from a build counter: the same commit yields the same version, hence the same store path,
 # which is what makes a released artifact re-derivable from its tag. The default below is the dev
 # sentinel. A dirty tree cannot produce a release id at all (flake.nix emits `v3.dirty`, which the

@@ -328,7 +328,7 @@ pkgs.testers.runNixOSTest {
     #        back -- same file swapped the other way -- and the node is serving what it served.
     V = "${agent.version}"
     GV = "vm." + V.split(".", 1)[1]
-    GV2 = "vm.20991230.next0000"
+    GV2 = "vm.99123000.next0000"
     host.succeed("mkdir -p /srv/vm && cp -r ${channel}/vm/. /srv/vm/ && chmod -R u+w /srv/vm")
     def sign_and_point(ver, pointers):
         d = f"/srv/vm/{ver}/amd64"
@@ -361,7 +361,7 @@ pkgs.testers.runNixOSTest {
     # THE FAILABLE CONTROL: a release whose signed manifest names a closure its image does not
     # boot. Same image bytes as GV2, manifest lying about the system -> the boot does not prove
     # the target -> the swap is undone and the node is back on GV2, serving.
-    GV3 = "vm.20991231.liar0000"
+    GV3 = "vm.99123100.liar0000"
     host.succeed(f"mkdir -p /srv/vm/{GV3}/amd64 && cp /srv/vm/{GV2}/amd64/nixos.qcow2.zst /srv/vm/{GV3}/amd64/")
     host.succeed(f"${agent}/bin/briard-agent --stage-manifest /srv/vm/{GV3}/amd64 --chain vm --platform amd64 --release {GV3} --system /nix/store/00000000000000000000000000000000-nixos-system-liar --min-briard {V}")
     sign_and_point(GV3, ("latest",))

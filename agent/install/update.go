@@ -104,7 +104,7 @@ type Decision struct {
 //     the epoch token only ever moves forward with the dates, and dropping it removes the trap
 //     where `v3` sorts before `v10`. No same-date rule, by decision — one would make the timer
 //     revert a cloud pin that shares a date with stable; the constraint sits in the publish path
-//     instead (promote refuses a same-date build).
+//     instead (promote refuses a build whose date field equals stable's).
 //   - `latest` / an exact id: install when the full id differs. These force past the ordering
 //     but still no-op at equality, or `briard update` would bounce an up-to-date agent.
 //   - An exact id may be OLDER than the installed one (a bad release must be revocable without
@@ -142,9 +142,9 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 				ErrTooOldToUpgrade, have.Version, want.MinUpgradeFrom)
 		}
 		// On the DATE, like every other ordering in this channel (owner, 2026-09-20). It
-		// inherits the same-day blind spot `min_briard` has, and for the same reason it is
-		// tolerable: `promote` refuses a same-date build, so `stable` cannot cross a floor
-		// twice in one day.
+		// inherits the blind spot `min_briard` has within one date field, and for the same reason
+		// it is tolerable: `promote` refuses a build whose date field equals stable's, so
+		// `stable` cannot cross a floor twice in one hour.
 		if haveDate < floorDate {
 			return Decision{}, fmt.Errorf("%w: installed %s is older than %s's min_upgrade_from %s — this node cannot be upgraded to it and must be reinstalled",
 				ErrTooOldToUpgrade, have.Version, want.Version, want.MinUpgradeFrom)
@@ -205,8 +205,10 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 	return Decision{Install: true, Reason: fmt.Sprintf("%s -> %s (%s)", target, want.Version, from)}, nil
 }
 
-// dateOf is the numeric date field of a release id (`v3.20260905.abc1234` -> 20260905), the
-// only part of an id the stable path orders on.
+// dateOf is the numeric date field of a release id (`v3.26090514.abc1234` -> 26090514), the
+// only part of an id the stable path orders on. Two forms, one order: the commit's YYMMDDHH, and
+// the YYYYMMDD older releases carry, every one of which is below every YYMMDDHH (20xxxxxx vs
+// 26xxxxxx and up), so comparing the numbers orders both by time with no form to tell apart.
 func dateOf(id string) (int64, error) {
 	parts := strings.Split(id, ".")
 	if len(parts) < 2 {

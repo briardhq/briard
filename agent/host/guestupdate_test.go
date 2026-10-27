@@ -166,7 +166,7 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 		cfg                Config
 	}{
 		{"host too old", install.TargetLatest, "older than the vm release requires", cfg},
-		{"unknown pin", "vm.20990101.nothere", "404", cfg},
+		{"unknown pin", "vm.99010100.nothere", "404", cfg},
 		{"pin below stable", old.Version, "older than stable", cfg},
 		{"no keyring", install.TargetStable, "no release keyring", func() Config { c := cfg; c.UpdateKeyring = nil; return c }()},
 	} {

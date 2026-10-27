@@ -1373,7 +1373,7 @@ pkgs.testers.runNixOSTest {
     assert f"already at {V}" in out, f"briard update said: {out!r}"
     host.succeed("test ! -e /run/briard/update-target")                        # the unit consumed its target
     host.succeed(f"grep -q '^ok already at {V}' /run/briard/update-result")  # the verdict stays, for the alerter
-    host.fail("/opt/briard/agent/briard-agent update -to v3.20990101.nothere")
+    host.fail("/opt/briard/agent/briard-agent update -to v3.99010100.nothere")
     host.succeed("journalctl -u briard-update | grep -q 'could not fetch a bootstrap agent'")
     print("the shipped update unit, timer and CLI round-trip against the channel; an unknown pin fails loudly")
 
@@ -1465,7 +1465,7 @@ pkgs.testers.runNixOSTest {
             host.succeed(f"mkdir -p {p} && rm -f {p}/manifest.json {p}/manifest.json.sig {p}/briard-agent && cp {d}/manifest.json {d}/manifest.json.sig {p}/ && cp -L /srv/briard/{V}/linux-amd64/briard-agent {p}/briard-agent")
     def agent_invocation():
         return host.succeed("systemctl show -p InvocationID --value briard-agent.service").strip()
-    V2 = "v3.20991230.b86b0000"
+    V2 = "v3.99123000.b86b0000"
     host.succeed(f"mkdir -p /root/bundle2 && zstd -dc < /srv/briard/{V}/linux-amd64/qemu-bundle.tar.zst | tar -xf - -C /root/bundle2")
     host.succeed("echo b86b > /root/bundle2/PROVENANCE.b86b")
     publish_pin(V2, "/root/bundle2")
@@ -1488,7 +1488,7 @@ pkgs.testers.runNixOSTest {
     # A release whose qemu does NOT run on this host is refused at stage time, WHOLE and before
     # anything stops: the agent is never touched, the staged set is gone, and the run's verdict
     # says why. The smoke test must actually refuse, and be seen to.
-    V3 = "v3.20991231.b86bbad0"
+    V3 = "v3.99123100.b86bbad0"
     host.succeed("mkdir -p /root/bundle3/bin && printf '#!/bin/sh\\nexit 1\\n' > /root/bundle3/bin/qemu-system-x86_64 && chmod 755 /root/bundle3/bin/qemu-system-x86_64")
     publish_pin(V3, "/root/bundle3")
     inv = agent_invocation()
@@ -1510,7 +1510,7 @@ pkgs.testers.runNixOSTest {
     # its start fails, the committed release goes back and starts, and the agent that comes back
     # escalates what the run left it. Through `latest`, so the bootstrap is a working updater.
     # The guest never noticed.
-    V3b = "v3.20991231.b86bdead"
+    V3b = "v3.99123100.b86bdead"
     host.succeed("printf '#!/bin/sh\\nexit 1\\n' > /root/dead-agent && chmod 755 /root/dead-agent")
     publish_pin(V3b, "/root/bundle2", agent="/root/dead-agent", pointer="latest")
     host.succeed("sha256sum /opt/briard/agent/briard-agent > /tmp/committed.sha")
@@ -1615,7 +1615,7 @@ pkgs.testers.runNixOSTest {
     # nothing else): the host stages the set, `bin.test` runs each copy, the dashboard's exits 1,
     # the guest discards the WHOLE staged set, nothing is armed, no unit is restarted, and the
     # house keeps serving on the set it had. The host records the refusal like any other.
-    V4 = "v3.20991231.b138gate"
+    V4 = "v3.99123100.b138gate"
     host.succeed(f"mkdir -p /root/gbundle4/bin && cp /opt/briard/agent/guest-{V}/bin/briard-guest-agent /opt/briard/agent/guest-{V}/bin/briard-reverse-proxy /root/gbundle4/bin/")
     host.succeed("printf '#!/bin/sh\\necho \"dashboard: test launch: no\" >&2\\nexit 1\\n' > /root/gbundle4/bin/briard-dashboard && chmod 755 /root/gbundle4/bin/*")
     publish_pin(V4, "/root/bundle2", "/root/gbundle4")
@@ -1638,7 +1638,7 @@ pkgs.testers.runNixOSTest {
     # back. The door reverted itself by its own auto-restart (its flag consumed), the returning
     # agent discards the staged set, and NOTHING DEMOTED: one failed start is well inside the
     # unit's budget, and briard-promotion-hold never fired.
-    V5 = "v3.20991231.b138door"
+    V5 = "v3.99123100.b138door"
     # The baseline for "nothing masked the promoter target": this rig has ALREADY masked it once
     # on purpose, with `handover -keep-masked` above, and that line stays in the console for the
     # rest of the run. Counting the whole log would fail on the rig's own earlier act.
@@ -1757,10 +1757,10 @@ pkgs.testers.runNixOSTest {
     # A guest release this host is too OLD for is refused before anything is staged, and the
     # refusal names the remedy -- the support window closing on a node must never be silent.
     # And the check can fail: the same command with an unknown pin fails too.
-    GNEW = "vm.20991231.b86d0000"
+    GNEW = "vm.99123100.b86d0000"
     d = f"/srv/vm/{GNEW}/amd64"
     host.succeed(f"mkdir -p {d} && echo not-an-image > {d}/nixos.qcow2.zst")  # a real file (the writer skips links); never fetched, the refusal comes first
-    host.succeed(f"/opt/briard/agent/briard-agent --stage-manifest {d} --chain vm --platform amd64 --release {GNEW} --system ${guestDisk.system} --min-briard v3.20991231.zzzzzzz")
+    host.succeed(f"/opt/briard/agent/briard-agent --stage-manifest {d} --chain vm --platform amd64 --release {GNEW} --system ${guestDisk.system} --min-briard v3.99123100.zzzzzzz")
     host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
     # ⚠️ WAIT FOR THE ADMIN DOOR BEFORE KNOCKING ON IT. The section above ends in a refused
     # bundle push and a relaunch, so the agent can still be re-opening its socket here -- and
@@ -1778,7 +1778,7 @@ pkgs.testers.runNixOSTest {
     # And the escalation reached the journal -- a refusal the owner never hears about is the
     # failure mode the alert exists for.
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest OS update.*failed and rolled back.*older than the vm release requires'", timeout=30)
-    host.fail("/opt/briard/agent/briard-agent update -vm -to vm.20990101.nothere")
+    host.fail("/opt/briard/agent/briard-agent update -vm -to vm.99010100.nothere")
     host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")  # the record never moved
     print("the shipped node resolves its vm chain: already running the installed release; a release needing a newer briard is refused loudly")
 

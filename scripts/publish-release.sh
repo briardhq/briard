@@ -97,9 +97,10 @@
 # `stable` is the one that matters: every installed node converges to it nightly and there is no
 # canary on that path, so promotion is meant to be evidence-driven (the canary converged, the
 # fleet stayed healthy for a real window) — never a release-day action. `promote` refuses a build
-# whose date equals the currently promoted one: the timer's stable path orders on the date field
-# alone, so a same-date promotion would be invisible to it, and would only LOOK like a
-# release. A same-day fix-up takes the next day's number.
+# whose date field equals the currently promoted one's: the timer's stable path orders on that
+# field alone, so such a promotion would be invisible to it, and would only LOOK like a
+# release. The field is the commit's hour (YYMMDDHH, UTC), so a same-hour fix-up takes the next
+# hour's number.
 #
 # `dev` IS THE ONE UNGATED POINTER, and its release is the one that does not outlive its
 # successor. `stable` and `latest` are evidence-driven and stay in the bucket until `gc`'s floor;
@@ -133,7 +134,7 @@
 #                         (default: the version staged in the default DIR)
 #   promote  [VERSION]    copy <VERSION>'s manifests to `stable` on every chain and arm, and its
 #                         installers (install.sh, install.ps1, briard-setup.exe) to the channel root
-#                         (default: whatever briard/latest names; refuses a same-date promotion,
+#                         (default: whatever briard/latest names; refuses a same-hour promotion,
 #                         and an upgrade floor newer than the newest Store exe under setup/)
 #   dev      [DIR]        stage + sign + publish + move `dev`, in one run and with NO gate, then
 #                         delete the previous dev release unless stable/latest names it
@@ -243,7 +244,7 @@ release_version() {
 	git merge-base --is-ancestor HEAD origin/main ||
 		die "refusing HEAD $(git rev-parse --short HEAD) (version=$v): it is not on origin/main — push it to main first; the suites test pushed main, so anything else would ship untested code"
 	# THE STALE-COMMIT FLOOR, and it is what keeps ids unique now that `gc` DELETES. An id is
-	# `v3.<commit-date>.<shortrev>`, so the only way to mint one twice is to publish the same
+	# `v3.<commit-hour>.<shortrev>`, so the only way to mint one twice is to publish the same
 	# commit twice — and `publish` catches that by asking the bucket, which is exactly the
 	# question a deleted release makes unanswerable. Everything `gc` removes is past the floor BY
 	# PUBLISH DATE, and a commit is never younger than its own publish, so refusing a commit
@@ -251,7 +252,7 @@ release_version() {
 	# practice: releases are cut from HEAD, and shipping old code is a REVERT COMMIT (the header's
 	# recovery note) — a new rev with today's date, which passes this.
 	local age
-	age=$(( ( $(date -u +%s) - $(date -u -d "$(date_of "$v")" +%s) ) / 86400 ))
+	age=$(( ( $(date -u +%s) - $(date -u -d "$(day_of "$v")" +%s) ) / 86400 ))
 	[ "$age" -le "$GC_FLOOR_DAYS" ] || die "refusing a commit $age days old (version=$v, floor ${GC_FLOOR_DAYS}d): gc deletes past that floor, so this id may name bytes that existed once and are gone — publish a revert commit, not the old tag"
 	echo "$v"
 }
@@ -278,8 +279,20 @@ live_vm_for_inputs() { # <inputs> <candidate id>
 	done
 	return 1
 }
-# The date field of an id — the ONLY thing the timer's stable path orders on.
+# The date field of an id — the ONLY thing the timer's stable path orders on, as a number. It is
+# the commit's YYMMDDHH (UTC); releases before that carry YYYYMMDD, and every one of those is below
+# every YYMMDDHH, so numeric comparison orders both forms by time.
 date_of() { echo "$1" | cut -d. -f2; }
+# The calendar day of an id's date field, as `date -d` reads it, in either form: a YYYYMMDD field
+# always starts `20`, which as YYMMDDHH would be the year 2020, before any id had the form.
+day_of() {
+	local d
+	d=$(date_of "$1")
+	case "$d" in
+		20??????) echo "${d:0:4}-${d:4:2}-${d:6:2}" ;;
+		*) echo "20${d:0:2}-${d:2:2}-${d:4:2}" ;;
+	esac
+}
 # A release directory's path below the chain: "<seg>" or "<seg>/<arm>".
 sub() { echo "$1${2:+/$2}"; }
 # The one versioned directory a staged chain holds.
@@ -824,14 +837,14 @@ promote)
 				if [ "$cur" = "$v" ]; then
 					say "$c/$p already names $v"
 				else
-					# THE NO-SAME-DATE RULE. The timer's stable path orders on the
+					# THE NO-SAME-HOUR RULE. The timer's stable path orders on the
 					# date field alone and deliberately has no same-date rule (one would make
 					# the timer revert a cloud pin that shares a date with stable). So the
-					# constraint sits here, in the layer we can fix: a build whose date equals
-					# the promoted one is invisible to the fleet, and promoting it would only
-					# LOOK like a release.
+					# constraint sits here, in the layer we can fix: a build whose date field
+					# equals the promoted one's is invisible to the fleet, and promoting it would
+					# only LOOK like a release.
 					[ "$(date_of "$cur")" != "$(date_of "$v")" ] ||
-						die "$c/$p is $cur, same date as $v — the timer cannot tell them apart; a same-day fix-up needs the next day's number"
+						die "$c/$p is $cur, same date field as $v — the timer cannot tell them apart; a same-hour fix-up needs the next hour's number"
 				fi
 			else
 				say "$c/$p has no stable yet — this promotion creates it"
@@ -962,7 +975,7 @@ gc)
 	need nix; need curl; need jq
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
 	# gc DELETES (owner, 2026-09-09), and what makes that safe is that nothing needs the old
-	# BYTES — only the old CODE, which git has. An id is `v3.<commit-date>.<shortrev>`, so the
+	# BYTES — only the old CODE, which git has. An id is `v3.<commit-hour>.<shortrev>`, so the
 	# property a client depends on is "an id never names two different byte-sets", not "bytes
 	# live forever"; shipping old code is a REVERT COMMIT, which is a new rev under a new id and
 	# satisfies that trivially. `release_version`'s stale-commit floor is the other half.

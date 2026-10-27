@@ -13,11 +13,17 @@
         system = "x86_64-linux";
         overlays = [ self.overlays.default ];
       };
-      # The release id, DERIVED FROM THE TREE. Shape `<epoch>.<commit-date>.<short-rev>`,
-      # e.g. `v3.20260806.92d4eee`: the epoch carries the only high-level semantics we have (this
-      # is an epoch scheme, not semver); the commit date is quasi-incremental and readable at a
-      # glance (same-day collisions are expected and fine); the short rev makes it unique AND
-      # survives a history rewrite, which a commit *count* would not.
+      # The release id, DERIVED FROM THE TREE. Shape `<epoch>.<commit-hour>.<short-rev>`,
+      # e.g. `v3.26080614.92d4eee`: the epoch carries the only high-level semantics we have (this
+      # is an epoch scheme, not semver); the commit hour is YYMMDDHH in UTC, quasi-incremental and
+      # readable at a glance (two commits in one hour share it, which is fine); the short rev makes
+      # it unique AND survives a history rewrite, which a commit *count* would not.
+      #
+      # YYMMDDHH, NOT YYYYMMDD. Installed nodes order releases on this field alone, as a number, so
+      # two releases in one day were one release to them, and a same-day fix waited for midnight.
+      # Dropping the century keeps the field eight digits, which every agent ever shipped parses,
+      # and the first YYMMDDHH id (26xxxxxx) is above every YYYYMMDD one (20xxxxxx), so those agents
+      # take it as newer and nothing needs a bridge release. It wraps in 2100.
       #
       # Deliberately NOT a build counter: the same commit must yield the same version, hence the
       # same store path, or a released artifact could never be re-derived from its tag — which is
@@ -28,7 +34,7 @@
       # labelled as what they are, which is what the startup banner then reports.
       agentVersion =
         if self ? shortRev
-        then "v3.${builtins.substring 0 8 self.lastModifiedDate}.${self.shortRev}"
+        then "v3.${builtins.substring 2 8 self.lastModifiedDate}.${self.shortRev}"
         else "v3.dirty";
       # THE GUEST IMAGE'S VERSION IS A FUNCTION OF ITS INPUTS, NOT OF THE COMMIT, AND
       # ITS INPUTS ARE THE PUSH PROTOCOL. `publish-release.sh stage` asks whether the

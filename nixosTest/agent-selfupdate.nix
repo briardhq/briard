@@ -170,11 +170,11 @@ pkgs.testers.runNixOSTest {
             machine.succeed(f"mkdir -p /srv/briard/{p}/linux-amd64 && cp {d}/manifest.json {d}/manifest.json.sig /srv/briard/{p}/linux-amd64/")
             machine.succeed(f"install -m755 ${realAgent} /srv/briard/{p}/linux-amd64/briard-agent")
 
-    V4 = "v3.20990906.aaaaaaa"
+    V4 = "v3.99090600.aaaaaaa"
     publish(V4, "${readyV4}")
     # The node's installed release: an OLDER date, so stable is ahead of it.
     machine.succeed(
-        "printf '%s' '{\"chain\":\"briard\",\"platform\":\"linux-amd64\",\"version\":\"v3.20990101.0000000\",\"artifacts\":[{\"name\":\"briard-agent\",\"sha256\":\"0\",\"size\":1}]}' > ${manifest}"
+        "printf '%s' '{\"chain\":\"briard\",\"platform\":\"linux-amd64\",\"version\":\"v3.99010100.0000000\",\"artifacts\":[{\"name\":\"briard-agent\",\"sha256\":\"0\",\"size\":1}]}' > ${manifest}"
     )
     machine.succeed("systemd-run --unit=release-httpd --collect ${stubExe} serve 127.0.0.1:8099 /srv")
     machine.wait_until_succeeds("curl -sf ${channel}/briard/stable/linux-amd64/manifest.json -o /dev/null", timeout=30)
@@ -218,7 +218,7 @@ pkgs.testers.runNixOSTest {
     # === 3) REFUSE-AND-STAY: a release whose served bytes differ from what its signed manifest
     #        pins is refused by the fresh bootstrap's hash check, and an unsigned pointer before
     #        anything is fetched -- nothing staged, nothing stopped, the verdict says failed. ===
-    V5 = "v3.20990907.bbbbbbb"
+    V5 = "v3.99090700.bbbbbbb"
     publish(V5, "${readyV4}", pointers=("latest",))
     machine.succeed(f"install -m755 ${evilCand} /srv/briard/{V5}/linux-amd64/briard-agent")  # tamper AFTER signing
     # ⚠️ THE DEFAULT IS `stable`: V5 sits at `latest` alone, so the bare verb must not reach it.
@@ -236,7 +236,7 @@ pkgs.testers.runNixOSTest {
 
     # === 4) A QEMU THAT DOES NOT RUN HERE refuses its release BEFORE ANYTHING STOPS: the smoke
     #        test is the updater's, at stage time, so the agent never notices. ===
-    V6 = "v3.20990908.ccccccc"
+    V6 = "v3.99090800.ccccccc"
     publish(V6, "${readyV2}", pointers=("latest",), qemu="bad")
     out = machine.fail("${realAgent} update -to latest -base ${base} -run /run/briard 2>&1")
     assert "refused on this host: qemu smoke test" in out, f"the release failed, but not on its qemu: {out!r}"
@@ -248,7 +248,7 @@ pkgs.testers.runNixOSTest {
 
     # === 5) A CANDIDATE THAT CRASHES is reverted whole: the start fails, the committed release
     #        goes back and starts, and the reason waits for the agent that came back. ===
-    V7 = "v3.20990909.ddddddd"
+    V7 = "v3.99090900.ddddddd"
     publish(V7, "${crashCand}", pointers=("latest",))
     out = machine.fail("${realAgent} update -to latest -base ${base} -run /run/briard 2>&1")
     assert "did not start on this host and was reverted" in out, f"unexpected: {out!r}"
@@ -264,7 +264,7 @@ pkgs.testers.runNixOSTest {
 
     # === 6) A CANDIDATE THAT HANGS before READY: TimeoutStartSec fails the start (the case a crash
     #        detector alone would miss), and it is reverted the same way. ===
-    V8 = "v3.20990910.eeeeeee"
+    V8 = "v3.99091000.eeeeeee"
     publish(V8, "${hangCand}", pointers=("latest",))
     out = machine.fail("${realAgent} update -to latest -base ${base} -run /run/briard 2>&1")
     assert "did not start on this host and was reverted" in out, f"unexpected: {out!r}"
@@ -296,7 +296,7 @@ pkgs.testers.runNixOSTest {
     #        control). An exact target's bootstrap is pulled from its versioned directory, so its
     #        artifact is the real agent -- which, started bare, prints its help and never sends
     #        READY, so the run that follows is one more revert. ===
-    OLD = "v3.20990201.fffffff"
+    OLD = "v3.99020100.fffffff"
     publish(OLD, "${realAgent}", pointers=())
     inv = invocation()
     out = machine.fail(f"${realAgent} update -to {OLD} -base ${base} -run /run/briard 2>&1")
