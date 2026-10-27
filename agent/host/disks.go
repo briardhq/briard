@@ -93,6 +93,44 @@ func (cfg Config) growStateDisk(ctx context.Context, g stateGrower, resize func(
 	return nil
 }
 
+// diskFill is the first start's making of this node's disks (provisionDisks), run OFF the loop:
+// started by finishInstall beside the image fetch, the other long operation of a first start and
+// independent of it, and joined by Run before bring-up (joinFill). done closes when it ends, err is
+// its result once done has, and by is the end of its budget.
+type diskFill struct {
+	done chan struct{}
+	err  error
+	by   time.Time
+}
+
+// startFill starts the fill on this copy of cfg, so nothing the start goes on to set races it.
+func (cfg Config) startFill(logf func(string, ...any)) *diskFill {
+	f := &diskFill{done: make(chan struct{}), by: time.Now().Add(provisionBudget)}
+	go func() { f.err = cfg.provisionDisks(logf); close(f.done) }()
+	return f
+}
+
+// joinFill waits for the fill while the loop answers the door, so a stranger's `briard status`
+// during a slow disk gets the reason. A failed fill is fatal, as it is where it fails: a guest
+// launched with a `-drive` for a file nobody made is a boot that fails further from its cause.
+//
+// THE BUDGET IS A DEADLINE HERE, NOT A WATCHDOG LEASE. Off the loop a lease would ping on the
+// loop's behalf while the start goes on without it, and hide a wedge in anything the start runs
+// beside the fill for as long as the budget. So the loop keeps beating, and a fill past its budget
+// ends the start with the error: the write takes no context, so nothing cuts it short, and the next
+// start discards the half-written file and writes it again (platform.AllocateThick).
+func (cfg Config) joinFill(ctx context.Context, local <-chan localRequest, f *diskFill, logf func(string, ...any)) error {
+	jctx, cancel := context.WithDeadline(ctx, f.by)
+	defer cancel()
+	if err := cfg.holdDoor(jctx, local, func() string { return "briard is making this node's disks" }, f.done, logf); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("host: this node's disks were not made within %s", provisionBudget)
+	}
+	return f.err
+}
+
 // provisionDisks makes this node's pet volumes exist, once, before the guest is launched.
 //
 // ⚠️ IT PROVISIONS ONLY WHAT IT WAS TOLD ABOUT, and that predicate is doing real work rather than
@@ -117,14 +155,33 @@ func (cfg Config) provisionDisks(logf func(string, ...any)) error {
 		if err != nil {
 			return fmt.Errorf("host: this node's data volume size: %w", err)
 		}
-		if err := platform.AllocateThick(cfg.DataDisk, size); err != nil {
-			return fmt.Errorf("host: %w", err)
+		if err := allocateLogged("data volume", cfg.DataDisk, size, logf); err != nil {
+			return err
 		}
 	}
 	if cfg.StateDisk != "" {
-		if err := platform.AllocateThick(cfg.StateDisk, stateDiskInitial); err != nil {
-			return fmt.Errorf("host: %w", err)
+		if err := allocateLogged("state disk", cfg.StateDisk, stateDiskInitial, logf); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// allocateLogged makes one disk, saying so when it is new: where the host cannot reserve without
+// writing, the zeros take a minute or more on a slow disk, and a start that is silent through them
+// reads as one that hung.
+func allocateLogged(what, path string, size int64, logf func(string, ...any)) error {
+	_, err := os.Lstat(path)
+	fresh := errors.Is(err, os.ErrNotExist)
+	start := time.Now()
+	if fresh {
+		logf("disks: making this node's %s, %s at %s", what, gb(size), path)
+	}
+	if err := platform.AllocateThick(path, size); err != nil {
+		return fmt.Errorf("host: %w", err)
+	}
+	if fresh {
+		logf("disks: the %s is made (%s)", what, time.Since(start).Round(time.Second))
 	}
 	return nil
 }

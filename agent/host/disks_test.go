@@ -178,6 +178,30 @@ func TestProvisionDisksMakesTheStateDiskThick(t *testing.T) {
 	}
 }
 
+// The join's three ways out: the fill's own result once it ends, a clean stop when the agent is
+// asked to stop while it runs, and a fault -- never a clean exit -- when it runs past its budget.
+func TestJoinFillEnds(t *testing.T) {
+	failed := errors.New("out of disk")
+	ended := &diskFill{done: make(chan struct{}), err: failed, by: time.Now().Add(time.Hour)}
+	close(ended.done)
+	if err := (Config{}).joinFill(context.Background(), nil, ended, t.Logf); !errors.Is(err, failed) {
+		t.Errorf("an ended fill: %v, want its own error", err)
+	}
+
+	running := &diskFill{done: make(chan struct{}), by: time.Now().Add(time.Hour)}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := (Config{}).joinFill(ctx, nil, running, t.Logf); !errors.Is(err, context.Canceled) {
+		t.Errorf("a stop during the fill: %v, want the stop", err)
+	}
+
+	overrun := &diskFill{done: make(chan struct{}), by: time.Now().Add(-time.Second)}
+	err := (Config{}).joinFill(context.Background(), nil, overrun, t.Logf)
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "not made within") {
+		t.Errorf("a fill past its budget: %v, want the fault that names it", err)
+	}
+}
+
 // The host-disk alert: once when free space drops under the reserve the grow keeps, silent while
 // it stays low or hovers between the reserve and the clear margin, nothing on an unreadable
 // answer, and one recovered when it is back above the margin. It reads once a minute.

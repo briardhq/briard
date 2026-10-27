@@ -25,7 +25,15 @@ import (
 //     watches does not run bugs already fixed. A no-op when this agent is already current; when
 //     it is not, the update replaces this agent, and the next one starts here again.
 //  2. the install's own image lay-down (layDownImage), against the manifest of the agent now
-//     installed: the vm release it names, fetched and verified, and nothing else.
+//     installed: the vm release it names, fetched and verified, and nothing else -- with the fill
+//     of this node's disks beside it (startFill), the first start's other long operation. The fill
+//     starts once the update has said this agent is current, so it is always the current agent's
+//     code and no update ends it half-way; a node with nothing to fetch starts it alone.
+//
+// It runs before anything this node is -- its identity, its cloud registration -- because none of
+// it is keyed to them, and because the Store's exe is resubmitted only when the floor moves: what a
+// first start does before the update is the exe's code, frozen until the next submission, and what
+// it does after is the channel's.
 //
 // The trigger is a positive read -- the image is not there -- never a first-run flag, so a node
 // whose image went missing finishes the same way. A failure is a waiting state with one alert,
@@ -69,37 +77,41 @@ const finishAlertKey = "install-finish"
 var finishDone = notify.Alert{Key: finishAlertKey, Kind: notify.Resolved,
 	Title: "Briard: the install is finished", Body: "the guest image is in place, and Briard is starting."}
 
-// finishInstall is the first start's half of the install: a no-op on a node whose image is there.
-// It returns only once the image is laid down, or with ctx's error when the agent is stopped --
-// by the update it started, among others.
-func (cfg Config) finishInstall(ctx context.Context, local <-chan localRequest, n notify.Notifier, logf func(string, ...any)) error {
+// finishInstall is the first start's half of the install: a stat on a node whose image is there.
+// It returns once the image is laid down, with the disks' fill started (joinFill waits for it), or
+// with ctx's error when the agent is stopped -- by the update it started, among others.
+func (cfg Config) finishInstall(ctx context.Context, local <-chan localRequest, n notify.Notifier, logf func(string, ...any)) (*diskFill, error) {
 	if cfg.GuestImage == "" {
-		return nil
+		return cfg.startFill(logf), nil
 	}
 	if _, err := os.Stat(cfg.GuestImage); !errors.Is(err, fs.ErrNotExist) {
 		if err == nil {
 			fireAlert(ctx, n, logf, finishDone)
 		}
-		return nil
+		return cfg.startFill(logf), nil
 	}
 	logf("install: no guest image at %s; finishing the install -- the self-update to stable, then the image", cfg.GuestImage)
 	wait, cause := finishHold(selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir), time.Now())
+	var fill *diskFill // started once: a retry of the fetch finds it running, or done
 	for {
 		if wait > 0 {
 			if err := cfg.finishHoldOff(ctx, local, n, wait, cause, logf); err != nil {
-				return err
+				return fill, err
 			}
 		}
 		err := cfg.finishStep(ctx, local, updateVerdictBound, "updating briard before its first start", cfg.awaitStableUpdate, logf)
 		if err == nil {
+			if fill == nil {
+				fill = cfg.startFill(logf)
+			}
 			err = cfg.finishStep(ctx, local, imageFetchBound, "fetching the guest image", cfg.fetchImage, logf)
 		}
 		if err == nil {
 			fireAlert(ctx, n, logf, finishDone)
-			return nil
+			return fill, nil
 		}
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return fill, ctx.Err()
 		}
 		wait, cause = retryAfter(err), err
 	}

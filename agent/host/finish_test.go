@@ -124,14 +124,39 @@ func TestFinishInstallResolvesAtEveryStartWithTheImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := &fakeNotifier{}
-	if err := (Config{GuestImage: image}).finishInstall(context.Background(), nil, f, t.Logf); err != nil {
+	if _, err := (Config{GuestImage: image}).finishInstall(context.Background(), nil, f, t.Logf); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.alerts) != 1 || f.alerts[0].Key != finishAlertKey || f.alerts[0].Kind != notify.Resolved {
 		t.Errorf("alerts = %+v, want one %s resolved", f.alerts, finishAlertKey)
 	}
 	f = &fakeNotifier{}
-	if err := (Config{}).finishInstall(context.Background(), nil, f, t.Logf); err != nil || len(f.alerts) != 0 {
+	if _, err := (Config{}).finishInstall(context.Background(), nil, f, t.Logf); err != nil || len(f.alerts) != 0 {
 		t.Errorf("no image setting: err %v, alerts %+v; want neither", err, f.alerts)
+	}
+}
+
+// A start with nothing to fetch still needs its disks: the finish starts the fill alone, and the
+// join sees it made them. Both ways out of the fetch -- the image there, no image setting at all.
+func TestFinishInstallStartsTheFillWithNothingToFetch(t *testing.T) {
+	dir := t.TempDir()
+	image := filepath.Join(dir, "nixos.qcow2")
+	if err := os.WriteFile(image, []byte("qcow2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, cfg := range map[string]Config{
+		"the image there":  {GuestImage: image, StateDisk: filepath.Join(dir, "a-state.img")},
+		"no image setting": {StateDisk: filepath.Join(dir, "b-state.img")},
+	} {
+		fill, err := cfg.finishInstall(context.Background(), nil, &fakeNotifier{}, t.Logf)
+		if err != nil || fill == nil {
+			t.Fatalf("%s: fill %v, err %v; want a fill started", name, fill, err)
+		}
+		if err := cfg.joinFill(context.Background(), nil, fill, t.Logf); err != nil {
+			t.Fatalf("%s: join: %v", name, err)
+		}
+		if fi, err := os.Stat(cfg.StateDisk); err != nil || fi.Size() != stateDiskInitial {
+			t.Errorf("%s: the state disk is %v (%v), want it made", name, fi, err)
+		}
 	}
 }

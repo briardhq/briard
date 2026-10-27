@@ -8,13 +8,19 @@ import (
 // allocate reserves the bytes of f from `from` up to `size`. THE WINDOWS ARM, and deliberately
 // the slow one.
 //
-// Windows can reserve without writing (SetFileValidData after SetEndOfFile), but only for a process
-// holding SE_MANAGE_VOLUME_NAME -- and the bytes it exposes are whatever was previously on the
-// disk, so the privilege exists because the call leaks. A briard host is somebody's desktop; taking
-// that privilege to save a minute once, at install, is not a trade worth making.
+// Setting the end of the file alone (SetEndOfFile) reserves the clusters with no privilege, and
+// reads past the file's valid-data length return zeros. What it saves is only deferred: NTFS keeps
+// that length, and a write past it zero-fills the gap first, synchronously, inside the write --
+// qemu's write. That is the first bring-up's mkfs, which scatters its backup superblocks over the
+// whole state disk, and on the data volume a stall as long as the gap whenever the filesystem
+// allocates further out, under a running service. Moving the length up front instead
+// (SetFileValidData) needs SE_MANAGE_VOLUME_NAME and exposes whatever was previously on the disk,
+// which is why it needs the privilege; a briard host is somebody's desktop, and that is not a
+// trade worth making.
 //
-// So this writes the zeros. It is slower and it is correct, which is the same answer the Linux arm
-// falls back to on a filesystem without fallocate.
+// So this writes the zeros, once, before the guest exists: the cost is paid where nothing is
+// waiting on it. It is the same answer the Linux arm falls back to on a filesystem without
+// fallocate.
 func allocate(f *os.File, from, size int64) error {
 	if _, err := f.Seek(from, io.SeekStart); err != nil {
 		return err

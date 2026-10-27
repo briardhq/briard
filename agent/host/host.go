@@ -588,11 +588,39 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	cfg.backupLive = &atomic.Pointer[string]{}
 	cfg.backupLive.Store(&backupDir)
 	cfg.backupKick = &atomic.Bool{}
-	// WHO THIS NODE IS, minted once on a node that has never minted (identity.go). FIRST,
-	// because everything below is keyed to it: the DRBD `on <name>`, the VM's UUID, the service
-	// MAC, the cloud's key for this node and the name the household types. A node that cannot write
-	// down its own identity must not go on to use one -- it would mint a different id at the next
-	// boot and stop recognising its own replicated metadata.
+	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
+	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
+	// must not mean; see the sdnotify package doc for the two costs of that coupling, the fatal
+	// one being that an agent whose guest never converges would never arm its watchdog. Sent
+	// BEFORE the install's finish and bringUp so the watchdog covers them and the recovery ladder,
+	// which are the stretches that most need it, and so a first start's update, which can take
+	// longer than a start may, runs after it. No-op when not under Type=notify.
+	if err := sdnotify.Ready(); err != nil {
+		logf("sd_notify READY failed (non-fatal): %v", err)
+	}
+	// THE LOCAL ADMIN DOOR, OPENED BEFORE THE NETWORK RATHER THAN AFTER THE GUEST.
+	// It used to start below, past bring-up, which was fine while a oneshot unit owned the
+	// network and `Requires=` meant a network failure stopped the agent outright. Now the agent
+	// survives that failure, and a surviving agent nobody can ask is only half the fix: the
+	// operator standing at the box needs the door open exactly when the node is degraded. The
+	// wait loop answers on this channel while it waits; the observe loop takes it over after.
+	local := make(chan localRequest)
+	go serveLocal(ctx, cfg.AdminSock, cfg.InstallUser, local, logf)
+	// THE INSTALL'S UNFINISHED HALF (finish.go), BEFORE ANYTHING THIS NODE IS: an install that
+	// laid no guest image leaves the self-update and the image to this start, and the update is
+	// keyed to nothing of this node's, so everything a first start does past it is the current
+	// release's code rather than the installer's. It also starts the fill of this node's disks,
+	// joined before bring-up below. One stat when the image is there. A stop while it waits -- the
+	// update it started, among others -- is clean.
+	fill, ferr := cfg.finishInstall(ctx, local, n, logf)
+	if ferr != nil {
+		return nil
+	}
+	// WHO THIS NODE IS, minted once on a node that has never minted (identity.go). Before
+	// everything that is keyed to it: the DRBD `on <name>`, the VM's UUID, the service MAC, the
+	// cloud's key for this node and the name the household types. A node that cannot write down
+	// its own identity must not go on to use one -- it would mint a different id at the next boot
+	// and stop recognising its own replicated metadata.
 	cfg, iderr := cfg.mintIdentity(logf)
 	if iderr != nil {
 		return fmt.Errorf("host: %w", iderr)
@@ -631,40 +659,6 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	}
 	// The update layout, read below for a reverted update's message to this agent.
 	layout := selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir)
-	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
-	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
-	// must not mean; see the sdnotify package doc for the two costs of that coupling, the fatal
-	// one being that an agent whose guest never converges would never arm its watchdog. Sent
-	// BEFORE bringUp so the watchdog covers bring-up and the recovery ladder, which are the
-	// stretches that most need it. No-op when not under Type=notify.
-	if err := sdnotify.Ready(); err != nil {
-		logf("sd_notify READY failed (non-fatal): %v", err)
-	}
-	// THE DISKS THIS NODE RUNS ON, made once, before anything tries to attach them (disks.go): pet
-	// state that only the first start creates. A failure here is fatal on purpose -- a guest
-	// launched with a `-drive` for a file nobody made is a boot that fails further from its cause.
-	//
-	// AFTER READY, because making them answers nothing about whether this release runs on this host,
-	// and it is the one start step whose length is the disk's: a filesystem without fallocate, and
-	// every Windows host, writes every zero (platform.allocate), minutes on a slow disk. Before READY
-	// that is bounded by the start timeout, and a disk slower than it restarts the agent at every
-	// first start, forever. So it runs under liveness instead, UNDER A LEASE: the budget cancels
-	// nothing -- the write takes no context -- it is the bound the write declares, past which the
-	// watchdog trips with the traceback (beat.go).
-	_, release := cfg.beat.budget(ctx, provisionBudget)
-	perr := cfg.provisionDisks(logf)
-	release()
-	if perr != nil {
-		return perr
-	}
-	// THE LOCAL ADMIN DOOR, OPENED BEFORE THE NETWORK RATHER THAN AFTER THE GUEST.
-	// It used to start below, past bring-up, which was fine while a oneshot unit owned the
-	// network and `Requires=` meant a network failure stopped the agent outright. Now the agent
-	// survives that failure, and a surviving agent nobody can ask is only half the fix: the
-	// operator standing at the box needs the door open exactly when the node is degraded. The
-	// wait loop answers on this channel while it waits; the observe loop takes it over after.
-	local := make(chan localRequest)
-	go serveLocal(ctx, cfg.AdminSock, cfg.InstallUser, local, logf)
 	// THE BACKUP STORE, up for the agent's whole life on every node: the guest that dials it is
 	// whichever is serving tonight. The fallback folder is the agent's own directory, so it is the
 	// one the agent makes; any other folder is the person's, and is never created here.
@@ -708,12 +702,6 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// cannot schedule this home and treats that as a fault, which is the honest outcome.
 	assignment := cloud.Resolve(ctx, rep, cfg.AssignmentCache,
 		api.NodeInfo{NodeName: cfg.Node, Role: cfg.Role, Timezone: localTimezone("/")}, logf)
-	// THE INSTALL'S UNFINISHED HALF (finish.go): an install that laid no guest image leaves the
-	// self-update and the image to this start, before anything needs the guest. One stat when the
-	// image is there. A stop while it waits -- the update it started, among others -- is clean.
-	if err := cfg.finishInstall(ctx, local, n, logf); err != nil {
-		return nil
-	}
 	// The host's side of the guest's L2 -- and the substrate fork, derived here from what the
 	// selected device turns out to be. AFTER READY on purpose (awaitNetwork says why), and it can
 	// block indefinitely on a node with no usable device, which is the point: waiting degraded and
@@ -722,6 +710,17 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	cfg, err := cfg.awaitNetwork(ctx, local, dg, logf)
 	if err != nil {
 		return nil // ctx cancelled while waiting for a network device -- a clean shutdown
+	}
+	// THE DISKS THIS NODE RUNS ON, joined before anything attaches them (disks.go): pet state only
+	// a first start makes, started by the install's finish beside the image fetch. Where the host
+	// cannot reserve without writing -- every Windows host, a filesystem without fallocate -- the
+	// fill is the one start step whose length is the disk's, so it runs off the loop, and the join
+	// answers the door until it ends.
+	if err := cfg.joinFill(ctx, local, fill, logf); err != nil {
+		if ctx.Err() != nil {
+			return nil // asked to stop while the disks were being made -- a clean shutdown
+		}
+		return err
 	}
 	// The flock's lease, on a substrate where the host holds it (lease.go): before bring-up, which
 	// asks it for the address to push.
