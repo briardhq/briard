@@ -164,3 +164,32 @@ func (cfg Config) applyStatus(d api.Directive, n notify.Notifier) api.DirectiveO
 	}
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: string(b)}
 }
+
+// holdDoor answers the local door until `until` fires or ctx ends, beating as it goes, for the
+// stretches when the loop is not there to: the install finishing (finish.go) and the recovery
+// ladder (guestrecover.go). A stop is the one directive taken, as in the network's wait
+// (waitTick); anything else is refused at once with the reason, read afresh each time so a wait
+// that moves on can say so -- the alternative is what the channel does with no reader, a CLI
+// that blocks until the agent exits, which to the person at the machine is an agent that wedged.
+func (cfg Config) holdDoor(ctx context.Context, local <-chan localRequest, refusal func() string, until <-chan struct{}, logf func(string, ...any)) error {
+	tick := time.NewTicker(netTick)
+	defer tick.Stop()
+	for {
+		cfg.beat.Beat()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-until:
+			return nil
+		case <-tick.C:
+		case req := <-local:
+			if req.d.Kind == api.DirectiveStop {
+				req.resp <- cfg.applyStop(req.d, logf)
+				continue
+			}
+			why := refusal()
+			logf("admin socket: refusing %s -- %s", req.d.Kind, why)
+			req.resp <- api.DirectiveOutcome{ID: req.d.ID, State: api.OutcomeFailed, Detail: why}
+		}
+	}
+}

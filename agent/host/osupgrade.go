@@ -180,7 +180,12 @@ type guestStopper interface {
 // waiting). Hence the neutral log prefix below: by the time this runs, which of the three is
 // calling is not something the messages can assume.
 func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client, logf func(string, ...any)) error {
-	perr := client.PowerOff(ctx)
+	// No channel at all -- the recovery ladder entered from a bring-up that never got one -- is
+	// the agent route known unavailable before it is tried: straight to the button.
+	perr := errors.New("no control channel to ask over")
+	if client != nil {
+		perr = client.PowerOff(ctx)
+	}
 	if perr == nil {
 		if err := g.WaitStopped(ctx, shutdownGrace); err == nil {
 			return nil

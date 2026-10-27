@@ -104,3 +104,41 @@ func TestPrepareSerialLogSurvivesAnUnwritablePath(t *testing.T) {
 	// Returns at all = did not panic, did not exit, has no error to hand its caller.
 	prepareSerialLog(filepath.Join(dir, "console.log"))
 }
+
+// THE LAST WORDS. The ladder decides on silence and then reads the logs to say why; what it
+// reads has to be the lines that carry the cause -- the end of the file, speaking lines only, in
+// order, with a console's carriage returns and escapes dropped and a runaway line cut -- and it
+// has to cost one small read however large the capture has grown.
+func TestLastLinesKeepsTheSpeakingTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "console.log")
+	long := make([]byte, 400)
+	for i := range long {
+		long[i] = 'x'
+	}
+	// Twice the read window of padding ahead of the tail, so a read of the whole file and a
+	// read of its end give different answers only if the implementation got the window wrong.
+	pad := make([]byte, 40<<10)
+	for i := range pad {
+		pad[i] = 'p'
+		if i%100 == 99 {
+			pad[i] = '\n'
+		}
+	}
+	body := string(pad) + "\n[    3.2] booting\r\n\x1b[31m[    4.0] Kernel panic - not syncing: Attempted to kill init!\x1b[0m\r\n\n" +
+		string(long) + "\n[    4.1] ---[ end Kernel panic ]---\n\n\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := tailFile(path, 3)
+	want := "[    4.0] Kernel panic - not syncing: Attempted to kill init! | " + string(long[:lastLineWidth]) + "… | [    4.1] ---[ end Kernel panic ]---"
+	if got != want {
+		t.Errorf("tailFile:\n got %q\nwant %q", got, want)
+	}
+	if tailFile(filepath.Join(dir, "absent.log"), 3) != "" {
+		t.Error("a log that is not there must contribute nothing, not an error")
+	}
+	if lastLines("\n\n  \r\n", 3) != "" {
+		t.Error("a log of blanks has no last words")
+	}
+}

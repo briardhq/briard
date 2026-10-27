@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"briard.io/agent/guestagent"
@@ -142,7 +143,33 @@ type guestRecovery struct {
 	attempts  int           // reboots spent on the current incident
 	announced bool          // the degraded alert has been sent for this incident
 	cleared   bool          // the all-clear has been sent for this incident
+
+	mu    sync.Mutex
+	doing string // what the ladder is doing now and when it next acts, for the local door (say / status)
 }
+
+// say records what the ladder is doing, and status reads it: the sentence the local door answers
+// with while the ladder runs (recoverAnswering), read from a different goroutine than the one
+// acting. Times are the household's clock, since the person reading is at the machine.
+func (r *guestRecovery) say(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.doing = fmt.Sprintf(format, args...)
+}
+
+func (r *guestRecovery) status() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.doing
+}
+
+// at is a moment as the door says it.
+func at(t time.Time) string { return t.Format("15:04") }
+
+// tryNow is the way out every refusal and alert of the ladder names: the agent runs throughout,
+// so `briard start` has nothing to start and keeps its one meaning; a stop powers the dead
+// guest off and a start is a fresh agent with a fresh ladder, which launches at once.
+const tryNow = "To try now: `briard stop`, then `briard start`."
 
 // guestRecoveryWindowOverride shortens the wait above, and exists for exactly one caller: the VM
 // test that drives this ladder end to end on a real frozen guest (nixosTest/agent-recover.nix).
@@ -303,8 +330,20 @@ func (r *guestRecovery) next(g gateVerdict, sinceAction time.Duration, unitDown 
 // VM, the channel and the Manager together, and there is exactly one place that knows how to
 // put all three back -- the same place the rollback leg uses. A second one would be a second
 // way to do it.
+//
+// IT IS ALSO THE ONLY DOOR FOR A GUEST THAT NEVER SPOKE. Bring-up used to have its own: a guest
+// that was launched or adopted and never answered ended the agent, on the reasoning that the
+// service manager would start it again "from scratch". Neither half held for a guest that is
+// alive and dead inside (a vCPU WHPX gave up on, a kernel halted in a panic): the next agent
+// adopted the same qemu, and a clean exit is a normal stop to systemd and the SCM alike, which
+// stays down. Measured on the first real desktop: two agent exits, then a dead qemu holding the
+// sockets and nobody told. So Run enters here with NO prior client (u.client nil), and the
+// ladder's first question -- is the unit even there -- already splits that case the right way.
+// Nothing detects the death; silence past the window is the verdict, as it always was, and
+// the logs are read only to SAY why (announce).
 func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Notifier) (*guestagent.Client, error) {
 	var lastAction time.Time // zero -> "nothing done yet this incident"; sinceAction reads as huge
+	defer r.say("")
 	for {
 		sinceAction := time.Duration(1 << 62)
 		if !lastAction.IsZero() {
@@ -323,6 +362,7 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 				// we are now on the slow cadence), which the owner would otherwise never learn.
 				u.logf("guest-recovery: the guest keeps stopping after %d relaunches; "+
 					"backing off to the %s cadence", r.attempts, r.cadenceFor())
+				r.say("the guest keeps stopping; Briard restarts it again at %s", at(lastAction.Add(r.cadenceFor())))
 				u.announce(ctx, n, r, fmt.Sprintf("the guest keeps stopping after being restarted "+
 					"%d times, so it is now being restarted every %s rather than immediately.",
 					r.attempts, r.cadenceFor()))
@@ -337,6 +377,7 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 				continue
 			}
 			u.logf("guest-recovery: the guest unit is stopped; relaunching (attempt %d)", r.attempts)
+			r.say("the guest stopped; Briard is restarting it")
 			lastAction = time.Now()
 			client, err := u.converge(ctx)
 			if err != nil {
@@ -360,6 +401,7 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 		// here on the first pass and the rest of this function never runs. It also runs between
 		// reboot attempts, so a guest that comes back on its own during the cadence is picked up
 		// within one window rather than waiting out the full two hours.
+		r.say("the guest is not answering; Briard waits until %s for it before restarting it", at(time.Now().Add(r.waitFor())))
 		client, err := u.awaitChannel(ctx, r.waitFor())
 		if err == nil {
 			// ANSWERING IS NOT CONVERGED, and telling the two apart is the point. The guest unit is
@@ -371,9 +413,18 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 			// re-attach and resume OBSERVING a guest it had not CONVERGED: no second CONVERGED
 			// line, connected=0 healthy=false for the rest of the run, the node dark on the wire
 			// while the peer served alone.
-			if reboot, from, to := u.guestRebooted(client); reboot {
-				u.logf("guest-recovery: the guest rebooted underneath us (boot %s -> %s); "+
-					"re-converging rather than resuming", from, to)
+			//
+			// The same rule, one step more general, covers the ladder entered from bring-up: a
+			// channel THIS AGENT has never converged (u.client nil) is converged, whatever boot it
+			// belongs to -- the guest it reaches may be the one the previous agent converged, or
+			// the baked image after a reboot nobody watched, and bring-up tells them apart for free.
+			if reboot, from, to := u.guestRebooted(client); reboot || u.client == nil {
+				if u.client == nil {
+					u.logf("guest-recovery: the guest answers, and this agent has not converged it yet; converging")
+				} else {
+					u.logf("guest-recovery: the guest rebooted underneath us (boot %s -> %s); "+
+						"re-converging rather than resuming", from, to)
+				}
 				// Hand the channel back first: the in-guest agent serves ONE connection at a
 				// time, so holding this one open would make bring-up's own re-dial wait out a
 				// guest that is answering perfectly well.
@@ -408,12 +459,18 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 			// the same defect the guest side had, where a held node alerted once and was never
 			// heard from again. Holding is a state the owner needs to know about too, because it
 			// is the one the house cannot leave without them.
+			if !lastAction.IsZero() && sinceAction < r.cadenceFor() {
+				r.say("the guest is not answering after a restart; Briard restarts it again at %s", at(lastAction.Add(r.cadenceFor())))
+			} else {
+				r.say("the guest is not answering, and restarting it would drop the rest of the cluster below quorum; Briard is leaving it alone and watching")
+			}
 			u.announce(ctx, n, r, fmt.Sprintf("no answer from the guest for %s. The host is not "+
 				"restarting it: the guest reports that restarting it would drop the rest of the "+
 				"cluster below quorum. It is being left alone and watched.", r.waitFor()))
 			continue
 		}
 
+		r.say("the guest is not answering; Briard is restarting it")
 		u.announce(ctx, n, r, fmt.Sprintf("no answer from the guest for %s. The host is "+
 			"restarting it.", r.waitFor()))
 		lastAction = time.Now()
@@ -501,19 +558,47 @@ func (u *osUpgrade) resolved(ctx context.Context, n notify.Notifier, r *guestRec
 // wedged path and false on the crash-loop one -- there the guest was answering seconds ago and
 // nothing waited ten minutes for it. An owner-facing sentence that is sometimes untrue is worse
 // than a vaguer one that is always true.
+//
+// THE CAUSE IS READ HERE, NEVER DECIDED ON. The ladder judged on silence; now that it has, the
+// logs are asked what the guest and its VM said last (platform.LastLines) -- the WHPX exit code
+// or the kernel's panic line, where there is one -- so the household is told why, from what
+// the log already holds, instead of "stopped answering" alone. And the way out is named:
+// stop + start is the person's "try now" (tryNow).
 func (u *osUpgrade) announce(ctx context.Context, n notify.Notifier, r *guestRecovery, situation string) {
 	if !r.takeAnnounce() {
 		return
+	}
+	body := fmt.Sprintf("node %s: %s This node is not serving until it comes back.", u.cfg.Node, situation)
+	if last := platform.LastLines(ctx, u.cfg.guestSpec()); last != "" {
+		u.logf("guest-recovery: the guest's last words: %s", last)
+		body += " The guest's last words: " + last + "."
 	}
 	u.fire(ctx, n, notify.Alert{
 		Key:      "guest",
 		Kind:     notify.Open,
 		Severity: notify.Critical,
 		Title:    "Briard: the guest has stopped answering",
-
-		Body: fmt.Sprintf("node %s: %s This node is not serving until it comes back.",
-			u.cfg.Node, situation),
+		Body:     body + " " + tryNow,
 	})
+}
+
+// recoverAnswering runs the ladder while the local door is answered (holdDoor): a stop is taken,
+// and anything else is refused with what the ladder is doing and when it next acts. Without a
+// reader the door had none for as long as the ladder ran -- `briard status` hung, the tray read a
+// healthy process that said nothing, and `briard stop` worked only through its service-manager
+// fallback, after the door's timeout and blaming an agent that "does not answer". It is what
+// makes stop + start the ordinary way to cut a wait short rather than a fallback.
+func (cfg Config) recoverAnswering(ctx context.Context, local <-chan localRequest, u *osUpgrade, r *guestRecovery, n notify.Notifier, logf func(string, ...any)) (*guestagent.Client, error) {
+	done := make(chan struct{})
+	var client *guestagent.Client
+	var err error
+	go func() {
+		defer close(done)
+		client, err = u.recover(ctx, r, n)
+	}()
+	_ = cfg.holdDoor(ctx, local, func() string { return r.status() + ". " + tryNow }, done, logf)
+	<-done
+	return client, err
 }
 
 // awaitChannel re-dials until the guest answers or the window closes. It is reconnect() under a

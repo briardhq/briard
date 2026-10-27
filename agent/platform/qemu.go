@@ -3,10 +3,14 @@ package platform
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
 
 	"briard.io/agent/guestfirmware"
 	"briard.io/agent/nic"
@@ -597,6 +601,83 @@ func Adopt(s QEMUSpec) *Guest {
 // so the caller launches fresh.
 func Running(ctx context.Context, s QEMUSpec) bool {
 	return unitIsActive(ctx, s.unit())
+}
+
+// LastLines is what the VM and the guest said last: the final lines of the unit's own output
+// (qemu's -- `WHPX: Unexpected VP exit code 4` is written there; on Linux the unit's journal for
+// its current invocation, on Windows the file the unit appends to) and of the serial console
+// capture (`Kernel panic - not syncing`). It is for SAYING why a guest stopped answering, in
+// the alert that announces it, and never for deciding that it has: the recovery ladder decides
+// on silence alone, and reads this once it has decided. No pattern list, so a cause nobody
+// anticipated is shown too. Best-effort throughout -- a log that cannot be read contributes
+// nothing, and "" means neither could.
+func LastLines(ctx context.Context, s QEMUSpec) string {
+	var parts []string
+	if t := unitTail(ctx, s, lastLinesN); t != "" {
+		parts = append(parts, "qemu: "+t)
+	}
+	if s.SerialLog != "" {
+		if t := tailFile(s.SerialLog, lastLinesN); t != "" {
+			parts = append(parts, "console: "+t)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// lastLinesN lines of each log, each cut at lastLineWidth runes: enough to carry the one line
+// that names the cause, short enough for an alert body.
+const (
+	lastLinesN    = 3
+	lastLineWidth = 160
+)
+
+// tailFile is the last n speaking lines of a file, read from a bounded window at its end so a
+// console capture of many megabytes costs one small read.
+func tailFile(path string, n int) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	const window = 16 << 10
+	off := max(fi.Size()-window, 0)
+	buf := make([]byte, fi.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+		return ""
+	}
+	return lastLines(string(buf), n)
+}
+
+// ansiCSI matches a terminal control sequence, which a console capture carries around the kernel's
+// coloured lines; the escape byte alone is not printable, but its parameters are.
+var ansiCSI = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+
+// lastLines keeps the last n non-blank lines of text, in order, joined by " | ", with control
+// sequences and characters dropped (a console carries carriage returns and escapes) and each cut
+// at lastLineWidth.
+func lastLines(text string, n int) string {
+	var keep []string
+	lines := strings.Split(ansiCSI.ReplaceAllString(text, ""), "\n")
+	for i := len(lines) - 1; i >= 0 && len(keep) < n; i-- {
+		l := strings.TrimSpace(strings.Map(func(r rune) rune {
+			if unicode.IsPrint(r) {
+				return r
+			}
+			return -1
+		}, lines[i]))
+		if l == "" {
+			continue
+		}
+		if r := []rune(l); len(r) > lastLineWidth {
+			l = string(r[:lastLineWidth]) + "…"
+		}
+		keep = append([]string{l}, keep...)
+	}
+	return strings.Join(keep, " | ")
 }
 
 // unitState reads a unit's ActiveState. The service manager answers for units that do not exist

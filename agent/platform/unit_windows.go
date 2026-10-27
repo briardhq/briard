@@ -31,6 +31,16 @@ import (
 // guest powerdown lives on the unit, so every stop of it -- the machine's, the agent's -- runs it;
 // here the agent powers the guest down itself (PowerOffGuest) and this layer only ever kills.
 
+// unitTail is the unit's last words: the tail of the file its output is appended to (the SCM
+// keeps no journal). The file outlives the launch, so an earlier launch's lines can stand at its
+// end until this one writes; "" with no file named.
+func unitTail(_ context.Context, s QEMUSpec, n int) string {
+	if s.UnitLog == "" {
+		return ""
+	}
+	return tailFile(s.UnitLog, n)
+}
+
 // jobName is the kernel object a unit lives in. Global\ so the name is the same from any session --
 // the agent runs as a service in session 0, and an operator's shell is not in it.
 func jobName(unit string) string { return `Global\briard-unit-` + unit }

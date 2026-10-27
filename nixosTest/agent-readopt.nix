@@ -67,11 +67,17 @@ pkgs.testers.runNixOSTest {
           NET_WRAP_BIN = "${netWrap}/bin/briard-net-wrap";
           STATUS_EVERY = "2s";
           GUEST_SERIAL = "/tmp/guest-serial.log"; # capture the guest console for post-mortem
+          # Act 1b waits out the recovery window on a guest that never answers; shortened for the
+          # same reason and under the same guard as agent-recover (guestrecover_test.go asserts
+          # the shipped value outlasts the guest deadman).
+          BRIARD_GUEST_RECOVERY_WINDOW = "60s";
         };
       };
     };
 
   testScript = ''
+    import time
+
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")
 
@@ -165,6 +171,103 @@ pkgs.testers.runNixOSTest {
 
     print("agent restart was transparent to the guest: same qemu, Primary held, VIP uninterrupted")
     print(host.succeed("journalctl -u briard-agent | tail -30"))
+
+    # === ACT 1b: the agent is restarted over a guest that will NEVER answer. ===
+    #
+    # Act 1 is re-adoption working: a healthy guest kept across the restart. This is re-adoption
+    # meeting a guest that is alive and dead inside -- the shape of a vCPU WHPX gave up on and of a
+    # kernel halted in a panic, both measured on the first real desktop -- which the restarted
+    # agent adopts and never hears from. What used to happen: bring-up's budget ran out, the agent
+    # EXITED cleanly ("systemd restarts it"), and under Restart=on-failure a clean exit is a
+    # normal stop, so the node stayed down with a dead qemu holding the sockets and nothing said.
+    #
+    # agent-recover cannot stand in for this: it never restarts the agent, so the guest it
+    # freezes is one the running agent had already converged, and the ladder is entered from the
+    # observe loop. Here the ladder has to be entered from bring-up, with no prior channel, by an
+    # agent that is a real service with a real restart policy -- which only this rig has.
+    #
+    # Three things only this act proves: the agent does NOT exit (the service invocation that
+    # adopted the frozen guest is the one that relaunches it); the local door answers while the
+    # ladder waits, with what it is doing; and the alert that announces the restart carries the
+    # guest's last words from the console capture. The relaunch itself and the window's timing
+    # are agent-recover's, asserted here only as far as the act needs them to finish.
+    frozen = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
+    print(f"freezing the guest QEMU (pid {frozen}) and restarting the agent over it")
+    host.succeed(f"kill -STOP {frozen}")
+    invocation = host.succeed("systemctl show -p InvocationID --value briard-agent").strip()
+    since = host.succeed("date +'%Y-%m-%d %H:%M:%S'").strip()
+    host.succeed("systemctl restart briard-agent")
+    adopted_at = time.monotonic()
+    restarted_invocation = host.succeed("systemctl show -p InvocationID --value briard-agent").strip()
+    assert restarted_invocation != invocation, "the restart did not start a new agent"
+
+    # The new agent adopts the frozen guest and spends its bring-up budget on a handshake nothing
+    # answers; then the LADDER, not an exit. The budget is the shipped five minutes.
+    host.wait_until_succeeds(
+        f"journalctl -u briard-agent --since='{since}' | grep -q 're-adopting running guest'", timeout=120
+    )
+    host.wait_until_succeeds(
+        f"journalctl -u briard-agent --since='{since}' | grep -q 'the guest never answered during bring-up'",
+        timeout=480,
+    )
+    print(f"the ladder took the mute guest {time.monotonic() - adopted_at:.0f}s after the adopt")
+
+    # THE AGENT DID NOT EXIT: the invocation that adopted the guest is still the one running, and
+    # the service manager counted no restart of its own. With the old code the agent is gone
+    # here -- exit 0, Restart=on-failure, nothing comes back.
+    host.succeed("systemctl is-active briard-agent")
+    now_invocation = host.succeed("systemctl show -p InvocationID --value briard-agent").strip()
+    assert now_invocation == restarted_invocation, (
+        f"the agent was restarted again ({restarted_invocation} -> {now_invocation}) -- it exited on the mute guest"
+    )
+
+    # THE DOOR ANSWERS MEANWHILE. A status asked during the wait is refused with what the ladder
+    # is doing and the way out -- not left hanging until the agent exits, which is what a channel
+    # with no reader does, and what the tray and `briard stop` used to get.
+    rc, out = host.execute("timeout 20 ${agent}/bin/briard-agent directive status 2>&1")
+    print(f"status during the ladder's wait (rc {rc}): {out.strip()}")
+    assert "the guest is not answering" in out and "briard stop" in out, (
+        f"the door must answer during the ladder with its sentence and the way out; got rc {rc}: {out!r}"
+    )
+
+    # The window closes, the forced stop takes the frozen qemu, and a DIFFERENT one comes up.
+    host.wait_until_succeeds(
+        "${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep -q 'the guest has stopped answering'",
+        timeout=300,
+    )
+    # THE CAUSE, FROM THE LOG. The alert's body carries the console's last lines -- here the
+    # guest's own boot output, since a frozen VM printed nothing on its way out; on a panicked
+    # kernel it is the panic line itself. The point is that the words are the guest's, not ours.
+    alert = host.succeed("${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep 'the guest has stopped answering'")
+    print(f"the alert: {alert.strip()[:400]}")
+    assert "last words" in alert and "console:" in alert, f"the alert does not carry the guest's last words: {alert!r}"
+    assert "briard stop" in alert, f"the alert does not name the way out: {alert!r}"
+    host.wait_until_succeeds(
+        f"journalctl -u briard-agent --since='{since}' | grep -q 'guest-recovery: could not stop the guest cleanly, forcing'",
+        timeout=180,
+    )
+    host.wait_until_fails(f"kill -0 {frozen}", timeout=180)
+    try:
+        host.wait_until_succeeds(
+            f"journalctl -u briard-agent --since='{since}' | grep -q 'guest-recovery: guest restarted and converged'",
+            timeout=600,
+        )
+    except Exception:
+        print("=== guest console ===")
+        print(host.execute("tail -120 /tmp/guest-serial.log")[1])
+        print("=== agent ===")
+        print(host.execute("journalctl -u briard-agent --no-pager | tail -60")[1])
+        raise
+    relaunched = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
+    assert relaunched != frozen, f"same QEMU pid {relaunched} -- the mute guest was never restarted"
+    host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
+    host.wait_until_succeeds(
+        "${agent}/bin/briard-agent alerts | sed -n '/history/,$p' | grep -q 'the guest is answering again'",
+        timeout=120,
+    )
+    # ...by the same agent, start to finish.
+    assert host.succeed("systemctl show -p InvocationID --value briard-agent").strip() == restarted_invocation
+    print(f"a mute guest met at bring-up was relaunched by the ladder, not abandoned: pid {frozen} -> {relaunched}")
 
     # === ACT 2: the other half of the same contract. ===
     # Act 1 proved stopping the AGENT leaves the guest alone. This proves stopping the GUEST UNIT

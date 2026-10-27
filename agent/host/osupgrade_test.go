@@ -530,3 +530,17 @@ func TestSystemRunningGivesUpWithTheBudget(t *testing.T) {
 		t.Errorf("err = %v, want never settled", err)
 	}
 }
+
+// The recovery ladder entered from a bring-up that never got a channel stops the guest with NO
+// client at all. The agent route is then known unavailable before it is tried -- straight to the
+// button, and the verdict is the unit's state as ever. With the old code this is a nil
+// dereference on the first call.
+func TestStopCleanlyWithoutAChannelGoesToTheButton(t *testing.T) {
+	g := platform.Adopt(platform.QEMUSpec{
+		QMPSock: filepath.Join(testsock.Dir(t), "absent.sock"), // never listened on: the button finds nothing
+		Unit:    "briard-test-absent.service",
+	})
+	if err := stopCleanly(context.Background(), g, nil, t.Logf); err != nil {
+		t.Fatalf("no channel, no monitor, no unit: the guest is down, which is clean; got %v", err)
+	}
+}

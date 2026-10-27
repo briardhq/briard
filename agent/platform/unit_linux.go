@@ -34,6 +34,27 @@ func unitShow(unit, prop string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// unitTail is the unit's last words from the journal: its current invocation's when it has one,
+// so a previous launch's exit does not stand in for this one's, and the unit's as a whole when
+// it is stopped. "" when the journal does not answer.
+func unitTail(ctx context.Context, s QEMUSpec, n int) string {
+	match := "-u" // the unit as a whole
+	sel := s.unit()
+	if id, err := unitShow(s.unit(), "InvocationID"); err == nil && id != "" {
+		match, sel = "_SYSTEMD_INVOCATION_ID="+id, ""
+	}
+	args := []string{match}
+	if sel != "" {
+		args = append(args, sel)
+	}
+	args = append(args, "-n", strconv.Itoa(n), "-o", "cat", "--no-pager")
+	out, err := exec.CommandContext(ctx, "journalctl", args...).Output()
+	if err != nil {
+		return ""
+	}
+	return lastLines(string(out), n)
+}
+
 // unitIsActive is the cheap liveness probe. Any non-"active" reading -- including a query that
 // failed -- reads as false, so the caller launches fresh rather than adopting a ghost.
 func unitIsActive(ctx context.Context, unit string) bool {

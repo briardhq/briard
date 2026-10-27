@@ -12,6 +12,7 @@ import (
 	"briard.io/agent/guest"
 	"briard.io/agent/guestagent"
 	"briard.io/agent/guestagent/deadman"
+	"briard.io/shared/api"
 	"briard.io/shared/notify"
 )
 
@@ -413,5 +414,52 @@ func TestCollectDeadmanEpisodeAlertsOnce(t *testing.T) {
 	cfg.collectDeadmanEpisode(ctx, &fakeStatus{}, st, func(string, ...any) {})
 	if len(fn.alerts) != 1 {
 		t.Errorf("an old guest produced an alert: %+v", fn.alerts)
+	}
+}
+
+// THE DOOR ANSWERS WHILE THE LADDER RUNS. Nothing else reads the local door for as long as
+// recover() does -- observe is not running, and at bring-up never was -- so the ladder's wait
+// answers it the way the finish's does: a stop is taken, anything else refused with what the
+// ladder is doing NOW (read afresh, so a wait that moves on says so) and the way to cut it
+// short. Without this the CLI blocks until the agent exits and the tray reads a healthy process
+// that says nothing, which is what the first real desktop showed.
+func TestTheDoorIsAnsweredWhileTheLadderRuns(t *testing.T) {
+	ctx, down := context.WithCancelCause(context.Background())
+	cfg := Config{down: down}
+	local := make(chan localRequest)
+	until := make(chan struct{})
+	r := &guestRecovery{}
+	r.say("the guest is not answering; Briard waits until %s for it before restarting it", "10:00")
+	done := make(chan error, 1)
+	go func() {
+		done <- cfg.holdDoor(ctx, local, func() string { return r.status() + ". " + tryNow }, until, t.Logf)
+	}()
+
+	ask := func(kind string) api.DirectiveOutcome {
+		t.Helper()
+		rq := localRequest{d: api.Directive{ID: kind + "-1", Kind: kind}, resp: make(chan api.DirectiveOutcome, 1)}
+		select {
+		case local <- rq:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the door did not take the request")
+		}
+		return <-rq.resp
+	}
+	o := ask(api.DirectiveStatus)
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "waits until 10:00") || !strings.Contains(o.Detail, "briard stop") {
+		t.Errorf("status during the wait = %+v; want refused with the ladder's sentence and the way out", o)
+	}
+	r.say("the guest is not answering; Briard is restarting it")
+	if o := ask(api.DirectiveDoctor); !strings.Contains(o.Detail, "is restarting it") {
+		t.Errorf("the refusal must read the ladder's CURRENT sentence; got %q", o.Detail)
+	}
+	if o := ask(api.DirectiveStop); o.State != api.OutcomeDone {
+		t.Errorf("a stop is the one directive the wait takes; got %+v", o)
+	}
+	if !errors.Is(context.Cause(ctx), ErrShutdown) {
+		t.Errorf("the stop must bring the node down; cause = %v", context.Cause(ctx))
+	}
+	if err := <-done; err == nil {
+		t.Error("holdDoor must return once the stop ended its context")
 	}
 }

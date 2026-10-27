@@ -747,6 +747,31 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// on our own -- and what that invalidates is the collision check behind this node's drawn
 	// system subnet, which nothing else would ever notice.
 	movedLAN := cfg.net != nil && nic.Compare(cfg.recordedNetwork(), nic.Read(ctx, cfg.net.Parent)) == nic.Elsewhere
+	// The guest binding an `upgrade` directive drives: a guest.Manager for the health-gated
+	// service/system upgrades, plus the VM handle the reboot path needs.
+	// nil-safe: a witness / service-less node just won't act on those directives. guestCfg is
+	// hoisted so the reconnect loop can rebuild the Manager on a fresh connection.
+	guestCfg := guest.Config{
+		HealthURL: cfg.HealthURL,
+		// The gate resolves its own probe target per call, for the same reason the observe
+		// loop does: under DHCP the address is acquired inside the guest, and this gate is a
+		// ROLLBACK TRIGGER — probing a stale address does not fail loudly, it reverts a
+		// healthy node.
+		VIPDev:         cfg.VIPDev,
+		Diskless:       cfg.Diskless,
+		Resource:       cfg.Resource.Name, // what OSReady asks about this node
+		ReactorSnippet: cfg.ReactorSnippet,
+		// The Manager's own step-by-step lines went NOWHERE until now: with no Logf, NewManager
+		// installs a no-op, so every "enter maintenance / quiesce / pin image / health-gate
+		// tripped" line has been discarded in the field while looking, in the source,
+		// like observability. Found while instrumenting the activation verdict and
+		// wondering why the new line never appeared.
+		Logf: logf,
+	}
+	// The recovery ladder's state, for one agent lifetime: a guest that never spoke at bring-up
+	// and one that stops speaking later are the same incident book.
+	var recovery guestRecovery
+	var mgr *osUpgrade
 	g, client, err := cfg.bringUp(ctx, cfg.guestSpec(), logf)
 	if err != nil {
 		// ASKED TO STOP BEFORE THE GUEST WAS UP. A cancellation is the shutdown this agent was
@@ -756,21 +781,34 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		// records `Failed with result 'exit-code'` against a unit that did exactly what it was
 		// asked: a false fault in the first place anyone looks.
 		//
-		// It cannot be done by inspecting the error instead. Bring-up tags its channel failures
-		// errNoChannel on the dial branch and NOT on the handshake branch beside it, and the
-		// cancellation arrives wrapped in guestfirmware.ErrChannelDown — a different sentinel from
-		// this package's errNoChannel. Asking the context "were we asked to stop?" needs no
-		// wrapping discipline from anything below it.
+		// It cannot be done by inspecting the error instead: the cancellation arrives wrapped in
+		// guestfirmware.ErrChannelDown — a different sentinel from this package's errNoChannel.
+		// Asking the context "were we asked to stop?" needs no wrapping discipline from anything
+		// below it.
 		//
 		// Logged rather than swallowed: the error still says how far bring-up had got.
 		if ctx.Err() != nil {
 			logf("shutting down during bring-up: %v", err)
 			return nil
 		}
-		if errors.Is(err, errNoChannel) {
-			return nil // never heard from the guest before the budget ran out -> clean shutdown
+		if !errors.Is(err, errNoChannel) {
+			return err
 		}
-		return err
+		// THE GUEST NEVER SPOKE, AND THAT IS THE LADDER'S CASE, NOT AN EXIT. This used to return
+		// nil here -- "a clean give-up; systemd restarts us and the sequence runs again from
+		// scratch" -- and both halves were false for a guest that is alive and dead inside: the
+		// next agent adopted the same qemu, and a clean exit is a normal stop to systemd
+		// (Restart=on-failure) and to the SCM alike, which stays down. So the ladder, with no
+		// prior client: it relaunches a stopped unit at once, waits the window for a mute one
+		// and power-cycles it, tells the household why, and answers the door meanwhile.
+		logf("the guest never answered during bring-up (%v); the recovery ladder has it", err)
+		mgr = newOSUpgrade(cfg, platform.Adopt(cfg.guestSpec()), nil, guestCfg, logf)
+		if client, err = cfg.recoverAnswering(ctx, local, mgr, &recovery, n, logf); err != nil {
+			return nil // ctx cancelled while recovering — a clean shutdown
+		}
+		g = mgr.vm
+	} else {
+		mgr = newOSUpgrade(cfg, g, client, guestCfg, logf)
 	}
 	defer client.Close()
 	// ...and kept from here on: the renewal outlives any one guest, like the lease it keeps.
@@ -793,34 +831,14 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		}
 	}
 
-	// The guest binding an `upgrade` directive drives: a guest.Manager for the health-gated
-	// service/system upgrades, plus the VM handle the reboot path needs.
-	// nil-safe: a witness / service-less node just won't act on those directives. guestCfg is
-	// hoisted so the reconnect loop can rebuild the Manager on a fresh connection.
-	guestCfg := guest.Config{
-		HealthURL: cfg.HealthURL,
-		// The gate resolves its own probe target per call, for the same reason the observe
-		// loop does: under DHCP the address is acquired inside the guest, and this gate is a
-		// ROLLBACK TRIGGER — probing a stale address does not fail loudly, it reverts a
-		// healthy node.
-		VIPDev:         cfg.VIPDev,
-		Diskless:       cfg.Diskless,
-		Resource:       cfg.Resource.Name, // what OSReady asks about this node
-		ReactorSnippet: cfg.ReactorSnippet,
-		// The Manager's own step-by-step lines went NOWHERE until now: with no Logf, NewManager
-		// installs a no-op, so every "enter maintenance / quiesce / pin image / health-gate
-		// tripped" line has been discarded in the field while looking, in the source,
-		// like observability. Found while instrumenting the activation verdict and
-		// wondering why the new line never appeared.
-		Logf: logf,
-	}
-	// EVERY node with a guest gets this, not only one running a service. Gating construction on
-	// `cfg.hasService()` would leave `up == nil` on a zero-service node, and applyDirective
-	// would then refuse every OS upgrade with "no target/upgrader on this node" — i.e. the shipped
-	// state, and the whole free tier, could not take an OS update. A system closure is a
-	// property of the NODE; what happens to run on top of it cannot decide whether the node can
-	// be updated. Service directives stay correctly refused: their own guard still reads spec.Name.
-	mgr := newOSUpgrade(cfg, g, client, guestCfg, logf)
+	// EVERY node with a guest gets the Manager above, not only one running a service. Gating its
+	// construction on `cfg.hasService()` would leave `up == nil` on a zero-service node, and
+	// applyDirective would then refuse every OS upgrade with "no target/upgrader on this node" —
+	// i.e. the shipped state, and the whole free tier, could not take an OS update. A system
+	// closure is a property of the NODE; what happens to run on top of it cannot decide whether
+	// the node can be updated. Service directives stay correctly refused: their own guard still
+	// reads spec.Name.
+	//
 	// Redundancy alerting: a data node warns when it loses a replica connection while still
 	// serving. A witness / single-node cluster has no redundancy signal.
 	var alerter *redundancyAlerter
@@ -888,8 +906,8 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// observe returns ErrChannelDown, and we re-dial + re-handshake rather than go blind
 	// forever (the older behaviour: one drop and the host never sees the guest again).
 	// A warm guest just re-attaches and observe resumes; a guest that stays unreachable past
-	// the recovery window gets its VM restarted, and after K of those the host stops and says
-	// so (guestrecover.go). A cancelled ctx is a clean shutdown.
+	// the recovery window gets its VM restarted, indefinitely at a slow cadence, and the
+	// household is told once per incident (guestrecover.go). A cancelled ctx is a clean shutdown.
 	//
 	// TERMINAL OUTCOMES LIVE HERE, NOT IN observe, and is why. observe returns on a dead
 	// channel, so anything held in its frame goes with it — and an OS upgrade ALWAYS bounces the
@@ -907,7 +925,6 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// flight have both happened, and no act starts once the stop has (acts.go, stopAfter).
 	ctx = cfg.acts.stopAfter(ctx, logf)
 	cfg.sleep = &sleepAlerter{read: lastSleep, lid: lidAction, shutDown: fastStartup}
-	var recovery guestRecovery
 	for {
 		served := time.Now()
 		err := cfg.observe(ctx, client, mgr, alerter, n, rep, cs, agg, assignment.Tenant, local, &pendingOutcomes, logf)
@@ -948,8 +965,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		// Wait for the guest to come back, and restart its VM if it does not. Rebinding the
 		// Manager is part of the swap recover() owns — a reboot replaces the channel and the VM
 		// together, so Run cannot rebind to a fresh channel without also being told about a
-		// fresh VM, which is why this is no longer a bare reconnect + rebind here.
-		client, err = mgr.recover(ctx, &recovery, n)
+		// fresh VM, which is why this is no longer a bare reconnect + rebind here. The door is
+		// answered meanwhile: observe is not running, and nothing else reads it.
+		client, err = cfg.recoverAnswering(ctx, local, mgr, &recovery, n, logf)
 		if err != nil {
 			return nil // ctx cancelled while recovering — clean shutdown
 		}
@@ -1071,11 +1089,12 @@ func logAcceleration(ctx context.Context, g *platform.Guest, spec platform.QEMUS
 	}
 }
 
-// errNoChannel reports that the guest never spoke: qemu never bound the control socket, or
-// an adopted guest's agent never re-served, before the bring-up budget ran out. It is kept
-// distinct from a bring-up *failure* because the two deserve opposite treatment — never
-// having reached the guest is a clean give-up (the agent exits, systemd restarts it, and the
-// whole sequence runs again from scratch), whereas a bring-up that got as far as speaking to
+// errNoChannel reports that the guest never spoke: qemu never bound the control socket, a
+// launched guest never answered the handshake, or an adopted guest's agent never re-served,
+// before the bring-up budget ran out. It is kept distinct from a bring-up *failure* because the
+// two deserve opposite treatment — a guest that never spoke is the recovery ladder's case (Run
+// enters it rather than exiting: a stopped unit is relaunched, a mute one waited for and then
+// power-cycled, and the household told why), whereas a bring-up that got as far as speaking to
 // the guest and then failed is a real error the caller must report and act on.
 var errNoChannel = errors.New("host: control channel never came up")
 
@@ -1204,7 +1223,10 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		// the firmware's five names, which is how the dress below knows to happen at all.
 		hello, herr := client.Handshake(bringup)
 		if herr != nil {
-			err = herr
+			// The same silence as a socket that was never bound: qemu is up and the guest inside
+			// it said nothing. Tagged so Run takes it to the ladder -- untagged, it was the exit
+			// that left the first real desktop with a dead qemu and no agent.
+			err = fmt.Errorf("%w: %w", errNoChannel, herr)
 		} else {
 			logf("guest bundle %q, %d capabilities", hello.Bundle, len(hello.Capabilities))
 		}

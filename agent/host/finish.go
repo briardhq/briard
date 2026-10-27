@@ -12,7 +12,6 @@ import (
 
 	"briard.io/agent/install"
 	"briard.io/agent/selfupdate"
-	"briard.io/shared/api"
 	"briard.io/shared/notify"
 )
 
@@ -121,7 +120,7 @@ func (cfg Config) finishHoldOff(ctx context.Context, local <-chan localRequest, 
 	wake := make(chan struct{})
 	retry := time.AfterFunc(wait, func() { close(wake) })
 	defer retry.Stop()
-	return cfg.finishWait(ctx, local, "waiting to retry: "+cause.Error(), wake, logf)
+	return cfg.holdDoor(ctx, local, func() string { return "briard is finishing its install: waiting to retry: " + cause.Error() }, wake, logf)
 }
 
 // retryAfter is the wait a failed finish asks for: finishRetryNet when the channel could not be
@@ -175,36 +174,10 @@ func (cfg Config) finishStep(ctx context.Context, local <-chan localRequest, bou
 	var err error
 	done := make(chan struct{})
 	go func() { err = step(sctx, logf); close(done) }()
-	if werr := cfg.finishWait(ctx, local, why, done, logf); werr != nil {
+	if werr := cfg.holdDoor(ctx, local, func() string { return "briard is finishing its install: " + why }, done, logf); werr != nil {
 		return werr
 	}
 	return err
-}
-
-// finishWait answers the local door until until fires or ctx ends, beating as it goes. A stop is
-// the one directive taken, as in the network's wait (waitTick); anything else is refused at once
-// with the reason.
-func (cfg Config) finishWait(ctx context.Context, local <-chan localRequest, why string, until <-chan struct{}, logf func(string, ...any)) error {
-	tick := time.NewTicker(netTick)
-	defer tick.Stop()
-	for {
-		cfg.beat.Beat()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-until:
-			return nil
-		case <-tick.C:
-		case req := <-local:
-			if req.d.Kind == api.DirectiveStop {
-				req.resp <- cfg.applyStop(req.d, logf)
-				continue
-			}
-			logf("admin socket: refusing %s -- the install is finishing", req.d.Kind)
-			req.resp <- api.DirectiveOutcome{ID: req.d.ID, State: api.OutcomeFailed,
-				Detail: "briard is finishing its install: " + why}
-		}
-	}
 }
 
 // awaitStableUpdate starts the update run against stable -- the trigger every update takes -- and
