@@ -436,7 +436,15 @@ func PowerOffGuest(ctx context.Context, qmpSock string, logf func(string, ...any
 	gctx, cancel := context.WithTimeout(ctx, GuestShutdownGrace+15*time.Second)
 	defer cancel()
 	if err := ShutdownVM(gctx, qmpSock, GuestShutdownGrace); err != nil {
-		return err
+		if !unitIsActive(ctx, GuestUnit) {
+			return nil
+		}
+		// The power button went unanswered: a guest dead inside -- a halted kernel, a WHPX fatal
+		// exit -- keeps its monitor up and never powers down, and a stop that left it running
+		// would hand it to the next agent to adopt. On Linux the unit's stop timeout kills such
+		// a guest; this is that. The clean half was offered, and the grace is spent.
+		logf("the guest did not power down after the power button (%v); ending it", err)
+		return RemoveUnit(GuestUnit)
 	}
 	if !unitIsActive(ctx, GuestUnit) {
 		return nil
