@@ -44,6 +44,10 @@ type backupView struct {
 	// Held is what the folder held after the newest night; Nights the recent nights, newest first.
 	Held   string
 	Nights []nightView
+	// OffsiteIn is the sync client holding the folder, "" for none; OffsiteSynced whether it has
+	// uploaded the newest good night. The host decides both; the card only says them.
+	OffsiteIn     string
+	OffsiteSynced bool
 	// Asked is the host's refusal of the last thing asked from this card, until the next ask.
 	Asked string
 }
@@ -64,7 +68,7 @@ func (a *app) backupState() *backupView {
 	if err := json.Unmarshal(raw, &h); err != nil {
 		return nil
 	}
-	v := &backupView{Folder: h.Folder, On: h.On, Key: h.Key, KeySaved: h.KeySaved}
+	v := &backupView{Folder: h.Folder, On: h.On, Key: h.Key, KeySaved: h.KeySaved, OffsiteIn: h.OffsiteIn, OffsiteSynced: h.OffsiteSynced}
 	if h.Previous != h.Folder {
 		v.Previous = h.Previous
 	}

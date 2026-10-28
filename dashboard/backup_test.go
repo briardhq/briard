@@ -166,3 +166,32 @@ func TestTheCardSaysWhereTheEarlierBackupsAre(t *testing.T) {
 		t.Error("a previous folder that is the current one is named as somewhere else")
 	}
 }
+
+// The off-site line's three states, each the host's: uploaded (the green line, and no advice to
+// move the folder), waiting (the plain line and when the client uploads), and no sync client
+// (neither, and the advice).
+func TestTheCardSaysWhetherTheBackupIsOffsite(t *testing.T) {
+	r, c, _ := backupRig(t)
+	nights := []dashboard.BackupRun{{At: time.Date(2026, 10, 10, 2, 4, 0, 0, time.UTC), Snapshot: "abc", BytesAdded: 5 << 20}}
+	const folder = `C:\Users\ana\OneDrive\Documents\Briard Backup`
+	const advice = "the folder has to leave the machine"
+
+	r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Key: testKey, KeySaved: true, Nights: nights, OffsiteIn: "OneDrive", OffsiteSynced: true})
+	body := r.page(c)
+	if !strings.Contains(body, `<p class="ok">Off-site: in OneDrive.`) || strings.Contains(body, "Waiting for") || strings.Contains(body, advice) {
+		t.Errorf("uploaded: %s", body)
+	}
+
+	r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Key: testKey, KeySaved: true, Nights: nights, OffsiteIn: "OneDrive"})
+	body = r.page(c)
+	if !strings.Contains(body, "Waiting for OneDrive to upload the newest backup.") || !strings.Contains(body, "while someone is signed in") ||
+		strings.Contains(body, "Off-site:") || strings.Contains(body, advice) {
+		t.Errorf("waiting: %s", body)
+	}
+
+	r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Key: testKey, KeySaved: true, Nights: nights})
+	body = r.page(c)
+	if strings.Contains(body, "Off-site:") || strings.Contains(body, "Waiting for") || !strings.Contains(body, advice) {
+		t.Errorf("no sync client: %s", body)
+	}
+}

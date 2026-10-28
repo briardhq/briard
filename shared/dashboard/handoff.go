@@ -168,6 +168,11 @@ type Backup struct {
 	KeySaved bool `json:"keySaved"`
 	// Nights are the recent finished runs, newest first; empty until there has been one.
 	Nights []BackupRun `json:"nights,omitempty"`
+	// OffsiteIn is the sync client whose folder holds the backup folder, by the name it gives
+	// itself (OneDrive); "" when none does, and on Linux. OffsiteSynced is whether it has
+	// uploaded every file of the newest good night -- false while it could not tell.
+	OffsiteIn     string `json:"offsiteIn,omitempty"`
+	OffsiteSynced bool   `json:"offsiteSynced,omitempty"`
 }
 
 // BackupRun is one finished night.

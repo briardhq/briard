@@ -36,7 +36,7 @@
   ul.alerts li { padding: .35rem 0; }
   ul.alerts .when { color: var(--muted); margin-right: .4rem; }
   ul.alerts .critical::before, ul.alerts .warning::before { content: "● "; color: var(--bad); }
-  ul.alerts .resolved::before { content: "✓ "; color: var(--accent); }
+  ul.alerts .resolved::before, .ok::before { content: "✓ "; color: var(--accent); }
   /* One click selects the whole key: the page is plain http, where the clipboard API is not offered. */
   .key code { font-size: 1.15rem; letter-spacing: .04em; user-select: all; overflow-wrap: anywhere; }
 </style>{{end}}
@@ -174,7 +174,7 @@
     {{with .Asked}}<p class="banner">{{.}}</p>{{end}}
     {{if .On}}
       <p>Every night at 02:00 Briard copies your apps' data, encrypted, to <code>{{.Folder}}</code>, on this machine. That protects against a broken app or a damaged volume, not against losing the machine itself.</p>
-      <p class="muted">To keep a copy that survives a dead disk, a theft or a fire, the folder has to leave the machine: keep it in a synced drive (OneDrive, Dropbox, Nextcloud) or on a NAS, or copy it somewhere else from time to time.</p>
+      {{if not .OffsiteIn}}<p class="muted">To keep a copy that survives a dead disk, a theft or a fire, the folder has to leave the machine: keep it in a synced drive (OneDrive, Dropbox, Nextcloud) or on a NAS, or copy it somewhere else from time to time.</p>{{end}}
       {{if .WrongKey}}<p class="banner">The folder holds a backup that this Briard cannot open — from an earlier install, or made with another key. Enter that backup's recovery key to continue it here, or change the folder below.</p>
       <form method="post" action="/backup/adopt" class="approve">
         <label for="backup-key">That backup's recovery key</label>
@@ -184,6 +184,9 @@
       {{else if .LastFailed}}<p class="banner">The backup on {{.LastWhen}} did not finish: {{.LastError}}</p>
       {{else if .LastWhen}}<p>Last backup: {{.LastWhen}}, {{.LastSize}} new{{with .Held}}; the folder holds {{.}}{{end}}.</p>
       {{else}}<p class="muted">The first backup runs tonight.</p>{{end}}
+      {{if .OffsiteSynced}}<p class="ok">Off-site: in {{.OffsiteIn}}. The newest backup has left this machine.</p>
+      {{else if .OffsiteIn}}<p>Waiting for {{.OffsiteIn}} to upload the newest backup.</p>
+      <p class="muted">{{.OffsiteIn}} uploads it while someone is signed in to this computer and syncing is not paused.</p>{{end}}
     {{else}}
       <p>The nightly backup is off. The backups already in <code>{{.Folder}}</code> are kept.</p>
     {{end}}

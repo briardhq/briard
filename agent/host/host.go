@@ -1549,8 +1549,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cfg.beat.Beat()
 		cs.tick(ctx, r, vip, logf) // the household's name -- claim poll, address, certificate, the page's view
 		cfg.beat.Beat()
-		pushAlerts(ctx, r, n, &alertsPushed, logf)      // the page's copy of the alert store, when it moved
-		cfg.pushBackupView(ctx, r, &backupPushed, logf) // the page's view of the backup, when it moved
+		pushAlerts(ctx, r, n, &alertsPushed, logf)                   // the page's copy of the alert store, when it moved
+		cfg.pushBackupView(ctx, r, &bs.offsite, &backupPushed, logf) // the page's view of the backup, when it moved
 		if errors.Is(err, guestfirmware.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}

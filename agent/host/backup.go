@@ -1,6 +1,7 @@
 package host
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,9 +56,12 @@ type backupScheduler struct {
 	loc     *time.Location
 	done    string
 	waiting time.Time // zero when no report is awaited
+	offsite offsiteCheck
 }
 
-func newBackupScheduler() *backupScheduler { return &backupScheduler{loc: householdLocation()} }
+func newBackupScheduler() *backupScheduler {
+	return &backupScheduler{loc: householdLocation(), offsite: offsiteCheck{provider: syncProvider, inSync: inSync}}
+}
 
 // backup collects a run that is going, or starts tonight's if it is due: this node serves, and the
 // local time is inside tonight's window. Every night that should have run and did not is recorded
@@ -70,6 +74,7 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 		cfg.collectBackup(ctx, g, b, n, logf)
 		return
 	}
+	b.offsite.tick(cfg.backupFolder(), cfg.readBackupRecord().Nights, now, logf)
 	// A kicked run (an adoption) runs now and does not count as the night: the night still runs,
 	// and finds nearly nothing to add.
 	kicked := cfg.backupKick != nil && cfg.backupKick.Swap(false)
@@ -239,6 +244,133 @@ func folderSize(dir string) int64 {
 	return n
 }
 
+// THE OFF-SITE CHECK: whether the folder's sync client -- OneDrive, where Documents is OneDrive's
+// (backupFolder, on Windows) -- has uploaded the newest good night. A folder under a sync client
+// says only that the client should upload it: OneDrive syncs nothing while nobody is signed in, a
+// full plan stops it, sync can be paused. So the answer is per file, from the client's own record
+// of each (inSync), over every file the night wrote -- the files modified since it started, which
+// needs nothing recorded and survives an agent restart.
+//
+// A LONG READ, OFF THE LOOP, as every long read is: a walk of the repository and a handle per new
+// file, in a goroutine the tick collects, between runs, on the node that serves. Asked once per
+// night and folder, and again every offsiteRetry while some file is waiting; not again once the
+// night is all uploaded or the folder is under no sync client. "Could not tell" -- a state that
+// could not be read, a file the client has not taken up yet, a night with no files found -- is
+// waiting, never synced.
+const offsiteRetry = 10 * time.Minute
+
+// offsiteCheck is the check's state, carried by the backup scheduler.
+type offsiteCheck struct {
+	provider func(dir string) (string, error) // the sync client holding dir (syncProvider)
+	inSync   func(path string) error          // nil when that client has uploaded path (inSync)
+	// folder and night are what the answer is about: a new one of either asks again.
+	folder string
+	night  time.Time
+	// in and synced are the answer, offsiteAnswer's.
+	in      string
+	synced  bool
+	next    time.Time // when to ask again while waiting
+	done    bool      // asked, and settled for this night and folder
+	running chan offsiteAnswer
+}
+
+// offsiteAnswer is what one check found.
+type offsiteAnswer struct {
+	folder          string
+	night           time.Time
+	in              string
+	synced          bool
+	files, uploaded int
+	why             error // why not synced: the folder's sync client could not be read, or the first file that is not uploaded
+}
+
+// tick collects a check in flight, or starts one when one is due. nights are the record's, newest
+// first; the newest without an error is the one asked about.
+func (o *offsiteCheck) tick(folder string, nights []dashboard.BackupRun, now time.Time, logf func(string, ...any)) {
+	var night time.Time
+	for _, n := range nights {
+		if n.Error == "" && n.Snapshot != "" {
+			night = n.At
+			break
+		}
+	}
+	if folder != o.folder || !night.Equal(o.night) {
+		*o = offsiteCheck{provider: o.provider, inSync: o.inSync, folder: folder, night: night, running: o.running}
+	}
+	if o.running != nil {
+		select {
+		case a := <-o.running:
+			o.running = nil
+			if a.folder != o.folder || !a.night.Equal(o.night) {
+				return // asked about a folder or a night since replaced; the next tick asks about this one
+			}
+			if a.in != o.in || a.synced != o.synced {
+				switch {
+				case a.in == "":
+					logf("backup: off-site: %s is in no sync client's folder (%v)", folder, a.why)
+				case a.synced:
+					logf("backup: off-site: %s has uploaded the night of %s (%d files)", a.in, night.Format(time.DateTime), a.files)
+				default:
+					logf("backup: off-site: waiting for %s: %d of %d files of the night of %s uploaded (%v)", a.in, a.uploaded, a.files, night.Format(time.DateTime), a.why)
+				}
+			}
+			o.in, o.synced = a.in, a.synced
+			o.done = a.in == "" || a.synced
+			o.next = now.Add(offsiteRetry)
+		default:
+		}
+		return
+	}
+	if folder == "" || night.IsZero() || o.done || now.Before(o.next) {
+		return
+	}
+	o.running = make(chan offsiteAnswer, 1)
+	go func(out chan<- offsiteAnswer, provider func(string) (string, error), inSync func(string) error) {
+		out <- offsiteRead(folder, night, provider, inSync)
+	}(o.running, o.provider, o.inSync)
+}
+
+// offsiteRead runs the check once: the folder's sync client, then every file modified since the
+// night started. A file or directory it could not read counts as not uploaded.
+func offsiteRead(folder string, night time.Time, provider func(string) (string, error), inSync func(string) error) offsiteAnswer {
+	a := offsiteAnswer{folder: folder, night: night}
+	if a.in, a.why = provider(folder); a.in == "" {
+		return a
+	}
+	unread := false
+	_ = filepath.WalkDir(folder, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			unread = true
+			a.why = cmp.Or(a.why, err)
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			unread = true
+			a.why = cmp.Or(a.why, err)
+			return nil
+		}
+		if fi.ModTime().Before(night) {
+			return nil
+		}
+		a.files++
+		if err := inSync(p); err != nil {
+			a.why = cmp.Or(a.why, fmt.Errorf("%s: %w", p, err))
+			return nil
+		}
+		a.uploaded++
+		return nil
+	})
+	a.synced = !unread && a.files > 0 && a.uploaded == a.files
+	if a.files == 0 && a.why == nil {
+		a.why = errors.New("no file of the night found")
+	}
+	return a
+}
+
 // backupHostFacts reads the host facts that exist. An absent one is a node that never had it (no
 // casa claim); an unreadable one is logged and left out -- tonight's backup is worth more than
 // one missing file.
@@ -332,13 +464,17 @@ type backupViewGuest interface {
 }
 
 // pushBackupView hands the guest the page's view when it differs from what this connection last
-// pushed. pushed starts empty with every connection, so a fresh guest is always told.
-func (cfg Config) pushBackupView(ctx context.Context, r any, pushed *string, logf func(string, ...any)) {
+// pushed. pushed starts empty with every connection, so a fresh guest is always told. o is the
+// off-site check's last answer; nil tells the page nothing about one.
+func (cfg Config) pushBackupView(ctx context.Context, r any, o *offsiteCheck, pushed *string, logf func(string, ...any)) {
 	g, ok := r.(backupViewGuest)
 	if !ok || cfg.stateDir() == "" {
 		return
 	}
 	v := cfg.backupView(ctx, g)
+	if o != nil {
+		v.OffsiteIn, v.OffsiteSynced = o.in, o.synced
+	}
 	b, err := json.Marshal(v)
 	if err != nil || string(b) == *pushed {
 		return

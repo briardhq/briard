@@ -29,7 +29,7 @@ func backupRig(t *testing.T) (Config, fakeStatus, *backupScheduler) {
 		}
 	}
 	cfg := Config{BackupDir: t.TempDir(), FlockID: "f1d", AssignmentCache: filepath.Join(state, "assignment.json"), SystemHostCIDR: "10.7.0.129/32"}
-	return cfg, fakeStatus{backup: &fakeBackup{}}, &backupScheduler{loc: time.UTC}
+	return cfg, fakeStatus{backup: &fakeBackup{}}, utcScheduler()
 }
 
 func tonightAt(hhmm string) time.Time {
@@ -215,25 +215,25 @@ func TestThePageIsToldTheViewWhenItMoves(t *testing.T) {
 	ctx := context.Background()
 	vg := &viewGuest{fakeStatus: fakeStatus{backup: g}}
 	pushed := ""
-	cfg.pushBackupView(ctx, vg, &pushed, quiet)
+	cfg.pushBackupView(ctx, vg, nil, &pushed, quiet)
 	if len(vg.views) != 1 || vg.views[0].Key != g.key.Key || vg.views[0].Key == "" || !vg.views[0].On || vg.views[0].KeySaved {
 		t.Fatalf("first push %+v", vg.views)
 	}
-	cfg.pushBackupView(ctx, vg, &pushed, quiet)
+	cfg.pushBackupView(ctx, vg, nil, &pushed, quiet)
 	if len(vg.views) != 1 {
 		t.Fatal("an unchanged view was pushed again")
 	}
 	if o := setBackup(cfg, g, settingBackupKeySaved, "yes"); o.State != api.OutcomeDone {
 		t.Fatalf("saved: %+v", o)
 	}
-	cfg.pushBackupView(ctx, vg, &pushed, quiet)
+	cfg.pushBackupView(ctx, vg, nil, &pushed, quiet)
 	if len(vg.views) != 2 || !vg.views[1].KeySaved {
 		t.Fatalf("the acknowledgement did not reach the page: %+v", vg.views)
 	}
 
 	none := &viewGuest{fakeStatus: fakeStatus{}} // no volume here: the verb fails
 	pushed = ""
-	cfg.pushBackupView(ctx, none, &pushed, quiet)
+	cfg.pushBackupView(ctx, none, nil, &pushed, quiet)
 	if len(none.views) != 1 || none.views[0].Key != "" || !none.views[0].On {
 		t.Fatalf("push with no key %+v", none.views)
 	}
@@ -257,7 +257,7 @@ func TestTheNightsAreRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	for night := 0; night < backupNightsKept+2; night++ {
-		*b = backupScheduler{loc: time.UTC}
+		*b = *utcScheduler()
 		start := tonightAt("02:04").Add(time.Duration(night) * 24 * time.Hour)
 		cfg.backup(context.Background(), g, b, true, start, nil, quiet)
 		g.backup.running, g.backup.report = false, &guestagent.BackupReport{Snapshot: "s", BytesAdded: int64(night)}
@@ -356,7 +356,7 @@ func TestTheBackupMoves(t *testing.T) {
 // leaves the guest's report lost).
 func backupNight(t *testing.T, cfg Config, g fakeStatus, n *fakeNotifier, d int, rep *guestagent.BackupReport) {
 	t.Helper()
-	b := &backupScheduler{loc: time.UTC}
+	b := utcScheduler()
 	start := tonightAt("02:04").Add(time.Duration(d) * 24 * time.Hour)
 	cfg.backup(context.Background(), g, b, true, start, n, quiet)
 	if g.backup != nil {
@@ -491,7 +491,7 @@ func TestAdoptingABackup(t *testing.T) {
 		t.Fatal("the typed key was recorded")
 	}
 	// The kicked run starts outside the window, once.
-	bs := &backupScheduler{loc: time.UTC}
+	bs := utcScheduler()
 	cfg.backup(context.Background(), fakeStatus{backup: g}, bs, true, tonightAt("14:00"), nil, quiet)
 	cfg.backup(context.Background(), fakeStatus{backup: g}, bs, true, tonightAt("14:01"), nil, quiet)
 	if g.starts != 1 {
@@ -530,5 +530,203 @@ func TestAWrongKeyNightIsNamedForThePage(t *testing.T) {
 	nights := cfg.readBackupRecord().Nights
 	if len(nights) != 1 || !nights[0].WrongKey || !strings.Contains(nights[0].Error, "Enter that key") {
 		t.Fatalf("nights %+v, want one wrong-key night that says what to do", nights)
+	}
+}
+
+// utcScheduler is the agent's scheduler, scheduled in UTC.
+func utcScheduler() *backupScheduler {
+	b := newBackupScheduler()
+	b.loc = time.UTC
+	return b
+}
+
+// syncFake is a sync client: the folders it holds, and the files it has uploaded.
+type syncFake struct {
+	name     string
+	uploaded map[string]bool
+	asked    []string
+	fail     error // every file's state unreadable
+}
+
+func (f *syncFake) check() offsiteCheck {
+	return offsiteCheck{
+		provider: func(string) (string, error) {
+			if f.name == "" {
+				return "", errors.New("not under a sync root")
+			}
+			return f.name, nil
+		},
+		inSync: func(p string) error {
+			f.asked = append(f.asked, filepath.Base(p))
+			switch {
+			case f.fail != nil:
+				return f.fail
+			case !f.uploaded[filepath.Base(p)]:
+				return errors.New("not uploaded yet")
+			}
+			return nil
+		},
+	}
+}
+
+// settle ticks until the check in flight has answered.
+func settle(t *testing.T, o *offsiteCheck, folder string, nights []dashboard.BackupRun, now time.Time) {
+	t.Helper()
+	for i := 0; o.running != nil; i++ {
+		if i > 400 {
+			t.Fatal("the off-site check never answered")
+		}
+		time.Sleep(5 * time.Millisecond)
+		o.tick(folder, nights, now, quiet)
+	}
+}
+
+// writeAt is a file the store wrote at a moment.
+func writeAt(t *testing.T, dir, name string, at time.Time) {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(name), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(p, at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTheOffsiteCheckAsksAboutTheNewestGoodNight: the files the newest good night wrote and no
+// others, asked again every offsiteRetry while one is waiting, and not again once all are
+// uploaded -- until a new night.
+func TestTheOffsiteCheckAsksAboutTheNewestGoodNight(t *testing.T) {
+	dir := t.TempDir()
+	good, failed := tonightAt("02:00"), tonightAt("02:00").Add(24*time.Hour)
+	writeAt(t, dir, "config", good.Add(-72*time.Hour))
+	writeAt(t, dir, "data/ab/old", good.Add(-24*time.Hour))
+	writeAt(t, dir, "data/cd/pack", good.Add(10*time.Minute))
+	writeAt(t, dir, "snapshots/snap", good.Add(20*time.Minute))
+	// A failed night after it: not the one asked about, though its stray pack counts as written since.
+	nights := []dashboard.BackupRun{{At: failed, Error: "the folder is not there"}, {At: good, Snapshot: "s1"}}
+	f := &syncFake{name: "OneDrive", uploaded: map[string]bool{"pack": true}}
+	o := f.check()
+	now := good.Add(time.Hour)
+
+	o.tick(dir, nights, now, quiet)
+	settle(t, &o, dir, nights, now)
+	if o.in != "OneDrive" || o.synced {
+		t.Fatalf("one file of the night not uploaded: in=%q synced=%v", o.in, o.synced)
+	}
+	if strings.Join(f.asked, ",") != "pack,snap" {
+		t.Errorf("asked about %v, want the night's two files only", f.asked)
+	}
+
+	f.asked = nil
+	o.tick(dir, nights, now.Add(offsiteRetry-time.Second), quiet)
+	if o.running != nil {
+		t.Fatal("asked again before offsiteRetry")
+	}
+	f.uploaded["snap"] = true
+	o.tick(dir, nights, now.Add(offsiteRetry), quiet)
+	settle(t, &o, dir, nights, now.Add(offsiteRetry))
+	if !o.synced || o.in != "OneDrive" {
+		t.Fatalf("every file uploaded: in=%q synced=%v", o.in, o.synced)
+	}
+	f.asked = nil
+	o.tick(dir, nights, now.Add(24*time.Hour), quiet)
+	if o.running != nil || len(f.asked) != 0 {
+		t.Fatal("a settled night was asked about again")
+	}
+
+	// The next good night: asked about from the start, and not synced until it says so.
+	next := failed.Add(24 * time.Hour)
+	writeAt(t, dir, "snapshots/snap2", next.Add(time.Minute))
+	nights = append([]dashboard.BackupRun{{At: next, Snapshot: "s3"}}, nights...)
+	o.tick(dir, nights, next.Add(time.Hour), quiet)
+	if o.synced || o.in != "" {
+		t.Fatalf("a new night kept the last one's answer: in=%q synced=%v", o.in, o.synced)
+	}
+	settle(t, &o, dir, nights, next.Add(time.Hour))
+	if o.synced || strings.Join(f.asked, ",") != "snap2" {
+		t.Fatalf("the new night: synced=%v asked=%v", o.synced, f.asked)
+	}
+}
+
+// TestTheOffsiteCheckCountsCouldNotTellAsWaiting: green only on a positive answer for every file.
+// A night with no files found, a state that could not be read, or a folder that cannot be listed
+// is waiting; a folder under no sync client is no answer, asked once; and no good night, or the
+// backup off, asks nothing.
+func TestTheOffsiteCheckCountsCouldNotTellAsWaiting(t *testing.T) {
+	night := tonightAt("02:00")
+	nights := []dashboard.BackupRun{{At: night, Snapshot: "s1"}}
+	now := night.Add(time.Hour)
+	ask := func(f *syncFake, dir string, nights []dashboard.BackupRun) offsiteCheck {
+		o := f.check()
+		o.tick(dir, nights, now, quiet)
+		settle(t, &o, dir, nights, now)
+		return o
+	}
+
+	empty := t.TempDir()
+	writeAt(t, empty, "config", night.Add(-time.Hour))
+	if o := ask(&syncFake{name: "OneDrive"}, empty, nights); o.synced || o.in != "OneDrive" || o.done {
+		t.Errorf("no file of the night: in=%q synced=%v done=%v, want waiting", o.in, o.synced, o.done)
+	}
+
+	dir := t.TempDir()
+	writeAt(t, dir, "snapshots/snap", night.Add(time.Minute))
+	if o := ask(&syncFake{name: "OneDrive", fail: errors.New("access denied")}, dir, nights); o.synced || o.in != "OneDrive" {
+		t.Errorf("unreadable state: in=%q synced=%v, want waiting", o.in, o.synced)
+	}
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		// Every file it could read uploaded, and a directory it could not list.
+		part := t.TempDir()
+		writeAt(t, part, "snapshots/snap", night.Add(time.Minute))
+		writeAt(t, part, "data/ab/pack", night.Add(time.Minute))
+		if err := os.Chmod(filepath.Join(part, "data", "ab"), 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(filepath.Join(part, "data", "ab"), 0o755) })
+		if o := ask(&syncFake{name: "OneDrive", uploaded: map[string]bool{"snap": true, "pack": true}}, part, nights); o.synced {
+			t.Error("a folder with a directory it could not list read as synced")
+		}
+	}
+
+	f := &syncFake{uploaded: map[string]bool{"snap": true}}
+	o := ask(f, dir, nights)
+	if o.in != "" || o.synced || !o.done || len(f.asked) != 0 {
+		t.Errorf("no sync client: in=%q synced=%v done=%v asked=%v", o.in, o.synced, o.done, f.asked)
+	}
+	o.tick(dir, nights, now.Add(offsiteRetry), quiet)
+	if o.running != nil {
+		t.Error("a folder under no sync client was asked about again the same night")
+	}
+
+	for name, c := range map[string]struct {
+		dir    string
+		nights []dashboard.BackupRun
+	}{
+		"no good night": {dir, []dashboard.BackupRun{{At: night, Error: "x"}}},
+		"backup off":    {"", nights},
+	} {
+		o := (&syncFake{name: "OneDrive"}).check()
+		o.tick(c.dir, c.nights, now, quiet)
+		if o.running != nil {
+			t.Errorf("%s: a check started", name)
+		}
+	}
+}
+
+// The page is told the check's answer with the rest of the view.
+func TestThePageIsToldTheOffsiteAnswer(t *testing.T) {
+	cfg, g := liveBackup(t, "/f")
+	vg := &viewGuest{fakeStatus: fakeStatus{backup: g}}
+	pushed := ""
+	o := &offsiteCheck{in: "OneDrive"}
+	cfg.pushBackupView(context.Background(), vg, o, &pushed, quiet)
+	o.synced = true
+	cfg.pushBackupView(context.Background(), vg, o, &pushed, quiet)
+	if len(vg.views) != 2 || vg.views[0].OffsiteIn != "OneDrive" || vg.views[0].OffsiteSynced || !vg.views[1].OffsiteSynced {
+		t.Fatalf("pushed %+v", vg.views)
 	}
 }
