@@ -158,10 +158,12 @@ func (r *rig) do(method, path string, cookie *http.Cookie, hdr map[string]string
 	return resp
 }
 
-// trust redeems the code and returns the session cookie.
-func (r *rig) trust() *http.Cookie {
+// trust redeems the code and returns the session cookie; trustAs does it as the given browser.
+func (r *rig) trust() *http.Cookie { return r.trustAs("") }
+
+func (r *rig) trustAs(ua string) *http.Cookie {
 	r.t.Helper()
-	resp := r.do("GET", "/?code="+r.code, nil, nil)
+	resp := r.do("GET", "/?code="+r.code, nil, map[string]string{"User-Agent": ua})
 	if resp.StatusCode != http.StatusSeeOther {
 		r.t.Fatalf("redeem = %d, want 303", resp.StatusCode)
 	}
@@ -458,7 +460,7 @@ func TestNotInstalled(t *testing.T) {
 func (r *rig) reissue(agent string, as *http.Cookie) *http.Cookie {
 	r.t.Helper()
 	code, _ := dashboard.NewCode()
-	raw, _ := json.Marshal(dashboard.Handoff{Code: code, Name: "Kostas", Username: "kostas", Language: "el", Issued: time.Now()})
+	raw, _ := json.Marshal(dashboard.Handoff{Code: code, Name: "Kostas", Username: "kostas", Language: "el", Issued: r.app.now()})
 	must(r.t, os.WriteFile(r.app.handoffPath, raw, 0o600))
 	resp := r.do("GET", "/?code="+code, as, map[string]string{"User-Agent": agent})
 	if resp.StatusCode != http.StatusSeeOther {
