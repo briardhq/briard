@@ -53,10 +53,10 @@ import (
 	"briard.io/shared/sdnotify"
 )
 
-//go:embed page.html
+//go:embed templates/*.html
 var pageFS embed.FS
 
-var page = template.Must(template.ParseFS(pageFS, "page.html"))
+var page = template.Must(template.ParseFS(pageFS, "templates/*.html"))
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8087", "listen address (loopback: the front door forwards to it)")

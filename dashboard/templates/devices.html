@@ -1,0 +1,18 @@
+{{define "devices"}}
+  <div class="card">
+    <h2>Trusted devices</h2>
+    <p class="muted">Browsers that can open this page. Lost one? Revoke it; it can come back only through <code>sudo briard open</code>.</p>
+    <ul class="devices">
+      {{range .Devices}}<li>
+        <span title="{{.Agent}}">{{.Label}}</span> <span class="muted">— added {{.Added}}{{if .This}} · this device{{end}}</span>
+        <form method="post" action="/devices/revoke"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="quiet">{{if .This}}Sign out{{else}}Revoke{{end}}</button></form>
+      </li>{{end}}
+    </ul>
+    <form method="post" action="/devices/approve" class="approve">
+      <label for="code">Let a new device in — enter the code its screen shows:</label>
+      <input id="code" name="code" inputmode="numeric" autocomplete="off" pattern="[0-9 -]*" placeholder="123 456" required>
+      <button type="submit">Approve</button>
+    </form>
+    {{if .HA}}<p class="muted">Revoking here does not sign a device out of Home Assistant; end those sessions in <a href="{{.HA.URL}}profile/security" target="_blank" rel="noopener">your Home Assistant profile</a>.</p>{{end}}
+  </div>
+{{end}}

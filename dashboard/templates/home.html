@@ -1,0 +1,3 @@
+{{define "page"}}{{if .Refresh}}{{template "head" "5"}}{{else}}{{template "head" ""}}{{end}}
+  <h1>Briard</h1>
+{{template "alerts" .}}{{template "casa" .}}{{template "app" .}}{{template "backup" .}}{{template "devices" .}}{{template "foot"}}{{end}}

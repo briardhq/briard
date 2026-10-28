@@ -1,0 +1,56 @@
+{{define "history"}}{{if .Refresh}}{{template "head" "5"}}{{else}}{{template "head" ""}}{{end}}
+  <h1>History</h1>
+  <div class="card">
+    <h2>{{.Service}}</h2>
+    {{if .Op}}
+      {{if .Op.Running}}<p>Undoing {{.Op.What}}… the app stops for it and starts again afterwards. This page refreshes itself.</p>
+      <p class="muted">Started at {{.Op.Since}}.</p>
+      {{else if .Op.Failed}}<p>Could not undo that: {{.Op.Detail}}</p>{{end}}
+    {{end}}
+    {{if .Error}}<p>Could not read this app's history: {{.Error}}</p>
+      <p class="muted">Or, on the machine that runs Briard: <code>sudo briard app history {{.Service}}</code></p>
+    {{else if not .Rows}}<p class="muted">Nothing yet. Updates, the changes Briard notices, and quiet stretches appear here.</p>
+    {{else}}
+    {{with .Banner}}<div class="banner">
+      <p>{{$.Service}} is not working. Undoing takes it back to {{.Back}}, its last healthy state, and loses everything since.</p>
+      <form method="post" action="/undo">
+        <input type="hidden" name="point" value="{{.Point}}">
+        <input type="hidden" name="what" value="{{or .What .Caption}}">
+        <button type="submit">Undo these changes</button>
+      </form>
+    </div>{{end}}
+    <p class="muted">Newest first. Point at a change to see what undoing it takes away: that change and everything above it.</p>
+    <ol class="history">
+      {{range .Rows}}<li tabindex="0">
+        <span class="when">{{.When}}</span>
+        <span class="what">{{.What}}</span>
+        {{if .Caption}}<span class="bad">{{.Caption}}</span>{{end}}
+        {{if or .MovesCode .Note}}<span class="muted">{{if .MovesCode}}also goes back to {{.Version}}{{end}}{{if and .MovesCode .Note}} · {{end}}{{.Note}}</span>{{end}}
+        <form method="post" action="/undo" class="undo">
+          <input type="hidden" name="point" value="{{.Point}}">
+          <input type="hidden" name="what" value="{{or .What .Caption}}">
+          <button type="submit">Undo these changes</button>
+        </form>
+      </li>{{end}}
+    </ol>
+    {{end}}
+    <p class="muted"><a href="/">Back</a></p>
+  </div>
+{{template "foot"}}{{end}}
+
+{{define "confirm"}}{{template "head" ""}}
+  <h1>Undo these changes?</h1>
+  <div class="card">
+    <h2>{{.What}}, and everything after it</h2>
+    <p>{{.Service}} goes back to how it was at {{.Back}}. Everything it has recorded since then is lost.{{if .MovesCode}} This also moves the app {{if .From}}from {{.From}} {{end}}back to {{.To}}.{{end}}</p>
+    {{if .Note}}<p class="muted">That moment was {{.Note}} — {{.Service}} recovers it on the way back up.</p>{{end}}
+    <p class="muted">The app stops for it and starts again afterwards. The undo is itself in the history, so it can be undone too.</p>
+    <form method="post" action="/undo">
+      <input type="hidden" name="point" value="{{.Point}}">
+      <input type="hidden" name="what" value="{{.What}}">
+      <input type="hidden" name="confirm" value="yes">
+      <button type="submit">Undo these changes</button>
+    </form>
+    <p class="muted"><a href="/history/{{.Service}}">Cancel</a></p>
+  </div>
+{{template "foot"}}{{end}}

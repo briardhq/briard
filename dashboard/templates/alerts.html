@@ -1,0 +1,28 @@
+{{define "alerts"}}
+  {{with .Alerts}}
+  {{if .Unreachable}}
+  <div class="card">
+    <h2>Briard is not answering</h2>
+    <p class="banner">The Briard agent on this machine has not been heard from since {{.Unreachable}}. Your apps keep running, but nothing is watching over them until it is back.</p>
+    <p class="muted">Restarting the machine that runs Briard usually brings it back. <code>sudo briard logs</code> there shows what it said last.</p>
+  </div>
+  {{else if .Open}}
+  <div class="card">
+    <h2>Needs your attention</h2>
+    <ul class="alerts">
+      {{range .Open}}<li id="alert-{{.Key}}"><span class="{{.Severity}}"><strong>{{.Title}}</strong></span><br>{{.Body}} <span class="muted">— since {{.When}}</span></li>{{end}}
+    </ul>
+    {{template "recent" .Recent}}
+  </div>
+  {{else}}
+  <p class="muted">Nothing on this machine needs your attention.</p>
+  {{if .Recent}}{{template "recent" .Recent}}{{end}}
+  {{end}}
+  {{end}}
+{{end}}
+
+{{define "recent"}}<details><summary class="muted">Recent alerts</summary>
+    <ul class="alerts">
+      {{range .}}<li><span class="when">{{.When}}</span><span class="{{if .Resolved}}resolved{{else}}{{.Severity}}{{end}}">{{.Title}}</span>{{if .Body}}<br><span class="muted">{{.Body}}</span>{{end}}</li>{{end}}
+    </ul>
+  </details>{{end}}

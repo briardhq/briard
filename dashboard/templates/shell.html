@@ -1,0 +1,50 @@
+{{define "style"}}<style>
+  :root { --fg: #1a1a1a; --muted: #666; --accent: #2a5d4e; --bg: #fff; --card: #f6f6f4; --grey: #e6e6e2; --bad: #b3261e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #ececec; --muted: #9a9a9a; --accent: #7fc4ad; --bg: #141414; --card: #1f1f1f; --grey: #2c2c2c; --bad: #f2b8b5; }
+  }
+  body { font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 0 1.25rem; }
+  main { max-width: 42rem; margin: 1.5rem auto 2rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 1rem; }
+  .card { background: var(--card); border-radius: 10px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .card h2 { font-size: 1.15rem; margin: 0 0 .4rem; }
+  .muted { color: var(--muted); }
+  button { font: inherit; background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: .55rem 1rem; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  code { font-size: .95em; }
+  a { color: var(--accent); }
+  ul.devices { list-style: none; padding: 0; margin: 0; }
+  ul.devices li { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; }
+  ul.devices form { margin-left: auto; }
+  button.quiet { background: transparent; color: var(--accent); border: 1px solid var(--accent); padding: .25rem .7rem; }
+  .code { font: 700 2.4rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; margin: .5rem 0 1rem; }
+  form.approve { margin-top: .8rem; display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  form.approve label { flex-basis: 100%; }
+  form.approve input { font: inherit; padding: .45rem .6rem; border: 1px solid var(--muted); border-radius: 8px; background: var(--bg); color: var(--fg); width: 8rem; }
+  form.approve input.wide { width: 100%; }
+  form.inline { display: inline; }
+  /* THE HISTORY: pointing at a row -- hover, or a tap that focuses it -- greys it and every
+     row above it, which is exactly what its undo takes away, and shows that row's one button. */
+  ol.history { list-style: none; padding: 0; margin: 0; }
+  ol.history li { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .6rem; padding: .45rem .5rem; border-radius: 8px; outline: none; }
+  ol.history .when { color: var(--muted); min-width: 9rem; }
+  ol.history form.undo { margin-left: auto; visibility: hidden; }
+  ol.history li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) { background: var(--grey); }
+  ol.history li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) .what { color: var(--muted); }
+  ol.history li:is(:hover, :focus-within) form.undo { visibility: visible; }
+  ol.history .bad::before { content: "● "; color: var(--bad); }
+  .banner { border-left: 4px solid var(--bad); padding: .2rem .8rem; margin: .5rem 0 1rem; }
+  ul.alerts { list-style: none; padding: 0; margin: 0; }
+  ul.alerts li { padding: .35rem 0; }
+  ul.alerts .when { color: var(--muted); margin-right: .4rem; }
+  ul.alerts .critical::before, ul.alerts .warning::before { content: "● "; color: var(--bad); }
+  ul.alerts .resolved::before, .ok::before { content: "✓ "; color: var(--accent); }
+  /* One click selects the whole key: the page is plain http, where the clipboard API is not offered. */
+  .key code { font-size: 1.15rem; letter-spacing: .04em; user-select: all; overflow-wrap: anywhere; }
+</style>{{end}}
+
+{{define "head"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{if .}}<meta http-equiv="refresh" content="{{.}}">{{end}}{{template "style"}}</head>
+<body><main>{{end}}
+
+{{define "foot"}}</main></body></html>{{end}}

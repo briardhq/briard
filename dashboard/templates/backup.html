@@ -1,0 +1,47 @@
+{{define "backup"}}
+  {{with .Backup}}
+  <div class="card" id="backup">
+    <h2>Backup</h2>
+    {{with .Asked}}<p class="banner">{{.}}</p>{{end}}
+    {{if .On}}
+      <p>Every night at 02:00 Briard copies your apps' data, encrypted, to <code>{{.Folder}}</code>, on this machine. That protects against a broken app or a damaged volume, not against losing the machine itself.</p>
+      {{if not .OffsiteIn}}<p class="muted">To keep a copy that survives a dead disk, a theft or a fire, the folder has to leave the machine: keep it in a synced drive (OneDrive, Dropbox, Nextcloud) or on a NAS, or copy it somewhere else from time to time.</p>{{end}}
+      {{if .WrongKey}}<p class="banner">The folder holds a backup that this Briard cannot open — from an earlier install, or made with another key. Enter that backup's recovery key to continue it here, or change the folder below.</p>
+      <form method="post" action="/backup/adopt" class="approve">
+        <label for="backup-key">That backup's recovery key</label>
+        <input id="backup-key" name="key" required autocomplete="off" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx" class="wide">
+        <button type="submit">Enter its key</button>
+      </form>
+      {{else if .LastFailed}}<p class="banner">The backup on {{.LastWhen}} did not finish: {{.LastError}}</p>
+      {{else if .LastWhen}}<p>Last backup: {{.LastWhen}}, {{.LastSize}} new{{with .Held}}; the folder holds {{.}}{{end}}.</p>
+      {{else}}<p class="muted">The first backup runs tonight.</p>{{end}}
+      {{if .OffsiteSynced}}<p class="ok">Off-site: in {{.OffsiteIn}}. The newest backup has left this machine.</p>
+      {{else if .OffsiteIn}}<p>Waiting for {{.OffsiteIn}} to upload the newest backup.</p>
+      <p class="muted">{{.OffsiteIn}} uploads it while someone is signed in to this computer and syncing is not paused.</p>{{end}}
+    {{else}}
+      <p>The nightly backup is off. The backups already in <code>{{.Folder}}</code> are kept.</p>
+    {{end}}
+    {{with .Previous}}<p class="muted">Your earlier backups are still in <code>{{.}}</code>. Briard no longer adds to them; delete that folder when you no longer need it.</p>{{end}}
+    {{if .Nights}}<details><summary class="muted">Recent nights</summary>
+      <ul class="alerts">
+        {{range .Nights}}<li><span class="when">{{.When}}</span>{{if .Error}}<span class="warning">did not finish: {{.Error}}</span>{{else}}<span class="resolved">{{.Added}} new</span>{{end}}</li>{{end}}
+      </ul>
+    </details>{{end}}
+    <details><summary class="muted">Change the folder</summary>
+      <form method="post" action="/backup/folder" class="approve">
+        <label for="backup-folder">Back up into this folder from tonight. It must already exist, belong to you, and be empty — or hold these backups, if you moved them there yourself. Your earlier backups stay where they are.</label>
+        <input id="backup-folder" name="folder" required placeholder="/home/you/Dropbox/Briard Backup" class="wide">
+        <button type="submit">Change</button>
+      </form>
+    </details>
+    {{if .Key}}
+      {{if not .KeySaved}}<p class="banner">Your recovery key is only on this machine. The backups cannot be opened without it, so if this machine dies, they die with it. Write it down, or keep it in your password manager.</p>{{end}}
+      <p>Recovery key</p>
+      <p class="key"><code>{{.Key}}</code></p>
+      <p class="muted">Whoever has this key and the backup folder has everything in it.</p>
+      {{if not .KeySaved}}<form method="post" action="/backup/saved"><button type="submit">I have saved the key</button></form>{{end}}
+    {{end}}
+    <form method="post" action="/backup/{{if .On}}off{{else}}on{{end}}" class="approve"><button type="submit" class="quiet">{{if .On}}Turn off nightly backup{{else}}Turn nightly backup back on{{end}}</button></form>
+  </div>
+  {{end}}
+{{end}}
