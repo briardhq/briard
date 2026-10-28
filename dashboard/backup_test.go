@@ -174,7 +174,7 @@ func TestTheCardSaysWhetherTheBackupIsOffsite(t *testing.T) {
 	r, c, _ := backupRig(t)
 	nights := []dashboard.BackupRun{{At: time.Date(2026, 10, 10, 2, 4, 0, 0, time.UTC), Snapshot: "abc", BytesAdded: 5 << 20}}
 	const folder = `C:\Users\ana\OneDrive\Documents\Briard Backup`
-	const advice = "the folder has to leave the machine"
+	const advice = "keep the folder in a synced drive"
 
 	r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Key: testKey, KeySaved: true, Nights: nights, OffsiteIn: "OneDrive", OffsiteSynced: true})
 	body := r.page(c)

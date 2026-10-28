@@ -16,10 +16,9 @@ import (
 // vocabulary is every class the templates and the stylesheet may name. The severity classes
 // (warning, critical, resolved) are set from an alert's own severity at render.
 var vocabulary = map[string]bool{
-	"card": true, "muted": true, "banner": true, "quiet": true, "code": true, "key": true,
-	"approve": true, "inline": true, "wide": true,
-	"alerts": true, "when": true, "warning": true, "critical": true, "resolved": true, "ok": true,
-	"devices": true,
+	"nav": true, "card": true, "status": true, "muted": true, "banner": true, "quiet": true, "action": true,
+	"field": true, "wide": true, "rows": true, "when": true, "warning": true, "critical": true, "resolved": true, "ok": true,
+	"key": true, "code": true,
 	"history": true, "what": true, "bad": true, "undo": true,
 }
 

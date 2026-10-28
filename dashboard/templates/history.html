@@ -1,7 +1,7 @@
 {{define "history"}}{{if .Refresh}}{{template "head" "5"}}{{else}}{{template "head" ""}}{{end}}
   <h1>History</h1>
   <div class="card">
-    <h2>{{.Service}}</h2>
+    <h2>{{.Title}}</h2>
     {{if .Op}}
       {{if .Op.Running}}<p>Undoing {{.Op.What}}… the app stops for it and starts again afterwards. This page refreshes itself.</p>
       <p class="muted">Started at {{.Op.Since}}.</p>
@@ -12,7 +12,7 @@
     {{else if not .Rows}}<p class="muted">Nothing yet. Updates, the changes Briard notices, and quiet stretches appear here.</p>
     {{else}}
     {{with .Banner}}<div class="banner">
-      <p>{{$.Service}} is not working. Undoing takes it back to {{.Back}}, its last healthy state, and loses everything since.</p>
+      <p>{{$.Title}} is not working. Undoing takes it back to {{.Back}}, its last healthy state, and loses everything since.</p>
       <form method="post" action="/undo">
         <input type="hidden" name="point" value="{{.Point}}">
         <input type="hidden" name="what" value="{{or .What .Caption}}">
@@ -34,7 +34,7 @@
       </li>{{end}}
     </ol>
     {{end}}
-    <p class="muted"><a href="/">Back</a></p>
+    <p class="muted"><a href="/">Home</a></p>
   </div>
 {{template "foot"}}{{end}}
 
@@ -42,8 +42,8 @@
   <h1>Undo these changes?</h1>
   <div class="card">
     <h2>{{.What}}, and everything after it</h2>
-    <p>{{.Service}} goes back to how it was at {{.Back}}. Everything it has recorded since then is lost.{{if .MovesCode}} This also moves the app {{if .From}}from {{.From}} {{end}}back to {{.To}}.{{end}}</p>
-    {{if .Note}}<p class="muted">That moment was {{.Note}} — {{.Service}} recovers it on the way back up.</p>{{end}}
+    <p>{{.Title}} goes back to how it was at {{.Back}}. Everything it has recorded since then is lost.{{if .MovesCode}} This also moves the app {{if .From}}from {{.From}} {{end}}back to {{.To}}.{{end}}</p>
+    {{if .Note}}<p class="muted">That moment was {{.Note}} — {{.Title}} recovers it on the way back up.</p>{{end}}
     <p class="muted">The app stops for it and starts again afterwards. The undo is itself in the history, so it can be undone too.</p>
     <form method="post" action="/undo">
       <input type="hidden" name="point" value="{{.Point}}">

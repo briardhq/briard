@@ -21,7 +21,6 @@ import (
 	"sync"
 	"time"
 
-	"briard.io/agent/hass"
 	"briard.io/shared/api"
 )
 
@@ -131,8 +130,8 @@ type installView struct {
 // the background because a pull runs minutes and a browser should not hold a request that
 // long. The page shows the state and refreshes itself.
 func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string) {
-	if name != hass.Name {
-		http.Error(w, "the dashboard only sets up Home Assistant\n", http.StatusNotFound)
+	if offeredApp(name) == nil {
+		http.Error(w, "the dashboard does not offer that app\n", http.StatusNotFound)
 		return
 	}
 	a.mu.Lock()

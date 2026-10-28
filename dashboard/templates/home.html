@@ -1,3 +1,6 @@
 {{define "page"}}{{if .Refresh}}{{template "head" "5"}}{{else}}{{template "head" ""}}{{end}}
-  <h1>Briard</h1>
-{{template "alerts" .}}{{template "casa" .}}{{template "app" .}}{{template "backup" .}}{{template "devices" .}}{{template "foot"}}{{end}}
+  <div class="nav"><h1>Briard</h1><a href="/settings">Settings</a></div>
+{{template "status" .}}
+{{if eq .Stage "choose"}}{{template "chooser" .}}{{else}}{{with .Installing}}{{template "installing" .}}{{end}}{{range .Apps}}{{if .Installed}}{{template "app" .}}{{end}}{{end}}{{end}}
+{{template "steps" .}}
+{{template "foot"}}{{end}}

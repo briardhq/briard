@@ -475,15 +475,21 @@ func (r *rig) reissue(agent string, as *http.Cookie) *http.Cookie {
 	return nil
 }
 
+// page is what a trusted device can see: the home page and the settings page, together. The
+// tests here ask what is said; which page says it is the gallery's question.
 func (r *rig) page(c *http.Cookie) string {
 	r.t.Helper()
-	req, _ := http.NewRequest("GET", r.srv.URL+"/", nil)
-	req.AddCookie(c)
-	resp, err := http.DefaultClient.Do(req)
-	must(r.t, err)
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return string(body)
+	var body string
+	for _, path := range []string{"/", "/settings"} {
+		req, _ := http.NewRequest("GET", r.srv.URL+path, nil)
+		req.AddCookie(c)
+		resp, err := http.DefaultClient.Do(req)
+		must(r.t, err)
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		body += string(b)
+	}
+	return body
 }
 
 func (r *rig) registry() registry {

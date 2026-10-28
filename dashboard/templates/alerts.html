@@ -1,4 +1,4 @@
-{{define "alerts"}}
+{{define "status"}}
   {{with .Alerts}}
   {{if .Unreachable}}
   <div class="card">
@@ -9,20 +9,20 @@
   {{else if .Open}}
   <div class="card">
     <h2>Needs your attention</h2>
-    <ul class="alerts">
-      {{range .Open}}<li id="alert-{{.Key}}"><span class="{{.Severity}}"><strong>{{.Title}}</strong></span><br>{{.Body}} <span class="muted">— since {{.When}}</span></li>{{end}}
+    <ul class="rows">
+      {{range .Open}}<li id="alert-{{.Key}}"><div><span class="{{.Severity}}"><strong>{{.Title}}</strong></span><br>{{.Body}} <span class="muted">— since {{.When}}</span></div></li>{{end}}
     </ul>
     {{template "recent" .Recent}}
   </div>
   {{else}}
-  <p class="muted">Nothing on this machine needs your attention.</p>
+  <p class="status muted">Nothing on this machine needs your attention.</p>
   {{if .Recent}}{{template "recent" .Recent}}{{end}}
   {{end}}
   {{end}}
 {{end}}
 
 {{define "recent"}}<details><summary class="muted">Recent alerts</summary>
-    <ul class="alerts">
-      {{range .}}<li><span class="when">{{.When}}</span><span class="{{if .Resolved}}resolved{{else}}{{.Severity}}{{end}}">{{.Title}}</span>{{if .Body}}<br><span class="muted">{{.Body}}</span>{{end}}</li>{{end}}
+    <ul class="rows">
+      {{range .}}<li><span class="when">{{.When}}</span><div><span class="{{if .Resolved}}resolved{{else}}{{.Severity}}{{end}}">{{.Title}}</span>{{if .Body}}<br><span class="muted">{{.Body}}</span>{{end}}</div></li>{{end}}
     </ul>
   </details>{{end}}

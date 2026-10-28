@@ -3,26 +3,51 @@
   @media (prefers-color-scheme: dark) {
     :root { --fg: #ececec; --muted: #9a9a9a; --accent: #7fc4ad; --bg: #141414; --card: #1f1f1f; --grey: #2c2c2c; --bad: #f2b8b5; }
   }
-  body { font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 0 1.25rem; }
-  main { max-width: 42rem; margin: 1.5rem auto 2rem; }
-  h1 { font-size: 1.6rem; margin: 0 0 1rem; }
-  .card { background: var(--card); border-radius: 10px; padding: 1rem 1.25rem; margin: 1rem 0; }
-  .card h2 { font-size: 1.15rem; margin: 0 0 .4rem; }
+  body { font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 0 1rem; }
+  main { max-width: 42rem; margin: 1.25rem auto 2rem; }
+  /* THE SHELL: one heading and, at most, one link away from it. */
+  .nav { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin: 0 0 .75rem; }
+  h1 { font-size: 1.6rem; margin: 0; }
   .muted { color: var(--muted); }
-  button { font: inherit; background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: .55rem 1rem; cursor: pointer; }
-  button[disabled] { opacity: .5; cursor: default; }
   code { font-size: .95em; }
   a { color: var(--accent); }
-  ul.devices { list-style: none; padding: 0; margin: 0; }
-  ul.devices li { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; }
-  ul.devices form { margin-left: auto; }
-  button.quiet { background: transparent; color: var(--accent); border: 1px solid var(--accent); padding: .25rem .7rem; }
+  /* THE CARD: one section, one heading; h3 is a step or an app inside it. */
+  .card { background: var(--card); border-radius: 10px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .card h2 { font-size: 1.15rem; margin: 0 0 .4rem; }
+  .card h3 { font-size: 1rem; margin: 1.1rem 0 .2rem; }
+  .card p { margin: .4rem 0; }
+  /* THE STATUS LINE: the one sentence above everything. */
+  .status { margin: 0 0 1rem; }
+  /* THE ACTION ROW: a button, and beside or under it the one muted line that explains it.
+     The filled button is the page's one primary act; everything else is quiet. */
+  button { font: inherit; background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: .55rem 1rem; cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  button.quiet { background: transparent; color: var(--accent); border: 1px solid var(--accent); padding: .3rem .8rem; }
+  .action { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .8rem; margin: .7rem 0 .3rem; }
+  .action .muted { flex-basis: 100%; }
+  /* THE BANNER: one sentence that needs the eye. */
+  .banner { border-left: 4px solid var(--bad); padding: .2rem .8rem; margin: .5rem 0 1rem; }
+  /* THE FIELD: a label, an input and its button, on one line when they fit. */
+  .field { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .8rem; }
+  .field label { flex-basis: 100%; }
+  .field input { font: inherit; padding: .45rem .6rem; border: 1px solid var(--muted); border-radius: 8px; background: var(--bg); color: var(--fg); width: 8rem; }
+  .field input.wide { width: 100%; }
+  /* THE ROWS: a list where each row is a thing, what is known about it, and at most one act. */
+  ul.rows { list-style: none; padding: 0; margin: .3rem 0; }
+  ul.rows li { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .6rem; padding: .4rem 0; border-top: 1px solid var(--grey); }
+  ul.rows li:first-child { border-top: 0; }
+  ul.rows li > div { flex: 1 1 12rem; }
+  ul.rows form { margin-left: auto; }
+  ul.rows .when { color: var(--muted); min-width: 9rem; }
+  ul.rows .critical::before, ul.rows .warning::before { content: "● "; color: var(--bad); }
+  ul.rows .resolved::before, .ok::before { content: "✓ "; color: var(--accent); }
+  details { margin: .5rem 0; }
+  summary { cursor: pointer; }
+  progress { width: 100%; height: .6rem; accent-color: var(--accent); }
+  /* THE KEY: one click selects the whole of it -- the page is plain http, where the clipboard
+     API is not offered. The join code is the same shape, larger. */
+  .key code { font-size: 1.15rem; letter-spacing: .04em; user-select: all; overflow-wrap: anywhere; }
   .code { font: 700 2.4rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; margin: .5rem 0 1rem; }
-  form.approve { margin-top: .8rem; display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
-  form.approve label { flex-basis: 100%; }
-  form.approve input { font: inherit; padding: .45rem .6rem; border: 1px solid var(--muted); border-radius: 8px; background: var(--bg); color: var(--fg); width: 8rem; }
-  form.approve input.wide { width: 100%; }
-  form.inline { display: inline; }
   /* THE HISTORY: pointing at a row -- hover, or a tap that focuses it -- greys it and every
      row above it, which is exactly what its undo takes away, and shows that row's one button. */
   ol.history { list-style: none; padding: 0; margin: 0; }
@@ -32,15 +57,8 @@
   ol.history li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) { background: var(--grey); }
   ol.history li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) .what { color: var(--muted); }
   ol.history li:is(:hover, :focus-within) form.undo { visibility: visible; }
+  @media (hover: none) { ol.history form.undo { visibility: visible; } }
   ol.history .bad::before { content: "● "; color: var(--bad); }
-  .banner { border-left: 4px solid var(--bad); padding: .2rem .8rem; margin: .5rem 0 1rem; }
-  ul.alerts { list-style: none; padding: 0; margin: 0; }
-  ul.alerts li { padding: .35rem 0; }
-  ul.alerts .when { color: var(--muted); margin-right: .4rem; }
-  ul.alerts .critical::before, ul.alerts .warning::before { content: "● "; color: var(--bad); }
-  ul.alerts .resolved::before, .ok::before { content: "✓ "; color: var(--accent); }
-  /* One click selects the whole key: the page is plain http, where the clipboard API is not offered. */
-  .key code { font-size: 1.15rem; letter-spacing: .04em; user-select: all; overflow-wrap: anywhere; }
 </style>{{end}}
 
 {{define "head"}}<!doctype html>

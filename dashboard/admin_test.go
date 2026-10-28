@@ -75,7 +75,7 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 	if resp := r.do("POST", "/install/home-assistant", nil, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("install with no session = %d, want 401", resp.StatusCode)
 	}
-	if resp := r.do("POST", "/install/mosquitto", c, nil); resp.StatusCode != http.StatusNotFound {
+	if resp := r.do("POST", "/install/immich", c, nil); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("install of another service = %d, want 404", resp.StatusCode)
 	}
 	if resp := r.do("POST", "/install/home-assistant", c, nil); resp.StatusCode != http.StatusSeeOther {

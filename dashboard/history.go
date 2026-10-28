@@ -47,6 +47,7 @@ type restoreOp struct {
 // historyView is the history page.
 type historyView struct {
 	Service string
+	Title   string    // the app as a person names it
 	Rows    []rowView // newest FIRST here, unlike the CLI: a page is read from the top
 	// Banner is the row whose undo returns an UNHEALTHY app to its last healthy state, or nil while
 	// the app is healthy.
@@ -86,17 +87,17 @@ type restoreOpView struct {
 // confirmView is the page between the button and the act. An undo discards everything since the
 // point, which is not a thing to do on one click.
 type confirmView struct {
-	Service, Point, What, Back string
-	Note                       string
-	MovesCode                  bool
-	From, To                   string
+	Service, Title, Point, What, Back string
+	Note                              string
+	MovesCode                         bool
+	From, To                          string
 }
 
 // showHistory lists one app's events.
 func (a *app) showHistory(w http.ResponseWriter, r *http.Request, service string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	v := historyView{Service: service}
+	v := historyView{Service: service, Title: appTitle(service)}
 	rows, _, err := a.rows(ctx, service)
 	if err != nil {
 		v.Error = err.Error()
@@ -256,7 +257,7 @@ func (a *app) confirmUndo(w http.ResponseWriter, r *http.Request, service, point
 		http.Error(w, "that point is no longer on this machine\n", http.StatusNotFound)
 		return
 	}
-	v := confirmView{Service: service, Point: point, What: cmp.Or(chosen.What, chosen.Caption), Back: chosen.Back,
+	v := confirmView{Service: service, Title: appTitle(service), Point: point, What: cmp.Or(chosen.What, chosen.Caption), Back: chosen.Back,
 		Note: chosen.Note, MovesCode: chosen.MovesCode, To: chosen.Version}
 	if chosen.MovesCode {
 		v.From = running
@@ -293,4 +294,12 @@ func zone() *time.Location {
 		return time.UTC
 	}
 	return loc
+}
+
+// appTitle is an app's name for a person, the slug for one the dashboard does not offer.
+func appTitle(name string) string {
+	if a := offeredApp(name); a != nil {
+		return a.Title
+	}
+	return name
 }

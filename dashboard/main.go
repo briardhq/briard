@@ -48,6 +48,8 @@ import (
 	"time"
 
 	"briard.io/agent/hass"
+	"briard.io/agent/mosquitto"
+	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/routes"
 	"briard.io/shared/sdnotify"
@@ -168,6 +170,13 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.render(w, r, d)
+	case r.URL.Path == "/settings" && r.Method == http.MethodGet:
+		d, ok := a.session(r)
+		if !ok {
+			a.refuse(w)
+			return
+		}
+		a.settings(w, r, d)
 	case r.URL.Path == "/open/home-assistant" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
 			a.refuse(w)
@@ -658,21 +667,74 @@ func (a *app) findHomeAssistant() *homeAssistant {
 	return nil
 }
 
-// view is what the page renders.
+// view is what the pages render: where the home is, and the parts each tier is built from.
+// THE PAGE SHOWS WHAT THE HOUSEHOLD MUST DO NOW AND FOLDS THE REST AWAY -- what comes first
+// depends on the stage, never on the order features were built; the first screen is the stage's
+// one act and the steps still owed, and everything read rarely is on /settings.
 type view struct {
-	Services []string
-	HA       *haView
-	Devices  []deviceView
-	// Install is a Home Assistant install the household asked for from this page, while it
-	// runs or after it failed; Refresh makes the page poll itself while something is moving.
-	Install *installView
-	// Casa is the household's name (casa.go): the first card, until skipped or done.
+	// Stage is where the home is: "choose" before any app, "installing" while one is on its
+	// way, "running" once one is. It decides what the first screen's one act is.
+	Stage string
+	// Apps is every app the dashboard offers, in the order it offers them -- the first is the
+	// common one, preselected by being the filled button -- each with what the routes table
+	// and, for Home Assistant, its own API say about it.
+	Apps []*appView
+	// Installing is the app on its way while Stage is "installing".
+	Installing *appView
+	Devices    []deviceView
+	// Casa is the household's name (casa.go).
 	Casa *casaView
 	// Alerts is the host's alert list (alerts.go), or the banner that its agent is away.
 	Alerts *alertsView
 	// Backup is the nightly backup (backup.go): where it goes, last night, the key.
-	Backup  *backupView
+	Backup *backupView
+	// Steps is what a fresh home still owes: the "finish setting up" list, gone when done.
+	Steps stepsView
+	// Refresh makes the page poll itself while something is moving.
 	Refresh bool
+}
+
+// stepsView is tier 2: each step one line and one act, shown only while it is owed.
+type stepsView struct {
+	// Address: the name is not yet the household's -- offered, refused, expired, its link
+	// pending -- or it is and the router blocks it; every state the household's own act moves.
+	Address bool
+	// Key: the backup's recovery key is nowhere but this machine.
+	Key bool
+}
+
+func (s stepsView) Any() bool { return s.Address || s.Key }
+
+// appInfo is an app the dashboard offers: its catalog slug, its name for a person, one line.
+// The list is the product's, keyed on catalog names the way agent/services is: the catalog has
+// no index to read, and two entries is a list, not a store.
+type appInfo struct {
+	Name, Title, Blurb string
+}
+
+var offered = []appInfo{
+	{hass.Name, "Home Assistant", "Runs your home: devices, automations, dashboards."},
+	{mosquitto.Name, "Mosquitto", "The MQTT broker many Home Assistant devices talk through."},
+}
+
+// offeredApp is the entry for a slug, nil for one the dashboard does not offer.
+func offeredApp(name string) *appInfo {
+	for i := range offered {
+		if offered[i].Name == name {
+			return &offered[i]
+		}
+	}
+	return nil
+}
+
+// appView is one app on the page.
+type appView struct {
+	appInfo
+	Installed bool    // the routes table lists it
+	HA        *haView // Home Assistant's own states, on its card alone
+	// Install is an install the household asked for from this page, while it runs or after
+	// it failed.
+	Install *installView
 }
 
 // deviceView is one row of the trusted-device list: a label a person can tell apart, when it
@@ -718,9 +780,27 @@ type haView struct {
 	Onboarded bool // every onboarding step done
 }
 
+// render is the home page; settings is the rest. Both read the same view -- the stage and every
+// section's state -- so the two pages cannot disagree about where the home is.
 func (a *app) render(w http.ResponseWriter, r *http.Request, self device) {
+	a.show(w, r, self, "page")
+}
+
+func (a *app) settings(w http.ResponseWriter, r *http.Request, self device) {
+	a.show(w, r, self, "settings")
+}
+
+func (a *app) show(w http.ResponseWriter, r *http.Request, self device, name string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+	v := a.view(ctx, r, self)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := page.ExecuteTemplate(w, name, v); err != nil {
+		log.Printf("dashboard: render %s: %v", name, err)
+	}
+}
+
+func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 	v := view{}
 	var reg registry
 	if err := a.readState(devicesFile, &reg); err == nil {
@@ -728,37 +808,57 @@ func (a *app) render(w http.ResponseWriter, r *http.Request, self device) {
 			v.Devices = append(v.Devices, deviceView{ID: d.ID, Label: deviceLabel(d.Agent), Agent: d.Agent, Added: d.Created.In(zone()).Format("2 Jan 2006"), This: d.ID == self.ID})
 		}
 	}
+	routed := map[string]bool{}
 	if raw, err := os.ReadFile(a.routesPath); err == nil {
 		if t, err := routes.Parse(raw); err == nil {
 			for _, s := range t.Services {
-				v.Services = append(v.Services, s.Name)
+				routed[s.Name] = true
 			}
 		}
 	}
-	if ha := a.findHomeAssistant(); ha != nil {
-		hv := &haView{Host: ha.host, URL: scheme(r) + "://" + ha.host + "/"}
-		if steps, err := hass.OnboardingSteps(ctx, ha.base); err == nil {
-			hv.Reachable = true
-			hv.Onboarded = steps.Done()
-			if _, access, err := hass.SystemAccess(ctx, a.exec(), ha.port); err == nil {
-				if st, err := hass.CoreState(ctx, ha.base, access); err == nil {
-					hv.Running = st == "RUNNING"
+	var ha *haView
+	if h := a.findHomeAssistant(); h != nil {
+		ha = &haView{Host: h.host, URL: scheme(r) + "://" + h.host + "/"}
+		if steps, err := hass.OnboardingSteps(ctx, h.base); err == nil {
+			ha.Reachable = true
+			ha.Onboarded = steps.Done()
+			if _, access, err := hass.SystemAccess(ctx, a.exec(), h.port); err == nil {
+				if st, err := hass.CoreState(ctx, h.base, access); err == nil {
+					ha.Running = st == "RUNNING"
 				}
 			}
 		}
-		v.HA = hv
 	}
-	v.Install = a.installState(hass.Name, v.HA != nil)
+	installed := false
+	for _, info := range offered {
+		av := &appView{appInfo: info, Installed: routed[info.Name]}
+		if info.Name == hass.Name {
+			av.HA = ha
+		}
+		av.Install = a.installState(info.Name, av.Installed)
+		if av.Install != nil && av.Install.Running {
+			v.Installing = av
+		}
+		installed = installed || av.Installed
+		v.Apps = append(v.Apps, av)
+	}
+	switch {
+	case v.Installing != nil:
+		v.Stage = "installing"
+	case installed:
+		v.Stage = "running"
+	default:
+		v.Stage = "choose"
+	}
 	v.Casa = a.casaState()
 	v.Alerts = a.alertsState()
 	v.Backup = a.backupState()
+	v.Steps.Address = v.Casa != nil && !v.Casa.Skipped && (v.Casa.State != casa.ClaimRegistered || v.Casa.Resolves == dashboard.CasaBlocked)
+	v.Steps.Key = v.Backup != nil && v.Backup.Key != "" && !v.Backup.KeySaved
 	// Poll while something is on its way: an install in flight, a Home Assistant that is
 	// routed but not yet RUNNING, or a name claim waiting on its link.
-	v.Refresh = (v.Install != nil && v.Install.Running) || (v.HA != nil && !v.HA.Running) || v.Casa.Refresh()
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := page.ExecuteTemplate(w, "page", v); err != nil {
-		log.Printf("dashboard: render: %v", err)
-	}
+	v.Refresh = v.Installing != nil || (ha != nil && !ha.Running) || v.Casa.Refresh()
+	return v
 }
 
 // openHomeAssistant is the button. By HA's own onboarding state:

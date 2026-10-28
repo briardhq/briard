@@ -168,8 +168,12 @@ func answerHistory(port *fakePort, ring string) {
 	}()
 }
 
-// home is the render of "/" with the page's own cookie.
+// home and settings are the renders of the two pages with the page's own cookie: a state is
+// listed under the page its section lives on.
 func home(_ *testing.T, _ *rig, c *http.Cookie, _ *fakePort) (string, *http.Cookie) { return "/", c }
+func settings(_ *testing.T, _ *rig, c *http.Cookie, _ *fakePort) (string, *http.Cookie) {
+	return "/settings", c
+}
 
 var galleryStates = []galleryState{
 	// THE HOME PAGE, through a household's life with it.
@@ -220,9 +224,10 @@ var galleryStates = []galleryState{
 			r.hostPushes(t, nil)
 			return home(t, r, c, port)
 		}},
-	{"home-ha-installing", "The install in flight, with the pull's progress.",
+	{"home-ha-installing", "The install in flight, with the pull's progress, the address step beside it.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			notInstalled(t, r)
+			r.hostSays(t, dashboard.Casa{Name: galleryName})
 			root := t.TempDir()
 			must(t, os.MkdirAll(filepath.Join(root, "overlay-layers"), 0o755))
 			must(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
@@ -299,58 +304,70 @@ var galleryStates = []galleryState{
 			r.form("/casa/claim", c, url.Values{"email": {"ana@example.org"}})
 			return home(t, r, c, port)
 		}},
-	{"home-casa-checking", "Registered, and the resolve check has not answered yet.",
+	{"settings-casa-checking", "Registered, and the resolve check has not answered yet.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: galleryName, Email: "ana@example.org"})
-			return home(t, r, c, port)
+			return settings(t, r, c, port)
 		}},
 	{"home-casa-blocked", "Registered, but the router's rebind protection drops the name.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: galleryName, Email: "ana@example.org", Resolves: dashboard.CasaBlocked})
 			return home(t, r, c, port)
 		}},
-	{"home-casa-cert-pending", "Registered and resolving; the certificate not yet issued.",
+	{"settings-casa-cert-pending", "Registered and resolving; the certificate not yet issued.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: galleryName, Email: "ana@example.org", Resolves: dashboard.CasaResolves})
-			return home(t, r, c, port)
+			return settings(t, r, c, port)
 		}},
 	// THE BACKUP's card, every state.
-	{"home-backup-off", "The nightly backup turned off; the folder kept.",
+	{"settings-backup-off", "The nightly backup turned off; the folder kept.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, Key: testKey, KeySaved: true, Nights: galleryNights(t, "")})
-			return home(t, r, c, port)
+			return settings(t, r, c, port)
 		}},
-	{"home-backup-failed-night", "Last night did not finish; the earlier backups are in another folder.",
+	{"settings-backup-failed-night", "Last night did not finish; the earlier backups are in another folder.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, Previous: "/home/ana/Old Briard Backup", On: true, Key: testKey, KeySaved: true,
 				Nights: galleryNights(t, "the backup folder is not there")})
-			return home(t, r, c, port)
+			return settings(t, r, c, port)
 		}},
-	{"home-backup-wrong-key", "The folder holds a backup this key does not open: adopt it, or move.",
+	{"settings-backup-wrong-key", "The folder holds a backup this key does not open: adopt it, or move.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			nights := galleryNights(t, "the folder holds a backup made with another key")
 			nights[0].WrongKey = true
 			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: nights})
-			return home(t, r, c, port)
+			return settings(t, r, c, port)
 		}},
-	{"home-backup-asked-refused", "The host refused the last thing asked of the card (a folder it will not use).",
+	{"settings-backup-asked-refused", "The host refused the last thing asked of the card (a folder it will not use).",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			port.mu.Lock()
 			port.fail = errors.New("the folder /root/x belongs to root; choose one of your own")
 			port.mu.Unlock()
 			r.form("/backup/folder", c, url.Values{"folder": {"/root/x"}})
-			return home(t, r, c, port)
+			return settings(t, r, c, port)
 		}},
-	{"home-many-devices", "Four trusted devices, this laptop among them.",
+	{"settings-many-devices", "Four trusted devices, this laptop among them.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			r.reissue("Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36", nil)
 			r.reissue("curl/8.9.1", nil)
-			return home(t, r, c, port)
+			return settings(t, r, c, port)
+		}},
+	// SETTINGS, as it stands at the two ends of the home's life.
+	{"settings-first-open", "Settings on the first open: no address yet, the key still a step on the home page, one device.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			r.hostSays(t, dashboard.Casa{Name: galleryName})
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey})
+			return settings(t, r, c, port)
+		}},
+	{"settings-everyday", "Settings most mornings: the address, last night, two devices, both apps.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			return settings(t, r, c, port)
 		}},
 	// THE OTHER PAGES.
 	{"refused", "A browser the home does not trust.",
