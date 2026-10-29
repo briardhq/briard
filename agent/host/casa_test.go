@@ -152,6 +152,7 @@ type casaRig struct {
 	now   time.Time
 	cs    *casaRunner
 	dns   *fakeDNS
+	lan   string // what the host reads as its network (casaRunner.lan)
 }
 
 func newCasaRig(t *testing.T) *casaRig {
@@ -172,6 +173,7 @@ func (r *casaRig) restart() {
 	r.cs = r.cfg.newCasaRunner(r.cloud)
 	r.cs.now = func() time.Time { return r.now }
 	r.cs.lookup = r.dns.lookup
+	r.cs.lan = func(context.Context) string { return r.lan }
 }
 
 // tick is one observe tick plus what it set in motion: the cloud calls (a poll, an address
@@ -627,4 +629,41 @@ func TestCasaRecheckAsksAgain(t *testing.T) {
 	if o := cfg.dispatch(context.Background(), api.Directive{ID: "d3", Kind: api.DirectiveCasaRecheck}, originCloud, nil, nil, nil, nil, nil, nil, t.Logf); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "local admin socket") {
 		t.Errorf("from the cloud: %+v", o)
 	}
+}
+
+// A NEW NETWORK IS A NEW RESOLVER: the verdict found on one network is forgotten when the host
+// finds itself on another, and both steps run again there. The same network read again keeps it,
+// and so does a network that cannot be read.
+func TestCasaResolveCheckRunsAgainOnANewNetwork(t *testing.T) {
+	r := newCasaRig(t)
+	r.lan = "192.168.1.20/24 via 192.168.1.1"
+	r.registered(t)
+	if v := r.guest.lastView(t); v.Resolves != dashboard.CasaResolves {
+		t.Fatalf("view once registered = %+v, want resolves", v)
+	}
+	asked := r.dns.count()
+	for _, same := range []string{r.lan, ""} {
+		r.lan = same
+		r.now = r.now.Add(casaLANEvery)
+		r.tick(t)
+		if n := r.dns.count(); n != asked {
+			t.Errorf("the same network (%q) was checked again: %d lookups, had %d", same, n, asked)
+		}
+	}
+	r.lan = "10.0.0.7/24 via 10.0.0.1"
+	r.now = r.now.Add(casaLANEvery)
+	r.cs.tick(context.Background(), r.guest, r.guest, t.Logf) // one tick: the verdict goes, the check starts
+	if v := r.guest.lastView(t); v.Resolves != "" {
+		t.Errorf("view on the new network = %+v, want the verdict forgotten", v)
+	}
+	r.tick(t) // the check lands
+	if v := r.guest.lastView(t); v.Resolves != dashboard.CasaResolves || r.dns.count() <= asked {
+		t.Errorf("view once the new network answered = %+v (%d lookups), want resolves again", v, r.dns.count())
+	}
+}
+
+func (d *fakeDNS) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.asked)
 }

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"briard.io/agent/guest"
+	"briard.io/agent/nic"
 	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
 	"briard.io/shared/casa"
@@ -127,6 +128,11 @@ type casaRunner struct {
 	resolveNote string
 	nextResolve time.Time
 	resolving   chan casaResolved // a check in flight; nil when none
+	// The network the verdict was found on (watchLAN): a new network is a new resolver, so the
+	// verdict is forgotten and both steps run again. lan reads it; cfg.lanKey, faked by tests.
+	lan     func(ctx context.Context) string
+	lanKey  string
+	nextLAN time.Time
 }
 
 // casaResolved is what a resolve check hands back. public is whether 1.0.0.1 or 8.8.8.8 answered
@@ -159,7 +165,7 @@ type casaIssued struct {
 // newCasaRunner loads whatever the last run left in the state dir. cl == nil is a build with no
 // casa client (tests that do not care); every claim is then refused.
 func (cfg Config) newCasaRunner(cl casaClient) *casaRunner {
-	c := &casaRunner{cfg: cfg, cl: cl, dir: cfg.stateDir(), now: time.Now, lookup: casaLookup}
+	c := &casaRunner{cfg: cfg, cl: cl, dir: cfg.stateDir(), now: time.Now, lookup: casaLookup, lan: cfg.lanKey}
 	if c.dir == "" {
 		return c
 	}
@@ -280,6 +286,7 @@ func (c *casaRunner) tick(ctx context.Context, r any, vip guest.VIPReader, logf 
 	}
 	if c.st.Registered && c.key != nil {
 		c.address(ctx, vip, now, logf)
+		c.watchLAN(ctx, now, logf)
 		c.resolve(ctx, now, logf)
 		c.certificate(ctx, g, now, logf)
 	}
@@ -365,6 +372,45 @@ func (c *casaRunner) address(ctx context.Context, vip guest.VIPReader, now time.
 		defer cancel()
 		out <- casaSetA{addr: addr, err: c.cl.SetA(actx, req)}
 	}(c.setting)
+}
+
+// casaLANEvery is how often the network is read for watchLAN: the read is a few netlink
+// questions, and a minute's lag on a network change is nothing against the check it starts.
+const casaLANEvery = time.Minute
+
+// watchLAN forgets the resolve check's verdict when the host finds itself on another network --
+// the household moved the machine, or the router it answers is a different box: a new network
+// is a new resolver, and the verdict was that resolver's. The verdict found on the first network
+// seen is kept until a second one is; a network that cannot be read (none owned, the cable out)
+// says nothing and changes nothing. Called with the lock held.
+func (c *casaRunner) watchLAN(ctx context.Context, now time.Time, logf func(string, ...any)) {
+	if c.lan == nil || now.Before(c.nextLAN) {
+		return
+	}
+	c.nextLAN = now.Add(casaLANEvery)
+	key := c.lan(ctx)
+	if key == "" || key == c.lanKey {
+		return
+	}
+	if c.lanKey != "" && c.resolves != "" {
+		c.resolves, c.resolveNote, c.nextResolve = "", "", time.Time{}
+		logf("casa: this host is on another network now (%s); checking again whether it resolves %s", key, casa.Names(c.cfg.FlockName)[0])
+	}
+	c.lanKey = key
+}
+
+// lanKey names the network the host is on, for watchLAN: its own address and prefix on the
+// parent and the router it points at. "" when the agent owns no network or the reading is not
+// one (nic.Fingerprint.Usable).
+func (cfg Config) lanKey(ctx context.Context) string {
+	if cfg.net == nil || cfg.net.Parent == "" {
+		return ""
+	}
+	fp := nic.Read(ctx, cfg.net.Parent)
+	if !fp.Usable() {
+		return ""
+	}
+	return fp.HostCIDR + " via " + fp.GatewayIP
 }
 
 // resolve checks, for the address last written, that the household's network finds the name,

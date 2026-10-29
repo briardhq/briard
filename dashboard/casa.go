@@ -79,6 +79,16 @@ func (v *casaView) Refresh() bool {
 		(v.State == casa.ClaimRegistered && v.Resolves == "")
 }
 
+// casaName is the household's name as the host last said it, "" for a host that never did. The
+// one host the hop carries trust to (hop.go), read off the same file as the view.
+func (a *app) casaName() string {
+	var h dashboard.Casa
+	if raw, err := os.ReadFile(a.casaPath); err == nil {
+		_ = json.Unmarshal(raw, &h)
+	}
+	return h.Name
+}
+
 // casaState reads the host's view, the household's skip, and this page's last ask. Nil until
 // the host has said what the name would be -- a guest the host never told (an older host, or
 // a flock with no name) shows no card rather than an empty one.

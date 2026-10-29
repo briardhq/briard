@@ -711,7 +711,13 @@ func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if line := installedLine(installedServices(serviceCacheDir)); line != "" {
 		fmt.Fprintf(stdout, "%s.\n\n", line)
 	}
-	fmt.Fprintf(stdout, "open this in a browser within %s (it works once):\n\n  %s\n\n", dashboard.TTL, o.Detail)
+	// One address per line: the household's own name first when it is usable, the `.local`
+	// alias under it (the same code, good on whichever is opened first).
+	fmt.Fprintf(stdout, "open this in a browser within %s (it works once):\n\n", dashboard.TTL)
+	for _, line := range strings.Split(o.Detail, "\n") {
+		fmt.Fprintf(stdout, "  %s\n", line)
+	}
+	fmt.Fprint(stdout, "\n")
 	return 0
 }
 

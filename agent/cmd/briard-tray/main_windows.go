@@ -399,7 +399,7 @@ func (t *tray) openOr(say func(string)) {
 	case o.State != api.OutcomeDone:
 		say(o.Detail)
 	default:
-		link, _ := windows.UTF16PtrFromString(o.Detail)
+		link, _ := windows.UTF16PtrFromString(strings.SplitN(o.Detail, "\n", 2)[0]) // the first address: the name when usable, else the alias
 		verb, _ := windows.UTF16PtrFromString("open")
 		if err := windows.ShellExecute(windows.Handle(t.wnd), verb, link, nil, nil, windows.SW_SHOWNORMAL); err != nil {
 			say("Could not open the browser: " + err.Error())

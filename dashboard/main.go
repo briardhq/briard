@@ -168,6 +168,9 @@ type app struct {
 	// one shows. In memory on purpose -- a request outlives neither its five minutes nor this
 	// process, and the volume keeps only what is trusted.
 	pending map[string]*pending
+	// hops is trust on its way from one of the dashboard's names to another (hop.go), by code,
+	// each for a minute. In memory like pending.
+	hops map[string]hop
 	// port is the host's admin port; installs is what was asked through it, by
 	// service, from the click until the routes table lists the service.
 	port     adminPort
@@ -195,7 +198,7 @@ type app struct {
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
 	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now,
-		pending: map[string]*pending{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
+		pending: map[string]*pending{}, hops: map[string]hop{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
 		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths, casaPath: dashboard.CasaPath,
 		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath, backupPath: dashboard.BackupPath}
 }
@@ -213,6 +216,11 @@ const (
 
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", csp)
+	// A hop answered with a code (hop.go): the code becomes this host's cookie, whatever the
+	// page. An empty or spent one falls through to the page, which refuses without bouncing.
+	if code := r.URL.Query().Get("hop"); code != "" && r.Method == http.MethodGet && a.redeemHop(w, r, code) {
+		return
+	}
 	switch {
 	case r.URL.Path == "/healthz":
 		fmt.Fprint(w, "ok: dashboard up\n")
@@ -229,41 +237,43 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, "/f/") && r.Method == http.MethodGet:
 		d, ok := a.session(r)
 		if !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		a.fragment(w, r, d, strings.TrimPrefix(r.URL.Path, "/f/"))
 	case r.URL.Path == "/" && r.Method == http.MethodGet && r.URL.Query().Get("code") != "":
 		a.redeem(w, r, r.URL.Query().Get("code"))
+	case r.URL.Path == "/hop" && r.Method == http.MethodGet:
+		a.serveHop(w, r)
 	case sections[r.URL.Path].tmpl != "" && r.Method == http.MethodGet:
 		d, ok := a.session(r)
 		if !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		a.render(w, r, d, sections[r.URL.Path].tmpl)
 	case r.URL.Path == "/open/home-assistant" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		a.openHomeAssistant(w, r)
 	case r.URL.Path == "/devices/revoke" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		a.revoke(w, r)
 	case strings.HasPrefix(r.URL.Path, "/install/") && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		a.requestInstall(w, r, strings.TrimPrefix(r.URL.Path, "/install/"))
 	case strings.HasPrefix(r.URL.Path, "/apps/") && r.Method == http.MethodGet:
 		d, ok := a.session(r)
 		if !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		name := appService(r.URL.Path)
@@ -274,7 +284,7 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.showApp(w, r, d, name)
 	case r.URL.Path == "/undo" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		a.requestUndo(w, r)
@@ -284,31 +294,31 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.wait(w, r)
 	case r.URL.Path == "/devices/approve" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		a.approve(w, r)
 	case r.URL.Path == "/casa/claim" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		a.requestCasa(w, r)
 	case r.URL.Path == "/casa/skip" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		a.skipCasa(w, r)
 	case r.URL.Path == "/casa/recheck" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		a.recheckCasa(w, r)
 	case strings.HasPrefix(r.URL.Path, "/backup/") && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
-			a.refuse(w)
+			a.refuse(w, r)
 			return
 		}
 		a.requestBackup(w, r, strings.TrimPrefix(r.URL.Path, "/backup/"))
@@ -319,8 +329,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // refuse is what a browser with no trusted session gets: no information, one instruction. The
 // page says where a code comes from and nothing about what is installed, because reaching this
-// port is not authentication.
-func (a *app) refuse(w http.ResponseWriter) {
+// port is not authentication. On the household's name, a browser that may be trusted on the
+// alias is first sent there to find out (hop.go).
+func (a *app) refuse(w http.ResponseWriter, r *http.Request) {
+	if a.bounce(w, r) {
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
 	_ = page.ExecuteTemplate(w, "refused", nil)
@@ -711,6 +725,18 @@ type homeAssistant struct {
 	base string // in-guest, e.g. http://127.0.0.1:8123
 	port int
 	host string // the bare mDNS name the door routes and the page links, e.g. briard-home-assistant.local
+	// casaHost is its name under the household's (home-assistant.<flock>.briard.casa), which
+	// a page served on that name links instead; "" when the table lists none.
+	casaHost string
+}
+
+// hostFor is the name a page links Home Assistant by: its casa name when the page itself came
+// in on the household's name (and the table lists one), else the bare `.local` one.
+func (h *homeAssistant) hostFor(onName bool) string {
+	if onName && h.casaHost != "" {
+		return h.casaHost
+	}
+	return h.host
 }
 
 // findHomeAssistant reads the table the way the door does. nil means not installed (or not yet
@@ -739,8 +765,15 @@ func (a *app) findHomeAssistant() *homeAssistant {
 		}
 		port, _ := strconv.Atoi(u.Port())
 		// The bare alias, which HostNames put in Hosts beside the flock-scoped name: it is what
-		// the household types and every other print site shows, so the link matches them.
-		return &homeAssistant{base: u.String(), port: port, host: routes.BareHostName(s.Name)}
+		// the household types and every other print site shows, so the link matches them. The
+		// casa name is the one entry under casa.Zone.
+		ha := &homeAssistant{base: u.String(), port: port, host: routes.BareHostName(s.Name)}
+		for _, h := range s.Hosts {
+			if strings.HasSuffix(h, "."+casa.Zone) {
+				ha.casaHost = h
+			}
+		}
+		return ha
 	}
 	return nil
 }
@@ -770,6 +803,9 @@ type view struct {
 	Backup *backupView
 	// Steps is what a fresh home still owes: the "finish setting up" list, gone when done.
 	Steps stepsView
+	// Secure is the household's own https address, offered on a page that came in by a
+	// `.local` name or an address while the name resolves with a certificate; "" otherwise.
+	Secure string
 }
 
 // stepsView is tier 2: each step one line and one act, shown only while it is owed.
@@ -923,9 +959,23 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 			}
 		}
 	}
+	v.Casa = a.casaState()
+	if v.Casa != nil {
+		// "Not now" is the home page's alone (its fragment asks with ?home): the Web address
+		// page offers the name throughout, so there is nothing there to put off.
+		v.Casa.OnHome = r.URL.Path == "/" || r.URL.Query().Has("home")
+	}
+	// The page's apps are named the way the page itself was reached (hop.go, onName): under
+	// the household's name on the name, by `.local` otherwise. A page reached by `.local` or an
+	// address while the name resolves with a certificate is offered the name.
+	byName := onName(r, v.Casa)
+	if c := v.Casa; !byName && c != nil && c.State == casa.ClaimRegistered && c.Resolves == dashboard.CasaResolves && c.CertUntil != "" {
+		v.Secure = "https://" + c.Name
+	}
 	var ha *haView
 	if h := a.findHomeAssistant(); h != nil {
-		ha = &haView{Host: h.host, URL: scheme(r) + "://" + h.host + "/"}
+		host := h.hostFor(byName)
+		ha = &haView{Host: host, URL: scheme(r) + "://" + host + "/"}
 		if steps, err := hass.OnboardingSteps(ctx, h.base); err == nil {
 			ha.Reachable = true
 			ha.Onboarded = steps.Done()
@@ -958,12 +1008,6 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 	default:
 		v.Stage = "choose"
 	}
-	v.Casa = a.casaState()
-	if v.Casa != nil {
-		// "Not now" is the home page's alone (its fragment asks with ?home): the Web address
-		// page offers the name throughout, so there is nothing there to put off.
-		v.Casa.OnHome = r.URL.Path == "/" || r.URL.Query().Has("home")
-	}
 	v.Alerts = a.alertsState()
 	v.Backup = a.backupState()
 	v.Steps.Address = v.Casa != nil && !v.Casa.Skipped && (v.Casa.State != casa.ClaimRegistered || v.Casa.Resolves == dashboard.CasaBlocked)
@@ -993,7 +1037,7 @@ func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Home Assistant is not installed on this machine\n", http.StatusNotFound)
 		return
 	}
-	origin := scheme(r) + "://" + ha.host
+	origin := scheme(r) + "://" + ha.hostFor(onName(r, a.casaState()))
 	steps, err := hass.OnboardingSteps(ctx, ha.base)
 	if err != nil {
 		http.Error(w, "Home Assistant is not answering yet; try again in a moment\n", http.StatusServiceUnavailable)

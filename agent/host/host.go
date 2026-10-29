@@ -1929,7 +1929,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		if !ok {
 			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "guest client cannot hand off a dashboard code"}
 		}
-		return cfg.applyDashboard(ctx, h, d, logf)
+		return cfg.applyDashboard(ctx, h, d, cs, logf)
 	}
 	if d.Kind == api.DirectivePair || d.Kind == api.DirectiveUnpair {
 		// Runtime anchor pairing needs the guest client's mesh verbs (adjust/bring-up), not the
