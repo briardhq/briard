@@ -1,8 +1,14 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -133,5 +139,46 @@ func TestThePageCarriesOneScriptAndAPolicyThatAllowsNothingElse(t *testing.T) {
 	}
 	if resp, body := get(t, r, htmxPath, nil); resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/javascript") || !strings.Contains(body, "htmx") {
 		t.Errorf("htmx is not served to every browser: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+}
+
+// The browser's half, which no string test can see: with the page open in a real browser, a
+// pending claim's card polls, and when the host registers the name the fragment's refresh
+// reloads the page, which then shows the name and no longer the step. Skipped unless
+// DASHBOARD_BROWSER names a chromium (a test tool's switch, like the gallery's); the lab's
+// gallery script runs it.
+func TestTheCardPollsAndThePageReloadsInABrowser(t *testing.T) {
+	chromium := os.Getenv("DASHBOARD_BROWSER")
+	if chromium == "" {
+		t.Skip("set DASHBOARD_BROWSER=<chromium> to prove the poll in a browser")
+	}
+	r, _, _ := galleryRig(t)
+	// The browser redeems its own code: a fresh handoff, since the rig's cookie spent the first.
+	raw, _ := json.Marshal(dashboard.Handoff{Code: "browser-code", Issued: r.app.now()})
+	must(t, os.WriteFile(r.app.handoffPath, raw, 0o600))
+	r.hostSays(t, dashboard.Casa{State: casa.ClaimPending, Name: galleryName, Email: "ana@example.org"})
+
+	// The host registers the name the moment the page first polls its step, so that poll is
+	// answered with a refresh and the reloaded page is what the browser dumps. Chromium runs the
+	// page on a virtual clock, so the five-second poll fires at once and the dump follows it.
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/f/address-step" {
+			once.Do(func() {
+				r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: galleryName, Email: "ana@example.org",
+					CertUntil: galleryClock.Add(80 * 24 * time.Hour), Resolves: dashboard.CasaResolves})
+			})
+		}
+		r.app.ServeHTTP(w, req)
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, chromium, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+		"--user-data-dir="+t.TempDir(), "--window-size=1200,900", "--virtual-time-budget=20000", "--dump-dom", srv.URL+"/?code=browser-code").Output()
+	must(t, err)
+	dom := string(out)
+	if strings.Contains(dom, "Check your email") || !strings.Contains(dom, "certificate until") {
+		t.Errorf("after the host registered the name the browser still shows the step, or not the name: %s", dom)
 	}
 }
