@@ -71,6 +71,8 @@ func show(r reading) view {
 		return view{state: working, tip: "Briard is starting"}
 	case r.status.Updating:
 		return view{state: working, tip: "Briard is updating", action: "stop", open: r.status.Open}
+	case r.status.Refused != "":
+		return view{state: degraded, tip: "Briard cannot take an address on your network", action: "stop", open: r.status.Open}
 	case r.status.Open > 0:
 		return view{state: degraded, tip: alerts(r.status.Open), action: "stop", open: r.status.Open}
 	case !r.status.Serving:
@@ -125,7 +127,8 @@ const restartNote = "Windows has not restarted since Briard was installed. Resta
 	"not Shut down) to finish the install; Briard starts by itself afterwards."
 
 // launch is a Start menu click's next step after a poll: the page once Briard serves, a start if
-// it is cleanly stopped and this click has not started it, and words when it cannot go on.
+// it is cleanly stopped and this click has not started it, and words when it cannot go on --
+// at once when the agent says it cannot serve until the household acts, which no wait ends.
 // started says this click's start has returned; waited is how long the click has waited.
 func launch(r reading, started bool, waited time.Duration) (step, string) {
 	switch {
@@ -133,6 +136,8 @@ func launch(r reading, started bool, waited time.Duration) (step, string) {
 		return failWith, "Briard was installed by another account on this computer, and only that account can open it here."
 	case r.err == nil && r.refusal == "" && r.status.Serving:
 		return openPage, ""
+	case r.err == nil && r.refusal == "" && r.status.Refused != "":
+		return failWith, "Briard cannot serve your home: " + r.status.Refused + "."
 	case r.err != nil && r.down && !r.update && started:
 		return failWith, restartNote
 	case r.err != nil && r.down && !r.update:

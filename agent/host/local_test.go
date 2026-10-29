@@ -252,4 +252,22 @@ func TestStatusAnswersFromTheLastTick(t *testing.T) {
 	if got := status(cfg, s); got.Serving {
 		t.Errorf("an unhealthy tick reads as serving: %+v", got)
 	}
+	// The lease's refusal rides along, in the line the agent logs: the reason and the fix. A
+	// lease that is not refused, or whose address the household named, adds nothing.
+	named := false
+	cfg.lease = &vipLeaser{spec: ipvtapSpec, named: func() bool { return named }, prefix: func(string) string { return "24" }}
+	if got := status(cfg, s); got.Refused != "" {
+		t.Errorf("an unrefused lease reads as refused: %q", got.Refused)
+	}
+	cfg.lease.why = "it offered 192.168.7.144, the address of the machine Briard runs on"
+	got := status(cfg, s).Refused
+	for _, want := range []string{"your router leases Briard nothing of its own: it offered 192.168.7.144", "; pick a free address", "config set vip <address>/24"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("refused = %q, want it to carry %q", got, want)
+		}
+	}
+	named = true
+	if got := status(cfg, s); got.Refused != "" {
+		t.Errorf("a named address still reads as refused: %q", got.Refused)
+	}
 }

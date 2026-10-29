@@ -11,6 +11,10 @@ import (
 	"briard.io/agent/host"
 )
 
+// leaseRefused is the agent's refusal as the status carries it: the lease's reason, then its fix.
+const leaseRefused = "your router leases Briard nothing of its own: it offered 192.168.7.144, the address of the machine Briard runs on; " +
+	"pick a free address outside your router's DHCP range and run `briard config set vip <address>/24` in a terminal opened as administrator"
+
 // Every reading the poll can make, and what the icon shows for it.
 func TestShow(t *testing.T) {
 	refused := fmt.Errorf("%w: %w", host.ErrNoAgent, fs.ErrPermission)
@@ -30,6 +34,8 @@ func TestShow(t *testing.T) {
 			view{state: degraded, tip: "Briard is not serving right now", action: "stop"}},
 		{"updating", reading{status: host.LocalStatus{Serving: true, Updating: true, Open: 1}},
 			view{state: working, tip: "Briard is updating", action: "stop", open: 1}},
+		{"no address", reading{status: host.LocalStatus{Open: 1, Refused: leaseRefused}},
+			view{state: degraded, tip: "Briard cannot take an address on your network", action: "stop", open: 1}},
 		{"refused", reading{refusal: "this node has no usable network device: no wired or wireless adapter is up"},
 			view{state: degraded, tip: "this node has no usable network device: no wired or wireless adapter is up", action: "stop"}},
 		{"stopped", reading{err: absent, down: true},
@@ -99,6 +105,8 @@ func TestLaunch(t *testing.T) {
 	}{
 		{"serving", reading{status: host.LocalStatus{Serving: true}}, false, 0, openPage, ""},
 		{"serving with an alert open", reading{status: host.LocalStatus{Serving: true, Open: 2}}, true, time.Minute, openPage, ""},
+		{"no address, at once", reading{status: host.LocalStatus{Open: 1, Refused: leaseRefused}}, true, 30 * time.Second, failWith, "cannot serve your home: your router leases Briard nothing"},
+		{"no address, with the fix", reading{status: host.LocalStatus{Open: 1, Refused: leaseRefused}}, false, 0, failWith, "config set vip"},
 		{"stopped", stopped, false, 0, startIt, ""},
 		{"stopped again after this click's start", stopped, true, 5 * time.Second, failWith, "Restart Windows"},
 		{"another account's", reading{err: refused}, false, 0, failWith, "another account"},

@@ -138,11 +138,15 @@ func writeOutcome(conn net.Conn, o api.DirectiveOutcome) {
 
 // LocalStatus is a status directive's answer, as JSON in the outcome's Detail: what the tray
 // shows. Everything in it is already in hand on the loop -- the last tick's health, the alert
-// store, the act lane -- so asking costs no read of the guest.
+// store, the act lane, the lease's refusal -- so asking costs no read of the guest.
 type LocalStatus struct {
 	Serving  bool `json:"serving"`  // the last tick found the node healthy
 	Open     int  `json:"open"`     // alerts open now
 	Updating bool `json:"updating"` // an update of the agent, the guest's image or its OS is in flight
+	// Refused is why the node cannot serve until the household acts, and what to do -- the
+	// network refusal's own line (lease.go) -- or "" when nothing refuses. Waiting does not end
+	// it, so a tray waiting for the page stops on it.
+	Refused string `json:"refused,omitempty"`
 }
 
 // updateKinds are the acts the tray calls an update.
@@ -154,6 +158,9 @@ var updateKinds = map[string]bool{
 
 func (cfg Config) applyStatus(d api.Directive, n notify.Notifier) api.DirectiveOutcome {
 	st := LocalStatus{Serving: cfg.healthy != nil && cfg.healthy.Load(), Updating: updateKinds[cfg.acts.kind()]}
+	if detail, fix := cfg.lease.refusal(); detail != "" {
+		st.Refused = detail + "; " + fix
+	}
 	if s, ok := n.(*alertStore); ok {
 		recs, _ := s.snapshot()
 		st.Open = len(notify.OpenNow(recs))
