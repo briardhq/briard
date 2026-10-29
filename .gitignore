@@ -38,3 +38,5 @@
 .release/
 # ...and the Store installer `setup build` makes, for the same reasons.
 .release-setup/
+# dashboard/css/build.sh unpacks Basecoat here while it runs.
+/dashboard/css/node_modules/

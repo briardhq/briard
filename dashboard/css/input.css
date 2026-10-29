@@ -1,0 +1,61 @@
+/* The dashboard's stylesheet: Tailwind over Basecoat (the components), plus THE PARTS -- the
+   few classes of Briard's own that the templates may use beside Basecoat's. A template names a
+   part or a Basecoat component and nothing else (vocabulary_test.go holds the list), so a page
+   is built from named things and an inline style cannot exist. */
+@import "tailwindcss";
+@import "basecoat-css";
+@source "../templates";
+
+/* The palette over Basecoat's neutral: one green, light and dark. */
+:root { --primary: oklch(.42 .06 170); --primary-foreground: oklch(.99 0 0); --ring: oklch(.42 .06 170); --sidebar-primary: oklch(.42 .06 170); }
+:root.dark { --primary: oklch(.78 .08 170); --primary-foreground: oklch(.2 0 0); --ring: oklch(.78 .08 170); --sidebar-primary: oklch(.78 .08 170); }
+
+/* THE SHELL: the sidebar (Basecoat's, coloured and spaced here) and, under its width, the top bar. */
+.sidebar > nav { @apply bg-sidebar text-sidebar-foreground; }
+.sidebar > nav > header { @apply p-4 text-lg font-semibold tracking-tight; }
+.sidebar > nav > section { @apply px-3; }
+.sidebar > nav > section ul > li > a { @apply rounded-md px-3 py-2 text-sm gap-3 hover:bg-sidebar-accent; }
+.sidebar > nav > section ul > li > a[aria-current=page] { @apply bg-sidebar-accent font-medium; }
+.sidebar > nav > section ul > li > a > svg { @apply size-4 text-muted-foreground; }
+.topbar { @apply md:hidden border-b px-4 py-3 flex items-center justify-between; }
+.topbar > span { @apply font-semibold; }
+.topbar > nav { @apply flex gap-3 text-sm; }
+
+/* THE PAGE: a heading line, then tiles -- cards in two columns, one on a phone. */
+.page { @apply p-5 md:p-8 max-w-5xl; }
+.page-head { @apply mb-6; }
+.page-head h1 { @apply text-2xl font-semibold tracking-tight; }
+.page-head p { @apply text-sm text-muted-foreground; }
+.tiles { @apply grid gap-6 md:grid-cols-2; }
+.wide { @apply md:col-span-2; }
+.group-title { @apply text-base font-medium mt-8 mb-3 first:mt-0; }
+
+/* THE PARTS inside a card. */
+.note { @apply text-sm text-muted-foreground; }
+.ok { @apply text-sm; }
+.ok::before { content: "✓ "; color: var(--primary); }
+.card > footer { @apply flex-wrap gap-2; }
+.card > section > * + * { @apply mt-3; }
+.page a:not(.btn):not(.item) { @apply underline underline-offset-4; }
+.item p { @apply line-clamp-none; }
+.when { @apply text-xs text-muted-foreground whitespace-nowrap; }
+code { @apply font-mono text-[.95em]; }
+progress { @apply w-full h-2 rounded-full overflow-hidden; }
+progress::-webkit-progress-bar { background: var(--muted); }
+progress::-webkit-progress-value { background: var(--primary); }
+progress::-moz-progress-bar { background: var(--primary); }
+/* THE KEY: one click selects the whole of it -- the page is plain http, where the clipboard
+   API is not offered. The join code is the same shape, larger. */
+.key { @apply font-mono text-base tracking-wide select-all break-all; }
+.code { @apply font-mono text-4xl font-bold tracking-widest my-4 select-all; }
+
+/* THE HISTORY: pointing at a row -- hover, or a tap that focuses it -- greys it and every row
+   above it, which is exactly what its undo takes away, and shows that row's one button. */
+.history { @apply list-none p-0 m-0; }
+.history > li { @apply flex flex-wrap items-center gap-x-3 gap-y-0 px-2 py-2 rounded-md outline-none; }
+.history .undo { @apply ml-auto invisible; }
+.history > li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) { @apply bg-muted; }
+.history > li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) .what { @apply text-muted-foreground; }
+.history > li:is(:hover, :focus-within) .undo { @apply visible; }
+@media (hover: none) { .history .undo { @apply visible; } }
+.bad::before { content: "● "; color: var(--destructive); }

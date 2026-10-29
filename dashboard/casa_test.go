@@ -38,7 +38,7 @@ func TestCasaClaimIsOfferedRelayedAndFollowed(t *testing.T) {
 	r.hostSays(t, dashboard.Casa{Name: "brave-elf.briard.casa"})
 
 	body := r.page(c)
-	if !strings.Contains(body, `action="/casa/claim"`) || !strings.Contains(body, "brave-elf.briard.casa") || !strings.Contains(body, ">Skip<") || strings.Contains(body, `http-equiv="refresh"`) {
+	if !strings.Contains(body, `action="/casa/claim"`) || !strings.Contains(body, "brave-elf.briard.casa") || !strings.Contains(body, ">Not now<") || strings.Contains(body, `http-equiv="refresh"`) {
 		t.Fatalf("the first page does not offer the name, or polls: %s", body)
 	}
 	if resp := r.form("/casa/claim", nil, url.Values{"email": {"a@x.org"}}); resp.StatusCode != http.StatusUnauthorized {

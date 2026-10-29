@@ -1,18 +1,14 @@
-{{define "devices"}}
-  <div class="card" id="devices">
-    <h2>Trusted devices</h2>
-    <p class="muted">Browsers that can open this page. Lost one? Revoke it; it can come back only through <code>sudo briard open</code>.</p>
-    <ul class="rows">
-      {{range .Devices}}<li>
-        <div><span title="{{.Agent}}">{{.Label}}</span> <span class="muted">— added {{.Added}}{{if .This}} · this device{{end}}</span></div>
-        <form method="post" action="/devices/revoke"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="quiet">{{if .This}}Sign out{{else}}Revoke{{end}}</button></form>
-      </li>{{end}}
-    </ul>
-    <form method="post" action="/devices/approve" class="field">
-      <label for="code">Let a new device in — enter the code its screen shows:</label>
-      <input id="code" name="code" inputmode="numeric" autocomplete="off" pattern="[0-9 -]*" placeholder="123 456" required>
-      <button type="submit" class="quiet">Approve</button>
-    </form>
-    {{range .Apps}}{{with .HA}}<p class="muted">Revoking here does not sign a device out of Home Assistant; end those sessions in <a href="{{.URL}}profile/security" target="_blank" rel="noopener">your Home Assistant profile</a>.</p>{{end}}{{end}}
-  </div>
-{{end}}
+{{/* THE TRUSTED DEVICES PAGE: the browsers that open this dashboard, and the way a new one gets in. */}}
+{{define "devices"}}{{template "head" (shell "devices" false)}}
+<header class="page-head"><h1>Trusted devices</h1><p>The browsers that can open this dashboard. Lost one? Revoke it; a new device gets in only when you approve its code here.</p></header>
+<div class="tiles">
+  <div class="card wide"><header><h2>Devices</h2></header><section><div class="table-container"><table class="table"><thead><tr><th>Device</th><th>Added</th><th></th></tr></thead><tbody>
+    {{range .Devices}}<tr><td><span title="{{.Agent}}">{{.Label}}</span>{{if .This}} <span class="badge" data-variant="secondary">this device</span>{{end}}</td><td>{{.Added}}</td><td><form method="post" action="/devices/revoke"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn" data-variant="outline" data-size="sm">{{if .This}}Sign out{{else}}Revoke{{end}}</button></form></td></tr>{{end}}
+  </tbody></table></div>
+  {{range .Apps}}{{with .HA}}<p class="note">Revoking here does not sign a device out of Home Assistant; end those sessions in <a href="{{.URL}}profile/security" target="_blank" rel="noopener">your Home Assistant profile</a>.</p>{{end}}{{end}}
+  </section></div>
+  <div class="card"><header><h2>Let a new device in</h2><p>Open the dashboard on it and enter the code its screen shows.</p></header><section>
+    <form method="post" action="/devices/approve" class="field" id="approve"><label class="label" for="code">Code</label><input class="input" id="code" name="code" inputmode="numeric" autocomplete="off" pattern="[0-9 -]*" placeholder="123 456" required></form>
+  </section><footer><button type="submit" class="btn" form="approve">Approve</button></footer></div>
+</div>
+{{template "foot" (shell "devices" false)}}{{end}}

@@ -1,44 +1,40 @@
-{{define "backup"}}
-  {{with .Backup}}
-  <div class="card" id="backup">
-    <h2>Backup</h2>
-    {{with .Asked}}<p class="banner">{{.}}</p>{{end}}
-    {{if .On}}
-    <p>Every night at 02:00, Briard copies your apps' data, encrypted, into <code>{{.Folder}}</code> on this machine.</p>
-    {{if .WrongKey}}<p class="banner">The folder holds a backup that this Briard cannot open — from an earlier install, or made with another key. Enter that backup's recovery key to continue it here, or change the folder below.</p>
-    <form method="post" action="/backup/adopt" class="field">
-      <label for="backup-key">That backup's recovery key</label>
-      <input id="backup-key" name="key" required autocomplete="off" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx" class="wide">
-      <button type="submit" class="quiet">Enter its key</button>
-    </form>
-    {{else if .LastFailed}}<p class="banner">The backup on {{.LastWhen}} did not finish: {{.LastError}}</p>
-    {{else if .LastWhen}}<p>Last backup: {{.LastWhen}}, {{.LastSize}} new{{with .Held}}; the folder holds {{.}}{{end}}.</p>
-    {{else}}<p class="muted">The first backup runs tonight.</p>{{end}}
-    {{if .OffsiteSynced}}<p class="ok">Off-site: in {{.OffsiteIn}}. The newest backup has left this machine.</p>
-    {{else if .OffsiteIn}}<p>Waiting for {{.OffsiteIn}} to upload the newest backup.</p>
-    <p class="muted">{{.OffsiteIn}} uploads it while someone is signed in to this computer and syncing is not paused.</p>{{end}}
-    {{if not .OffsiteIn}}<p class="muted">A copy on this machine survives a broken app or a damaged volume, not a dead disk, a theft or a fire — for that, keep the folder in a synced drive (OneDrive, Dropbox, Nextcloud) or on a NAS.</p>{{end}}
-    {{else}}
-    <p>The nightly backup is off. The backups already in <code>{{.Folder}}</code> are kept.</p>
-    {{end}}
-    {{with .Previous}}<p class="muted">Your earlier backups are still in <code>{{.}}</code>. Briard no longer adds to them; delete that folder when you no longer need it.</p>{{end}}
-    {{if .Nights}}<details><summary class="muted">Recent nights</summary>
-      <ul class="rows">
-        {{range .Nights}}<li><span class="when">{{.When}}</span>{{if .Error}}<span class="warning">did not finish: {{.Error}}</span>{{else}}<span class="resolved">{{.Added}} new</span>{{end}}</li>{{end}}
-      </ul>
-    </details>{{end}}
-    <details><summary class="muted">Change the folder</summary>
-      <form method="post" action="/backup/folder" class="field">
-        <label for="backup-folder">Back up into this folder from tonight. It must already exist, belong to you, and be empty — or hold these backups, if you moved them there yourself. Your earlier backups stay where they are.</label>
-        <input id="backup-folder" name="folder" required placeholder="/home/you/Dropbox/Briard Backup" class="wide">
-        <button type="submit" class="quiet">Change</button>
-      </form>
-    </details>
-    {{if and .Key .KeySaved}}<details><summary class="muted">Recovery key</summary>
-      <p class="key"><code>{{.Key}}</code></p>
-      <p class="muted">Whoever has this key and the backup folder has everything in it.</p>
-    </details>{{end}}
-    <div class="action"><form method="post" action="/backup/{{if .On}}off{{else}}on{{end}}"><button type="submit" class="quiet">{{if .On}}Turn off nightly backup{{else}}Turn nightly backup back on{{end}}</button></form></div>
-  </div>
-  {{end}}
+{{/* THE KEY STEP: the recovery key until the household says it is saved. On the home page while
+     owed, on the Backup page always. */}}
+{{define "key-step"}}
+  <div class="card"><header><h2>Save your recovery key</h2><p>Your backups cannot be opened without it, and it exists only on this machine.</p></header><section>
+    <p class="key">{{.Key}}</p>
+    <p class="note">Write it down, or keep it in your password manager. One click selects the whole key. Whoever has this key and the backup folder has everything in it.</p>
+  </section><footer><form method="post" action="/backup/saved"><button type="submit" class="btn" data-variant="outline">I have saved the key</button></form></footer></div>
 {{end}}
+
+{{/* THE BACKUP PAGE: the nightly backup, its nights, the key, the folder. */}}
+{{define "backup"}}{{template "head" (shell "backup" false)}}
+<header class="page-head"><h1>Backup</h1><p>{{with .Backup}}{{if .On}}Every night at 02:00, encrypted, into <code>{{.Folder}}</code> on this machine.{{else}}The nightly backup is off.{{end}}{{else}}The nightly backup has not been set up by this host yet.{{end}}</p></header>
+{{with .Backup}}
+<div class="tiles">
+  <div class="card"><header><h2>Nightly backup</h2>
+    <p>{{if not .On}}Off. The backups already in <code>{{.Folder}}</code> are kept.{{else if .WrongKey}}The folder holds a backup that this Briard cannot open.{{else if .LastFailed}}The backup on {{.LastWhen}} did not finish: {{.LastError}}{{else if .LastWhen}}Last backup: {{.LastWhen}}, {{.LastSize}} new{{with .Held}}; the folder holds {{.}}{{end}}.{{else}}The first backup runs tonight.{{end}}</p></header><section>
+    {{with .Asked}}<div class="alert" data-variant="destructive"><section>{{.}}</section></div>{{end}}
+    {{if .On}}
+    {{if .WrongKey}}<p class="note">It is from an earlier install, or made with another key. Enter that backup's recovery key to continue it here, or change the folder below.</p>
+    <form method="post" action="/backup/adopt" class="field" id="backup-adopt"><label class="label" for="backup-key">That backup's recovery key</label><input class="input" id="backup-key" name="key" required autocomplete="off" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"></form>
+    {{end}}
+    {{if .OffsiteSynced}}<p class="ok">Off-site: in {{.OffsiteIn}}. The newest backup has left this machine.</p>
+    {{else if .OffsiteIn}}<p>Waiting for {{.OffsiteIn}} to upload the newest backup.</p><p class="note">{{.OffsiteIn}} uploads it while someone is signed in to this computer and syncing is not paused.</p>
+    {{else}}<p class="note">A copy on this machine survives a broken app or a damaged volume, not a dead disk, a theft or a fire — for that, keep the folder in a synced drive (OneDrive, Dropbox, Nextcloud) or on a NAS.</p>{{end}}
+    {{end}}
+    {{with .Previous}}<p class="note">Your earlier backups are still in <code>{{.}}</code>. Briard no longer adds to them; delete that folder when you no longer need it.</p>{{end}}
+  </section><footer>{{if .WrongKey}}<button type="submit" class="btn" form="backup-adopt">Enter its key</button>{{end}}<form method="post" action="/backup/{{if .On}}off{{else}}on{{end}}"><button type="submit" class="btn" data-variant="ghost">{{if .On}}Turn off nightly backup{{else}}Turn nightly backup back on{{end}}</button></form></footer></div>
+  {{if .Nights}}<div class="card"><header><h2>Recent nights</h2></header><section><div class="table-container"><table class="table"><thead><tr><th>Night</th><th>Added</th><th>Result</th></tr></thead><tbody>
+    {{range .Nights}}<tr><td>{{.When}}</td><td>{{if .Error}}—{{else}}{{.Added}}{{end}}</td><td>{{if .Error}}<span class="bad">did not finish: {{.Error}}</span>{{else}}<span class="badge" data-variant="secondary">ok</span>{{end}}</td></tr>{{end}}
+  </tbody></table></div></section></div>{{end}}
+  {{if .Key}}{{if .KeySaved}}
+  <div class="card"><header><h2>Recovery key</h2><p>Saved, you said.</p></header><section><p class="key">{{.Key}}</p><p class="note">Whoever has this key and the backup folder has everything in it.</p></section></div>
+  {{else}}{{template "key-step" .}}{{end}}{{end}}
+  <div class="card"><header><h2>Folder</h2><p>Back up into another folder from tonight.</p></header><section>
+    <p class="note">It must already exist, belong to you, and be empty — or hold these backups, if you moved them there yourself. Your earlier backups stay where they are.</p>
+    <form method="post" action="/backup/folder" class="field" id="backup-folder-form"><label class="label" for="backup-folder">Folder</label><input class="input" id="backup-folder" name="folder" required placeholder="/home/you/Dropbox/Briard Backup"></form>
+  </section><footer><button type="submit" class="btn" data-variant="outline" form="backup-folder-form">Change</button></footer></div>
+</div>
+{{end}}
+{{template "foot" (shell "backup" false)}}{{end}}

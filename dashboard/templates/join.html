@@ -1,19 +1,22 @@
-{{define "refused"}}{{template "head" ""}}
-  <h1>Briard</h1>
-  <p>This browser is not yet trusted by this home.</p>
-  <form method="post" action="/join"><button type="submit">Ask a trusted device to let me in</button></form>
-  <p class="muted">Or, on the machine that runs Briard, run <code>sudo briard open</code> and open the address it prints.</p>
-{{template "foot"}}{{end}}
+{{/* THE DOOR: what an untrusted browser sees. No sidebar -- reaching this port is not
+     authentication, and the page says nothing about what is installed. */}}
+{{define "refused"}}{{template "head" (shell "" false)}}
+<header class="page-head"><h1>Briard</h1><p>This browser is not yet trusted by this home.</p></header>
+<div class="card"><section><form method="post" action="/join"><button type="submit" class="btn">Ask a trusted device to let me in</button></form>
+<p class="note">Or, on the machine that runs Briard, run <code>sudo briard open</code> and open the address it prints.</p></section></div>
+{{template "foot" (shell "" false)}}{{end}}
 
-{{define "join"}}{{if not .Expired}}{{template "head" "3"}}{{else}}{{template "head" ""}}{{end}}
-  <h1>Briard</h1>
+{{define "join"}}{{template "head" (shell "" (not .Expired))}}
+<header class="page-head"><h1>Briard</h1></header>
+<div class="card"><section>
   {{if .Expired}}
   <p>That request has expired or was already used.</p>
-  <form method="post" action="/join"><button type="submit">Ask again</button></form>
+  <form method="post" action="/join"><button type="submit" class="btn">Ask again</button></form>
   {{else}}
   <p>Your code is</p>
   <p class="code">{{.Code}}</p>
-  <p>On a device that already opens this page, open <strong>Settings → Trusted devices</strong>, enter this code and approve. This page will let you in on its own.</p>
-  <p class="muted">The code is good for five minutes.</p>
+  <p>On a device that already opens this page, open <strong>Trusted devices</strong>, enter this code and approve. This page will let you in on its own.</p>
+  <p class="note">The code is good for five minutes.</p>
   {{end}}
-{{template "foot"}}{{end}}
+</section></div>
+{{template "foot" (shell "" false)}}{{end}}

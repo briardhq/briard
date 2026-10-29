@@ -360,7 +360,7 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	must(t, err)
 	n, _ = page.Body.Read(buf)
 	page.Body.Close()
-	if !strings.Contains(string(buf[:n]), `<button type="submit">Open Home Assistant`) {
+	if !strings.Contains(string(buf[:n]), `<button type="submit" class="btn">Open Home Assistant`) {
 		t.Error("the page on a set-up HA does not offer Open Home Assistant")
 	}
 }
@@ -480,7 +480,7 @@ func (r *rig) reissue(agent string, as *http.Cookie) *http.Cookie {
 func (r *rig) page(c *http.Cookie) string {
 	r.t.Helper()
 	var body string
-	for _, path := range []string{"/", "/settings"} {
+	for _, path := range []string{"/", "/apps", "/backup", "/address", "/devices", "/activity"} {
 		req, _ := http.NewRequest("GET", r.srv.URL+path, nil)
 		req.AddCookie(c)
 		resp, err := http.DefaultClient.Do(req)
@@ -522,7 +522,7 @@ func TestDevicesAreListedAndRevokedFromTheRegistryOnly(t *testing.T) {
 			t.Errorf("the phone's page lacks %q", want)
 		}
 	}
-	if strings.Count(body, "this device") != 1 || !strings.Contains(body, "Safari on iPhone</span> <span class=\"muted\">— added") {
+	if strings.Count(body, "this device") != 1 || !strings.Contains(body, `Safari on iPhone</span> <span class="badge" data-variant="secondary">this device</span>`) {
 		t.Errorf("the page does not mark exactly the viewing device")
 	}
 	if strings.Contains(body, laptop.Value) || strings.Contains(body, phone.Value) || strings.Contains(body, reg.Devices[0].Hash) {

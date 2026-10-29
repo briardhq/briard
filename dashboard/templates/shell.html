@@ -1,68 +1,37 @@
-{{define "style"}}<style>
-  :root { --fg: #1a1a1a; --muted: #666; --accent: #2a5d4e; --bg: #fff; --card: #f6f6f4; --grey: #e6e6e2; --bad: #b3261e; }
-  @media (prefers-color-scheme: dark) {
-    :root { --fg: #ececec; --muted: #9a9a9a; --accent: #7fc4ad; --bg: #141414; --card: #1f1f1f; --grey: #2c2c2c; --bad: #f2b8b5; }
-  }
-  body { font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 0 1rem; }
-  main { max-width: 42rem; margin: 1.25rem auto 2rem; }
-  /* THE SHELL: one heading and, at most, one link away from it. */
-  .nav { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin: 0 0 .75rem; }
-  h1 { font-size: 1.6rem; margin: 0; }
-  .muted { color: var(--muted); }
-  code { font-size: .95em; }
-  a { color: var(--accent); }
-  /* THE CARD: one section, one heading; h3 is a step or an app inside it. */
-  .card { background: var(--card); border-radius: 10px; padding: 1rem 1.25rem; margin: 1rem 0; }
-  .card h2 { font-size: 1.15rem; margin: 0 0 .4rem; }
-  .card h3 { font-size: 1rem; margin: 1.1rem 0 .2rem; }
-  .card p { margin: .4rem 0; }
-  /* THE STATUS LINE: the one sentence above everything. */
-  .status { margin: 0 0 1rem; }
-  /* THE ACTION ROW: a button, and beside or under it the one muted line that explains it.
-     The filled button is the page's one primary act; everything else is quiet. */
-  button { font: inherit; background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: .55rem 1rem; cursor: pointer; }
-  button[disabled] { opacity: .5; cursor: default; }
-  button.quiet { background: transparent; color: var(--accent); border: 1px solid var(--accent); padding: .3rem .8rem; }
-  .action { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .8rem; margin: .7rem 0 .3rem; }
-  .action .muted { flex-basis: 100%; }
-  /* THE BANNER: one sentence that needs the eye. */
-  .banner { border-left: 4px solid var(--bad); padding: .2rem .8rem; margin: .5rem 0 1rem; }
-  /* THE FIELD: a label, an input and its button, on one line when they fit. */
-  .field { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .8rem; }
-  .field label { flex-basis: 100%; }
-  .field input { font: inherit; padding: .45rem .6rem; border: 1px solid var(--muted); border-radius: 8px; background: var(--bg); color: var(--fg); width: 8rem; }
-  .field input.wide { width: 100%; }
-  /* THE ROWS: a list where each row is a thing, what is known about it, and at most one act. */
-  ul.rows { list-style: none; padding: 0; margin: .3rem 0; }
-  ul.rows li { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .6rem; padding: .4rem 0; border-top: 1px solid var(--grey); }
-  ul.rows li:first-child { border-top: 0; }
-  ul.rows li > div { flex: 1 1 12rem; }
-  ul.rows form { margin-left: auto; }
-  ul.rows .when { color: var(--muted); min-width: 9rem; }
-  ul.rows .critical::before, ul.rows .warning::before { content: "● "; color: var(--bad); }
-  ul.rows .resolved::before, .ok::before { content: "✓ "; color: var(--accent); }
-  details { margin: .5rem 0; }
-  summary { cursor: pointer; }
-  progress { width: 100%; height: .6rem; accent-color: var(--accent); }
-  /* THE KEY: one click selects the whole of it -- the page is plain http, where the clipboard
-     API is not offered. The join code is the same shape, larger. */
-  .key code { font-size: 1.15rem; letter-spacing: .04em; user-select: all; overflow-wrap: anywhere; }
-  .code { font: 700 2.4rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; margin: .5rem 0 1rem; }
-  /* THE HISTORY: pointing at a row -- hover, or a tap that focuses it -- greys it and every
-     row above it, which is exactly what its undo takes away, and shows that row's one button. */
-  ol.history { list-style: none; padding: 0; margin: 0; }
-  ol.history li { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .6rem; padding: .45rem .5rem; border-radius: 8px; outline: none; }
-  ol.history .when { color: var(--muted); min-width: 9rem; }
-  ol.history form.undo { margin-left: auto; visibility: hidden; }
-  ol.history li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) { background: var(--grey); }
-  ol.history li:is(:hover, :focus-within, :has(~ li:hover), :has(~ li:focus-within)) .what { color: var(--muted); }
-  ol.history li:is(:hover, :focus-within) form.undo { visibility: visible; }
-  @media (hover: none) { ol.history form.undo { visibility: visible; } }
-  ol.history .bad::before { content: "● "; color: var(--bad); }
-</style>{{end}}
-
+{{/* THE SHELL: the head, the sidebar with its six sections, the top bar that stands in for it on
+     a phone, and the page's main. A page opens with "head" and closes with "foot", both given the
+     shell view (main.go, shellOf): which section is current, the title, whether the page polls. A
+     page with no section -- the refusal, the join page -- gets no sidebar: the browser is not trusted. */}}
 {{define "head"}}<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard</title>{{if .}}<meta http-equiv="refresh" content="{{.}}">{{end}}{{template "style"}}</head>
-<body><main>{{end}}
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard{{with .Title}} — {{.}}{{end}}</title>{{with .Refresh}}<meta http-equiv="refresh" content="{{.}}">{{end}}<link rel="stylesheet" href="/app.css"><script>if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.classList.add('dark')</script></head>
+<body>
+{{if .Section}}<aside class="sidebar" data-side="left" aria-hidden="false"><nav aria-label="Briard">
+  <header>Briard</header>
+  <section>
+    <div role="group"><ul>
+      <li><a href="/"{{if eq .Section "home"}} aria-current="page"{{end}}>{{template "icon-home"}}<span>Home</span></a></li>
+      <li><a href="/apps"{{if eq .Section "apps"}} aria-current="page"{{end}}>{{template "icon-apps"}}<span>Apps</span></a></li>
+      <li><a href="/backup"{{if eq .Section "backup"}} aria-current="page"{{end}}>{{template "icon-backup"}}<span>Backup</span></a></li>
+      <li><a href="/address"{{if eq .Section "address"}} aria-current="page"{{end}}>{{template "icon-address"}}<span>Web address</span></a></li>
+      <li><a href="/devices"{{if eq .Section "devices"}} aria-current="page"{{end}}>{{template "icon-devices"}}<span>Trusted devices</span></a></li>
+    </ul></div>
+    <div role="group"><ul>
+      <li><a href="/activity"{{if eq .Section "activity"}} aria-current="page"{{end}}>{{template "icon-activity"}}<span>Activity</span></a></li>
+    </ul></div>
+  </section>
+</nav></aside>
+<div>
+<div class="topbar"><span>Briard</span><nav><a href="/">Home</a><a href="/apps">Apps</a><a href="/backup">Backup</a><a href="/activity">Activity</a></nav></div>
+{{end}}<main class="page">
+{{end}}
 
-{{define "foot"}}</main></body></html>{{end}}
+{{define "foot"}}</main>{{if .Section}}</div>{{end}}</body></html>{{end}}
+
+{{/* The sidebar's icons (Lucide, MIT), one per section, and the alert's. */}}
+{{define "icon-home"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>{{end}}
+{{define "icon-apps"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>{{end}}
+{{define "icon-backup"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>{{end}}
+{{define "icon-address"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>{{end}}
+{{define "icon-devices"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8"/><path d="M10 19v-3.96 3.15"/><path d="M7 19h5"/><rect width="6" height="10" x="16" y="12" rx="2"/></svg>{{end}}
+{{define "icon-activity"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>{{end}}
+{{define "icon-alert"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>{{end}}

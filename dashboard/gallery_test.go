@@ -168,12 +168,20 @@ func answerHistory(port *fakePort, ring string) {
 	}()
 }
 
-// home and settings are the renders of the two pages with the page's own cookie: a state is
+// home and section are the renders of the sidebar.s pages with the page.s own cookie: a state is
 // listed under the page its section lives on.
 func home(_ *testing.T, _ *rig, c *http.Cookie, _ *fakePort) (string, *http.Cookie) { return "/", c }
-func settings(_ *testing.T, _ *rig, c *http.Cookie, _ *fakePort) (string, *http.Cookie) {
-	return "/settings", c
+func section(path string) func(*testing.T, *rig, *http.Cookie, *fakePort) (string, *http.Cookie) {
+	return func(_ *testing.T, _ *rig, c *http.Cookie, _ *fakePort) (string, *http.Cookie) { return path, c }
 }
+
+var (
+	apps     = section("/apps")
+	backup   = section("/backup")
+	address  = section("/address")
+	devices  = section("/devices")
+	activity = section("/activity")
+)
 
 var galleryStates = []galleryState{
 	// THE HOME PAGE, through a household's life with it.
@@ -304,70 +312,113 @@ var galleryStates = []galleryState{
 			r.form("/casa/claim", c, url.Values{"email": {"ana@example.org"}})
 			return home(t, r, c, port)
 		}},
-	{"settings-casa-checking", "Registered, and the resolve check has not answered yet.",
+	{"address-checking", "Registered, and the resolve check has not answered yet.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: galleryName, Email: "ana@example.org"})
-			return settings(t, r, c, port)
+			return address(t, r, c, port)
 		}},
 	{"home-casa-blocked", "Registered, but the router's rebind protection drops the name.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: galleryName, Email: "ana@example.org", Resolves: dashboard.CasaBlocked})
 			return home(t, r, c, port)
 		}},
-	{"settings-casa-cert-pending", "Registered and resolving; the certificate not yet issued.",
+	{"address-cert-pending", "Registered and resolving; the certificate not yet issued.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: galleryName, Email: "ana@example.org", Resolves: dashboard.CasaResolves})
-			return settings(t, r, c, port)
+			return address(t, r, c, port)
 		}},
 	// THE BACKUP's card, every state.
-	{"settings-backup-off", "The nightly backup turned off; the folder kept.",
+	{"backup-off", "The nightly backup turned off; the folder kept.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, Key: testKey, KeySaved: true, Nights: galleryNights(t, "")})
-			return settings(t, r, c, port)
+			return backup(t, r, c, port)
 		}},
-	{"settings-backup-failed-night", "Last night did not finish; the earlier backups are in another folder.",
+	{"backup-failed-night", "Last night did not finish; the earlier backups are in another folder.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, Previous: "/home/ana/Old Briard Backup", On: true, Key: testKey, KeySaved: true,
 				Nights: galleryNights(t, "the backup folder is not there")})
-			return settings(t, r, c, port)
+			return backup(t, r, c, port)
 		}},
-	{"settings-backup-wrong-key", "The folder holds a backup this key does not open: adopt it, or move.",
+	{"backup-wrong-key", "The folder holds a backup this key does not open: adopt it, or move.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			nights := galleryNights(t, "the folder holds a backup made with another key")
 			nights[0].WrongKey = true
 			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: nights})
-			return settings(t, r, c, port)
+			return backup(t, r, c, port)
 		}},
-	{"settings-backup-asked-refused", "The host refused the last thing asked of the card (a folder it will not use).",
+	{"backup-asked-refused", "The host refused the last thing asked of the card (a folder it will not use).",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			port.mu.Lock()
 			port.fail = errors.New("the folder /root/x belongs to root; choose one of your own")
 			port.mu.Unlock()
 			r.form("/backup/folder", c, url.Values{"folder": {"/root/x"}})
-			return settings(t, r, c, port)
+			return backup(t, r, c, port)
 		}},
-	{"settings-many-devices", "Four trusted devices, this laptop among them.",
+	{"devices-many", "Four trusted devices, this laptop among them.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			r.reissue("Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36", nil)
 			r.reissue("curl/8.9.1", nil)
-			return settings(t, r, c, port)
+			return devices(t, r, c, port)
 		}},
-	// SETTINGS, as it stands at the two ends of the home's life.
-	{"settings-first-open", "Settings on the first open: no address yet, the key still a step on the home page, one device.",
+	// THE SECTIONS, as they stand at the two ends of the home's life.
+	{"address-first-open", "The web address page on the first open: the name offered, nothing registered.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{Name: galleryName})
 			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey})
-			return settings(t, r, c, port)
+			return address(t, r, c, port)
 		}},
-	{"settings-everyday", "Settings most mornings: the address, last night, two devices, both apps.",
+	{"address-everyday", "The web address page most mornings: registered, resolving, the certificate good.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
-			return settings(t, r, c, port)
+			return address(t, r, c, port)
+		}},
+	{"apps-everyday", "The apps page most mornings: Home Assistant installed, Mosquitto available.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			return apps(t, r, c, port)
+		}},
+	{"apps-first-run", "The apps page before anything is installed: both available.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			notInstalled(t, r)
+			return apps(t, r, c, port)
+		}},
+	{"backup-everyday", "The backup page most mornings: last night, a week of nights, the key saved.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			return backup(t, r, c, port)
+		}},
+	{"backup-first-open", "The backup page on the first open: no night yet, the key not yet saved.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey})
+			return backup(t, r, c, port)
+		}},
+	{"devices-everyday", "The trusted devices page most mornings: this laptop and a phone.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			return devices(t, r, c, port)
+		}},
+	{"activity-everyday", "The activity page most mornings: an update, a resolved alert.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			return activity(t, r, c, port)
+		}},
+	{"activity-alert-open", "The activity page with an alert open.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			r.hostPushes(t, []notify.Record{
+				galleryAlert(-24*time.Hour, "upgrade:os", notify.Event, notify.Info, "Updated", "Briard updated itself to v3.20261027.46bc529."),
+				galleryAlert(-40*time.Minute, "disk", notify.Open, notify.Warning, "Disk space low", "The data volume has 1.2 GB free; Home Assistant's recorder stops writing below 1 GB."),
+			})
+			return activity(t, r, c, port)
+		}},
+	{"activity-empty", "The activity page on a host that pushed nothing.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			return activity(t, r, c, port)
 		}},
 	// THE OTHER PAGES.
 	{"refused", "A browser the home does not trust.",
@@ -429,6 +480,8 @@ func TestGallery(t *testing.T) {
 		t.Skip("set DASHBOARD_GALLERY=<dir> to render every page in every state there")
 	}
 	must(t, os.MkdirAll(dir, 0o755))
+	// The stylesheet beside the pages, so a file:// render finds it where the served page would.
+	must(t, os.WriteFile(filepath.Join(dir, "app.css"), appCSS, 0o644))
 	var index strings.Builder
 	index.WriteString("<!doctype html><meta charset=utf-8><title>Briard dashboard gallery</title><style>body{font:16px/1.5 system-ui;max-width:48rem;margin:2rem auto;padding:0 1rem}dt{font-weight:600;margin-top:.8rem}dd{margin:0;color:#555}</style><h1>Briard dashboard — the state gallery</h1><p>Rendered " + galleryClock.Format("2 Jan 2006 15:04 MST") + " (the fixtures' clock). <a href=screens.html>Screenshots</a>, when the lab script has run.</p><dl>")
 	for _, s := range galleryStates {
@@ -456,7 +509,7 @@ func TestGallery(t *testing.T) {
 			if !strings.Contains(page, "<html") {
 				t.Fatalf("%s %s = %d, not a page: %s", method, path, resp.StatusCode, page)
 			}
-			must(t, os.WriteFile(filepath.Join(dir, s.name+".html"), []byte(page), 0o644))
+			must(t, os.WriteFile(filepath.Join(dir, s.name+".html"), []byte(strings.ReplaceAll(page, `href="/app.css"`, `href="app.css"`)), 0o644))
 			fmt.Fprintf(&index, "<dt><a href=%s.html>%s</a> <small>(%d)</small></dt><dd>%s</dd>", s.name, s.name, resp.StatusCode, html.EscapeString(s.note))
 		})
 	}

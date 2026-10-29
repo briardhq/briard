@@ -1,66 +1,42 @@
+{{/* THE CHOOSER: the first run's one act -- which app to set up. The first offered is the
+     common one, the filled button. */}}
 {{define "chooser"}}
-  <div class="card">
-    <h2>What should this machine run?</h2>
-    {{range $i, $app := .Apps}}
-    <h3>{{.Title}}</h3>
-    <p class="muted">{{.Blurb}}</p>
-    {{with .Install}}{{if .Failed}}<p class="banner">Could not install {{$app.Title}}: {{.Detail}}</p>{{end}}{{end}}
-    <div class="action">
-      <form method="post" action="/install/{{.Name}}"><button type="submit"{{if $i}} class="quiet"{{end}}>{{if and .Install .Install.Failed}}Try again{{else}}Set up {{.Title}}{{end}}</button></form>
-      {{if and .Install .Install.Failed}}<span class="muted">Or, on the machine that runs Briard: <code>sudo briard app install {{.Name}}</code></span>{{end}}
-    </div>
-    {{end}}
-  </div>
+  <div class="card wide"><header><h2>What should this machine run?</h2><p>Pick one to start; the rest is a click away under Apps.</p></header><section><div class="item-group">
+    {{range $i, $app := .Apps}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{.Title}}</h3><p>{{.Blurb}}</p>{{with .Install}}{{if .Failed}}<p class="note">Could not install {{$app.Title}}: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$app.Name}}</code></p>{{end}}{{end}}</section><aside><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn"{{if $i}} data-variant="outline"{{end}}>{{if and .Install .Install.Failed}}Try again{{else}}Set up {{.Title}}{{end}}</button></form></aside></div>{{end}}
+  </div></section></div>
 {{end}}
 
+{{/* INSTALLING: the app on its way, with the pull's progress when the host left a record. */}}
 {{define "installing"}}
-  <div class="card">
-    <h2>{{.Title}}</h2>
-    {{with .Install}}
-    {{with .Progress}}
-    <p>Installing… {{.DoneGB}} of {{.TotalGB}} downloaded ({{.Percent}}%).</p>
-    <progress max="100" value="{{.Percent}}"></progress>
-    {{else}}
-    <p>Installing… downloading it, which takes a minute or two.</p>
-    {{end}}
-    <p class="muted">Started at {{.Since}}. This page refreshes itself.</p>
-    {{end}}
-  </div>
+  <div class="card"><header><h2>{{.Title}}</h2><p>{{with .Install}}{{with .Progress}}Installing · {{.DoneGB}} of {{.TotalGB}} downloaded ({{.Percent}}%){{else}}Installing · downloading it, which takes a minute or two{{end}}{{end}}</p></header><section>
+    {{with .Install}}{{with .Progress}}<progress max="100" value="{{.Percent}}"></progress>{{end}}<p class="note">Started at {{.Since}}. You can close this page; Briard carries on, and this page follows along while it is open.</p>{{end}}
+  </section></div>
 {{end}}
 
-{{define "app"}}
-  <div class="card">
-    <h2>{{.Title}}</h2>
-    {{with .HA}}
-    {{if not .Reachable}}
-    <p class="muted">Starting…</p>
-    {{else if .Onboarded}}
-    <p>Running at <a href="{{.URL}}" target="_blank" rel="noopener">{{.Host}}</a>.</p>
-    <div class="action">
-      <form method="post" action="/open/home-assistant" target="_blank"><button type="submit">Open Home Assistant</button></form>
-      <span class="muted">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.URL}}config/person" target="_blank" rel="noopener">Settings → People</a>, your name, “Change password” — no old password is needed.</span>
-    </div>
-    {{else}}
-    <p>{{if .Running}}Ready for its first open.{{else}}Almost ready — Home Assistant is still starting.{{end}}</p>
-    <div class="action">
-      <form method="post" action="/open/home-assistant" target="_blank"><button type="submit"{{if not .Running}} disabled{{end}}>Open Home Assistant</button></form>
-    </div>
-    {{end}}
-    {{else}}
-    <p>Installed and running.</p>
-    {{end}}
-    <p class="muted"><a href="/history/{{.Name}}">History</a> — every update and the changes Briard notices, any of which you can undo.</p>
-  </div>
+{{/* THE APP CARD: an installed app, its one button, and the way to its history. */}}
+{{define "app-card"}}
+  <div class="card"><header><h2>{{.Title}}</h2>
+    {{with .HA}}<p>{{if not .Reachable}}Starting…{{else if .Onboarded}}Running at <a href="{{.URL}}" target="_blank" rel="noopener">{{.Host}}</a>{{else if .Running}}Ready for its first open.{{else}}Almost ready — Home Assistant is still starting.{{end}}</p>{{else}}<p>Installed and running.</p>{{end}}
+  </header>
+  {{with .HA}}{{if and .Reachable .Onboarded}}<section class="note">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.URL}}config/person" target="_blank" rel="noopener">Settings → People</a>, your name, “Change password” — no old password is needed.</section>{{end}}{{end}}
+  <footer>
+    {{with .HA}}{{if .Reachable}}<form method="post" action="/open/home-assistant" target="_blank"><button type="submit" class="btn"{{if not .Running}} disabled{{end}}>Open Home Assistant</button></form>{{end}}{{end}}
+    <a class="btn" data-variant="ghost" href="/history/{{.Name}}">History</a>
+  </footer></div>
 {{end}}
 
-{{define "apps"}}
-  <div class="card" id="apps">
-    <h2>Apps</h2>
-    <ul class="rows">
-      {{range .Apps}}<li>
-        <div>{{.Title}} <span class="muted">— {{if .Installed}}<a href="/history/{{.Name}}">history</a>{{else if and .Install .Install.Running}}installing…{{else}}{{.Blurb}}{{end}}</span></div>
-        {{if not .Installed}}{{if not (and .Install .Install.Running)}}<form method="post" action="/install/{{.Name}}"><button type="submit" class="quiet">Set up</button></form>{{end}}{{end}}
-      </li>{{end}}
-    </ul>
-  </div>
-{{end}}
+{{/* THE APPS PAGE: what runs, then what could. */}}
+{{define "apps"}}{{template "head" (shell "apps" .Refresh)}}
+<header class="page-head"><h1>Apps</h1><p>What this machine runs, and what it could.</p></header>
+{{if .InstalledCount}}<h2 class="group-title">Installed</h2>
+<div class="tiles">{{range .Apps}}{{if .Installed}}{{template "app-card" .}}{{end}}{{end}}</div>{{end}}
+{{if ne .InstalledCount (len .Apps)}}<h2 class="group-title">Available</h2>
+<div class="tiles">
+  {{range .Apps}}{{if not .Installed}}
+  {{if and .Install .Install.Running}}{{template "installing" .}}{{else}}
+  <div class="card"><header><h2>{{.Title}}</h2><p>{{.Blurb}}</p></header>
+    {{with .Install}}{{if .Failed}}<section class="note">Could not install it: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$.Name}}</code></section>{{end}}{{end}}
+    <footer><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn" data-variant="outline">{{if and .Install .Install.Failed}}Try again{{else}}Set up {{.Title}}{{end}}</button></form></footer></div>
+  {{end}}{{end}}{{end}}
+</div>{{end}}
+{{template "foot" (shell "apps" false)}}{{end}}

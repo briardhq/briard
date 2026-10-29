@@ -1,28 +1,28 @@
-{{define "status"}}
+{{/* NEEDS ATTENTION: the one tile that comes before everything, only while something does.
+     The host agent away is its own case -- then the alert list is stale and is not shown. */}}
+{{define "alerts"}}
   {{with .Alerts}}
   {{if .Unreachable}}
-  <div class="card">
-    <h2>Briard is not answering</h2>
-    <p class="banner">The Briard agent on this machine has not been heard from since {{.Unreachable}}. Your apps keep running, but nothing is watching over them until it is back.</p>
-    <p class="muted">Restarting the machine that runs Briard usually brings it back. <code>sudo briard logs</code> there shows what it said last.</p>
-  </div>
+  <div class="alert wide" data-variant="destructive">{{template "icon-alert"}}<h2>Briard is not answering</h2><section><p>The Briard agent on this machine has not been heard from since {{.Unreachable}}. Your apps keep running, but nothing is watching over them until it is back.</p><p>Restarting the machine that runs Briard usually brings it back.</p></section></div>
   {{else if .Open}}
-  <div class="card">
-    <h2>Needs your attention</h2>
-    <ul class="rows">
-      {{range .Open}}<li id="alert-{{.Key}}"><div><span class="{{.Severity}}"><strong>{{.Title}}</strong></span><br>{{.Body}} <span class="muted">— since {{.When}}</span></div></li>{{end}}
-    </ul>
-    {{template "recent" .Recent}}
-  </div>
-  {{else}}
-  <p class="status muted">Nothing on this machine needs your attention.</p>
-  {{if .Recent}}{{template "recent" .Recent}}{{end}}
+  <div class="alert wide" data-variant="destructive">{{template "icon-alert"}}<h2>Needs attention</h2><section><div class="item-group">
+    {{range $i, $a := .Open}}{{if $i}}<hr>{{end}}<div class="item" id="alert-{{.Key}}"><section><h3>{{.Title}}</h3><p>{{.Body}}</p></section><aside class="when">since {{.When}}</aside></div>{{end}}
+  </div></section></div>
   {{end}}
   {{end}}
 {{end}}
 
-{{define "recent"}}<details><summary class="muted">Recent alerts</summary>
-    <ul class="rows">
-      {{range .}}<li><span class="when">{{.When}}</span><div><span class="{{if .Resolved}}resolved{{else}}{{.Severity}}{{end}}">{{.Title}}</span>{{if .Body}}<br><span class="muted">{{.Body}}</span>{{end}}</div></li>{{end}}
-    </ul>
-  </details>{{end}}
+{{/* ACTIVITY: what Briard did and noticed, newest first -- the host's alert record, open and
+     resolved alike. Each app's own history is on its card. */}}
+{{define "activity"}}{{template "head" (shell "activity" false)}}
+<header class="page-head"><h1>Activity</h1><p>What Briard did and noticed, newest first. Each app's own history is under Apps.</p></header>
+<div class="tiles">
+{{template "alerts" .}}
+<div class="card wide"><section>
+  {{with .Alerts}}{{if .Recent}}<div class="item-group">
+    {{range $i, $a := .Recent}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{.Title}}{{if .Resolved}} <span class="badge" data-variant="secondary">resolved</span>{{else if ne .Severity "info"}} <span class="badge" data-variant="destructive">{{.Severity}}</span>{{end}}</h3>{{with .Body}}<p>{{.}}</p>{{end}}</section><aside class="when">{{.When}}</aside></div>{{end}}
+  </div>{{else}}<p class="note">Nothing yet. What Briard notices and does on this machine appears here.</p>{{end}}
+  {{else}}<p class="note">Nothing yet. What Briard notices and does on this machine appears here.</p>{{end}}
+</section></div>
+</div>
+{{template "foot" (shell "activity" false)}}{{end}}

@@ -38,7 +38,7 @@ func TestAlertsOpenFirstThenHistory(t *testing.T) {
 	r := alertsRig(t)
 	c := r.trust()
 	r.contact(t, time.Now())
-	if body := r.page(c); strings.Contains(body, "needs your attention") || strings.Contains(body, "Recent alerts") {
+	if body := r.page(c); strings.Contains(body, "Needs attention") || !strings.Contains(body, "Nothing yet") {
 		t.Fatalf("a page the host never told shows an alert card: %s", body)
 	}
 
@@ -53,17 +53,18 @@ func TestAlertsOpenFirstThenHistory(t *testing.T) {
 		rec(4, "upgrade-rolled-back:os", notify.Event, notify.Info, "Update rolled back"),
 	})
 	body := r.page(c)
-	open := body[strings.Index(body, "Needs your attention"):strings.Index(body, "Recent alerts")]
+	open := body[strings.Index(body, "Needs attention"):strings.Index(body, "<h1>Activity</h1>")]
 	if !strings.Contains(open, `id="alert-disk"`) || !strings.Contains(open, "Disk space low") || strings.Contains(open, "Clock not synchronised") || strings.Contains(open, "rolled back") {
 		t.Errorf("the open list is not exactly the disk alert: %s", open)
 	}
-	recent := body[strings.Index(body, "Recent alerts"):]
+	recent := body[strings.Index(body, "<h1>Activity</h1>"):]
+	recent = recent[strings.Index(recent, `<div class="card wide"><section>`):]
 	if !strings.Contains(recent, "Clock synchronised") || !strings.Contains(recent, "Update rolled back") || strings.Index(recent, "Update rolled back") > strings.Index(recent, "Disk space low") {
 		t.Errorf("the history is not every record, newest first: %s", recent)
 	}
 
 	r.hostPushes(t, []notify.Record{rec(1, "disk", notify.Open, notify.Warning, "Disk space low"), rec(5, "disk", notify.Resolved, "", "Disk space recovered")})
-	if body := r.page(c); strings.Contains(body, "Needs your attention") || !strings.Contains(body, "Nothing on this machine needs your attention") || !strings.Contains(body, "Disk space recovered") {
+	if body := r.page(c); strings.Contains(body, "Needs attention") || !strings.Contains(body, "Everything is running") || !strings.Contains(body, "Disk space recovered") {
 		t.Errorf("a closed alert still reads as open, or the history went: %s", body)
 	}
 }

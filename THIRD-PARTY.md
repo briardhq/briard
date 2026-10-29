@@ -71,3 +71,16 @@ firmware the guest image bakes, the front door and the dashboard are Go programs
 
 Under Nix the module set is vendored from those exact versions (`vendor-hash.nix` pins it), so the
 binary the release ships is built from nothing else.
+
+## The dashboard's stylesheet and icons — MIT, ISC
+
+The household dashboard's one stylesheet, `dashboard/static/app.css`, is built ahead of time by
+[`dashboard/css/build.sh`](dashboard/css/build.sh) and committed, so the guest fetches nothing:
+
+- [Basecoat CSS](https://basecoatui.com) 1.1.0 (MIT) — the components; fetched from npm by the
+  hash pinned in the script, so the build verifies it.
+- [Tailwind CSS](https://tailwindcss.com) v4 (MIT) — the build tool and the utilities the parts in
+  `dashboard/css/input.css` are made of; nixpkgs' `tailwindcss_4` at the revision pinned in
+  [`flake.lock`](flake.lock).
+- [Lucide](https://lucide.dev) (ISC) — the six sidebar icons and the alert's, inline in
+  `dashboard/templates/shell.html`.

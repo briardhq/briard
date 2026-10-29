@@ -19,9 +19,9 @@
 // which is how it finds Home Assistant -- the same way the door does, so the two cannot disagree
 // about where a service is.
 //
-// DELIBERATELY PLAIN: templates and a stylesheet, no build step, nothing fetched from anywhere --
-// it has to render on a node with no internet, and it is a supervisor next to Home Assistant, not
-// a rival to it.
+// DELIBERATELY PLAIN: templates and one stylesheet, built ahead of time (css/build.sh) and
+// embedded, nothing fetched from anywhere at run time -- it has to render on a node with no
+// internet, and it is a supervisor next to Home Assistant, not a rival to it.
 package main
 
 import (
@@ -55,10 +55,49 @@ import (
 	"briard.io/shared/sdnotify"
 )
 
-//go:embed templates/*.html
+//go:embed templates/*.html css/input.css
 var pageFS embed.FS
 
-var page = template.Must(template.ParseFS(pageFS, "templates/*.html"))
+// appCSS is the built stylesheet: Tailwind over Basecoat with the parts in css/input.css,
+// committed so the build needs nothing but Go (css/build.sh regenerates it).
+//
+//go:embed static/app.css
+var appCSS []byte
+
+var page = template.Must(template.New("").Funcs(template.FuncMap{"shell": shellOf}).ParseFS(pageFS, "templates/*.html"))
+
+// shellView is what the shell renders around a page: the section the sidebar marks current
+// ("" for a page with no sidebar -- an untrusted browser's), the title, and the seconds the page
+// polls at ("" for none).
+type shellView struct {
+	Section, Title, Refresh string
+}
+
+// sections is each page of the sidebar: its path, the template that renders it, and its title.
+// Every page reads the same view, so no two can disagree about where the home is.
+var sections = map[string]struct{ tmpl, title string }{
+	"/":         {"home", ""},
+	"/apps":     {"apps", "Apps"},
+	"/backup":   {"backup", "Backup"},
+	"/address":  {"address", "Web address"},
+	"/devices":  {"devices", "Trusted devices"},
+	"/activity": {"activity", "Activity"},
+}
+
+// shellOf is the template function behind "head" and "foot": the section by its template name,
+// and whether the page polls (a bool, every five seconds while something is moving).
+func shellOf(section string, refresh bool) shellView {
+	v := shellView{Section: section}
+	if refresh {
+		v.Refresh = "5"
+	}
+	for _, s := range sections {
+		if s.tmpl == section {
+			v.Title = s.title
+		}
+	}
+	return v
+}
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8087", "listen address (loopback: the front door forwards to it)")
@@ -159,24 +198,19 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/healthz":
 		fmt.Fprint(w, "ok: dashboard up\n")
-	case r.URL.Path == "/" && r.Method == http.MethodGet:
-		if code := r.URL.Query().Get("code"); code != "" {
-			a.redeem(w, r, code)
-			return
-		}
+	case r.URL.Path == "/app.css" && r.Method == http.MethodGet:
+		// The stylesheet, to every browser: it says nothing about the home.
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		_, _ = w.Write(appCSS)
+	case r.URL.Path == "/" && r.Method == http.MethodGet && r.URL.Query().Get("code") != "":
+		a.redeem(w, r, r.URL.Query().Get("code"))
+	case sections[r.URL.Path].tmpl != "" && r.Method == http.MethodGet:
 		d, ok := a.session(r)
 		if !ok {
 			a.refuse(w)
 			return
 		}
-		a.render(w, r, d)
-	case r.URL.Path == "/settings" && r.Method == http.MethodGet:
-		d, ok := a.session(r)
-		if !ok {
-			a.refuse(w)
-			return
-		}
-		a.settings(w, r, d)
+		a.render(w, r, d, sections[r.URL.Path].tmpl)
 	case r.URL.Path == "/open/home-assistant" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
 			a.refuse(w)
@@ -667,18 +701,20 @@ func (a *app) findHomeAssistant() *homeAssistant {
 	return nil
 }
 
-// view is what the pages render: where the home is, and the parts each tier is built from.
-// THE PAGE SHOWS WHAT THE HOUSEHOLD MUST DO NOW AND FOLDS THE REST AWAY -- what comes first
-// depends on the stage, never on the order features were built; the first screen is the stage's
-// one act and the steps still owed, and everything read rarely is on /settings.
+// view is what the pages render: where the home is, and the parts each page is built from.
+// THE HOME SHOWS WHAT THE HOUSEHOLD MUST DO NOW AND THE REST IS A SECTION AWAY -- what comes
+// first depends on the stage, never on the order features were built; the home page is what
+// needs attention, the stage's one act, the steps still owed and a glance at the rest, and each
+// section's detail is its own page in the sidebar.
 type view struct {
 	// Stage is where the home is: "choose" before any app, "installing" while one is on its
-	// way, "running" once one is. It decides what the first screen's one act is.
+	// way, "running" once one is. It decides what the home page's one act is.
 	Stage string
 	// Apps is every app the dashboard offers, in the order it offers them -- the first is the
 	// common one, preselected by being the filled button -- each with what the routes table
-	// and, for Home Assistant, its own API say about it.
-	Apps []*appView
+	// and, for Home Assistant, its own API say about it. InstalledCount is how many are.
+	Apps           []*appView
+	InstalledCount int
 	// Installing is the app on its way while Stage is "installing".
 	Installing *appView
 	Devices    []deviceView
@@ -704,6 +740,41 @@ type stepsView struct {
 }
 
 func (s stepsView) Any() bool { return s.Address || s.Key }
+
+// Heading and Status are the home page's first line: where the home is, in a word and a sentence.
+func (v view) Heading() string {
+	switch v.Stage {
+	case "choose":
+		return "Welcome"
+	case "installing":
+		return "Setting up"
+	}
+	return "Home"
+}
+
+func (v view) Status() string {
+	switch {
+	case v.Alerts != nil && v.Alerts.Unreachable != "":
+		return "Briard is not answering · last heard from " + v.Alerts.Unreachable
+	case v.Stage == "choose":
+		return "Briard is installed and running. Nothing else is, yet."
+	case v.Stage == "installing":
+		return v.Installing.Title + " is installing in the background. This page follows along."
+	case v.Alerts != nil && len(v.Alerts.Open) == 1:
+		return "One thing needs your attention."
+	case v.Alerts != nil && len(v.Alerts.Open) > 1:
+		return fmt.Sprintf("%d things need your attention.", len(v.Alerts.Open))
+	}
+	for _, app := range v.Apps {
+		if app.HA != nil && !app.HA.Running {
+			return app.Title + " is starting."
+		}
+	}
+	if v.Steps.Any() {
+		return "Everything is running. The rest is only yours to do."
+	}
+	return "Everything is running."
+}
 
 // appInfo is an app the dashboard offers: its catalog slug, its name for a person, one line.
 // The list is the product's, keyed on catalog names the way agent/services is: the catalog has
@@ -780,17 +851,8 @@ type haView struct {
 	Onboarded bool // every onboarding step done
 }
 
-// render is the home page; settings is the rest. Both read the same view -- the stage and every
-// section's state -- so the two pages cannot disagree about where the home is.
-func (a *app) render(w http.ResponseWriter, r *http.Request, self device) {
-	a.show(w, r, self, "page")
-}
-
-func (a *app) settings(w http.ResponseWriter, r *http.Request, self device) {
-	a.show(w, r, self, "settings")
-}
-
-func (a *app) show(w http.ResponseWriter, r *http.Request, self device, name string) {
+// render is one of the sidebar's pages, by template name, over the one view.
+func (a *app) render(w http.ResponseWriter, r *http.Request, self device, name string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	v := a.view(ctx, r, self)
@@ -829,7 +891,6 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 			}
 		}
 	}
-	installed := false
 	for _, info := range offered {
 		av := &appView{appInfo: info, Installed: routed[info.Name]}
 		if info.Name == hass.Name {
@@ -839,13 +900,15 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 		if av.Install != nil && av.Install.Running {
 			v.Installing = av
 		}
-		installed = installed || av.Installed
+		if av.Installed {
+			v.InstalledCount++
+		}
 		v.Apps = append(v.Apps, av)
 	}
 	switch {
 	case v.Installing != nil:
 		v.Stage = "installing"
-	case installed:
+	case v.InstalledCount > 0:
 		v.Stage = "running"
 	default:
 		v.Stage = "choose"
