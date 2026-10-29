@@ -368,4 +368,25 @@ type Offload struct {
 	GUID    string `json:"guid"`
 	Keyword string `json:"keyword"`
 	Value   string `json:"value"`
+	// RSC4 and RSC6 are the member's receive segment coalescing values (*RscIPv4, *RscIPv6),
+	// recorded and turned off beside the checksum offload; "" where the driver offers none.
+	RSC4 string `json:"rsc4,omitempty"`
+	RSC6 string `json:"rsc6,omitempty"`
 }
+
+// settings are what the record holds, by registry keyword, in the order they are read, turned
+// off and put back; a "" value is a driver without the setting and is skipped.
+func (o Offload) settings() [3][2]string {
+	return [3][2]string{{o.Keyword, o.Value}, {rscOffloadIPv4, o.RSC4}, {rscOffloadIPv6, o.RSC6}}
+}
+
+// The receive segment coalescing settings the bridge needs off on the member too. A member that
+// coalesces received segments hands the bridge frames larger than the MTU, and the bridge drops
+// them -- measured on a virtio NIC, whose hypervisor coalesces on the member's behalf: every
+// download crawled at tens of kilobytes a second until RSC was off. Windows already reports RSC as
+// not operational on a bridge member, so turning it off costs nothing on any NIC; what it buys is a
+// driver that stops asking its hardware, or its hypervisor, for coalesced frames.
+const (
+	rscOffloadIPv4 = "*RscIPv4"
+	rscOffloadIPv6 = "*RscIPv6"
+)

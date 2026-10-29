@@ -96,28 +96,57 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 	return rec, nil
 }
 
-// offloadOff records a's IPv4 checksum offload and turns it off, the setting a member needs
-// (checksumOffload). The record is returned even when turning it off fails part-way. An adapter
-// whose driver offers no such setting has nothing to record or turn off (measured: Realtek's
-// RTL8922AE package): the property list is read whole, so a failed read stays an error and only a
-// list without the keyword reads as absent.
+// offloadOff records a's IPv4 checksum offload and receive segment coalescing and turns them off,
+// the settings a member needs (checksumOffload, rscOffloadIPv4, rscOffloadIPv6). The record is
+// returned even when turning one off fails part-way. An adapter whose driver offers none of them
+// has nothing to record or turn off (measured: Realtek's RTL8922AE package has no checksum
+// keyword): the property list is read whole, so a failed read stays an error and only a list
+// without the keyword reads as absent.
 func offloadOff(ctx context.Context, a adapter) (Offload, error) {
-	val, err := powershell(ctx, fmt.Sprintf("@(Get-NetAdapterAdvancedProperty -Name %s -AllProperties -EA Stop | Where-Object RegistryKeyword -eq '%s').RegistryValue -join ','",
-		psQuote(a.name), checksumOffload))
-	if err != nil {
-		return Offload{}, fmt.Errorf("reading %s on %s: %w", checksumOffload, a.name, err)
+	rec := Offload{GUID: a.guid, Keyword: checksumOffload}
+	for i, v := range []*string{&rec.Value, &rec.RSC4, &rec.RSC6} {
+		val, err := readSetting(ctx, a.name, rec.settings()[i][0])
+		if err != nil {
+			return Offload{}, err
+		}
+		*v = val
 	}
-	if val == "" {
+	if rec.Value == "" && rec.RSC4 == "" && rec.RSC6 == "" {
 		return Offload{}, nil
 	}
-	rec := Offload{GUID: a.guid, Keyword: checksumOffload, Value: val}
-	if val != "0" {
-		if _, err := powershell(ctx, fmt.Sprintf("Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -RegistryValue 0 -EA Stop",
-			psQuote(a.name), checksumOffload)); err != nil {
-			return rec, fmt.Errorf("turning %s off on %s: %w", checksumOffload, a.name, err)
+	for _, s := range rec.settings() {
+		if kw, val := s[0], s[1]; val != "" && val != "0" {
+			if _, err := powershell(ctx, fmt.Sprintf("Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -RegistryValue 0 -EA Stop",
+				psQuote(a.name), kw)); err != nil {
+				return rec, fmt.Errorf("turning %s off on %s: %w", kw, a.name, err)
+			}
 		}
 	}
 	return rec, nil
+}
+
+// readSetting is adapter name's registry value for keyword kw: "" when its driver has no such
+// setting (the property list is read whole, so a failed read is an error, never an absence).
+func readSetting(ctx context.Context, name, kw string) (string, error) {
+	val, err := powershell(ctx, fmt.Sprintf("@(Get-NetAdapterAdvancedProperty -Name %s -AllProperties -EA Stop | Where-Object RegistryKeyword -eq '%s').RegistryValue -join ','",
+		psQuote(name), kw))
+	if err != nil {
+		return "", fmt.Errorf("reading %s on %s: %w", kw, name, err)
+	}
+	return val, nil
+}
+
+// putBack gives adapter name the values rec holds, keyword by keyword; a "" value is skipped.
+func putBack(ctx context.Context, name string, rec Offload) error {
+	for _, s := range rec.settings() {
+		if kw, val := s[0], s[1]; val != "" {
+			if _, err := powershell(ctx, fmt.Sprintf("Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -RegistryValue '%s' -EA Stop",
+				psQuote(name), kw, val)); err != nil {
+				return fmt.Errorf("putting %s back to %s on %s: %w", kw, val, name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // SwapMember moves bridge onto the standalone adapter to: the physical member leaves, the
@@ -155,10 +184,9 @@ func SwapMember(ctx context.Context, bridge, to string, prev Offload) (Offload, 
 		if err := waitMaster(ctx, from, ""); err != nil {
 			return rec, fmt.Errorf("%s did not leave %s, so %s was not added: %w", from, bridge, to, err)
 		}
-		if f, ok := byName(adapters(), from); ok && prev.GUID == f.guid && prev.Value != "" && prev.Value != "0" {
-			// Best-effort: the leaving member works either way; it is the bridge that needs it off.
-			_, _ = powershell(ctx, fmt.Sprintf("Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -RegistryValue '%s' -EA Stop",
-				psQuote(from), prev.Keyword, prev.Value))
+		if f, ok := byName(adapters(), from); ok && prev.GUID == f.guid {
+			// Best-effort: the leaving member works either way; it is the bridge that needs them off.
+			_ = putBack(ctx, from, prev)
 		}
 	}
 	if _, err := powershell(ctx, fmt.Sprintf("Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword NetworkAddress -RegistryValue '%s' -EA Stop",
@@ -316,7 +344,7 @@ var (
 )
 
 // DestroyBridge undoes BuildBridge (`briard uninstall`): our bridge is destroyed, its member gets
-// the offload value rec recorded back, and our TAP is removed. A bridge that is not ours is never
+// the values rec recorded back, and our TAP is removed. A bridge that is not ours is never
 // touched, and an absent one is already destroyed.
 //
 // THE MEMBER BY GUID, the value by registry keyword and value: a name is the user's to change and
@@ -341,14 +369,13 @@ func DestroyBridge(ctx context.Context, rec Offload) error {
 			}
 		}
 	}
-	if rec.Value != "" {
+	if rec.Value != "" || rec.RSC4 != "" || rec.RSC6 != "" {
 		m, ok := byGUID(adapters(), rec.GUID)
 		if !ok {
-			return fmt.Errorf("no adapter %s to give its %s value %s back to", rec.GUID, rec.Keyword, rec.Value)
+			return fmt.Errorf("no adapter %s to give its settings back to (%+v)", rec.GUID, rec)
 		}
-		if _, err := powershell(ctx, fmt.Sprintf("Set-NetAdapterAdvancedProperty -Name %s -RegistryKeyword '%s' -RegistryValue '%s' -EA Stop",
-			psQuote(m.name), rec.Keyword, rec.Value)); err != nil {
-			return fmt.Errorf("putting %s back to %s on %s: %w", rec.Keyword, rec.Value, m.name, err)
+		if err := putBack(ctx, m.name, rec); err != nil {
+			return err
 		}
 	}
 	if _, ok := byName(adapters(), TapName); !ok {

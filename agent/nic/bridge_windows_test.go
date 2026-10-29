@@ -11,7 +11,8 @@ import (
 // only when BRIARD_TEST_BRIDGE names the NIC to bridge, on a machine built to be broken
 // (lab/vanilla-windows), as an administrator: TestBuildBridge before a restart, then
 // TestBridgeAfterRestart after one -- because a Windows bridge shows its TAP as a member, and
-// carries it, only once the machine has restarted.
+// carries it, only once the machine has restarted. TestDestroyBridge runs alone on a machine with
+// no bridge and a TAP adapter present, and leaves it with neither.
 
 func bridgeMember(t *testing.T) string {
 	member := os.Getenv("BRIARD_TEST_BRIDGE")
@@ -66,5 +67,54 @@ func TestBridgeAfterRestart(t *testing.T) {
 	}
 	if again, err := BuildBridge(context.Background(), member); err != nil || again != (Offload{}) {
 		t.Errorf("a build after the restart = %+v, %v; want the zero record and no error", again, err)
+	}
+}
+
+// TestDestroyBridge builds the bridge, destroys it with the record the build returned, and reads
+// the member's settings back from the registry: each one the build turned off must be at its
+// recorded value again, the checksum offload and both receive segment coalescing values alike.
+func TestDestroyBridge(t *testing.T) {
+	member := bridgeMember(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	rec, err := BuildBridge(ctx, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec == (Offload{}) {
+		t.Skip("a bridge already exists: this test needs to build its own to know what to put back")
+	}
+	t.Logf("offload record: %+v", rec)
+	for _, s := range rec.settings() {
+		if kw, want := s[0], s[1]; want != "" {
+			if got, err := readSetting(ctx, member, kw); err != nil || got != "0" {
+				t.Errorf("%s on %s after the build = %q, %v; want 0", kw, member, got, err)
+			}
+		}
+	}
+	if err := DestroyBridge(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if IsBridge(BridgeName) {
+		t.Errorf("a bridge named %q survived DestroyBridge", BridgeName)
+	}
+	// The device removal is asynchronous: the adapter table lists the TAP for a moment after
+	// pnputil returns (measured: a read straight after still showed it; the next did not).
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(time.Second) {
+		_, ok := byName(adapters(), TapName)
+		if !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("the TAP %q survived DestroyBridge", TapName)
+			break
+		}
+	}
+	for _, s := range rec.settings() {
+		if kw, want := s[0], s[1]; want != "" {
+			if got, err := readSetting(ctx, member, kw); err != nil || got != want {
+				t.Errorf("%s on %s after the destroy = %q, %v; want %q back", kw, member, got, err, want)
+			}
+		}
 	}
 }
