@@ -44,11 +44,20 @@ type restoreOp struct {
 	Detail       string
 }
 
-// historyView is the history page.
+// appPageView is an app's page: its card, with the one button, and its history.
+type appPageView struct {
+	App     *appView
+	History historyView
+}
+
+// historyView is the history card, with what the newest member says about the app as it runs now.
 type historyView struct {
 	Service string
-	Title   string    // the app as a person names it
-	Rows    []rowView // newest FIRST here, unlike the CLI: a page is read from the top
+	Title   string // the app as a person names it
+	// Version is what the app runs now; OnDisk what its image holds on this machine (the
+	// manifest's installed size). Both "" when the ring is empty or says nothing.
+	Version, OnDisk string
+	Rows            []rowView // newest FIRST here, unlike the CLI: a page is read from the top
 	// Banner is the row whose undo returns an UNHEALTHY app to its last healthy state, or nil while
 	// the app is healthy.
 	Banner  *rowView
@@ -93,25 +102,32 @@ type confirmView struct {
 	From, To                          string
 }
 
-// showHistory lists one app's events.
-func (a *app) showHistory(w http.ResponseWriter, r *http.Request, service string) {
+// showApp is one app's page: its card as the home shows it, and its history.
+func (a *app) showApp(w http.ResponseWriter, r *http.Request, self device, service string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	v := a.history(ctx, service)
+	v := appPageView{App: a.view(ctx, r, self).app(service), History: a.history(ctx, service)}
+	v.App.Here = true
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := page.ExecuteTemplate(w, "history", v); err != nil {
-		log.Printf("dashboard: history page: %v", err)
+	if err := page.ExecuteTemplate(w, "app-page", v); err != nil {
+		log.Printf("dashboard: app page: %v", err)
 	}
 }
 
-// history is the page's view: the rows, the banner, and the undo in flight if there is one.
+// history is the card's view: the rows, the banner, and the undo in flight if there is one.
 func (a *app) history(ctx context.Context, service string) historyView {
 	v := historyView{Service: service, Title: appTitle(service)}
-	rows, _, err := a.rows(ctx, service)
+	rows, running, err := a.rows(ctx, service)
 	if err != nil {
 		v.Error = err.Error()
 	} else {
 		v.Rows = rows
+		if running != nil {
+			v.Version = running.Version
+			if running.InstalledSize > 0 {
+				v.OnDisk = gb(running.InstalledSize)
+			}
+		}
 		for i := range rows {
 			if rows[i].Offer {
 				v.Banner = &rows[i]
@@ -131,21 +147,25 @@ func (a *app) history(ctx context.Context, service string) historyView {
 	return v
 }
 
-// rows asks the host for the ring and renders its history for the page, with the version the app
-// runs now.
-func (a *app) rows(ctx context.Context, service string) ([]rowView, string, error) {
+// rows asks the host for the ring and renders its history for the page, with the manifest the
+// app runs now (nil when the ring is empty or its newest member does not say).
+func (a *app) rows(ctx context.Context, service string) ([]rowView, *manifest.Manifest, error) {
 	o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveServiceMembers, Payload: service})
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	if o.State != api.OutcomeDone {
-		return nil, "", fmt.Errorf("%s", o.Detail)
+		return nil, nil, fmt.Errorf("%s", o.Detail)
 	}
 	var members []quadlet.SnapshotEntry
 	if err := json.Unmarshal([]byte(o.Detail), &members); err != nil {
-		return nil, "", fmt.Errorf("the machine's answer did not parse: %w", err)
+		return nil, nil, fmt.Errorf("the machine's answer did not parse: %w", err)
 	}
-	running := runningVersion(members)
+	newest := runningManifest(members)
+	var running string
+	if newest != nil {
+		running = newest.Version
+	}
 	offer, unhealthy := quadlet.Unhealthy(members)
 	var out []rowView
 	loc := zone()
@@ -164,16 +184,16 @@ func (a *app) rows(ctx context.Context, service string) ([]rowView, string, erro
 			Offer:     unhealthy && h.Point.Member == offer.Member,
 		})
 	}
-	return out, running, nil
+	return out, newest, nil
 }
 
-// runningVersion is what the app is on now, read off the NEWEST member.
+// runningManifest is what the app is on now, read off the NEWEST member.
 //
 // It is a derivation rather than a question asked, and it holds because of how members are taken:
 // every start takes one and the newest is never pruned, and an update always restarts the service
 // — so the newest member is pinned to the identity running now. An empty ring has no answer and
 // marks nothing, which is the right failure: an unmarked row says less, never something false.
-func runningVersion(members []quadlet.SnapshotEntry) string {
+func runningManifest(members []quadlet.SnapshotEntry) *manifest.Manifest {
 	var newest quadlet.SnapshotEntry
 	var at time.Time
 	for _, m := range members {
@@ -181,7 +201,11 @@ func runningVersion(members []quadlet.SnapshotEntry) string {
 			newest, at = m, t
 		}
 	}
-	return versionOf(newest.Meta.Manifest)
+	m, _, err := manifest.Parse([]byte(newest.Meta.Manifest))
+	if err != nil {
+		return nil
+	}
+	return &m
 }
 
 func versionOf(raw string) string {
@@ -212,7 +236,7 @@ func (a *app) requestUndo(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	if op, running := a.restores[service]; running && !op.Done {
 		a.mu.Unlock()
-		http.Redirect(w, r, "/history/"+service, http.StatusSeeOther)
+		http.Redirect(w, r, "/apps/"+service, http.StatusSeeOther)
 		return
 	}
 	a.restores[service] = &restoreOp{Started: a.now(), What: r.FormValue("what")}
@@ -238,7 +262,7 @@ func (a *app) requestUndo(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("dashboard: undo %s to %s: outcome=%+v err=%v", service, point, o, err)
 	}()
-	http.Redirect(w, r, "/history/"+service, http.StatusSeeOther)
+	http.Redirect(w, r, "/apps/"+service, http.StatusSeeOther)
 }
 
 // confirmUndo renders the step between. It re-reads the history rather than trusting the form,
@@ -265,8 +289,8 @@ func (a *app) confirmUndo(w http.ResponseWriter, r *http.Request, service, point
 	}
 	v := confirmView{Service: service, Title: appTitle(service), Point: point, What: cmp.Or(chosen.What, chosen.Caption), Back: chosen.Back,
 		Note: chosen.Note, MovesCode: chosen.MovesCode, To: chosen.Version}
-	if chosen.MovesCode {
-		v.From = running
+	if chosen.MovesCode && running != nil {
+		v.From = running.Version
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := page.ExecuteTemplate(w, "confirm", v); err != nil {
@@ -274,9 +298,9 @@ func (a *app) confirmUndo(w http.ResponseWriter, r *http.Request, service, point
 	}
 }
 
-// historyService reads the app name out of /history/<service>, or "" for a path that names none.
-func historyService(path string) string {
-	name := strings.TrimPrefix(path, "/history/")
+// appService reads the app name out of /apps/<service>, or "" for a path that names none.
+func appService(path string) string {
+	name := strings.TrimPrefix(path, "/apps/")
 	if name == path || name == "" || strings.Contains(name, "/") {
 		return ""
 	}

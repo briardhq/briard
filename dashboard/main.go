@@ -260,17 +260,18 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.requestInstall(w, r, strings.TrimPrefix(r.URL.Path, "/install/"))
-	case strings.HasPrefix(r.URL.Path, "/history/") && r.Method == http.MethodGet:
-		if _, ok := a.session(r); !ok {
+	case strings.HasPrefix(r.URL.Path, "/apps/") && r.Method == http.MethodGet:
+		d, ok := a.session(r)
+		if !ok {
 			a.refuse(w)
 			return
 		}
-		name := historyService(r.URL.Path)
-		if name == "" {
+		name := appService(r.URL.Path)
+		if offeredApp(name) == nil {
 			http.NotFound(w, r)
 			return
 		}
-		a.showHistory(w, r, name)
+		a.showApp(w, r, d, name)
 	case r.URL.Path == "/undo" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
 			a.refuse(w)
@@ -847,6 +848,9 @@ type appView struct {
 	// Install is an install the household asked for from this page, while it runs or after
 	// it failed.
 	Install *installView
+	// Here says the card is on the app's own page (its fragment asks with &here), which it
+	// then need not link to.
+	Here bool
 }
 
 // deviceView is one row of the trusted-device list: a label a person can tell apart, when it

@@ -101,7 +101,7 @@ func TestFragmentsPollOnlyWhileMovingThenRefreshThePage(t *testing.T) {
 	r2.app.mu.Lock()
 	r2.app.restores["home-assistant"] = &restoreOp{Started: galleryClock, What: "Updated to 2026.8.0"}
 	r2.app.mu.Unlock()
-	if _, body := get(t, r2, "/history/home-assistant", c2); !strings.Contains(body, `hx-get="/f/history?app=home-assistant"`) || !strings.Contains(body, "Undoing") {
+	if _, body := get(t, r2, "/apps/home-assistant", c2); !strings.Contains(body, `hx-get="/f/history?app=home-assistant"`) || !strings.Contains(body, "Undoing") {
 		t.Errorf("the history card does not poll while an undo runs: %s", body)
 	}
 	if resp, body := get(t, r2, "/f/history?app=home-assistant", c2); resp.StatusCode != 200 || !strings.Contains(body, "Undoing") || strings.Contains(body, "<html") {

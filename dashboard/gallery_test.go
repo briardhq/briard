@@ -141,7 +141,7 @@ func galleryRing(broken bool) string {
 		health = services.Unhealthy
 	}
 	manifestOf := func(v string) string {
-		return `{"name":"home-assistant","version":"` + v + `","containers":[{"name":"app",` +
+		return `{"name":"home-assistant","version":"` + v + `","size":622000000,"installedSize":2490000000,"containers":[{"name":"app",` +
 			`"image":"ghcr.io/x/ha@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
 			`"mount":"/config","primary":true,"port":8123,"healthPath":"/"}]}`
 	}
@@ -453,29 +453,29 @@ var galleryStates = []galleryState{
 			r.app.now = func() time.Time { return galleryClock.Add(time.Minute + joinTTL + time.Second) }
 			return "/join", j.join
 		}},
-	{"history", "Home Assistant's history: a quiet day, an update, each undoable.",
+	{"app", "Home Assistant's page: the card, what it is, and its history -- a quiet day, an update, each undoable.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			answerHistory(port, galleryRing(false))
-			return "/history/home-assistant", c
+			return "/apps/home-assistant", c
 		}},
-	{"history-broken", "The app did not start cleanly after the update: the banner offers the way back.",
+	{"app-broken", "The app did not start cleanly after the update: the banner offers the way back.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			answerHistory(port, galleryRing(true))
-			return "/history/home-assistant", c
+			return "/apps/home-assistant", c
 		}},
-	{"history-empty", "No history yet.",
+	{"app-empty", "No history yet.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			answerHistory(port, "[]")
-			return "/history/home-assistant", c
+			return "/apps/home-assistant", c
 		}},
-	{"history-unreadable", "The history could not be read (no admin port).",
+	{"app-unreadable", "The history could not be read (no admin port).",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			port.mu.Lock()
 			port.noPort = true
 			port.mu.Unlock()
-			return "/history/home-assistant", c
+			return "/apps/home-assistant", c
 		}},
-	{"history-undoing", "An undo in flight.",
+	{"app-undoing", "An undo in flight.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			ring := galleryRing(false)
 			// The listing's directives are answered; the restore's is left waiting.
@@ -484,7 +484,7 @@ var galleryStates = []galleryState{
 			postForm(t, r, "/undo", c, url.Values{"point": {point}, "what": {"Updated to 2026.8.0"}, "confirm": {"yes"}}).Body.Close()
 			<-port.waiting
 			port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: ring}
-			return "/history/home-assistant", c
+			return "/apps/home-assistant", c
 		}},
 	{"confirm", "The step between pressing Undo and the undo itself.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {

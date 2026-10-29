@@ -38,6 +38,9 @@
 .card > section > * + * { @apply mt-3; }
 .page a:not(.btn):not(.item) { @apply underline underline-offset-4; }
 .item p { @apply line-clamp-none; }
+/* Rows in a card: closer than Basecoat sets them, so a list of four is one glance. */
+.item-group { @apply gap-1; }
+.item-group > .item { @apply px-3 py-2; }
 .when { @apply text-xs text-muted-foreground whitespace-nowrap; }
 code { @apply font-mono text-[.95em]; }
 progress { @apply w-full h-2 rounded-full overflow-hidden; }

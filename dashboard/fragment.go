@@ -57,6 +57,7 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 		if part == "install" {
 			tmpl, moving = "installing", av.Install != nil && av.Install.Running
 		} else {
+			av.Here = r.URL.Query().Has("here")
 			tmpl, moving = "app-card", av.HA != nil && !av.HA.Running
 		}
 	case "address-step", "address-card":

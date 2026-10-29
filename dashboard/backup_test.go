@@ -218,7 +218,7 @@ func TestActsReturnToThePageTheyWerePressedOn(t *testing.T) {
 		}
 		return resp.Header.Get("Location")
 	}
-	for referer, want := range map[string]string{r.srv.URL + "/backup": "/backup", r.srv.URL + "/": "/", "": "/", "https://evil.example/backup": "/backup", r.srv.URL + "/history/home-assistant": "/"} {
+	for referer, want := range map[string]string{r.srv.URL + "/backup": "/backup", r.srv.URL + "/": "/", "": "/", "https://evil.example/backup": "/backup", r.srv.URL + "/apps/home-assistant": "/"} {
 		if got := post(referer); got != want {
 			t.Errorf("after an act pressed on %q the page goes to %q, want %q", referer, got, want)
 		}

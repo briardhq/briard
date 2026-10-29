@@ -20,7 +20,7 @@ import (
 // start after it -- a sample, which anchors nothing and is not a row.
 func ring() string {
 	manifestOf := func(v string) string {
-		return `{"name":"home-assistant","version":"` + v + `","containers":[{"name":"app",` +
+		return `{"name":"home-assistant","version":"` + v + `","size":622000000,"installedSize":2490000000,"containers":[{"name":"app",` +
 			`"image":"ghcr.io/x/ha@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
 			`"mount":"/config","primary":true,"port":8123,"healthPath":"/"}]}`
 	}
@@ -88,11 +88,11 @@ func TestHistoryListsWhatTheHostReports(t *testing.T) {
 	r.app.port = port
 	answerMembers(port)
 
-	resp := r.do("GET", "/history/home-assistant", c, nil)
+	resp := r.do("GET", "/apps/home-assistant", c, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("history = %d, want 200", resp.StatusCode)
 	}
-	req, _ := http.NewRequest("GET", r.srv.URL+"/history/home-assistant", nil)
+	req, _ := http.NewRequest("GET", r.srv.URL+"/apps/home-assistant", nil)
 	req.AddCookie(c)
 	got, err := http.DefaultClient.Do(req)
 	must(t, err)
@@ -104,6 +104,9 @@ func TestHistoryListsWhatTheHostReports(t *testing.T) {
 		"taken while the app was running", // the day's point's class, in the CLI's words
 		"also goes back to 2026.7.1",      // undoing the update moves the version too
 		"Undo these changes",
+		"<h3>Version</h3><p>2026.8.0</p>", // the About card, off the newest member's manifest
+		"Its image takes 2.49 GB",
+		"Open Home Assistant", // the app's card, on its page too
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the page does not say %q:\n%s", want, body)
@@ -127,6 +130,17 @@ func TestHistoryListsWhatTheHostReports(t *testing.T) {
 		if d.Kind != api.DirectiveServiceMembers {
 			t.Errorf("listing the history asked the host for %q", d.Kind)
 		}
+	}
+	// The home's card links to the page; the page's own card does not link to itself. An app
+	// the dashboard does not offer has no page.
+	if home := r.page(c); !strings.Contains(home, `href="/apps/home-assistant">Details</a>`) {
+		t.Errorf("the home's card does not lead to the app's page: %s", home)
+	}
+	if strings.Contains(body, `href="/apps/home-assistant"`) {
+		t.Errorf("the app's page links to itself: %s", body)
+	}
+	if resp := r.do("GET", "/apps/immich", c, nil); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("an app not offered has a page: %d", resp.StatusCode)
 	}
 }
 
@@ -217,7 +231,7 @@ func TestHistoryNeedsATrustedBrowser(t *testing.T) {
 	r := newRig(t)
 	port := newFakePort()
 	r.app.port = port
-	if resp := r.do("GET", "/history/home-assistant", nil, nil); resp.StatusCode != http.StatusUnauthorized {
+	if resp := r.do("GET", "/apps/home-assistant", nil, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("history with no session = %d, want 401", resp.StatusCode)
 	}
 	resp := postForm(t, r, "/undo", nil, url.Values{"point": {"x"}})
@@ -282,7 +296,7 @@ func TestHistoryMarksAnAppThatDidNotStart(t *testing.T) {
 				port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: members(c.health)}
 			}
 		}()
-		req, _ := http.NewRequest("GET", r.srv.URL+"/history/home-assistant", nil)
+		req, _ := http.NewRequest("GET", r.srv.URL+"/apps/home-assistant", nil)
 		req.AddCookie(cookie)
 		got, err := http.DefaultClient.Do(req)
 		must(t, err)
@@ -326,7 +340,7 @@ func TestHistoryShowsTheHouseholdsHours(t *testing.T) {
 	port := newFakePort()
 	r.app.port = port
 	answerMembers(port)
-	req, _ := http.NewRequest("GET", r.srv.URL+"/history/home-assistant", nil)
+	req, _ := http.NewRequest("GET", r.srv.URL+"/apps/home-assistant", nil)
 	req.AddCookie(c)
 	got, err := http.DefaultClient.Do(req)
 	must(t, err)

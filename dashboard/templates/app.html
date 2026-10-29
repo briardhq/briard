@@ -13,17 +13,31 @@
   </section></div>
 {{end}}
 
-{{/* THE APP CARD: an installed app, its one button, and the way to its history. */}}
+{{/* THE APP CARD: an installed app, its one button, and the way to its page -- unless it is on it. */}}
 {{define "app-card"}}
-  <div class="card"{{with .HA}}{{if not .Running}} hx-get="/f/app?app={{$.Name}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>{{.Title}}</h2>
+  <div class="card"{{with .HA}}{{if not .Running}} hx-get="/f/app?app={{$.Name}}{{if $.Here}}&here{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>{{.Title}}</h2>
     {{with .HA}}<p>{{if not .Reachable}}Starting…{{else if .Onboarded}}Running at <a href="{{.URL}}" target="_blank" rel="noopener">{{.Host}}</a>{{else if .Running}}Ready for its first open.{{else}}Almost ready — Home Assistant is still starting.{{end}}</p>{{else}}<p>Installed and running.</p>{{end}}
   </header>
   {{with .HA}}{{if and .Reachable .Onboarded}}<section class="note">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.URL}}config/person" target="_blank" rel="noopener">Settings → People</a>, your name, “Change password” — no old password is needed.</section>{{end}}{{end}}
   <footer>
     {{with .HA}}{{if .Reachable}}<form method="post" action="/open/home-assistant" target="_blank"><button type="submit" class="btn"{{if not .Running}} disabled{{end}}>Open Home Assistant</button></form>{{end}}{{end}}
-    <a class="btn" data-variant="ghost" href="/history/{{.Name}}">History</a>
+    {{if not .Here}}<a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a>{{end}}
   </footer></div>
 {{end}}
+
+{{/* THE APP PAGE: the card as the home shows it, what the app is, and its history. */}}
+{{define "app-page"}}{{template "head" (shell "apps" false)}}
+<header class="page-head"><h1>{{.App.Title}}</h1><p>{{.App.Blurb}}</p></header>
+<div class="tiles">
+  {{template "app-card" .App}}
+  <div class="card"><header><h2>About</h2></header><section><div class="item-group">
+    <div class="item"><section><h3>Version</h3><p>{{with .History.Version}}{{.}}{{else}}Not known yet{{end}}</p></section></div>
+    <div class="item"><section><h3>On disk</h3><p>{{with .History.OnDisk}}Its image takes {{.}} of this machine; your own data comes on top.{{else}}Not known yet{{end}}</p></section></div>
+    {{with .App.HA}}<div class="item"><section><h3>Address</h3><p><code>{{.Host}}</code> on your home network.</p></section></div>{{end}}
+  </div></section></div>
+  {{template "history-card" .History}}
+</div>
+{{template "foot" (shell "apps" false)}}{{end}}
 
 {{/* THE APPS PAGE: what runs, then what could. */}}
 {{define "apps"}}{{template "head" (shell "apps" false)}}
