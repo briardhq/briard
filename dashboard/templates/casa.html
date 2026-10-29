@@ -16,18 +16,18 @@
   </section><footer><form method="post" action="/casa/recheck"><button type="submit" class="btn" data-variant="outline">Check again</button></form></footer></div>
   {{else}}
   <div class="card"{{with .Asked}}{{if not .Failed}} hx-get="/f/address-step{{if $.OnHome}}?home{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>Secure access</h2><p>Your browser marks <code>{{.Host}}</code> as <strong>{{template "icon-alert"}}Not secure</strong>. Enable encryption with a free address and a real certificate, used automatically by every Briard app:</p></header><section>
-    <p class="key">{{template "icon-lock"}}https://{{.Name}}</p>
+    <p>{{template "icon-lock"}}<code>https://{{.Name}}</code></p>
     <p class="note">No account. Enter an email and open the confirmation link, and the address is yours. It points only inside your home network; nothing is opened to the internet.</p>
     {{if eq .State "refused"}}<div class="alert" data-variant="destructive"><section>{{.Reason}}</section></div>{{else if eq .State "expired"}}<div class="alert" data-variant="destructive"><section>The last link expired before it was opened. Try again.</section></div>{{end}}
     {{with .Asked}}{{if .Failed}}<div class="alert" data-variant="destructive"><section>{{.Detail}}</section></div>{{else}}<p>Sending the link to {{.Email}}…</p>{{end}}{{end}}
     <form method="post" action="/casa/claim" class="field" id="casa-claim"><label class="label" for="casa-email">Email</label><input class="input" id="casa-email" name="email" type="email" required placeholder="you@example.org"{{with .Asked}} value="{{.Email}}"{{end}} hx-preserve></form>
-  </section><footer><button type="submit" class="btn" form="casa-claim">Register</button>{{if .OnHome}}<button type="submit" class="btn" data-variant="ghost" form="casa-claim" formaction="/casa/skip" formnovalidate>Not now</button>{{end}}</footer></div>
+  </section><footer><button type="submit" class="btn" form="casa-claim">Enable encryption</button>{{if .OnHome}}<button type="submit" class="btn" data-variant="ghost" form="casa-claim" formaction="/casa/skip" formnovalidate>Not now</button>{{end}}</footer></div>
   {{end}}
 {{end}}
 
 {{/* THE SECURE ACCESS PAGE: the name as it stands, and what reaches it from outside (nothing). */}}
 {{define "address"}}{{template "head" (shell "address" false)}}
-<header class="page-head"><h1>Secure access</h1><p>The name your apps answer to, with a real certificate.</p></header>
+<header class="page-head"><h1>Secure access</h1><p>Enable encryption with a free address and a real certificate.</p></header>
 <div class="tiles">
   {{with .Casa}}
   {{if eq .State "registered"}}{{if eq .Resolves "blocked"}}{{template "address-step" .}}{{else}}{{template "address-card" $}}{{end}}

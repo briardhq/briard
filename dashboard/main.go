@@ -96,7 +96,7 @@ var sections = map[string]struct{ tmpl, title string }{
 	"/":         {"home", ""},
 	"/apps":     {"apps", "Apps"},
 	"/backup":   {"backup", "Backup"},
-	"/address":  {"address", "Secure access"},
+	"/secure":   {"address", "Secure access"},
 	"/devices":  {"devices", "Trusted devices"},
 	"/activity": {"activity", "Activity"},
 }

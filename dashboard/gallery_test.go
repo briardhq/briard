@@ -178,7 +178,7 @@ func section(path string) func(*testing.T, *rig, *http.Cookie, *fakePort) (strin
 var (
 	apps     = section("/apps")
 	backup   = section("/backup")
-	address  = section("/address")
+	address  = section("/secure")
 	devices  = section("/devices")
 	activity = section("/activity")
 )

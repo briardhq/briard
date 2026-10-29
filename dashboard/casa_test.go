@@ -140,7 +140,7 @@ func TestCasaSkipHidesTheStepFromTheHomeForAWhile(t *testing.T) {
 	if _, home := get(t, r, "/", c); strings.Contains(home, "<h2>Secure access</h2>") {
 		t.Errorf("the home still shows the step after Not now: %s", home)
 	}
-	if _, addr := get(t, r, "/address", c); !strings.Contains(addr, "<h2>Secure access</h2>") || strings.Contains(addr, ">Not now<") {
+	if _, addr := get(t, r, "/secure", c); !strings.Contains(addr, "<h2>Secure access</h2>") || strings.Contains(addr, ">Not now<") {
 		t.Errorf("the Secure access page does not offer the name after Not now, or offers Not now itself: %s", addr)
 	}
 	r.app.now = func() time.Time { return time.Now().Add(casaSkipFor + time.Hour) }
@@ -235,7 +235,7 @@ func TestCasaOfferNamesTheHostTheBrowserIsOn(t *testing.T) {
 		resp, err := http.DefaultClient.Do(req)
 		must(t, err)
 		body := bodyOf(t, resp)
-		if want := "Your browser marks <code>" + strings.TrimSuffix(host, ":8080") + "</code> as"; !strings.Contains(string(body), want) || !strings.Contains(string(body), "https://brave-elf.briard.casa</p>") {
+		if want := "Your browser marks <code>" + strings.TrimSuffix(host, ":8080") + "</code> as"; !strings.Contains(string(body), want) || !strings.Contains(string(body), "<code>https://brave-elf.briard.casa</code></p>") {
 			t.Errorf("on %s, the offer does not name the host and the address: %s", host, body)
 		}
 	}

@@ -480,7 +480,7 @@ func (r *rig) reissue(agent string, as *http.Cookie) *http.Cookie {
 func (r *rig) page(c *http.Cookie) string {
 	r.t.Helper()
 	var body string
-	for _, path := range []string{"/", "/apps", "/backup", "/address", "/devices", "/activity"} {
+	for _, path := range []string{"/", "/apps", "/backup", "/secure", "/devices", "/activity"} {
 		req, _ := http.NewRequest("GET", r.srv.URL+path, nil)
 		req.AddCookie(c)
 		resp, err := http.DefaultClient.Do(req)
