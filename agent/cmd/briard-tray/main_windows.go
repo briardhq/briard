@@ -179,8 +179,9 @@ var t *tray
 
 func main() {
 	runtime.LockOSThread()
-	// --open is the Start menu entry's: start briard if it is stopped and open the Briard page
-	// once it serves (launch). Without it -- the Run key at logon -- the icon only shows.
+	// --open is the Start menu entry's, and the install's hand-over at the next logon (the RunOnce
+	// key): start briard if it is stopped and open the Briard page once it serves (launch).
+	// Without it -- the Run key at logon -- the icon only shows.
 	open := len(os.Args) > 1 && os.Args[1] == "--open"
 	// The Start menu shortcut's identity (host.AppID), declared before any window or icon: Windows
 	// then titles this process's notifications with the shortcut's name and icon, not the file name.

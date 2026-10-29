@@ -10,15 +10,14 @@
 # channel root and run once, so nothing it does can be reached by a release afterwards. It does
 # only what has to happen before an agent can run on this machine -- be an administrator, get an
 # agent onto the box, put the two things in place the agent cannot (a kernel driver someone else
-# signs, a Windows feature), call the agent, arrange to be resumed after the restart, and ask for
-# the restart.
+# signs, a Windows feature), call the agent, and ask for the restart.
 #
 # EVERYTHING ELSE IS THE AGENT'S -- `briard-agent install` (agent/host/install.go,
 # install_windows.go): the machine report card, the signed fetch, the %ProgramData%\briard layout,
 # config.env, the tree's ACL, the service and its recovery, the firewall hole, `briard` on PATH,
-# the network bridge -- and `briard-agent install -wait`, the closing wait for the node's one-time
-# link, which runs at the first administrator logon after the restart. Adding something back here
-# means showing it has to happen before an agent can run.
+# the network bridge, and the notification-area icon, which at the installing account's next logon
+# opens the Briard page once the node serves. Adding something back here means showing it has to
+# happen before an agent can run.
 #
 # BRIARD_ARTIFACTS=<dir> installs from a local, already-verified staging dir (the rig, and the
 # Store's exe, which carries the windows-amd64 arm in itself). Unset = the signed network fetch over
@@ -66,7 +65,8 @@ $RELEASE_KEYRING_PEM = '__BRIARD_RELEASE_KEYRING_PEM__'
 $TapSha256 = '1c44e77ab148ddfb174de8041100efc38c4f23500183faff88f9badac5782e3c'
 $TapDescription = 'TAP-Windows Adapter V9' # how the driver describes its adapters, whatever they are named
 
-# The resume: the task that runs the closing at the next administrator logon.
+# The console task an earlier installer registered to run the closing at the next logon: removed
+# here, so a reinstall over a node still waiting for that logon opens no console.
 $ResumeTask = 'briard-install'
 
 function Say($m) { Write-Host "briard: $m" }
@@ -224,17 +224,12 @@ if ($Boot) { Remove-Item $Boot -ErrorAction SilentlyContinue }
 if ($rc -ne 0 -and $rc -ne 3010) { Die 'the install did not finish (the agent said why above)' }
 
 # ---- 4. the hand-over, after the restart ----------------------------------------------
-# The service starts by itself at boot. The closing -- the installed agent waiting for its own
-# node to answer, then printing the one-time link to the household's Briard page -- needs an
-# administrator's console (the agent's files are the administrators'), so it runs as a task at
-# the next administrator logon, in a window that stays, and the task removes itself. Any
-# administrator, by group: no name, no password kept.
+# The service starts by itself at boot, with no window. The hand-over is the agent's, laid down
+# above: at the installing account's next logon its notification-area icon starts once with
+# --open, says Briard is starting, and opens the Briard page in that person's browser once the
+# node serves. Nothing is left to arrange here but removing an earlier installer's console task.
 $exe = "$Prefix\agent\briard-agent.exe"
-$resume = "& '$exe' install -wait; schtasks /delete /tn $ResumeTask /f | Out-Null"
-Register-ScheduledTask -TaskName $ResumeTask -Force `
-	-Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoExit -NoProfile -ExecutionPolicy Bypass -Command `"$resume`"") `
-	-Trigger (New-ScheduledTaskTrigger -AtLogOn) `
-	-Principal (New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Administrators' -RunLevel Highest) | Out-Null
+Unregister-ScheduledTask -TaskName $ResumeTask -Confirm:$false -ErrorAction SilentlyContinue
 
 Unlock # installed: what follows is the ending, and a retry no longer races anything
 
@@ -245,7 +240,7 @@ Unlock # installed: what follows is the ending, and a retry no longer races anyt
 if ($NoRestart) {
 	if ($rc -eq 3010) {
 		Say 'installed. Restart Windows to finish (Restart, not Shut down): Briard starts by itself afterwards.'
-		Say 'at the next logon it prints the link to your Briard page.'
+		Say 'when you log on again, your Briard page opens in your browser once it is ready.'
 		exit 3010
 	}
 	$rc = Run $exe start
@@ -257,7 +252,7 @@ if ($NoRestart) {
 # only after a restart: one restart, asked for, never a shutdown (Fast Startup's resume is not a
 # start). Briard finishes on its own afterwards; the link appears when an administrator logs on.
 Say 'installed. Windows must restart once for the network bridge and the hypervisor.'
-Say 'after the restart, log on: Briard finishes starting and prints the link to your Briard page.'
+Say 'after the restart, log on: Briard finishes starting and opens your Briard page in your browser.'
 if ([Environment]::UserInteractive -and $Host.Name -eq 'ConsoleHost') {
 	Read-Host 'press Enter to restart now (Ctrl-C to restart later yourself)' | Out-Null
 }

@@ -26,14 +26,14 @@ import (
 
 // What the Windows install made (install.ps1 and layDownOS), and so what goes:
 //
-//   - the agent's service and the warden's, the update task, and the resume task install.ps1
-//     registers for the closing;
+//   - the agent's service and the warden's, the update task, and the console task an earlier
+//     install.ps1 registered for the closing;
 //   - the bridge, with its member's checksum offload put back from the record, the TAP adapter by
 //     instance, the bridge's spanning-tree value, and the backup store's firewall rule;
 //   - the tree under %ProgramData%\briard, its bin on the system PATH, and its entry in Installed
 //     apps;
-//   - the tray, running in its owner's session, its Run value in that account's hive, and the
-//     all-users Start menu entry that runs it;
+//   - the tray, running in its owner's session, its Run and RunOnce values in that account's hive,
+//     and the all-users Start menu entry that runs it;
 //   - state\ under it, the pet -- KEPT unless the operator asks for it to go.
 //
 // The tap-windows6 driver package goes only when install.ps1 installed it (state\tap-installed)
@@ -43,8 +43,8 @@ import (
 // deleteHint finishes the kept-data line with how to delete it by hand.
 const deleteHint = "`Remove-Item -Recurse -Force '%s'`, in a terminal opened as administrator, deletes them for good"
 
-// resumeTask is the task install.ps1 registers to run the closing at the next logon ($ResumeTask
-// there). It deletes itself when it runs; an uninstall before that logon finds it still waiting.
+// resumeTask is the console task an older install.ps1 registered to run the closing at the next
+// logon. It deletes itself when it runs; an uninstall before that logon finds it still waiting.
 const resumeTask = "briard-install"
 
 // firewallRule is the backup store's inbound rule, by the name layDownOS gives it.
@@ -319,23 +319,27 @@ func offPath(bin string) error {
 	return k.SetExpandStringValue("Path", strings.Join(kept, ";"))
 }
 
-// offLogon deletes the tray's Run value from the install user's hive (runAtLogon). Loaded while
-// that account is logged on -- the one uninstalling, as a rule; when it is not, the value stays,
+// offLogon deletes the tray's Run and RunOnce values from the install user's hive (runAtLogon);
+// the RunOnce one is still there when nobody has logged on since the install. Loaded while that
+// account is logged on -- the one uninstalling, as a rule; when it is not, the values stay,
 // naming a program that is gone, which Windows skips.
 func (cfg Config) offLogon() error {
 	if cfg.InstallUser == "" {
 		return nil
 	}
-	k, err := registry.OpenKey(registry.USERS, cfg.InstallUser+`\`+runKey, registry.SET_VALUE)
-	if errors.Is(err, registry.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer k.Close()
-	if err := k.DeleteValue(trayValue); err != nil && !errors.Is(err, registry.ErrNotExist) {
-		return err
+	for _, key := range []string{runKey, runOnceKey} {
+		k, err := registry.OpenKey(registry.USERS, cfg.InstallUser+`\`+key, registry.SET_VALUE)
+		if errors.Is(err, registry.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		err = k.DeleteValue(trayValue)
+		k.Close()
+		if err != nil && !errors.Is(err, registry.ErrNotExist) {
+			return err
+		}
 	}
 	return nil
 }

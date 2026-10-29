@@ -121,6 +121,10 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	// which Settings > Apps > Startup lists and switches off. It starts at the next logon, never
 	// from here: a program this elevated process started would run elevated, and so would the
 	// browser it opens. A SYSTEM install has no such account, and no tray.
+	//
+	// THE HAND-OVER is the same tray, once: that logon also runs it with --open, which says Briard
+	// is starting and opens the Briard page in the person's browser once it serves -- the install's
+	// closing, with no console window.
 	say("installing the notification-area icon")
 	tray := filepath.Join(agentDir, trayExe)
 	if err := installFile(filepath.Join(hostSrc, trayExe), tray, 0o755); err != nil {
@@ -574,25 +578,39 @@ func stopRunning(ctx context.Context, say func(string, ...any)) error {
 	return stopNode(ctx, ConfigFromEnv().QMPSock, say)
 }
 
-// runKey is where an account's programs to start at its logon are named, under its own hive.
-const runKey = `Software\Microsoft\Windows\CurrentVersion\Run`
+// runKey is where an account's programs to start at its logon are named, under its own hive;
+// runOnceKey names the ones to start at its next logon only, each value deleted by Windows before
+// it runs.
+const (
+	runKey     = `Software\Microsoft\Windows\CurrentVersion\Run`
+	runOnceKey = `Software\Microsoft\Windows\CurrentVersion\RunOnce`
+)
 
 // trayValue is the tray's name there, which Settings > Apps > Startup shows.
 const trayValue = "Briard"
 
-// runAtLogon names the tray in the install user's Run key, through HKEY_USERS by SID: the same key
-// the uninstall deletes from, whoever runs it. The hive is loaded, its owner being the one
-// installing. No install user: nothing.
+// runAtLogon names the tray in the install user's Run key, and the tray with --open in their
+// RunOnce key, through HKEY_USERS by SID: the same keys the uninstall deletes from, whoever runs
+// it. The hive is loaded, its owner being the one installing. No install user: nothing.
+//
+// Both start at the next logon, and the tray's one-per-session rule makes them one: the second to
+// start hands its --open to the first, or leaves the --open one in charge.
 func runAtLogon(sid, exe string) error {
 	if sid == "" {
 		return nil
 	}
-	k, _, err := registry.CreateKey(registry.USERS, sid+`\`+runKey, registry.SET_VALUE)
-	if err != nil {
-		return err
+	for key, cmd := range map[string]string{runKey: windows.EscapeArg(exe), runOnceKey: windows.EscapeArg(exe) + " --open"} {
+		k, _, err := registry.CreateKey(registry.USERS, sid+`\`+key, registry.SET_VALUE)
+		if err != nil {
+			return err
+		}
+		err = k.SetStringValue(trayValue, cmd)
+		k.Close()
+		if err != nil {
+			return err
+		}
 	}
-	defer k.Close()
-	return k.SetStringValue(trayValue, windows.EscapeArg(exe))
+	return nil
 }
 
 // endTrays ends every running tray, in every session, and waits for each to exit: a reinstall

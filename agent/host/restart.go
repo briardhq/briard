@@ -106,7 +106,7 @@ const restartFix = "Windows has not restarted since briard was installed: restar
 // restartGate is the first thing a start asks: true means the restart is still owed, said, and the
 // start ends here -- cleanly, a STOPPED service and exit 0, because a non-zero exit is the
 // service's recovery restarting it every few seconds, forever. The line is the network refusal's
-// own, so `install -wait` ends on it with the reason.
+// own, so `install -wait` ends on it with the reason; the tray reads the clean stop instead.
 //
 // ⚠️ A READ THAT FAILS PROCEEDS. Refusing on "could not tell" is a node that never starts;
 // proceeding on it is a node that may not reach the LAN and says so (the no-LAN-presence alert).
