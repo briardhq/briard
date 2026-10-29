@@ -35,7 +35,7 @@ type casaSkip struct {
 	At      time.Time `json:"at"`
 }
 
-const casaSkipFor = 30 * 24 * time.Hour
+const casaSkipFor = 5 * 24 * time.Hour
 
 // casaAsk is the last claim asked from this page, kept until the host's view moves past it.
 type casaAsk struct {
@@ -66,6 +66,7 @@ type casaView struct {
 	Resolves   string // dashboard.Casa.Resolves: the name is linked only on "yes"
 	RecheckErr string // why the last "check again" was not taken
 	Asked      *casaAsk
+	OnHome     bool // the step is on the home page, the one place "Not now" exists (main.go, view)
 }
 
 // Refresh says whether the page should poll itself: a claim is in flight, or one was just asked

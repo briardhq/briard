@@ -74,13 +74,17 @@ func TestFragmentsPollOnlyWhileMovingThenRefreshThePage(t *testing.T) {
 		t.Errorf("the app fragment once RUNNING = %d, no HX-Refresh", resp.StatusCode)
 	}
 
-	// A claim waiting on its link polls the step; a registered name waiting on its check polls
-	// the card; resolved, neither.
+	// A claim waiting on its link polls the step; the link opened, the step is over and its
+	// fragment refreshes the page (never the offer again, over a registered name); a registered
+	// name waiting on its check polls the card; resolved, neither.
 	r2.hostSays(t, dashboard.Casa{State: casa.ClaimPending, Name: galleryName, Email: "ana@example.org"})
-	if resp, body := get(t, r2, "/f/address-step", c2); resp.StatusCode != 200 || !strings.Contains(body, "Check your email") {
+	if resp, body := get(t, r2, "/f/address-step?home", c2); resp.StatusCode != 200 || !strings.Contains(body, "Check your email") || !strings.Contains(body, `hx-get="/f/address-step?home"`) {
 		t.Errorf("the address-step fragment while pending = %d: %s", resp.StatusCode, body)
 	}
 	r2.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: galleryName, Email: "ana@example.org"})
+	if resp, body := get(t, r2, "/f/address-step?home", c2); resp.StatusCode != http.StatusNoContent || resp.Header.Get("HX-Refresh") != "true" {
+		t.Errorf("the address-step fragment once registered = %d %q, want 204 + HX-Refresh: %s", resp.StatusCode, resp.Header.Get("HX-Refresh"), body)
+	}
 	if resp, body := get(t, r2, "/f/address-card", c2); resp.StatusCode != 200 || !strings.Contains(body, "Checking that your home network") {
 		t.Errorf("the address-card fragment while checking = %d: %s", resp.StatusCode, body)
 	}
@@ -139,6 +143,13 @@ func TestThePageCarriesOneScriptAndAPolicyThatAllowsNothingElse(t *testing.T) {
 	}
 	if resp, body := get(t, r, htmxPath, nil); resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/javascript") || !strings.Contains(body, "htmx") {
 		t.Errorf("htmx is not served to every browser: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	// The tab's icon, named by every page and served to every browser.
+	if _, body := get(t, r, "/", nil); !strings.Contains(body, `<link rel="icon" type="image/png" href="/favicon.png">`) {
+		t.Errorf("the page names no icon: %s", body)
+	}
+	if resp, body := get(t, r, "/favicon.png", nil); resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/png" || !strings.HasPrefix(body, "\x89PNG") {
+		t.Errorf("the icon is not served to every browser: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
 }
 

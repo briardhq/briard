@@ -74,6 +74,11 @@ var htmxJS []byte
 
 const htmxPath = "/htmx-2.0.11.min.js"
 
+// favicon is the tab's icon: the mark briard.io shows, at 96 px (the site's briard-mark.png).
+//
+//go:embed static/favicon.png
+var favicon []byte
+
 var page = template.Must(template.New("").Funcs(template.FuncMap{
 	"shell": shellOf, "theme": theme, "htmx": func() string { return htmxPath },
 }).ParseFS(pageFS, "templates/*.html"))
@@ -218,6 +223,9 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == htmxPath && r.Method == http.MethodGet:
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		_, _ = w.Write(htmxJS)
+	case r.URL.Path == "/favicon.png" && r.Method == http.MethodGet:
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(favicon)
 	case strings.HasPrefix(r.URL.Path, "/f/") && r.Method == http.MethodGet:
 		d, ok := a.session(r)
 		if !ok {
@@ -947,6 +955,11 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 		v.Stage = "choose"
 	}
 	v.Casa = a.casaState()
+	if v.Casa != nil {
+		// "Not now" is the home page's alone (its fragment asks with ?home): the Web address
+		// page offers the name throughout, so there is nothing there to put off.
+		v.Casa.OnHome = r.URL.Path == "/" || r.URL.Query().Has("home")
+	}
 	v.Alerts = a.alertsState()
 	v.Backup = a.backupState()
 	v.Steps.Address = v.Casa != nil && !v.Casa.Skipped && (v.Casa.State != casa.ClaimRegistered || v.Casa.Resolves == dashboard.CasaBlocked)

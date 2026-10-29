@@ -60,11 +60,13 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 			tmpl, moving = "app-card", av.HA != nil && !av.HA.Running
 		}
 	case "address-step", "address-card":
-		// The step is over the name alone; the card over the view, for the apps' names.
+		// The step is over the name alone, and moves only while it is still owed: a claim that
+		// became the name is the step's end, not another state of it. The card is over the
+		// view, for the apps' names.
 		v := a.view(ctx, r, self)
-		tmpl, data, moving = part, v.Casa, v.Casa.Refresh()
+		tmpl, data, moving = part, v.Casa, v.Casa.Refresh() && v.Steps.Address
 		if part == "address-card" {
-			data = v
+			data, moving = v, v.Casa.Refresh()
 		}
 	case "history":
 		if offeredApp(name) == nil {

@@ -122,8 +122,9 @@ func TestCasaRefusalIsShownWithTheForm(t *testing.T) {
 	}
 }
 
-// "Not now" takes the step off the home page for thirty days, on the volume so every device
-// agrees; the Web address page offers the name throughout; asking again, or undo, brings it back.
+// "Not now" takes the step off the home page for five days, on the volume so every device
+// agrees; the Web address page offers the name throughout, with nothing to put off; asking
+// again, or undo, brings it back.
 func TestCasaSkipHidesTheStepFromTheHomeForAWhile(t *testing.T) {
 	r := newRig(t)
 	r.app.casaPath = filepath.Join(r.dir, "casa.json")
@@ -139,12 +140,12 @@ func TestCasaSkipHidesTheStepFromTheHomeForAWhile(t *testing.T) {
 	if _, home := get(t, r, "/", c); strings.Contains(home, "Give this home an address") {
 		t.Errorf("the home still shows the step after Not now: %s", home)
 	}
-	if _, addr := get(t, r, "/address", c); !strings.Contains(addr, "Give this home an address") || strings.Contains(addr, "Register a name") {
-		t.Errorf("the Web address page does not offer the name after Not now: %s", addr)
+	if _, addr := get(t, r, "/address", c); !strings.Contains(addr, "Give this home an address") || strings.Contains(addr, ">Not now<") {
+		t.Errorf("the Web address page does not offer the name after Not now, or offers Not now itself: %s", addr)
 	}
 	r.app.now = func() time.Time { return time.Now().Add(casaSkipFor + time.Hour) }
 	if _, home := get(t, r, "/", c); !strings.Contains(home, "Give this home an address") {
-		t.Errorf("thirty days on, the step is still off the home: %s", home)
+		t.Errorf("five days on, the step is still off the home: %s", home)
 	}
 	r.app.now = time.Now
 	if resp := r.form("/casa/skip", c, url.Values{"undo": {"1"}}); resp.StatusCode != http.StatusSeeOther {

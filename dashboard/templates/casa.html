@@ -1,9 +1,10 @@
 {{/* THE ADDRESS STEP: the name in every state the household's own act moves -- offered,
      refused, expired, its link pending, the router blocking it. On the home page while it is
-     owed, and on the Web address page until the name is the household's. */}}
+     owed -- where "Not now" puts it off for a few days -- and on the Web address page until the
+     name is the household's. */}}
 {{define "address-step"}}
   {{if eq .State "pending"}}
-  <div class="card" hx-get="/f/address-step" hx-trigger="every 5s" hx-swap="outerHTML"><header><h2>Check your email</h2><p>A confirmation link is on its way to <strong>{{.Email}}</strong>.</p></header><section>
+  <div class="card" hx-get="/f/address-step{{if .OnHome}}?home{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"><header><h2>Check your email</h2><p>A confirmation link is on its way to <strong>{{.Email}}</strong>.</p></header><section>
     <p class="note">Open it within 20 minutes and this page will finish setting up <code>{{.Name}}</code> on its own.</p>
     <form method="post" action="/casa/claim" class="field" id="casa-resend"><label class="label" for="casa-email">Wrong address, or no email? Send the link again, to:</label><input class="input" id="casa-email" name="email" type="email" required placeholder="you@example.org" hx-preserve></form>
   </section><footer><button type="submit" class="btn" data-variant="outline" form="casa-resend">Send again</button></footer></div>
@@ -13,12 +14,12 @@
     {{if .RecheckErr}}<div class="alert" data-variant="destructive"><section>{{.RecheckErr}}</section></div>{{end}}
   </section><footer><form method="post" action="/casa/recheck"><button type="submit" class="btn" data-variant="outline">Check again</button></form></footer></div>
   {{else}}
-  <div class="card"{{with .Asked}}{{if not .Failed}} hx-get="/f/address-step" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>Give this home an address</h2><p>Open your apps at <code>{{.Name}}</code> on your home network, with a real certificate and no browser warnings.</p></header><section>
+  <div class="card"{{with .Asked}}{{if not .Failed}} hx-get="/f/address-step{{if $.OnHome}}?home{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>Give this home an address</h2><p>Open your apps at <code>{{.Name}}</code> on your home network, with a real certificate and no browser warnings.</p></header><section>
     <p class="note">All we need is an email for the confirmation link. It is also how you get the name back if this machine is ever replaced. Nothing is registered without the link, and the name only ever points inside your home — it is not reachable from the internet.</p>
     {{if eq .State "refused"}}<div class="alert" data-variant="destructive"><section>{{.Reason}}</section></div>{{else if eq .State "expired"}}<div class="alert" data-variant="destructive"><section>The last link expired before it was opened. Try again.</section></div>{{end}}
     {{with .Asked}}{{if .Failed}}<div class="alert" data-variant="destructive"><section>{{.Detail}}</section></div>{{else}}<p>Sending the link to {{.Email}}…</p>{{end}}{{end}}
     <form method="post" action="/casa/claim" class="field" id="casa-claim"><label class="label" for="casa-email">Email</label><input class="input" id="casa-email" name="email" type="email" required placeholder="you@example.org"{{with .Asked}} value="{{.Email}}"{{end}} hx-preserve></form>
-  </section><footer><button type="submit" class="btn" form="casa-claim">Register</button><button type="submit" class="btn" data-variant="ghost" form="casa-claim" formaction="/casa/skip" formnovalidate>Not now</button></footer></div>
+  </section><footer><button type="submit" class="btn" form="casa-claim">Register</button>{{if .OnHome}}<button type="submit" class="btn" data-variant="ghost" form="casa-claim" formaction="/casa/skip" formnovalidate>Not now</button>{{end}}</footer></div>
   {{end}}
 {{end}}
 
