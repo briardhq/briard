@@ -1,7 +1,8 @@
 {{/* THE ADDRESS STEP: the name in every state the household's own act moves -- offered,
      refused, expired, its link pending, the router blocking it. On the home page while it is
-     owed -- where "Not now" puts it off for a few days -- and on the Web address page until the
-     name is the household's. */}}
+     owed -- where "Not now" puts it off for a few days -- and on the Secure access page until the
+     name is the household's. The offer is made in the browser's own terms: the "Not secure" it
+     shows beside the host the page is on, and the one padlocked line that replaces it. */}}
 {{define "address-step"}}
   {{if eq .State "pending"}}
   <div class="card" hx-get="/f/address-step{{if .OnHome}}?home{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"><header><h2>Check your email</h2><p>A confirmation link is on its way to <strong>{{.Email}}</strong>.</p></header><section>
@@ -14,8 +15,9 @@
     {{if .RecheckErr}}<div class="alert" data-variant="destructive"><section>{{.RecheckErr}}</section></div>{{end}}
   </section><footer><form method="post" action="/casa/recheck"><button type="submit" class="btn" data-variant="outline">Check again</button></form></footer></div>
   {{else}}
-  <div class="card"{{with .Asked}}{{if not .Failed}} hx-get="/f/address-step{{if $.OnHome}}?home{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>Give this home an address</h2><p>Open your apps at <code>{{.Name}}</code> on your home network, with a real certificate and no browser warnings.</p></header><section>
-    <p class="note">All we need is an email for the confirmation link. It is also how you get the name back if this machine is ever replaced. Nothing is registered without the link, and the name only ever points inside your home — it is not reachable from the internet.</p>
+  <div class="card"{{with .Asked}}{{if not .Failed}} hx-get="/f/address-step{{if $.OnHome}}?home{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>Secure access</h2><p>Your browser marks <code>{{.Host}}</code> as <strong>{{template "icon-alert"}}Not secure</strong>. Enable encryption with a free address and a real certificate, used automatically by every Briard app:</p></header><section>
+    <p class="key">{{template "icon-lock"}}https://{{.Name}}</p>
+    <p class="note">No account. Enter an email and open the confirmation link, and the address is yours. It points only inside your home network; nothing is opened to the internet.</p>
     {{if eq .State "refused"}}<div class="alert" data-variant="destructive"><section>{{.Reason}}</section></div>{{else if eq .State "expired"}}<div class="alert" data-variant="destructive"><section>The last link expired before it was opened. Try again.</section></div>{{end}}
     {{with .Asked}}{{if .Failed}}<div class="alert" data-variant="destructive"><section>{{.Detail}}</section></div>{{else}}<p>Sending the link to {{.Email}}…</p>{{end}}{{end}}
     <form method="post" action="/casa/claim" class="field" id="casa-claim"><label class="label" for="casa-email">Email</label><input class="input" id="casa-email" name="email" type="email" required placeholder="you@example.org"{{with .Asked}} value="{{.Email}}"{{end}} hx-preserve></form>
@@ -23,9 +25,9 @@
   {{end}}
 {{end}}
 
-{{/* THE WEB ADDRESS PAGE: the name as it stands, and what reaches it from outside (nothing). */}}
+{{/* THE SECURE ACCESS PAGE: the name as it stands, and what reaches it from outside (nothing). */}}
 {{define "address"}}{{template "head" (shell "address" false)}}
-<header class="page-head"><h1>Web address</h1><p>The name your apps answer to, with a real certificate.</p></header>
+<header class="page-head"><h1>Secure access</h1><p>The name your apps answer to, with a real certificate.</p></header>
 <div class="tiles">
   {{with .Casa}}
   {{if eq .State "registered"}}{{if eq .Resolves "blocked"}}{{template "address-step" .}}{{else}}{{template "address-card" $}}{{end}}

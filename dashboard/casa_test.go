@@ -123,7 +123,7 @@ func TestCasaRefusalIsShownWithTheForm(t *testing.T) {
 }
 
 // "Not now" takes the step off the home page for five days, on the volume so every device
-// agrees; the Web address page offers the name throughout, with nothing to put off; asking
+// agrees; the Secure access page offers the name throughout, with nothing to put off; asking
 // again, or undo, brings it back.
 func TestCasaSkipHidesTheStepFromTheHomeForAWhile(t *testing.T) {
 	r := newRig(t)
@@ -137,21 +137,21 @@ func TestCasaSkipHidesTheStepFromTheHomeForAWhile(t *testing.T) {
 	if resp := r.form("/casa/skip", c, nil); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("skip = %d", resp.StatusCode)
 	}
-	if _, home := get(t, r, "/", c); strings.Contains(home, "Give this home an address") {
+	if _, home := get(t, r, "/", c); strings.Contains(home, "<h2>Secure access</h2>") {
 		t.Errorf("the home still shows the step after Not now: %s", home)
 	}
-	if _, addr := get(t, r, "/address", c); !strings.Contains(addr, "Give this home an address") || strings.Contains(addr, ">Not now<") {
-		t.Errorf("the Web address page does not offer the name after Not now, or offers Not now itself: %s", addr)
+	if _, addr := get(t, r, "/address", c); !strings.Contains(addr, "<h2>Secure access</h2>") || strings.Contains(addr, ">Not now<") {
+		t.Errorf("the Secure access page does not offer the name after Not now, or offers Not now itself: %s", addr)
 	}
 	r.app.now = func() time.Time { return time.Now().Add(casaSkipFor + time.Hour) }
-	if _, home := get(t, r, "/", c); !strings.Contains(home, "Give this home an address") {
+	if _, home := get(t, r, "/", c); !strings.Contains(home, "<h2>Secure access</h2>") {
 		t.Errorf("five days on, the step is still off the home: %s", home)
 	}
 	r.app.now = time.Now
 	if resp := r.form("/casa/skip", c, url.Values{"undo": {"1"}}); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("undo = %d", resp.StatusCode)
 	}
-	if _, home := get(t, r, "/", c); !strings.Contains(home, "Give this home an address") {
+	if _, home := get(t, r, "/", c); !strings.Contains(home, "<h2>Secure access</h2>") {
 		t.Errorf("undo did not bring the step back: %s", home)
 	}
 	if resp := r.form("/casa/skip", nil, nil); resp.StatusCode != http.StatusUnauthorized {
@@ -218,5 +218,25 @@ func TestCasaRecheckIsOfferedOnlyWhenBlocked(t *testing.T) {
 	r.page(c)
 	if r.app.casaRecheck != nil {
 		t.Error("the ask outlived the host's restarted check")
+	}
+}
+
+// The offer is made in the browser's own terms: it names the host the browser is on -- the one
+// its address bar marks "Not secure" -- whichever of the dashboard's names or addresses that is.
+func TestCasaOfferNamesTheHostTheBrowserIsOn(t *testing.T) {
+	r := newRig(t)
+	r.app.casaPath = filepath.Join(r.dir, "casa.json")
+	c := r.trust()
+	r.hostSays(t, dashboard.Casa{Name: "brave-elf.briard.casa"})
+	for _, host := range []string{"briard.local", "192.168.1.20:8080"} {
+		req, _ := http.NewRequest("GET", r.srv.URL+"/", nil)
+		req.Host = host
+		req.AddCookie(c)
+		resp, err := http.DefaultClient.Do(req)
+		must(t, err)
+		body := bodyOf(t, resp)
+		if want := "Your browser marks <code>" + strings.TrimSuffix(host, ":8080") + "</code> as"; !strings.Contains(string(body), want) || !strings.Contains(string(body), "https://brave-elf.briard.casa</p>") {
+			t.Errorf("on %s, the offer does not name the host and the address: %s", host, body)
+		}
 	}
 }

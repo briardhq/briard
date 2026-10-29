@@ -517,6 +517,7 @@ func TestGallery(t *testing.T) {
 				path = "/undo"
 			}
 			req, _ := http.NewRequest(method, r.srv.URL+path, body)
+			req.Host = routes.BareFlockHostName // the gallery is seen as a browser on the alias sees it
 			if body != nil {
 				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			}

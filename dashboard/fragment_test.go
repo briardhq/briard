@@ -126,8 +126,8 @@ func TestFragmentsPollOnlyWhileMovingThenRefreshThePage(t *testing.T) {
 	}
 }
 
-// The script budget: htmx from this origin on trusted pages, the one inline theme line by its
-// hash, and a policy on every answer that allows nothing else.
+// The script budget: htmx from this origin on trusted pages, the inline theme and drawer lines by
+// their hashes, and a policy on every answer that allows nothing else.
 func TestThePageCarriesOneScriptAndAPolicyThatAllowsNothingElse(t *testing.T) {
 	r, c, _ := galleryRig(t)
 	for _, path := range []string{"/", "/apps", "/f/address-step", htmxPath, "/app.css"} {
@@ -135,11 +135,11 @@ func TestThePageCarriesOneScriptAndAPolicyThatAllowsNothingElse(t *testing.T) {
 			t.Errorf("%s: Content-Security-Policy = %q", path, got)
 		}
 	}
-	if body := r.page(c); strings.Count(body, "<script") != 2*6 || !strings.Contains(body, `<script src="`+htmxPath+`"></script>`) || !strings.Contains(body, "<script>"+themeScript+"</script>") {
-		t.Errorf("a trusted page's scripts are not htmx and the theme line: %s", body)
+	if body := r.page(c); strings.Count(body, "<script") != 3*6 || !strings.Contains(body, `<script src="`+htmxPath+`"></script>`) || !strings.Contains(body, "<script>"+themeScript+"</script>") || !strings.Contains(body, "<script>"+drawerScript+"</script>") {
+		t.Errorf("a trusted page's scripts are not htmx, the theme line and the drawer line: %s", body)
 	}
-	if _, body := get(t, r, "/", nil); strings.Contains(body, htmxPath) || !strings.Contains(body, "<script>"+themeScript+"</script>") {
-		t.Errorf("an untrusted page loads htmx, or lost its theme line: %s", body)
+	if _, body := get(t, r, "/", nil); strings.Contains(body, htmxPath) || strings.Contains(body, drawerScript) || !strings.Contains(body, "<script>"+themeScript+"</script>") {
+		t.Errorf("an untrusted page loads htmx or the drawer, or lost its theme line: %s", body)
 	}
 	if resp, body := get(t, r, htmxPath, nil); resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/javascript") || !strings.Contains(body, "htmx") {
 		t.Errorf("htmx is not served to every browser: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))

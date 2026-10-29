@@ -1,7 +1,10 @@
-{{/* THE SHELL: the head, the sidebar with its six sections, the top bar that stands in for it on
-     a phone, and the page's main. A page opens with "head" and closes with "foot", both given the
+{{/* THE SHELL: the head, the sidebar with its six sections, the top bar that opens it on a
+     phone, and the page's main. A page opens with "head" and closes with "foot", both given the
      shell view (main.go, shellOf): which section is current, the title, whether the page polls. A
-     page with no section -- the refusal, the join page -- gets no sidebar: the browser is not trusted. */}}
+     page with no section -- the refusal, the join page -- gets no sidebar: the browser is not trusted.
+     On a phone the sidebar is Basecoat's drawer, slid in over the page by the top bar's button
+     and closed by its backdrop or Escape; the few lines that do it are the drawer script
+     (fragment.go), at the end of the body, and the one menu is the sidebar on every width. */}}
 {{define "head"}}<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard{{with .Title}} — {{.}}{{end}}</title>{{with .Refresh}}<meta http-equiv="refresh" content="{{.}}">{{end}}<link rel="icon" type="image/png" href="/favicon.png"><link rel="stylesheet" href="/app.css"><script>{{theme}}</script>{{if .Section}}<script src="{{htmx}}"></script>{{end}}</head>
 <body>
@@ -12,7 +15,7 @@
       <li><a href="/"{{if eq .Section "home"}} aria-current="page"{{end}}>{{template "icon-home"}}<span>Home</span></a></li>
       <li><a href="/apps"{{if eq .Section "apps"}} aria-current="page"{{end}}>{{template "icon-apps"}}<span>Apps</span></a></li>
       <li><a href="/backup"{{if eq .Section "backup"}} aria-current="page"{{end}}>{{template "icon-backup"}}<span>Backup</span></a></li>
-      <li><a href="/address"{{if eq .Section "address"}} aria-current="page"{{end}}>{{template "icon-address"}}<span>Web address</span></a></li>
+      <li><a href="/address"{{if eq .Section "address"}} aria-current="page"{{end}}>{{template "icon-address"}}<span>Secure access</span></a></li>
       <li><a href="/devices"{{if eq .Section "devices"}} aria-current="page"{{end}}>{{template "icon-devices"}}<span>Trusted devices</span></a></li>
     </ul></div>
     <div role="group"><ul>
@@ -21,13 +24,16 @@
   </section>
 </nav></aside>
 <div>
-<div class="topbar"><span>Briard</span><nav><a href="/">Home</a><a href="/apps">Apps</a><a href="/backup">Backup</a><a href="/activity">Activity</a></nav></div>
+<div class="topbar"><span>Briard</span><button type="button" aria-label="Menu">{{template "icon-menu"}}</button></div>
 {{end}}<main class="page">
 {{end}}
 
-{{define "foot"}}</main>{{if .Section}}</div>{{end}}</body></html>{{end}}
+{{define "foot"}}</main>{{if .Section}}</div><script>{{drawer}}</script>{{end}}</body></html>{{end}}
 
-{{/* The sidebar's icons (Lucide, MIT), one per section, and the alert's. */}}
+{{/* The sidebar's icons (Lucide, MIT), one per section, the top bar's menu, the alert's, and the
+     padlock the secure address is shown with. */}}
+{{define "icon-menu"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h16"/><path d="M4 18h16"/><path d="M4 6h16"/></svg>{{end}}
+{{define "icon-lock"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>{{end}}
 {{define "icon-home"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>{{end}}
 {{define "icon-apps"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>{{end}}
 {{define "icon-backup"}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>{{end}}

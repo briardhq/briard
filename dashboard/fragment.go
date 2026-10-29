@@ -24,14 +24,32 @@ import (
 // nothing else inline.
 const themeScript = "if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.classList.add('dark')"
 
-// csp is every page's Content-Security-Policy: scripts from this origin and the one inline line.
-// The dashboard is the whole security budget of the home's browser, so nothing else may run.
+// drawerScript makes the sidebar a drawer on a phone, the way Basecoat's own script would: marked
+// initialized (Basecoat hides an unmarked sidebar under its breakpoint), hidden under the
+// breakpoint and shown over it, opened by the top bar's button and closed by the backdrop --
+// the sidebar element itself, which is the overlay while open -- or Escape. At the end of the
+// body, so the elements exist; without it the phone has the page and no menu, and the page is
+// still complete.
+const drawerScript = "var s=document.querySelector('.sidebar'),m=matchMedia('(min-width:48rem)'),fit=function(){s.setAttribute('aria-hidden',!m.matches)};" +
+	"fit();m.addEventListener('change',fit);s.setAttribute('data-sidebar-initialized','');" +
+	"document.querySelector('.topbar button').addEventListener('click',function(){s.setAttribute('aria-hidden','false')});" +
+	"s.addEventListener('click',function(e){if(e.target===s)fit()});" +
+	"document.addEventListener('keydown',function(e){if(e.key==='Escape')fit()})"
+
+// csp is every page's Content-Security-Policy: scripts from this origin and the two inline
+// lines, by hash. The dashboard is the whole security budget of the home's browser, so nothing
+// else may run.
 var csp = func() string {
-	sum := sha256.Sum256([]byte(themeScript))
-	return "script-src 'self' 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+	p := "script-src 'self'"
+	for _, s := range []string{themeScript, drawerScript} {
+		sum := sha256.Sum256([]byte(s))
+		p += " 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+	}
+	return p
 }()
 
-func theme() template.JS { return template.JS(themeScript) }
+func theme() template.JS  { return template.JS(themeScript) }
+func drawer() template.JS { return template.JS(drawerScript) }
 
 // fragment is /f/<part>?app=<name>: the partial for one moving part, or HX-Refresh once it has
 // stopped moving. A part that is not one of the four, or an app the dashboard does not offer,

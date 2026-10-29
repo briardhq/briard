@@ -80,7 +80,7 @@ const htmxPath = "/htmx-2.0.11.min.js"
 var favicon []byte
 
 var page = template.Must(template.New("").Funcs(template.FuncMap{
-	"shell": shellOf, "theme": theme, "htmx": func() string { return htmxPath },
+	"shell": shellOf, "theme": theme, "drawer": drawer, "htmx": func() string { return htmxPath },
 }).ParseFS(pageFS, "templates/*.html"))
 
 // shellView is what the shell renders around a page: the section the sidebar marks current
@@ -96,7 +96,7 @@ var sections = map[string]struct{ tmpl, title string }{
 	"/":         {"home", ""},
 	"/apps":     {"apps", "Apps"},
 	"/backup":   {"backup", "Backup"},
-	"/address":  {"address", "Web address"},
+	"/address":  {"address", "Secure access"},
 	"/devices":  {"devices", "Trusted devices"},
 	"/activity": {"activity", "Activity"},
 }
@@ -961,9 +961,10 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 	}
 	v.Casa = a.casaState()
 	if v.Casa != nil {
-		// "Not now" is the home page's alone (its fragment asks with ?home): the Web address
+		// "Not now" is the home page's alone (its fragment asks with ?home): the Secure access
 		// page offers the name throughout, so there is nothing there to put off.
 		v.Casa.OnHome = r.URL.Path == "/" || r.URL.Query().Has("home")
+		v.Casa.Host = hostOf(r)
 	}
 	// The page's apps are named the way the page itself was reached (hop.go, onName): under
 	// the household's name on the name, by `.local` otherwise. A page reached by `.local` or an

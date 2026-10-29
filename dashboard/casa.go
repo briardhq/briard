@@ -29,7 +29,7 @@ import (
 const casaSkipFile = "casa-skip.json"
 
 // casaSkip is "not now" on the home page: the address step stays off the home for casaSkipFor,
-// then returns; the Web address page offers the name throughout, so nothing is ever lost.
+// then returns; the Secure access page offers the name throughout, so nothing is ever lost.
 type casaSkip struct {
 	Skipped bool      `json:"skipped"`
 	At      time.Time `json:"at"`
@@ -66,7 +66,8 @@ type casaView struct {
 	Resolves   string // dashboard.Casa.Resolves: the name is linked only on "yes"
 	RecheckErr string // why the last "check again" was not taken
 	Asked      *casaAsk
-	OnHome     bool // the step is on the home page, the one place "Not now" exists (main.go, view)
+	OnHome     bool   // the step is on the home page, the one place "Not now" exists (main.go, view)
+	Host       string // the host the browser is on, which it marks "Not secure" (main.go, view)
 }
 
 // Refresh says whether the page should poll itself: a claim is in flight, or one was just asked

@@ -10,7 +10,8 @@
 :root { --primary: oklch(.42 .06 170); --primary-foreground: oklch(.99 0 0); --ring: oklch(.42 .06 170); --sidebar-primary: oklch(.42 .06 170); }
 :root.dark { --primary: oklch(.78 .08 170); --primary-foreground: oklch(.2 0 0); --ring: oklch(.78 .08 170); --sidebar-primary: oklch(.78 .08 170); }
 
-/* THE SHELL: the sidebar (Basecoat's, coloured and spaced here) and, under its width, the top bar. */
+/* THE SHELL: the sidebar (Basecoat's, coloured and spaced here; a drawer under its width) and,
+   under its width, the top bar whose button opens the drawer. */
 .sidebar > nav { @apply bg-sidebar text-sidebar-foreground; }
 .sidebar > nav > header { @apply p-4 text-lg font-semibold tracking-tight; }
 .sidebar > nav > section { @apply px-3; }
@@ -19,7 +20,8 @@
 .sidebar > nav > section ul > li > a > svg { @apply size-4 text-muted-foreground; }
 .topbar { @apply md:hidden border-b px-4 py-3 flex items-center justify-between; }
 .topbar > span { @apply font-semibold; }
-.topbar > nav { @apply flex gap-3 text-sm; }
+.topbar > button { @apply size-8 flex items-center justify-center rounded-md hover:bg-muted; }
+.topbar > button > svg { @apply size-5; }
 
 /* THE PAGE: a heading line, then tiles -- cards in two columns, one on a phone. */
 .page { @apply p-5 md:p-8 max-w-5xl; }
@@ -50,6 +52,9 @@ progress::-moz-progress-bar { background: var(--primary); }
 /* THE KEY: one click selects the whole of it -- the page is plain http, where the clipboard
    API is not offered. The join code is the same shape, larger. */
 .key { @apply font-mono text-base tracking-wide select-all break-all; }
+/* An icon in a line of text -- the browser's warning sign, the address's padlock -- sits on the
+   text's baseline at its size. */
+.card p > svg, .card strong > svg { @apply inline size-[1em] -mt-1 mr-1; }
 .code { @apply font-mono text-4xl font-bold tracking-widest my-4 select-all; }
 
 /* THE HISTORY: pointing at a row -- hover, or a tap that focuses it -- greys it and every row
