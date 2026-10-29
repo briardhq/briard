@@ -1,4 +1,4 @@
-/* The dashboard's stylesheet: Tailwind over Basecoat (the components), plus THE PARTS -- the
+/* The dashboard's stylesheet (built by ../static/build.sh): Tailwind over Basecoat (the components), plus THE PARTS -- the
    few classes of Briard's own that the templates may use beside Basecoat's. A template names a
    part or a Basecoat component and nothing else (vocabulary_test.go holds the list), so a page
    is built from named things and an inline style cannot exist. */

@@ -97,6 +97,15 @@ type confirmView struct {
 func (a *app) showHistory(w http.ResponseWriter, r *http.Request, service string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	v := a.history(ctx, service)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := page.ExecuteTemplate(w, "history", v); err != nil {
+		log.Printf("dashboard: history page: %v", err)
+	}
+}
+
+// history is the page's view: the rows, the banner, and the undo in flight if there is one.
+func (a *app) history(ctx context.Context, service string) historyView {
 	v := historyView{Service: service, Title: appTitle(service)}
 	rows, _, err := a.rows(ctx, service)
 	if err != nil {
@@ -119,10 +128,7 @@ func (a *app) showHistory(w http.ResponseWriter, r *http.Request, service string
 	}
 	a.mu.Unlock()
 	v.Refresh = v.Op != nil && v.Op.Running
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := page.ExecuteTemplate(w, "history", v); err != nil {
-		log.Printf("dashboard: history page: %v", err)
-	}
+	return v
 }
 
 // rows asks the host for the ring and renders its history for the page, with the version the app

@@ -72,10 +72,10 @@ firmware the guest image bakes, the front door and the dashboard are Go programs
 Under Nix the module set is vendored from those exact versions (`vendor-hash.nix` pins it), so the
 binary the release ships is built from nothing else.
 
-## The dashboard's stylesheet and icons — MIT, ISC
+## The dashboard's stylesheet, script and icons — MIT, 0BSD, ISC
 
-The household dashboard's one stylesheet, `dashboard/static/app.css`, is built ahead of time by
-[`dashboard/css/build.sh`](dashboard/css/build.sh) and committed, so the guest fetches nothing:
+The household dashboard's one stylesheet, `dashboard/static/app.css`, and its one script are built and fetched ahead of time by
+[`dashboard/static/build.sh`](dashboard/static/build.sh) and committed, so the guest fetches nothing:
 
 - [Basecoat CSS](https://basecoatui.com) 1.1.0 (MIT) — the components; fetched from npm by the
   hash pinned in the script, so the build verifies it.
@@ -84,3 +84,5 @@ The household dashboard's one stylesheet, `dashboard/static/app.css`, is built a
   [`flake.lock`](flake.lock).
 - [Lucide](https://lucide.dev) (ISC) — the six sidebar icons and the alert's, inline in
   `dashboard/templates/shell.html`.
+- [htmx](https://htmx.org) 2.0.11 (0BSD) — `dashboard/static/htmx-2.0.11.min.js`, the one script on the
+  page, which polls a card while it moves; fetched from npm by the hash pinned in the script.

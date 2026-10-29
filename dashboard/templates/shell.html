@@ -3,7 +3,7 @@
      shell view (main.go, shellOf): which section is current, the title, whether the page polls. A
      page with no section -- the refusal, the join page -- gets no sidebar: the browser is not trusted. */}}
 {{define "head"}}<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard{{with .Title}} — {{.}}{{end}}</title>{{with .Refresh}}<meta http-equiv="refresh" content="{{.}}">{{end}}<link rel="stylesheet" href="/app.css"><script>if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.classList.add('dark')</script></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard{{with .Title}} — {{.}}{{end}}</title>{{with .Refresh}}<meta http-equiv="refresh" content="{{.}}">{{end}}<link rel="stylesheet" href="/app.css"><script>{{theme}}</script>{{if .Section}}<script src="{{htmx}}"></script>{{end}}</head>
 <body>
 {{if .Section}}<aside class="sidebar" data-side="left" aria-hidden="false"><nav aria-label="Briard">
   <header>Briard</header>

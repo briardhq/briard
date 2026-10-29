@@ -1,7 +1,12 @@
 {{/* AN APP'S HISTORY: every update and the changes Briard notices, newest first, each undoable. */}}
-{{define "history"}}{{template "head" (shell "apps" .Refresh)}}
+{{define "history"}}{{template "head" (shell "apps" false)}}
 <header class="page-head"><h1>{{.Title}}</h1><p>History: every update and the changes Briard notices, any of which you can undo.</p></header>
-<div class="card">
+{{template "history-card" .}}
+{{template "foot" (shell "apps" false)}}{{end}}
+
+{{/* THE HISTORY CARD: the rows and the undo in flight; polls while one is. */}}
+{{define "history-card"}}
+<div class="card"{{if .Refresh}} hx-get="/f/history?app={{.Service}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}>
   <section>
     {{if .Op}}
       {{if .Op.Running}}<p>Undoing {{.Op.What}}… the app stops for it and starts again afterwards. This page refreshes itself.</p>
@@ -28,7 +33,7 @@
   </section>
   <footer><a class="btn" data-variant="ghost" href="/apps">Back to Apps</a></footer>
 </div>
-{{template "foot" (shell "apps" false)}}{{end}}
+{{end}}
 
 {{define "confirm"}}{{template "head" (shell "apps" false)}}
 <header class="page-head"><h1>Undo these changes?</h1><p>{{.What}}, and everything after it.</p></header>

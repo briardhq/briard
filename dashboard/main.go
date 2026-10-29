@@ -19,9 +19,10 @@
 // which is how it finds Home Assistant -- the same way the door does, so the two cannot disagree
 // about where a service is.
 //
-// DELIBERATELY PLAIN: templates and one stylesheet, built ahead of time (css/build.sh) and
-// embedded, nothing fetched from anywhere at run time -- it has to render on a node with no
-// internet, and it is a supervisor next to Home Assistant, not a rival to it.
+// DELIBERATELY PLAIN: templates, one stylesheet and one script (htmx, which polls a card while
+// it moves), built ahead of time (static/build.sh) and embedded, nothing fetched from anywhere
+// at run time -- it has to render on a node with no internet, and it is a supervisor next to
+// Home Assistant, not a rival to it.
 package main
 
 import (
@@ -59,12 +60,22 @@ import (
 var pageFS embed.FS
 
 // appCSS is the built stylesheet: Tailwind over Basecoat with the parts in css/input.css,
-// committed so the build needs nothing but Go (css/build.sh regenerates it).
+// committed so the build needs nothing but Go (static/build.sh regenerates it).
 //
 //go:embed static/app.css
 var appCSS []byte
 
-var page = template.Must(template.New("").Funcs(template.FuncMap{"shell": shellOf}).ParseFS(pageFS, "templates/*.html"))
+// htmxJS is the one script: htmx, which polls a card while it moves (fragment.go). Vendored by
+// static/build.sh under its version, so a bump shows in the name.
+//
+//go:embed static/htmx-2.0.11.min.js
+var htmxJS []byte
+
+const htmxPath = "/htmx-2.0.11.min.js"
+
+var page = template.Must(template.New("").Funcs(template.FuncMap{
+	"shell": shellOf, "theme": theme, "htmx": func() string { return htmxPath },
+}).ParseFS(pageFS, "templates/*.html"))
 
 // shellView is what the shell renders around a page: the section the sidebar marks current
 // ("" for a page with no sidebar -- an untrusted browser's), the title, and the seconds the page
@@ -195,13 +206,24 @@ const (
 )
 
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Security-Policy", csp)
 	switch {
 	case r.URL.Path == "/healthz":
 		fmt.Fprint(w, "ok: dashboard up\n")
 	case r.URL.Path == "/app.css" && r.Method == http.MethodGet:
-		// The stylesheet, to every browser: it says nothing about the home.
+		// The stylesheet and the script, to every browser: they say nothing about the home.
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		_, _ = w.Write(appCSS)
+	case r.URL.Path == htmxPath && r.Method == http.MethodGet:
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		_, _ = w.Write(htmxJS)
+	case strings.HasPrefix(r.URL.Path, "/f/") && r.Method == http.MethodGet:
+		d, ok := a.session(r)
+		if !ok {
+			a.refuse(w)
+			return
+		}
+		a.fragment(w, r, d, strings.TrimPrefix(r.URL.Path, "/f/"))
 	case r.URL.Path == "/" && r.Method == http.MethodGet && r.URL.Query().Get("code") != "":
 		a.redeem(w, r, r.URL.Query().Get("code"))
 	case sections[r.URL.Path].tmpl != "" && r.Method == http.MethodGet:
@@ -726,8 +748,6 @@ type view struct {
 	Backup *backupView
 	// Steps is what a fresh home still owes: the "finish setting up" list, gone when done.
 	Steps stepsView
-	// Refresh makes the page poll itself while something is moving.
-	Refresh bool
 }
 
 // stepsView is tier 2: each step one line and one act, shown only while it is owed.
@@ -918,9 +938,6 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 	v.Backup = a.backupState()
 	v.Steps.Address = v.Casa != nil && !v.Casa.Skipped && (v.Casa.State != casa.ClaimRegistered || v.Casa.Resolves == dashboard.CasaBlocked)
 	v.Steps.Key = v.Backup != nil && v.Backup.Key != "" && !v.Backup.KeySaved
-	// Poll while something is on its way: an install in flight, a Home Assistant that is
-	// routed but not yet RUNNING, or a name claim waiting on its link.
-	v.Refresh = v.Installing != nil || (ha != nil && !ha.Running) || v.Casa.Refresh()
 	return v
 }
 

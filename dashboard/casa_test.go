@@ -59,13 +59,13 @@ func TestCasaClaimIsOfferedRelayedAndFollowed(t *testing.T) {
 		t.Fatalf("the host was asked %+v; want one casa-claim carrying the email", asked)
 	}
 	body = r.page(c)
-	if !strings.Contains(body, "Sending the link to a@x.org") || !strings.Contains(body, `http-equiv="refresh"`) {
+	if !strings.Contains(body, "Sending the link to a@x.org") || !strings.Contains(body, `hx-get="/f/address-step"`) {
 		t.Errorf("the page after asking does not say so and poll: %s", body)
 	}
 
 	r.hostSays(t, dashboard.Casa{State: casa.ClaimPending, Name: "brave-elf.briard.casa", Email: "a@x.org"})
 	body = r.page(c)
-	if !strings.Contains(body, "Check your email") || !strings.Contains(body, "a@x.org") || !strings.Contains(body, `http-equiv="refresh"`) || strings.Contains(body, "Sending the link") {
+	if !strings.Contains(body, "Check your email") || !strings.Contains(body, "a@x.org") || !strings.Contains(body, `hx-get="/f/address-step"`) || strings.Contains(body, "Sending the link") {
 		t.Errorf("the pending page: %s", body)
 	}
 
@@ -74,21 +74,21 @@ func TestCasaClaimIsOfferedRelayedAndFollowed(t *testing.T) {
 	reg := dashboard.Casa{State: casa.ClaimRegistered, Name: "brave-elf.briard.casa", Email: "a@x.org", CertUntil: time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC)}
 	r.hostSays(t, reg)
 	body = r.page(c)
-	if strings.Contains(body, "https://brave-elf.briard.casa") || strings.Contains(body, "home-assistant.brave-elf.briard.casa") || !strings.Contains(body, "Checking that your home network finds the name") || !strings.Contains(body, `http-equiv="refresh"`) {
+	if strings.Contains(body, "https://brave-elf.briard.casa") || strings.Contains(body, "home-assistant.brave-elf.briard.casa") || !strings.Contains(body, "Checking that your home network finds the name") || !strings.Contains(body, `hx-get="/f/address-card"`) {
 		t.Errorf("the registered page, check unanswered: %s", body)
 	}
 
 	reg.Resolves = dashboard.CasaBlocked
 	r.hostSays(t, reg)
 	body = r.page(c)
-	if strings.Contains(body, "https://brave-elf.briard.casa") || !strings.Contains(body, "your router blocks the name") || strings.Contains(body, `http-equiv="refresh"`) {
+	if strings.Contains(body, "https://brave-elf.briard.casa") || !strings.Contains(body, "your router blocks the name") || strings.Contains(body, `hx-get=`) {
 		t.Errorf("the registered page, name blocked: %s", body)
 	}
 
 	reg.Resolves = dashboard.CasaResolves
 	r.hostSays(t, reg)
 	body = r.page(c)
-	if !strings.Contains(body, `href="https://brave-elf.briard.casa/"`) || !strings.Contains(body, "valid until 2 Jan 2027") || strings.Contains(body, `http-equiv="refresh"`) || strings.Contains(body, `action="/casa/claim"`) {
+	if !strings.Contains(body, `href="https://brave-elf.briard.casa/"`) || !strings.Contains(body, "valid until 2 Jan 2027") || strings.Contains(body, `hx-get=`) || strings.Contains(body, `action="/casa/claim"`) {
 		t.Errorf("the registered page: %s", body)
 	}
 }
@@ -166,7 +166,7 @@ func TestCasaRecheckIsOfferedOnlyWhenBlocked(t *testing.T) {
 	}
 	reg.Resolves = dashboard.CasaBlocked
 	r.hostSays(t, reg)
-	if body := r.page(c); !strings.Contains(body, `action="/casa/recheck"`) || strings.Contains(body, `http-equiv="refresh"`) {
+	if body := r.page(c); !strings.Contains(body, `action="/casa/recheck"`) || strings.Contains(body, `hx-get=`) {
 		t.Fatalf("the blocked card does not offer Check again, or polls: %s", body)
 	}
 	if resp := r.form("/casa/recheck", nil, nil); resp.StatusCode != http.StatusUnauthorized {
@@ -184,13 +184,13 @@ func TestCasaRecheckIsOfferedOnlyWhenBlocked(t *testing.T) {
 		t.Fatalf("the host was asked %+v; want one casa-recheck", asked)
 	}
 	// The host has not pushed yet: the card says checking and polls, never the old verdict.
-	if body := r.page(c); strings.Contains(body, `action="/casa/recheck"`) || !strings.Contains(body, "Checking that your home network finds the name") || !strings.Contains(body, `http-equiv="refresh"`) {
+	if body := r.page(c); strings.Contains(body, `action="/casa/recheck"`) || !strings.Contains(body, "Checking that your home network finds the name") || !strings.Contains(body, `hx-get="/f/address-card"`) {
 		t.Errorf("right after asking: %s", body)
 	}
 	// The new check came back blocked before the page saw it restart: once the wait has passed,
 	// the verdict and the button are back.
 	r.app.casaRecheck.at = time.Now().Add(-casaRecheckWait)
-	if body := r.page(c); !strings.Contains(body, `action="/casa/recheck"`) || strings.Contains(body, `http-equiv="refresh"`) {
+	if body := r.page(c); !strings.Contains(body, `action="/casa/recheck"`) || strings.Contains(body, `hx-get=`) {
 		t.Errorf("after a blocked answer again: %s", body)
 	}
 

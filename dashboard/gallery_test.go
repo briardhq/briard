@@ -420,6 +420,17 @@ var galleryStates = []galleryState{
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			return activity(t, r, c, port)
 		}},
+	{"apps-install-failed", "The apps page after the host refused an install: the reason, the CLI, and the button back.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			notInstalled(t, r)
+			startInstall(t, r, c, port)
+			port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "the data volume has 1.9 GB free; Home Assistant needs 3.5 GB"}
+			deadline := time.Now().Add(5 * time.Second)
+			for !strings.Contains(r.page(c), "Could not install") && time.Now().Before(deadline) {
+				time.Sleep(20 * time.Millisecond)
+			}
+			return apps(t, r, c, port)
+		}},
 	// THE OTHER PAGES.
 	{"refused", "A browser the home does not trust.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) { return "/", nil }},

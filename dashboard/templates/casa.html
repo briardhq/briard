@@ -3,9 +3,9 @@
      owed, and on the Web address page until the name is the household's. */}}
 {{define "address-step"}}
   {{if eq .State "pending"}}
-  <div class="card"><header><h2>Check your email</h2><p>A confirmation link is on its way to <strong>{{.Email}}</strong>.</p></header><section>
+  <div class="card" hx-get="/f/address-step" hx-trigger="every 5s" hx-swap="outerHTML"><header><h2>Check your email</h2><p>A confirmation link is on its way to <strong>{{.Email}}</strong>.</p></header><section>
     <p class="note">Open it within 20 minutes and this page will finish setting up <code>{{.Name}}</code> on its own.</p>
-    <form method="post" action="/casa/claim" class="field" id="casa-resend"><label class="label" for="casa-email">Wrong address, or no email? Send the link again, to:</label><input class="input" id="casa-email" name="email" type="email" required placeholder="you@example.org"></form>
+    <form method="post" action="/casa/claim" class="field" id="casa-resend"><label class="label" for="casa-email">Wrong address, or no email? Send the link again, to:</label><input class="input" id="casa-email" name="email" type="email" required placeholder="you@example.org" hx-preserve></form>
   </section><footer><button type="submit" class="btn" data-variant="outline" form="casa-resend">Send again</button></footer></div>
   {{else if eq .Resolves "blocked"}}
   <div class="card"><header><h2>Let your router find the name</h2><p>This home is registered as <code>{{.Name}}</code>, but your router blocks the name.</p></header><section>
@@ -13,27 +13,21 @@
     {{if .RecheckErr}}<div class="alert" data-variant="destructive"><section>{{.RecheckErr}}</section></div>{{end}}
   </section><footer><form method="post" action="/casa/recheck"><button type="submit" class="btn" data-variant="outline">Check again</button></form></footer></div>
   {{else}}
-  <div class="card"><header><h2>Give this home an address</h2><p>Open your apps at <code>{{.Name}}</code> on your home network, with a real certificate and no browser warnings.</p></header><section>
+  <div class="card"{{with .Asked}}{{if not .Failed}} hx-get="/f/address-step" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>Give this home an address</h2><p>Open your apps at <code>{{.Name}}</code> on your home network, with a real certificate and no browser warnings.</p></header><section>
     <p class="note">All we need is an email for the confirmation link. It is also how you get the name back if this machine is ever replaced. Nothing is registered without the link, and the name only ever points inside your home — it is not reachable from the internet.</p>
     {{if eq .State "refused"}}<div class="alert" data-variant="destructive"><section>{{.Reason}}</section></div>{{else if eq .State "expired"}}<div class="alert" data-variant="destructive"><section>The last link expired before it was opened. Try again.</section></div>{{end}}
     {{with .Asked}}{{if .Failed}}<div class="alert" data-variant="destructive"><section>{{.Detail}}</section></div>{{else}}<p>Sending the link to {{.Email}}…</p>{{end}}{{end}}
-    <form method="post" action="/casa/claim" class="field" id="casa-claim"><label class="label" for="casa-email">Email</label><input class="input" id="casa-email" name="email" type="email" required placeholder="you@example.org"{{with .Asked}} value="{{.Email}}"{{end}}></form>
+    <form method="post" action="/casa/claim" class="field" id="casa-claim"><label class="label" for="casa-email">Email</label><input class="input" id="casa-email" name="email" type="email" required placeholder="you@example.org"{{with .Asked}} value="{{.Email}}"{{end}} hx-preserve></form>
   </section><footer><button type="submit" class="btn" form="casa-claim">Register</button><button type="submit" class="btn" data-variant="ghost" form="casa-claim" formaction="/casa/skip">Not now</button></footer></div>
   {{end}}
 {{end}}
 
 {{/* THE WEB ADDRESS PAGE: the name as it stands, and what reaches it from outside (nothing). */}}
-{{define "address"}}{{template "head" (shell "address" .Refresh)}}
+{{define "address"}}{{template "head" (shell "address" false)}}
 <header class="page-head"><h1>Web address</h1><p>The name your apps answer to, with a real certificate.</p></header>
 <div class="tiles">
   {{with .Casa}}
-  {{if eq .State "registered"}}{{if eq .Resolves "blocked"}}{{template "address-step" .}}{{else}}
-  <div class="card"><header><h2>{{.Name}}</h2><p>Registered to {{.Email}}.</p></header><section><div class="item-group">
-    <div class="item"><section><h3>Certificate</h3><p>{{if .CertUntil}}It is valid until {{.CertUntil}}; Briard renews it on its own.{{else}}On its way, which takes a minute or two.{{end}}</p></section><aside><span class="badge" data-variant="secondary">{{if .CertUntil}}valid{{else}}pending{{end}}</span></aside></div>
-    {{if eq .Resolves "yes"}}{{range $.Apps}}{{if .Installed}}<hr><div class="item"><section><h3>{{.Title}}</h3><p>{{.Name}}.{{$.Casa.Name}}</p></section><aside><span class="badge" data-variant="secondary">resolving</span></aside></div>{{end}}{{end}}{{end}}
-    </div><p class="note">{{if eq .Resolves "yes"}}Each app gets a name under yours. They work on your home network, from any device, with no browser warnings.{{else}}Checking that your home network finds the name — this takes up to a minute or two.{{end}}</p></section>
-    {{if eq .Resolves "yes"}}<footer><a class="btn" data-variant="outline" href="https://{{.Name}}/">Open https://{{.Name}}</a></footer>{{end}}</div>
-  {{end}}
+  {{if eq .State "registered"}}{{if eq .Resolves "blocked"}}{{template "address-step" .}}{{else}}{{template "address-card" $}}{{end}}
   {{else if .Skipped}}
   <div class="card"><header><h2>No address yet</h2><p>Want <code>{{.Name}}</code> and a real certificate, so your apps open without browser warnings?</p></header><footer><form method="post" action="/casa/skip"><input type="hidden" name="undo" value="1"><button type="submit" class="btn" data-variant="outline">Register a name</button></form></footer></div>
   {{else}}{{template "address-step" .}}{{end}}
@@ -41,3 +35,14 @@
   <div class="card"><header><h2>From outside your home</h2><p>Nothing is opened to the internet.</p></header><section class="note">Your apps are reachable only on your home network. To reach them while you are away, the usual ways are Tailscale, WireGuard, or a port on your router; each one is a choice about your privacy that Briard leaves to you.</section></div>
 </div>
 {{template "foot" (shell "address" false)}}{{end}}
+
+{{/* THE ADDRESS CARD: the registered name -- its certificate, and its apps' names once the home
+     network is found to resolve it; polls while that check has not answered. Over the whole
+     view, for the apps. */}}
+{{define "address-card"}}{{with .Casa}}
+  <div class="card"{{if eq .Resolves ""}} hx-get="/f/address-card" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>{{.Name}}</h2><p>Registered to {{.Email}}.</p></header><section><div class="item-group">
+    <div class="item"><section><h3>Certificate</h3><p>{{if .CertUntil}}It is valid until {{.CertUntil}}; Briard renews it on its own.{{else}}On its way, which takes a minute or two.{{end}}</p></section><aside><span class="badge" data-variant="secondary">{{if .CertUntil}}valid{{else}}pending{{end}}</span></aside></div>
+    {{if eq .Resolves "yes"}}{{range $.Apps}}{{if .Installed}}<hr><div class="item"><section><h3>{{.Title}}</h3><p>{{.Name}}.{{$.Casa.Name}}</p></section><aside><span class="badge" data-variant="secondary">resolving</span></aside></div>{{end}}{{end}}{{end}}
+    </div><p class="note">{{if eq .Resolves "yes"}}Each app gets a name under yours. They work on your home network, from any device, with no browser warnings.{{else}}Checking that your home network finds the name — this takes up to a minute or two.{{end}}</p></section>
+    {{if eq .Resolves "yes"}}<footer><a class="btn" data-variant="outline" href="https://{{.Name}}/">Open https://{{.Name}}</a></footer>{{end}}</div>
+{{end}}{{end}}
