@@ -122,25 +122,36 @@ func TestCasaRefusalIsShownWithTheForm(t *testing.T) {
 	}
 }
 
-// Skip folds the card to one line, on the volume so every device agrees; asking again unfolds it.
-func TestCasaSkipIsRememberedAndUndone(t *testing.T) {
+// "Not now" takes the step off the home page for thirty days, on the volume so every device
+// agrees; the Web address page offers the name throughout; asking again, or undo, brings it back.
+func TestCasaSkipHidesTheStepFromTheHomeForAWhile(t *testing.T) {
 	r := newRig(t)
 	r.app.casaPath = filepath.Join(r.dir, "casa.json")
 	c := r.trust()
 	r.hostSays(t, dashboard.Casa{Name: "brave-elf.briard.casa"})
+	if _, home := get(t, r, "/", c); !strings.Contains(home, `formaction="/casa/skip" formnovalidate`) {
+		t.Errorf("the step's Not now would be blocked by the email field's validation: %s", home)
+	}
 
 	if resp := r.form("/casa/skip", c, nil); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("skip = %d", resp.StatusCode)
 	}
-	body := r.page(c)
-	if strings.Contains(body, "Give this home an address") || !strings.Contains(body, "Register a name") {
-		t.Errorf("the skipped page still shows the card, or no way back: %s", body)
+	if _, home := get(t, r, "/", c); strings.Contains(home, "Give this home an address") {
+		t.Errorf("the home still shows the step after Not now: %s", home)
 	}
+	if _, addr := get(t, r, "/address", c); !strings.Contains(addr, "Give this home an address") || strings.Contains(addr, "Register a name") {
+		t.Errorf("the Web address page does not offer the name after Not now: %s", addr)
+	}
+	r.app.now = func() time.Time { return time.Now().Add(casaSkipFor + time.Hour) }
+	if _, home := get(t, r, "/", c); !strings.Contains(home, "Give this home an address") {
+		t.Errorf("thirty days on, the step is still off the home: %s", home)
+	}
+	r.app.now = time.Now
 	if resp := r.form("/casa/skip", c, url.Values{"undo": {"1"}}); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("undo = %d", resp.StatusCode)
 	}
-	if body := r.page(c); !strings.Contains(body, "Give this home an address") {
-		t.Errorf("undo did not bring the card back: %s", body)
+	if _, home := get(t, r, "/", c); !strings.Contains(home, "Give this home an address") {
+		t.Errorf("undo did not bring the step back: %s", home)
 	}
 	if resp := r.form("/casa/skip", nil, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("skip with no session = %d, want 401", resp.StatusCode)

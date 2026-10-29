@@ -116,7 +116,7 @@ func notInstalled(t *testing.T, r *rig) {
 	must(t, os.Remove(filepath.Join(r.dir, "routes.json")))
 }
 
-// startInstall presses "Set up Home Assistant" and waits for the directive to reach the port,
+// startInstall presses "Install Home Assistant" and waits for the directive to reach the port,
 // where it stays until the state answers it.
 func startInstall(t *testing.T, r *rig, c *http.Cookie, port *fakePort) {
 	t.Helper()
@@ -223,11 +223,20 @@ var galleryStates = []galleryState{
 			return home(t, r, c, port)
 		}},
 	// HOME ASSISTANT's card, every state.
+	{"home-first-run", "The first screen: nothing installed, the name and the key both still owed -- and only the chooser shows, one thing at a time.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			notInstalled(t, r)
+			r.hostSays(t, dashboard.Casa{Name: galleryName})
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey})
+			r.contact(t, galleryClock)
+			r.hostPushes(t, nil)
+			return home(t, r, c, port)
+		}},
 	{"home-ha-not-installed", "Nothing installed yet; the name skipped.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			notInstalled(t, r)
 			r.hostSays(t, dashboard.Casa{Name: galleryName})
-			must(t, r.app.writeState(casaSkipFile, casaSkip{Skipped: true}))
+			must(t, r.app.writeState(casaSkipFile, casaSkip{Skipped: true, At: galleryClock}))
 			r.contact(t, galleryClock)
 			r.hostPushes(t, nil)
 			return home(t, r, c, port)

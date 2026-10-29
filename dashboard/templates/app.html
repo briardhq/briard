@@ -2,7 +2,7 @@
      common one, the filled button. */}}
 {{define "chooser"}}
   <div class="card wide"><header><h2>What should this machine run?</h2><p>Pick one to start; the rest is a click away under Apps.</p></header><section><div class="item-group">
-    {{range $i, $app := .Apps}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{.Title}}</h3><p>{{.Blurb}}</p>{{with .Install}}{{if .Failed}}<p class="note">Could not install {{$app.Title}}: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$app.Name}}</code></p>{{end}}{{end}}</section><aside><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn"{{if $i}} data-variant="outline"{{end}}>{{if and .Install .Install.Failed}}Try again{{else}}Set up {{.Title}}{{end}}</button></form></aside></div>{{end}}
+    {{range $i, $app := .Apps}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{.Title}}</h3><p>{{.Blurb}}</p>{{with .Install}}{{if .Failed}}<p class="note">Could not install {{$app.Title}}: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$app.Name}}</code></p>{{end}}{{end}}</section><aside><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn"{{if $i}} data-variant="outline"{{end}}>{{if and .Install .Install.Failed}}Try again{{else}}Install {{.Title}}{{end}}</button></form></aside></div>{{end}}
   </div></section></div>
 {{end}}
 
@@ -36,7 +36,7 @@
   {{if and .Install .Install.Running}}{{template "installing" .}}{{else}}
   <div class="card"><header><h2>{{.Title}}</h2><p>{{.Blurb}}</p></header>
     {{with .Install}}{{if .Failed}}<section class="note">Could not install it: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$app.Name}}</code></section>{{end}}{{end}}
-    <footer><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn" data-variant="outline">{{if and .Install .Install.Failed}}Try again{{else}}Set up {{.Title}}{{end}}</button></form></footer></div>
+    <footer><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn" data-variant="outline">{{if and .Install .Install.Failed}}Try again{{else}}Install {{.Title}}{{end}}</button></form></footer></div>
   {{end}}{{end}}{{end}}
 </div>{{end}}
 {{template "foot" (shell "apps" false)}}{{end}}

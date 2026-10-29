@@ -28,9 +28,14 @@ import (
 
 const casaSkipFile = "casa-skip.json"
 
+// casaSkip is "not now" on the home page: the address step stays off the home for casaSkipFor,
+// then returns; the Web address page offers the name throughout, so nothing is ever lost.
 type casaSkip struct {
-	Skipped bool `json:"skipped"`
+	Skipped bool      `json:"skipped"`
+	At      time.Time `json:"at"`
 }
+
+const casaSkipFor = 30 * 24 * time.Hour
 
 // casaAsk is the last claim asked from this page, kept until the host's view moves past it.
 type casaAsk struct {
@@ -91,7 +96,7 @@ func (a *app) casaState() *casaView {
 	}
 	var skip casaSkip
 	if err := a.readState(casaSkipFile, &skip); err == nil {
-		v.Skipped = skip.Skipped
+		v.Skipped = skip.Skipped && a.now().Sub(skip.At) < casaSkipFor
 	}
 	a.mu.Lock()
 	// A successful ask is superseded by the host's own word on it; a failed one stays until
@@ -133,7 +138,7 @@ func (a *app) recheckCasa(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.casaRecheck = rc
 	a.mu.Unlock()
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, back(r), http.StatusSeeOther)
 }
 
 // requestCasa is the form: one email, one directive, one answer shown on the page.
@@ -163,14 +168,14 @@ func (a *app) requestCasa(w http.ResponseWriter, r *http.Request) {
 	if err := a.writeState(casaSkipFile, casaSkip{}); err != nil {
 		log.Printf("dashboard: casa skip: %v", err)
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, back(r), http.StatusSeeOther)
 }
 
-// skipCasa folds the card away (or brings it back, with undo=1).
+// skipCasa takes the step off the home page for a while (or brings it back, with undo=1).
 func (a *app) skipCasa(w http.ResponseWriter, r *http.Request) {
-	if err := a.writeState(casaSkipFile, casaSkip{Skipped: r.FormValue("undo") == ""}); err != nil {
+	if err := a.writeState(casaSkipFile, casaSkip{Skipped: r.FormValue("undo") == "", At: a.now()}); err != nil {
 		http.Error(w, "could not record that\n", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, back(r), http.StatusSeeOther)
 }

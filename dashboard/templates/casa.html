@@ -18,7 +18,7 @@
     {{if eq .State "refused"}}<div class="alert" data-variant="destructive"><section>{{.Reason}}</section></div>{{else if eq .State "expired"}}<div class="alert" data-variant="destructive"><section>The last link expired before it was opened. Try again.</section></div>{{end}}
     {{with .Asked}}{{if .Failed}}<div class="alert" data-variant="destructive"><section>{{.Detail}}</section></div>{{else}}<p>Sending the link to {{.Email}}…</p>{{end}}{{end}}
     <form method="post" action="/casa/claim" class="field" id="casa-claim"><label class="label" for="casa-email">Email</label><input class="input" id="casa-email" name="email" type="email" required placeholder="you@example.org"{{with .Asked}} value="{{.Email}}"{{end}} hx-preserve></form>
-  </section><footer><button type="submit" class="btn" form="casa-claim">Register</button><button type="submit" class="btn" data-variant="ghost" form="casa-claim" formaction="/casa/skip">Not now</button></footer></div>
+  </section><footer><button type="submit" class="btn" form="casa-claim">Register</button><button type="submit" class="btn" data-variant="ghost" form="casa-claim" formaction="/casa/skip" formnovalidate>Not now</button></footer></div>
   {{end}}
 {{end}}
 
@@ -28,8 +28,6 @@
 <div class="tiles">
   {{with .Casa}}
   {{if eq .State "registered"}}{{if eq .Resolves "blocked"}}{{template "address-step" .}}{{else}}{{template "address-card" $}}{{end}}
-  {{else if .Skipped}}
-  <div class="card"><header><h2>No address yet</h2><p>Want <code>{{.Name}}</code> and a real certificate, so your apps open without browser warnings?</p></header><footer><form method="post" action="/casa/skip"><input type="hidden" name="undo" value="1"><button type="submit" class="btn" data-variant="outline">Register a name</button></form></footer></div>
   {{else}}{{template "address-step" .}}{{end}}
   {{end}}
   <div class="card"><header><h2>From outside your home</h2><p>Nothing is opened to the internet.</p></header><section class="note">Your apps are reachable only on your home network. To reach them while you are away, the usual ways are Tailscale, WireGuard, or a port on your router; each one is a choice about your privacy that Briard leaves to you.</section></div>

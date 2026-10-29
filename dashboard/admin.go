@@ -137,7 +137,7 @@ func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string
 	a.mu.Lock()
 	if cur, ok := a.installs[name]; ok && !cur.Done {
 		a.mu.Unlock()
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, back(r), http.StatusSeeOther)
 		return
 	}
 	a.installs[name] = &install{Started: a.now()}
@@ -159,7 +159,7 @@ func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string
 		}
 		log.Printf("dashboard: install %s: outcome=%+v err=%v", name, o, err)
 	}()
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, back(r), http.StatusSeeOther)
 }
 
 // installState is what the card shows for a service, nil when nothing was asked. A finished,

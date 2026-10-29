@@ -68,7 +68,7 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 	port := newFakePort()
 	r.app.port = port
 	body := r.page(c)
-	if !strings.Contains(body, `action="/install/home-assistant"`) || !strings.Contains(body, "Set up Home Assistant") || strings.Contains(body, `http-equiv="refresh"`) {
+	if !strings.Contains(body, `action="/install/home-assistant"`) || !strings.Contains(body, "Install Home Assistant") || strings.Contains(body, `http-equiv="refresh"`) {
 		t.Fatalf("the not-installed card offers no button, or the idle page polls: %s", body)
 	}
 	// Untrusted cannot press it, and pressing for anything but HA is refused.
@@ -87,7 +87,7 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 		t.Fatal("the directive never reached the port")
 	}
 	body = r.page(c)
-	if !strings.Contains(body, "Installing") || !strings.Contains(body, `hx-get="/f/install?app=home-assistant"`) || strings.Contains(body, "Set up Home Assistant") {
+	if !strings.Contains(body, "Installing") || !strings.Contains(body, `hx-get="/f/install?app=home-assistant"`) || strings.Contains(body, "Install Home Assistant") {
 		t.Errorf("the page while installing does not say so and poll: %s", body)
 	}
 	// A second press while it runs relays nothing more.

@@ -41,6 +41,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -494,8 +495,20 @@ func (a *app) revoke(w http.ResponseWriter, r *http.Request) {
 	}
 	if c, err := r.Cookie(cookieName); err == nil && hashToken(c.Value) == gone.Hash {
 		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: scheme(r) == "https", MaxAge: -1})
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, back(r), http.StatusSeeOther)
+}
+
+// back is where a form's act returns to: the section page it was pressed on, read from the
+// Referer, or the home when there is none or it is not one of ours. An act is a POST that
+// redirects, so the page the household was reading is the page it keeps reading.
+func back(r *http.Request) string {
+	if u, err := url.Parse(r.Referer()); err == nil && sections[u.Path].tmpl != "" {
+		return u.Path
+	}
+	return "/"
 }
 
 // QUICK-CONNECT: a browser that is not trusted asks; a browser that is
@@ -622,7 +635,7 @@ func (a *app) approve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.token = tok
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, back(r), http.StatusSeeOther)
 }
 
 // sweep drops requests past their TTL, approved or not. Called with the lock held.

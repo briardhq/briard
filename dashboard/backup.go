@@ -155,5 +155,5 @@ func (a *app) requestBackup(w http.ResponseWriter, r *http.Request, what string)
 	a.mu.Lock()
 	a.backupAsked = asked
 	a.mu.Unlock()
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, back(r), http.StatusSeeOther)
 }

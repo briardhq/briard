@@ -195,3 +195,32 @@ func TestTheCardSaysWhetherTheBackupIsOffsite(t *testing.T) {
 		t.Errorf("no sync client: %s", body)
 	}
 }
+
+// An act returns to the page it was pressed on -- the section's page, read from the Referer --
+// and to the home when there is none or it is not one of ours.
+func TestActsReturnToThePageTheyWerePressedOn(t *testing.T) {
+	r, c, port := backupRig(t)
+	answerHistory(port, "") // the host says yes to each; the answer is not the question here
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/f", On: true, Key: testKey, KeySaved: true})
+	post := func(referer string) string {
+		t.Helper()
+		req, _ := http.NewRequest("POST", r.srv.URL+"/backup/off", strings.NewReader(""))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if referer != "" {
+			req.Header.Set("Referer", referer)
+		}
+		req.AddCookie(c)
+		resp, err := noRedirect.Do(req)
+		must(t, err)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("POST /backup/off = %d", resp.StatusCode)
+		}
+		return resp.Header.Get("Location")
+	}
+	for referer, want := range map[string]string{r.srv.URL + "/backup": "/backup", r.srv.URL + "/": "/", "": "/", "https://evil.example/backup": "/backup", r.srv.URL + "/history/home-assistant": "/"} {
+		if got := post(referer); got != want {
+			t.Errorf("after an act pressed on %q the page goes to %q, want %q", referer, got, want)
+		}
+	}
+}

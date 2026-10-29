@@ -6,8 +6,9 @@
 <div class="tiles">
 {{template "alerts" .}}
 {{if eq .Stage "choose"}}{{template "chooser" .}}{{else}}{{with .Installing}}{{template "installing" .}}{{end}}{{range .Apps}}{{if .Installed}}{{template "app-card" .}}{{end}}{{end}}{{end}}
-{{if .Steps.Address}}{{with .Casa}}{{template "address-step" .}}{{end}}{{end}}
-{{if .Steps.Key}}{{with .Backup}}{{template "key-step" .}}{{end}}{{end}}
+{{/* The steps wait for the stage: none beside the chooser, the address beside the install, both once an app runs -- one thing at a time. */}}
+{{if ne .Stage "choose"}}{{if .Steps.Address}}{{with .Casa}}{{template "address-step" .}}{{end}}{{end}}{{end}}
+{{if eq .Stage "running"}}{{if .Steps.Key}}{{with .Backup}}{{template "key-step" .}}{{end}}{{end}}{{end}}
 {{if eq .Stage "running"}}{{template "glance" .}}{{end}}
 </div>
 {{template "foot" (shell "home" false)}}{{end}}

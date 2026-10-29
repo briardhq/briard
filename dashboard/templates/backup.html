@@ -3,7 +3,7 @@
 {{define "key-step"}}
   <div class="card"><header><h2>Save your recovery key</h2><p>Your backups cannot be opened without it, and it exists only on this machine.</p></header><section>
     <p class="key">{{.Key}}</p>
-    <p class="note">Write it down, or keep it in your password manager. One click selects the whole key. Whoever has this key and the backup folder has everything in it.</p>
+    <p class="note">Write it down, or keep it in your password manager. Whoever has this key and the backup folder has everything in it.</p>
   </section><footer><form method="post" action="/backup/saved"><button type="submit" class="btn" data-variant="outline">I have saved the key</button></form></footer></div>
 {{end}}
 
@@ -12,9 +12,9 @@
 <header class="page-head"><h1>Backup</h1><p>{{with .Backup}}{{if .On}}Every night at 02:00, encrypted, into <code>{{.Folder}}</code> on this machine.{{else}}The nightly backup is off.{{end}}{{else}}The nightly backup has not been set up by this host yet.{{end}}</p></header>
 {{with .Backup}}
 <div class="tiles">
+  {{with .Asked}}<div class="alert wide" data-variant="destructive">{{template "icon-alert"}}<h2>Not done</h2><section>{{.}}</section></div>{{end}}
   <div class="card"><header><h2>Nightly backup</h2>
     <p>{{if not .On}}Off. The backups already in <code>{{.Folder}}</code> are kept.{{else if .WrongKey}}The folder holds a backup that this Briard cannot open.{{else if .LastFailed}}The backup on {{.LastWhen}} did not finish: {{.LastError}}{{else if .LastWhen}}Last backup: {{.LastWhen}}, {{.LastSize}} new{{with .Held}}; the folder holds {{.}}{{end}}.{{else}}The first backup runs tonight.{{end}}</p></header><section>
-    {{with .Asked}}<div class="alert" data-variant="destructive"><section>{{.}}</section></div>{{end}}
     {{if .On}}
     {{if .WrongKey}}<p class="note">It is from an earlier install, or made with another key. Enter that backup's recovery key to continue it here, or change the folder below.</p>
     <form method="post" action="/backup/adopt" class="field" id="backup-adopt"><label class="label" for="backup-key">That backup's recovery key</label><input class="input" id="backup-key" name="key" required autocomplete="off" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"></form>
@@ -29,7 +29,7 @@
     {{range .Nights}}<tr><td>{{.When}}</td><td>{{if .Error}}—{{else}}{{.Added}}{{end}}</td><td>{{if .Error}}<span class="bad">did not finish: {{.Error}}</span>{{else}}<span class="badge" data-variant="secondary">ok</span>{{end}}</td></tr>{{end}}
   </tbody></table></div></section></div>{{end}}
   {{if .Key}}{{if .KeySaved}}
-  <div class="card"><header><h2>Recovery key</h2><p>Saved, you said.</p></header><section><p class="key">{{.Key}}</p><p class="note">Whoever has this key and the backup folder has everything in it.</p></section></div>
+  <div class="card"><header><h2>Recovery key</h2><p>Saved, you said. It stays out of sight until you ask.</p></header><section><details><summary class="btn" data-variant="outline">Show the key</summary><p class="key">{{.Key}}</p><p class="note">Whoever has this key and the backup folder has everything in it.</p></details></section></div>
   {{else}}{{template "key-step" .}}{{end}}{{end}}
   <div class="card"><header><h2>Folder</h2><p>Back up into another folder from tonight.</p></header><section>
     <p class="note">It must already exist, belong to you, and be empty — or hold these backups, if you moved them there yourself. Your earlier backups stay where they are.</p>
