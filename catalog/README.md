@@ -51,9 +51,8 @@ function a node uses.
 **Choosing what to list.** The index is for apps a household wants, not a mirror of everything
 that can be self-hosted. Left out on purpose: anything whose role the platform already fills
 (reverse proxies, container managers, remote-access tunnels, auto-updaters, uptime and metrics
-stacks), and services that are a platform of their own rather than an app. Apps that need a
-user-data store are listed although none is installable yet: the index exists to learn which
-of them to build.
+stacks). Apps that need a user-data store, or a design pass of their own, are listed although
+none is installable yet: the index exists to learn which of them to build.
 
 **Icons** come from [homarr-labs/dashboard-icons](https://github.com/homarr-labs/dashboard-icons)
 (Apache-2.0 for the collection; each mark remains its project's) unless the collection's copy is
