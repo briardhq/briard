@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -16,15 +15,16 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// TWO WAYS TO RUN, ONE INSTALL. Double-clicked, it opens a console that shows the install as it
-// goes and, when the restart is owed, asks whether to restart now. With /S -- the Store's silent
-// switch -- nothing opens but the UAC prompt and it never restarts Windows. Either way it ends with
-// the script's exit code, 3010 when the restart is owed (the Store shows its own restart message
-// for it), 0 when not, and anything else is a failure. The whole output also goes to
-// %TEMP%\briard-setup.log.
+// TWO WAYS TO RUN, ONE INSTALL. Double-clicked, it shows the install in a window
+// (window_windows.go) that ends, when the restart is owed, on Restart now / Later. With /S -- the
+// Store's silent switch -- nothing opens but the UAC prompt and it never restarts Windows. Either
+// way it ends with the script's exit code, 3010 when the restart is owed (the Store shows its own
+// restart message for it), 0 when not, and anything else is a failure. The whole output also goes
+// to %TEMP%\briard-setup.log.
 //
-// Not elevated, it relaunches itself elevated and returns that run's code: a program with no
-// manifest resource asks for UAC this way, as install.ps1 does.
+// Not elevated, it relaunches itself elevated and returns that run's code: its manifest asks for
+// no elevation (asInvoker), so the /S run the Store starts is the run that asks, as install.ps1
+// does.
 
 // exitCancelled is ERROR_CANCELLED: the UAC prompt was declined.
 const exitCancelled = 1223
@@ -35,7 +35,8 @@ func run() int {
 	silent := false
 	for _, a := range os.Args[1:] {
 		if !strings.EqualFold(a, "/S") {
-			return usage(a)
+			tell(fmt.Sprintf("Briard Setup does not know the argument %q. The only one is /S, a silent install.", a))
+			return 87 // ERROR_INVALID_PARAMETER
 		}
 		silent = true
 	}
@@ -48,46 +49,24 @@ func run() int {
 		return 1
 	}
 	defer lf.Close()
-	out := io.Writer(lf)
-	var con *os.File
-	if !silent {
-		if con = console(); con != nil {
-			defer con.Close()
-			out = io.MultiWriter(con, lf)
-		}
+	if silent {
+		return runInstall(lf)
 	}
-	code := runInstall(out)
-	if con != nil {
-		switch code {
-		case 3010:
-			fmt.Fprint(con, "\nRestart now? [Y/n] ")
-			if a := strings.TrimSpace(readLine()); a == "" || strings.EqualFold(a[:1], "y") {
-				// install.ps1's own restart: Restart, never a shutdown -- Fast Startup's resume is
-				// not a start.
-				exec.Command(filepath.Join(os.Getenv("SystemRoot"), `System32\shutdown.exe`),
-					"/r", "/t", "5", "/c", "Briard: restarting once to finish the install").Run()
-				return code
-			}
-			fmt.Fprintln(con, "Restart Windows when you are ready (Restart, not Shut down): Briard starts by itself afterwards.")
-		case 0:
-		default:
-			fmt.Fprintf(con, "\nbriard: the install did not finish. Everything above is also in %s.\n", logPath)
-		}
-		fmt.Fprint(con, "\nPress Enter to close this window.")
-		readLine()
-	}
-	return code
+	return installWindow(lf, logPath)
 }
 
-// readLine reads one line from the console.
-func readLine() string {
-	in, err := os.Open("CONIN$")
-	if err != nil {
-		return ""
-	}
-	defer in.Close()
-	s, _ := bufio.NewReader(in).ReadString('\n')
-	return s
+// restart is install.ps1's own restart: Restart, never a shutdown -- Fast Startup's resume is not
+// a start.
+func restart() {
+	exec.Command(filepath.Join(os.Getenv("SystemRoot"), `System32\shutdown.exe`),
+		"/r", "/t", "5", "/c", "Briard: restarting once to finish the install").Run()
+}
+
+// tell says text in a message box, for what happens before there is a window or without one.
+func tell(text string) {
+	t, _ := windows.UTF16PtrFromString(text)
+	c, _ := windows.UTF16PtrFromString("Briard Setup")
+	windows.MessageBox(0, t, c, windows.MB_OK|windows.MB_ICONERROR|windows.MB_SETFOREGROUND)
 }
 
 // runInstall unpacks what this program carries and runs install.ps1: the carried arm's, or
@@ -142,30 +121,7 @@ func runInstall(out io.Writer) int {
 	return 0
 }
 
-func usage(arg string) int {
-	if con := console(); con != nil {
-		fmt.Fprintf(con, "briard-setup: unknown argument %q (the only one is /S, a silent install)\n", arg)
-		con.Close()
-	}
-	return 87 // ERROR_INVALID_PARAMETER
-}
-
-var (
-	procAllocConsole    = windows.NewLazySystemDLL("kernel32.dll").NewProc("AllocConsole")
-	procShellExecuteExW = windows.NewLazySystemDLL("shell32.dll").NewProc("ShellExecuteExW")
-)
-
-// console opens a console window for this GUI-subsystem program; nil when there is none to open.
-func console() *os.File {
-	if r, _, _ := procAllocConsole.Call(); r == 0 {
-		return nil
-	}
-	con, err := os.OpenFile("CONOUT$", os.O_RDWR, 0)
-	if err != nil {
-		return nil
-	}
-	return con
-}
+var procShellExecuteExW = windows.NewLazySystemDLL("shell32.dll").NewProc("ShellExecuteExW")
 
 // shellExecuteInfo is SHELLEXECUTEINFOW.
 type shellExecuteInfo struct {

@@ -33,7 +33,10 @@
 # goos: "windows" cross-compiles the Windows host agent (briard-agent.exe) -- a plain Go cross build,
 # which is the whole reason the agent is pure Go. The ELF check below does not apply to a PE file.
 # gui: a Windows GUI-subsystem program (the tray), which Windows starts without a console window.
-{ lib, buildGoModule, patchelf, subPackage ? "agent/cmd/briard-agent", version ? "0.0.0-dev", goos ? null, gui ? false }:
+# rc: a Windows resource script beside the main (its icon, its manifest), compiled by mingw's windres
+# into the .syso the Go linker takes by itself -- the same cross toolchain the Windows QEMU builds
+# with. The host's cpp is its preprocessor.
+{ lib, buildGoModule, patchelf, pkgsCross, subPackage ? "agent/cmd/briard-agent", version ? "0.0.0-dev", goos ? null, gui ? false, rc ? null }:
 buildGoModule {
   pname = baseNameOf subPackage;
   inherit version;
@@ -42,7 +45,8 @@ buildGoModule {
   subPackages = [ subPackage ];
   env.CGO_ENABLED = 0;
   # In preBuild rather than env: buildGoModule sets GOOS/GOARCH itself, over anything in env.
-  preBuild = lib.optionalString (goos != null) "export GOOS=${goos} GOARCH=amd64";
+  preBuild = lib.optionalString (goos != null) "export GOOS=${goos} GOARCH=amd64\n"
+    + lib.optionalString (rc != null) "(cd ${dirOf rc} && x86_64-w64-mingw32-windres --preprocessor=cpp -O coff -i ${baseNameOf rc} -o rsrc_windows_amd64.syso)\n";
   # A cross-compiled test binary cannot run here; the Windows tests run on a Windows machine.
   doCheck = goos == null;
   # The PE is NOT stripped by the fixup: binutils' strip is an ELF tool, and run over the PE Go
@@ -59,7 +63,7 @@ buildGoModule {
   # cgo would otherwise ship an agent that cannot start on any machine without this exact store
   # path -- the failure we already shipped once, and one no NixOS test can see. This fails the
   # build instead: it is checked on the built binary, so it cannot go vacuous.
-  nativeBuildInputs = [ patchelf ];
+  nativeBuildInputs = [ patchelf ] ++ lib.optional (rc != null) pkgsCross.ucrt64.buildPackages.binutils;
   postFixup = lib.optionalString (goos == null) ''
     if interp=$(patchelf --print-interpreter "$out/bin/briard-agent" 2>/dev/null) && [ -n "$interp" ]; then
       echo "briard-agent has an ELF interpreter ($interp) -- it must be STATIC, or it cannot exec" >&2

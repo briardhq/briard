@@ -1,0 +1,12 @@
+// briard-setup's resources. The release build (agent/package.nix) compiles this with windres into
+// rsrc_windows_amd64.syso beside the Go files, which the Go linker takes into the program by itself;
+// a plain `go build` has no .syso and builds the program without them.
+//
+// briard.ico is Briard's mark (agent/hass/component/brand/icon@2x.png) at 256, 48, 32 and 16 px,
+// each a PNG, as Windows reads an icon since Vista.
+
+// The program's icon -- Explorer, the browser's downloads, the taskbar -- and the window's.
+1 ICON "briard.ico"
+
+// The application manifest: RT_MANIFEST (24), CREATEPROCESS_MANIFEST_RESOURCE_ID (1).
+1 24 "briard-setup.manifest"

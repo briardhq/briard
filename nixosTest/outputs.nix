@@ -564,7 +564,7 @@ in
     tray-windows = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-tray"; version = agentVersion; goos = "windows"; gui = true; };
     # The Store's installer stub, a GUI program too: `publish-release.sh setup` appends a published
     # windows arm to it.
-    setup-windows = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-setup"; version = agentVersion; goos = "windows"; gui = true; };
+    setup-windows = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-setup"; version = agentVersion; goos = "windows"; gui = true; rc = "agent/cmd/briard-setup/briard-setup.rc"; };
     driver = driverPkg;
     qemu-bundle = qemuBundle.bundle; # the relocatable qemu the free-local installer ships
     # The Windows arm of the same thing: QEMU cross-built here from a pinned release over MSYS2's
