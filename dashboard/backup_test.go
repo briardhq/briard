@@ -593,3 +593,33 @@ func TestTheBackupsCardOfAFolderWithNoBackupYet(t *testing.T) {
 		t.Errorf("an empty folder's card:\n%s", body)
 	}
 }
+
+// A SETTING'S PAGE SHOWS IT DONE: the host pushes its view on its next tick, so the answer to a
+// move waits for the view that has the new folder before sending the browser back -- and a host
+// that never pushes leaves the page as it was once the wait is up, rather than holding it.
+func TestAMoveComesBackToThePageShowingIt(t *testing.T) {
+	r, c, port := backupRig(t)
+	r.app.viewWait = 5 * time.Second
+	const old, to = "/home/ana/Briard Backup", "/home/ana/Dropbox/Briard Backup"
+	r.hostBacksUp(t, dashboard.Backup{Folder: old, On: true, Key: testKey, KeySaved: true})
+	port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: "backups are now stored in " + to}
+	go func() {
+		time.Sleep(500 * time.Millisecond) // the host's next tick
+		raw, _ := json.Marshal(dashboard.Backup{Folder: to, On: true, Key: testKey, KeySaved: true, Previous: old})
+		_ = os.WriteFile(r.app.backupPath, raw, 0o600)
+	}()
+	if resp := r.form("/backup/folder", c, url.Values{"folder": {to}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("confirm = %d", resp.StatusCode)
+	}
+	if got := r.get(t, "/backup", c); !strings.Contains(got, `value="`+to+`"`) {
+		t.Errorf("the page after the move still shows the old folder:\n%s", card(got, "backup-folder-form"))
+	}
+
+	r.app.viewWait = 300 * time.Millisecond
+	port.answer <- api.DirectiveOutcome{State: api.OutcomeDone}
+	start := time.Now()
+	r.form("/backup/off", c, nil) // the host never pushes "off"
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("a host that does not push held the page %s", d)
+	}
+}

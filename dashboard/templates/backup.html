@@ -55,7 +55,7 @@
   {{if not .Moving}}{{if .Rows}}<div class="table-container"><table class="table"><thead><tr><th>When</th><th>Added</th><th>Status</th><th></th></tr></thead><tbody>
   {{range .Rows}}<tr><td>{{.When}}</td><td>{{.Added}}</td><td>{{if .Error}}<span class="bad">did not finish: {{.Error}}</span>{{else if .Earlier}}<span class="badge" data-variant="outline">from an earlier install</span>{{else}}<span class="badge" data-variant="secondary">ok</span>{{end}}</td><td>{{with .ID}}<a class="btn" data-variant="outline" href="/backup/{{.}}">Details</a>{{end}}</td></tr>{{end}}
   </tbody></table></div>{{else if not .Error}}<p class="note">The folder holds no backup yet.</p>{{end}}
-  <p class="note">Briard keeps the backups of the last 2 days and 1 weekly.</p>{{end}}
+  {{if not .Error}}<p class="note">Briard keeps the backups of the last 2 days and 1 weekly.</p>{{end}}{{end}}
 </section></div>{{end}}
 
 {{/* ONE BACKUP: when, whose, what it added and holds, and its apps, each with a Restore. */}}

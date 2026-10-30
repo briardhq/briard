@@ -196,10 +196,13 @@ type app struct {
 	backupPath, backupAsked string
 	// backupNow is the run Back up now asked for, until the page has said how it ended (backup.go).
 	backupNow *backupNowOp
+	// viewWait is how long a backup setting's answer waits for the host to push the view it
+	// changed (awaitView): a few of the host's ticks.
+	viewWait time.Duration
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
-	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now,
+	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now, viewWait: 15 * time.Second,
 		pending: map[string]*pending{}, hops: map[string]hop{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
 		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths, casaPath: dashboard.CasaPath,
 		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath, backupPath: dashboard.BackupPath}

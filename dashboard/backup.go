@@ -190,9 +190,11 @@ func (a *app) requestBackup(w http.ResponseWriter, r *http.Request, what string)
 		return
 	}
 	var s api.ConfigSetting
+	var shown func(*backupView) bool // the view once the host has pushed what it did; nil: nothing to wait for
 	switch what {
 	case "saved":
 		s = api.ConfigSetting{Key: "backup-key-saved", Value: "yes"}
+		shown = func(v *backupView) bool { return v.KeySaved }
 	case "adopt":
 		key := strings.TrimSpace(r.FormValue("key"))
 		if key == "" {
@@ -202,7 +204,9 @@ func (a *app) requestBackup(w http.ResponseWriter, r *http.Request, what string)
 		s = api.ConfigSetting{Key: "backup-adopt", Value: key}
 	case "off":
 		s = api.ConfigSetting{Key: "backup-dir", Value: ""}
+		shown = func(v *backupView) bool { return !v.On }
 	case "on":
+		shown = func(v *backupView) bool { return v.On }
 		v := a.backupState()
 		if v == nil || v.Folder == "" {
 			http.Error(w, "this machine has not said where its backups go\n", http.StatusConflict)
@@ -223,7 +227,31 @@ func (a *app) requestBackup(w http.ResponseWriter, r *http.Request, what string)
 	o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveConfigSet, Payload: string(payload)})
 	log.Printf("dashboard: backup %s: outcome=%+v err=%v", what, o, err) // the typed key is not in the outcome
 	a.asked(o, err)
+	if err == nil && o.State == api.OutcomeDone && shown != nil {
+		a.awaitView(r.Context(), shown)
+	}
 	http.Redirect(w, r, back(r), http.StatusSeeOther)
+}
+
+// awaitView waits, briefly, for the host's pushed view to show what the host just said it did.
+// The host pushes the view on its next tick, so a page that came back first would show the folder
+// or the switch as they were, and the household would take it for not done. Bounded: a host that
+// has not pushed by then leaves the page one tick behind, as it was.
+func (a *app) awaitView(ctx context.Context, shown func(*backupView) bool) {
+	deadline := time.Now().Add(a.viewWait) // wall time: the page's clock may be a fixture
+	for {
+		if v := a.backupState(); v != nil && shown(v) {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
 
 // asked keeps the host's refusal of what the page asked, or clears the last one.
@@ -307,6 +335,9 @@ func (a *app) requestBackupFolder(w http.ResponseWriter, r *http.Request) {
 	log.Printf("dashboard: backup folder %q (confirm %v): state=%s err=%v", folder, confirm, o.State, err) // never the key
 	if confirm {
 		a.asked(o, err)
+		if err == nil && o.State == api.OutcomeDone {
+			a.awaitView(r.Context(), func(v *backupView) bool { return v.On && v.Folder == folder })
+		}
 		http.Redirect(w, r, "/backup", http.StatusSeeOther)
 		return
 	}
