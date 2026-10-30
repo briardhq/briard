@@ -419,7 +419,7 @@ func (a *app) backupsCard(ctx context.Context) backupsCardView {
 		if !op.Backup {
 			continue
 		}
-		v.Ops = append(v.Ops, backupOpView{Service: service, Title: appTitle(service), From: op.What,
+		v.Ops = append(v.Ops, backupOpView{Service: service, Title: a.appTitle(service), From: op.What,
 			Since: op.Started.In(zone()).Format("15:04"), Detail: op.Detail, Running: !op.Done, Failed: op.Failed})
 		v.Moving = v.Moving || !op.Done
 		if op.Done && !op.Failed {
@@ -509,7 +509,7 @@ func (a *app) showBackup(w http.ResponseWriter, r *http.Request, id string) {
 			v.Added, v.Size = sizeWord(b.Added), sizeWord(b.Size)
 		}
 		for _, ap := range b.Apps {
-			v.Apps = append(v.Apps, backupAppView{Name: ap.Name, Title: appTitle(ap.Name), Version: ap.Version,
+			v.Apps = append(v.Apps, backupAppView{Name: ap.Name, Title: a.appTitle(ap.Name), Version: ap.Version,
 				Taken: backupWhen(ap.TakenAt), Installed: installed[ap.Name]})
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -550,7 +550,7 @@ func (a *app) requestBackupRestore(w http.ResponseWriter, r *http.Request) {
 		for _, b := range list {
 			for _, ap := range b.Apps {
 				if b.ID == id && ap.Name == service {
-					v = &backupConfirmView{Backup: id, When: backupWhen(b.At), Service: service, Title: appTitle(service),
+					v = &backupConfirmView{Backup: id, When: backupWhen(b.At), Service: service, Title: a.appTitle(service),
 						Version: ap.Version, Taken: backupWhen(ap.TakenAt), Installed: a.installedApps()[service]}
 				}
 			}

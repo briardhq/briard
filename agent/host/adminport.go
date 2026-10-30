@@ -62,7 +62,8 @@ func guestMayAsk(d api.Directive) bool {
 		api.DirectiveBackupRestore, api.DirectiveBackupList, // the Backup page's restore
 		api.DirectiveBackupNow, api.DirectiveBackupFolder, // its Back up now, and its Change
 		api.DirectiveCasaClaim,   // a name for this household, asked from its own page
-		api.DirectiveCasaRecheck: // and its network asked again about it
+		api.DirectiveCasaRecheck, // and its network asked again about it
+		api.DirectiveWish:        // the Apps page's "I want this": a name on this node, nothing else
 		return true
 	case api.DirectiveConfigSet:
 		return isBackupSetting(d.Payload)

@@ -377,6 +377,10 @@ const (
 	// dashboard.backup writes the host's view of the nightly backup for the page -- the folder,
 	// whether it runs, the last night and the key -- pushed the same way; the key stays the host's.
 	verbDashboardBackup = "dashboard.backup"
+	// dashboard.catalog writes the host's view of the catalog's index for the page -- every
+	// listed app, which are installable and which the household wished for -- pushed the same
+	// way; the index and the wishes stay the host's.
+	verbDashboardCatalog = "dashboard.catalog"
 )
 
 // manifestDir holds the installed services' identities on the replicated volume — one file per
@@ -449,7 +453,7 @@ var guestCapabilities = []string{
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
 	verbCertWrite, verbCertRead,
-	verbDashboardHandoff, verbDashboardCasa, verbDashboardAlerts, verbDashboardBackup,
+	verbDashboardHandoff, verbDashboardCasa, verbDashboardAlerts, verbDashboardBackup, verbDashboardCatalog,
 	verbResources,
 	verbFsSync,
 	guestfirmware.VerbHello, guestfirmware.VerbBinStage, guestfirmware.VerbBinTest, guestfirmware.VerbBinActivate,
@@ -482,7 +486,8 @@ var besideActs = map[string]bool{
 	verbDataBackupResult: true, verbDataBackupKey: true, verbDataBackupList: true,
 	// pushes
 	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true, verbDashboardBackup: true,
-	verbServicePulling: true, verbCertWrite: true, verbNetMDNSName: true, verbHassNudge: true,
+	verbDashboardCatalog: true,
+	verbServicePulling:   true, verbCertWrite: true, verbNetMDNSName: true, verbHassNudge: true,
 }
 
 // isAct is ServeFrames' lane predicate: anything not declared to run beside acts is one.
@@ -1333,8 +1338,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, fmt.Errorf("%s: %w: %s", verbDashboardHandoff, err, strings.TrimSpace(string(out)))
 			}
 			return nil, nil
-		case verbDashboardCasa, verbDashboardAlerts, verbDashboardBackup:
-			// Three of the host's facts for the page, written the same way; the payload is parsed
+		case verbDashboardCasa, verbDashboardAlerts, verbDashboardBackup, verbDashboardCatalog:
+			// Four of the host's facts for the page, written the same way; the payload is parsed
 			// as its own shape, so a malformed one never reaches the page.
 			// The alert copy's directory is readable by more than the page (dashboard.AlertsDir);
 			// the backup view carries the key, so it stays in the page's own.
@@ -1345,6 +1350,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				v, path, dir, mode = &[]notify.Record{}, dashboard.AlertsPath, dashboard.AlertsDir, "0755"
 			case verbDashboardBackup:
 				v, path = &dashboard.Backup{}, dashboard.BackupPath
+			case verbDashboardCatalog:
+				v, path = &dashboard.Catalog{}, dashboard.CatalogPath
 			}
 			if err := json.Unmarshal(payload, v); err != nil {
 				return nil, err
@@ -2990,6 +2997,16 @@ func (g *Client) SupportsDashboardCasa() bool { return g.Supports(verbDashboardC
 func (g *Client) DashboardBackup(ctx context.Context, b dashboard.Backup) error {
 	return g.c.Call(ctx, verbDashboardBackup, b, nil)
 }
+
+// DashboardCatalog tells the guest what the host knows of the catalog's index, for the page's
+// cards: every listed app, which are installable, which the household wished for.
+func (g *Client) DashboardCatalog(ctx context.Context, c dashboard.Catalog) error {
+	return g.c.Call(ctx, verbDashboardCatalog, c, nil)
+}
+
+// SupportsDashboardCatalog reports whether this guest takes the catalog view (an older one does
+// not; its page shows what is installed and nothing it could add).
+func (g *Client) SupportsDashboardCatalog() bool { return g.Supports(verbDashboardCatalog) }
 
 // DashboardAlerts hands the guest a copy of the host's alert store, for the dashboard to list.
 func (g *Client) DashboardAlerts(ctx context.Context, recs []notify.Record) error {

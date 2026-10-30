@@ -130,3 +130,31 @@ func TestFetchRejectsUnsafeName(t *testing.T) {
 		}
 	}
 }
+
+// Has is existence by HEAD: 200 is published, 404 is not, and anything else is an error the
+// caller must not read as "not published" -- a mirror that is down knows nothing.
+func TestHasIsExistenceAndNothingElse(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/home-assistant.json", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Errorf("asked with %s; want HEAD", r.Method)
+		}
+	})
+	mux.HandleFunc("/broken.json", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) })
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := &Catalog{BaseURL: srv.URL, Client: srv.Client()}
+	ctx := context.Background()
+	if ok, err := c.Has(ctx, "home-assistant"); err != nil || !ok {
+		t.Errorf("a published manifest: ok=%v err=%v", ok, err)
+	}
+	if ok, err := c.Has(ctx, "paperless-ngx"); err != nil || ok {
+		t.Errorf("an unpublished manifest: ok=%v err=%v; want false, nil", ok, err)
+	}
+	if _, err := c.Has(ctx, "broken"); err == nil {
+		t.Error("a 502 read as an answer; it is an error")
+	}
+	if _, err := c.Has(ctx, "../index"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a non-slug name: %v; want ErrInvalid", err)
+	}
+}

@@ -44,13 +44,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"briard.io/agent/hass"
-	"briard.io/agent/mosquitto"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/routes"
@@ -196,6 +196,9 @@ type app struct {
 	backupPath, backupAsked string
 	// backupNow is the run Back up now asked for, until the page has said how it ended (backup.go).
 	backupNow *backupNowOp
+	// catalogPath is the host's view of the catalog's index (catalog.go): every card's text and
+	// icon, which apps are installable, which the household wished for.
+	catalogPath string
 	// viewWait is how long a backup setting's answer waits for the host to push the view it
 	// changed (awaitView): a few of the host's ticks.
 	viewWait time.Duration
@@ -205,7 +208,7 @@ func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
 	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now, viewWait: 15 * time.Second,
 		pending: map[string]*pending{}, hops: map[string]hop{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
 		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths, casaPath: dashboard.CasaPath,
-		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath, backupPath: dashboard.BackupPath}
+		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath, backupPath: dashboard.BackupPath, catalogPath: dashboard.CatalogPath}
 }
 
 const (
@@ -275,6 +278,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.requestInstall(w, r, strings.TrimPrefix(r.URL.Path, "/install/"))
+	case strings.HasPrefix(r.URL.Path, "/wish/") && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w, r)
+			return
+		}
+		a.requestWish(w, r, strings.TrimPrefix(r.URL.Path, "/wish/"))
 	case strings.HasPrefix(r.URL.Path, "/apps/") && r.Method == http.MethodGet:
 		d, ok := a.session(r)
 		if !ok {
@@ -282,7 +291,7 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		name := appService(r.URL.Path)
-		if offeredApp(name) == nil {
+		if !a.knows(name) {
 			http.NotFound(w, r)
 			return
 		}
@@ -804,11 +813,15 @@ type view struct {
 	// Stage is where the home is: "choose" before any app, "installing" while one is on its
 	// way, "running" once one is. It decides what the home page's one act is.
 	Stage string
-	// Apps is every app the dashboard offers, in the order it offers them -- the first is the
-	// common one, preselected by being the filled button -- each with what the routes table
-	// and, for Home Assistant, its own API say about it. InstalledCount is how many are.
+	// Apps is every app the page has a card for: the catalog's index in its order -- the first
+	// is the common one, preselected by being the filled button -- then anything installed
+	// that the index does not list, each with what the routes table and, for Home Assistant,
+	// its own API say about it. InstalledCount is how many are installed. Catalog says whether
+	// the host has pushed an index at all: before it has, the page shows what is installed
+	// and nothing it could add.
 	Apps           []*appView
 	InstalledCount int
+	Catalog        bool
 	// Installing is the app on its way while Stage is "installing".
 	Installing *appView
 	Devices    []deviceView
@@ -835,6 +848,23 @@ type stepsView struct {
 }
 
 func (s stepsView) Any() bool { return s.Address || s.Key }
+
+// Installable is the apps a household can install now: listed with a manifest, not installed.
+// Soon is the rest of the list: no manifest yet, a wish instead of a button.
+func (v view) Installable() []*appView {
+	return v.pick(func(a *appView) bool { return a.Available && !a.Installed })
+}
+func (v view) Soon() []*appView { return v.pick(func(a *appView) bool { return !a.Available }) }
+
+func (v view) pick(keep func(*appView) bool) []*appView {
+	var out []*appView
+	for _, a := range v.Apps {
+		if keep(a) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
 
 // Heading and Status are the home page's first line: where the home is, in a word and a sentence.
 func (v view) Heading() string {
@@ -871,33 +901,18 @@ func (v view) Status() string {
 	return "Everything is running."
 }
 
-// appInfo is an app the dashboard offers: its catalog slug, its name for a person, one line.
-// The list is the product's, keyed on catalog names the way agent/services is: the catalog has
-// no index to read, and two entries is a list, not a store.
-type appInfo struct {
-	Name, Title, Blurb string
-}
-
-var offered = []appInfo{
-	{hass.Name, "Home Assistant", "Runs your home: devices, automations, dashboards."},
-	{mosquitto.Name, "Mosquitto", "The MQTT broker many Home Assistant devices talk through."},
-}
-
-// offeredApp is the entry for a slug, nil for one the dashboard does not offer.
-func offeredApp(name string) *appInfo {
-	for i := range offered {
-		if offered[i].Name == name {
-			return &offered[i]
-		}
-	}
-	return nil
-}
-
-// appView is one app on the page.
+// appView is one app on the page: what the catalog's index says of it (catalog.go), and what
+// this machine does.
 type appView struct {
-	appInfo
-	Installed bool    // the routes table lists it
-	HA        *haView // Home Assistant's own states, on its card alone
+	// Name is the catalog slug, the key. Title, Functionality, Description and Homepage are
+	// the index's words; Icon its mark as a data URI (verified by the host; "" for none).
+	Name, Title, Functionality, Description, Homepage string
+	Icon                                              template.URL
+	// Available: the catalog has a manifest for it, so this machine can install it. Wished: the
+	// household asked for it while it had none.
+	Available, Wished bool
+	Installed         bool    // the routes table lists it
+	HA                *haView // Home Assistant's own states, on its card alone
 	// Install is an install the household asked for from this page, while it runs or after
 	// it failed.
 	Install *installView
@@ -1004,12 +1019,26 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 			}
 		}
 	}
-	for _, info := range offered {
-		av := &appView{appInfo: info, Installed: routed[info.Name]}
-		if info.Name == hass.Name {
+	// The cards: the index in its order, then anything installed that it does not list -- an
+	// app installed before the index was read, or by hand -- under the slug made readable.
+	var cards []*appView
+	if c := a.catalogState(); c != nil {
+		v.Catalog = true
+		for _, ca := range c.Apps {
+			cards = append(cards, &appView{Name: ca.Name, Title: ca.Title, Functionality: ca.Functionality, Description: ca.Description,
+				Homepage: ca.Homepage, Icon: icon(ca.Icon), Available: ca.Available, Wished: ca.Wished, Installed: routed[ca.Name]})
+		}
+	}
+	for _, name := range routedNames(a.routesPath) {
+		if !slices.ContainsFunc(cards, func(av *appView) bool { return av.Name == name }) {
+			cards = append(cards, &appView{Name: name, Title: titleOf(name), Available: true, Installed: true})
+		}
+	}
+	for _, av := range cards {
+		if av.Name == hass.Name {
 			av.HA = ha
 		}
-		av.Install = a.installState(info.Name, av.Installed)
+		av.Install = a.installState(av.Name, av.Installed)
 		if av.Install != nil && av.Install.Running {
 			v.Installing = av
 		}

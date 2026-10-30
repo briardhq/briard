@@ -1,56 +1,84 @@
-{{/* THE CHOOSER: the first run's one act -- which app to set up. The first offered is the
-     common one, the filled button. */}}
+{{/* THE CHOOSER: the first run's one act -- which app to set up. The first installable is the
+     common one, the filled button. Before the host has read the catalog there is nothing to
+     choose from, and the card says so. */}}
 {{define "chooser"}}
-  <div class="card wide"><header><h2>What should this machine run?</h2><p>Pick one to start; the rest is a click away under Apps.</p></header><section><div class="item-group">
-    {{range $i, $app := .Apps}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{.Title}}</h3><p>{{.Blurb}}</p>{{with .Install}}{{if .Failed}}<p class="note">Could not install {{$app.Title}}: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$app.Name}}</code></p>{{end}}{{end}}</section><aside><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn"{{if $i}} data-variant="outline"{{end}}>{{if and .Install .Install.Failed}}Try again{{else}}Install {{.Title}}{{end}}</button></form></aside></div>{{end}}
-  </div></section></div>
+  <div class="card wide"><header><h2>What should this machine run?</h2><p>{{if .Installable}}Pick one to start; the rest is a click away under Apps.{{else}}Briard has not read its catalog yet. The apps it can install appear here as soon as it has.{{end}}</p></header>{{if .Installable}}<section><div class="item-group">
+    {{range $i, $app := .Installable}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{template "app-title" .}}</h3><p>{{.Description}}</p>{{with .Install}}{{if .Failed}}<p class="note">Could not install {{$app.Title}}: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$app.Name}}</code></p>{{end}}{{end}}</section><aside><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn"{{if $i}} data-variant="outline"{{end}}>{{if and .Install .Install.Failed}}Try again{{else}}Install {{.Title}}{{end}}</button></form></aside></div>{{end}}
+  </div></section>{{end}}</div>
 {{end}}
+
+{{/* THE TITLE LINE of every card: the app's mark, its name, and in brand-less words what it does. */}}
+{{define "app-title"}}{{with .Icon}}<img class="app-icon" src="{{.}}" alt="">{{end}}{{.Title}}{{end}}
 
 {{/* INSTALLING: the app on its way, with the pull's progress when the host left a record. */}}
 {{define "installing"}}
-  <div class="card" hx-get="/f/install?app={{.Name}}" hx-trigger="every 5s" hx-swap="outerHTML"><header><h2>{{.Title}}</h2><p>{{with .Install}}{{with .Progress}}Installing · {{.DoneGB}} of {{.TotalGB}} downloaded ({{.Percent}}%){{else}}Installing · downloading it, which takes a minute or two{{end}}{{end}}</p></header><section>
+  <div class="card" hx-get="/f/install?app={{.Name}}" hx-trigger="every 5s" hx-swap="outerHTML"><header><h2>{{template "app-title" .}}</h2><p>{{with .Install}}{{with .Progress}}Installing · {{.DoneGB}} of {{.TotalGB}} downloaded ({{.Percent}}%){{else}}Installing · downloading it, which takes a minute or two{{end}}{{end}}</p></header><section>
     {{with .Install}}{{with .Progress}}<progress max="100" value="{{.Percent}}"></progress>{{end}}<p class="note">Started at {{.Since}}. You can close this page; Briard carries on, and this page follows along while it is open.</p>{{end}}
   </section></div>
 {{end}}
 
 {{/* THE APP CARD: an installed app, its one button, and the way to its page -- unless it is on it. */}}
 {{define "app-card"}}
-  <div class="card"{{with .HA}}{{if not .Running}} hx-get="/f/app?app={{$.Name}}{{if $.Here}}&here{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>{{.Title}}</h2>
+  <div class="card"{{with .HA}}{{if not .Running}} hx-get="/f/app?app={{$.Name}}{{if $.Here}}&here{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>{{template "app-title" .}}</h2>{{with .Functionality}}<p>{{.}}</p>{{end}}</header>
+  <section>
     {{with .HA}}<p>{{if not .Reachable}}Starting…{{else if .Onboarded}}Running at <a href="{{.URL}}" target="_blank" rel="noopener">{{.Host}}</a>{{else if .Running}}Ready for its first open.{{else}}Almost ready — Home Assistant is still starting.{{end}}</p>{{else}}<p>Installed and running.</p>{{end}}
-  </header>
-  {{with .HA}}{{if and .Reachable .Onboarded}}<section class="note">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.URL}}config/person" target="_blank" rel="noopener">Settings → People</a>, your name, “Change password” — no old password is needed.</section>{{end}}{{end}}
+    {{with .HA}}{{if and .Reachable .Onboarded}}<p class="note">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.URL}}config/person" target="_blank" rel="noopener">Settings → People</a>, your name, “Change password” — no old password is needed.</p>{{end}}{{end}}
+  </section>
   <footer>
     {{with .HA}}{{if .Reachable}}<form method="post" action="/open/home-assistant" target="_blank"><button type="submit" class="btn"{{if not .Running}} disabled{{end}}>Open Home Assistant</button></form>{{end}}{{end}}
     {{if not .Here}}<a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a>{{end}}
   </footer></div>
 {{end}}
 
+{{/* THE AVAILABLE CARD: an app this machine can install, and -- when the household asked for it
+     while it could not -- the line that says its wish is met. */}}
+{{define "available-card"}}
+  <div class="card"><header><h2>{{template "app-title" .}}</h2>{{with .Functionality}}<p>{{.}}</p>{{end}}</header>
+    <section><p>{{.Description}}</p>
+    {{if .Wished}}<p class="ok">You asked for this. It is available now.</p>{{end}}
+    {{with .Install}}{{if .Failed}}<p class="note">Could not install it: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$.Name}}</code></p>{{end}}{{end}}</section>
+    <footer><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn" data-variant="outline">{{if and .Install .Install.Failed}}Try again{{else}}Install {{.Title}}{{end}}</button></form>
+    {{if .Wished}}<form method="post" action="/wish/{{.Name}}" hx-post="/wish/{{.Name}}" hx-target="closest .card" hx-swap="outerHTML"><button type="submit" class="btn" data-variant="ghost">Never mind</button></form>{{end}}
+    {{with .Homepage}}<a class="btn" data-variant="ghost" href="{{.}}" target="_blank" rel="noopener">About</a>{{end}}</footer></div>
+{{end}}
+
+{{/* THE COMING-SOON CARD: an app the catalog lists and cannot install yet. One button records
+     the household's wish on this machine; pressed again, it takes the wish back. */}}
+{{define "soon-card"}}
+  <div class="card"><header><h2>{{template "app-title" .}}</h2>{{with .Functionality}}<p>{{.}}</p>{{end}}</header>
+    <section><p>{{.Description}}</p>
+    {{if .Wished}}<p class="ok">Your wish is recorded. Briard will notify you when this app becomes available.</p>{{end}}</section>
+    <footer><form method="post" action="/wish/{{.Name}}" hx-post="/wish/{{.Name}}" hx-target="closest .card" hx-swap="outerHTML"><button type="submit" class="btn" data-variant="{{if .Wished}}ghost{{else}}outline{{end}}">{{if .Wished}}Never mind{{else}}I want this{{end}}</button></form>
+    {{with .Homepage}}<a class="btn" data-variant="ghost" href="{{.}}" target="_blank" rel="noopener">About</a>{{end}}</footer></div>
+{{end}}
+
 {{/* THE APP PAGE: the card as the home shows it, what the app is, and its history. */}}
 {{define "app-page"}}{{template "head" (shell "apps" false)}}
-<header class="page-head"><h1>{{.App.Title}}</h1><p>{{.App.Blurb}}</p></header>
+<header class="page-head"><h1>{{.App.Title}}</h1><p>{{or .App.Description .App.Functionality}}</p></header>
 <div class="tiles">
   {{template "app-card" .App}}
   <div class="card"><header><h2>About</h2></header><section><div class="item-group">
     <div class="item"><section><h3>Version</h3><p>{{with .History.Version}}{{.}}{{else}}Not known yet{{end}}</p></section></div>
     <div class="item"><section><h3>On disk</h3><p>{{with .History.OnDisk}}Its image takes {{.}} of this machine; your own data comes on top.{{else}}Not known yet{{end}}</p></section></div>
     {{with .App.HA}}<div class="item"><section><h3>Address</h3><p><code>{{.Host}}</code> on your home network.</p></section></div>{{end}}
+    {{with .App.Homepage}}<div class="item"><section><h3>Project</h3><p><a href="{{.}}" target="_blank" rel="noopener">{{.}}</a></p></section></div>{{end}}
   </div></section></div>
   {{template "history-card" .History}}
 </div>
 {{template "foot" (shell "apps" false)}}{{end}}
 
-{{/* THE APPS PAGE: what runs, then what could. */}}
+{{/* THE APPS PAGE: what runs, then what could, then what the catalog lists and cannot install
+     yet. Before the host has read the catalog, only the first. */}}
 {{define "apps"}}{{template "head" (shell "apps" false)}}
-<header class="page-head"><h1>Apps</h1><p>What this machine runs, and what it could.</p></header>
+<header class="page-head"><h1>Apps</h1><p>{{if .Catalog}}What this machine runs, what it could, and what is on its way.{{else}}What this machine runs. Briard has not read its catalog yet; the apps it can install appear here as soon as it has.{{end}}</p></header>
 {{if .InstalledCount}}<h2 class="group-title">Installed</h2>
 <div class="tiles">{{range .Apps}}{{if .Installed}}{{template "app-card" .}}{{end}}{{end}}</div>{{end}}
-{{if ne .InstalledCount (len .Apps)}}<h2 class="group-title">Available</h2>
+{{with .Installable}}<h2 class="group-title">Available</h2>
 <div class="tiles">
-  {{range $app := .Apps}}{{if not .Installed}}
-  {{if and .Install .Install.Running}}{{template "installing" .}}{{else}}
-  <div class="card"><header><h2>{{.Title}}</h2><p>{{.Blurb}}</p></header>
-    {{with .Install}}{{if .Failed}}<section class="note">Could not install it: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$app.Name}}</code></section>{{end}}{{end}}
-    <footer><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn" data-variant="outline">{{if and .Install .Install.Failed}}Try again{{else}}Install {{.Title}}{{end}}</button></form></footer></div>
-  {{end}}{{end}}{{end}}
+  {{range .}}{{if and .Install .Install.Running}}{{template "installing" .}}{{else}}{{template "available-card" .}}{{end}}{{end}}
+</div>{{end}}
+{{with .Soon}}<h2 class="group-title">Coming soon</h2>
+<div class="tiles">
+  {{range .}}{{template "soon-card" .}}{{end}}
 </div>{{end}}
 {{template "foot" (shell "apps" false)}}{{end}}

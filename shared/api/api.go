@@ -434,6 +434,12 @@ const (
 	//                                       network resolves its registered casa name, for when the
 	//                                       household changed its router after the name was found
 	//                                       blocked. Local-only, like the claim.
+	DirectiveWish = "wish" // Payload = a CATALOG NAME the catalog's index lists. Toggles the
+	//                        household's wish for an app that is listed but not yet installable:
+	//                        recorded on the node when absent, removed when present. The node
+	//                        tells the household from its own dashboard and alerts when a wished
+	//                        app gains a manifest. Local-only: a wish is the household's, asked
+	//                        from its dashboard; nothing about it leaves the node.
 
 	DirectivePair = "pair" // Payload = a JSON MeshSpec: reconcile this node's DRBD to a target mesh
 	//                        (runtime anchor pairing). The serving primary adjusts in place

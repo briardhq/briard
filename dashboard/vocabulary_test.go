@@ -25,7 +25,7 @@ var components = map[string]bool{
 // has no name for.
 var parts = map[string]bool{
 	"topbar": true, "page": true, "page-head": true, "tiles": true, "wide": true, "group-title": true,
-	"note": true, "ok": true, "when": true, "key": true, "code": true,
+	"note": true, "ok": true, "when": true, "key": true, "code": true, "app-icon": true,
 	"history": true, "what": true, "bad": true, "undo": true,
 }
 

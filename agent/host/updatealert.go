@@ -52,12 +52,17 @@ func newUpdateAlerter(n notify.Notifier, node string, lay selfupdate.Layout, log
 // Started once, beside the guest update timer, and on EVERY node -- a witness included. A node
 // that can no longer update is outside its support window whatever else it is, and that is not a
 // statement about replicas, services or role.
+//
+// The catalog's index rides the same tick (catalog.go): it is the one other read of the release
+// host a node makes, due daily like the update itself, and a cadence of its own would be a
+// second timer for the same clock.
 func (cfg Config) watchUpdates(ctx context.Context, n notify.Notifier, logf func(string, ...any)) {
 	a := newUpdateAlerter(n, cfg.Node, selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir), logf)
 	t := time.NewTicker(updateCheckEvery)
 	defer t.Stop()
 	for {
 		a.observe(ctx)
+		cfg.catalog.refresh(ctx)
 		select {
 		case <-ctx.Done():
 			return

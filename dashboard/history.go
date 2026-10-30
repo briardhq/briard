@@ -118,7 +118,7 @@ func (a *app) showApp(w http.ResponseWriter, r *http.Request, self device, servi
 
 // history is the card's view: the rows, the banner, and the undo in flight if there is one.
 func (a *app) history(ctx context.Context, service string) historyView {
-	v := historyView{Service: service, Title: appTitle(service)}
+	v := historyView{Service: service, Title: a.appTitle(service)}
 	rows, running, err := a.rows(ctx, service)
 	if err != nil {
 		v.Error = err.Error()
@@ -289,7 +289,7 @@ func (a *app) confirmUndo(w http.ResponseWriter, r *http.Request, service, point
 		http.Error(w, "that point is no longer on this machine\n", http.StatusNotFound)
 		return
 	}
-	v := confirmView{Service: service, Title: appTitle(service), Point: point, What: cmp.Or(chosen.What, chosen.Caption), Back: chosen.Back,
+	v := confirmView{Service: service, Title: a.appTitle(service), Point: point, What: cmp.Or(chosen.What, chosen.Caption), Back: chosen.Back,
 		Note: chosen.Note, MovesCode: chosen.MovesCode, To: chosen.Version}
 	if chosen.MovesCode && running != nil {
 		v.From = running.Version
@@ -326,12 +326,4 @@ func zone() *time.Location {
 		return time.UTC
 	}
 	return loc
-}
-
-// appTitle is an app's name for a person, the slug for one the dashboard does not offer.
-func appTitle(name string) string {
-	if a := offeredApp(name); a != nil {
-		return a.Title
-	}
-	return name
 }

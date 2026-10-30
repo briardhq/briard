@@ -19,8 +19,33 @@ import (
 	"fmt"
 	"time"
 
+	"briard.io/shared/manifest"
 	"briard.io/shared/routes"
 )
+
+// CatalogPath is where the host keeps the dashboard told what the catalog lists: written
+// through `dashboard.catalog` whenever the host's view changes and at the start of every
+// connection, for the reason CasaPath is. The host fetches and verifies the catalog's index and
+// asks which listed apps have a manifest; the page reads this copy and never the network, so it
+// renders on a node that is offline and shows nothing it was not told.
+const CatalogPath = Dir + "/catalog.json"
+
+// Catalog is that file's content: every app the index lists, in the index's order, with what
+// this node knows about each beyond the index itself.
+type Catalog struct {
+	// Fetched is when the host last read the index.
+	Fetched time.Time    `json:"fetched"`
+	Apps    []CatalogApp `json:"apps"`
+}
+
+// CatalogApp is one listed app.
+type CatalogApp struct {
+	manifest.App
+	// Available: the catalog publishes a manifest for it, so this node can install it.
+	Available bool `json:"available,omitempty"`
+	// Wished: the household asked for it from the page.
+	Wished bool `json:"wished,omitempty"`
+}
 
 // Dir is the guest-side directory, on tmpfs and node-local like the routing table beside it: a
 // code is minted for the node that holds the VIP now, and a failover mints a new one.

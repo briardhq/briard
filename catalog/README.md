@@ -46,7 +46,10 @@ the index, and not otherwise. There is no status field: it would be a second sta
 same fact, one that could disagree with the first, and flipping it would mean re-signing the
 index while a manifest's arrival already is a signed act. `catalog_test.go` checks the one
 relation that must hold — every manifest here is listed — and parses the index with the
-function a node uses.
+function a node uses. A node learns availability literally: when it re-reads the index (daily,
+on its update watcher's tick) it asks for each listed `<name>.json` with a HEAD
+(`Catalog.Has`), caches the index and the answers node-locally, and pushes the result to its
+dashboard, which renders every card from it and never reaches the network itself.
 
 **Choosing what to list.** The index is for apps a household wants, not a mirror of everything
 that can be self-hosted. Left out on purpose: anything whose role the platform already fills

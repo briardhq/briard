@@ -130,8 +130,14 @@ func newRig(t *testing.T) *rig {
 	a.viewWait = 0 // the fake host pushes nothing unless a test says so; the wait has its own test
 	srv := httptest.NewServer(a)
 	t.Cleanup(srv.Close)
-	return &rig{t: t, ha: ha, app: a, srv: srv, dir: dir, code: code, haURL: u}
+	r := &rig{t: t, ha: ha, app: a, srv: srv, dir: dir, code: code, haURL: u}
+	rigCatalog(t, r)
+	return r
 }
+
+// rigCatalog gives a rig the host's view of the catalog's index (catalog_test.go): every card's
+// words come from it, so a rig without one shows only what is installed.
+var rigCatalog = func(*testing.T, *rig) {}
 
 func must(t *testing.T, err error) {
 	t.Helper()

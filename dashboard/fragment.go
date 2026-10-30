@@ -65,7 +65,7 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 	)
 	switch part {
 	case "install", "app":
-		if offeredApp(name) == nil {
+		if !a.knows(name) {
 			http.NotFound(w, r)
 			return
 		}
@@ -88,7 +88,7 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 			data, moving = v, v.Casa.Refresh()
 		}
 	case "history":
-		if offeredApp(name) == nil {
+		if !a.knows(name) {
 			http.NotFound(w, r)
 			return
 		}
@@ -122,7 +122,7 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 	}
 }
 
-// app is the view's entry for an offered app, by slug.
+// app is the view's entry for an app, by slug; nil for one the page has no card for.
 func (v view) app(name string) *appView {
 	for _, av := range v.Apps {
 		if av.Name == name {

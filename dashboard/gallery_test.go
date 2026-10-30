@@ -458,10 +458,39 @@ var galleryStates = []galleryState{
 			everyday(t, r)
 			return apps(t, r, c, port)
 		}},
-	{"apps-first-run", "The apps page before anything is installed: both available.",
+	{"apps-first-run", "The apps page before anything is installed: both available, two coming soon.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			notInstalled(t, r)
 			return apps(t, r, c, port)
+		}},
+	{"apps-wished", "A coming-soon app the household asked for: the wish recorded, the button now takes it back.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			r.wished(t, "paperless-ngx", true)
+			return apps(t, r, c, port)
+		}},
+	{"apps-wish-met", "The wished app gained a manifest: it moved to Available with the line that says so.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			cat := testCatalog()
+			cat.Apps[2].Available, cat.Apps[2].Wished = true, true
+			r.hostLists(t, cat)
+			return apps(t, r, c, port)
+		}},
+	{"apps-no-index", "The host has not read the catalog yet: what is installed, and the page says why that is all.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			must(t, os.Remove(r.app.catalogPath))
+			return apps(t, r, c, port)
+		}},
+	{"home-first-run-no-index", "The first screen on a machine whose host has not read the catalog: nothing to choose from yet.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			notInstalled(t, r)
+			must(t, os.Remove(r.app.catalogPath))
+			r.hostSays(t, dashboard.Casa{Name: galleryName})
+			r.contact(t, galleryClock)
+			r.hostPushes(t, nil)
+			return home(t, r, c, port)
 		}},
 	{"backup-everyday", "The backup page most mornings: last night, a week of nights, the key saved.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {

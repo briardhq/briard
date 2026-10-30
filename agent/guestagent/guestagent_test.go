@@ -24,6 +24,7 @@ import (
 	"briard.io/agent/quadlet"
 	"briard.io/internal/testsock"
 	"briard.io/shared/dashboard"
+	"briard.io/shared/manifest"
 	"briard.io/shared/nodestorage"
 	"briard.io/shared/notify"
 )
@@ -2177,6 +2178,33 @@ func TestDashboardBackupIsWrittenSecretThenMovedIn(t *testing.T) {
 		t.Errorf("runs = %v, want %v", x.runs, want)
 	}
 	if !slices.Contains(guestCapabilities, verbDashboardBackup) || isAct(verbDashboardBackup) {
+		t.Error("the push is not advertised, or waits behind acts")
+	}
+}
+
+// dashboard.catalog writes the host's view of the catalog's index the way the casa view is
+// written: parsed as its own shape, into the page's directory, moved in whole.
+func TestDashboardCatalogIsWrittenThenMovedIn(t *testing.T) {
+	x := &fakeExec{}
+	raw, _ := json.Marshal(dashboard.Catalog{Apps: []dashboard.CatalogApp{{App: manifest.App{Name: "paperless-ngx", Title: "Paperless-ngx"}, Wished: true}}})
+	if _, err := dispatch(x)(context.Background(), verbDashboardCatalog, raw); err != nil {
+		t.Fatal(err)
+	}
+	tmp := dashboard.CatalogPath + ".new"
+	if got := x.files[tmp]; !strings.Contains(got, `"name":"paperless-ngx"`) || !strings.Contains(got, `"wished":true`) {
+		t.Errorf("written %q; want the view", got)
+	}
+	want := [][]string{
+		{"mkdir", "-p", "-m", "0700", dashboard.Dir},
+		{"mv", "-f", tmp, dashboard.CatalogPath},
+	}
+	if !reflect.DeepEqual(x.runs, want) {
+		t.Errorf("runs = %v, want %v", x.runs, want)
+	}
+	if _, err := dispatch(x)(context.Background(), verbDashboardCatalog, []byte(`not json`)); err == nil {
+		t.Error("a malformed view was written")
+	}
+	if !slices.Contains(guestCapabilities, verbDashboardCatalog) || isAct(verbDashboardCatalog) {
 		t.Error("the push is not advertised, or waits behind acts")
 	}
 }

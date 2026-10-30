@@ -462,6 +462,10 @@ type Config struct {
 	// backupEnded is how the scheduler's newest run ended, for `briard backup` to wait on: the run
 	// stays the scheduler's, so a run asked for and the night's are never two runs at once.
 	backupEnded *atomic.Pointer[dashboard.BackupEnd]
+	// catalog is what this node knows of the catalog's index and the household's wishes
+	// (catalog.go): refreshed by the update watcher, toggled by dispatch, pushed by the loop.
+	// nil where it cannot exist, and every caller is nil-safe.
+	catalog *catalogState
 	// backupCandidate is a folder the household asked to move the backup into, served read-only
 	// to the guest while it is read with the household's key (backup-folder); nil while none is.
 	backupCandidate *atomic.Pointer[string]
@@ -606,6 +610,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		cfg.backupDocs.Store(&docs)
 	}
 	cfg.refreshDocuments(userDocuments, logf)
+	cfg.catalog = cfg.newCatalog(logf)
 	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
 	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
 	// must not mean; see the sdnotify package doc for the two costs of that coupling, the fatal
@@ -1492,7 +1497,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	episodeAsks := []int{0, 6, 12}
 	// The alert store generation the guest's copy was last taken at; none yet, this connection.
 	alertsPushed := -1
-	backupPushed := "" // the page's backup view last pushed on this connection (backup.go)
+	backupPushed := ""  // the page's backup view last pushed on this connection (backup.go)
+	catalogPushed := "" // the page's catalog view, likewise (catalog.go)
 	cycle := 0
 	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
 	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
@@ -1570,8 +1576,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cfg.beat.Beat()
 		cs.tick(ctx, r, vip, logf) // the household's name -- claim poll, address, certificate, the page's view
 		cfg.beat.Beat()
-		pushAlerts(ctx, r, n, &alertsPushed, logf)          // the page's copy of the alert store, when it moved
-		cfg.pushBackupView(ctx, r, bs, &backupPushed, logf) // the page's view of the backup, when it moved
+		pushAlerts(ctx, r, n, &alertsPushed, logf)           // the page's copy of the alert store, when it moved
+		cfg.pushBackupView(ctx, r, bs, &backupPushed, logf)  // the page's view of the backup, when it moved
+		cfg.pushCatalogView(ctx, r, n, &catalogPushed, logf) // the page's view of the catalog, when it moved; the wishes' notices
 		if errors.Is(err, guestfirmware.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}
@@ -1856,6 +1863,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveBackupFolder:  true, // ...and moves it, as its settings are
 	api.DirectiveCasaClaim:     true, // the household claims its own name; the cloud never does
 	api.DirectiveCasaRecheck:   true, // ...and asks again whether its network resolves it
+	api.DirectiveWish:          true, // ...and wishes for an app from its own page; a wish never leaves the node
 	api.DirectiveConfigSet:     true, // ...and changes its own address
 	api.DirectiveStop:          true, // ...and brings its own node down
 	api.DirectiveStatus:        true, // ...and asks how it is, as doctor does
@@ -1909,6 +1917,9 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this node has no casa client"}
 		}
 		return cs.recheck(d, logf)
+	}
+	if d.Kind == api.DirectiveWish {
+		return cfg.applyWish(d)
 	}
 	if d.Kind == api.DirectiveBackupNow {
 		return cfg.applyBackupNow(ctx, d)

@@ -130,8 +130,8 @@ type installView struct {
 // the background because a pull runs minutes and a browser should not hold a request that
 // long. The page shows the state and refreshes itself.
 func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string) {
-	if offeredApp(name) == nil {
-		http.Error(w, "the dashboard does not offer that app\n", http.StatusNotFound)
+	if !a.installable(name) {
+		http.Error(w, "the catalog has no manifest for that app\n", http.StatusNotFound)
 		return
 	}
 	a.mu.Lock()
