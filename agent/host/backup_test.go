@@ -810,3 +810,70 @@ func TestThePageMayRestoreFromTheBackup(t *testing.T) {
 		}
 	}
 }
+
+// `briard backup` waits for the run IT asked for: an ending older than the ask (last night's) is
+// not its answer; the kicked run's is, success or failure, said as the scheduler said it.
+func TestBackupNowWaitsForTheRunItAskedFor(t *testing.T) {
+	cfg, _ := liveBackup(t, filepath.Join(t.TempDir(), "Briard Backup"))
+	cfg.backupKick, cfg.backupEnded = &atomic.Bool{}, &atomic.Pointer[backupEnd]{}
+	cfg.ended(time.Now().Add(-8*time.Hour), false, "last night's") // before the ask
+	for _, tc := range []struct {
+		failed bool
+		detail string
+		want   string
+	}{
+		{false, "backed up home-assistant: 39 files, 418 kB added (snapshot 40796b60)", api.OutcomeDone},
+		{true, "Fatal: unable to save snapshot", api.OutcomeFailed},
+	} {
+		got := make(chan api.DirectiveOutcome, 1)
+		go func() {
+			got <- cfg.applyBackupNow(context.Background(), api.Directive{ID: "d", Kind: api.DirectiveBackupNow})
+		}()
+		for !cfg.backupKick.Load() {
+			time.Sleep(time.Millisecond)
+		}
+		select {
+		case o := <-got:
+			t.Fatalf("answered %+v before its run ended -- the older ending was taken for it", o)
+		case <-time.After(1500 * time.Millisecond):
+		}
+		cfg.backupKick.Store(false)                 // the scheduler took it up...
+		cfg.ended(time.Now(), tc.failed, tc.detail) // ...and its run ended
+		if o := <-got; o.State != tc.want || o.Detail != tc.detail {
+			t.Errorf("outcome %+v; want %s, %q", o, tc.want, tc.detail)
+		}
+	}
+	cfg.BackupDir = ""
+	cfg.backupLive.Store(new(string))
+	if o := cfg.applyBackupNow(context.Background(), api.Directive{ID: "d"}); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "turned off") || cfg.backupKick.Load() {
+		t.Errorf("off: %+v, kicked %v", o, cfg.backupKick.Load())
+	}
+}
+
+// The scheduler says how each run ended, for `briard backup`: a kicked run outside the window
+// starts, and its report is the ending -- what it added, or nothing to back up.
+func TestTheSchedulerSaysHowAKickedRunEnded(t *testing.T) {
+	cfg, g := liveBackup(t, filepath.Join(t.TempDir(), "Briard Backup"))
+	cfg.backupKick, cfg.backupEnded = &atomic.Bool{}, &atomic.Pointer[backupEnd]{}
+	for _, tc := range []struct {
+		rep    *guestagent.BackupReport
+		failed bool
+		want   string
+	}{
+		{&guestagent.BackupReport{Snapshot: "40796b608ceb", Services: []string{"home-assistant"}, Files: 39, BytesAdded: 427712}, false, "backed up home-assistant: 39 files, 418 kB added (snapshot 40796b60)"},
+		{&guestagent.BackupReport{}, false, "nothing to back up"},
+		{failedRun, true, "unable to save snapshot"},
+	} {
+		asked := time.Now()
+		cfg.backupKick.Store(true)
+		bs := utcScheduler()
+		// A tick that began well before the ask: the run it takes up is stamped when taken up.
+		cfg.backup(context.Background(), fakeStatus{backup: g}, bs, true, tonightAt("14:00").Add(-48*time.Hour), nil, quiet)
+		g.running, g.report = false, tc.rep
+		cfg.backup(context.Background(), fakeStatus{backup: g}, bs, true, tonightAt("14:01").Add(-48*time.Hour), nil, quiet)
+		e := cfg.backupEnded.Load()
+		if e == nil || e.Started.Before(asked) || e.Failed != tc.failed || !strings.Contains(e.Detail, tc.want) {
+			t.Errorf("ended %+v; want started after the ask, failed %v, %q", e, tc.failed, tc.want)
+		}
+	}
+}

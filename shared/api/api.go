@@ -527,6 +527,11 @@ const (
 	//                        from. Read-only, read with no lock, so it neither waits for a running
 	//                        backup nor holds one up. Local-only, as the restore is: what the
 	//                        household backed up is the household's to see.
+	DirectiveBackupNow = "backup-now" // Payload empty. The nightly backup, now: the newest History
+	//                        snapshot of every app into the folder, answered once the run has
+	//                        ended (Outcome.Detail says what it added, or why not). The scheduler's
+	//                        own run, asked for -- never a second one beside the night's -- and it
+	//                        does not count as the night. Local-only: `briard backup`.
 	DirectiveStop = "stop" // Payload empty. Bring this node down until it is started again or the
 	//                        machine next boots: the act in flight aborted (the outcome names it),
 	//                        the guest powered off cleanly, the agent exited. `briard stop`.

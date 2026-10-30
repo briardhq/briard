@@ -455,8 +455,12 @@ type Config struct {
 	// own goroutine. Read through backupFolder().
 	backupLive *atomic.Pointer[string]
 	// backupKick asks the scheduler for a run now, outside the nightly window: set by an adoption,
-	// so the page shows the adopted folder working within minutes rather than at 02:00.
+	// so the page shows the adopted folder working within minutes rather than at 02:00, and by
+	// `briard backup`.
 	backupKick *atomic.Bool
+	// backupEnded is how the scheduler's newest run ended, for `briard backup` to wait on: the run
+	// stays the scheduler's, so a run asked for and the night's are never two runs at once.
+	backupEnded *atomic.Pointer[backupEnd]
 
 	// readinessSettle overrides how long the S1 gate lets a service's signal settle before it
 	// judges it (agent/host/readiness.go). Machinery, not a knob: the production value is the
@@ -588,6 +592,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	cfg.backupLive = &atomic.Pointer[string]{}
 	cfg.backupLive.Store(&backupDir)
 	cfg.backupKick = &atomic.Bool{}
+	cfg.backupEnded = &atomic.Pointer[backupEnd]{}
 	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
 	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
 	// must not mean; see the sdnotify package doc for the two costs of that coupling, the fatal
@@ -1829,6 +1834,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveDoctor:        true,
 	api.DirectiveBackupRestore: true,
 	api.DirectiveBackupList:    true, // what the household backed up is the household's to see
+	api.DirectiveBackupNow:     true, // ...and backs it up now
 	api.DirectiveCasaClaim:     true, // the household claims its own name; the cloud never does
 	api.DirectiveCasaRecheck:   true, // ...and asks again whether its network resolves it
 	api.DirectiveConfigSet:     true, // ...and changes its own address
@@ -1884,6 +1890,9 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this node has no casa client"}
 		}
 		return cs.recheck(d, logf)
+	}
+	if d.Kind == api.DirectiveBackupNow {
+		return cfg.applyBackupNow(ctx, d)
 	}
 	if d.Kind == api.DirectiveBackupList {
 		l, ok := r.(backupLister)

@@ -124,15 +124,19 @@ var commands = []command{
 		run: runDashboard, probe: []string{"-h"},
 	},
 	{
-		name: "backup", args: "restore [-at <night>] <app>", group: groupRepair,
-		synopsis: "put an app back to a night of the nightly backup",
-		detail: "restore <app> -- put that app's data back to the newest night in the backup folder, or\n" +
-			"to the night -at names (a snapshot id as the Briard page's Backup section lists them, or\n" +
-			"as `restic snapshots` prints them; nights from an earlier install of this folder work\n" +
-			"too). The night is read into the app's history first, then restored like any point of it:\n" +
-			"the app stops, starts again afterwards, and the restore is a row in its history that\n" +
-			"`briard app undo` can undo. If the night needs an image this machine no longer has and\n" +
-			"cannot fetch, nothing is changed and it says so.",
+		name: "backup", args: "[restore [-at <backup>] <app>]", group: groupRepair,
+		synopsis: "back up now, or put an app back from a backup",
+		detail: "With no arguments: back up now -- the newest history point of every app into the backup\n" +
+			"folder, as the 02:00 run does -- and wait for it to finish (a first one copies everything).\n" +
+			"It does not replace that night's run.\n\n" +
+			"restore <app> -- put that app's data back to the newest backup in the backup folder, or to\n" +
+			"the one -at names (a snapshot id as the Briard page's Backup section lists them, or as\n" +
+			"`restic snapshots` prints them; backups from an earlier install of this folder work too).\n" +
+			"An app this machine does not have is installed at that backup's version. The backup is\n" +
+			"read into the app's history first, then restored like any point of it: the app stops,\n" +
+			"starts again afterwards, and the restore is a row in its history that `briard app undo`\n" +
+			"can undo. If the backup needs an image this machine no longer has and cannot fetch,\n" +
+			"nothing is changed and it says so.",
 		run: runBackup, probe: []string{"-h"},
 	},
 	{
@@ -525,17 +529,21 @@ func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) i
 }
 
 // runConfig is `briard config set <key> <value>`. The agent judges the value; this only carries it.
-// runBackup is `briard backup restore [-at <night>] <app>`: the night named, or the newest, as one
-// directive -- the machine materialises the night and restores it, and answers once it has.
+// runBackup is `briard backup`: with no arguments the nightly run, now, answered once it has ended;
+// `restore [-at <backup>] <app>` the backup named, or the newest, as one directive -- the machine
+// reads the backup into the app's history and restores it, and answers once it has.
 func runBackup(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) < 1 || args[0] != "restore" {
-		fmt.Fprint(stderr, "usage: briard backup restore [-at <night>] <app>\n")
+	if len(args) == 0 {
+		return runBackupNow(ctx, stdout, stderr)
+	}
+	if args[0] != "restore" {
+		fmt.Fprint(stderr, "usage: briard backup [restore [-at <backup>] <app>]\n")
 		return 2
 	}
 	fs := flag.NewFlagSet("briard backup restore", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
-	at := fs.String("at", "latest", "the night: a snapshot id, or latest")
+	at := fs.String("at", "latest", "the backup: a snapshot id, or latest")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -619,6 +627,24 @@ func submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOut
 		return o, fmt.Errorf("cannot reach the agent at %s (is briard-agent running? %s): %w", sock, privHint, err)
 	}
 	return o, err
+}
+
+// runBackupNow is `briard backup` with no arguments: the nightly run, now, and its answer once it
+// has ended -- what it added, that there was nothing to back up, or why it did not.
+func runBackupNow(ctx context.Context, stdout, stderr io.Writer) int {
+	fmt.Fprint(stdout, "backing up now: the newest history point of every app, into the backup folder\n")
+	fmt.Fprint(stdout, "  a first backup copies everything and can take a while\n")
+	o, err := submit(ctx, sockDefault(), api.Directive{Kind: api.DirectiveBackupNow})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	if o.State != api.OutcomeDone {
+		fmt.Fprintf(stderr, "briard backup: %s\n", o.Detail)
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s\n", o.Detail)
+	return 0
 }
 
 // runStop is `briard stop`, and runStart `briard start` (host.Stop, host.Start: the uninstall

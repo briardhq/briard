@@ -98,11 +98,14 @@ var (
 		api.DirectiveDoctor:         true,
 		api.DirectiveServiceMembers: true,
 		api.DirectiveBackupList:     true, // restic reads the repository: seconds
-		api.DirectiveDashboard:      true,
-		api.DirectiveCasaClaim:      true,
-		api.DirectiveCasaRecheck:    true,
-		api.DirectiveDebugArm:       true,
-		api.DirectiveDebugDisarm:    true,
+		// `briard backup` waits on the scheduler's run, minutes to an hour: off the loop, and holding
+		// no act's turn -- the run is the scheduler's, in the guest's background, as at 02:00.
+		api.DirectiveBackupNow:   true,
+		api.DirectiveDashboard:   true,
+		api.DirectiveCasaClaim:   true,
+		api.DirectiveCasaRecheck: true,
+		api.DirectiveDebugArm:    true,
+		api.DirectiveDebugDisarm: true,
 	}
 )
 

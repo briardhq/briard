@@ -75,9 +75,14 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 		return
 	}
 	b.offsite.tick(cfg.backupFolder(), cfg.readBackupRecord().Nights, now, logf)
-	// A kicked run (an adoption) runs now and does not count as the night: the night still runs,
-	// and finds nearly nothing to add.
+	// A kicked run (an adoption, `briard backup`) runs now and does not count as the night: the
+	// night still runs, and finds nearly nothing to add.
 	kicked := cfg.backupKick != nil && cfg.backupKick.Swap(false)
+	if kicked {
+		// Stamped when taken up, not when this tick began: `briard backup` waits for a run that
+		// started after it asked, and it asks before it kicks.
+		now = time.Now()
+	}
 	local := now.In(b.loc)
 	day := local.Format(time.DateOnly)
 	mins := local.Hour()*60 + local.Minute()
@@ -90,10 +95,12 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 	if cfg.backupFolder() == "" {
 		// Off is the household's decision: whatever was failing is no longer being asked of it.
 		fireAlert(ctx, n, logf, backupWorking(cfg.Node, "The nightly backup is turned off."))
+		cfg.ended(now, true, "the nightly backup is turned off")
 		return
 	}
 	failed := func(why string) {
 		logf("backup: %s", why)
+		cfg.ended(now, true, why)
 		cfg.recordNight(ctx, dashboard.BackupRun{At: now, Error: cfg.backupFailure(why)}, n, logf)
 	}
 	url := "http://" + net.JoinHostPort(cfg.hostNodeIP(), backupStorePort) + "/"
@@ -129,6 +136,7 @@ func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupSc
 		b.waiting = time.Time{}
 		why := "the run was lost when the guest restarted"
 		logf("backup: %s", why)
+		cfg.ended(started, true, why)
 		cfg.recordNight(ctx, dashboard.BackupRun{At: started, Error: cfg.backupFailure(why)}, n, logf)
 		return
 	}
@@ -137,11 +145,14 @@ func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupSc
 	switch {
 	case rep.Error != "":
 		logf("backup: FAILED (snapshot %q): %s", rep.Snapshot, rep.Error)
+		cfg.ended(started, true, rep.Error)
 	case rep.Snapshot == "":
 		logf("backup: nothing to back up (no service has a snapshot yet)")
+		cfg.ended(started, false, "nothing to back up: no app has a snapshot yet")
 		return
 	default:
 		logf("backup: snapshot %s of %s: %d files, %d bytes added", rep.Snapshot, strings.Join(rep.Services, ", "), rep.Files, rep.BytesAdded)
+		cfg.ended(started, false, fmt.Sprintf("backed up %s: %d files, %s added (snapshot %.8s)", strings.Join(rep.Services, ", "), rep.Files, sizeWords(rep.BytesAdded), rep.Snapshot))
 	}
 	night := dashboard.BackupRun{At: started, Snapshot: rep.Snapshot, BytesAdded: rep.BytesAdded, Size: folderSize(cfg.backupFolder()), WrongKey: rep.WrongKey}
 	if rep.WrongKey {
@@ -777,4 +788,70 @@ const backupListTimeout = 2 * time.Minute
 type backupAdopter interface {
 	DataBackupAdopt(ctx context.Context, url, password string) error
 	SupportsBackupAdopt() bool
+}
+
+// backupEnd is how one of the scheduler's runs ended: when it started, and what came of it.
+type backupEnd struct {
+	Started time.Time
+	Failed  bool
+	Detail  string
+}
+
+// ended records how the run started at started ended, for `briard backup` to read.
+func (cfg Config) ended(started time.Time, failed bool, detail string) {
+	if cfg.backupEnded != nil {
+		cfg.backupEnded.Store(&backupEnd{Started: started, Failed: failed, Detail: detail})
+	}
+}
+
+// sizeWords is a byte count as the CLI says it.
+func sizeWords(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.0f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f kB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d bytes", n)
+}
+
+// backupNowBudget bounds `briard backup`'s wait: a first run copies everything, and may take an hour.
+const backupNowBudget = 90 * time.Minute
+
+// applyBackupNow is `briard backup`: the nightly run, now -- the newest History snapshot of every
+// app, into the folder, as at 02:00 -- answered once it has ended. It KICKS THE SCHEDULER rather
+// than starting a run itself: the run, its report and its record stay the scheduler's, so this and
+// the night's are never two runs at once (asked during one, it waits for that one, then runs).
+// Like an adoption's kick, it does not count as the night: the night still runs.
+func (cfg Config) applyBackupNow(ctx context.Context, d api.Directive) api.DirectiveOutcome {
+	failed := func(detail string) api.DirectiveOutcome {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
+	}
+	if cfg.backupKick == nil || cfg.backupEnded == nil {
+		return failed("this agent has no backup scheduler")
+	}
+	if cfg.backupFolder() == "" {
+		return failed("the nightly backup is turned off on this node; turn it on from the Briard page first")
+	}
+	asked := time.Now()
+	cfg.backupKick.Store(true)
+	ctx, cancel := context.WithTimeout(ctx, backupNowBudget)
+	defer cancel()
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return failed("the backup has not ended yet; the Briard page's Backup section, or `briard logs`, says how it ends")
+		case <-tick.C:
+			if e := cfg.backupEnded.Load(); e != nil && !e.Started.Before(asked) {
+				if e.Failed {
+					return failed(e.Detail)
+				}
+				return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: e.Detail}
+			}
+		}
+	}
 }
