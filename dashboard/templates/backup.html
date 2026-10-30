@@ -7,50 +7,89 @@
   </section><footer><form method="post" action="/backup/saved"><button type="submit" class="btn" data-variant="outline">I have saved the key</button></form></footer></div>
 {{end}}
 
-{{/* THE BACKUP PAGE: the nightly backup, its recent runs, the restore, the key, the folder. */}}
+{{/* THE BACKUP PAGE, one card per question: when it runs, what the folder holds, the key, and
+     where the folder is. */}}
 {{define "backup"}}{{template "head" (shell "backup" false)}}
-<header class="page-head"><h1>Backup</h1><p>{{with .Backup}}{{if .On}}Every night at 02:00, encrypted, into <code>{{.Folder}}</code> on this machine.{{else}}The nightly backup is off.{{end}}{{else}}The nightly backup has not been set up by this host yet.{{end}}</p></header>
+<header class="page-head"><h1>Backup</h1><p>{{with .Backup}}{{if .On}}Encrypted copies of your apps' data.{{else}}The daily backup is off.{{end}}{{else}}The daily backup has not been set up by this host yet.{{end}}</p></header>
 {{with .Backup}}
 <div class="tiles">
   {{with .Asked}}<div class="alert wide" data-variant="destructive">{{template "icon-alert"}}<h2>Not done</h2><section>{{.}}</section></div>{{end}}
-  <div class="card"><header><h2>Nightly backup</h2>
-    <p>{{if not .On}}Off. The backups already in <code>{{.Folder}}</code> are kept.{{else if .WrongKey}}The folder holds a backup that this Briard cannot open.{{else if .LastFailed}}The backup on {{.LastWhen}} did not finish: {{.LastError}}{{else if .LastWhen}}Last backup: {{.LastWhen}}, {{.LastSize}} new{{with .Held}}; the folder holds {{.}}{{end}}.{{else}}The first backup runs tonight.{{end}}</p></header><section>
-    {{if .On}}
-    {{if .WrongKey}}<p class="note">It is from an earlier install, or made with another key. Enter that backup's recovery key to continue it here, or change the folder below.</p>
-    <form method="post" action="/backup/adopt" class="field" id="backup-adopt"><label class="label" for="backup-key">That backup's recovery key</label><input class="input" id="backup-key" name="key" required autocomplete="off" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"></form>
-    {{end}}
-    {{if .OffsiteSynced}}<p class="ok">Off-site: in {{.OffsiteIn}}. The newest backup has left this machine.</p>
-    {{else if .OffsiteIn}}<p>Waiting for {{.OffsiteIn}} to upload the newest backup.</p><p class="note">{{.OffsiteIn}} uploads it while someone is signed in to this computer and syncing is not paused.</p>
-    {{else}}<p class="note">A copy on this machine survives a broken app or a damaged volume, not a dead disk, a theft or a fire — for that, keep the folder in a synced drive (OneDrive, Dropbox, Nextcloud) or on a NAS.</p>{{end}}
-    {{end}}
-    {{with .Previous}}<p class="note">Your earlier backups are still in <code>{{.}}</code>. Briard no longer adds to them; delete that folder when you no longer need it.</p>{{end}}
-  </section><footer>{{if .WrongKey}}<button type="submit" class="btn" form="backup-adopt">Enter its key</button>{{end}}<form method="post" action="/backup/{{if .On}}off{{else}}on{{end}}"><button type="submit" class="btn" data-variant="ghost">{{if .On}}Turn off nightly backup{{else}}Turn nightly backup back on{{end}}</button></form></footer></div>
-  {{if .Nights}}<div class="card"><header><h2>Recent backups</h2></header><section><div class="table-container"><table class="table"><thead><tr><th>Backup</th><th>Added</th><th>Result</th></tr></thead><tbody>
-    {{range .Nights}}<tr><td>{{.When}}</td><td>{{if .Error}}—{{else}}{{.Added}}{{end}}</td><td>{{if .Error}}<span class="bad">did not finish: {{.Error}}</span>{{else}}<span class="badge" data-variant="secondary">ok</span>{{end}}</td></tr>{{end}}
-  </tbody></table></div></section></div>{{end}}
-  {{if .On}}{{with .Restore}}{{template "restore-card" .}}{{else}}<div class="card wide" id="restore" hx-get="/f/restore" hx-trigger="load" hx-swap="outerHTML"><header><h2>Restore an app</h2></header><section><p class="note">Reading the backups in the folder…</p><noscript><p><a href="/backup?list">Show the backups</a></p></noscript></section></div>{{end}}{{end}}
+  {{template "schedule-card" .}}
+  {{if .On}}{{with .Backups}}{{template "backups-card" .}}{{else}}<div class="card wide" id="backups" hx-get="/f/backups" hx-trigger="load" hx-swap="outerHTML"><header><h2>Backups</h2></header><section><p class="note">Reading the backups in the folder…</p><noscript><p><a href="/backup?list">Show the backups</a></p></noscript></section></div>{{end}}{{end}}
   {{if .Key}}{{if .KeySaved}}
   <div class="card"><header><h2>Recovery key</h2><p>Saved, you said. It stays out of sight until you ask.</p></header><section><details><summary class="btn" data-variant="outline">Show the key</summary><p class="key">{{.Key}}</p><p class="note">Whoever has this key and the backup folder has everything in it.</p></details></section></div>
   {{else}}{{template "key-step" .}}{{end}}{{end}}
-  <div class="card"><header><h2>Folder</h2><p>Back up into another folder from tonight.</p></header><section>
-    <p class="note">It must already exist, belong to you, and be empty — or hold these backups, if you moved them there yourself. Your earlier backups stay where they are.</p>
-    <form method="post" action="/backup/folder" class="field" id="backup-folder-form"><label class="label" for="backup-folder">Folder</label><input class="input" id="backup-folder" name="folder" required placeholder="/home/you/Dropbox/Briard Backup"></form>
-  </section><footer><button type="submit" class="btn" data-variant="outline" form="backup-folder-form">Change</button></footer></div>
+  <div class="card"><header><h2>Folder</h2><p>Where backups are stored.</p></header><section>
+    <form method="get" action="/backup/folder" class="field" id="backup-folder-form"><label class="label" for="backup-folder">Folder</label><input class="input" id="backup-folder" name="folder" required value="{{.Folder}}"></form>
+    {{if .On}}
+    {{if .WrongKey}}<p class="bad">The folder holds a backup that this Briard cannot open.</p><p class="note">It is from an earlier install, or made with another key. Enter that backup's recovery key to continue it here, or change the folder.</p>
+    <form method="post" action="/backup/adopt" class="field" id="backup-adopt"><label class="label" for="backup-key">That backup's recovery key</label><input class="input" id="backup-key" name="key" required autocomplete="off" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"></form>
+    {{end}}
+    {{if .OffsiteSynced}}<p class="ok">In {{.OffsiteIn}}. The newest backup has left this machine.</p>
+    {{else if .OffsiteIn}}<p>Waiting for {{.OffsiteIn}} to upload the newest backup.</p><p class="note">{{.OffsiteIn}} uploads it while someone is signed in to this computer and syncing is not paused.</p>
+    {{else if .OffsiteUnknown}}<p class="note">Briard can't tell whether this folder is copied off this machine. A copy on this machine survives a broken app or a damaged volume, not a dead disk, a theft or a fire — for that, keep the folder in a synced drive (Dropbox, Nextcloud) or on a NAS.</p>
+    {{else}}<p class="note">A copy on this machine survives a broken app or a damaged volume, not a dead disk, a theft or a fire — for that, keep the folder in a synced drive (OneDrive, Dropbox, Nextcloud) or on a NAS.</p>{{end}}
+    {{end}}
+    {{with .Previous}}<p class="note">Your earlier backups are still in <code>{{.}}</code>. Briard no longer adds to them; delete that folder when you no longer need it.</p>{{end}}
+  </section><footer>{{if and .On .WrongKey}}<button type="submit" class="btn" form="backup-adopt">Enter its key</button>{{end}}<button type="submit" class="btn" data-variant="outline" form="backup-folder-form">Change</button></footer></div>
 </div>
 {{end}}
 {{template "foot" (shell "backup" false)}}{{end}}
 
-{{/* THE RESTORE CARD: the backups in the folder and the apps in each, or the restore running. It
-     polls only while a restore runs; then it is a list again. */}}
-{{define "restore-card"}}<div class="card wide" id="restore"{{if .Moving}} hx-get="/f/restore" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>Restore an app</h2><p>Put an app back as it was in one of the backups in this folder, whether it is installed here or not.</p></header><section>
+{{/* THE SCHEDULE: when the backup runs and how the last run went, with Back up now. It polls only
+     while a run goes, the night's or one asked for; then the page reloads and says once how the
+     one asked for ended. */}}
+{{define "schedule-card"}}<div class="card" id="schedule"{{if .Moving}} hx-get="/f/schedule" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>Schedule</h2>
+  <p>{{if not .On}}Off. The backups already in <code>{{.Folder}}</code> are kept.{{else}}Runs daily at 02:00.{{with .LastAgo}} <span{{if $.LastFailed}} class="bad"{{end}}>Last run: {{.}}{{if $.LastFailed}}, did not finish{{end}}.</span>{{else}} The first runs tonight.{{end}}{{end}}</p></header>
+  {{if .Running}}<section><p>Backing up… <span class="note">since {{.Running}}</span></p></section>
+  {{else if .RunEnded}}<section><p class="{{if .RunFailed}}bad{{else}}ok{{end}}">{{.RunEnded}}</p></section>{{end}}
+  <footer>{{if and .On (not .Running)}}<form method="post" action="/backup/now"><button type="submit" class="btn" data-variant="outline">Back up now</button></form>{{end}}<form method="post" action="/backup/{{if .On}}off{{else}}on{{end}}"><button type="submit" class="btn" data-variant="ghost">{{if .On}}Turn off{{else}}Turn back on{{end}}</button></form></footer></div>{{end}}
+
+{{/* THE BACKUPS CARD: the backups in the folder and the runs that failed since the newest, or a
+     restore running. It polls only while a restore runs; then it is a list again. */}}
+{{define "backups-card"}}<div class="card wide" id="backups"{{if .Moving}} hx-get="/f/backups" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>Backups</h2></header><section>
   {{range .Ops}}{{if .Running}}<p>Restoring {{.Title}} from the backup of {{.From}}… <span class="note">since {{.Since}}</span></p>
   {{else if .Failed}}<p class="bad">{{.Title}} was not restored: {{.Detail}}</p>
   {{else}}<p class="ok">{{.Title}} is back as it was in the backup of {{.From}}. <a href="/apps/{{.Service}}">Its History</a> has the restore, and what it had before.</p>{{end}}{{end}}
   {{with .Error}}<p class="bad">The backups could not be read: {{.}}</p>{{end}}
-  {{if not .Moving}}{{if .Backups}}<div class="table-container"><table class="table"><thead><tr><th>Backup</th><th>App</th><th>Its data from</th><th></th></tr></thead><tbody>
-  {{range $b := .Backups}}{{range .Apps}}<tr><td>{{$b.When}}{{if $b.Earlier}} <span class="note">from an earlier machine</span>{{end}}</td><td>{{.Title}}{{with .Version}} {{.}}{{end}}{{if not .Installed}} <span class="badge" data-variant="outline">not installed</span>{{end}}</td><td>{{.Taken}}</td><td><form method="post" action="/backup/restore"><input type="hidden" name="backup" value="{{$b.ID}}"><input type="hidden" name="app" value="{{.Name}}"><button type="submit" class="btn" data-variant="outline">Restore</button></form></td></tr>{{end}}{{if not .Apps}}<tr><td>{{$b.When}}{{if $b.Earlier}} <span class="note">from an earlier machine</span>{{end}}</td><td colspan="3" class="note">No app in it could be read.</td></tr>{{end}}{{end}}
-  </tbody></table></div>{{else if not .Error}}<p class="note">The folder holds no backup yet.</p>{{end}}{{end}}
+  {{if not .Moving}}{{if .Rows}}<div class="table-container"><table class="table"><thead><tr><th>When</th><th>Added</th><th>Status</th><th></th></tr></thead><tbody>
+  {{range .Rows}}<tr><td>{{.When}}</td><td>{{.Added}}</td><td>{{if .Error}}<span class="bad">did not finish: {{.Error}}</span>{{else if .Earlier}}<span class="badge" data-variant="outline">from an earlier install</span>{{else}}<span class="badge" data-variant="secondary">ok</span>{{end}}</td><td>{{with .ID}}<a class="btn" data-variant="outline" href="/backup/{{.}}">Details</a>{{end}}</td></tr>{{end}}
+  </tbody></table></div>{{else if not .Error}}<p class="note">The folder holds no backup yet.</p>{{end}}
+  <p class="note">Briard keeps the backups of the last 2 days and 1 weekly.</p>{{end}}
 </section></div>{{end}}
+
+{{/* ONE BACKUP: when, whose, what it added and holds, and its apps, each with a Restore. */}}
+{{define "backup-details"}}{{template "head" (shell "backup" false)}}
+<header class="page-head"><h1>Backup of {{.When}}</h1><p>{{if .Earlier}}Made by an earlier install.{{else}}Made by this machine.{{end}}{{with .Added}} It added {{.}}, and holds {{$.Size}} of data.{{end}}</p></header>
+<div class="tiles">
+<div class="card wide"><header><h2>Apps</h2><p>Restore an app to how it was in this backup, whether it is installed here or not.</p></header><section>
+  {{if .Apps}}<div class="table-container"><table class="table"><thead><tr><th>App</th><th>Its data from</th><th></th></tr></thead><tbody>
+  {{range .Apps}}<tr><td>{{.Title}}{{with .Version}} {{.}}{{end}}{{if not .Installed}} <span class="badge" data-variant="outline">not installed</span>{{end}}</td><td>{{.Taken}}</td><td><form method="post" action="/backup/restore"><input type="hidden" name="backup" value="{{$.ID}}"><input type="hidden" name="app" value="{{.Name}}"><button type="submit" class="btn" data-variant="outline">Restore</button></form></td></tr>{{end}}
+  </tbody></table></div>{{else}}<p class="note">No app in it could be read.</p>{{end}}
+</section><footer><a class="btn" data-variant="ghost" href="/backup">Back</a></footer></div>
+</div>
+{{template "foot" (shell "backup" false)}}{{end}}
+
+{{/* THE STEP BETWEEN Change AND THE MOVE: what the folder holds, read with this household's key --
+     or why it cannot be used, in place of the question. Nothing is written into it until it is
+     confirmed; a folder another key made takes that key here, and moves and adopts in one act. */}}
+{{define "backup-folder"}}{{template "head" (shell "backup" false)}}
+<header class="page-head"><h1>{{if .Refused}}That folder cannot be used{{else}}Change the backup folder?{{end}}</h1><p><code>{{.Folder}}</code></p></header>
+<div class="card">
+  {{if .Refused}}<section><p class="bad">{{.Refused}}</p></section><footer><a class="btn" data-variant="ghost" href="/backup">Back</a></footer>
+  {{else}}<section>
+    {{if .Empty}}<p>Future backups will be stored in <code>{{.Folder}}</code>. This folder is empty.</p>
+    {{else if .OtherKey}}<p><code>{{.Folder}}</code> holds backups made with another key — an earlier install's? Enter that backup's recovery key to continue them here.</p>
+    <div class="field"><label class="label" for="folder-key">That backup's recovery key</label><input class="input" id="folder-key" name="key" form="backup-folder-confirm" required autocomplete="off" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"></div>
+    {{else}}<p>{{if .Own}}<code>{{.Folder}}</code> holds {{.Own}}; Briard continues them.{{else}}Future backups will be stored in <code>{{.Folder}}</code>.{{end}}{{with .Earlier}} It also holds {{.}}, kept as they are.{{end}}</p>{{end}}
+    {{with .Previous}}<p class="note">Backups already in <code>{{.}}</code> stay where they are.</p>{{end}}
+  </section>
+  <footer>
+    <form method="post" action="/backup/folder" id="backup-folder-confirm"><input type="hidden" name="folder" value="{{.Folder}}"><button type="submit" class="btn">Change folder</button></form>
+    <a class="btn" data-variant="ghost" href="/backup">Cancel</a>
+  </footer>{{end}}
+</div>
+{{template "foot" (shell "backup" false)}}{{end}}
 
 {{/* THE STEP BETWEEN: what the restore does to the app, in words that do not say "lost" -- the
      restore takes an undo point first, so what the app has now stays within reach. */}}

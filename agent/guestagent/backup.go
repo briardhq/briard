@@ -206,9 +206,9 @@ type BackupReport struct {
 	WrongKey bool `json:"wrongKey,omitempty"`
 }
 
-// resticWrongKey is what restic says when a repository exists and the password is not one of
+// ResticWrongKey is what restic says when a repository exists and the password is not one of
 // its keys -- the one open failure that is a question for the household rather than for a disk.
-const resticWrongKey = "wrong password or no key found"
+const ResticWrongKey = "wrong password or no key found"
 
 // BackupState is what the host reads back of a run in the background: whether it is still
 // running, and its report once it has finished, handed over once.
@@ -376,7 +376,7 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 	// not be read for any other reason (a wrong password, the store down) fails here too rather
 	// than being replaced.
 	if _, err := restic("cat", "config"); err != nil {
-		if strings.Contains(err.Error(), resticWrongKey) {
+		if strings.Contains(err.Error(), ResticWrongKey) {
 			rep := fail(fmt.Errorf("the folder holds a backup made with another key"))
 			rep.WrongKey = true
 			return rep
@@ -599,6 +599,11 @@ func listBackups(ctx context.Context, x Executor, req backupListRequest) ([]dash
 		ID       string    `json:"id"`
 		Time     time.Time `json:"time"`
 		Hostname string    `json:"hostname"` // the group: the household that made it
+		// Summary is restic's own account of the run that made it; absent before restic 0.17.
+		Summary struct {
+			DataAdded  int64 `json:"data_added"`
+			TotalBytes int64 `json:"total_bytes_processed"`
+		} `json:"summary"`
 	}
 	var snaps []snapshot
 	if err := json.Unmarshal(raw, &snaps); err != nil {
@@ -607,7 +612,7 @@ func listBackups(ctx context.Context, x Executor, req backupListRequest) ([]dash
 	slices.SortFunc(snaps, func(a, b snapshot) int { return b.Time.Compare(a.Time) })
 	list := make([]dashboard.BackupListing, 0, len(snaps))
 	for _, s := range snaps {
-		b := dashboard.BackupListing{ID: s.ID, At: s.Time, Own: s.Hostname == req.Group}
+		b := dashboard.BackupListing{ID: s.ID, At: s.Time, Own: s.Hostname == req.Group, Added: s.Summary.DataAdded, Size: s.Summary.TotalBytes}
 		// A backup whose members cannot be read is still listed, with no apps: the page says so
 		// rather than hiding a backup the household may be looking for.
 		if out, err := restic("dump", "--archive", "tar", s.ID, backupFacts+"/members"); err != nil {
@@ -707,7 +712,7 @@ func adoptBackup(ctx context.Context, x Executor, req backupAdoptRequest) error 
 		return nil
 	}
 	if _, err := run("restic", append(slices.Clone(repo), "--password-file", backupAdoptFile, "key", "add", "--new-password-file", backupPasswordFile)...); err != nil {
-		if strings.Contains(err.Error(), resticWrongKey) {
+		if strings.Contains(err.Error(), ResticWrongKey) {
 			return errors.New("that key does not open the backup in this folder")
 		}
 		return err

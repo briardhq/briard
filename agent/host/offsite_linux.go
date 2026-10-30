@@ -7,3 +7,7 @@ import "errors"
 func syncProvider(string) (string, error) { return "", errors.ErrUnsupported }
 
 func inSync(string) error { return errors.ErrUnsupported }
+
+// offsiteCanTell is false here: the page says Briard cannot tell, rather than advising as if it
+// had looked.
+const offsiteCanTell = false

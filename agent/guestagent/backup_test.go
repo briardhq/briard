@@ -532,7 +532,7 @@ func TestANightIsRefusedBeforeAnythingIsRead(t *testing.T) {
 // such -- never re-initialised, never a bare error the page cannot act on.
 func TestAWrongKeyIsNamedNotReplaced(t *testing.T) {
 	f, _ := backupRig(map[string]func() ([]byte, error){
-		"cat": func() ([]byte, error) { return []byte("Fatal: " + resticWrongKey), errors.New("exit status 1") },
+		"cat": func() ([]byte, error) { return []byte("Fatal: " + ResticWrongKey), errors.New("exit status 1") },
 	})
 	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/"})
 	if !rep.WrongKey || rep.Error == "" || rep.Snapshot != "" {
@@ -556,7 +556,7 @@ func TestAdoptionAddsTheVolumesKey(t *testing.T) {
 			if n == "restic" {
 				pw := args[slices.Index(args, "--password-file")+1]
 				if !opens[pw] {
-					return []byte("Fatal: " + resticWrongKey), errors.New("exit status 1")
+					return []byte("Fatal: " + ResticWrongKey), errors.New("exit status 1")
 				}
 				if slices.Contains(args, "add") {
 					opens[args[slices.Index(args, "--new-password-file")+1]] = true
@@ -641,7 +641,7 @@ func TestTheListReadsEveryBackupWithItsApps(t *testing.T) {
 	f, _ := backupRig(map[string]func() ([]byte, error){
 		"snapshots": func() ([]byte, error) {
 			return []byte(`[{"id":"aaaa1111","time":"2026-10-29T09:00:00Z","hostname":"f1d"},` +
-				`{"id":"bbbb2222","time":"2026-10-30T09:00:00Z","hostname":"an-earlier-machine"}]`), nil
+				`{"id":"bbbb2222","time":"2026-10-30T09:00:00Z","hostname":"an-earlier-machine","summary":{"data_added":4096,"total_bytes_processed":308224}}]`), nil
 		},
 		"dump": func() ([]byte, error) { return members, nil },
 	})
@@ -651,6 +651,9 @@ func TestTheListReadsEveryBackupWithItsApps(t *testing.T) {
 	}
 	if len(list) != 2 || list[0].ID != "bbbb2222" || list[1].ID != "aaaa1111" {
 		t.Fatalf("list = %+v; want both backups, newest first", list)
+	}
+	if list[0].Added != 4096 || list[0].Size != 308224 || list[1].Added != 0 {
+		t.Errorf("summaries = %d/%d, %d; want restic's for the backup that has one, nothing for the one without", list[0].Added, list[0].Size, list[1].Added)
 	}
 	if list[0].Own || !list[1].Own {
 		t.Errorf("own = %v, %v; want the earlier machine's not this household's", list[0].Own, list[1].Own)

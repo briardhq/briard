@@ -43,6 +43,11 @@ import (
 // holds. Neither reaches past the guest's own data: the repository is the folder the host already
 // serves the guest, opened with the key on the guest's own volume.
 //
+// backup-now and backup-folder join them for the rest of the Backup page: the first starts the
+// run 02:00 starts, into the folder the household chose; the second reads a folder the household
+// names and moves the backup there once confirmed -- what the backup-dir setting below already
+// may, behind the same checkBackupFolder, and the read is read-only and restic's paths alone.
+//
 // config-set joins them for the BACKUP'S settings only, never the address: the page's Backup
 // section turns the nightly backup off and on, moves it to another folder, and records that the
 // key is saved. What a guest taken over gains outside itself: it can stop tomorrow's backup of
@@ -55,6 +60,7 @@ func guestMayAsk(d api.Directive) bool {
 	case api.DirectiveServiceInstall, api.DirectiveServicePrewarm, api.DirectiveServiceRestore,
 		api.DirectiveServiceMembers,
 		api.DirectiveBackupRestore, api.DirectiveBackupList, // the Backup page's restore
+		api.DirectiveBackupNow, api.DirectiveBackupFolder, // its Back up now, and its Change
 		api.DirectiveCasaClaim,   // a name for this household, asked from its own page
 		api.DirectiveCasaRecheck: // and its network asked again about it
 		return true

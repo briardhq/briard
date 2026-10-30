@@ -367,6 +367,73 @@ var galleryStates = []galleryState{
 			r.form("/backup/folder", c, url.Values{"folder": {"/root/x"}})
 			return backup(t, r, c, port)
 		}},
+	{"backup-running", "A backup running now: the Schedule follows it.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: galleryNights(t, ""), Running: galleryClock.Add(-2 * time.Minute)})
+			return backup(t, r, c, port)
+		}},
+	{"backup-now-done", "Back up now has ended: said once, what it added.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			port.answer <- api.DirectiveOutcome{State: api.OutcomeDone}
+			r.form("/backup/now", c, nil)
+			nights := append([]dashboard.BackupRun{{At: galleryClock, Snapshot: "now", BytesAdded: 301 << 10}}, galleryNights(t, "")...)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: nights, Ended: &dashboard.BackupEnd{Started: galleryClock}})
+			return backup(t, r, c, port)
+		}},
+	{"backup-linux", "On Linux: Briard cannot tell whether the folder is copied off the machine.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: galleryNights(t, ""), OffsiteUnknown: true})
+			return backup(t, r, c, port)
+		}},
+	{"backup-list", "The Backups card rendered in the page (no script): a failed run, this household's backup, an earlier install's.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			nights := galleryNights(t, "")
+			nights[0].Snapshot = "bbbb2222"
+			nights = append([]dashboard.BackupRun{{At: time.Date(2026, 10, 30, 14, 0, 0, 0, time.Local), Error: "the backup folder is not there"}}, nights...)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: nights})
+			answerByKind(port, "")
+			return "/backup?list", c
+		}},
+	{"backup-details", "One backup: when, what it added and holds, its apps -- one not installed -- each with Restore.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			answerByKind(port, "")
+			return "/backup/bbbb2222", c
+		}},
+	{"backup-details-earlier", "An earlier install's backup, with no summary from restic.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			answerByKind(port, "")
+			return "/backup/aaaa1111", c
+		}},
+	{"backup-folder-empty", "Change into an empty folder: the confirmation.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			answerFolder(port, &dashboard.BackupFolderCheck{Folder: "/home/ana/Dropbox/Briard Backup", Empty: true, Previous: galleryFolder}, "")
+			return "/backup/folder?folder=" + url.QueryEscape("/home/ana/Dropbox/Briard Backup"), c
+		}},
+	{"backup-folder-ours", "Change into a folder holding this household's backups and an earlier install's.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			answerFolder(port, &dashboard.BackupFolderCheck{Folder: "/home/ana/Dropbox/Briard Backup", Own: 3, Earlier: 2, Newest: galleryClock.Add(-7 * time.Hour), Previous: galleryFolder}, "")
+			return "/backup/folder?folder=" + url.QueryEscape("/home/ana/Dropbox/Briard Backup"), c
+		}},
+	{"backup-folder-other-key", "Change into a folder another key made: its key, in the confirmation.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			answerFolder(port, &dashboard.BackupFolderCheck{Folder: "/home/ana/Dropbox/Briard Backup", OtherKey: true, Previous: galleryFolder}, "")
+			return "/backup/folder?folder=" + url.QueryEscape("/home/ana/Dropbox/Briard Backup"), c
+		}},
+	{"backup-folder-refused", "Change into a folder the host will not use: why, in place of the question.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			answerFolder(port, nil, "/home/ana/Documents already holds other files: choose an empty folder, or one that holds these backups")
+			return "/backup/folder?folder=" + url.QueryEscape("/home/ana/Documents"), c
+		}},
 	{"devices-many", "Four trusted devices, this laptop among them.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)

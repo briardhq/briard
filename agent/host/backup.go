@@ -475,19 +475,25 @@ type backupViewGuest interface {
 }
 
 // pushBackupView hands the guest the page's view when it differs from what this connection last
-// pushed. pushed starts empty with every connection, so a fresh guest is always told. o is the
-// off-site check's last answer; nil tells the page nothing about one.
-func (cfg Config) pushBackupView(ctx context.Context, r any, o *offsiteCheck, pushed *string, logf func(string, ...any)) {
+// pushed. pushed starts empty with every connection, so a fresh guest is always told. b is the
+// scheduler -- the off-site check's last answer, and the run going now -- nil tells the page
+// nothing about either.
+func (cfg Config) pushBackupView(ctx context.Context, r any, b *backupScheduler, pushed *string, logf func(string, ...any)) {
 	g, ok := r.(backupViewGuest)
 	if !ok || cfg.stateDir() == "" {
 		return
 	}
 	v := cfg.backupView(ctx, g)
-	if o != nil {
-		v.OffsiteIn, v.OffsiteSynced = o.in, o.synced
+	v.OffsiteUnknown = !offsiteCanTell
+	if b != nil {
+		v.OffsiteIn, v.OffsiteSynced = b.offsite.in, b.offsite.synced
+		v.Running = b.waiting
 	}
-	b, err := json.Marshal(v)
-	if err != nil || string(b) == *pushed {
+	if cfg.backupEnded != nil {
+		v.Ended = cfg.backupEnded.Load()
+	}
+	raw, err := json.Marshal(v)
+	if err != nil || string(raw) == *pushed {
 		return
 	}
 	pctx, cancel := context.WithTimeout(ctx, backupCallTimeout)
@@ -496,7 +502,7 @@ func (cfg Config) pushBackupView(ctx context.Context, r any, o *offsiteCheck, pu
 		logf("backup: dashboard copy: %v", err)
 		return
 	}
-	*pushed = string(b)
+	*pushed = string(raw)
 }
 
 // THE BACKUP'S TWO SETTINGS, through `config set` -- the one runtime writer -- so the page and the
@@ -615,8 +621,9 @@ func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any
 		// delete, and the next night opens the repository already in the new folder -- one the
 		// household moved there itself -- or starts one, with the same key.
 		if err := cfg.updateBackupRecord(func(r *backupRecord) {
-			if r.Folder != "" && r.Folder != want {
-				r.Previous = r.Folder
+			// The folder it leaves: the record's, or -- never moved before -- the installer's.
+			if left := cmp.Or(r.Folder, now); left != "" && left != want {
+				r.Previous = left
 			}
 			r.Folder = want
 		}); err != nil {
@@ -784,23 +791,129 @@ func (cfg Config) applyBackupList(ctx context.Context, g backupLister, d api.Dir
 // handful since the repository keeps two days and a week.
 const backupListTimeout = 2 * time.Minute
 
+// backupCandidateDir is the folder the store serves read-only under /candidate/, "" while none is.
+func (cfg Config) backupCandidateDir() string {
+	if cfg.backupCandidate == nil {
+		return ""
+	}
+	if p := cfg.backupCandidate.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// THE FOLDER MOVE, READ FIRST (api.DirectiveBackupFolder): the Backup page's Change asks what the
+// folder holds, says it, and moves only once the household has confirmed -- a folder of another
+// key's backups with that key, so the switch and the adoption happen together and the backup is
+// never left in a folder this household cannot open.
+//
+// THE READ IS WITH THIS HOUSEHOLD'S KEY: restic's snapshot list decrypts, so it proves whose
+// backups are there. The guest's own list (data.backup.list), pointed at the store's read-only
+// candidate root, which is set for the read alone and cleared after it. One read at a time: a
+// second is refused rather than handed the first one's folder.
+func (cfg Config) applyBackupFolder(ctx context.Context, d api.Directive, r any, logf func(string, ...any)) api.DirectiveOutcome {
+	failed := func(format string, a ...any) api.DirectiveOutcome {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: fmt.Sprintf(format, a...)}
+	}
+	var req api.BackupFolder
+	if err := json.Unmarshal([]byte(d.Payload), &req); err != nil || req.Folder == "" {
+		return failed("the payload does not name a folder")
+	}
+	if cfg.backupLive == nil || cfg.stateDir() == "" {
+		return failed("this node keeps no backup settings")
+	}
+	now := cfg.backupFolder()
+	if req.Folder == now {
+		return failed("backups are already stored in %s", now)
+	}
+	if err := checkBackupFolder(req.Folder); err != nil {
+		return failed("%v", err)
+	}
+	check := dashboard.BackupFolderCheck{Folder: req.Folder, Empty: !isResticRepository(req.Folder)}
+	if left := cmp.Or(now, cfg.readBackupRecord().Folder); left != "" && isResticRepository(left) {
+		check.Previous = left
+	}
+	if !check.Empty {
+		l, ok := r.(backupLister)
+		if !ok || !l.SupportsBackupList() {
+			return failed("this guest is too old to read a backup folder; update the guest OS first")
+		}
+		if cfg.hostNodeIP() == "" || cfg.backupCandidate == nil {
+			return failed("this node serves no backup folder to read")
+		}
+		dir := req.Folder
+		if !cfg.backupCandidate.CompareAndSwap(nil, &dir) {
+			return failed("another folder is being read; try again in a moment")
+		}
+		url := "http://" + net.JoinHostPort(cfg.hostNodeIP(), backupStorePort) + "/" + backupCandidateRoot + "/"
+		lctx, cancel := context.WithTimeout(ctx, backupListTimeout)
+		list, err := l.DataBackupList(lctx, url, cfg.FlockID)
+		cancel()
+		cfg.backupCandidate.Store(nil)
+		switch {
+		case err != nil && strings.Contains(err.Error(), guestagent.ResticWrongKey):
+			check.OtherKey = true
+		case err != nil:
+			return failed("the backups in %s could not be read: %v", req.Folder, err)
+		}
+		for _, b := range list {
+			if !b.Own {
+				check.Earlier++
+				continue
+			}
+			check.Own++
+			if b.At.After(check.Newest) {
+				check.Newest = b.At
+			}
+		}
+	}
+	if !req.Confirm {
+		raw, err := json.Marshal(check)
+		if err != nil {
+			return failed("%v", err)
+		}
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: string(raw)}
+	}
+	key := strings.TrimSpace(req.Key)
+	if check.OtherKey && key == "" {
+		return failed("%s holds backups made with another key: enter that key to continue them here", req.Folder)
+	}
+	before := cfg.readBackupRecord()
+	set := func(k, v string) api.DirectiveOutcome {
+		payload, _ := json.Marshal(api.ConfigSetting{Key: k, Value: v})
+		out, _ := cfg.applyBackupSetting(ctx, api.Directive{ID: d.ID, Kind: api.DirectiveConfigSet, Payload: string(payload)}, r, logf)
+		return out
+	}
+	if out := set(settingBackupDir, req.Folder); out.State != api.OutcomeDone {
+		return out
+	}
+	if !check.OtherKey {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: fmt.Sprintf("backups are now stored in %s", req.Folder)}
+	}
+	if out := set(settingBackupAdopt, key); out.State != api.OutcomeDone {
+		// NOT LEFT IN A FOLDER IT CANNOT OPEN: back where it was, the record as it was.
+		if back := set(settingBackupDir, now); back.State != api.OutcomeDone {
+			logf("backup: could not go back to %q after the adoption failed: %s", now, back.Detail)
+		}
+		if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Folder, r.Previous = before.Folder, before.Previous }); err != nil {
+			logf("backup: could not restore the folder record: %v", err)
+		}
+		return failed("the folder was not changed: %s", out.Detail)
+	}
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: fmt.Sprintf("backups are now stored in %s, continuing the ones there", req.Folder)}
+}
+
 // backupAdopter is the slice of the guest an adoption costs.
 type backupAdopter interface {
 	DataBackupAdopt(ctx context.Context, url, password string) error
 	SupportsBackupAdopt() bool
 }
 
-// backupEnd is how one of the scheduler's runs ended: when it started, and what came of it.
-type backupEnd struct {
-	Started time.Time
-	Failed  bool
-	Detail  string
-}
-
-// ended records how the run started at started ended, for `briard backup` to read.
+// ended records how the run started at started ended, for `briard backup` to read and the page to
+// say.
 func (cfg Config) ended(started time.Time, failed bool, detail string) {
 	if cfg.backupEnded != nil {
-		cfg.backupEnded.Store(&backupEnd{Started: started, Failed: failed, Detail: detail})
+		cfg.backupEnded.Store(&dashboard.BackupEnd{Started: started, Failed: failed, Detail: detail})
 	}
 }
 
@@ -825,6 +938,10 @@ const backupNowBudget = 90 * time.Minute
 // than starting a run itself: the run, its report and its record stay the scheduler's, so this and
 // the night's are never two runs at once (asked during one, it waits for that one, then runs).
 // Like an adoption's kick, it does not count as the night: the night still runs.
+//
+// THE PAGE ASKS AND DOES NOT WAIT (api.BackupNowStart): its one wire to the host answers in
+// order, so an hour's wait would hold every other button on it. It follows the run in the view
+// instead -- the run going, then how it ended (pushBackupView).
 func (cfg Config) applyBackupNow(ctx context.Context, d api.Directive) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
@@ -837,6 +954,9 @@ func (cfg Config) applyBackupNow(ctx context.Context, d api.Directive) api.Direc
 	}
 	asked := time.Now()
 	cfg.backupKick.Store(true)
+	if d.Payload == api.BackupNowStart {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "a backup starts now"}
+	}
 	ctx, cancel := context.WithTimeout(ctx, backupNowBudget)
 	defer cancel()
 	tick := time.NewTicker(time.Second)

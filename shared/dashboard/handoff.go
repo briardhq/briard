@@ -173,6 +173,21 @@ type Backup struct {
 	// uploaded every file of the newest good night -- false while it could not tell.
 	OffsiteIn     string `json:"offsiteIn,omitempty"`
 	OffsiteSynced bool   `json:"offsiteSynced,omitempty"`
+	// OffsiteUnknown: this host cannot tell whether any folder is copied off the machine (Linux
+	// reads no sync client), so the page says that rather than advising as if it had looked.
+	OffsiteUnknown bool `json:"offsiteUnknown,omitempty"`
+	// Running is when the run going now started; zero while none goes. Ended is how the newest
+	// run ended -- the night's or one asked for, and one that found nothing to back up, which
+	// leaves no night -- so the page that asked for one can say how it ended.
+	Running time.Time  `json:"running,omitzero"`
+	Ended   *BackupEnd `json:"ended,omitempty"`
+}
+
+// BackupEnd is how one run ended: when it started, and what came of it in the host's words.
+type BackupEnd struct {
+	Started time.Time `json:"started"`
+	Failed  bool      `json:"failed,omitempty"`
+	Detail  string    `json:"detail"`
 }
 
 // BackupRun is one finished night.
@@ -199,6 +214,26 @@ type BackupListing struct {
 	// Own says this household made it; one an earlier machine left in an adopted folder is not.
 	Own  bool        `json:"own"`
 	Apps []BackupApp `json:"apps,omitempty"`
+	// Added is what the backup added to the folder and Size the data it holds, from restic's own
+	// summary of the run; 0 for a backup made before restic kept one.
+	Added int64 `json:"added,omitempty"`
+	Size  int64 `json:"size,omitempty"`
+}
+
+// BackupFolderCheck is what a folder the household asked to move the backup into holds, read
+// before anything switches (api.DirectiveBackupFolder): nothing, or backups this household's key
+// opens -- its own and an earlier install's -- or backups another key made.
+type BackupFolderCheck struct {
+	Folder string `json:"folder"`
+	Empty  bool   `json:"empty,omitempty"`
+	// OtherKey: the folder holds a backup this household's key does not open.
+	OtherKey bool `json:"otherKey,omitempty"`
+	// Own and Earlier count the backups this household made and those an earlier install made.
+	Own     int       `json:"own,omitempty"`
+	Earlier int       `json:"earlier,omitempty"`
+	Newest  time.Time `json:"newest,omitzero"` // the newest of this household's
+	// Previous is the folder the backup leaves, when it holds backups: they stay there.
+	Previous string `json:"previous,omitempty"`
 }
 
 // BackupApp is one app in a backup: its name, the version its data was written under, and when

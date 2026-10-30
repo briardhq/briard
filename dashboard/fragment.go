@@ -94,11 +94,19 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 		}
 		hv := a.history(ctx, name)
 		tmpl, data, moving = "history-card", hv, hv.Refresh
-	case "restore":
+	case "backups":
 		// ALWAYS ANSWERED, unlike the parts above: the card loads itself once, and then polls only
 		// while a restore runs (its template says so), so a still card is a list, not an ending.
 		// Under the request's own deadline, not the fragment's ten seconds: the list is restic.
-		tmpl, data, moving = "restore-card", a.restoreCard(r.Context()), true
+		tmpl, data, moving = "backups-card", a.backupsCard(r.Context()), true
+	case "schedule":
+		// Moves while a run goes; its ending is said by the page the HX-Refresh reloads.
+		v := a.backupState()
+		if v == nil {
+			http.NotFound(w, r)
+			return
+		}
+		tmpl, data, moving = "schedule-card", v, v.Moving
 	default:
 		http.NotFound(w, r)
 		return

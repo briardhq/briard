@@ -331,3 +331,63 @@ func TestRealResticMovesByStartingFreshOrContinuing(t *testing.T) {
 		t.Fatalf("the moved repository has %d snapshots, want its 1 plus tonight's", count(carried))
 	}
 }
+
+// THE CANDIDATE ROOT, against real restic: a repository served under /candidate/ reads as it does
+// at the root, nothing in it can be written or deleted, nothing but restic's paths is answered,
+// and nothing at all while no candidate is set.
+func TestTheCandidateRootIsReadOnly(t *testing.T) {
+	s, srv, _ := storeRig(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restic(t, srv.URL, "init")
+	restic(t, srv.URL, "backup", src)
+	if err := os.WriteFile(filepath.Join(s.dir, "notes.txt"), []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo := s.dir
+	candidate := ""
+	c := &backupStore{folder: func() string { return "" }, candidate: func() string { return candidate }, client: "127.0.0.1", own: platform.ChownLike}
+	csrv := httptest.NewServer(c)
+	t.Cleanup(csrv.Close)
+	status := func(method, path string) int {
+		req, _ := http.NewRequest(method, csrv.URL+path, strings.NewReader("x"))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := status("GET", "/candidate/config"); got != http.StatusNotFound {
+		t.Errorf("no candidate set: GET config = %d, want 404", got)
+	}
+	candidate = repo
+	if out := restic(t, csrv.URL+"/candidate", "--no-lock", "snapshots", "--json"); !strings.Contains(out, src) {
+		t.Errorf("the candidate's snapshots do not read: %s", out)
+	}
+	keys, _ := os.ReadDir(filepath.Join(repo, "keys"))
+	name := keys[0].Name()
+	for _, tc := range []struct {
+		method, path string
+		want         int
+	}{
+		{"POST", "/candidate/keys/" + strings.Repeat("a", 64), http.StatusMethodNotAllowed},
+		{"DELETE", "/candidate/keys/" + name, http.StatusMethodNotAllowed},
+		{"POST", "/candidate/?create=true", http.StatusMethodNotAllowed},
+		{"GET", "/candidate/notes.txt", http.StatusNotFound},
+		{"GET", "/candidate/keys/" + name, http.StatusOK},
+		{"GET", "/config", http.StatusServiceUnavailable}, // the live root, off in this store
+	} {
+		if got := status(tc.method, tc.path); got != tc.want {
+			t.Errorf("%s %s = %d, want %d", tc.method, tc.path, got, tc.want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repo, "keys", name)); err != nil {
+		t.Errorf("the key is gone: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(repo, "locks")); len(entries) != 0 {
+		t.Errorf("reading the candidate left locks: %v", entries)
+	}
+}

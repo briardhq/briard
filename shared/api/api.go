@@ -527,11 +527,21 @@ const (
 	//                        from. Read-only, read with no lock, so it neither waits for a running
 	//                        backup nor holds one up. Local-only, as the restore is: what the
 	//                        household backed up is the household's to see.
-	DirectiveBackupNow = "backup-now" // Payload empty. The nightly backup, now: the newest History
-	//                        snapshot of every app into the folder, answered once the run has
-	//                        ended (Outcome.Detail says what it added, or why not). The scheduler's
-	//                        own run, asked for -- never a second one beside the night's -- and it
-	//                        does not count as the night. Local-only: `briard backup`.
+	DirectiveBackupNow = "backup-now" // Payload empty or BackupNowStart. The nightly backup, now:
+	//                        the newest History snapshot of every app into the folder, answered once
+	//                        the run has ended (Outcome.Detail says what it added, or why not) -- or,
+	//                        with BackupNowStart, as soon as it is asked for: the Backup page, whose
+	//                        one wire to the host must not be held for an hour, follows the run in
+	//                        the host's view instead. The scheduler's own run, asked for -- never a
+	//                        second one beside the night's -- and it does not count as the night.
+	//                        Local-only: `briard backup`, and the page's Back up now.
+	DirectiveBackupFolder = "backup-folder" // Payload = a JSON BackupFolder. Move the backup to
+	//                        another folder, the folder READ FIRST: without Confirm nothing changes,
+	//                        and Outcome.Detail is a JSON dashboard.BackupFolderCheck -- empty, this
+	//                        household's backups, or another key's; with Confirm it is read again
+	//                        and the backup moves there, adopting it with Key when another key made
+	//                        it, and staying where it was when that key does not open it.
+	//                        Local-only, as the backup's settings are: the Backup page's Change.
 	DirectiveStop = "stop" // Payload empty. Bring this node down until it is started again or the
 	//                        machine next boots: the act in flight aborted (the outcome names it),
 	//                        the guest powered off cleanly, the agent exited. `briard stop`.
@@ -548,6 +558,17 @@ const (
 type BackupRestore struct {
 	Service  string `json:"service"`
 	Snapshot string `json:"snapshot"`
+}
+
+// BackupNowStart is the DirectiveBackupNow payload that asks for the run without waiting for it.
+const BackupNowStart = "start"
+
+// BackupFolder is a DirectiveBackupFolder's payload: the folder, whether the household has
+// confirmed the move, and -- for a folder holding another key's backups -- that key.
+type BackupFolder struct {
+	Folder  string `json:"folder"`
+	Key     string `json:"key,omitempty"`
+	Confirm bool   `json:"confirm,omitempty"`
 }
 
 // ConfigSetting is a DirectiveConfigSet's payload: one setting and its new value.

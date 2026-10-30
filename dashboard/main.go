@@ -194,6 +194,8 @@ type app struct {
 	// backupPath is the host's view of the nightly backup (backup.go); backupAsked the host's
 	// refusal of the last thing asked from that card.
 	backupPath, backupAsked string
+	// backupNow is the run Back up now asked for, until the page has said how it ended (backup.go).
+	backupNow *backupNowOp
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
@@ -316,6 +318,18 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.recheckCasa(w, r)
+	case r.URL.Path == "/backup/folder" && r.Method == http.MethodGet:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w, r)
+			return
+		}
+		a.requestBackupFolder(w, r)
+	case strings.HasPrefix(r.URL.Path, "/backup/") && r.Method == http.MethodGet:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w, r)
+			return
+		}
+		a.showBackup(w, r, strings.TrimPrefix(r.URL.Path, "/backup/"))
 	case strings.HasPrefix(r.URL.Path, "/backup/") && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
 			a.refuse(w, r)
@@ -938,8 +952,11 @@ func (a *app) render(w http.ResponseWriter, r *http.Request, self device, name s
 	defer cancel()
 	v := a.view(ctx, r, self)
 	if name == "backup" && v.Backup != nil && r.URL.Query().Has("list") {
-		rc := a.restoreCard(r.Context())
-		v.Backup.Restore = &rc
+		bc := a.backupsCard(r.Context())
+		v.Backup.Backups = &bc
+	}
+	if name == "backup" {
+		a.sayRunEnded(v.Backup) // said on this page, once
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := page.ExecuteTemplate(w, name, v); err != nil {

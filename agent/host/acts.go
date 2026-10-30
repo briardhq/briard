@@ -90,6 +90,7 @@ var (
 		install.DirectiveUpdateVM:   true,
 		api.DirectiveUpgradeSystem:  true,
 		api.DirectiveConfigSet:      true,
+		api.DirectiveBackupFolder:   true, // a read, then config.env written: one at a time, as config-set
 		api.DirectivePair:           true,
 		api.DirectiveUnpair:         true,
 		api.DirectiveRescue:         true,

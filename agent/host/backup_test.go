@@ -722,10 +722,10 @@ func TestThePageIsToldTheOffsiteAnswer(t *testing.T) {
 	cfg, g := liveBackup(t, "/f")
 	vg := &viewGuest{fakeStatus: fakeStatus{backup: g}}
 	pushed := ""
-	o := &offsiteCheck{in: "OneDrive"}
-	cfg.pushBackupView(context.Background(), vg, o, &pushed, quiet)
-	o.synced = true
-	cfg.pushBackupView(context.Background(), vg, o, &pushed, quiet)
+	b := &backupScheduler{offsite: offsiteCheck{in: "OneDrive"}}
+	cfg.pushBackupView(context.Background(), vg, b, &pushed, quiet)
+	b.offsite.synced = true
+	cfg.pushBackupView(context.Background(), vg, b, &pushed, quiet)
 	if len(vg.views) != 2 || vg.views[0].OffsiteIn != "OneDrive" || vg.views[0].OffsiteSynced || !vg.views[1].OffsiteSynced {
 		t.Fatalf("pushed %+v", vg.views)
 	}
@@ -799,7 +799,7 @@ func TestTheBackupListIsTheGuestsReadOfTheRepository(t *testing.T) {
 // TestThePageMayRestoreFromTheBackup: the Backup page's restore and its list are the page's to
 // ask, as an undo and an install are; the backup's other local-only acts and the node's own are not.
 func TestThePageMayRestoreFromTheBackup(t *testing.T) {
-	for _, kind := range []string{api.DirectiveBackupRestore, api.DirectiveBackupList} {
+	for _, kind := range []string{api.DirectiveBackupRestore, api.DirectiveBackupList, api.DirectiveBackupNow, api.DirectiveBackupFolder} {
 		if !guestMayAsk(api.Directive{Kind: kind}) {
 			t.Errorf("the page may not ask %s", kind)
 		}
@@ -815,7 +815,7 @@ func TestThePageMayRestoreFromTheBackup(t *testing.T) {
 // not its answer; the kicked run's is, success or failure, said as the scheduler said it.
 func TestBackupNowWaitsForTheRunItAskedFor(t *testing.T) {
 	cfg, _ := liveBackup(t, filepath.Join(t.TempDir(), "Briard Backup"))
-	cfg.backupKick, cfg.backupEnded = &atomic.Bool{}, &atomic.Pointer[backupEnd]{}
+	cfg.backupKick, cfg.backupEnded = &atomic.Bool{}, &atomic.Pointer[dashboard.BackupEnd]{}
 	cfg.ended(time.Now().Add(-8*time.Hour), false, "last night's") // before the ask
 	for _, tc := range []struct {
 		failed bool
@@ -854,7 +854,7 @@ func TestBackupNowWaitsForTheRunItAskedFor(t *testing.T) {
 // starts, and its report is the ending -- what it added, or nothing to back up.
 func TestTheSchedulerSaysHowAKickedRunEnded(t *testing.T) {
 	cfg, g := liveBackup(t, filepath.Join(t.TempDir(), "Briard Backup"))
-	cfg.backupKick, cfg.backupEnded = &atomic.Bool{}, &atomic.Pointer[backupEnd]{}
+	cfg.backupKick, cfg.backupEnded = &atomic.Bool{}, &atomic.Pointer[dashboard.BackupEnd]{}
 	for _, tc := range []struct {
 		rep    *guestagent.BackupReport
 		failed bool
@@ -875,5 +875,188 @@ func TestTheSchedulerSaysHowAKickedRunEnded(t *testing.T) {
 		if e == nil || e.Started.Before(asked) || e.Failed != tc.failed || !strings.Contains(e.Detail, tc.want) {
 			t.Errorf("ended %+v; want started after the ask, failed %v, %q", e, tc.failed, tc.want)
 		}
+	}
+}
+
+// folderGuest is the guest a folder move reads through: the list it answers, and the candidate
+// root the store was serving while it read.
+type folderGuest struct {
+	fakeStatus
+	*fakeLister
+	cfg    Config
+	during string
+}
+
+func (g *folderGuest) DataBackupList(ctx context.Context, url, group string) ([]dashboard.BackupListing, error) {
+	g.during = g.cfg.backupCandidateDir()
+	return g.fakeLister.DataBackupList(ctx, url, group)
+}
+
+// fakeRepo makes dir look like a restic repository, as isResticRepository reads one.
+func fakeRepo(t *testing.T, dir string) {
+	t.Helper()
+	for _, p := range []string{"config", "keys/k1"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, p), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func askFolder(cfg Config, g any, req api.BackupFolder) (api.DirectiveOutcome, dashboard.BackupFolderCheck) {
+	raw, _ := json.Marshal(req)
+	o := cfg.applyBackupFolder(context.Background(), api.Directive{ID: "d", Kind: api.DirectiveBackupFolder, Payload: string(raw)}, g, quiet)
+	var c dashboard.BackupFolderCheck
+	if o.State == api.OutcomeDone && !req.Confirm {
+		_ = json.Unmarshal([]byte(o.Detail), &c)
+	}
+	return o, c
+}
+
+// A FOLDER IS READ BEFORE THE BACKUP MOVES: empty says so with no read; one holding backups is
+// read with this household's key through the candidate root -- set for the read, cleared after --
+// and counted, this household's and an earlier install's; one another key made says so; anything
+// checkBackupFolder refuses is refused before the guest is asked. Nothing moves without Confirm.
+func TestAFolderIsReadBeforeTheBackupMoves(t *testing.T) {
+	old := filepath.Join(t.TempDir(), "Briard Backup")
+	fakeRepo(t, old)
+	cfg, _ := liveBackup(t, old)
+	cfg.backupCandidate = &atomic.Pointer[string]{}
+	at := time.Date(2026, 10, 30, 2, 0, 0, 0, time.UTC)
+	g := &folderGuest{fakeStatus: fakeStatus{backup: &fakeBackup{}}, fakeLister: &fakeLister{}, cfg: cfg}
+
+	empty := t.TempDir()
+	o, c := askFolder(cfg, g, api.BackupFolder{Folder: empty})
+	if o.State != api.OutcomeDone || !c.Empty || c.Previous != old || g.url != "" {
+		t.Fatalf("an empty folder: %+v %+v, asked %q; want empty, the old folder named, no read", o, c, g.url)
+	}
+
+	moved := filepath.Join(t.TempDir(), "OneDrive")
+	fakeRepo(t, moved)
+	g.list = []dashboard.BackupListing{{ID: "c", At: at, Own: true}, {ID: "b", At: at.Add(-24 * time.Hour), Own: true},
+		{ID: "a", At: at.Add(-7 * 24 * time.Hour), Own: true}, {ID: "e1", At: at.Add(-30 * 24 * time.Hour)}, {ID: "e2", At: at.Add(-31 * 24 * time.Hour)}}
+	o, c = askFolder(cfg, g, api.BackupFolder{Folder: moved})
+	if o.State != api.OutcomeDone || c.Empty || c.OtherKey || c.Own != 3 || c.Earlier != 2 || !c.Newest.Equal(at) {
+		t.Fatalf("a folder of backups: %+v %+v; want 3 of this household's, newest %s, and 2 earlier", o, c, at)
+	}
+	if g.during != moved || !strings.HasSuffix(g.url, ":"+backupStorePort+"/"+backupCandidateRoot+"/") || g.group != "f1d" {
+		t.Errorf("read %q (%q) while the candidate was %q; want the candidate root on %s, this household's group", g.url, g.group, g.during, moved)
+	}
+	if cfg.backupCandidateDir() != "" {
+		t.Error("the candidate root was left set after the read")
+	}
+	if cfg.backupFolder() != old {
+		t.Errorf("a check moved the backup to %s", cfg.backupFolder())
+	}
+
+	g.list, g.fakeLister.err = nil, errors.New("restic --repo rest:http://h/candidate/ snapshots: exit status 12: Fatal: "+guestagent.ResticWrongKey)
+	if o, c = askFolder(cfg, g, api.BackupFolder{Folder: moved}); o.State != api.OutcomeDone || !c.OtherKey {
+		t.Errorf("another key's: %+v %+v", o, c)
+	}
+	g.fakeLister.err = errors.New("connection refused")
+	if o, _ = askFolder(cfg, g, api.BackupFolder{Folder: moved}); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "could not be read") {
+		t.Errorf("an unreadable folder: %+v", o)
+	}
+	if cfg.backupCandidateDir() != "" {
+		t.Error("a failed read left the candidate root set")
+	}
+	g.fakeLister.err = nil
+
+	kube := t.TempDir()
+	if err := os.WriteFile(filepath.Join(kube, "config"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g.url = ""
+	for _, dir := range []string{kube, filepath.Join(empty, "not-mounted"), old} {
+		if o, _ := askFolder(cfg, g, api.BackupFolder{Folder: dir}); o.State != api.OutcomeFailed || g.url != "" {
+			t.Errorf("%s: %+v, asked %q; want refused unread", dir, o, g.url)
+		}
+	}
+	busy := "/elsewhere"
+	cfg.backupCandidate.Store(&busy)
+	if o, _ := askFolder(cfg, g, api.BackupFolder{Folder: moved}); o.State != api.OutcomeFailed || g.url != "" || cfg.backupCandidateDir() != busy {
+		t.Errorf("a second read while one goes: %+v; want refused, the first one's root kept", o)
+	}
+}
+
+// THE CONFIRMED MOVE: into an empty folder or one of this household's, the folder changes and the
+// old one is remembered; into another key's, only with that key, adopted in the same act -- and a
+// key that does not open it leaves the backup where it was, the record as it was.
+func TestTheConfirmedMoveAdoptsOrStaysWhereItWas(t *testing.T) {
+	old := filepath.Join(t.TempDir(), "Briard Backup")
+	fakeRepo(t, old)
+	cfg, fb := liveBackup(t, old)
+	cfg.backupCandidate, cfg.backupKick = &atomic.Pointer[string]{}, &atomic.Bool{}
+	g := &folderGuest{fakeStatus: fakeStatus{backup: fb}, fakeLister: &fakeLister{}, cfg: cfg}
+
+	other := filepath.Join(t.TempDir(), "Their Backup")
+	fakeRepo(t, other)
+	g.fakeLister.err = errors.New("Fatal: " + guestagent.ResticWrongKey)
+	if o, _ := askFolder(cfg, g, api.BackupFolder{Folder: other, Confirm: true}); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "enter that key") || cfg.backupFolder() != old {
+		t.Fatalf("another key's with no key: %+v, folder %s", o, cfg.backupFolder())
+	}
+	fb.adoptErr = errors.New("that key does not open the backup in this folder")
+	o, _ := askFolder(cfg, g, api.BackupFolder{Folder: other, Key: " wrong ", Confirm: true})
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "was not changed") || cfg.backupFolder() != old || fb.adopted != "wrong" {
+		t.Fatalf("a key that does not open it: %+v, folder %s, adopted with %q", o, cfg.backupFolder(), fb.adopted)
+	}
+	if rec := cfg.readBackupRecord(); rec.Previous != "" {
+		t.Errorf("the failed move left the record %+v", rec)
+	}
+	if b, _ := os.ReadFile(os.Getenv("BRIARD_CONFIG")); !strings.Contains(string(b), "BACKUP_DIR="+old) {
+		t.Errorf("config.env after the failed move:\n%s", b)
+	}
+	fb.adoptErr = nil
+	if o, _ := askFolder(cfg, g, api.BackupFolder{Folder: other, Key: "theirs", Confirm: true}); o.State != api.OutcomeDone || cfg.backupFolder() != other || fb.adopted != "theirs" {
+		t.Fatalf("with its key: %+v, folder %s, adopted with %q", o, cfg.backupFolder(), fb.adopted)
+	}
+	if rec := cfg.readBackupRecord(); rec.Folder != other || rec.Previous != old {
+		t.Errorf("record %+v; want the new folder, the old one previous", rec)
+	}
+
+	g.fakeLister.err, fb.adopted = nil, ""
+	empty := t.TempDir()
+	if o, _ := askFolder(cfg, g, api.BackupFolder{Folder: empty, Confirm: true}); o.State != api.OutcomeDone || cfg.backupFolder() != empty || fb.adopted != "" {
+		t.Fatalf("an empty folder: %+v, folder %s, adopted %q", o, cfg.backupFolder(), fb.adopted)
+	}
+	if entries, _ := os.ReadDir(empty); len(entries) != 0 {
+		t.Errorf("the move wrote %v into the folder", entries)
+	}
+}
+
+// The page asks for a run and does not wait for it: the scheduler is kicked, the answer is at once.
+func TestThePagesBackupNowDoesNotWait(t *testing.T) {
+	cfg, _ := liveBackup(t, filepath.Join(t.TempDir(), "Briard Backup"))
+	cfg.backupKick, cfg.backupEnded = &atomic.Bool{}, &atomic.Pointer[dashboard.BackupEnd]{}
+	done := make(chan api.DirectiveOutcome, 1)
+	go func() {
+		done <- cfg.applyBackupNow(context.Background(), api.Directive{ID: "d", Kind: api.DirectiveBackupNow, Payload: api.BackupNowStart})
+	}()
+	select {
+	case o := <-done:
+		if o.State != api.OutcomeDone || !cfg.backupKick.Load() {
+			t.Errorf("%+v, kicked %v", o, cfg.backupKick.Load())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the page's ask waited for the run")
+	}
+}
+
+// The page is told the run going and how the newest one ended, so it can follow one it asked for.
+func TestThePageIsToldTheRunGoingAndHowItEnded(t *testing.T) {
+	cfg, g := liveBackup(t, "/f")
+	cfg.backupEnded = &atomic.Pointer[dashboard.BackupEnd]{}
+	vg := &viewGuest{fakeStatus: fakeStatus{backup: g}}
+	pushed := ""
+	b := utcScheduler()
+	b.waiting = time.Date(2026, 10, 30, 14, 5, 0, 0, time.UTC)
+	cfg.pushBackupView(context.Background(), vg, b, &pushed, quiet)
+	b.waiting = time.Time{}
+	cfg.ended(time.Date(2026, 10, 30, 14, 5, 0, 0, time.UTC), false, "backed up home-assistant: 36 files, 301 kB added (snapshot 5aa539af)")
+	cfg.pushBackupView(context.Background(), vg, b, &pushed, quiet)
+	if len(vg.views) != 2 || vg.views[0].Running.IsZero() || !vg.views[1].Running.IsZero() || vg.views[1].Ended == nil || !strings.Contains(vg.views[1].Ended.Detail, "301 kB") {
+		t.Fatalf("pushed %+v", vg.views)
 	}
 }

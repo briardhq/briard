@@ -47,6 +47,9 @@ type cfPlaceholderBasicInfo struct {
 // errNotUploaded is a file its sync client holds but has not uploaded yet.
 var errNotUploaded = errors.New("not uploaded yet")
 
+// offsiteCanTell: this host reads whether a folder is a sync client's (the page's off-site line).
+const offsiteCanTell = true
+
 // syncProvider names the sync client whose sync root holds dir, by the name it registered.
 func syncProvider(dir string) (string, error) {
 	p, err := windows.UTF16PtrFromString(dir)

@@ -41,6 +41,7 @@ import (
 	"briard.io/agent/selfupdate"
 	"briard.io/agent/services"
 	"briard.io/shared/api"
+	"briard.io/shared/dashboard"
 	"briard.io/shared/model"
 	"briard.io/shared/nodestorage"
 	"briard.io/shared/notify"
@@ -460,7 +461,10 @@ type Config struct {
 	backupKick *atomic.Bool
 	// backupEnded is how the scheduler's newest run ended, for `briard backup` to wait on: the run
 	// stays the scheduler's, so a run asked for and the night's are never two runs at once.
-	backupEnded *atomic.Pointer[backupEnd]
+	backupEnded *atomic.Pointer[dashboard.BackupEnd]
+	// backupCandidate is a folder the household asked to move the backup into, served read-only
+	// to the guest while it is read with the household's key (backup-folder); nil while none is.
+	backupCandidate *atomic.Pointer[string]
 
 	// readinessSettle overrides how long the S1 gate lets a service's signal settle before it
 	// judges it (agent/host/readiness.go). Machinery, not a knob: the production value is the
@@ -592,7 +596,8 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	cfg.backupLive = &atomic.Pointer[string]{}
 	cfg.backupLive.Store(&backupDir)
 	cfg.backupKick = &atomic.Bool{}
-	cfg.backupEnded = &atomic.Pointer[backupEnd]{}
+	cfg.backupEnded = &atomic.Pointer[dashboard.BackupEnd]{}
+	cfg.backupCandidate = &atomic.Pointer[string]{}
 	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
 	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
 	// must not mean; see the sdnotify package doc for the two costs of that coupling, the fatal
@@ -718,7 +723,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// THE BACKUP STORE, from here and not above: its addresses are the ones awaitNetwork
 	// numbered this node with. A first start has none on record until then, and a store started
 	// before it was skipped for the agent's whole life -- the first nights of every install.
-	go ServeBackupStore(ctx, cfg.backupFolder, cfg.hostNodeIP(), cfg.guestNodeIP(), logf)
+	go serveBackupStore(ctx, cfg.backupFolder, cfg.backupCandidateDir, cfg.hostNodeIP(), cfg.guestNodeIP(), logf)
 	// THE DISKS THIS NODE RUNS ON, joined before anything attaches them (disks.go): pet state only
 	// a first start makes, started by the install's finish beside the image fetch. Where the host
 	// cannot reserve without writing -- every Windows host, a filesystem without fallocate -- the
@@ -1557,8 +1562,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cfg.beat.Beat()
 		cs.tick(ctx, r, vip, logf) // the household's name -- claim poll, address, certificate, the page's view
 		cfg.beat.Beat()
-		pushAlerts(ctx, r, n, &alertsPushed, logf)                   // the page's copy of the alert store, when it moved
-		cfg.pushBackupView(ctx, r, &bs.offsite, &backupPushed, logf) // the page's view of the backup, when it moved
+		pushAlerts(ctx, r, n, &alertsPushed, logf)          // the page's copy of the alert store, when it moved
+		cfg.pushBackupView(ctx, r, bs, &backupPushed, logf) // the page's view of the backup, when it moved
 		if errors.Is(err, guestfirmware.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}
@@ -1835,6 +1840,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveBackupRestore: true,
 	api.DirectiveBackupList:    true, // what the household backed up is the household's to see
 	api.DirectiveBackupNow:     true, // ...and backs it up now
+	api.DirectiveBackupFolder:  true, // ...and moves it, as its settings are
 	api.DirectiveCasaClaim:     true, // the household claims its own name; the cloud never does
 	api.DirectiveCasaRecheck:   true, // ...and asks again whether its network resolves it
 	api.DirectiveConfigSet:     true, // ...and changes its own address
@@ -1893,6 +1899,9 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectiveBackupNow {
 		return cfg.applyBackupNow(ctx, d)
+	}
+	if d.Kind == api.DirectiveBackupFolder {
+		return cfg.applyBackupFolder(ctx, d, r, logf)
 	}
 	if d.Kind == api.DirectiveBackupList {
 		l, ok := r.(backupLister)

@@ -49,9 +49,11 @@ type backupStore struct {
 	// and on again with no restart -- read once per request into dir, the repository that request
 	// works in.
 	folder func() string
-	dir    string
-	client string                       // the only source address answered: the guest's node IP
-	own    func(dir, path string) error // gives path dir's owner (platform.ChownLike)
+	// candidate is the folder served read-only under /candidate/, "" while none is (serveCandidate).
+	candidate func() string
+	dir       string
+	client    string                       // the only source address answered: the guest's node IP
+	own       func(dir, path string) error // gives path dir's owner (platform.ChownLike)
 }
 
 // backupReadme is the README.txt the store puts in a repository it creates: whoever finds the
@@ -90,6 +92,10 @@ func (s *backupStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	if p, ok := strings.CutPrefix(r.URL.Path, "/"+backupCandidateRoot+"/"); ok {
+		s.serveCandidate(w, r, p)
+		return
+	}
 	if s.folder != nil {
 		c := *s
 		c.dir = s.folder()
@@ -105,7 +111,37 @@ func (s *backupStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the backup folder is not there: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	p := strings.Trim(r.URL.Path, "/")
+	s.route(w, r, strings.Trim(r.URL.Path, "/"))
+}
+
+// THE CANDIDATE ROOT: a folder the household asked to move the backup into, served under
+// /candidate/ while the host reads it with the household's key (backup-folder) -- restic's
+// snapshot list decrypts, so it proves whose backups are there before anything switches. READ
+// ONLY, and restic's own paths only: nothing is written into a folder the household has not
+// confirmed, and checkBackupFolder has passed it (empty, or a restic repository) before it is set.
+// Nothing is served while none is set.
+const backupCandidateRoot = "candidate"
+
+func (s *backupStore) serveCandidate(w http.ResponseWriter, r *http.Request, p string) {
+	dir := ""
+	if s.candidate != nil {
+		dir = s.candidate()
+	}
+	if dir == "" {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "the folder is only being read", http.StatusMethodNotAllowed)
+		return
+	}
+	c := *s
+	c.dir = dir
+	c.route(w, r, strings.Trim(p, "/"))
+}
+
+// route answers one of restic's paths in s.dir.
+func (s *backupStore) route(w http.ResponseWriter, r *http.Request, p string) {
 	switch {
 	case p == "":
 		if r.Method == http.MethodPost && r.URL.Query().Get("create") == "true" {
@@ -335,6 +371,11 @@ func storeError(w http.ResponseWriter, err error) {
 // Exported for one other caller, the agent-less rig's store (nixosTest/backup-store), which
 // serves the same code with no agent around it.
 func ServeBackupStore(ctx context.Context, folder func() string, hostIP, guestIP string, logf func(string, ...any)) {
+	serveBackupStore(ctx, folder, nil, hostIP, guestIP, logf)
+}
+
+// serveBackupStore is ServeBackupStore with the candidate root the agent's folder check reads.
+func serveBackupStore(ctx context.Context, folder, candidate func() string, hostIP, guestIP string, logf func(string, ...any)) {
 	if hostIP == "" || guestIP == "" {
 		return
 	}
@@ -353,7 +394,7 @@ func ServeBackupStore(ctx context.Context, folder func() string, hostIP, guestIP
 		case <-time.After(5 * time.Second):
 		}
 	}
-	store := &backupStore{folder: folder, client: guestIP, own: platform.ChownLike}
+	store := &backupStore{folder: folder, candidate: candidate, client: guestIP, own: platform.ChownLike}
 	srv := &http.Server{Handler: store, ReadHeaderTimeout: 30 * time.Second}
 	go func() {
 		<-ctx.Done()
