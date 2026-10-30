@@ -1788,7 +1788,10 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			// loop, for exactly the reason cloud directives are: the loop decides the lane
 			// (acts.go) -- on itself for one that relaunches the guest, off it for an act or a
 			// pull -- and only one place may make that decision. Arriving on the select also
-			// WAKES the loop, so the CLI isn't left waiting out a StatusEvery tick.
+			// WAKES the loop, so the CLI isn't left waiting out a StatusEvery tick -- and then
+			// waits on, like a link change: a request is not a cycle. The tray asks for status
+			// every 5 s and the page polls while a card moves; each running the tick's reads
+			// again would double the agent's idle cost for answers the last tick already holds.
 			//
 			// Its outcome goes back to the CLI and NOWHERE ELSE — deliberately not appended to
 			// pendingOutcomes. Outcomes close the loop on an intent the cloud announced;
@@ -1798,11 +1801,13 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			if o, done := cfg.run(ctx, rq.d, originLocal, &rq, r, up, n, cr, cs, su, logf); done {
 				cfg.finish(actResult{d: rq.d, o: o, rq: &rq}, pending, logf)
 			}
+			goto wait
 		case res := <-cfg.acts.ch():
 			// A directive that ran off the loop (acts.go) is finished here, where its
-			// bookkeeping lives; arriving on the select wakes the loop like a local request.
+			// bookkeeping lives; it wakes the loop and waits on, like a local request.
 			cfg.acts.drained(res.d.ID)
 			cfg.finish(res, pending, logf)
+			goto wait
 		case <-t.C:
 			cfg.alertGuestRevert(ctx, n, logf, &revertAlerted)
 		}

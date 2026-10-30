@@ -232,14 +232,18 @@ func Wireless(dev string) bool {
 // master names the bridge dev is a member of: walking UP its stack, the first adapter with an IP
 // binding. A member's own filter layers have none, and neither does the bridge's hidden edge; the
 // bridge itself is where IP is bound. "" when dev is a member of nothing.
-func master(dev string) string {
-	as := adapters()
+func master(dev string) string { return masterIn(adapters(), stack(), dev) }
+
+// masterIn is master over one read of the adapters and the stack, for a caller that asks it of
+// every adapter: each read is a full IP Helper walk of every interface, the dearest call the agent
+// makes on a tick.
+func masterIn(as []adapter, rows []stackRow, dev string) string {
 	a, ok := byName(as, dev)
 	if !ok || a.ipBound {
 		return ""
 	}
 	name := ""
-	walk(stack(), a.index, func(i uint32) bool {
+	walk(rows, a.index, func(i uint32) bool {
 		if m, ok := byIndex(as, i); ok && m.ipBound && m.name != "" {
 			name = m.name
 		}

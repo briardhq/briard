@@ -276,8 +276,9 @@ func tapAdapter(as []adapter) (adapter, bool) {
 // speed in bits/s. The bridge's own speed is the SUM of its members (measured: 2 Gbps on a gigabit
 // NIC plus the TAP), so it is never the question. ("", 0) when there is no such member.
 func MemberSpeed(bridge string) (string, uint64) {
-	for _, a := range adapters() {
-		if a.name == "" || a.filter || a.name == TapName || master(a.name) != bridge {
+	as, rows := adapters(), stack()
+	for _, a := range as {
+		if a.name == "" || a.filter || a.name == TapName || masterIn(as, rows, a.name) != bridge {
 			continue
 		}
 		return a.name, Speed(a.name)
@@ -395,8 +396,9 @@ func DestroyBridge(ctx context.Context, rec Offload) error {
 // member already.
 func tapCandidates(as []adapter) []adapter {
 	var found []adapter
+	rows := stack()
 	for _, a := range as {
-		if a.name != "" && !a.filter && strings.HasPrefix(a.desc, tapDescription) && master(a.name) == "" {
+		if a.name != "" && !a.filter && strings.HasPrefix(a.desc, tapDescription) && masterIn(as, rows, a.name) == "" {
 			found = append(found, a)
 		}
 	}
