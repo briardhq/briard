@@ -86,3 +86,13 @@ The household dashboard's one stylesheet, `dashboard/static/app.css`, and its on
   `dashboard/templates/shell.html`.
 - [htmx](https://htmx.org) 2.0.11 (0BSD) — `dashboard/static/htmx-2.0.11.min.js`, the one script on the
   page, which polls a card while it moves; fetched from npm by the hash pinned in the script.
+
+## The catalog's app icons — Apache-2.0 collection, each mark its project's
+
+`catalog/index.json` carries one vector mark per listed app, inline as a data URI:
+
+- [homarr-labs/dashboard-icons](https://github.com/homarr-labs/dashboard-icons) (Apache-2.0) —
+  the collection every mark but one is taken from, unchanged. The marks themselves are the
+  logos and trademarks of their respective projects, used to identify them.
+- [Memos](https://www.usememos.com) (MIT) — its logo from the project's own repository
+  (`web/public/logo.svg`), because the collection's copy is a bitmap.

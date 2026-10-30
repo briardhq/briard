@@ -18,15 +18,28 @@ import (
 	"briard.io/shared/manifest"
 )
 
-func TestEveryPublishedEntryParses(t *testing.T) {
+// manifests is every published manifest here: the `.json` files other than the index, which
+// is the listing of them and not one of them.
+func manifests(t *testing.T) []string {
+	t.Helper()
 	entries, err := filepath.Glob("*.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) == 0 {
+	var out []string
+	for _, path := range entries {
+		if path != manifest.IndexName {
+			out = append(out, path)
+		}
+	}
+	if len(out) == 0 {
 		t.Fatal("no catalog entries found; this test is vacuous without them")
 	}
-	for _, path := range entries {
+	return out
+}
+
+func TestEveryPublishedEntryParses(t *testing.T) {
+	for _, path := range manifests(t) {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(path)
 			if err != nil {
@@ -50,6 +63,34 @@ func TestEveryPublishedEntryParses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestIndexListsEveryManifest parses the index with the function a node uses and checks the one
+// relation between it and the manifests beside it: an app is installable when its manifest
+// exists, so a manifest with no index entry is an installable app no page can show. The other
+// direction is the point of the index -- an entry with no manifest is an app a household may
+// ask for -- and needs no check.
+func TestIndexListsEveryManifest(t *testing.T) {
+	idx, err := manifest.ParseIndex(read(t, manifest.IndexName))
+	if err != nil {
+		t.Fatalf("a node would refuse the index: %v", err)
+	}
+	listed := make(map[string]bool, len(idx.Apps))
+	for _, a := range idx.Apps {
+		listed[a.Name] = true
+		// Every published entry carries its mark: the title's initial is a page's fallback for an
+		// icon that could not be sourced, not a shape this file ships.
+		if a.Icon == "" {
+			t.Errorf("%s has no icon", a.Name)
+		}
+	}
+	paths := manifests(t)
+	for _, path := range paths {
+		if name := strings.TrimSuffix(path, ".json"); !listed[name] {
+			t.Errorf("manifest %s is not listed in the index", path)
+		}
+	}
+	t.Logf("%d apps listed, %d installable", len(idx.Apps), len(paths))
 }
 
 // TestMosquittoEntryMatchesTheProductsConfig is the cross-document check: this entry and the
@@ -87,14 +128,7 @@ func TestMosquittoEntryMatchesTheProductsConfig(t *testing.T) {
 // was taught to honour it, and both published entries kept saying nothing -- which would have moved
 // Home Assistant onto a private network and taken the mDNS/SSDP discovery it exists for with it.
 func TestEveryEntryDeclaresItsNetworking(t *testing.T) {
-	paths, err := filepath.Glob("*.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(paths) == 0 {
-		t.Fatal("no catalog entries found; this test is vacuous without them")
-	}
-	for _, path := range paths {
+	for _, path := range manifests(t) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -149,8 +183,7 @@ func read(t *testing.T, name string) []byte {
 // learn neither until the pull is over. Measured with skopeo (copy, then sum the manifest's
 // layer sizes and the decompressed layers), 2026-09-04.
 func TestEveryEntryDeclaresItsSizes(t *testing.T) {
-	entries, _ := filepath.Glob("*.json")
-	for _, path := range entries {
+	for _, path := range manifests(t) {
 		m, _, err := manifest.Parse(read(t, path))
 		if err != nil {
 			t.Fatalf("%s: %v", path, err)
