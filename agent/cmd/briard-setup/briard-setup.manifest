@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!-- briard-setup's application manifest, compiled into the program through briard-setup.rc.
      Common Controls 6: the task dialog its window is. asInvoker: it asks for elevation itself,
-     so the Store's /S run is the one that asks. PerMonitorV2: Windows scales nothing as a bitmap,
-     so the window's text is sharp on any display. -->
+     so the Store's /S run is the one that asks. PerMonitorV2, which the agent's and the tray's
+     (../briard.manifest) do not ask for: Windows scales nothing of this one as a bitmap, so the
+     window's text is sharp on any display. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <dependency>
     <dependentAssembly>

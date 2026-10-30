@@ -1,0 +1,9 @@
+// briard-tray's resources: what every Windows program of Briard's carries (../briard.rc), and the
+// manifest it shares with the agent. Its description is plain "Briard": it is the program Settings'
+// Startup apps lists, and the one a person runs.
+#define DESCRIPTION "Briard"
+#define FILENAME "briard-tray.exe"
+#include "../briard.rc"
+
+// The application manifest: RT_MANIFEST (24), CREATEPROCESS_MANIFEST_RESOURCE_ID (1).
+1 24 "../briard.manifest"

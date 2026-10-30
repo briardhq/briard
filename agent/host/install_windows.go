@@ -18,11 +18,9 @@ import (
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc/mgr"
 
-	"briard.io/agent/hass"
 	"briard.io/agent/nic"
 	"briard.io/agent/platform"
 	"briard.io/agent/selfupdate"
-	"briard.io/shared/atomicfile"
 )
 
 // ServiceName is the agent's name in the service manager: what the install registers and what the
@@ -137,7 +135,7 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	// briard if it is stopped and opens the Briard page once it serves (or says why not). The
 	// tray is the program a person runs; the service never is.
 	say("adding Briard to the Start menu")
-	if err := startMenuEntry(ctx, tray, filepath.Join(agentDir, iconFile)); err != nil {
+	if err := startMenuEntry(tray); err != nil {
 		return fmt.Errorf("adding Briard to the Start menu: %w", err)
 	}
 	// THE ONE INBOUND HOLE: the guest dials the host's backup store. Scoped to this program and
@@ -732,18 +730,11 @@ func startMenuPath() (string, error) {
 	return filepath.Join(dir, "Briard.lnk"), nil
 }
 
-// startMenuEntry lays the icon and the shortcut to the tray (writeShortcut).
-func startMenuEntry(ctx context.Context, tray, icon string) error {
-	ico, err := icoOf(hass.Mark())
-	if err != nil {
-		return err
-	}
-	if err := atomicfile.Write(icon, ico, 0o644, 0o755); err != nil {
-		return err
-	}
+// startMenuEntry lays the shortcut to the tray (writeShortcut), drawn with the tray's own icon.
+func startMenuEntry(tray string) error {
 	lnk, err := startMenuPath()
 	if err != nil {
 		return err
 	}
-	return writeShortcut(lnk, tray, "--open", filepath.Dir(tray), icon, "Start Briard and open its page", AppID)
+	return writeShortcut(lnk, tray, "--open", filepath.Dir(tray), tray, "Start Briard and open its page", AppID)
 }

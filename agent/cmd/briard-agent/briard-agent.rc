@@ -1,0 +1,8 @@
+// briard-agent's resources on Windows (briard.exe is a link to it): what every Windows program of
+// Briard's carries (../briard.rc), and the manifest it shares with the tray.
+#define DESCRIPTION "Briard agent"
+#define FILENAME "briard-agent.exe"
+#include "../briard.rc"
+
+// The application manifest: RT_MANIFEST (24), CREATEPROCESS_MANIFEST_RESOURCE_ID (1).
+1 24 "../briard.manifest"

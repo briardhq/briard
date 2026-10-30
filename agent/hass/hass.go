@@ -224,10 +224,6 @@ var stubIcon string
 //go:embed component/brand/icon@2x.png
 var stubIcon2x string
 
-// Mark is Briard's mark at 256 px, as a PNG: the integration's brand icon, which the Windows install
-// also lays down as the Start menu entry's icon.
-func Mark() []byte { return []byte(stubIcon) }
-
 // Executor is the narrow slice of the guest agent's executor this package needs. A
 // local interface for dependency injection, not a seam: it exists so the package can
 // be driven by a fake in tests without importing the guest agent (which imports this).

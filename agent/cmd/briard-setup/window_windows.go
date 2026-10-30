@@ -49,7 +49,7 @@ const (
 	tdeContent               = 0
 
 	tdErrorIcon = 0xFFFE // MAKEINTRESOURCE(-2)
-	iconID      = 1      // briard.ico in briard-setup.rc
+	iconID      = 1      // the icon, ../briard.rc
 	idCancel    = 2
 	idRestart   = 100
 	idLater     = 101

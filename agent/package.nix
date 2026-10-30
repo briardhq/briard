@@ -33,10 +33,21 @@
 # goos: "windows" cross-compiles the Windows host agent (briard-agent.exe) -- a plain Go cross build,
 # which is the whole reason the agent is pure Go. The ELF check below does not apply to a PE file.
 # gui: a Windows GUI-subsystem program (the tray), which Windows starts without a console window.
-# rc: a Windows resource script beside the main (its icon, its manifest), compiled by mingw's windres
-# into the .syso the Go linker takes by itself -- the same cross toolchain the Windows QEMU builds
-# with. The host's cpp is its preprocessor.
+# rc: a Windows resource script beside the main (its icon, version info and manifest, agent/cmd/
+# briard.rc), compiled by mingw's windres into the .syso the Go linker takes by itself -- the same
+# cross toolchain the Windows QEMU builds with. The host's cpp is its preprocessor.
 { lib, buildGoModule, patchelf, pkgsCross, subPackage ? "agent/cmd/briard-agent", version ? "0.0.0-dev", goos ? null, gui ? false, rc ? null }:
+let
+  # The release id as Windows' four 16-bit version fields: v3.26102922.e073879 is 3.2610.2922.0
+  # (the epoch, then the commit hour split in two); any other version, a dev build's, is 0.0.0.0.
+  p = lib.splitString "." version;
+  hour = builtins.elemAt p 1;
+  field = s: toString (lib.toIntBase10 s); # a field may lead with zeros: 0105
+  winVersion =
+    if builtins.length p == 3 && lib.hasPrefix "v" (builtins.head p) && builtins.match "[0-9]{8}" hour != null
+    then "${field (lib.removePrefix "v" (builtins.head p))},${field (builtins.substring 0 4 hour)},${field (builtins.substring 4 4 hour)},0"
+    else "0,0,0,0";
+in
 buildGoModule {
   pname = baseNameOf subPackage;
   inherit version;
@@ -46,7 +57,7 @@ buildGoModule {
   env.CGO_ENABLED = 0;
   # In preBuild rather than env: buildGoModule sets GOOS/GOARCH itself, over anything in env.
   preBuild = lib.optionalString (goos != null) "export GOOS=${goos} GOARCH=amd64\n"
-    + lib.optionalString (rc != null) "(cd ${dirOf rc} && x86_64-w64-mingw32-windres --preprocessor=cpp -O coff -i ${baseNameOf rc} -o rsrc_windows_amd64.syso)\n";
+    + lib.optionalString (rc != null) "(cd ${dirOf rc} && x86_64-w64-mingw32-windres --preprocessor=cpp -DBRIARD_VERSION=${version} -DBRIARD_FILEVERSION=${winVersion} -O coff -i ${baseNameOf rc} -o rsrc_windows_amd64.syso)\n";
   # A cross-compiled test binary cannot run here; the Windows tests run on a Windows machine.
   doCheck = goos == null;
   # The PE is NOT stripped by the fixup: binutils' strip is an ELF tool, and run over the PE Go

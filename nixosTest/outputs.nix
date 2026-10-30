@@ -559,9 +559,9 @@ in
     guest-disk = guestDisk;
     agent = agentPkg;
     # The Windows host agent, cross-compiled; staged into the release's windows-amd64 arm.
-    agent-windows = pkgs.callPackage ../agent/package.nix { version = agentVersion; goos = "windows"; };
+    agent-windows = pkgs.callPackage ../agent/package.nix { version = agentVersion; goos = "windows"; rc = "agent/cmd/briard-agent/briard-agent.rc"; };
     # The notification-area icon beside it, a GUI program: no console window opens at logon.
-    tray-windows = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-tray"; version = agentVersion; goos = "windows"; gui = true; };
+    tray-windows = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-tray"; version = agentVersion; goos = "windows"; gui = true; rc = "agent/cmd/briard-tray/briard-tray.rc"; };
     # The Store's installer stub, a GUI program too: `publish-release.sh setup` appends a published
     # windows arm to it.
     setup-windows = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-setup"; version = agentVersion; goos = "windows"; gui = true; rc = "agent/cmd/briard-setup/briard-setup.rc"; };

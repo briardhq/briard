@@ -1,0 +1,39 @@
+// What every Windows program of Briard's carries, included by each program's own .rc after it
+// defines DESCRIPTION and FILENAME. agent/package.nix compiles that .rc with windres from the
+// program's directory, defining BRIARD_VERSION (the release id) and BRIARD_FILEVERSION (the id as
+// Windows' four 16-bit fields).
+//
+// briard.ico is Briard's mark (agent/hass/component/brand/icon@2x.png) at 256, 48, 32 and 16 px,
+// each a PNG, as Windows reads an icon since Vista.
+
+#define STR2(x) #x
+#define STR(x) STR2(x)
+
+// The program's icon: Explorer, Task Manager, the taskbar, the Start menu entry (the tray's), and
+// Installed apps (the agent's).
+1 ICON "../briard.ico"
+
+// What Explorer's Properties, Task Manager and Settings' Startup apps say the program is.
+1 VERSIONINFO
+FILEVERSION BRIARD_FILEVERSION
+PRODUCTVERSION BRIARD_FILEVERSION
+FILEOS 0x40004 // VOS_NT_WINDOWS32
+FILETYPE 1     // VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0" // US English, Unicode
+    BEGIN
+      VALUE "CompanyName", "Briard"
+      VALUE "FileDescription", DESCRIPTION
+      VALUE "FileVersion", STR(BRIARD_VERSION)
+      VALUE "OriginalFilename", FILENAME
+      VALUE "ProductName", "Briard"
+      VALUE "ProductVersion", STR(BRIARD_VERSION)
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
