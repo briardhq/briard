@@ -6,6 +6,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // The off-site check's two reads (backup.go), from the Cloud Files API that OneDrive -- and other
@@ -106,4 +107,34 @@ func hresult(hr uintptr) error {
 		return windows.Errno(hr & 0xffff)
 	}
 	return fmt.Errorf("HRESULT %#x", uint32(hr))
+}
+
+// userDocuments is where the account sid's Documents is now, read from that account's own hive --
+// the agent runs as SYSTEM, whose known folders are not the household's. The hive is loaded only
+// while the account is logged on; otherwise this is an error, "not yet", and never a guess. The
+// value is the shell's own, %USERPROFILE% and all (expandUserProfile), so a Documents that OneDrive
+// moved reads as OneDrive's.
+func userDocuments(sid string) (string, error) {
+	k, err := registry.OpenKey(registry.USERS, sid+`\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders`, registry.QUERY_VALUE)
+	if err != nil {
+		return "", fmt.Errorf("the account's settings are not loaded (not logged on?): %w", err)
+	}
+	defer k.Close()
+	raw, _, err := k.GetStringValue("Personal") // REG_EXPAND_SZ: read unexpanded
+	if err != nil {
+		return "", err
+	}
+	p, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\`+sid, registry.QUERY_VALUE)
+	if err != nil {
+		return "", err
+	}
+	defer p.Close()
+	profile, _, err := p.GetStringValue("ProfileImagePath")
+	if err != nil {
+		return "", err
+	}
+	if profile, err = registry.ExpandString(profile); err != nil {
+		return "", err
+	}
+	return registry.ExpandString(expandUserProfile(raw, profile))
 }

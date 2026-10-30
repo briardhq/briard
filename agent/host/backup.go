@@ -57,10 +57,14 @@ type backupScheduler struct {
 	done    string
 	waiting time.Time // zero when no report is awaited
 	offsite offsiteCheck
+	// documents reads where an account's Documents is now (userDocuments); followed is the missing
+	// folder already tried, so a disappearance is tried once (followDocuments).
+	documents func(sid string) (string, error)
+	followed  string
 }
 
 func newBackupScheduler() *backupScheduler {
-	return &backupScheduler{loc: householdLocation(), offsite: offsiteCheck{provider: syncProvider, inSync: inSync}}
+	return &backupScheduler{loc: householdLocation(), offsite: offsiteCheck{provider: syncProvider, inSync: inSync}, documents: userDocuments}
 }
 
 // backup collects a run that is going, or starts tonight's if it is due: this node serves, and the
@@ -74,6 +78,7 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 		cfg.collectBackup(ctx, g, b, n, logf)
 		return
 	}
+	cfg.followDocuments(ctx, g, b, n, logf)
 	b.offsite.tick(cfg.backupFolder(), cfg.readBackupRecord().Nights, now, logf)
 	// A kicked run (an adoption, `briard backup`) runs now and does not count as the night: the
 	// night still runs, and finds nearly nothing to add.
@@ -621,8 +626,9 @@ func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any
 		// delete, and the next night opens the repository already in the new folder -- one the
 		// household moved there itself -- or starts one, with the same key.
 		if err := cfg.updateBackupRecord(func(r *backupRecord) {
-			// The folder it leaves: the record's, or -- never moved before -- the installer's.
-			if left := cmp.Or(r.Folder, now); left != "" && left != want {
+			// The folder it leaves: the record's, or -- never moved before -- the installer's; and
+			// only one still there, since the page says the earlier backups are in it.
+			if left := cmp.Or(r.Folder, now); left != "" && left != want && exists(left) {
 				r.Previous = left
 			}
 			r.Folder = want
@@ -901,6 +907,89 @@ func (cfg Config) applyBackupFolder(ctx context.Context, d api.Directive, r any,
 		return failed("the folder was not changed: %s", out.Detail)
 	}
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: fmt.Sprintf("backups are now stored in %s, continuing the ones there", req.Folder)}
+}
+
+// THE FOLDER FOLLOWS DOCUMENTS (Windows): the install names the household's backup folder inside
+// the installing account's Documents (install_windows.go's backupFolder), and OneDrive's folder
+// backup, turned on later, MOVES Documents -- the folder and its backups with it -- and re-points
+// the account's Documents at the new place. That is drift, not the household's act, so it is
+// followed: ONLY WHILE THE CONFIGURED FOLDER IS MISSING (a folder the household chose exists, and is
+// never second-guessed), the folder of the same name in that account's Documents now is read with
+// the household's key exactly as the page's Change reads one, and moved to -- through the same
+// backup-folder act, one writer -- when it holds this household's backups. Anything else (a disk
+// not plugged in, no such folder there, another key's) changes nothing: the run fails and says so,
+// as it did.
+//
+// ONE TRY PER DISAPPEARANCE: the read is restic's, seconds, so it runs off the loop in the act lane,
+// and a refusal is not asked again every tick; a different missing folder, or the folder back,
+// starts over. "Not yet" -- the account not logged on, so its Documents cannot be read; the act lane
+// busy -- is not a try.
+func (cfg Config) followDocuments(ctx context.Context, g any, b *backupScheduler, n notify.Notifier, logf func(string, ...any)) {
+	folder := cfg.backupFolder()
+	if folder == "" || cfg.InstallUser == "" || b.documents == nil {
+		return
+	}
+	if _, err := os.Stat(folder); !errors.Is(err, fs.ErrNotExist) {
+		b.followed = "" // there (or not known to be gone): nothing to follow
+		return
+	}
+	if b.followed == folder {
+		return
+	}
+	docs, err := b.documents(cfg.InstallUser)
+	if err != nil || docs == "" {
+		return // not yet
+	}
+	to := filepath.Join(docs, filepath.Base(folder))
+	if to == folder || !isResticRepository(to) {
+		b.followed = folder
+		logf("backup: the folder %s is gone, and %s holds no backup to follow it to", folder, to)
+		return
+	}
+	if cfg.acts != nil {
+		if _, ok := cfg.acts.claim(api.DirectiveBackupFolder); !ok {
+			return // not yet
+		}
+	}
+	b.followed = folder
+	go func() {
+		if cfg.acts != nil {
+			defer cfg.acts.release()
+		}
+		ask := func(confirm bool) api.DirectiveOutcome {
+			raw, _ := json.Marshal(api.BackupFolder{Folder: to, Confirm: confirm})
+			return cfg.applyBackupFolder(ctx, api.Directive{ID: "follow-documents", Kind: api.DirectiveBackupFolder, Payload: string(raw)}, g, logf)
+		}
+		o := ask(false)
+		var c dashboard.BackupFolderCheck
+		if o.State != api.OutcomeDone || json.Unmarshal([]byte(o.Detail), &c) != nil || c.Own == 0 {
+			logf("backup: the folder %s is gone; not following it to %s, which holds none of this household's backups (%s)", folder, to, o.Detail)
+			return
+		}
+		if o = ask(true); o.State != api.OutcomeDone {
+			logf("backup: the folder %s is gone; following it to %s failed: %s", folder, to, o.Detail)
+			return
+		}
+		logf("backup: the folder %s moved with Documents to %s; backing up there from now on", folder, to)
+		fireAlert(ctx, n, logf, notify.Alert{
+			Key:      "backup-folder",
+			Kind:     notify.Event,
+			Severity: notify.Info,
+			Title:    "Briard: the backup folder moved with Documents",
+			Body: fmt.Sprintf("Your Documents folder moved, and the backups with it, from %s to %s. Briard backs up into %s from now on; "+
+				"nothing was lost.", folder, to, to),
+		})
+	}()
+}
+
+// expandUserProfile puts an account's profile folder in place of %USERPROFILE% -- as the account's
+// own shell would, in any case -- in a path read from its hive.
+func expandUserProfile(raw, profile string) string {
+	const v = "%USERPROFILE%"
+	if i := strings.Index(strings.ToUpper(raw), v); i >= 0 {
+		return raw[:i] + profile + raw[i+len(v):]
+	}
+	return raw
 }
 
 // backupAdopter is the slice of the guest an adoption costs.

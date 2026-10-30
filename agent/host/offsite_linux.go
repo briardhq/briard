@@ -11,3 +11,7 @@ func inSync(string) error { return errors.ErrUnsupported }
 // offsiteCanTell is false here: the page says Briard cannot tell, rather than advising as if it
 // had looked.
 const offsiteCanTell = false
+
+// userDocuments is the Windows read a moved Documents is followed with (followDocuments): Linux
+// has no folder move to follow.
+func userDocuments(string) (string, error) { return "", errors.ErrUnsupported }
