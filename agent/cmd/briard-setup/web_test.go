@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -101,6 +102,8 @@ func TestPrepareRunsOnlyAVerifiedStableScript(t *testing.T) {
 		}
 		if err == nil || rerr == nil {
 			t.Errorf("%s: err %v, script on disk %v; want a refusal and no script", c.name, err, rerr == nil)
+		} else if strings.Contains(err.Error(), "could not reach") {
+			t.Errorf("%s: %v; the channel answered, so it is no network problem", c.name, err)
 		}
 	}
 }
@@ -117,5 +120,27 @@ func TestPrepareInstallsFromTheCarriedArm(t *testing.T) {
 	}
 	if _, err := prepare(context.Background(), t.TempDir(), "http://127.0.0.1:1", t.Logf); err == nil {
 		t.Error("a payload with neither an install nor the key was accepted")
+	}
+}
+
+// A channel that never answers is said as a network problem the household can act on; the
+// transport's own words go to the log.
+func TestPrepareSaysAnUnreachableChannelPlainly(t *testing.T) {
+	_, pemKey := key(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, keyringFile), pemKey, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var said []string
+	_, err := prepare(context.Background(), dir, "http://127.0.0.1:1", func(f string, a ...any) { said = append(said, fmt.Sprintf(f, a...)) })
+	want := "could not reach 127.0.0.1:1. Check this computer's internet connection, then run Briard Setup again"
+	if err == nil || err.Error() != want {
+		t.Errorf("err %v; want %q", err, want)
+	}
+	if last := said[len(said)-1]; !strings.Contains(last, "stable's manifest") || !strings.Contains(last, "127.0.0.1:1") {
+		t.Errorf("the log's last line %q; want the transport's own words", last)
+	}
+	if _, err := os.Stat(filepath.Join(dir, installScript)); err == nil {
+		t.Error("a script was left to run")
 	}
 }

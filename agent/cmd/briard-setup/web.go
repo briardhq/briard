@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -53,7 +54,7 @@ func prepare(ctx context.Context, dir, base string, say func(string, ...any)) ([
 	say("briard: fetching the current stable release from %s ...", base)
 	man, _, err := f.Manifest(ctx, install.TargetStable)
 	if err != nil {
-		return nil, fmt.Errorf("stable's manifest: %w", err)
+		return nil, unreached(base, fmt.Errorf("stable's manifest: %w", err), say)
 	}
 	for _, a := range man.Artifacts {
 		if a.Name == installScript {
@@ -65,7 +66,7 @@ func prepare(ctx context.Context, dir, base string, say func(string, ...any)) ([
 			}
 			defer os.RemoveAll(tmp)
 			if err := f.Artifact(ctx, man.Version, tmp, a); err != nil {
-				return nil, fmt.Errorf("stable's %s: %w", installScript, err)
+				return nil, unreached(base, fmt.Errorf("stable's %s: %w", installScript, err), say)
 			}
 			if err := os.Rename(filepath.Join(tmp, installScript), filepath.Join(dir, installScript)); err != nil {
 				return nil, err
@@ -75,4 +76,21 @@ func prepare(ctx context.Context, dir, base string, say func(string, ...any)) ([
 		}
 	}
 	return nil, fmt.Errorf("stable (%s) names no %s", man.Version, installScript)
+}
+
+// unreached says a fetch the channel never answered -- no network, no name, refused, timed out,
+// TLS cut short -- as what the household can do about it, and keeps the transport's own words in
+// the log. An answer the channel did give (a 404, a signature that does not verify) is no network
+// problem, and is said as it is.
+func unreached(base string, err error, say func(string, ...any)) error {
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return err
+	}
+	say("briard: %v", err)
+	host := base
+	if u, perr := url.Parse(base); perr == nil && u.Host != "" {
+		host = u.Host
+	}
+	return fmt.Errorf("could not reach %s. Check this computer's internet connection, then run Briard Setup again", host)
 }
