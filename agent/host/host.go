@@ -673,7 +673,6 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 			logf("backup: could not remember the folder: %v", err)
 		}
 	}
-	go ServeBackupStore(ctx, cfg.backupFolder, cfg.hostNodeIP(), cfg.guestNodeIP(), logf)
 	// THE CLOUD SEAM, BUILT BEFORE THE NETWORK RATHER THAN AFTER THE GUEST. None of
 	// it depends on a guest -- CloudClient is Register/Report/ReportMetrics, and Resolve needs
 	// only this node's name, role and zone -- so its old position below bring-up was an accident
@@ -711,6 +710,10 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	if err != nil {
 		return nil // ctx cancelled while waiting for a network device -- a clean shutdown
 	}
+	// THE BACKUP STORE, from here and not above: its addresses are the ones awaitNetwork
+	// numbered this node with. A first start has none on record until then, and a store started
+	// before it was skipped for the agent's whole life -- the first nights of every install.
+	go ServeBackupStore(ctx, cfg.backupFolder, cfg.hostNodeIP(), cfg.guestNodeIP(), logf)
 	// THE DISKS THIS NODE RUNS ON, joined before anything attaches them (disks.go): pet state only
 	// a first start makes, started by the install's finish beside the image fetch. Where the host
 	// cannot reserve without writing -- every Windows host, a filesystem without fallocate -- the
