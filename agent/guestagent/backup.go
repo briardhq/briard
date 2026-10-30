@@ -1,14 +1,18 @@
 package guestagent
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"maps"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -16,6 +20,8 @@ import (
 	"time"
 
 	"briard.io/agent/quadlet"
+	"briard.io/shared/dashboard"
+	"briard.io/shared/manifest"
 )
 
 // THE BACKUP RUNS IN THE BACKGROUND, the recorder check's shape (dbcheck.go): data.backup starts
@@ -541,6 +547,108 @@ func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreReque
 // the agent-less rigs prove it against a real ring and a real store.
 func RestoreBackupMember(ctx context.Context, x Executor, url, snapshot, service string) (string, error) {
 	return restoreBackupMember(ctx, x, backupRestoreRequest{Repository: url, Snapshot: snapshot, Service: service}, time.Now())
+}
+
+// THE LIST, for the Backup page's restore: every backup the repository holds, newest first, each
+// with the apps it carries -- their version and when their data was taken, read from the members'
+// sidecars the backup put beside the data (briard/members/<app>.json), one `restic dump` of that
+// directory per backup, as a tar. Any group's: an earlier machine's backups in an adopted folder
+// restore the same way, and Own says which are this household's.
+//
+// A READ WITH NO LOCK, so it neither waits for a running backup nor holds one up, and with a
+// password file of its own: its cleanup must never remove the one a running backup or restore
+// is still to read.
+type backupListRequest struct {
+	Repository string `json:"repository"`
+	Group      string `json:"group"`
+}
+
+// backupListPasswordFile holds the key for the list's commands, 0600 on tmpfs.
+const backupListPasswordFile = "/run/briard/backup.list.password"
+
+func listBackups(ctx context.Context, x Executor, req backupListRequest) ([]dashboard.BackupListing, error) {
+	if !strings.HasPrefix(req.Repository, "http://") && !strings.HasPrefix(req.Repository, "https://") {
+		return nil, fmt.Errorf("the repository is not a REST URL: %q", req.Repository)
+	}
+	run := func(name string, args ...string) ([]byte, error) {
+		out, err := x.Run(ctx, name, args...)
+		if err != nil {
+			return out, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+		return out, nil
+	}
+	key, err := backupKey(ctx, x)
+	if err != nil {
+		return nil, fmt.Errorf("no repository key: %w", err)
+	}
+	defer x.Run(ctx, "rm", "-f", backupListPasswordFile)
+	if _, err := run("install", "-D", "-m", "0600", "/dev/null", backupListPasswordFile); err != nil {
+		return nil, err
+	}
+	if err := x.WriteFile(backupListPasswordFile, []byte(key)); err != nil {
+		return nil, fmt.Errorf("write %s: %w", backupListPasswordFile, err)
+	}
+	restic := func(args ...string) ([]byte, error) {
+		return run("restic", append([]string{"--repo", "rest:" + req.Repository, "--password-file", backupListPasswordFile, "--no-cache", "--no-lock"}, args...)...)
+	}
+	raw, err := restic("snapshots", "--json")
+	if err != nil {
+		return nil, err
+	}
+	type snapshot struct {
+		ID       string    `json:"id"`
+		Time     time.Time `json:"time"`
+		Hostname string    `json:"hostname"` // the group: the household that made it
+	}
+	var snaps []snapshot
+	if err := json.Unmarshal(raw, &snaps); err != nil {
+		return nil, fmt.Errorf("restic's snapshot list does not parse: %w", err)
+	}
+	slices.SortFunc(snaps, func(a, b snapshot) int { return b.Time.Compare(a.Time) })
+	list := make([]dashboard.BackupListing, 0, len(snaps))
+	for _, s := range snaps {
+		b := dashboard.BackupListing{ID: s.ID, At: s.Time, Own: s.Hostname == req.Group}
+		// A backup whose members cannot be read is still listed, with no apps: the page says so
+		// rather than hiding a backup the household may be looking for.
+		if out, err := restic("dump", "--archive", "tar", s.ID, backupFacts+"/members"); err != nil {
+			log.Printf("backup list: %s: %v", s.ID, err)
+		} else {
+			b.Apps = backupApps(out)
+		}
+		list = append(list, b)
+	}
+	return list, nil
+}
+
+// backupApps reads one backup's members directory, as restic dumps it: a tar of sidecars, one per
+// app. A sidecar that does not describe its app is skipped -- the restore would refuse it too.
+func backupApps(archive []byte) []dashboard.BackupApp {
+	var apps []dashboard.BackupApp
+	tr := tar.NewReader(bytes.NewReader(archive))
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break // io.EOF, or an archive cut short: what was read stands
+		}
+		if h.Typeflag != tar.TypeReg || !strings.HasSuffix(h.Name, ".json") {
+			continue
+		}
+		raw, err := io.ReadAll(io.LimitReader(tr, 1<<20))
+		if err != nil {
+			break
+		}
+		var meta quadlet.SnapshotMeta
+		if json.Unmarshal(raw, &meta) != nil || meta.Service+".json" != path.Base(h.Name) || meta.Manifest == "" {
+			continue
+		}
+		app := dashboard.BackupApp{Name: meta.Service, TakenAt: meta.TakenAt}
+		if m, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
+			app.Version = m.Version
+		}
+		apps = append(apps, app)
+	}
+	slices.SortFunc(apps, func(a, b dashboard.BackupApp) int { return strings.Compare(a.Name, b.Name) })
+	return apps
 }
 
 // THE ADOPTION: a repository in the folder that the volume's key does not open -- an earlier

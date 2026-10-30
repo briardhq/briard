@@ -187,3 +187,24 @@ type BackupRun struct {
 	// open -- an earlier install's, or one made with another key. The page offers to adopt it.
 	WrongKey bool `json:"wrongKey,omitempty"`
 }
+
+// BackupListing is one backup the household's repository holds, as the Backup page's restore card
+// lists it: the guest reads it from the repository (data.backup.list), the host relays it
+// (api.DirectiveBackupList). Not BackupRun: that is this node's record of its own runs, and an
+// adopted folder's backups and the apps in each are in the repository alone.
+type BackupListing struct {
+	// ID is the restic snapshot id, which `backup-restore` takes.
+	ID string    `json:"id"`
+	At time.Time `json:"at"`
+	// Own says this household made it; one an earlier machine left in an adopted folder is not.
+	Own  bool        `json:"own"`
+	Apps []BackupApp `json:"apps,omitempty"`
+}
+
+// BackupApp is one app in a backup: its name, the version its data was written under, and when
+// that data was taken -- the History member the backup copied, not the backup's own time.
+type BackupApp struct {
+	Name    string    `json:"name"`
+	Version string    `json:"version,omitempty"`
+	TakenAt time.Time `json:"takenAt"`
+}

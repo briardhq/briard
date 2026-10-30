@@ -34,9 +34,9 @@
 <header class="page-head"><h1>Undo these changes?</h1><p>{{.What}}, and everything after it.</p></header>
 <div class="card">
   <section>
-    <p>{{.Title}} goes back to how it was at {{.Back}}. Everything it has recorded since then is lost.{{if .MovesCode}} This also moves the app {{if .From}}from {{.From}} {{end}}back to {{.To}}.{{end}}</p>
+    <p>{{.Title}} goes back to how it was at {{.Back}}.{{if .MovesCode}} This also moves the app {{if .From}}from {{.From}} {{end}}back to {{.To}}.{{end}}</p>
     {{if .Note}}<p class="note">That moment was {{.Note}} — {{.Title}} recovers it on the way back up.</p>{{end}}
-    <p class="note">The app stops for it and starts again afterwards. The undo is itself in the history, so it can be undone too.</p>
+    <p class="note">What it has now is kept in its History, so you can go back to it. The app stops for it and starts again afterwards.</p>
   </section>
   <footer>
     <form method="post" action="/undo"><input type="hidden" name="point" value="{{.Point}}"><input type="hidden" name="what" value="{{.What}}"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn" data-variant="destructive">Undo these changes</button></form>

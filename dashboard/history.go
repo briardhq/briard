@@ -42,6 +42,8 @@ type restoreOp struct {
 	What         string
 	Done, Failed bool
 	Detail       string
+	// Backup says it is a restore from the backup (backup.go), which the Backup page shows.
+	Backup bool
 }
 
 // appPageView is an app's page: its card, with the one button, and its history.

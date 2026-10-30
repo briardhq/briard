@@ -37,6 +37,12 @@ import (
 // the same blast radius an install already has, and the picker that asks for it is the dashboard
 // behind the same door.
 //
+// backup-restore and backup-list join them for the Backup page's restore: the restore is one
+// service's data and code put back from the household's own repository -- a service-restore, or
+// on a node without the service an install -- and the list only reads what that repository
+// holds. Neither reaches past the guest's own data: the repository is the folder the host already
+// serves the guest, opened with the key on the guest's own volume.
+//
 // config-set joins them for the BACKUP'S settings only, never the address: the page's Backup
 // section turns the nightly backup off and on, moves it to another folder, and records that the
 // key is saved. What a guest taken over gains outside itself: it can stop tomorrow's backup of
@@ -48,6 +54,7 @@ func guestMayAsk(d api.Directive) bool {
 	switch d.Kind {
 	case api.DirectiveServiceInstall, api.DirectiveServicePrewarm, api.DirectiveServiceRestore,
 		api.DirectiveServiceMembers,
+		api.DirectiveBackupRestore, api.DirectiveBackupList, // the Backup page's restore
 		api.DirectiveCasaClaim,   // a name for this household, asked from its own page
 		api.DirectiveCasaRecheck: // and its network asked again about it
 		return true

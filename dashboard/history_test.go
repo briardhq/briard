@@ -161,7 +161,7 @@ func TestHistoryConfirmsBeforeUndoing(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("first press = %d, want the confirmation page", resp.StatusCode)
 	}
-	if !strings.Contains(body, "Updated to 2026.8.0") || !strings.Contains(body, "is lost") ||
+	if !strings.Contains(body, "Updated to 2026.8.0") || !strings.Contains(body, "is kept in its History") ||
 		!strings.Contains(body, time.Date(2026, 9, 21, 3, 0, 0, 0, time.Local).Format("Mon 2 Jan 2006, 15:04:05")) {
 		t.Errorf("the confirmation does not name the change, the exact moment it goes back to, and what it costs:\n%s", body)
 	}

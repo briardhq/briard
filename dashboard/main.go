@@ -937,6 +937,10 @@ func (a *app) render(w http.ResponseWriter, r *http.Request, self device, name s
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	v := a.view(ctx, r, self)
+	if name == "backup" && v.Backup != nil && r.URL.Query().Has("list") {
+		rc := a.restoreCard(r.Context())
+		v.Backup.Restore = &rc
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := page.ExecuteTemplate(w, name, v); err != nil {
 		log.Printf("dashboard: render %s: %v", name, err)
@@ -951,14 +955,7 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 			v.Devices = append(v.Devices, deviceView{ID: d.ID, Label: deviceLabel(d.Agent), Agent: d.Agent, Added: d.Created.In(zone()).Format("2 Jan 2006"), This: d.ID == self.ID})
 		}
 	}
-	routed := map[string]bool{}
-	if raw, err := os.ReadFile(a.routesPath); err == nil {
-		if t, err := routes.Parse(raw); err == nil {
-			for _, s := range t.Services {
-				routed[s.Name] = true
-			}
-		}
-	}
+	routed := a.installedApps()
 	v.Casa = a.casaState()
 	if v.Casa != nil {
 		// "Not now" is the home page's alone (its fragment asks with ?home): the Secure access

@@ -1377,8 +1377,12 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	// The code moved too, so the image it ran on is superseded the same way an upgrade's is; the
 	// undo point names it, and putting it back re-pulls (step 1 above).
 	cfg.dropSuperseded(ctx, g, runningRaw, logf)
+	done := "undone back to"
+	if target.Meta.Trigger == quadlet.TriggerFromBackup {
+		done = "restored from the backup, as it was at"
+	}
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone,
-		Detail: fmt.Sprintf("undone back to %s, %s", back, moved)}
+		Detail: fmt.Sprintf("%s %s, %s", done, back, moved)}
 }
 
 // takeMember renders a member's sidecar and asks the guest for it. The host records the events

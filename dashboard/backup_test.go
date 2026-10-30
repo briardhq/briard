@@ -156,7 +156,7 @@ func TestTheCardSaysWhereTheEarlierBackupsAre(t *testing.T) {
 			{At: at.Add(-24 * time.Hour), Error: "the backup folder is not there"},
 		}})
 	body := r.page(c)
-	for _, want := range []string{"earlier backups are still in <code>/home/ana/Briard Backup</code>", "the folder holds 3.0 GB", "Recent nights", "5 MB new", "did not finish: the backup folder is not there"} {
+	for _, want := range []string{"earlier backups are still in <code>/home/ana/Briard Backup</code>", "the folder holds 3.0 GB", "Recent backups", "5 MB new", "did not finish: the backup folder is not there"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card lacks %q", want)
 		}
@@ -222,5 +222,178 @@ func TestActsReturnToThePageTheyWerePressedOn(t *testing.T) {
 		if got := post(referer); got != want {
 			t.Errorf("after an act pressed on %q the page goes to %q, want %q", referer, got, want)
 		}
+	}
+}
+
+// theBackups is the host's answer to backup-list: one backup of this household's with Home
+// Assistant (installed in the rig) and mosquitto (not), and an earlier machine's.
+func theBackups() string {
+	at := time.Date(2026, 10, 30, 2, 0, 0, 0, time.Local)
+	raw, _ := json.Marshal([]dashboard.BackupListing{
+		{ID: "bbbb2222", At: at, Own: true, Apps: []dashboard.BackupApp{
+			{Name: "home-assistant", Version: "2026.9.4", TakenAt: at.Add(-26 * time.Minute)},
+			{Name: "mosquitto", Version: "2.0.22", TakenAt: at.Add(-40 * time.Minute)},
+		}},
+		{ID: "aaaa1111", At: at.Add(-7 * 24 * time.Hour), Own: false, Apps: []dashboard.BackupApp{
+			{Name: "home-assistant", Version: "2026.8.0", TakenAt: at.Add(-7*24*time.Hour - time.Hour)},
+		}},
+	})
+	return string(raw)
+}
+
+// answerByKind answers whatever the page asks: the backups, an app's ring, and a restore with
+// restored (or a failure, when restored is "").
+func answerByKind(port *fakePort, restored string) {
+	go func() {
+		for range port.waiting {
+			port.mu.Lock()
+			d := port.asked[len(port.asked)-1]
+			port.mu.Unlock()
+			switch d.Kind {
+			case api.DirectiveBackupList:
+				port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: theBackups()}
+			case api.DirectiveServiceMembers:
+				port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: ring()}
+			case api.DirectiveBackupRestore:
+				if restored == "" {
+					port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "the image could not be fetched"}
+				} else {
+					port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: restored}
+				}
+			default:
+				port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "not this test's"}
+			}
+		}
+	}()
+}
+
+func (r *rig) get(t *testing.T, path string, c *http.Cookie) string {
+	t.Helper()
+	req, _ := http.NewRequest("GET", r.srv.URL+path, nil)
+	req.AddCookie(c)
+	resp, err := noRedirect.Do(req)
+	must(t, err)
+	return bodyOf(t, resp)
+}
+
+// THE RESTORE CARD lists the folder's backups and the apps in each -- installed here or not, and
+// an earlier machine's said so -- with a restore per app. The page does not wait for it: the card
+// loads itself, or, with no script, renders in the page behind its link.
+func TestTheRestoreCardListsTheBackups(t *testing.T) {
+	r, c, port := backupRig(t)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true})
+	answerByKind(port, "")
+	page := r.get(t, "/backup", c)
+	if !strings.Contains(page, `hx-get="/f/restore" hx-trigger="load"`) || !strings.Contains(page, `href="/backup?list"`) {
+		t.Fatalf("the page does not load its restore card, or offers no way without a script:\n%s", page)
+	}
+	port.mu.Lock()
+	asked := len(port.asked)
+	port.mu.Unlock()
+	if asked != 0 {
+		t.Errorf("rendering the page asked the host %d times; the card asks for itself", asked)
+	}
+	for _, body := range []string{r.get(t, "/f/restore", c), r.get(t, "/backup?list", c)} {
+		for _, want := range []string{"Restore an app", "2026.9.4", "Fri 30 Oct, 02:00", "Fri 30 Oct, 01:34", "from an earlier machine",
+			`name="backup" value="bbbb2222"`, `name="app" value="mosquitto"`} {
+			if !strings.Contains(body, want) {
+				t.Errorf("the card lacks %q:\n%s", want, body)
+			}
+		}
+		if strings.Count(body, "not installed") != 1 {
+			t.Errorf("want mosquitto alone marked not installed:\n%s", body)
+		}
+		if strings.Contains(body, "every 5s") {
+			t.Errorf("an idle card polls:\n%s", body)
+		}
+	}
+	if card := r.get(t, "/f/restore", c); strings.Contains(strings.ToLower(card), "night") {
+		t.Errorf("the card says night:\n%s", card)
+	}
+}
+
+// A RESTORE ASKS FIRST, in words that say the app goes back and what it has now is kept -- or,
+// for an app this machine does not have, that it is installed. Then it relays one backup-restore,
+// the card follows it while it runs, says how it ended once, and is a list again.
+func TestARestoreFromTheBackupConfirmsThenRuns(t *testing.T) {
+	r, c, port := backupRig(t)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true})
+	answerByKind(port, "restored from the backup, as it was at Fri 30 Oct 2026, 01:34:00, code too")
+
+	body := bodyOf(t, postForm(t, r, "/backup/restore", c, url.Values{"backup": {"bbbb2222"}, "app": {"home-assistant"}}))
+	for _, want := range []string{"Restore Home Assistant?", "goes back to how it was at Fri 30 Oct, 01:34", "from 2026.8.0 to 2026.9.4",
+		"kept in its History", `name="confirm" value="yes"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the confirmation lacks %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "lost") {
+		t.Errorf("the confirmation says lost:\n%s", body)
+	}
+	body = bodyOf(t, postForm(t, r, "/backup/restore", c, url.Values{"backup": {"bbbb2222"}, "app": {"mosquitto"}}))
+	if !strings.Contains(body, "is not installed on this machine") || !strings.Contains(body, "installs Mosquitto 2.0.22") {
+		t.Errorf("the not-installed confirmation:\n%s", body)
+	}
+	port.mu.Lock()
+	for _, d := range port.asked {
+		if d.Kind == api.DirectiveBackupRestore {
+			t.Errorf("a confirmation already asked the host to restore: %+v", d)
+		}
+	}
+	port.mu.Unlock()
+
+	// The restore itself: one directive, the app and the backup, and the card follows it.
+	resp := postForm(t, r, "/backup/restore", c, url.Values{"backup": {"bbbb2222"}, "app": {"home-assistant"}, "when": {"Fri 30 Oct, 02:00"}, "confirm": {"yes"}})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/backup" {
+		t.Fatalf("the act = %d to %q, want back to the Backup page", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	var restore api.Directive
+	for i := 0; i < 200 && restore.Kind == ""; i++ {
+		port.mu.Lock()
+		for _, d := range port.asked {
+			if d.Kind == api.DirectiveBackupRestore {
+				restore = d
+			}
+		}
+		port.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	var p api.BackupRestore
+	if err := json.Unmarshal([]byte(restore.Payload), &p); err != nil || p.Service != "home-assistant" || p.Snapshot != "bbbb2222" {
+		t.Fatalf("relayed %+v (%v); want home-assistant from bbbb2222", restore, err)
+	}
+	var card string
+	for i := 0; i < 200; i++ {
+		if card = r.get(t, "/f/restore", c); strings.Contains(card, "is back as it was in the backup of Fri 30 Oct, 02:00") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(card, "is back as it was") || !strings.Contains(card, `href="/apps/home-assistant"`) {
+		t.Fatalf("the card never said the restore ended:\n%s", card)
+	}
+	if again := r.get(t, "/f/restore", c); strings.Contains(again, "is back as it was") || !strings.Contains(again, "bbbb2222") {
+		t.Errorf("the ending was said twice, or the list did not come back:\n%s", again)
+	}
+}
+
+// A restore that fails says why, and stays said until the next restore of that app.
+func TestAFailedRestoreFromTheBackupSaysWhy(t *testing.T) {
+	r, c, port := backupRig(t)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true})
+	answerByKind(port, "")
+	postForm(t, r, "/backup/restore", c, url.Values{"backup": {"bbbb2222"}, "app": {"mosquitto"}, "when": {"Fri 30 Oct, 02:00"}, "confirm": {"yes"}})
+	var card string
+	for i := 0; i < 200; i++ {
+		if card = r.get(t, "/f/restore", c); strings.Contains(card, "was not restored") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(card, "Mosquitto was not restored: the image could not be fetched") {
+		t.Fatalf("the card:\n%s", card)
+	}
+	if again := r.get(t, "/f/restore", c); !strings.Contains(again, "was not restored") {
+		t.Errorf("the failure was forgotten after one look:\n%s", again)
 	}
 }

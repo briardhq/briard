@@ -7,7 +7,7 @@
   </section><footer><form method="post" action="/backup/saved"><button type="submit" class="btn" data-variant="outline">I have saved the key</button></form></footer></div>
 {{end}}
 
-{{/* THE BACKUP PAGE: the nightly backup, its nights, the key, the folder. */}}
+{{/* THE BACKUP PAGE: the nightly backup, its recent runs, the restore, the key, the folder. */}}
 {{define "backup"}}{{template "head" (shell "backup" false)}}
 <header class="page-head"><h1>Backup</h1><p>{{with .Backup}}{{if .On}}Every night at 02:00, encrypted, into <code>{{.Folder}}</code> on this machine.{{else}}The nightly backup is off.{{end}}{{else}}The nightly backup has not been set up by this host yet.{{end}}</p></header>
 {{with .Backup}}
@@ -25,9 +25,10 @@
     {{end}}
     {{with .Previous}}<p class="note">Your earlier backups are still in <code>{{.}}</code>. Briard no longer adds to them; delete that folder when you no longer need it.</p>{{end}}
   </section><footer>{{if .WrongKey}}<button type="submit" class="btn" form="backup-adopt">Enter its key</button>{{end}}<form method="post" action="/backup/{{if .On}}off{{else}}on{{end}}"><button type="submit" class="btn" data-variant="ghost">{{if .On}}Turn off nightly backup{{else}}Turn nightly backup back on{{end}}</button></form></footer></div>
-  {{if .Nights}}<div class="card"><header><h2>Recent nights</h2></header><section><div class="table-container"><table class="table"><thead><tr><th>Night</th><th>Added</th><th>Result</th></tr></thead><tbody>
+  {{if .Nights}}<div class="card"><header><h2>Recent backups</h2></header><section><div class="table-container"><table class="table"><thead><tr><th>Backup</th><th>Added</th><th>Result</th></tr></thead><tbody>
     {{range .Nights}}<tr><td>{{.When}}</td><td>{{if .Error}}—{{else}}{{.Added}}{{end}}</td><td>{{if .Error}}<span class="bad">did not finish: {{.Error}}</span>{{else}}<span class="badge" data-variant="secondary">ok</span>{{end}}</td></tr>{{end}}
   </tbody></table></div></section></div>{{end}}
+  {{if .On}}{{with .Restore}}{{template "restore-card" .}}{{else}}<div class="card wide" id="restore" hx-get="/f/restore" hx-trigger="load" hx-swap="outerHTML"><header><h2>Restore an app</h2></header><section><p class="note">Reading the backups in the folder…</p><noscript><p><a href="/backup?list">Show the backups</a></p></noscript></section></div>{{end}}{{end}}
   {{if .Key}}{{if .KeySaved}}
   <div class="card"><header><h2>Recovery key</h2><p>Saved, you said. It stays out of sight until you ask.</p></header><section><details><summary class="btn" data-variant="outline">Show the key</summary><p class="key">{{.Key}}</p><p class="note">Whoever has this key and the backup folder has everything in it.</p></details></section></div>
   {{else}}{{template "key-step" .}}{{end}}{{end}}
@@ -37,4 +38,34 @@
   </section><footer><button type="submit" class="btn" data-variant="outline" form="backup-folder-form">Change</button></footer></div>
 </div>
 {{end}}
+{{template "foot" (shell "backup" false)}}{{end}}
+
+{{/* THE RESTORE CARD: the backups in the folder and the apps in each, or the restore running. It
+     polls only while a restore runs; then it is a list again. */}}
+{{define "restore-card"}}<div class="card wide" id="restore"{{if .Moving}} hx-get="/f/restore" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>Restore an app</h2><p>Put an app back as it was in one of the backups in this folder, whether it is installed here or not.</p></header><section>
+  {{range .Ops}}{{if .Running}}<p>Restoring {{.Title}} from the backup of {{.From}}… <span class="note">since {{.Since}}</span></p>
+  {{else if .Failed}}<p class="bad">{{.Title}} was not restored: {{.Detail}}</p>
+  {{else}}<p class="ok">{{.Title}} is back as it was in the backup of {{.From}}. <a href="/apps/{{.Service}}">Its History</a> has the restore, and what it had before.</p>{{end}}{{end}}
+  {{with .Error}}<p class="bad">The backups could not be read: {{.}}</p>{{end}}
+  {{if not .Moving}}{{if .Backups}}<div class="table-container"><table class="table"><thead><tr><th>Backup</th><th>App</th><th>Its data from</th><th></th></tr></thead><tbody>
+  {{range $b := .Backups}}{{range .Apps}}<tr><td>{{$b.When}}{{if $b.Earlier}} <span class="note">from an earlier machine</span>{{end}}</td><td>{{.Title}}{{with .Version}} {{.}}{{end}}{{if not .Installed}} <span class="badge" data-variant="outline">not installed</span>{{end}}</td><td>{{.Taken}}</td><td><form method="post" action="/backup/restore"><input type="hidden" name="backup" value="{{$b.ID}}"><input type="hidden" name="app" value="{{.Name}}"><button type="submit" class="btn" data-variant="outline">Restore</button></form></td></tr>{{end}}{{if not .Apps}}<tr><td>{{$b.When}}{{if $b.Earlier}} <span class="note">from an earlier machine</span>{{end}}</td><td colspan="3" class="note">No app in it could be read.</td></tr>{{end}}{{end}}
+  </tbody></table></div>{{else if not .Error}}<p class="note">The folder holds no backup yet.</p>{{end}}{{end}}
+</section></div>{{end}}
+
+{{/* THE STEP BETWEEN: what the restore does to the app, in words that do not say "lost" -- the
+     restore takes an undo point first, so what the app has now stays within reach. */}}
+{{define "backup-confirm"}}{{template "head" (shell "backup" false)}}
+<header class="page-head"><h1>Restore {{.Title}}?</h1><p>From the backup of {{.When}}.</p></header>
+<div class="card">
+  <section>
+    {{if .Installed}}<p>{{.Title}} goes back to how it was at {{.Taken}}.{{with .From}} Its version moves too, from {{.}} to {{$.Version}}.{{end}}</p>
+    <p class="note">What it has now is kept in its History, so you can go back to it. It stops for the restore and starts again afterwards.</p>
+    {{else}}<p>{{.Title}} is not installed on this machine. Restoring installs {{.Title}}{{with .Version}} {{.}}{{end}} with its data from {{.Taken}}.</p>
+    <p class="note">It may take a few minutes: the app is fetched first.</p>{{end}}
+  </section>
+  <footer>
+    <form method="post" action="/backup/restore"><input type="hidden" name="backup" value="{{.Backup}}"><input type="hidden" name="app" value="{{.Service}}"><input type="hidden" name="when" value="{{.When}}"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn">Restore {{.Title}}</button></form>
+    <a class="btn" data-variant="ghost" href="/backup">Cancel</a>
+  </footer>
+</div>
 {{template "foot" (shell "backup" false)}}{{end}}

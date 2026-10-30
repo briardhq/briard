@@ -1,6 +1,8 @@
 package guestagent
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -603,5 +605,87 @@ func TestAdoptionAddsTheVolumesKey(t *testing.T) {
 	}
 	if err := adoptBackup(ctx, f, backupAdoptRequest{Repository: "http://h/", Password: "  "}); err == nil {
 		t.Fatal("an empty key was accepted")
+	}
+}
+
+// sidecarTar is one backup's members directory as `restic dump --archive tar` writes it.
+func sidecarTar(t *testing.T, metas ...quadlet.SnapshotMeta) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	tw := tar.NewWriter(&b)
+	_ = tw.WriteHeader(&tar.Header{Name: "/briard-backup/briard/members/", Typeflag: tar.TypeDir, Mode: 0o755})
+	for _, m := range metas {
+		raw, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: "/briard-backup/briard/members/" + m.Service + ".json", Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(raw))}); err != nil {
+			t.Fatal(err)
+		}
+		tw.Write(raw)
+	}
+	tw.Close()
+	return b.Bytes()
+}
+
+// The Backup page's list: every backup the repository holds, newest first, whichever household
+// made it, each with the apps its sidecars describe -- a sidecar that does not, skipped as the
+// restore would refuse it. A read that takes no lock, and its own password file, removed after:
+// the one a running backup reads must outlive the list.
+func TestTheListReadsEveryBackupWithItsApps(t *testing.T) {
+	taken := time.Date(2026, 10, 30, 8, 34, 13, 0, time.UTC)
+	members := sidecarTar(t,
+		quadlet.SnapshotMeta{Service: "home-assistant", TakenAt: taken, Manifest: haManifest},
+		quadlet.SnapshotMeta{Service: "mosquitto", TakenAt: taken}, // no manifest: not restorable
+	)
+	f, _ := backupRig(map[string]func() ([]byte, error){
+		"snapshots": func() ([]byte, error) {
+			return []byte(`[{"id":"aaaa1111","time":"2026-10-29T09:00:00Z","hostname":"f1d"},` +
+				`{"id":"bbbb2222","time":"2026-10-30T09:00:00Z","hostname":"an-earlier-machine"}]`), nil
+		},
+		"dump": func() ([]byte, error) { return members, nil },
+	})
+	list, err := listBackups(context.Background(), f, backupListRequest{Repository: "http://h/", Group: "f1d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].ID != "bbbb2222" || list[1].ID != "aaaa1111" {
+		t.Fatalf("list = %+v; want both backups, newest first", list)
+	}
+	if list[0].Own || !list[1].Own {
+		t.Errorf("own = %v, %v; want the earlier machine's not this household's", list[0].Own, list[1].Own)
+	}
+	for _, b := range list {
+		if len(b.Apps) != 1 || b.Apps[0].Name != "home-assistant" || b.Apps[0].Version != "2026.7.1" || !b.Apps[0].TakenAt.Equal(taken) {
+			t.Errorf("%s's apps = %+v; want home-assistant 2026.7.1 taken at %s alone", b.ID, b.Apps, taken)
+		}
+	}
+	removed := false
+	for _, r := range f.runs {
+		if r[0] == "restic" && (!slices.Contains(r, "--no-lock") || !slices.Contains(r, backupListPasswordFile)) {
+			t.Errorf("restic ran without --no-lock and the list's own password file: %v", r)
+		}
+		if slices.Contains(r, backupPasswordFile) {
+			t.Errorf("the list touched the backup's password file: %v", r)
+		}
+		removed = removed || (r[0] == "rm" && slices.Contains(r, backupListPasswordFile))
+	}
+	if !removed {
+		t.Error("the list's password file was left behind")
+	}
+}
+
+// A backup whose members cannot be read is still listed, with no apps: the household may be
+// looking for exactly that one, and the page says what it can.
+func TestTheListKeepsABackupItCannotReadInto(t *testing.T) {
+	f, _ := backupRig(map[string]func() ([]byte, error){
+		"snapshots": func() ([]byte, error) {
+			return []byte(`[{"id":"cccc3333","time":"2026-10-30T09:00:00Z","hostname":"f1d"}]`), nil
+		},
+		"dump": func() ([]byte, error) { return nil, errors.New("path not found") },
+	})
+	list, err := listBackups(context.Background(), f, backupListRequest{Repository: "http://h/", Group: "f1d"})
+	if err != nil || len(list) != 1 || list[0].ID != "cccc3333" || len(list[0].Apps) != 0 {
+		t.Fatalf("list = %+v, err %v; want the one backup, with no apps", list, err)
 	}
 }

@@ -293,6 +293,9 @@ const (
 	// data.backup.adopt adds the volume's key to a repository another key opens (backup.go), so
 	// the next night can write it. An act, one restic command.
 	verbDataBackupAdopt = "data.backup.adopt"
+	// data.backup.list answers every backup the repository holds, newest first, with the apps in
+	// each (backup.go) -- the Backup page's restore. A read, with no lock on the repository.
+	verbDataBackupList = "data.backup.list"
 	// service.converge re-runs converge-at-promotion IN PLACE, on a node that is already Primary
 	// -- render every manifest on the volume, warm, start (converge.go). It is what an
 	// install calls once it has written the new manifest, and it exists as a VERB rather than a
@@ -440,7 +443,7 @@ var guestCapabilities = []string{
 	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
-	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
+	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataBackupList, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
@@ -476,7 +479,7 @@ var besideActs = map[string]bool{
 	verbReactorActive: true, verbOSSystem: true, verbOSState: true, verbDeadmanEpisode: true,
 	verbHassReadiness: true, verbMosquittoProbe: true, verbHassDBCheck: true,
 	verbHassDBCheckResult: true, verbServicePending: true, verbDataBackup: true,
-	verbDataBackupResult: true, verbDataBackupKey: true,
+	verbDataBackupResult: true, verbDataBackupKey: true, verbDataBackupList: true,
 	// pushes
 	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true, verbDashboardBackup: true,
 	verbServicePulling: true, verbCertWrite: true, verbNetMDNSName: true, verbHassNudge: true,
@@ -1261,6 +1264,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return restoreBackupMember(ctx, x, req, time.Now())
+		case verbDataBackupList:
+			var req backupListRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return listBackups(ctx, x, req)
 		case verbDataBackupAdopt:
 			var req backupAdoptRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2904,6 +2913,17 @@ func (g *Client) DataBackupAdopt(ctx context.Context, url, password string) erro
 
 // SupportsBackupAdopt says whether this guest can adopt a repository.
 func (g *Client) SupportsBackupAdopt() bool { return g.Supports(verbDataBackupAdopt) }
+
+// DataBackupList answers every backup the repository at url holds, newest first, with the apps in
+// each; group is this household's, so the list says which backups are its own.
+func (g *Client) DataBackupList(ctx context.Context, url, group string) ([]dashboard.BackupListing, error) {
+	var list []dashboard.BackupListing
+	err := g.c.Call(ctx, verbDataBackupList, backupListRequest{Repository: url, Group: group}, &list)
+	return list, err
+}
+
+// SupportsBackupList says whether this guest can list the backup.
+func (g *Client) SupportsBackupList() bool { return g.Supports(verbDataBackupList) }
 
 // SupportsBackupRestore says whether this guest can materialise a backup's night as a member.
 func (g *Client) SupportsBackupRestore() bool { return g.Supports(verbDataBackupRestore) }

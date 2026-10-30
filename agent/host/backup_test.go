@@ -730,3 +730,68 @@ func TestThePageIsToldTheOffsiteAnswer(t *testing.T) {
 		t.Fatalf("pushed %+v", vg.views)
 	}
 }
+
+// fakeLister is the guest's data.backup.list.
+type fakeLister struct {
+	list       []dashboard.BackupListing
+	err        error
+	old        bool
+	url, group string
+}
+
+func (f *fakeLister) DataBackupList(_ context.Context, url, group string) ([]dashboard.BackupListing, error) {
+	f.url, f.group = url, group
+	return f.list, f.err
+}
+func (f *fakeLister) SupportsBackupList() bool { return !f.old }
+
+// TestTheBackupListIsTheGuestsReadOfTheRepository: the page's list is what the guest reads from the
+// store this host serves it, under this household's group so it can say which backups are its
+// own, relayed as it came. Off, or a guest without the verb, refuses before the guest is asked.
+func TestTheBackupListIsTheGuestsReadOfTheRepository(t *testing.T) {
+	cfg, _ := liveBackup(t, filepath.Join(t.TempDir(), "Briard Backup"))
+	cfg.FlockID = "f1d"
+	want := []dashboard.BackupListing{{ID: "bbbb2222", At: time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC), Own: true,
+		Apps: []dashboard.BackupApp{{Name: "home-assistant", Version: "2026.9.4"}}}}
+	l := &fakeLister{list: want}
+	o := cfg.applyBackupList(context.Background(), l, api.Directive{ID: "d", Kind: api.DirectiveBackupList})
+	if o.State != api.OutcomeDone {
+		t.Fatalf("list: %+v", o)
+	}
+	var got []dashboard.BackupListing
+	if err := json.Unmarshal([]byte(o.Detail), &got); err != nil || len(got) != 1 || got[0].ID != want[0].ID || got[0].Apps[0].Version != "2026.9.4" {
+		t.Fatalf("detail %q (%v); want the guest's list as it came", o.Detail, err)
+	}
+	if l.group != "f1d" || !strings.Contains(l.url, ":"+backupStorePort+"/") {
+		t.Errorf("asked the guest with %q, %q; want this household's group and the store", l.url, l.group)
+	}
+	l.err = errors.New("repository does not exist")
+	if o := cfg.applyBackupList(context.Background(), l, api.Directive{ID: "d"}); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "does not exist") {
+		t.Errorf("a failed read: %+v", o)
+	}
+	l.err, l.old, l.url = nil, true, ""
+	if o := cfg.applyBackupList(context.Background(), l, api.Directive{ID: "d"}); o.State != api.OutcomeFailed || l.url != "" || !strings.Contains(o.Detail, "update the guest") {
+		t.Errorf("an old guest: %+v, asked %q", o, l.url)
+	}
+	l.old = false
+	cfg.BackupDir = ""
+	cfg.backupLive.Store(new(string))
+	if o := cfg.applyBackupList(context.Background(), l, api.Directive{ID: "d"}); o.State != api.OutcomeFailed || l.url != "" {
+		t.Errorf("off, yet asked the guest: %+v", o)
+	}
+}
+
+// TestThePageMayRestoreFromTheBackup: the Backup page's restore and its list are the page's to
+// ask, as an undo and an install are; the backup's other local-only acts and the node's own are not.
+func TestThePageMayRestoreFromTheBackup(t *testing.T) {
+	for _, kind := range []string{api.DirectiveBackupRestore, api.DirectiveBackupList} {
+		if !guestMayAsk(api.Directive{Kind: kind}) {
+			t.Errorf("the page may not ask %s", kind)
+		}
+	}
+	for _, kind := range []string{api.DirectiveStop, api.DirectiveDebugArm, api.DirectiveDoctor, api.DirectiveStatus} {
+		if guestMayAsk(api.Directive{Kind: kind}) {
+			t.Errorf("the page may ask %s", kind)
+		}
+	}
+}

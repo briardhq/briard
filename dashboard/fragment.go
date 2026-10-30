@@ -52,7 +52,7 @@ func theme() template.JS  { return template.JS(themeScript) }
 func drawer() template.JS { return template.JS(drawerScript) }
 
 // fragment is /f/<part>?app=<name>: the partial for one moving part, or HX-Refresh once it has
-// stopped moving. A part that is not one of the four, or an app the dashboard does not offer,
+// stopped moving. A part that is not one of these, or an app the dashboard does not offer,
 // is not found.
 func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -94,6 +94,11 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 		}
 		hv := a.history(ctx, name)
 		tmpl, data, moving = "history-card", hv, hv.Refresh
+	case "restore":
+		// ALWAYS ANSWERED, unlike the parts above: the card loads itself once, and then polls only
+		// while a restore runs (its template says so), so a still card is a list, not an ending.
+		// Under the request's own deadline, not the fragment's ten seconds: the list is restic.
+		tmpl, data, moving = "restore-card", a.restoreCard(r.Context()), true
 	default:
 		http.NotFound(w, r)
 		return

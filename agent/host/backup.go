@@ -729,6 +729,44 @@ func (cfg Config) applyBackupRestore(ctx context.Context, g serviceInstaller, d 
 	return cfg.applyServiceRestore(ctx, g, api.Directive{ID: d.ID, Kind: api.DirectiveServiceRestore, Payload: member}, logf)
 }
 
+// backupLister is the slice of the guest the Backup page's list costs.
+type backupLister interface {
+	DataBackupList(ctx context.Context, url, group string) ([]dashboard.BackupListing, error)
+	SupportsBackupList() bool
+}
+
+// applyBackupList answers what the household's repository holds, for the Backup page's restore:
+// every backup newest first, the apps in each. The guest reads it (data.backup.list), from the
+// store this host serves it; this node's own record of its runs cannot answer it -- an adopted
+// folder's backups, and the apps in any of them, are in the repository alone.
+func (cfg Config) applyBackupList(ctx context.Context, g backupLister, d api.Directive) api.DirectiveOutcome {
+	failed := func(detail string) api.DirectiveOutcome {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
+	}
+	if !g.SupportsBackupList() {
+		return failed("this guest is too old to list the backup; update the guest OS first")
+	}
+	if cfg.backupFolder() == "" || cfg.hostNodeIP() == "" {
+		return failed("the backup is turned off on this node, so there is no repository to list")
+	}
+	url := "http://" + net.JoinHostPort(cfg.hostNodeIP(), backupStorePort) + "/"
+	lctx, cancel := context.WithTimeout(ctx, backupListTimeout)
+	defer cancel()
+	list, err := g.DataBackupList(lctx, url, cfg.FlockID)
+	if err != nil {
+		return failed(fmt.Sprintf("read the backup: %v", err))
+	}
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return failed(err.Error())
+	}
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: string(raw)}
+}
+
+// backupListTimeout bounds the list: one restic call for the snapshots and one per backup, a
+// handful since the repository keeps two days and a week.
+const backupListTimeout = 2 * time.Minute
+
 // backupAdopter is the slice of the guest an adoption costs.
 type backupAdopter interface {
 	DataBackupAdopt(ctx context.Context, url, password string) error

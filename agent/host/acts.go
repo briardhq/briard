@@ -97,6 +97,7 @@ var (
 	offLoopPulls = map[string]bool{
 		api.DirectiveDoctor:         true,
 		api.DirectiveServiceMembers: true,
+		api.DirectiveBackupList:     true, // restic reads the repository: seconds
 		api.DirectiveDashboard:      true,
 		api.DirectiveCasaClaim:      true,
 		api.DirectiveCasaRecheck:    true,

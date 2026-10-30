@@ -521,6 +521,12 @@ const (
 	//                        and a point from the ring are one path, and the restore is itself a
 	//                        row in the history that can be undone. Local-only: the household's
 	//                        data is the household's to put back.
+	DirectiveBackupList = "backup-list" // Payload empty. Outcome.Detail is a JSON array of
+	//                        dashboard.BackupListing: every backup the household's repository holds,
+	//                        newest first, with the apps in each -- what the Backup page restores
+	//                        from. Read-only, read with no lock, so it neither waits for a running
+	//                        backup nor holds one up. Local-only, as the restore is: what the
+	//                        household backed up is the household's to see.
 	DirectiveStop = "stop" // Payload empty. Bring this node down until it is started again or the
 	//                        machine next boots: the act in flight aborted (the outcome names it),
 	//                        the guest powered off cleanly, the agent exited. `briard stop`.

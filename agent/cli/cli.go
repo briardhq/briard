@@ -548,8 +548,8 @@ func runBackup(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintf(stderr, "briard: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "restoring %s from the backup's %s night\n", fs.Arg(0), *at)
-	fmt.Fprint(stdout, "  everything the app recorded since then is lost; the restore is itself in the history, so it can be undone\n")
+	fmt.Fprintf(stdout, "restoring %s from backup %s\n", fs.Arg(0), *at)
+	fmt.Fprint(stdout, "  it goes back to how it was then; what it has now is kept in its history, so you can go back to it\n")
 	fmt.Fprint(stdout, "  the app stops for it and starts again afterwards\n")
 	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveBackupRestore, Payload: string(payload)})
 	if err != nil {
@@ -832,7 +832,7 @@ func runAppUndo(ctx context.Context, sock, member string, stdout, stderr io.Writ
 	if at, ok := quadlet.SnapshotMemberTime(member); ok {
 		fmt.Fprintf(stdout, "undoing back to %s\n", at.Local().Format("2006-01-02 15:04:05"))
 	}
-	fmt.Fprint(stdout, "  everything the app recorded since then is lost; the undo is itself in the history, so it can be undone too\n")
+	fmt.Fprint(stdout, "  what it has now is kept in its history, so you can go back to it\n")
 	fmt.Fprint(stdout, "  the app stops for it and starts again afterwards\n")
 	o, err := submit(ctx, sock, api.Directive{Kind: api.DirectiveServiceRestore, Payload: member})
 	if err != nil {
