@@ -329,6 +329,7 @@ func TestTheBackupMoves(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(old, "README.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	fakeRepo(t, old)
 	moved := t.TempDir()
 	if o := setBackup(cfg, g, settingBackupDir, moved); o.State != api.OutcomeDone || cfg.backupFolder() != moved {
 		t.Fatalf("move: %+v, folder %q", o, cfg.backupFolder())
@@ -1175,5 +1176,18 @@ func TestBackupDirSetAsDocumentsKeepsFollowing(t *testing.T) {
 	// The page's "on" names the folder it showed -- resolved -- and gets the one as written.
 	if o := setBackup(cfg, g, settingBackupDir, filepath.Join(*docs, "Briard Backup")); o.State != api.OutcomeDone || cfg.backupDir() != raw {
 		t.Errorf("off and on: %+v, written %q; want %q", o, cfg.backupDir(), raw)
+	}
+}
+
+// A folder left holding no backup is not named as holding the earlier ones: the page would send
+// the household looking in an empty folder.
+func TestAnEmptyFolderLeftIsNotNamed(t *testing.T) {
+	old := t.TempDir() // nothing ever ran into it
+	cfg, g := liveBackup(t, old)
+	if o := setBackup(cfg, g, settingBackupDir, t.TempDir()); o.State != api.OutcomeDone {
+		t.Fatalf("move: %+v", o)
+	}
+	if rec := cfg.readBackupRecord(); rec.Previous != "" {
+		t.Errorf("previous %q; an empty folder holds no earlier backups", rec.Previous)
 	}
 }

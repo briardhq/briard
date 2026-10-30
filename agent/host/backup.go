@@ -688,8 +688,8 @@ func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any
 			return
 		}
 		// The folder it leaves: the record's, or -- never moved before -- the installer's; and
-		// only one still there, since the page says the earlier backups are in it.
-		if left := cfg.resolveBackupDir(cmp.Or(r.Folder, rawNow)); left != "" && left != wantDir && exists(left) {
+		// only one holding backups, since the page says the earlier backups are in it.
+		if left := cfg.resolveBackupDir(cmp.Or(r.Folder, rawNow)); left != "" && left != wantDir && isResticRepository(left) {
 			r.Previous = left
 		}
 		r.Folder = want
