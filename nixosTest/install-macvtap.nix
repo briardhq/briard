@@ -599,23 +599,17 @@ pkgs.testers.runNixOSTest {
     client.fail(f"curl -fsS -o /dev/null -H 'Host: {install_link_host}' 'http://{vip}/?code={install_code}'")
     print(f"the installer's link redeemed once at {install_link_host}")
 
-    # THE GUEST'S ADMIN PORT, END TO END: the trusted browser presses "Set up Home
+    # THE GUEST'S ADMIN PORT, END TO END: the trusted browser presses "Install Home
     # Assistant"; the dashboard relays a service-install directive over the second virtio-serial
     # port; the host agent dispatches it exactly as it would the CLI's. This VM has no WAN, so
     # the install FAILS -- and that is the measurement: the page must carry the host's own
     # refusal back, which proves the whole wire (device -> qemu -> host acceptor -> dispatch ->
     # outcome -> device -> page) rather than a page that merely says "installing" forever.
+    # (The alert list's copy across the channel is measured where this rig opens an alert:
+    # "A NODE THAT HAS STOPPED UPDATING" below.)
     session = [l.split(":", 1)[1].split(";")[0].strip() for l in redeemed.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
     node_page = client.succeed(f"curl -fsS -H 'Host: {install_link_host}' -H 'Cookie: {session}' http://{vip}/")
-    assert "Set up Home Assistant" in node_page and 'action="/install/home-assistant"' in node_page, node_page
-    # THE ALERT LIST is the host's store, copied across the guest channel (dashboard.alerts) at
-    # the start of the connection. The page shows no alert card until a copy exists, so either of
-    # its two states proves the copy crossed the channel and rendered; neither appears without it.
-    client.wait_until_succeeds(
-        f"curl -fsS -H 'Host: {install_link_host}' -H 'Cookie: {session}' http://{vip}/ "
-        "| grep -qE 'Nothing on this machine needs your attention|Needs your attention'",
-        timeout=60,
-    )
+    assert "Install Home Assistant" in node_page and 'action="/install/home-assistant"' in node_page, node_page
     host.succeed("test -S /run/briard-admin.sock")  # qemu serves the host end
     pressed = client.succeed(
         f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {install_link_host}' -H 'Cookie: {session}' "
@@ -1414,6 +1408,25 @@ pkgs.testers.runNixOSTest {
     alerts = host.succeed("/opt/briard/agent/briard-agent alerts")
     assert "The update run said:" in alerts, f"the alert does not carry the run's own line:\n{alerts}"
     assert "could not fetch a bootstrap agent" in alerts, f"the alert does not carry the refusal:\n{alerts}"
+    # THE SAME ALERT ON THE PAGE: the host copies its store across the guest channel
+    # (dashboard.alerts) when it moves and at the start of every connection, and the home page
+    # lists what is open under "Needs attention". The page has no card while nothing is open, so
+    # this open alert is what makes the copy observable. Through a fresh link from `briard open`,
+    # at the address the node moved to.
+    opened = host.wait_until_succeeds("/opt/briard/agent/briard-agent open", timeout=60)
+    m = re.search(r"http://([^/\s]+)/\?code=([0-9a-f]{64})", opened)
+    assert m, f"`briard open` printed no link:\n{opened}"
+    again = client.succeed(f"curl -sS -D - -o /dev/null -H 'Host: {m.group(1)}' 'http://{moved}/?code={m.group(2)}'")
+    assert " 303 " in again.splitlines()[0], again
+    session = [l.split(":", 1)[1].split(";")[0].strip() for l in again.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
+    client.wait_until_succeeds(
+        f"curl -fsS -H 'Host: {m.group(1)}' -H 'Cookie: {session}' http://{moved}/ "
+        "| grep -q 'Needs attention' && "
+        f"curl -fsS -H 'Host: {m.group(1)}' -H 'Cookie: {session}' http://{moved}/ "
+        "| grep -qF 'this node has stopped updating'",
+        timeout=60,
+    )
+    print("the open alert crossed the guest channel and is on the home page")
 
     # Put the channel back and clear the unit, so the steps below meet the node they expect.
     host.succeed("mv /root/hidden-agent /srv/briard/stable/linux-amd64/briard-agent")

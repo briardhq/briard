@@ -1004,13 +1004,13 @@ pkgs.testers.runNixOSTest {
     )
     print("later open minted for the owner: " + owner_id)
 
-    # THE DEVICE LIST AND REVOKE: the trusted page lists this browser as a device and
+    # THE DEVICE LIST AND REVOKE: the Trusted devices page lists this browser as a device and
     # points at HA's own profile for the session it holds there; revoking it takes it out of
     # briard's registry and out of NOTHING ELSE -- HA's store keeps every refresh token it held
     # (registry-only by decision); the cookie is refused after, on the page and on
     # the button; and the way back is a fresh code, as at install.
     import re as _re
-    trusted_page = node1.succeed(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {cookie}' http://192.168.1.100/")
+    trusted_page = node1.succeed(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {cookie}' http://192.168.1.100/devices")
     assert "this device" in trusted_page and f'href="{origin}/profile/security"' in trusted_page, trusted_page
     ids = _re.findall(r'name="id" value="([0-9a-f]+)"', trusted_page)
     assert len(ids) == 1, f"devices on the page: {ids}"
@@ -1062,7 +1062,7 @@ pkgs.testers.runNixOSTest {
     assert " 303 " in collected.splitlines()[0], collected
     phone = [l.split(":", 1)[1].split(";")[0].strip() for l in collected.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
     node1.fail(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {join}' http://192.168.1.100/join")
-    both = node1.succeed(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {phone}' http://192.168.1.100/")
+    both = node1.succeed(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {phone}' http://192.168.1.100/devices")
     assert "phone/1.0" in both and len(_re.findall(r'name="id" value="', both)) == 2, both
     assert len(_zj.loads(node1.succeed(f"cat {registry}"))["devices"]) == 2
     print("quick-connect: the phone was let in by its code, typed on the laptop")
