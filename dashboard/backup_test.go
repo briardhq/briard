@@ -397,3 +397,18 @@ func TestAFailedRestoreFromTheBackupSaysWhy(t *testing.T) {
 		t.Errorf("the failure was forgotten after one look:\n%s", again)
 	}
 }
+
+// A new install's folder holds no backup until the first run: the card says so, and offers none.
+func TestTheRestoreCardOfAFolderWithNoBackupYet(t *testing.T) {
+	r, c, port := backupRig(t)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/var/lib/briard/backup", On: true, Key: testKey, KeySaved: true})
+	go func() {
+		for range port.waiting {
+			port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: "[]"}
+		}
+	}()
+	card := r.get(t, "/f/restore", c)
+	if !strings.Contains(card, "The folder holds no backup yet.") || strings.Contains(card, `action="/backup/restore"`) || strings.Contains(card, "could not be read") {
+		t.Errorf("an empty folder's card:\n%s", card)
+	}
+}

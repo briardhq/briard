@@ -749,6 +749,12 @@ func (cfg Config) applyBackupList(ctx context.Context, g backupLister, d api.Dir
 	if cfg.backupFolder() == "" || cfg.hostNodeIP() == "" {
 		return failed("the backup is turned off on this node, so there is no repository to list")
 	}
+	// A FOLDER WITH NO REPOSITORY YET holds no backup: the first run makes it, so a new install's
+	// folder is empty until then, and restic would answer that with "repository does not exist".
+	// Read off the folder this host serves, before the guest is asked.
+	if !isResticRepository(cfg.backupFolder()) {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "[]"}
+	}
 	url := "http://" + net.JoinHostPort(cfg.hostNodeIP(), backupStorePort) + "/"
 	lctx, cancel := context.WithTimeout(ctx, backupListTimeout)
 	defer cancel()

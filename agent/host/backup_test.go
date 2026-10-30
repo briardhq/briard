@@ -749,11 +749,26 @@ func (f *fakeLister) SupportsBackupList() bool { return !f.old }
 // store this host serves it, under this household's group so it can say which backups are its
 // own, relayed as it came. Off, or a guest without the verb, refuses before the guest is asked.
 func TestTheBackupListIsTheGuestsReadOfTheRepository(t *testing.T) {
-	cfg, _ := liveBackup(t, filepath.Join(t.TempDir(), "Briard Backup"))
+	folder := filepath.Join(t.TempDir(), "Briard Backup")
+	cfg, _ := liveBackup(t, folder)
 	cfg.FlockID = "f1d"
 	want := []dashboard.BackupListing{{ID: "bbbb2222", At: time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC), Own: true,
 		Apps: []dashboard.BackupApp{{Name: "home-assistant", Version: "2026.9.4"}}}}
 	l := &fakeLister{list: want}
+	// A new install's folder: empty until the first run makes the repository. No backup, and
+	// nothing to ask the guest.
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if o := cfg.applyBackupList(context.Background(), l, api.Directive{ID: "d"}); o.State != api.OutcomeDone || o.Detail != "[]" || l.url != "" {
+		t.Fatalf("an empty folder: %+v, asked %q; want no backups, and the guest not asked", o, l.url)
+	}
+	if err := os.MkdirAll(filepath.Join(folder, "keys"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(folder, "config"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	o := cfg.applyBackupList(context.Background(), l, api.Directive{ID: "d", Kind: api.DirectiveBackupList})
 	if o.State != api.OutcomeDone {
 		t.Fatalf("list: %+v", o)
