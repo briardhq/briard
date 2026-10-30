@@ -124,7 +124,7 @@ var commands = []command{
 		run: runDashboard, probe: []string{"-h"},
 	},
 	{
-		name: "backup", args: "restore <app> [-at <night>]", group: groupRepair,
+		name: "backup", args: "restore [-at <night>] <app>", group: groupRepair,
 		synopsis: "put an app back to a night of the nightly backup",
 		detail: "restore <app> -- put that app's data back to the newest night in the backup folder, or\n" +
 			"to the night -at names (a snapshot id as the Briard page's Backup section lists them, or\n" +
@@ -525,11 +525,11 @@ func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) i
 }
 
 // runConfig is `briard config set <key> <value>`. The agent judges the value; this only carries it.
-// runBackup is `briard backup restore <app> [-at <night>]`: the night named, or the newest, as one
+// runBackup is `briard backup restore [-at <night>] <app>`: the night named, or the newest, as one
 // directive -- the machine materialises the night and restores it, and answers once it has.
 func runBackup(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 || args[0] != "restore" {
-		fmt.Fprint(stderr, "usage: briard backup restore <app> [-at <night>]\n")
+		fmt.Fprint(stderr, "usage: briard backup restore [-at <night>] <app>\n")
 		return 2
 	}
 	fs := flag.NewFlagSet("briard backup restore", flag.ContinueOnError)

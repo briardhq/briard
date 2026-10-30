@@ -47,6 +47,8 @@ type fakeInstaller struct {
 	// A map rather than one string because that is the shape the volume now has: a fake holding
 	// another service's manifest must not satisfy a read for this one.
 	prior map[string]string
+	// installedEr is what a read of the recorded manifest answers instead, when set.
+	installedEr error
 	// staged and rollbacks are the volume's STAGED installs (agent/guestagent/staging.go): the
 	// manifest nothing has accepted yet, and the member that undoes its data.
 	staged       map[string]string
@@ -157,6 +159,9 @@ func (f *fakeInstaller) ServiceProvision(_ context.Context, name, _ string, _ []
 // per-service split adds: another service's manifest can no longer stand in for this one's.
 func (f *fakeInstaller) ServiceInstalled(_ context.Context, name string) (string, error) {
 	f.steps = append(f.steps, "installed?:"+name)
+	if f.installedEr != nil {
+		return "", f.installedEr
+	}
 	return f.prior[name], nil
 }
 func (f *fakeInstaller) SupportsServiceInstalled() bool { return !f.oldGuest }
@@ -2248,5 +2253,69 @@ func TestBackupRestoreRefusesBeforeItTouchesAnything(t *testing.T) {
 				t.Errorf("%s: the restore did %q before refusing: %v", name, forbidden, f.steps)
 			}
 		}
+	}
+}
+
+// TestRestoreOntoANodeWithoutTheApp is a new machine putting a household's app back from its
+// backup: the app is given its place first (the night's manifest, an empty data subvolume), so the
+// undo point is a point like any other and the swap has a live copy to replace -- and nothing is
+// stopped, since nothing runs.
+func TestRestoreOntoANodeWithoutTheApp(t *testing.T) {
+	cfg, f, member := ringWith(t, testManifest(), nil)
+	f.prior = map[string]string{}
+	o := restore(cfg, f, member)
+	if o.State != api.OutcomeDone || !strings.Contains(o.Detail, "installed at") {
+		t.Fatalf("outcome = %+v, want done and installed", o)
+	}
+	joined := strings.Join(f.steps, ",")
+	if strings.Contains(joined, "stop:") {
+		t.Errorf("stopped an app that was not installed: %v", f.steps)
+	}
+	pi := strings.Index(joined, "provision:home-assistant")
+	ui := strings.Index(joined, "snapshot:"+quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUndoBefore, fixedNow))
+	ri := strings.Index(joined, "restore:")
+	ci := strings.LastIndex(joined, "converge")
+	if pi < 0 || ui < 0 || ri < 0 || ci < 0 {
+		t.Fatalf("the restore did not run its whole sequence: %v", f.steps)
+	}
+	if !(pi < ui && ui < ri && ri < ci) {
+		t.Errorf("order was %v, want provision -> undo -> restore -> converge", f.steps)
+	}
+	if len(f.manifests) != 2 || f.manifests[0] != f.members[0].Meta.Manifest {
+		t.Errorf("provisioned %d manifests, the first %.40q; want the night's, twice", len(f.manifests), f.manifests)
+	}
+}
+
+// TestRestoreDoesNotGuessThatNothingIsInstalled: a read of the recorded manifest that fails says
+// nothing about whether the app is there, and "not there" is what lets the restore install over
+// whatever data sits in its place. It refuses, and touches nothing.
+func TestRestoreDoesNotGuessThatNothingIsInstalled(t *testing.T) {
+	cfg, f, member := ringWith(t, testManifest(), nil)
+	f.installedEr = errors.New("the guest did not answer")
+	o := restore(cfg, f, member)
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "nothing was changed") {
+		t.Fatalf("outcome = %+v, want a refusal that changed nothing", o)
+	}
+	joined := strings.Join(f.steps, ",")
+	for _, forbidden := range []string{"stop:", "provision", "snapshot:", "restore:"} {
+		if strings.Contains(joined, forbidden) {
+			t.Errorf("a restore that could not read the app did %q: %v", forbidden, f.steps)
+		}
+	}
+}
+
+// TestRestoreOntoANodeWithoutTheAppSaysWhatItLeft: once the app has its place, a failure is no
+// longer "nothing was changed" -- the app is installed, empty and stopped, and restoring again
+// finishes it.
+func TestRestoreOntoANodeWithoutTheAppSaysWhatItLeft(t *testing.T) {
+	cfg, f, member := ringWith(t, testManifest(), nil)
+	f.prior = map[string]string{}
+	f.snapEr = errors.New("no space left on device")
+	o := restore(cfg, f, member)
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "installed here but empty") || strings.Contains(o.Detail, "nothing was changed") {
+		t.Fatalf("outcome = %+v, want a failure that says the app is installed but empty", o)
+	}
+	if strings.Contains(strings.Join(f.steps, ","), "restore:") {
+		t.Errorf("the data was swapped after the undo failed: %v", f.steps)
 	}
 }

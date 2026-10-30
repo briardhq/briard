@@ -1315,11 +1315,32 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	if target.Meta.Trigger == quadlet.TriggerFromBackup {
 		what = "Restored the backup from " + back
 	}
+	// NOTHING INSTALLED -- a new machine putting a household's app back from its backup -- is given
+	// its place first: service.provision makes the data subvolume (reusing one an earlier failed
+	// install left, never re-creating it) and records the night's manifest. The undo point below is
+	// then a point like any other -- of an empty app, or of what that install left -- so even this
+	// restore can be undone, and the swap below has a live copy to replace. Said POSITIVELY, from
+	// a read that answered, never from priorService's nil, which a failed read returns too.
+	unchanged, fresh := "nothing was changed", false
+	if running == nil {
+		raw, err := g.ServiceInstalled(ctx, service)
+		if err != nil {
+			return failed(fmt.Sprintf("read %s's installed manifest: %v; nothing was changed", service, err))
+		}
+		if raw == "" {
+			if err := g.ServiceProvision(ctx, service, dataDir, quadlet.Subdirs(pm), target.Meta.Manifest); err != nil {
+				return failed(fmt.Sprintf("make %s's place on this node: %v", service, err))
+			}
+			logf("service restore %s: not installed here; installed empty at %s to restore into", service, pm.Version)
+			unchanged = service + " is installed here but empty and stopped; restore it again to finish"
+			fresh = true
+		}
+	}
 	if err := cfg.takeMember(ctx, g, service, undo, quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
 		// THE UNDO IS ITSELF AN EVENT, on the point that undoes it -- which is the redo.
 		&quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUndo, What: what}}},
 		at, logf); err != nil {
-		return stopped(fmt.Sprintf("take the undo point: %v; nothing was changed", err))
+		return stopped(fmt.Sprintf("take the undo point: %v; %s", err, unchanged))
 	}
 	// (4) THE DATA, keeping the verify -> materialise -> destroy order, and SWEPT of the
 	// markers a household's own backup restore leaves inside a member: a "before
@@ -1328,7 +1349,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	// worked around on a guest that cannot sweep — this path's alternative is leaving them exactly
 	// as they are, which is no loss at all.
 	if !g.SupportsRestoreSweep() {
-		return stopped("this node's guest cannot put a point back safely (it predates the restore sweep); nothing was changed")
+		return stopped("this node's guest cannot put a point back safely (it predates the restore sweep); " + unchanged)
 	}
 	if err := g.Restore(ctx, dataDir, target.Member, services.RestoreMarkers(pm)); err != nil {
 		// Do NOT converge: that would start the service on data that is neither what it was nor
@@ -1346,7 +1367,9 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 		return failed(fmt.Sprintf("converge onto the restored member (the service is left stopped): %v", err))
 	}
 	moved := "data only"
-	if runningVersion != "" && runningVersion != pm.Version {
+	if fresh {
+		moved = "installed at " + pm.Version
+	} else if runningVersion != "" && runningVersion != pm.Version {
 		moved = fmt.Sprintf("code too (%s -> %s)", runningVersion, pm.Version)
 	}
 	back = target.Meta.TakenAt.Local().Format("Mon 2 Jan 2006, 15:04:05")
