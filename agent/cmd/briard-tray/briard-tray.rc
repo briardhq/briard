@@ -1,7 +1,9 @@
 // briard-tray's resources: what every Windows program of Briard's carries (../briard.rc), and the
-// manifest it shares with the agent. Its description is plain "Briard": it is the program Settings'
-// Startup apps lists, and the one a person runs.
-#define DESCRIPTION "Briard"
+// manifest it shares with the agent. Its description is what Settings' Startup apps and Task
+// Manager list it as -- named, as Windows names its own, for the icon it is, so turning it off
+// there reads as turning off the icon and not Briard. The Start menu entry and the notifications
+// stay "Briard": the shortcut's name and the AppUserModelID it carries.
+#define DESCRIPTION "Briard notification icon"
 #define FILENAME "briard-tray.exe"
 #include "../briard.rc"
 
