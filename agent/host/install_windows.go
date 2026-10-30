@@ -487,7 +487,10 @@ func flushInstall(_ context.Context, say func(string, ...any)) error {
 // backupFolder makes the household's backup folder: `Briard Backup` in the Documents of the account
 // that passed UAC -- the installer runs elevated AS that account, so the known folder is theirs.
 // Resolved through the shell, never composed: with OneDrive's folder backup on (Windows 11's default
-// with a Microsoft account) Documents IS OneDrive's, and the off-site copy comes with it. No owner
+// with a Microsoft account) Documents IS OneDrive's, and the off-site copy comes with it. WRITTEN AS
+// %DOCUMENTS%\Briard Backup, not as the path: OneDrive's folder backup turned on LATER moves
+// Documents and the folder with it, and the agent follows wherever Documents is (backup.go's
+// resolveBackupDir). No owner
 // step: the profile's inherited ACL gives its owner every file under it, whoever wrote it. SYSTEM
 // (a remote or scripted install) has no household Documents: "", and the agent's own folder under
 // the state dir is used. An operator who named one (BRIARD_BACKUP_DIR, "" for off) is copied like
@@ -500,11 +503,10 @@ func backupFolder(context.Context) string {
 	if err != nil {
 		return ""
 	}
-	dir := filepath.Join(docs, "Briard Backup")
-	if os.MkdirAll(dir, 0o755) != nil {
+	if os.MkdirAll(filepath.Join(docs, "Briard Backup"), 0o755) != nil {
 		return ""
 	}
-	return dir
+	return documentsPlaceholder + `\Briard Backup`
 }
 
 // installUser is the SID of the account that passed UAC: the installer runs elevated AS that

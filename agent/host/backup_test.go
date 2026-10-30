@@ -1061,133 +1061,6 @@ func TestThePageIsToldTheRunGoingAndHowItEnded(t *testing.T) {
 	}
 }
 
-// followRig is a node whose backup folder was in its installing account's Documents, and a
-// Documents that moved: the old folder gone, the new Documents read as docs says.
-func followRig(t *testing.T) (Config, *folderGuest, *backupScheduler, string, string, *fakeNotifier) {
-	t.Helper()
-	home := t.TempDir()
-	old := filepath.Join(home, "Documents", "Briard Backup") // never created: OneDrive moved it
-	cfg, fb := liveBackup(t, old)
-	cfg.InstallUser = "S-1-5-21-1-2-3-1001"
-	cfg.backupCandidate, cfg.backupKick = &atomic.Pointer[string]{}, &atomic.Bool{}
-	cfg.acts = newActLane()
-	docs := filepath.Join(home, "OneDrive", "Documents")
-	g := &folderGuest{fakeStatus: fakeStatus{backup: fb}, fakeLister: &fakeLister{}, cfg: cfg}
-	b := utcScheduler()
-	b.documents = func(sid string) (string, error) {
-		if sid != cfg.InstallUser {
-			t.Errorf("read the Documents of %q, want the installing account's", sid)
-		}
-		return docs, nil
-	}
-	return cfg, g, b, old, filepath.Join(docs, "Briard Backup"), &fakeNotifier{}
-}
-
-// follow runs one tick's check and waits for the act it may have started.
-func follow(t *testing.T, cfg Config, g *folderGuest, b *backupScheduler, n *fakeNotifier) {
-	t.Helper()
-	cfg.followDocuments(context.Background(), g, b, n, quiet)
-	for i := 0; i < 500 && cfg.acts.kind() != ""; i++ {
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
-// THE FOLDER FOLLOWS DOCUMENTS: gone from where the install put it, and this household's backups
-// in the account's Documents now -- the move is followed through the backup-folder act, read with
-// the household's key, with an event saying so and no "earlier backups" in a folder that is gone.
-func TestTheBackupFolderFollowsAMovedDocuments(t *testing.T) {
-	cfg, g, b, old, to, n := followRig(t)
-	fakeRepo(t, to)
-	g.list = []dashboard.BackupListing{{ID: "a", At: time.Date(2026, 10, 30, 2, 0, 0, 0, time.UTC), Own: true}}
-	follow(t, cfg, g, b, n)
-	if cfg.backupFolder() != to {
-		t.Fatalf("folder %q, want it followed to %q", cfg.backupFolder(), to)
-	}
-	if b, _ := os.ReadFile(os.Getenv("BRIARD_CONFIG")); !strings.Contains(string(b), "BACKUP_DIR="+to) {
-		t.Errorf("config.env:\n%s", b)
-	}
-	if rec := cfg.readBackupRecord(); rec.Folder != to || rec.Previous != "" {
-		t.Errorf("record %+v; want the new folder and no previous one -- %s is gone, its backups moved", rec, old)
-	}
-	if len(n.alerts) != 1 || n.alerts[0].Kind != notify.Event || !strings.Contains(n.alerts[0].Body, to) {
-		t.Errorf("alerts %+v; want one event naming where the folder is now", n.alerts)
-	}
-	if g.during != to {
-		t.Errorf("read %q through the candidate root; want the new folder, read before the move", g.during)
-	}
-}
-
-// NOTHING ELSE IS FOLLOWED: a folder that is there (the household's choice), no folder of that name
-// in Documents, one that is not a repository, another key's, an earlier install's alone. And a
-// disappearance is tried once -- "not yet" (the account's Documents unreadable, the act lane busy)
-// is not a try, and the folder coming back starts over.
-func TestTheBackupFolderFollowsNothingElse(t *testing.T) {
-	t.Run("there", func(t *testing.T) {
-		cfg, g, b, old, _, n := followRig(t)
-		must(t, os.MkdirAll(old, 0o700))
-		b.documents = func(string) (string, error) { t.Error("asked Documents about a folder that is there"); return "", nil }
-		follow(t, cfg, g, b, n)
-	})
-	for name, set := range map[string]func(t *testing.T, g *folderGuest, to string){
-		"no folder there":  func(*testing.T, *folderGuest, string) {},
-		"not a repository": func(t *testing.T, _ *folderGuest, to string) { must(t, os.MkdirAll(to, 0o700)) },
-		"another key's": func(t *testing.T, g *folderGuest, to string) {
-			fakeRepo(t, to)
-			g.fakeLister.err = errors.New("Fatal: " + guestagent.ResticWrongKey)
-		},
-		"an earlier install": func(t *testing.T, g *folderGuest, to string) {
-			fakeRepo(t, to)
-			g.list = []dashboard.BackupListing{{ID: "e", Own: false}}
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			cfg, g, b, old, to, n := followRig(t)
-			set(t, g, to)
-			follow(t, cfg, g, b, n)
-			reads := g.url
-			follow(t, cfg, g, b, n) // the next tick: tried once already
-			if cfg.backupFolder() != old || len(n.alerts) != 0 || b.followed != old {
-				t.Errorf("folder %q, alerts %v, followed %q; want nothing moved, the disappearance marked tried", cfg.backupFolder(), n.alerts, b.followed)
-			}
-			if g.url != reads {
-				t.Error("the folder was read again on the next tick")
-			}
-		})
-	}
-	t.Run("not yet, then once", func(t *testing.T) {
-		cfg, g, b, old, to, n := followRig(t)
-		fakeRepo(t, to)
-		g.list = []dashboard.BackupListing{{ID: "a", Own: true}}
-		docs := b.documents
-		b.documents = func(string) (string, error) { return "", errors.New("the account's settings are not loaded") }
-		follow(t, cfg, g, b, n)
-		if b.followed != "" || cfg.backupFolder() != old {
-			t.Fatal("an unreadable Documents counted as a try")
-		}
-		b.documents = docs
-		held, _ := cfg.acts.claim(api.DirectiveServiceInstall)
-		_ = held
-		cfg.followDocuments(context.Background(), g, b, n, quiet)
-		cfg.acts.release()
-		if b.followed != "" || cfg.backupFolder() != old {
-			t.Fatal("a busy act lane counted as a try")
-		}
-		follow(t, cfg, g, b, n)
-		if cfg.backupFolder() != to {
-			t.Fatalf("folder %q; want it followed once nothing stood in the way", cfg.backupFolder())
-		}
-	})
-	t.Run("back again", func(t *testing.T) {
-		cfg, g, b, old, _, n := followRig(t)
-		follow(t, cfg, g, b, n)
-		must(t, os.MkdirAll(old, 0o700))
-		follow(t, cfg, g, b, n)
-		if b.followed != "" {
-			t.Error("the folder came back and the try was not forgotten")
-		}
-	})
-}
-
 // The shell's own form of a path in an account's hive, %USERPROFILE% in any case.
 func TestExpandUserProfile(t *testing.T) {
 	for raw, want := range map[string]string{
@@ -1206,5 +1079,101 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// docsRig is a node whose BACKUP_DIR is written as the Windows install writes it -- in the
+// installing account's Documents, wherever that is -- and whose Documents is read as docs says.
+func docsRig(t *testing.T) (cfg Config, read func(string) (string, error), docs *string, logged *bool) {
+	t.Helper()
+	raw := documentsPlaceholder + string(filepath.Separator) + "Briard Backup"
+	cfg, _ = liveBackup(t, raw)
+	cfg.InstallUser = "S-1-5-21-1-2-3-1001"
+	cfg.backupDocs = &atomic.Pointer[string]{}
+	home := t.TempDir()
+	d, in := filepath.Join(home, "Documents"), true
+	docs, logged = &d, &in
+	read = func(sid string) (string, error) {
+		if sid != cfg.InstallUser {
+			t.Errorf("read the Documents of %q, want the installing account's", sid)
+		}
+		if !*logged {
+			return "", errors.New("the account's settings are not loaded (not logged on?)")
+		}
+		return *docs, nil
+	}
+	return cfg, read, docs, logged
+}
+
+// WHEREVER DOCUMENTS IS: the folder follows the account's Documents when OneDrive moves it -- no
+// act, nothing written -- and while the account is logged off the last answer stands, across an
+// agent restart too. Never read, the value is left as written: no such folder, and no guess.
+func TestTheBackupFolderIsWhereverDocumentsIs(t *testing.T) {
+	cfg, read, docs, logged := docsRig(t)
+	raw := cfg.backupDir()
+	if got := cfg.backupFolder(); got != raw {
+		t.Fatalf("never read: %q, want it as written", got)
+	}
+	cfg.refreshDocuments(read, quiet)
+	first := filepath.Join(*docs, "Briard Backup")
+	if got := cfg.backupFolder(); got != first {
+		t.Fatalf("folder %q, want %q", got, first)
+	}
+	// OneDrive's folder backup: Documents moves.
+	*docs = filepath.Join(filepath.Dir(*docs), "OneDrive", "Documents")
+	moved := filepath.Join(*docs, "Briard Backup")
+	cfg.refreshDocuments(read, quiet)
+	if got := cfg.backupFolder(); got != moved {
+		t.Fatalf("after the move: %q, want %q", got, moved)
+	}
+	if b, _ := os.ReadFile(os.Getenv("BRIARD_CONFIG")); !strings.Contains(string(b), "BACKUP_DIR="+raw) {
+		t.Errorf("following Documents rewrote config.env:\n%s", b)
+	}
+	// Logged off: the last answer stands, and a restarted agent starts from it.
+	*logged = false
+	cfg.refreshDocuments(read, quiet)
+	if got := cfg.backupFolder(); got != moved {
+		t.Errorf("logged off: %q, want the last answer %q", got, moved)
+	}
+	restarted := cfg
+	restarted.backupDocs = &atomic.Pointer[string]{}
+	if d := restarted.readBackupRecord().Documents; d != "" {
+		restarted.backupDocs.Store(&d)
+	}
+	restarted.refreshDocuments(read, quiet)
+	if got := restarted.backupFolder(); got != moved {
+		t.Errorf("restarted while logged off: %q, want %q", got, moved)
+	}
+	// A folder written as a path is that path, whatever Documents does.
+	cfg.backupLive.Store(&first)
+	if got := cfg.backupFolder(); got != first {
+		t.Errorf("a literal folder: %q", got)
+	}
+}
+
+// `config set backup-dir` takes %DOCUMENTS% as the install writes it: checked as the folder it names
+// now, kept as written -- and off then on comes back to it as written, not to the path it named.
+func TestBackupDirSetAsDocumentsKeepsFollowing(t *testing.T) {
+	cfg, read, docs, _ := docsRig(t)
+	cfg.refreshDocuments(read, quiet)
+	literal := filepath.Join(t.TempDir(), "Elsewhere")
+	must(t, os.MkdirAll(literal, 0o700))
+	cfg.backupLive.Store(&literal)
+	g := &fakeBackup{}
+	raw := documentsPlaceholder + string(filepath.Separator) + "Briard Backup"
+	if o := setBackup(cfg, g, settingBackupDir, raw); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, filepath.Join(*docs, "Briard Backup")) {
+		t.Fatalf("a %%DOCUMENTS%% folder that is not there: %+v; want refused, naming the folder it is now", o)
+	}
+	must(t, os.MkdirAll(filepath.Join(*docs, "Briard Backup"), 0o700))
+	if o := setBackup(cfg, g, settingBackupDir, raw); o.State != api.OutcomeDone || cfg.backupDir() != raw {
+		t.Fatalf("set: %+v, written %q", o, cfg.backupDir())
+	}
+	if b, _ := os.ReadFile(os.Getenv("BRIARD_CONFIG")); !strings.Contains(string(b), "BACKUP_DIR="+raw) {
+		t.Errorf("config.env:\n%s", b)
+	}
+	setBackup(cfg, g, settingBackupDir, "")
+	// The page's "on" names the folder it showed -- resolved -- and gets the one as written.
+	if o := setBackup(cfg, g, settingBackupDir, filepath.Join(*docs, "Briard Backup")); o.State != api.OutcomeDone || cfg.backupDir() != raw {
+		t.Errorf("off and on: %+v, written %q; want %q", o, cfg.backupDir(), raw)
 	}
 }

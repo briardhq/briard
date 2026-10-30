@@ -12,6 +12,6 @@ func inSync(string) error { return errors.ErrUnsupported }
 // had looked.
 const offsiteCanTell = false
 
-// userDocuments is the Windows read a moved Documents is followed with (followDocuments): Linux
+// userDocuments is the Windows read %DOCUMENTS% resolves through (refreshDocuments): Linux
 // has no folder move to follow.
 func userDocuments(string) (string, error) { return "", errors.ErrUnsupported }

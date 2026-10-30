@@ -329,7 +329,7 @@ STATE_DISK=%s
 		filepath.Join(r.state, "data.img"), filepath.Join(r.state, "state.img"))
 	if dir := backupFolder(ctx); dir != "" {
 		fmt.Fprintf(&b, "BACKUP_DIR=%s\n", dir)
-		say("nightly backups go to %s", dir)
+		say("nightly backups go to %s", strings.Replace(dir, documentsPlaceholder, "Documents", 1))
 	}
 	if sid := installUser(); sid != "" {
 		fmt.Fprintf(&b, "INSTALL_USER_SID=%s\n", sid)

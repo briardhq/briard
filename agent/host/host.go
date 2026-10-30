@@ -465,6 +465,9 @@ type Config struct {
 	// backupCandidate is a folder the household asked to move the backup into, served read-only
 	// to the guest while it is read with the household's key (backup-folder); nil while none is.
 	backupCandidate *atomic.Pointer[string]
+	// backupDocs is where the installing account's Documents last was, for a BACKUP_DIR written as
+	// %DOCUMENTS% (backup.go's resolveBackupDir); nil or empty while never read.
+	backupDocs *atomic.Pointer[string]
 
 	// readinessSettle overrides how long the S1 gate lets a service's signal settle before it
 	// judges it (agent/host/readiness.go). Machinery, not a knob: the production value is the
@@ -598,6 +601,11 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	cfg.backupKick = &atomic.Bool{}
 	cfg.backupEnded = &atomic.Pointer[dashboard.BackupEnd]{}
 	cfg.backupCandidate = &atomic.Pointer[string]{}
+	cfg.backupDocs = &atomic.Pointer[string]{}
+	if docs := cfg.readBackupRecord().Documents; docs != "" {
+		cfg.backupDocs.Store(&docs)
+	}
+	cfg.refreshDocuments(userDocuments, logf)
 	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
 	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
 	// must not mean; see the sdnotify package doc for the two costs of that coupling, the fatal

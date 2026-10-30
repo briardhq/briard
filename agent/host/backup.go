@@ -57,20 +57,17 @@ type backupScheduler struct {
 	done    string
 	waiting time.Time // zero when no report is awaited
 	offsite offsiteCheck
-	// documents reads where an account's Documents is now (userDocuments); followed is the missing
-	// folder already tried, so a disappearance is tried once (followDocuments).
-	documents func(sid string) (string, error)
-	followed  string
 }
 
 func newBackupScheduler() *backupScheduler {
-	return &backupScheduler{loc: householdLocation(), offsite: offsiteCheck{provider: syncProvider, inSync: inSync}, documents: userDocuments}
+	return &backupScheduler{loc: householdLocation(), offsite: offsiteCheck{provider: syncProvider, inSync: inSync}}
 }
 
 // backup collects a run that is going, or starts tonight's if it is due: this node serves, and the
 // local time is inside tonight's window. Every night that should have run and did not is recorded
 // as a failed one, so the alert counts what the household would count.
 func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler, serving bool, now time.Time, n notify.Notifier, logf func(string, ...any)) {
+	cfg.refreshDocuments(userDocuments, logf) // a registry read: where the backup folder is, if Documents moved
 	if cfg.stateDir() == "" || cfg.hostNodeIP() == "" || !serving {
 		return
 	}
@@ -78,7 +75,6 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 		cfg.collectBackup(ctx, g, b, n, logf)
 		return
 	}
-	cfg.followDocuments(ctx, g, b, n, logf)
 	b.offsite.tick(cfg.backupFolder(), cfg.readBackupRecord().Nights, now, logf)
 	// A kicked run (an adoption, `briard backup`) runs now and does not count as the night: the
 	// night still runs, and finds nearly nothing to add.
@@ -416,16 +412,71 @@ type backupRecord struct {
 	Folder   string                `json:"folder,omitempty"`
 	Previous string                `json:"previous,omitempty"`
 	Nights   []dashboard.BackupRun `json:"nights,omitempty"`
+	// Documents is where the installing account's Documents last was (refreshDocuments).
+	Documents string `json:"documents,omitempty"`
 }
 
 // backupFolder is the backup folder as it stands NOW: `config set backup-dir` turns it off and on
 // at runtime, and the store and the nightly tick both read it. Atomic, because the store reads it
 // from its own goroutine. nil (every unit test that does not set it) reads BackupDir.
 func (cfg Config) backupFolder() string {
+	return cfg.resolveBackupDir(cfg.backupDir())
+}
+
+// backupDir is BACKUP_DIR as written: %DOCUMENTS% still in it (resolveBackupDir).
+func (cfg Config) backupDir() string {
 	if cfg.backupLive != nil {
 		return *cfg.backupLive.Load()
 	}
 	return cfg.BackupDir
+}
+
+// WHEREVER DOCUMENTS IS: %DOCUMENTS% at the head of BACKUP_DIR stands for the installing account's
+// Documents as it is NOW. The Windows install writes the backup folder so (install_windows.go's
+// backupFolder), because OneDrive's folder backup, turned on later, moves Documents -- the folder
+// and its backups with it -- and re-points the account's Documents at the new place; a path
+// written once would name a folder that is gone.
+//
+// The account's Documents is read from its own hive (userDocuments), which Windows loads only while
+// the account is logged on -- so it is read at every tick and the last answer kept, on this node
+// (the backup record) for an agent started while nobody is logged on. Not logged on is the last
+// answer, never a guess; OneDrive moves Documents only while someone is. Never read, the value is
+// left as written: no such folder, and the run says so.
+const documentsPlaceholder = "%DOCUMENTS%"
+
+// resolveBackupDir is a BACKUP_DIR value with %DOCUMENTS% replaced by the account's Documents now.
+func (cfg Config) resolveBackupDir(raw string) string {
+	rest, ok := strings.CutPrefix(raw, documentsPlaceholder)
+	if !ok || cfg.backupDocs == nil {
+		return raw
+	}
+	if d := cfg.backupDocs.Load(); d != nil && *d != "" {
+		return *d + rest
+	}
+	return raw
+}
+
+// refreshDocuments reads where the installing account's Documents is now, and keeps it when it
+// moved. read is userDocuments; an error is "not logged on": the last answer stands.
+func (cfg Config) refreshDocuments(read func(sid string) (string, error), logf func(string, ...any)) {
+	if cfg.backupDocs == nil || cfg.InstallUser == "" {
+		return
+	}
+	docs, err := read(cfg.InstallUser)
+	if err != nil || docs == "" {
+		return
+	}
+	old := cfg.backupDocs.Load()
+	if old != nil && *old == docs {
+		return
+	}
+	cfg.backupDocs.Store(&docs)
+	if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Documents = docs }); err != nil {
+		logf("backup: could not remember where Documents is: %v", err)
+	}
+	if old != nil && *old != "" {
+		logf("backup: Documents moved from %s to %s; the backup folder follows it", *old, docs)
+	}
 }
 
 func (cfg Config) readBackupRecord() backupRecord {
@@ -460,7 +511,7 @@ func (cfg Config) backupView(ctx context.Context, g backupViewGuest) dashboard.B
 	rec := cfg.readBackupRecord()
 	v := dashboard.Backup{Folder: cfg.backupFolder(), On: cfg.backupFolder() != "", Previous: rec.Previous, Nights: rec.Nights}
 	if !v.On {
-		v.Folder = rec.Folder
+		v.Folder = cfg.resolveBackupDir(rec.Folder)
 		if v.Folder == "" {
 			v.Folder = defaultBackupDir // where turning it on goes (applyBackupSetting)
 		}
@@ -598,47 +649,56 @@ func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any
 		logf("backup: adopted the backup in %s; a run starts now", folder)
 		return done("the backup in %s is now this household's; tonight's copy is being made now", folder)
 	}
-	now := cfg.backupFolder()
+	// RAW AND RESOLVED: the value is kept as given -- %DOCUMENTS% and all, so it keeps following
+	// Documents -- and every check is of the folder it names now.
+	rawNow, now := cfg.backupDir(), cfg.backupFolder()
 	want := s.Value
 	last := cfg.readBackupRecord().Folder
+	if want != "" && want == cfg.resolveBackupDir(last) {
+		want = last // "on" names the folder the page showed; the record has how it was written
+	}
+	wantDir := cfg.resolveBackupDir(want)
 	switch {
 	case want == "":
 	case want == defaultBackupDir:
 		if err := os.MkdirAll(want, 0o700); err != nil {
 			return failed("%v", err)
 		}
-	case want == now || want == last:
+	case wantDir == now || want == last:
 		// A folder this backup already uses: nothing to check.
 	default:
-		if err := checkBackupFolder(want); err != nil {
+		if err := checkBackupFolder(wantDir); err != nil {
 			return failed("%v", err)
 		}
 	}
-	if want == now {
-		return done("the backup is already %s; nothing changed", backupWord(want))
+	if want == rawNow {
+		return done("the backup is already %s; nothing changed", backupWord(now))
 	}
 	path := cfg.configPathForMessage()
 	if err := setConfigKey(path, "BACKUP_DIR", want, false); err != nil {
 		return failed("could not record it in %s: %v", path, err)
 	}
-	if want != "" {
-		// MOVED, NOT CARRIED: the earlier backups stay where they are, the household's to keep or
-		// delete, and the next night opens the repository already in the new folder -- one the
-		// household moved there itself -- or starts one, with the same key.
-		if err := cfg.updateBackupRecord(func(r *backupRecord) {
-			// The folder it leaves: the record's, or -- never moved before -- the installer's; and
-			// only one still there, since the page says the earlier backups are in it.
-			if left := cmp.Or(r.Folder, now); left != "" && left != want && exists(left) {
-				r.Previous = left
-			}
-			r.Folder = want
-		}); err != nil {
-			logf("backup: could not remember the folder: %v", err)
+	// MOVED, NOT CARRIED: the earlier backups stay where they are, the household's to keep or
+	// delete, and the next night opens the repository already in the new folder -- one the
+	// household moved there itself -- or starts one, with the same key. Off, the folder is
+	// remembered as it was written, so on comes back to it.
+	if err := cfg.updateBackupRecord(func(r *backupRecord) {
+		if want == "" {
+			r.Folder = cmp.Or(rawNow, r.Folder)
+			return
 		}
+		// The folder it leaves: the record's, or -- never moved before -- the installer's; and
+		// only one still there, since the page says the earlier backups are in it.
+		if left := cfg.resolveBackupDir(cmp.Or(r.Folder, rawNow)); left != "" && left != wantDir && exists(left) {
+			r.Previous = left
+		}
+		r.Folder = want
+	}); err != nil {
+		logf("backup: could not remember the folder: %v", err)
 	}
 	cfg.backupLive.Store(&want)
-	logf("backup: %s -> %s, recorded in %s", backupWord(now), backupWord(want), path)
-	return done("the nightly backup is now %s", backupWord(want))
+	logf("backup: %s -> %s, recorded in %s", backupWord(now), backupWord(wantDir), path)
+	return done("the nightly backup is now %s", backupWord(wantDir))
 }
 
 // backupWord names a BACKUP_DIR value for a person.
@@ -828,7 +888,7 @@ func (cfg Config) applyBackupFolder(ctx context.Context, d api.Directive, r any,
 	if cfg.backupLive == nil || cfg.stateDir() == "" {
 		return failed("this node keeps no backup settings")
 	}
-	now := cfg.backupFolder()
+	rawNow, now := cfg.backupDir(), cfg.backupFolder()
 	if req.Folder == now {
 		return failed("backups are already stored in %s", now)
 	}
@@ -836,7 +896,7 @@ func (cfg Config) applyBackupFolder(ctx context.Context, d api.Directive, r any,
 		return failed("%v", err)
 	}
 	check := dashboard.BackupFolderCheck{Folder: req.Folder, Empty: !isResticRepository(req.Folder)}
-	if left := cmp.Or(now, cfg.readBackupRecord().Folder); left != "" && isResticRepository(left) {
+	if left := cmp.Or(now, cfg.resolveBackupDir(cfg.readBackupRecord().Folder)); left != "" && isResticRepository(left) {
 		check.Previous = left
 	}
 	if !check.Empty {
@@ -897,9 +957,10 @@ func (cfg Config) applyBackupFolder(ctx context.Context, d api.Directive, r any,
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: fmt.Sprintf("backups are now stored in %s", req.Folder)}
 	}
 	if out := set(settingBackupAdopt, key); out.State != api.OutcomeDone {
-		// NOT LEFT IN A FOLDER IT CANNOT OPEN: back where it was, the record as it was.
-		if back := set(settingBackupDir, now); back.State != api.OutcomeDone {
-			logf("backup: could not go back to %q after the adoption failed: %s", now, back.Detail)
+		// NOT LEFT IN A FOLDER IT CANNOT OPEN: back where it was -- as it was written, so %DOCUMENTS% keeps
+		// following -- the record as it was.
+		if back := set(settingBackupDir, rawNow); back.State != api.OutcomeDone {
+			logf("backup: could not go back to %q after the adoption failed: %s", rawNow, back.Detail)
 		}
 		if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Folder, r.Previous = before.Folder, before.Previous }); err != nil {
 			logf("backup: could not restore the folder record: %v", err)
@@ -907,79 +968,6 @@ func (cfg Config) applyBackupFolder(ctx context.Context, d api.Directive, r any,
 		return failed("the folder was not changed: %s", out.Detail)
 	}
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: fmt.Sprintf("backups are now stored in %s, continuing the ones there", req.Folder)}
-}
-
-// THE FOLDER FOLLOWS DOCUMENTS (Windows): the install names the household's backup folder inside
-// the installing account's Documents (install_windows.go's backupFolder), and OneDrive's folder
-// backup, turned on later, MOVES Documents -- the folder and its backups with it -- and re-points
-// the account's Documents at the new place. That is drift, not the household's act, so it is
-// followed: ONLY WHILE THE CONFIGURED FOLDER IS MISSING (a folder the household chose exists, and is
-// never second-guessed), the folder of the same name in that account's Documents now is read with
-// the household's key exactly as the page's Change reads one, and moved to -- through the same
-// backup-folder act, one writer -- when it holds this household's backups. Anything else (a disk
-// not plugged in, no such folder there, another key's) changes nothing: the run fails and says so,
-// as it did.
-//
-// ONE TRY PER DISAPPEARANCE: the read is restic's, seconds, so it runs off the loop in the act lane,
-// and a refusal is not asked again every tick; a different missing folder, or the folder back,
-// starts over. "Not yet" -- the account not logged on, so its Documents cannot be read; the act lane
-// busy -- is not a try.
-func (cfg Config) followDocuments(ctx context.Context, g any, b *backupScheduler, n notify.Notifier, logf func(string, ...any)) {
-	folder := cfg.backupFolder()
-	if folder == "" || cfg.InstallUser == "" || b.documents == nil {
-		return
-	}
-	if _, err := os.Stat(folder); !errors.Is(err, fs.ErrNotExist) {
-		b.followed = "" // there (or not known to be gone): nothing to follow
-		return
-	}
-	if b.followed == folder {
-		return
-	}
-	docs, err := b.documents(cfg.InstallUser)
-	if err != nil || docs == "" {
-		return // not yet
-	}
-	to := filepath.Join(docs, filepath.Base(folder))
-	if to == folder || !isResticRepository(to) {
-		b.followed = folder
-		logf("backup: the folder %s is gone, and %s holds no backup to follow it to", folder, to)
-		return
-	}
-	if cfg.acts != nil {
-		if _, ok := cfg.acts.claim(api.DirectiveBackupFolder); !ok {
-			return // not yet
-		}
-	}
-	b.followed = folder
-	go func() {
-		if cfg.acts != nil {
-			defer cfg.acts.release()
-		}
-		ask := func(confirm bool) api.DirectiveOutcome {
-			raw, _ := json.Marshal(api.BackupFolder{Folder: to, Confirm: confirm})
-			return cfg.applyBackupFolder(ctx, api.Directive{ID: "follow-documents", Kind: api.DirectiveBackupFolder, Payload: string(raw)}, g, logf)
-		}
-		o := ask(false)
-		var c dashboard.BackupFolderCheck
-		if o.State != api.OutcomeDone || json.Unmarshal([]byte(o.Detail), &c) != nil || c.Own == 0 {
-			logf("backup: the folder %s is gone; not following it to %s, which holds none of this household's backups (%s)", folder, to, o.Detail)
-			return
-		}
-		if o = ask(true); o.State != api.OutcomeDone {
-			logf("backup: the folder %s is gone; following it to %s failed: %s", folder, to, o.Detail)
-			return
-		}
-		logf("backup: the folder %s moved with Documents to %s; backing up there from now on", folder, to)
-		fireAlert(ctx, n, logf, notify.Alert{
-			Key:      "backup-folder",
-			Kind:     notify.Event,
-			Severity: notify.Info,
-			Title:    "Briard: the backup folder moved with Documents",
-			Body: fmt.Sprintf("Your Documents folder moved, and the backups with it, from %s to %s. Briard backs up into %s from now on; "+
-				"nothing was lost.", folder, to, to),
-		})
-	}()
 }
 
 // expandUserProfile puts an account's profile folder in place of %USERPROFILE% -- as the account's
