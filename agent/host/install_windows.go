@@ -330,7 +330,7 @@ func (r installRoots) buildBridge(ctx context.Context, say func(string, ...any))
 	sel := nic.Select(os.Getenv("BRIARD_NIC"), "")
 	member := sel.Dev
 	if member == nic.BridgeName {
-		member, _ = nic.MemberSpeed(nic.BridgeName)
+		member, _, _ = nic.Member(nic.BridgeName)
 	}
 	if member == "" {
 		return fmt.Errorf("no network adapter to bridge: %s", sel.Fix())

@@ -15,9 +15,9 @@ func (cfg Config) mirrorLink(ctx context.Context, m *linkMirror, logf func(strin
 	if cfg.net == nil || !cfg.net.Bridge {
 		return
 	}
-	member, _ := nic.MemberSpeed(cfg.net.Parent)
+	member, _, carrier := nic.Member(cfg.net.Parent)
 	g := platform.Adopt(cfg.guestSpec())
-	if m.tick(ctx, member, member != "" && nic.Up(member), g.SetSystemLink, logf) {
+	if m.tick(ctx, member, carrier, g.SetSystemLink, logf) {
 		cfg.lease.askNow() // the carrier back: the lease re-asks (lease.go)
 		// AND THE GUEST SAYS WHERE IT IS. The bridge forgets where the guest's addresses live
 		// when its member's media cycles (measured on a radio re-association: the host back in
@@ -32,8 +32,9 @@ func (cfg Config) mirrorLink(ctx context.Context, m *linkMirror, logf func(strin
 }
 
 // linkChanges wakes the observe loop for the mirror alone when Windows reports an interface
-// change, so a carrier edge is mirrored in milliseconds rather than at the next tick; the tick
-// still runs the mirror, so a lost notification costs at most one tick. nil (never ready) without
+// change, so a carrier edge is mirrored in milliseconds rather than at the next network check; the
+// check still runs the mirror, so a lost notification costs at most one check (netCheckTicks).
+// nil (never ready) without
 // a bridge, or when the notification cannot be registered.
 func (cfg Config) linkChanges(logf func(string, ...any)) <-chan struct{} {
 	if cfg.net == nil || !cfg.net.Bridge {
@@ -41,7 +42,7 @@ func (cfg Config) linkChanges(logf func(string, ...any)) <-chan struct{} {
 	}
 	ch, err := nic.LinkChanges()
 	if err != nil {
-		logf("network: no interface-change notifications (%v); the guest's link follows the NIC's carrier at each tick only", err)
+		logf("network: no interface-change notifications (%v); the guest's link follows the NIC's carrier at each network check only", err)
 	}
 	return ch
 }

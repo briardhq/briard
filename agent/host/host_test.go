@@ -758,6 +758,34 @@ func TestObserveAsksTheAddressOncePerCycle(t *testing.T) {
 	}
 }
 
+// A REQUEST IS NOT A CYCLE. The tray asks for status every 5 s and the page polls while a card
+// moves; each is answered from what the last tick saw, never by running the tick's reads again,
+// which once doubled the idle agent's cost. With an hour-long tick, ten requests leave the loop
+// at its one first cycle.
+func TestObserveAnswersARequestWithoutACycle(t *testing.T) {
+	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Hour}
+	cfg.Resource.Name = "r0"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var cycles int
+	r := fakeStatus{qs: model.QuorumState{Primary: true, Quorate: true}, health: true, clusterAsked: &cycles}
+	local := make(chan localRequest)
+	done := make(chan error, 1)
+	go func() {
+		done <- cfg.observe(ctx, r, nil, nil, nil, nil, nil, nil, "", local, &[]api.DirectiveOutcome{}, func(string, ...any) {})
+	}()
+	for range 10 {
+		await(t, "status", submit(local, api.DirectiveStatus), 5*time.Second)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("observe = %v", err)
+	}
+	if cycles != 1 {
+		t.Errorf("ten requests ran %d cycles; want the loop's first alone", cycles)
+	}
+}
+
 // captureClient records the last reported status and stops observe after one report.
 type captureClient struct {
 	last   *api.NodeStatus

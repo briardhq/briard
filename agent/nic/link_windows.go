@@ -179,8 +179,8 @@ func built(dev string) bool {
 	if up(dev) {
 		return true
 	}
-	member, _ := MemberSpeed(m)
-	return member != "" && !up(member)
+	member, _, carrier := Member(m)
+	return member != "" && !carrier
 }
 
 // bridgeComponent is the PnP ComponentId of the miniport a Network Bridge is: the NDIS IM
@@ -336,8 +336,7 @@ func DefaultRoute(string) string {
 		}
 		carrier := a.up
 		if a.name == BridgeName {
-			m, _ := MemberSpeed(BridgeName)
-			carrier = m != "" && up(m)
+			_, _, carrier = Member(BridgeName)
 		} else if !isHardware(a.index) {
 			continue
 		}
@@ -368,7 +367,7 @@ func Uplink(parent string) (string, bool) {
 	if parent != BridgeName {
 		return parent, false
 	}
-	m, _ := MemberSpeed(parent)
+	m, _, _ := Member(parent)
 	return m, true
 }
 
@@ -403,7 +402,7 @@ func Settling() string {
 			continue
 		}
 		if a.name == BridgeName {
-			if m, _ := MemberSpeed(BridgeName); m != "" && up(m) {
+			if m, _, carrier := Member(BridgeName); m != "" && carrier {
 				return a.name
 			}
 			continue

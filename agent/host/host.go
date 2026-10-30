@@ -1518,32 +1518,35 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// every read the loop does before it acts. Logged on the status line so the soak's journal
 		// carries it and a slow tick shows up without anyone looking for it.
 		tickStart := time.Now()
-		// The host's side of the guest's L2, re-asserted before anything is read over it.
-		// Check-first and silent when nothing moved, which is every cycle on a host
-		// nothing else touches -- but our system-subnet address can sit on a device
-		// NetworkManager manages, and NM reconciles addresses on a connection's reactivation.
-		cfg.beat.Beat()
-		cfg.convergeNetwork(ctx, logf)
-		// ...the LAN record's gateway MAC, if the bring-up could not read it (reparent.go)...
-		cfg.completeNetworkRecord(ctx, logf)
-		// ...and the harder question the same tick is the only place to ask: has the
-		// PARENT gone away? qemu does not notice — it keeps running with a dead NIC, so the guest
-		// is alive, healthy by its own account, and unreachable. Paced, because the repair costs
-		// the household a guest restart; see reparent.go for what each tier is paying for.
-		if dev, rel := rp.consider(ctx, cfg, time.Now(), logf); dev != "" {
-			if err := cfg.reparent(ctx, up, n, dev, rel, logf); err != nil {
-				logf("network: %v", err)
-			} else {
-				// The guest was restarted under us, so this channel is dead and the Manager
-				// already holds the new one. Hand back the way an OS upgrade does and let Run
-				// adopt it, rather than growing a second way to swap the channel.
-				return guestfirmware.ErrChannelDown
+		// THE NETWORK CHECKS, every netCheckTicks-th tick and the loop's first (network.go).
+		if cycle%netCheckTicks == 0 {
+			// The host's side of the guest's L2, re-asserted before anything is read over it.
+			// Check-first and silent when nothing moved, which is every check on a host
+			// nothing else touches -- but our system-subnet address can sit on a device
+			// NetworkManager manages, and NM reconciles addresses on a connection's reactivation.
+			cfg.beat.Beat()
+			cfg.convergeNetwork(ctx, logf)
+			// ...the LAN record's gateway MAC, if the bring-up could not read it (reparent.go)...
+			cfg.completeNetworkRecord(ctx, logf)
+			// ...and the harder question the same tick is the only place to ask: has the
+			// PARENT gone away? qemu does not notice — it keeps running with a dead NIC, so the guest
+			// is alive, healthy by its own account, and unreachable. Paced, because the repair costs
+			// the household a guest restart; see reparent.go for what each tier is paying for.
+			if dev, rel := rp.consider(ctx, cfg, time.Now(), logf); dev != "" {
+				if err := cfg.reparent(ctx, up, n, dev, rel, logf); err != nil {
+					logf("network: %v", err)
+				} else {
+					// The guest was restarted under us, so this channel is dead and the Manager
+					// already holds the new one. Hand back the way an OS upgrade does and let Run
+					// adopt it, rather than growing a second way to swap the channel.
+					return guestfirmware.ErrChannelDown
+				}
 			}
+			// ...and on Windows, the guest's link follows the household NIC's carrier, so the bridge
+			// is down to Windows when that NIC is (linkmirror.go).
+			cfg.beat.Beat()
+			cfg.mirrorLink(ctx, lm, logf)
 		}
-		// ...and on Windows, the guest's link follows the household NIC's carrier, so the bridge
-		// is down to Windows when that NIC is (linkmirror.go).
-		cfg.beat.Beat()
-		cfg.mirrorLink(ctx, lm, logf)
 		// The running system is read from the guest each cycle, so it is correct even on a node
 		// that switched closure without this loop driving it.
 		cfg.beat.Beat()

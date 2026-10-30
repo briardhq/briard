@@ -14,7 +14,7 @@ func (cfg Config) checkFastNIC(ctx context.Context, n notify.Notifier, logf func
 	if cfg.net == nil || !cfg.net.Bridge {
 		return
 	}
-	member, bps := nic.MemberSpeed(cfg.net.Parent)
+	member, bps, _ := nic.Member(cfg.net.Parent)
 	if al, ok := fastNICAlert(member, bps); ok {
 		fireAlert(ctx, n, logf, al)
 	}

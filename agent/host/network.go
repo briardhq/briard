@@ -39,6 +39,13 @@ const netTick = 10 * time.Second
 // NIC that never gets a gateway costs each cold start.
 const netSettle = 30 * time.Second
 
+// netCheckTicks is how many status ticks apart the observe loop runs its network checks -- the
+// converger, the reparenter, the link mirror -- the first tick of a loop included: 15 s on a shipped
+// node. None of them needs 5 s: the reparenter waits minutes before it moves anything, the
+// converger repairs drift, and the mirror's edges arrive as Windows' notification, which wakes the
+// loop at once. And on Windows each check is a handful of full IP Helper walks.
+const netCheckTicks = 3
+
 // linksPresent reports whether every device this node's config names is already built. It is the
 // hot path's whole question: an agent that finds its devices there has nothing to build, whether
 // they were built by its own previous life or by a rig that owns the substrate itself. Callers

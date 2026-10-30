@@ -172,7 +172,7 @@ func SwapMember(ctx context.Context, bridge, to string, prev Offload) (Offload, 
 	if !ok || t.filter || IsBridge(to) || master(to) != "" || t.name == TapName || strings.HasPrefix(t.desc, tapDescription) || !isHardware(t.index) {
 		return Offload{}, fmt.Errorf("%q is not a standalone physical adapter to swap into %s", to, bridge)
 	}
-	from, _ := MemberSpeed(bridge)
+	from, _, _ := Member(bridge)
 	rec, err := offloadOff(ctx, t)
 	if err != nil {
 		return rec, err
@@ -272,18 +272,20 @@ func tapAdapter(as []adapter) (adapter, bool) {
 	return found[0], true
 }
 
-// MemberSpeed names the household's NIC in bridge -- the member that is not our TAP -- and its link
-// speed in bits/s. The bridge's own speed is the SUM of its members (measured: 2 Gbps on a gigabit
-// NIC plus the TAP), so it is never the question. ("", 0) when there is no such member.
-func MemberSpeed(bridge string) (string, uint64) {
+// Member names the household's NIC in bridge -- the member that is not our TAP -- with its link
+// speed in bits/s and its carrier, all from one read of the adapters: the tick asks this every
+// check, and each read is a full IP Helper walk. The bridge's own speed is the SUM of its members
+// (measured: 2 Gbps on a gigabit NIC plus the TAP), and its own status the OR, so neither is ever
+// the question. ("", 0, false) when there is no such member.
+func Member(bridge string) (string, uint64, bool) {
 	as, rows := adapters(), stack()
 	for _, a := range as {
 		if a.name == "" || a.filter || a.name == TapName || masterIn(as, rows, a.name) != bridge {
 			continue
 		}
-		return a.name, Speed(a.name)
+		return a.name, speedOf(a.index), a.up
 	}
-	return "", 0
+	return "", 0, false
 }
 
 // Speed is dev's link speed in bits/s, 0 when it cannot be read.
@@ -292,7 +294,11 @@ func Speed(dev string) uint64 {
 	if !ok {
 		return 0
 	}
-	row := windows.MibIfRow2{InterfaceIndex: a.index}
+	return speedOf(a.index)
+}
+
+func speedOf(index uint32) uint64 {
+	row := windows.MibIfRow2{InterfaceIndex: index}
 	if windows.GetIfEntry2Ex(windows.MibIfEntryNormalWithoutStatistics, &row) != nil {
 		return 0
 	}
@@ -360,7 +366,7 @@ var (
 func DestroyBridge(ctx context.Context, rec Offload) error {
 	as := adapters()
 	if b, ok := byName(as, BridgeName); ok && IsBridge(BridgeName) {
-		member, _ := MemberSpeed(BridgeName)
+		member, _, _ := Member(BridgeName)
 		if err := netsh(ctx, "bridge", "destroy", b.guid); err != nil {
 			return fmt.Errorf("netsh bridge destroy: %w", err)
 		}

@@ -270,7 +270,7 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 	// leaves the device there, up and carrying nothing. None of them alone moves anything -- the
 	// move needs a successor in hand (below), so a cold boot with the cable out, or a one-NIC
 	// desktop with its cable pulled, only waits.
-	if up != "" && nic.Exists(up) && nic.Carrier(up) {
+	if up != "" && nic.Carrier(up) { // a device that is not there has no carrier, on either OS
 		if !r.goneSince.IsZero() {
 			logf("network: %s is back; nothing to re-parent", up)
 			r.goneSince, r.said = time.Time{}, ""
