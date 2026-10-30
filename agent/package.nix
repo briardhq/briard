@@ -33,10 +33,12 @@
 # goos: "windows" cross-compiles the Windows host agent (briard-agent.exe) -- a plain Go cross build,
 # which is the whole reason the agent is pure Go. The ELF check below does not apply to a PE file.
 # gui: a Windows GUI-subsystem program (the tray), which Windows starts without a console window.
-# rc: a Windows resource script beside the main (its icon, version info and manifest, agent/cmd/
+# winres: a Windows resource script beside the main (its icon, version info and manifest, agent/cmd/
 # briard.rc), compiled by mingw's windres into the .syso the Go linker takes by itself -- the same
 # cross toolchain the Windows QEMU builds with. The host's cpp is its preprocessor.
-{ lib, buildGoModule, patchelf, pkgsCross, subPackage ? "agent/cmd/briard-agent", version ? "0.0.0-dev", goos ? null, gui ? false, rc ? null }:
+# ⚠️ No argument here may share a name with a package: callPackage fills it from pkgs over its
+# default. This one was `rc` -- the Plan 9 shell -- and every build that left it unset ran windres.
+{ lib, buildGoModule, patchelf, pkgsCross, subPackage ? "agent/cmd/briard-agent", version ? "0.0.0-dev", goos ? null, gui ? false, winres ? null }:
 let
   # The release id as Windows' four 16-bit version fields: v3.26102922.e073879 is 3.2610.2922.0
   # (the epoch, then the commit hour split in two); any other version, a dev build's, is 0.0.0.0.
@@ -57,7 +59,7 @@ buildGoModule {
   env.CGO_ENABLED = 0;
   # In preBuild rather than env: buildGoModule sets GOOS/GOARCH itself, over anything in env.
   preBuild = lib.optionalString (goos != null) "export GOOS=${goos} GOARCH=amd64\n"
-    + lib.optionalString (rc != null) "(cd ${dirOf rc} && x86_64-w64-mingw32-windres --preprocessor=cpp -DBRIARD_VERSION=${version} -DBRIARD_FILEVERSION=${winVersion} -O coff -i ${baseNameOf rc} -o rsrc_windows_amd64.syso)\n";
+    + lib.optionalString (winres != null) "(cd ${dirOf winres} && x86_64-w64-mingw32-windres --preprocessor=cpp -DBRIARD_VERSION=${version} -DBRIARD_FILEVERSION=${winVersion} -O coff -i ${baseNameOf winres} -o rsrc_windows_amd64.syso)\n";
   # A cross-compiled test binary cannot run here; the Windows tests run on a Windows machine.
   doCheck = goos == null;
   # The PE is NOT stripped by the fixup: binutils' strip is an ELF tool, and run over the PE Go
@@ -74,7 +76,7 @@ buildGoModule {
   # cgo would otherwise ship an agent that cannot start on any machine without this exact store
   # path -- the failure we already shipped once, and one no NixOS test can see. This fails the
   # build instead: it is checked on the built binary, so it cannot go vacuous.
-  nativeBuildInputs = [ patchelf ] ++ lib.optional (rc != null) pkgsCross.ucrt64.buildPackages.binutils;
+  nativeBuildInputs = [ patchelf ] ++ lib.optional (winres != null) pkgsCross.ucrt64.buildPackages.binutils;
   postFixup = lib.optionalString (goos == null) ''
     if interp=$(patchelf --print-interpreter "$out/bin/briard-agent" 2>/dev/null) && [ -n "$interp" ]; then
       echo "briard-agent has an ELF interpreter ($interp) -- it must be STATIC, or it cannot exec" >&2
