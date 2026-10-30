@@ -209,7 +209,8 @@ func QuietPoint(members []SnapshotEntry, member string) (SnapshotEntry, bool) {
 // useful ones.
 //
 // A member is kept if it is the restore point of an event under RetainEvents old, of the latest
-// app-update for RetainLastUpdate, held by an app sidecar for RetainApp, the NEWEST member, a start still PENDING evaluation, the newest
+// app-update for RetainLastUpdate, held by an app sidecar for RetainApp, a night from the backup
+// for RetainEvents from when it was put there, the NEWEST member, a start still PENDING evaluation, the newest
 // EVALUATED member (what that evaluation compares with, so pruning waits for it), or S₀, the start
 // of a quiet stretch that has no quiet point yet (QuietPoint needs it). Everything else is a
 // sample that anchors nothing, and the next one has replaced it.
@@ -244,6 +245,11 @@ func RetentionPrune(members []SnapshotEntry, now time.Time) []string {
 		case ev != nil && now.Sub(ev.At) <= RetainEvents:
 		case i == lastUpdate && now.Sub(ev.At) <= RetainLastUpdate:
 		case m.App && now.Sub(at) <= RetainApp:
+		// A NIGHT FROM THE BACKUP, put in the ring to be restored: the undo point the restore takes
+		// next is a take, and every take prunes, so being the newest does not carry it to its own
+		// swap. Kept as long as an event, from when it was put there; after the swap it shares its
+		// extents with the live copy, and one a failed restore left goes with the window.
+		case m.Meta.Trigger == TriggerFromBackup && now.Sub(at) <= RetainEvents:
 		default:
 			prune = append(prune, m.Member)
 		}

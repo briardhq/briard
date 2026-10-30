@@ -398,3 +398,20 @@ func TestAMemberFromTheBackupIsABeforeSampleAndTheNewest(t *testing.T) {
 		}
 	}
 }
+
+// TestRetentionKeepsANightFromTheBackupThroughItsRestore: a restore from the backup puts the night
+// in the ring, then takes its undo point -- a take, which prunes -- and only then swaps the night
+// in. The night is no longer the newest by then and anchors no event, so it needs a rule of its
+// own, or the prune takes it out from under its own swap. Kept as long as an event, from when it
+// was put there.
+func TestRetentionKeepsANightFromTheBackupThroughItsRestore(t *testing.T) {
+	night := sample(TriggerFromBackup, 2*time.Second)
+	undo := anchor(TriggerAppUndoBefore, time.Second, ReasonAppUndo, 0, "Restored the backup from Thu 29 Oct, 01:34")
+	if pruned(t, night, undo)[night.Member] {
+		t.Error("the undo point's prune took the night it was about to restore")
+	}
+	stale := sample(TriggerFromBackup, 6*day)
+	if !pruned(t, stale, sample(TriggerClock, time.Hour), undo)[stale.Member] {
+		t.Error("a night put in the ring six days ago outlived the five-day window")
+	}
+}
