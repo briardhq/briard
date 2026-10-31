@@ -360,7 +360,7 @@ pkgs.testers.runNixOSTest {
         host.succeed(f"ln -sf ${channel}/briard/{V}/linux-amd64/briard-agent /srv/briard/{ptr}/linux-amd64/briard-agent")
     # The catalog's index, as published: the real one, signed here with the rig's key. No
     # manifest is served beside it (see channelEnv).
-    host.succeed(f"mkdir -p /srv/catalog && cp ${catalogIndex} /srv/catalog/index.json")
+    host.succeed("mkdir -p /srv/catalog && cp ${catalogIndex} /srv/catalog/index.json")
     host.succeed(f"{stub} sign /root/release.key /srv/catalog/index.json | base64 -d > /srv/catalog/index.json.sig")
 
     host.succeed(
