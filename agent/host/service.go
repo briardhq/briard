@@ -767,6 +767,7 @@ func specOf(raw []byte) (model.ServiceSpec, quadlet.Rendered, error) {
 		// The identity of the bytes as read, not of a re-marshalling of them -- Parse returns it
 		// here for free, which is why the report reads it from the spec.
 		Manifest:    string(id),
+		Version:     m.Version,
 		MinMemoryMB: m.MinMemoryMB,
 	}, rendered, nil
 }

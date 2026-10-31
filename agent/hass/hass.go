@@ -139,13 +139,15 @@ const implPath = implDir + "/briard_ha.py"
 // step with the catalog.
 const mqttPortToken = "@MQTT_PORT@"
 
-// alertsPathToken, dashboardURLToken and externalURLPathToken are the integration's other
-// placeholders: where it reads the alert copy inside the container, the page its Repairs issues
-// link to, and where it reads the external URL. Each value has one definition elsewhere (the
+// alertsPathToken, appsPathToken, dashboardURLToken and externalURLPathToken are the
+// integration's other placeholders: where it reads the alert copy and the apps' releases inside
+// the container, the page its Repairs issues and updates link to, and where it reads the
+// external URL. Each value has one definition elsewhere (the
 // binds, shared/routes, ExternalURLPath), so the integration carries a token rather than a
 // second copy.
 const (
 	alertsPathToken      = "@ALERTS_PATH@"
+	appsPathToken        = "@APPS_PATH@"
 	dashboardURLToken    = "@DASHBOARD_URL@"
 	externalURLPathToken = "@EXTERNAL_URL_PATH@"
 )
@@ -203,6 +205,12 @@ var stubSource string
 
 //go:embed component/manifest.json
 var stubManifest string
+
+// stubUpdate is the stub's update platform: Home Assistant imports a platform only from the
+// integration's package, so the apps' update entities need a file there that delegates.
+//
+//go:embed component/update.py
+var stubUpdate string
 
 //go:embed briard_ha.py
 var implSource string
@@ -470,6 +478,7 @@ func writeIntegration(ctx context.Context, x Executor, mqttPort int) error {
 	for _, t := range [][2]string{
 		{mqttPortToken, strconv.Itoa(mqttPort)},
 		{alertsPathToken, alertsMount + "/" + filepath.Base(dashboard.AlertsPath)},
+		{appsPathToken, alertsMount + "/" + filepath.Base(dashboard.AppsPath)},
 		{dashboardURLToken, "http://" + routes.BareFlockHostName + "/"},
 		{externalURLPathToken, mountPoint + "/" + filepath.Base(ExternalURLPath)},
 	} {
@@ -491,6 +500,7 @@ func writeIntegration(ctx context.Context, x Executor, mqttPort int) error {
 	for _, f := range [][2]string{
 		{stubDir + "/__init__.py", stubSource},
 		{stubDir + "/manifest.json", stubManifest},
+		{stubDir + "/update.py", stubUpdate},
 		{stubDir + "/translations/en.json", stubTranslations},
 		{stubDir + "/brand/icon.png", stubIcon},
 		{stubDir + "/brand/icon@2x.png", stubIcon2x},

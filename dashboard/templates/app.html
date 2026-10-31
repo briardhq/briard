@@ -17,14 +17,22 @@
   </section></div>
 {{end}}
 
-{{/* THE APP CARD: an installed app, its one button, and the way to its page -- unless it is on it. */}}
+{{/* THE APP CARD: an installed app, its one button, and the way to its page -- unless it is on it.
+     An update the catalog offers is a badge, one line and an Update button; on the app's own page
+     also the line that says what Briard does around it. An update in flight is the card's state
+     until it ends, and an update that did not finish says so on the card. */}}
 {{define "app-card"}}
-  <div class="card"{{with .HA}}{{if not .Running}} hx-get="/f/app?app={{$.Name}}{{if $.Here}}&here{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>{{template "app-title" .}}</h2>{{with .Functionality}}<p>{{.}}</p>{{end}}</header>
+  <div class="card"{{if or (and .HA (not .HA.Running)) (and .Install .Install.Running)}} hx-get="/f/app?app={{.Name}}{{if .Here}}&here{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>{{template "app-title" .}}{{if .Offering}} <span class="badge" data-variant="secondary">Update available</span>{{end}}</h2>{{with .Functionality}}<p>{{.}}</p>{{end}}</header>
   <section>
-    {{with .HA}}<p>{{if not .Reachable}}Starting…{{else if .Onboarded}}Running at <a href="{{.URL}}" target="_blank" rel="noopener">{{.Host}}</a>{{else if .Running}}Ready for its first open.{{else}}Almost ready — Home Assistant is still starting.{{end}}</p>{{else}}<p>Installed and running.</p>{{end}}
-    {{with .HA}}{{if and .Reachable .Onboarded}}<p class="note">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.URL}}config/person" target="_blank" rel="noopener">Settings → People</a>, your name, “Change password” — no old password is needed.</p>{{end}}{{end}}
+    {{if and .Install .Install.Running}}{{with .Install}}<p>{{with .Progress}}Updating · {{.DoneGB}} of {{.TotalGB}} downloaded ({{.Percent}}%){{else}}Updating · downloading it, then checking that it works{{end}}</p>{{with .Progress}}<progress max="100" value="{{.Percent}}"></progress>{{end}}<p class="note">Started at {{.Since}}. {{$.Title}} is away for a few minutes; if it does not start and work, Briard puts it back by itself.</p>{{end}}
+    {{else}}{{with .HA}}<p>{{if not .Reachable}}Starting…{{else if .Onboarded}}Running at <a href="{{.URL}}" target="_blank" rel="noopener">{{.Host}}</a>{{else if .Running}}Ready for its first open.{{else}}Almost ready — Home Assistant is still starting.{{end}}</p>{{else}}<p>Installed and running.</p>{{end}}
+    {{with .HA}}{{if and .Reachable .Onboarded}}<p class="note">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.URL}}config/person" target="_blank" rel="noopener">Settings → People</a>, your name, “Change password” — no old password is needed.</p>{{end}}{{end}}{{end}}
+    {{with .Install}}{{if and .Update .Failed}}<p class="note">The update did not finish, and {{$.Title}} is as it was: {{.Detail}}</p>{{end}}{{end}}
+    {{if .Offering}}<p>{{if eq .Offer .Running}}A revision of {{.Offer}} is available.{{else}}{{.Offer}} is available{{with .Running}}; you have {{.}}{{end}}.{{end}} You can undo the update afterwards from its History.</p>
+    {{if .Here}}<p class="note">Briard checks that {{.Title}} starts and works after the update, and puts it back by itself if not. {{.Title}} is away for a few minutes while it updates.</p>{{end}}{{end}}
   </section>
   <footer>
+    {{if .Offering}}<form method="post" action="/update/{{.Name}}"><button type="submit" class="btn" data-variant="outline">{{if and .Install .Install.Failed}}Try again{{else}}Update{{end}}</button></form>{{end}}
     {{with .HA}}{{if .Reachable}}<form method="post" action="/open/home-assistant" target="_blank"><button type="submit" class="btn"{{if not .Running}} disabled{{end}}>Open Home Assistant</button></form>{{end}}{{end}}
     {{if not .Here}}<a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a>{{end}}
   </footer></div>
@@ -59,7 +67,7 @@
 <div class="tiles">
   {{template "app-card" .App}}
   <div class="card"><header><h2>About</h2></header><section><div class="item-group">
-    <div class="item"><section><h3>Version</h3><p>{{with .History.Version}}{{.}}{{else}}Not known yet{{end}}</p></section></div>
+    <div class="item"><section><h3>Version</h3><p>{{with .History.Version}}{{.}}{{else}}Not known yet{{end}}{{with .App.Offer}} · {{.}} is available{{end}}</p></section></div>
     <div class="item"><section><h3>On disk</h3><p>{{with .History.OnDisk}}Its image takes {{.}} of this machine; your own data comes on top.{{else}}Not known yet{{end}}</p></section></div>
     {{with .App.HA}}<div class="item"><section><h3>Address</h3><p><code>{{.Host}}</code> on your home network.</p></section></div>{{end}}
     {{with .App.Homepage}}<div class="item"><section><h3>Project</h3><p><a href="{{.}}" target="_blank" rel="noopener">{{.}}</a></p></section></div>{{end}}

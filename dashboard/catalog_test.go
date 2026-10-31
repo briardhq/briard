@@ -229,3 +229,99 @@ func init() {
 		r.hostLists(t, testCatalog())
 	}
 }
+
+// offering is the host's view with Home Assistant installed at 2026.9.4 and, when update, the
+// catalog's 2026.10.1 on offer.
+func offering(update bool) dashboard.Catalog {
+	c := testCatalog()
+	c.Apps[0].Installed, c.Apps[0].Running = true, "2026.9.4"
+	c.Apps[0].Available, c.Apps[0].Version = true, "2026.10.1"
+	c.Apps[0].Update = update
+	if !update {
+		c.Apps[0].Running = "2026.10.1"
+	}
+	return c
+}
+
+// AN UPDATE THE CATALOG OFFERS is a badge, a line naming both versions and the undo, and an
+// Update button on the app's card wherever it shows; the app's own page also says what Briard
+// does around it. The press relays one service-install, as Install does; while it runs the card
+// says it is updating and polls itself, and the home is not "setting up". An update that did
+// not finish says so with the host's reason and a retry; one that did hides the offer until
+// the host's view drops it.
+func TestAnOfferedUpdateIsShownPressedAndTaken(t *testing.T) {
+	r := newRig(t)
+	c := r.trust()
+	r.hostLists(t, offering(true))
+	// The app's page asks the host for its history; a port that is not there answers at once.
+	r.app.port = &fakePort{noPort: true}
+	if _, app := get(t, r, "/apps/home-assistant", c); !strings.Contains(app, "puts it back by itself if not") || !strings.Contains(app, "· 2026.10.1 is available") {
+		t.Errorf("the app's page does not explain the update or name the version on offer: %s", app)
+	}
+	port := newFakePort()
+	r.app.port = port
+	body := r.page(c)
+	for _, want := range []string{"Update available", "2026.10.1 is available; you have 2026.9.4.", "You can undo the update afterwards from its History.", `action="/update/home-assistant"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the offer does not show %q", want)
+		}
+	}
+	if strings.Contains(body, `action="/update/mosquitto"`) {
+		t.Error("an app with nothing on offer has an Update button")
+	}
+	if resp := r.do("POST", "/update/home-assistant", nil, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("update with no session = %d, want 401", resp.StatusCode)
+	}
+	if resp := r.do("POST", "/update/mosquitto", c, nil); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("update of an app with no offer = %d, want 404", resp.StatusCode)
+	}
+
+	if resp := r.do("POST", "/update/home-assistant", c, nil); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("press = %d, want 303", resp.StatusCode)
+	}
+	<-port.waiting
+	body = r.page(c)
+	if !strings.Contains(body, "Updating") || !strings.Contains(body, `hx-get="/f/app?app=home-assistant`) || strings.Contains(body, `action="/update/home-assistant"`) || strings.Contains(body, "Setting up") {
+		t.Errorf("the page while updating does not say so on the card and poll, or offers the button, or is setting up: %s", body)
+	}
+	port.mu.Lock()
+	asked := append([]api.Directive(nil), port.asked...)
+	port.mu.Unlock()
+	if len(asked) != 1 || asked[0].Kind != api.DirectiveServiceInstall || asked[0].Payload != "home-assistant" {
+		t.Fatalf("the host was asked %+v; want exactly one service-install of home-assistant", asked)
+	}
+
+	port.answer <- api.DirectiveOutcome{ID: asked[0].ID, State: api.OutcomeRolledBack, Detail: "home-assistant did not come up"}
+	waitFor := func(want string) string {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			body := r.page(c)
+			if strings.Contains(body, want) || time.Now().After(deadline) {
+				return body
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	body = waitFor("The update did not finish")
+	if !strings.Contains(body, "The update did not finish, and Home Assistant is as it was: home-assistant did not come up") || !strings.Contains(body, "Try again") {
+		t.Errorf("a rolled-back update is not surfaced with its reason and a retry: %s", body)
+	}
+
+	if resp := r.do("POST", "/update/home-assistant", c, nil); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("retry = %d", resp.StatusCode)
+	}
+	<-port.waiting
+	port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: "installed"}
+	deadline := time.Now().Add(5 * time.Second)
+	for body = r.page(c); strings.Contains(body, "Updating ·") && time.Now().Before(deadline); body = r.page(c) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if strings.Contains(body, `action="/update/home-assistant"`) || strings.Contains(body, "Updating ·") {
+		t.Errorf("a taken update is still offered, or still updating, before the host's push: %s", body)
+	}
+	r.hostLists(t, offering(false))
+	if body = r.page(c); strings.Contains(body, "Update available") || strings.Contains(body, "The update did not finish") {
+		t.Errorf("once the host's view drops the offer the card is the ordinary one: %s", body)
+	}
+}

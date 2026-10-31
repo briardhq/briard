@@ -67,6 +67,13 @@ func (a *app) installable(name string) bool {
 	return l != nil && l.Available
 }
 
+// offered says whether the host's view offers an update for a slug: the page may then ask the
+// host to install it over what runs. The host decides again.
+func (a *app) offered(name string) bool {
+	l := a.listed(name)
+	return l != nil && l.Update
+}
+
 // appTitle is an app's name for a person: the index's, or the slug made readable for an app the
 // index does not list (one installed before the index was read, or by hand).
 func (a *app) appTitle(name string) string {

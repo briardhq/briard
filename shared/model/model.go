@@ -124,6 +124,9 @@ type ServiceSpec struct {
 	// a value that cannot change without an install would be a file read per node per cycle for
 	// nothing.
 	Manifest string
+	// Version is that manifest's upstream version, for people: what a page says the service runs
+	// and what an offered update moves it from.
+	Version string
 	// MinMemoryMB is the manifest's declared minimum (shared/manifest.Manifest.MinMemoryMB): what
 	// the guest must hold for this service from its first second, before growth can react.
 	MinMemoryMB int

@@ -58,6 +58,14 @@ type App struct {
 	// Available: the app's signed manifest is published beside the index, so a node can
 	// install it. Absent for an app a household can only ask for.
 	Available bool `json:"available,omitempty"`
+	// Version and Identity restate that manifest, for an available app: its upstream version,
+	// for people, and the Identity of its exact bytes, which is the service a node would install
+	// now. A node that runs the app under another identity has an update to offer, learned from
+	// this one document and with no read that depends on what the node runs. Both or neither,
+	// and neither on an app that is not available; the catalog's own test holds them to the
+	// manifest beside them.
+	Version  string   `json:"version,omitempty"`
+	Identity Identity `json:"identity,omitempty"`
 	// Title is the app's name for a person ("Paperless-ngx").
 	Title string `json:"title"`
 	// Functionality says in two to five brand-less words what the app does ("document
@@ -65,7 +73,7 @@ type App struct {
 	// to most.
 	Functionality string `json:"functionality"`
 	// Description is a few lines on what the app does for a household. It promises nothing
-	// and names no version; the manifest carries the version when there is one.
+	// and names no version; Version does, for an available app.
 	Description string `json:"description"`
 	// Icon is the app's mark as an SVG data URI, or empty, in which case a page shows the
 	// title's initial instead. Bounded in size and checked for scripts and external
@@ -132,8 +140,30 @@ func (idx Index) Validate() error {
 				return err
 			}
 		}
+		if err := validRelease(a); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// identityRe is an Identity as Parse spells one.
+var identityRe = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+
+// validRelease holds Version and Identity to their rule: both or neither, only on an available
+// app, the version one line and the identity a hash as Parse spells it.
+func validRelease(a App) error {
+	switch {
+	case a.Version == "" && a.Identity == "":
+		return nil
+	case !a.Available:
+		return fmt.Errorf("%w: index app %q names a release but is not available", ErrInvalid, a.Name)
+	case a.Version == "" || a.Identity == "":
+		return fmt.Errorf("%w: index app %q names a version or an identity without the other", ErrInvalid, a.Name)
+	case !identityRe.MatchString(string(a.Identity)):
+		return fmt.Errorf("%w: index app %q identity %q is not sha256:<64 hex>", ErrInvalid, a.Name, a.Identity)
+	}
+	return safeValue(a.Name+" version", a.Version)
 }
 
 func validHomepage(name, s string) error {

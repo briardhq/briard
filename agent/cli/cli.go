@@ -95,10 +95,13 @@ var commands = []command{
 	},
 	{
 		name: "app", args: "install|history|undo", group: groupEveryday,
-		synopsis: "install an app, look at its history, or undo changes",
+		synopsis: "install or update an app, look at its history, or undo changes",
 		detail: "install <name> -- the name is an entry in the signed catalog. It downloads the image,\n" +
 			"puts its data on the replicated volume, and starts it behind a health gate that reverts the\n" +
-			"machine if it does not come up. It blocks until the machine reaches a terminal state.\n\n" +
+			"machine if it does not come up. It blocks until the machine reaches a terminal state.\n" +
+			"Run on an installed app, it updates it to the catalog's version the same way, and the update\n" +
+			"is a row in its history. Apps never update by themselves; `briard doctor` lists the updates\n" +
+			"on offer.\n\n" +
 			"history <name> -- what happened to this app, oldest first: updates, undos, the changes\n" +
 			"Briard noticed, and quiet days. Under each row is the point that undoes it.\n\n" +
 			"undo <point> -- undo that row and everything after it, naming the point exactly as history\n" +
@@ -378,7 +381,13 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return 2
 	}
 	name := fs.Arg(0)
-	fmt.Fprintf(stdout, "installing %s (this takes a few minutes; the machine stays up)\n", name)
+	// An installed app the catalog offers an update for is updated by this same act: say so,
+	// and to which version.
+	verb, to := "installing", ""
+	if v := offeredVersion(ctx, *sock, name); v != "" {
+		verb, to = "updating", " to "+v
+	}
+	fmt.Fprintf(stdout, "%s %s%s (this takes a few minutes; the machine stays up)\n", verb, name, to)
 	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveServiceInstall, Payload: name})
 	if err != nil {
 		fmt.Fprintf(stderr, "briard: %v\n", err)
@@ -395,6 +404,10 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		// The address leads because it is the operator's next action. The agent composes it (it
 		// owns the manifest's port and the node's published name) and hands back the whole phrase;
 		// the CLI does not re-derive it, so there is one place the address can be wrong.
+		if to != "" {
+			fmt.Fprintf(stdout, "%s updated%s and healthy; `briard app history %s` can undo it\n", name, to, name)
+			return 0
+		}
 		fmt.Fprintf(stdout, "%s installed and healthy\n", name)
 		if o.Detail != "" {
 			fmt.Fprintf(stdout, "  %s\n", o.Detail)
@@ -410,6 +423,26 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stderr, "%s install failed: %s\n", name, o.Detail)
 		return 1
 	}
+}
+
+// offeredVersion is the version the catalog offers as an update for an installed app, from the
+// agent's status answer; "" when it offers none, or when the agent could not say -- the install
+// itself then reports what happened.
+func offeredVersion(ctx context.Context, sock, name string) string {
+	o, err := host.Submit(ctx, sock, api.Directive{Kind: api.DirectiveStatus})
+	if err != nil || o.State != api.OutcomeDone {
+		return ""
+	}
+	var st host.LocalStatus
+	if json.Unmarshal([]byte(o.Detail), &st) != nil {
+		return ""
+	}
+	for _, u := range st.Updates {
+		if u.Name == name {
+			return u.Version
+		}
+	}
+	return ""
 }
 
 // runHandover is `briard handover` — give this node's work to a peer, on purpose, while it is

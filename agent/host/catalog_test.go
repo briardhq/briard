@@ -17,6 +17,7 @@ import (
 	"briard.io/shared/api"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
+	"briard.io/shared/model"
 	"briard.io/shared/notify"
 )
 
@@ -106,11 +107,11 @@ func TestCatalogRefreshReadsTheIndexAndWhatIsInstallable(t *testing.T) {
 	_, cat := newFakeCatalog(t)
 	s, now := newTestCatalog(t, cat)
 	ctx := context.Background()
-	if v := s.view(); len(v.Apps) != 0 || !v.Fetched.IsZero() {
+	if v := s.view(nil); len(v.Apps) != 0 || !v.Fetched.IsZero() {
 		t.Fatalf("before any read the view must be empty, got %+v", v)
 	}
 	s.refresh(ctx)
-	v := s.view()
+	v := s.view(nil)
 	if len(v.Apps) != 2 || !v.Fetched.Equal(*now) {
 		t.Fatalf("view = %+v", v)
 	}
@@ -126,12 +127,12 @@ func TestCatalogRefreshReadsTheIndexAndWhatIsInstallable(t *testing.T) {
 	off := newCatalogState(s.dir, &manifest.Catalog{BaseURL: "http://127.0.0.1:1", Verifier: indexRing{}}, s.logf)
 	off.now = s.now
 	off.refresh(ctx)
-	if v2 := off.view(); len(v2.Apps) != 2 || !appOf(t, v2, "home-assistant").Available {
+	if v2 := off.view(nil); len(v2.Apps) != 2 || !appOf(t, v2, "home-assistant").Available {
 		t.Errorf("the cache must answer with the catalog unreachable: %+v", v2)
 	}
 	*now = now.Add(catalogRefreshEvery)
 	off.refresh(ctx) // due, fails, keeps what it had
-	if v2 := off.view(); len(v2.Apps) != 2 {
+	if v2 := off.view(nil); len(v2.Apps) != 2 {
 		t.Errorf("a failed read must keep the last index: %+v", v2)
 	}
 }
@@ -158,17 +159,17 @@ func TestCatalogWishTogglesAndIsRefusedWhereItMakesNoSense(t *testing.T) {
 	if o := wish("paperless-ngx"); o.State != api.OutcomeDone || !strings.Contains(o.Detail, "recorded") {
 		t.Errorf("the first press: %+v", o)
 	}
-	if !appOf(t, s.view(), "paperless-ngx").Wished {
+	if !appOf(t, s.view(nil), "paperless-ngx").Wished {
 		t.Error("the view does not show the wish")
 	}
 	again := newCatalogState(s.dir, cat, s.logf)
-	if !appOf(t, again.view(), "paperless-ngx").Wished {
+	if !appOf(t, again.view(nil), "paperless-ngx").Wished {
 		t.Error("the wish did not survive a restart")
 	}
 	if o := wish("paperless-ngx"); o.State != api.OutcomeDone || !strings.Contains(o.Detail, "removed") {
 		t.Errorf("the second press: %+v", o)
 	}
-	if appOf(t, s.view(), "paperless-ngx").Wished {
+	if appOf(t, s.view(nil), "paperless-ngx").Wished {
 		t.Error("the second press did not remove the wish")
 	}
 	if raw, err := os.ReadFile(filepath.Join(s.dir, wishesName)); err != nil || string(raw) != "[]" {
@@ -268,7 +269,7 @@ func TestCatalogWishNoticeIsAnEdge(t *testing.T) {
 			fn := &fakeNotifier{}
 			st := newAlertStore(filepath.Join(t.TempDir(), "alerts.json"), fn, s.logf)
 			ctx := context.Background()
-			none := map[string]bool{}
+			none := map[string]model.ServiceSpec{}
 			s.refresh(ctx)
 			s.toggle(api.Directive{Kind: api.DirectiveWish, Payload: "paperless-ngx"})
 			s.notices(ctx, st, none)
@@ -287,7 +288,7 @@ func TestCatalogWishNoticeIsAnEdge(t *testing.T) {
 				t.Errorf("the notice: %+v", a)
 			}
 			if settle == "installed" {
-				none = map[string]bool{"paperless-ngx": true}
+				none = map[string]model.ServiceSpec{"paperless-ngx": {Name: "paperless-ngx"}}
 			} else {
 				s.toggle(api.Directive{Kind: api.DirectiveWish, Payload: "paperless-ngx"})
 			}
@@ -339,4 +340,69 @@ func TestCatalogViewIsPushedWhenItMoves(t *testing.T) {
 	}
 	none := ""
 	Config{}.pushCatalogView(ctx, g, &fakeNotifier{}, &none, s.logf) // no catalog: nothing, no panic
+}
+
+// THE OFFER is the index's identity against the one this node runs, at every look: an app run
+// under another identity has the index's version on offer; the same identity, an app not
+// installed, an app the index cannot install, or an index that names no identity offers
+// nothing. The Home Assistant file carries the same answer.
+func TestCatalogViewOffersAnUpdate(t *testing.T) {
+	f, cat := newFakeCatalog(t)
+	const newer = "sha256:" + "1111111111111111111111111111111111111111111111111111111111111111"
+	s, _ := newTestCatalog(t, cat)
+	ctx := context.Background()
+	s.refresh(ctx) // an index from before the field: no identity named
+	running := func(id string) map[string]model.ServiceSpec {
+		return map[string]model.ServiceSpec{
+			"home-assistant": {Name: "home-assistant", Manifest: id, Version: "2026.9.4"},
+			"paperless-ngx":  {Name: "paperless-ngx", Manifest: "sha256:by-hand", Version: "2.0"},
+		}
+	}
+	if a := appOf(t, s.view(running("sha256:old")), "home-assistant"); !a.Installed || a.Running != "2026.9.4" || a.Update {
+		t.Fatalf("an index naming no identity must offer nothing: %+v", a)
+	}
+
+	f.mu.Lock()
+	f.idx = strings.Replace(f.idx, `"available":true,`, `"available":true,"version":"2026.10.1","identity":"`+newer+`",`, 1)
+	f.mu.Unlock()
+	s2 := newCatalogState(t.TempDir(), cat, s.logf)
+	s2.now = s.now
+	s2.refresh(ctx)
+
+	cases := []struct {
+		name      string
+		installed map[string]model.ServiceSpec
+		inst      bool
+		update    bool
+	}{
+		{"not installed", nil, false, false},
+		{"runs what the index names", running(newer), true, false},
+		{"runs another identity", running("sha256:old"), true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := s2.view(c.installed)
+			a := appOf(t, v, "home-assistant")
+			if a.Installed != c.inst || a.Update != c.update {
+				t.Fatalf("installed=%v update=%v; want %v %v (%+v)", a.Installed, a.Update, c.inst, c.update, a)
+			}
+			if p := appOf(t, v, "paperless-ngx"); c.installed != nil && (!p.Installed || p.Update) {
+				t.Errorf("an app the index cannot install is never offered an update: %+v", p)
+			}
+			rel := v.Releases()
+			if c.installed == nil {
+				if len(rel) != 0 {
+					t.Fatalf("nothing installed, yet releases %+v", rel)
+				}
+				return
+			}
+			want := dashboard.AppRelease{Name: "home-assistant", Title: "Home Assistant", Running: "2026.9.4", Latest: "2026.9.4"}
+			if c.update {
+				want.Latest, want.Update = "2026.10.1", true
+			}
+			if len(rel) != 2 || rel[0] != want {
+				t.Fatalf("releases %+v; want %+v first", rel, want)
+			}
+		})
+	}
 }

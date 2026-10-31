@@ -2183,10 +2183,14 @@ func TestDashboardBackupIsWrittenSecretThenMovedIn(t *testing.T) {
 }
 
 // dashboard.catalog writes the host's view of the catalog's index the way the casa view is
-// written: parsed as its own shape, into the page's directory, moved in whole.
+// written: parsed as its own shape, into the page's directory, moved in whole -- and the
+// installed apps' releases beside the alert copy, for Home Assistant, the same way.
 func TestDashboardCatalogIsWrittenThenMovedIn(t *testing.T) {
 	x := &fakeExec{}
-	raw, _ := json.Marshal(dashboard.Catalog{Apps: []dashboard.CatalogApp{{App: manifest.App{Name: "paperless-ngx", Title: "Paperless-ngx"}, Wished: true}}})
+	raw, _ := json.Marshal(dashboard.Catalog{Apps: []dashboard.CatalogApp{
+		{App: manifest.App{Name: "paperless-ngx", Title: "Paperless-ngx"}, Wished: true},
+		{App: manifest.App{Name: "home-assistant", Title: "Home Assistant", Available: true, Version: "2026.10.1"}, Installed: true, Running: "2026.9.4", Update: true},
+	}})
 	if _, err := dispatch(x)(context.Background(), verbDashboardCatalog, raw); err != nil {
 		t.Fatal(err)
 	}
@@ -2194,9 +2198,15 @@ func TestDashboardCatalogIsWrittenThenMovedIn(t *testing.T) {
 	if got := x.files[tmp]; !strings.Contains(got, `"name":"paperless-ngx"`) || !strings.Contains(got, `"wished":true`) {
 		t.Errorf("written %q; want the view", got)
 	}
+	apps := dashboard.AppsPath + ".new"
+	if got, want := x.files[apps], `[{"name":"home-assistant","title":"Home Assistant","running":"2026.9.4","latest":"2026.10.1","update":true}]`; got != want {
+		t.Errorf("releases written %q; want %q", got, want)
+	}
 	want := [][]string{
 		{"mkdir", "-p", "-m", "0700", dashboard.Dir},
 		{"mv", "-f", tmp, dashboard.CatalogPath},
+		{"mkdir", "-p", "-m", "0755", dashboard.AlertsDir},
+		{"mv", "-f", apps, dashboard.AppsPath},
 	}
 	if !reflect.DeepEqual(x.runs, want) {
 		t.Errorf("runs = %v, want %v", x.runs, want)

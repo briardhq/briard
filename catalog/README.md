@@ -36,6 +36,8 @@ One entry per line, so a diff reads per app. Each carries:
 |---|---|
 | `name` | the catalog slug — the key; the manifest for an installable app is `<name>.json` beside this file |
 | `available` | `true` when that manifest is published beside this file; omitted otherwise |
+| `version` | for an available entry: its manifest's `version`, for people; omitted otherwise |
+| `identity` | for an available entry: `sha256:` of its manifest's exact bytes — the service a node installs now, and what a node running another identity offers as an update; omitted otherwise |
 | `title` | the app's name for a person |
 | `functionality` | two to five brand-less words on what it does, shown beside the title ("document management system") |
 | `description` | a few lines on what it does for a household; no promise, no version |
@@ -52,6 +54,14 @@ watcher's tick), caches it node-locally, and pushes it to its dashboard, which r
 card from it and never reaches the network itself. One signed listing read whole is what every
 add-on store and package index does; asking the server per app is the shape they left behind,
 and what the install path does on its own when a button is pressed.
+
+**The index also says what an update is.** An available entry's `identity` is its manifest's, so
+a manifest changed here is an index line changed with it (`catalog_test.go` refuses either alone),
+and publishing the new manifest publishes the index after it. A node compares the identity with
+the one it runs and offers the household the update on its page and in Home Assistant; it never
+takes one unasked. An entry that needs a newer briard is published only once that briard is
+`stable` and nodes have had a night to take it — an update offered sooner is one that is tried,
+fails its gate, and is put back.
 
 **Choosing what to list.** The index is for apps a household wants, not a mirror of everything
 that can be self-hosted. Left out on purpose: anything whose role the platform already fills

@@ -252,3 +252,14 @@ func TestDoctorWifiWarns(t *testing.T) {
 		}
 	}
 }
+
+// An offered update is a pass that names the command taking it, one line per app; with none
+// offered there is no line at all.
+func TestDoctorNamesAnOfferedUpdate(t *testing.T) {
+	f := servingLone()
+	f.Updates = []AppUpdate{{Name: "home-assistant", Title: "Home Assistant", Version: "2026.10.1"}}
+	c := checkNamed(t, judgeDoctor(f), "update")
+	if c.Status != reportcard.Pass || c.Detail != "Home Assistant 2026.10.1 is available" || !strings.Contains(c.Fix, "sudo briard app install home-assistant") {
+		t.Errorf("update check = %+v", c)
+	}
+}

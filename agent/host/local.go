@@ -137,8 +137,9 @@ func writeOutcome(conn net.Conn, o api.DirectiveOutcome) {
 }
 
 // LocalStatus is a status directive's answer, as JSON in the outcome's Detail: what the tray
-// shows. Everything in it is already in hand on the loop -- the last tick's health, the alert
-// store, the act lane, the lease's refusal -- so asking costs no read of the guest.
+// shows. Everything in it is already on this host -- the last tick's health, the alert store,
+// the act lane, the lease's refusal, the catalog's view over the installed-service cache -- so
+// asking costs no read of the guest.
 type LocalStatus struct {
 	Serving  bool `json:"serving"`  // the last tick found the node healthy
 	Open     int  `json:"open"`     // alerts open now
@@ -147,6 +148,28 @@ type LocalStatus struct {
 	// network refusal's own line (lease.go) -- or "" when nothing refuses. Waiting does not end
 	// it, so a tray waiting for the page stops on it.
 	Refused string `json:"refused,omitempty"`
+	// Updates is every installed app the catalog offers an update for, in its order: an
+	// offer, not a fault, so it is counted apart from Open.
+	Updates []AppUpdate `json:"updates,omitempty"`
+}
+
+// AppUpdate is one offered update: the app by its catalog name and its title, and the version on
+// offer.
+type AppUpdate struct {
+	Name    string `json:"name"`
+	Title   string `json:"title"`
+	Version string `json:"version"`
+}
+
+// updates is the offers in the catalog's view now.
+func (cfg Config) updates() []AppUpdate {
+	var out []AppUpdate
+	for _, r := range cfg.catalog.view(cfg.installedByName(func(string, ...any) {})).Releases() {
+		if r.Update {
+			out = append(out, AppUpdate{Name: r.Name, Title: r.Title, Version: r.Latest})
+		}
+	}
+	return out
 }
 
 // updateKinds are the acts the tray calls an update.
@@ -165,6 +188,7 @@ func (cfg Config) applyStatus(d api.Directive, n notify.Notifier) api.DirectiveO
 		recs, _ := s.snapshot()
 		st.Open = len(notify.OpenNow(recs))
 	}
+	st.Updates = cfg.updates()
 	b, err := json.Marshal(st)
 	if err != nil {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: err.Error()}

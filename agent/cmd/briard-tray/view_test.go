@@ -122,3 +122,50 @@ func TestLaunch(t *testing.T) {
 		}
 	}
 }
+
+// An update on offer is a menu line, never the icon's state: the app and its version for one,
+// the count for more, nothing while the agent does not answer.
+func TestUpdatesLine(t *testing.T) {
+	ha := host.AppUpdate{Name: "home-assistant", Title: "Home Assistant", Version: "2026.10.1"}
+	mq := host.AppUpdate{Name: "mosquitto", Title: "Mosquitto", Version: "2.1.3"}
+	for _, tc := range []struct {
+		name string
+		r    reading
+		want view
+	}{
+		{"one", reading{status: host.LocalStatus{Serving: true, Updates: []host.AppUpdate{ha}}},
+			view{state: serving, tip: "Briard is running", action: "stop", updates: "Update available: Home Assistant 2026.10.1"}},
+		{"two, with an alert", reading{status: host.LocalStatus{Serving: true, Open: 1, Updates: []host.AppUpdate{ha, mq}}},
+			view{state: degraded, tip: "1 alert needs your attention", action: "stop", open: 1, updates: "2 app updates available"}},
+		{"no answer", reading{err: host.ErrNoAgent, status: host.LocalStatus{Updates: []host.AppUpdate{ha}}},
+			view{state: working, tip: "Briard is starting"}},
+	} {
+		if got := show(tc.r); got != tc.want {
+			t.Errorf("%s: %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// An offer is news once: the first answer never, an offer already made never, a new version of
+// one already offered yes, and a poll that got no answer never.
+func TestOfferToast(t *testing.T) {
+	old := host.AppUpdate{Name: "home-assistant", Title: "Home Assistant", Version: "2026.10.1"}
+	newer := host.AppUpdate{Name: "home-assistant", Title: "Home Assistant", Version: "2026.11.0"}
+	prev := &host.LocalStatus{Updates: []host.AppUpdate{old}}
+	for _, tc := range []struct {
+		name string
+		prev *host.LocalStatus
+		r    reading
+		want string
+	}{
+		{"first answer", nil, reading{status: host.LocalStatus{Updates: []host.AppUpdate{old}}}, ""},
+		{"already offered", prev, reading{status: host.LocalStatus{Updates: []host.AppUpdate{old}}}, ""},
+		{"a newer version", prev, reading{status: host.LocalStatus{Updates: []host.AppUpdate{newer}}}, "Home Assistant 2026.11.0 is available. Click to open Briard and update it."},
+		{"taken", prev, reading{status: host.LocalStatus{}}, ""},
+		{"no answer", prev, reading{err: host.ErrNoAgent, status: host.LocalStatus{Updates: []host.AppUpdate{newer}}}, ""},
+	} {
+		if got := offerToast(tc.prev, tc.r); got != tc.want {
+			t.Errorf("%s: offerToast = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

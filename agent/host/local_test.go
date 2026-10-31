@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"briard.io/agent/install"
 	"briard.io/internal/testsock"
 	"briard.io/shared/api"
+	"briard.io/shared/manifest"
 	"briard.io/shared/notify"
 )
 
@@ -221,13 +223,13 @@ func TestStatusAnswersFromTheLastTick(t *testing.T) {
 		}
 		return st
 	}
-	if got := status(Config{}, nil); got != (LocalStatus{}) {
+	if got := status(Config{}, nil); !reflect.DeepEqual(got, LocalStatus{}) {
 		t.Errorf("a bare Config = %+v, want the zero answer", got)
 	}
 	cfg := Config{healthy: new(atomic.Bool), acts: newActLane()}
 	cfg.healthy.Store(true)
 	s := testStore(t, nil)
-	if got := status(cfg, s); got != (LocalStatus{Serving: true}) {
+	if got := status(cfg, s); !reflect.DeepEqual(got, LocalStatus{Serving: true}) {
 		t.Errorf("serving = %+v", got)
 	}
 	for _, a := range []notify.Alert{open("disk", "low"), open("clock", "off"), resolved("clock"), event("slept")} {
@@ -235,7 +237,7 @@ func TestStatusAnswersFromTheLastTick(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := status(cfg, s); got != (LocalStatus{Serving: true, Open: 1}) {
+	if got := status(cfg, s); !reflect.DeepEqual(got, LocalStatus{Serving: true, Open: 1}) {
 		t.Errorf("degraded = %+v, want one open", got)
 	}
 	for kind, updating := range map[string]bool{api.DirectiveAgentUpdate: true, api.DirectiveUpgradeSystem: true,
@@ -269,5 +271,43 @@ func TestStatusAnswersFromTheLastTick(t *testing.T) {
 	named = true
 	if got := status(cfg, s); got.Refused != "" {
 		t.Errorf("a named address still reads as refused: %q", got.Refused)
+	}
+}
+
+// The tray's offers are the catalog's: an installed app the index names under another identity
+// is one update, by title and the index's version; once it runs that identity there is none.
+func TestStatusCarriesOfferedUpdates(t *testing.T) {
+	raw, err := json.Marshal(testManifest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, id, err := manifest.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{ServiceCache: t.TempDir()}
+	if err := cfg.cacheService("home-assistant", raw); err != nil {
+		t.Fatal(err)
+	}
+	f, cat := newFakeCatalog(t)
+	offer := func(identity string) LocalStatus {
+		t.Helper()
+		f.mu.Lock()
+		f.idx = strings.Replace(testIndex, `"available":true,`, `"available":true,"version":"2026.10.1","identity":"`+identity+`",`, 1)
+		f.mu.Unlock()
+		cfg.catalog, _ = newTestCatalog(t, cat)
+		cfg.catalog.refresh(context.Background())
+		o := cfg.applyStatus(api.Directive{ID: "s"}, nil)
+		var st LocalStatus
+		if err := json.Unmarshal([]byte(o.Detail), &st); err != nil {
+			t.Fatalf("status detail %q: %v", o.Detail, err)
+		}
+		return st
+	}
+	if got := offer("sha256:" + strings.Repeat("1", 64)); !reflect.DeepEqual(got.Updates, []AppUpdate{{Name: "home-assistant", Title: "Home Assistant", Version: "2026.10.1"}}) {
+		t.Errorf("updates = %+v, want Home Assistant 2026.10.1", got.Updates)
+	}
+	if got := offer(string(id)); got.Updates != nil {
+		t.Errorf("the index names what runs, yet updates = %+v", got.Updates)
 	}
 }

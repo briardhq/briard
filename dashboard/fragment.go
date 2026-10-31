@@ -1,7 +1,7 @@
 package main
 
-// THE MOVING PARTS: a card that is on its way -- an install, a Home Assistant still starting, a
-// name claim waiting on its link or its check, an undo in flight -- polls itself through htmx,
+// THE MOVING PARTS: a card that is on its way -- an install or an update, a Home Assistant still
+// starting, a name claim waiting on its link or its check, an undo in flight -- polls itself through htmx,
 // the one script on the page, and nothing else on the page polls at all. The template puts the
 // hx-get on the card only while its part moves, and the fragment answers with the same partial
 // over the same view, so the page and its poll cannot disagree. When the part has stopped
@@ -76,7 +76,7 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 			tmpl, moving = "installing", av.Install != nil && av.Install.Running
 		} else {
 			av.Here = r.URL.Query().Has("here")
-			tmpl, moving = "app-card", av.HA != nil && !av.HA.Running
+			tmpl, moving = "app-card", av.HA != nil && !av.HA.Running || av.Install != nil && av.Install.Running
 		}
 	case "address-step", "address-card":
 		// The step is over the name alone, and moves only while it is still owed: a claim that

@@ -84,6 +84,9 @@ type doctorFacts struct {
 	// Casa is the registered casa name ("" when none), and the casa runner's resolve check for
 	// CasaAddr: CasaResolves is dashboard.Casa.Resolves, CasaNote what an unfinished one awaits.
 	Casa, CasaAddr, CasaResolves, CasaNote string
+
+	// Updates is the catalog's offers for what this node runs (LocalStatus.Updates).
+	Updates []AppUpdate
 }
 
 // applyDoctor gathers doctorFacts and answers with the judged checks as JSON.
@@ -105,6 +108,7 @@ func (cfg Config) applyDoctor(ctx context.Context, d api.Directive, r guestReade
 	}
 	f.Refused, f.RefusedFix = cfg.lease.refusal()
 	cs.doctor(&f)
+	f.Updates = cfg.updates()
 	if f.DataDisk != "" {
 		_, err := os.Stat(f.DataDisk)
 		f.DiskFound = err == nil
@@ -294,6 +298,14 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		default:
 			add("volume", reportcard.Pass, fmt.Sprintf("%d MB free of %d MB", f.VolFree>>20, f.VolTot>>20), "")
 		}
+	}
+
+	// AN UPDATE ON OFFER IS NOT A FAULT: a pass, with the one command that takes it, because
+	// nothing takes it unasked and the CLI is the only place a person without the page hears of
+	// it.
+	for _, u := range f.Updates {
+		add("update", reportcard.Pass, fmt.Sprintf("%s %s is available", u.Title, u.Version),
+			fmt.Sprintf("`sudo briard app install %s` updates it, and puts it back by itself if it does not come up", u.Name))
 	}
 
 	if f.CertAsked {

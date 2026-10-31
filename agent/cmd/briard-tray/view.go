@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"time"
 
 	"briard.io/agent/host"
@@ -45,9 +46,21 @@ type view struct {
 	tip    string
 	action string
 	open   int // alerts open, for the menu's count; 0 hides it
+	// updates is the menu's line for the apps' updates on offer, "" for none: an offer, not a
+	// fault, so it never touches the icon's state.
+	updates string
 }
 
 func show(r reading) view {
+	v := look(r)
+	if r.err == nil && r.refusal == "" {
+		v.updates = updatesLine(r.status.Updates)
+	}
+	return v
+}
+
+// look is the icon, its tooltip and its action for a reading.
+func look(r reading) view {
 	switch {
 	case r.pending == "stop" && !(r.err != nil && r.down):
 		return view{state: working, tip: "Briard is stopping"}
@@ -146,4 +159,31 @@ func launch(r reading, started bool, waited time.Duration) (step, string) {
 		return failWith, "Briard is not ready after " + launchBound.String() + ": " + show(r).tip + ". Try again in a few minutes."
 	}
 	return waitFor, ""
+}
+
+// updatesLine is the menu's line for the updates on offer: the app and its version when there
+// is one, the count when there are more.
+func updatesLine(us []host.AppUpdate) string {
+	switch len(us) {
+	case 0:
+		return ""
+	case 1:
+		return "Update available: " + us[0].Title + " " + us[0].Version
+	}
+	return fmt.Sprintf("%d app updates available", len(us))
+}
+
+// offerToast is the notification for an update the last answer did not offer, "" for none. As
+// with alerts the first answer is never news -- what was on offer at logon is in the menu -- and
+// a poll that got no answer offers nothing new. One update is named; the menu holds the rest.
+func offerToast(prev *host.LocalStatus, r reading) string {
+	if r.err != nil || r.refusal != "" || prev == nil {
+		return ""
+	}
+	for _, u := range r.status.Updates {
+		if !slices.Contains(prev.Updates, u) {
+			return u.Title + " " + u.Version + " is available. Click to open Briard and update it."
+		}
+	}
+	return ""
 }

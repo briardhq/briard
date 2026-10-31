@@ -128,6 +128,26 @@ func startInstall(t *testing.T, r *rig, c *http.Cookie, port *fakePort) {
 	}
 }
 
+// galleryOffer is the host's view with Home Assistant installed at galleryRing's 2026.8.0 and
+// the catalog's 2026.9.4 on offer.
+func galleryOffer(t *testing.T, r *rig) {
+	t.Helper()
+	c := testCatalog()
+	c.Apps[0].Installed, c.Apps[0].Running, c.Apps[0].Version, c.Apps[0].Update = true, "2026.8.0", "2026.9.4", true
+	r.hostLists(t, c)
+}
+
+// startUpdate is the Update button, held at the port until the state answers it.
+func startUpdate(t *testing.T, r *rig, c *http.Cookie, port *fakePort) {
+	t.Helper()
+	r.do("POST", "/update/home-assistant", c, nil)
+	select {
+	case <-port.waiting:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the update never reached the port")
+	}
+}
+
 // galleryRing is the history the host reports: a quiet day on 2026.7.1, the update to 2026.8.0
 // taken quiesced, and the start after it; with broken set, that update did not start cleanly
 // and the app is unhealthy now.
@@ -535,6 +555,44 @@ var galleryStates = []galleryState{
 				time.Sleep(20 * time.Millisecond)
 			}
 			return apps(t, r, c, port)
+		}},
+	// AN UPDATE ON OFFER, and the press: the home, the apps page and the app's own page.
+	{"home-update-offered", "The catalog offers Home Assistant 2026.9.4 over the 2026.8.0 it runs: the badge, the line, the Update button.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			galleryOffer(t, r)
+			return home(t, r, c, port)
+		}},
+	{"apps-update-offered", "The apps page with an update on offer for an installed app.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			galleryOffer(t, r)
+			return apps(t, r, c, port)
+		}},
+	{"app-update-offered", "Home Assistant's page with an update on offer: the line that says what Briard does around it, and the version on offer.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			galleryOffer(t, r)
+			answerHistory(port, galleryRing(false))
+			return "/apps/home-assistant", c
+		}},
+	{"home-updating", "The update in flight: the card says so and follows it, and the home is not setting up.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			galleryOffer(t, r)
+			startUpdate(t, r, c, port)
+			return home(t, r, c, port)
+		}},
+	{"home-update-rolled-back", "The update did not come up and was put back: the reason, and the button to try again.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			galleryOffer(t, r)
+			startUpdate(t, r, c, port)
+			port.answer <- api.DirectiveOutcome{State: api.OutcomeRolledBack, Detail: "home-assistant 2026.9.4 did not come up within 15m0s; the machine was put back"}
+			deadline := time.Now().Add(5 * time.Second)
+			for !strings.Contains(r.page(c), "The update did not finish") && time.Now().Before(deadline) {
+				time.Sleep(20 * time.Millisecond)
+			}
+			return home(t, r, c, port)
 		}},
 	// THE OTHER PAGES.
 	{"refused", "A browser the home does not trust.",

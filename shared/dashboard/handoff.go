@@ -43,6 +43,14 @@ type CatalogApp struct {
 	manifest.App // its Available is the index's own word
 	// Wished: the household asked for it from the page.
 	Wished bool `json:"wished,omitempty"`
+	// Installed: this node runs it, at version Running (its manifest's word; "" when the
+	// manifest names none). Update: the index's Identity is not the one it runs, so the index's
+	// Version is on offer -- never taken until the household asks. Versions are for people, and
+	// the same version under another identity (a revision of how Briard runs it) is an update
+	// too.
+	Installed bool   `json:"installed,omitempty"`
+	Running   string `json:"running,omitempty"`
+	Update    bool   `json:"update,omitempty"`
 }
 
 // Dir is the guest-side directory, on tmpfs and node-local like the routing table beside it: a
@@ -158,6 +166,38 @@ const (
 // workload may see -- and a directory rather than a file bind, because the copy is replaced by a
 // rename, which a file bind would never show the container.
 const AlertsDir = "/run/briard/alerts"
+
+// AppsPath is the installed apps' releases as Home Assistant's integration reads them
+// ([]AppRelease): beside the alert copy because that is the directory the container sees, and
+// written with the page's catalog view, so the two never disagree. Like the alerts, nothing
+// reads it to act: an update is taken from the page.
+const AppsPath = AlertsDir + "/apps.json"
+
+// AppRelease is one installed, listed app: what it runs and what the catalog offers. Latest is
+// Running when nothing is on offer.
+type AppRelease struct {
+	Name    string `json:"name"`
+	Title   string `json:"title"`
+	Running string `json:"running"`
+	Latest  string `json:"latest"`
+	Update  bool   `json:"update"`
+}
+
+// Releases is the catalog view's installed apps, in its order, as AppsPath carries them.
+func (c Catalog) Releases() []AppRelease {
+	out := []AppRelease{}
+	for _, a := range c.Apps {
+		if !a.Installed {
+			continue
+		}
+		r := AppRelease{Name: a.Name, Title: a.Title, Running: a.Running, Latest: a.Running, Update: a.Update}
+		if a.Update {
+			r.Latest = a.Version
+		}
+		out = append(out, r)
+	}
+	return out
+}
 
 // AlertsPath is that copy ([]notify.Record, oldest first): written through `dashboard.alerts` at
 // the first cycle of every connection and whenever the store records something, because the

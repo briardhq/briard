@@ -31,10 +31,12 @@ from urllib.parse import quote
 
 from homeassistant.components.auth import create_auth_code
 from homeassistant.components.http import KEY_HASS, KEY_HASS_USER, HomeAssistantView
+from homeassistant.components.update import UpdateEntity, UpdateEntityFeature
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.core import CoreState
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.discovery import async_load_platform
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.start import async_at_started
 
@@ -234,6 +236,10 @@ async def async_setup(hass, config):
 
     async_at_started(hass, _external)
     async_track_time_interval(hass, _external, EXTERNAL_URL_EVERY)
+
+    # The apps' updates, as update entities (below). A platform is loaded, not set up here: Home
+    # Assistant sets the update integration up first, then calls the stub's update.py.
+    hass.async_create_task(async_load_platform(hass, "update", DOMAIN, {}, config))
     return True
 
 # THE NODE'S ALERTS AS REPAIRS ISSUES. The node's host agent keeps the one record of every alert;
@@ -297,6 +303,90 @@ async def _mirror_alerts(hass):
     for domain, issue_id in list(registry.issues):
         if domain == DOMAIN and issue_id not in open_now:
             ir.async_delete_issue(hass, DOMAIN, issue_id)
+
+# THE APPS' UPDATES AS UPDATE ENTITIES. The node offers an app's update when the catalog names a
+# release it does not run, and never takes one unasked; the guest writes each installed app's
+# running and latest version to APPS_PATH, beside the alert copy. Each app is one update entity,
+# so an offer shows where Home Assistant shows every update, under Settings. Nothing here acts:
+# the entity cannot install (Home Assistant has no door to the node, and this adds none), and
+# its release link leads to the app's page on the Briard dashboard, which stays the one place to
+# take the update. Skip is Home Assistant's own and stays on its side.
+#
+# Versions are compared the way Home Assistant compares them, so a revision of how Briard runs
+# the same version, which the page offers, is not one here.
+#
+# A copy that is absent or unreadable changes nothing, as with the alerts; an app the copy no
+# longer lists is unavailable rather than removed, since nothing here can tell why it went.
+APPS_PATH = "@APPS_PATH@"
+APPS_EVERY = timedelta(seconds=30)
+
+def _releases():
+    """The copy's apps by name, or None when there is no copy to read. Blocking; called in the
+    executor."""
+    try:
+        with open(APPS_PATH, encoding="utf-8") as fh:
+            records = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(records, list):
+        return None
+    return {r["name"]: r for r in records if isinstance(r, dict) and isinstance(r.get("name"), str)}
+
+class AppUpdate(UpdateEntity):
+    """One installed app's update, as the node offers it."""
+
+    _attr_should_poll = False
+    _attr_supported_features = UpdateEntityFeature(0)
+
+    def __init__(self, name):
+        self._app = name
+        self._attr_unique_id = f"{DOMAIN}_{name}"
+        self.entity_id = f"update.{DOMAIN}_{name.replace('-', '_')}"
+        self._attr_release_url = DASHBOARD_URL + "apps/" + quote(name)
+
+    def take(self, rec):
+        """Take one record of the copy, or None when the copy no longer lists the app."""
+        if rec is None:
+            self._attr_available = False
+        else:
+            title = str(rec.get("title") or self._app)
+            self._attr_available = True
+            self._attr_name = title
+            self._attr_title = title
+            self._attr_installed_version = str(rec.get("running") or "") or None
+            self._attr_latest_version = str(rec.get("latest") or "") or None
+            self._attr_release_summary = (
+                f"Update {title} from the Briard page. Briard checks that it starts and works "
+                "afterwards and puts it back by itself if not; you can also undo the update "
+                "later from its History."
+            )
+        if self.hass is not None:
+            self.async_write_ha_state()
+
+async def async_setup_update_platform(hass, async_add_entities):
+    """The update platform, handed over by the stub: an entity per app the copy lists, kept to
+    the copy on the alerts' slow poll."""
+    entities = {}
+
+    async def _refresh(_now=None):
+        try:
+            recs = await hass.async_add_executor_job(_releases)
+            if recs is None:
+                return
+            new = []
+            for name, rec in recs.items():
+                if name not in entities:
+                    entities[name] = AppUpdate(name)
+                    new.append(entities[name])
+            for name, entity in entities.items():
+                entity.take(recs.get(name))
+            if new:
+                async_add_entities(new)
+        except Exception:  # noqa: BLE001 — nothing in here may cost a household its Home Assistant
+            _LOGGER.warning("briard: could not read the apps' updates", exc_info=True)
+
+    await _refresh()
+    async_track_time_interval(hass, _refresh, APPS_EVERY)
 
 # THE CASA NAME AS HOME ASSISTANT'S EXTERNAL URL. A Home Assistant with no external URL cannot
 # cast a dashboard to a Chromecast or Nest Hub, which needs https, and the household's casa name

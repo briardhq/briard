@@ -108,17 +108,23 @@ func (p *serialPort) Submit(ctx context.Context, d api.Directive) (api.Directive
 }
 
 // install is one service install the dashboard asked the host for, from the click until the
-// routes table lists the service (or the host said no).
+// routes table lists the service (or the host said no). Update: it was the Update button on an
+// installed app -- the same directive, since an update is an install over what runs, and the
+// card says "updating" instead of turning back into a chooser.
 type install struct {
 	Started time.Time
+	Update  bool
 	Done    bool
 	Failed  bool
 	Detail  string
 }
 
-// installView is the card's view of it.
+// installView is the card's view of it. Updated: an update finished well while the host's view
+// still offers it -- the offer is hidden until the host's next push takes it away.
 type installView struct {
 	Running bool
+	Update  bool
+	Updated bool
 	Failed  bool
 	Detail  string
 	Since   string
@@ -126,11 +132,16 @@ type installView struct {
 	Progress *progressView
 }
 
-// requestInstall is the button: one install in flight per service, the directive relayed in
-// the background because a pull runs minutes and a browser should not hold a request that
-// long. The page shows the state and refreshes itself.
-func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string) {
-	if !a.installable(name) {
+// requestInstall is the Install button, and with update the Update button: one install in
+// flight per service, the directive relayed in the background because a pull runs minutes and
+// a browser should not hold a request that long. The page shows the state and refreshes itself.
+// An update is asked only of an app the host's view offers one for; the host decides again.
+func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string, update bool) {
+	switch {
+	case update && !a.offered(name):
+		http.Error(w, "the catalog offers no update for that app\n", http.StatusNotFound)
+		return
+	case !update && !a.installable(name):
 		http.Error(w, "the catalog has no manifest for that app\n", http.StatusNotFound)
 		return
 	}
@@ -140,7 +151,7 @@ func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string
 		http.Redirect(w, r, back(r), http.StatusSeeOther)
 		return
 	}
-	a.installs[name] = &install{Started: a.now()}
+	a.installs[name] = &install{Started: a.now(), Update: update}
 	a.mu.Unlock()
 	go func() {
 		// The pull is bounded on the host; this is the ceiling on waiting for its answer.
@@ -157,26 +168,28 @@ func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string
 		case o.State != api.OutcomeDone:
 			st.Failed, st.Detail = true, o.Detail
 		}
-		log.Printf("dashboard: install %s: outcome=%+v err=%v", name, o, err)
+		log.Printf("dashboard: install %s (update=%v): outcome=%+v err=%v", name, update, o, err)
 	}()
 	http.Redirect(w, r, back(r), http.StatusSeeOther)
 }
 
 // installState is what the card shows for a service, nil when nothing was asked. A finished,
-// successful install is forgotten once the routes table lists the service -- the card's
-// ordinary states take over from there.
-func (a *app) installState(name string, routed bool) *installView {
+// successful install is forgotten once the routes table lists the service, and a successful
+// update once the host's view no longer offers it -- the card's ordinary states take over from
+// there.
+func (a *app) installState(name string, routed, offered bool) *installView {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st, ok := a.installs[name]
 	if !ok {
 		return nil
 	}
-	if st.Done && !st.Failed && routed {
+	if st.Done && !st.Failed && routed && !(st.Update && offered) {
 		delete(a.installs, name)
 		return nil
 	}
-	v := &installView{Running: !st.Done, Failed: st.Failed, Detail: st.Detail, Since: st.Started.In(zone()).Format("15:04")}
+	v := &installView{Running: !st.Done, Update: st.Update, Updated: st.Done && !st.Failed && st.Update,
+		Failed: st.Failed, Detail: st.Detail, Since: st.Started.In(zone()).Format("15:04")}
 	if v.Running {
 		v.Progress = a.pullProgress(name)
 	}

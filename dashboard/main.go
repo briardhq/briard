@@ -277,7 +277,13 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.refuse(w, r)
 			return
 		}
-		a.requestInstall(w, r, strings.TrimPrefix(r.URL.Path, "/install/"))
+		a.requestInstall(w, r, strings.TrimPrefix(r.URL.Path, "/install/"), false)
+	case strings.HasPrefix(r.URL.Path, "/update/") && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w, r)
+			return
+		}
+		a.requestInstall(w, r, strings.TrimPrefix(r.URL.Path, "/update/"), true)
 	case strings.HasPrefix(r.URL.Path, "/wish/") && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
 			a.refuse(w, r)
@@ -913,8 +919,13 @@ type appView struct {
 	Available, Wished bool
 	Installed         bool    // the routes table lists it
 	HA                *haView // Home Assistant's own states, on its card alone
-	// Install is an install the household asked for from this page, while it runs or after
-	// it failed.
+	// Running is the version this machine runs (the host's word, "" when it has none), and
+	// Offer the version the catalog offers as an update, "" when it offers none: never taken
+	// until the household presses Update. Offer equal to Running is a revision of how Briard
+	// runs that version.
+	Running, Offer string
+	// Install is an install or an update the household asked for from this page, while it runs
+	// or after it failed.
 	Install *installView
 	// Here says the card is on the app's own page (its fragment asks with &here), which it
 	// then need not link to.
@@ -1025,8 +1036,13 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 	if c := a.catalogState(); c != nil {
 		v.Catalog = true
 		for _, ca := range c.Apps {
-			cards = append(cards, &appView{Name: ca.Name, Title: ca.Title, Functionality: ca.Functionality, Description: ca.Description,
-				Homepage: ca.Homepage, Icon: icon(ca.Icon), Available: ca.Available, Wished: ca.Wished, Installed: routed[ca.Name]})
+			av := &appView{Name: ca.Name, Title: ca.Title, Functionality: ca.Functionality, Description: ca.Description,
+				Homepage: ca.Homepage, Icon: icon(ca.Icon), Available: ca.Available, Wished: ca.Wished, Installed: routed[ca.Name],
+				Running: ca.Running}
+			if ca.Update && av.Installed {
+				av.Offer = ca.Version
+			}
+			cards = append(cards, av)
 		}
 	}
 	for _, name := range routedNames(a.routesPath) {
@@ -1038,8 +1054,12 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 		if av.Name == hass.Name {
 			av.HA = ha
 		}
-		av.Install = a.installState(av.Name, av.Installed)
-		if av.Install != nil && av.Install.Running {
+		av.Install = a.installState(av.Name, av.Installed, av.Offer != "")
+		if av.Install != nil && av.Install.Updated {
+			av.Offer = "" // taken; the host's next push says so too
+		}
+		if av.Install != nil && av.Install.Running && !av.Install.Update {
+			// An update is not the home being set up: the app's own card says it is updating.
 			v.Installing = av
 		}
 		if av.Installed {
@@ -1211,4 +1231,9 @@ func (fileExec) WriteFile(string, []byte) error {
 
 func (fileExec) Run(context.Context, string, ...string) ([]byte, error) {
 	return nil, errors.New("dashboard: does not run commands")
+}
+
+// Offering says the card offers the update: there is one, and it is not already under way.
+func (av *appView) Offering() bool {
+	return av.Offer != "" && (av.Install == nil || !av.Install.Running)
 }

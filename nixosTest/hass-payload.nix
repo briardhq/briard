@@ -83,6 +83,28 @@ let
     asyncio.run(main())
   '';
 
+  # The updates probe: Briard's update entities as HA's state machine holds them, as one JSON list,
+  # over the same websocket.
+  updatesProbe = pkgs.writeText "updates-probe.py" ''
+    import asyncio
+    import json
+    import os
+
+    import aiohttp
+
+    async def main():
+        async with aiohttp.ClientSession() as s:
+            async with s.ws_connect("http://127.0.0.1:8123/api/websocket") as ws:
+                await ws.receive_json()
+                await ws.send_json({"type": "auth", "access_token": os.environ["TOKEN"]})
+                assert (await ws.receive_json())["type"] == "auth_ok"
+                await ws.send_json({"id": 1, "type": "get_states"})
+                states = (await ws.receive_json())["result"]
+        print(json.dumps([s for s in states if s["entity_id"].startswith("update.briard_")]))
+
+    asyncio.run(main())
+  '';
+
   node = h.mkNode {
     # The broker rides along for ONE claim -- (b), at the bottom of this file: whether
     # HA's own zeroconf stack sees what the guest announces. It needs a real service record on
@@ -627,6 +649,37 @@ pkgs.testers.runNixOSTest {
         timeout=120,
     )
     print("the node's open alert became a Repairs issue, and its resolution removed it")
+
+    # THE APPS' UPDATES AS UPDATE ENTITIES, from the file the guest agent writes beside the alert
+    # copy for `dashboard.catalog` (written by hand here, the same way). An offered update turns
+    # the app's entity on, with both versions and the app's page on the dashboard as its link; a
+    # copy whose latest is what runs turns it off. The entity cannot install: the page does that.
+    def push_apps(records):
+        node1.succeed(
+            f"echo {shlex.quote(_zj.dumps(records))} > /run/briard/alerts/apps.json.new "
+            "&& mv -f /run/briard/alerts/apps.json.new /run/briard/alerts/apps.json"
+        )
+    def updates():
+        return _zj.loads(node1.succeed(
+            f"podman exec -i -e TOKEN={wired} briard-home-assistant-app python3 - < ${updatesProbe}"
+        ))
+    push_apps([{"name": "home-assistant", "title": "Home Assistant", "running": "2026.9.4", "latest": "2026.10.1", "update": True}])
+    node1.wait_until_succeeds(
+        f"podman exec -i -e TOKEN={wired} briard-home-assistant-app python3 - < ${updatesProbe} | grep -q '\"state\": \"on\"'",
+        timeout=120,
+    )
+    got = updates()
+    assert [u["entity_id"] for u in got] == ["update.briard_home_assistant"], f"want exactly Home Assistant's: {got}"
+    attrs = got[0]["attributes"]
+    assert attrs["installed_version"] == "2026.9.4" and attrs["latest_version"] == "2026.10.1", attrs
+    assert attrs["release_url"] == "http://briard.local/apps/home-assistant", attrs
+    assert attrs["supported_features"] == 0, f"the entity must not install: {attrs}"
+    push_apps([{"name": "home-assistant", "title": "Home Assistant", "running": "2026.10.1", "latest": "2026.10.1", "update": False}])
+    node1.wait_until_succeeds(
+        f"podman exec -i -e TOKEN={wired} briard-home-assistant-app python3 - < ${updatesProbe} | grep -q '\"state\": \"off\"'",
+        timeout=120,
+    )
+    print("the node's offered update became an update entity, and taking it turned the entity off")
 
     # THE EXTERNAL URL, from the file the guest agent writes for `dashboard.casa` (written by hand
     # here, the same way). An empty slot is filled live, with no restart. A set one is never

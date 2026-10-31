@@ -91,6 +91,18 @@ func TestIndexListsEveryManifest(t *testing.T) {
 		if a.Available != published[a.Name] {
 			t.Errorf("%s: available=%v in the index, manifest beside it=%v", a.Name, a.Available, published[a.Name])
 		}
+		// An available entry names its manifest's release, and names it exactly: the identity
+		// is what a node compares with the one it runs, so a stale one here is an update offered
+		// for nothing, or one never offered.
+		if a.Available {
+			m, id, err := manifest.Parse(read(t, a.Name+".json"))
+			switch {
+			case err != nil:
+				t.Errorf("%s.json: %v", a.Name, err)
+			case a.Identity != id || a.Version != m.Version:
+				t.Errorf("%s: the index names %q %s, the manifest beside it is %q %s", a.Name, a.Version, a.Identity, m.Version, id)
+			}
+		}
 	}
 	for name := range published {
 		if !listed[name] {

@@ -41,12 +41,16 @@ func rawIndex(t *testing.T, idx Index) []byte {
 func TestParseIndexGood(t *testing.T) {
 	second := goodApp()
 	second.Name, second.Title, second.Icon = "mealie", "Mealie", ""
+	second.Available, second.Version, second.Identity = true, "3.1.2", Identity("sha256:"+strings.Repeat("ab", 32))
 	idx, err := ParseIndex(rawIndex(t, Index{Apps: []App{goodApp(), second}}))
 	if err != nil {
 		t.Fatalf("ParseIndex: %v", err)
 	}
 	if len(idx.Apps) != 2 || idx.Apps[0].Name != "paperless-ngx" || idx.Apps[1].Name != "mealie" {
 		t.Fatalf("parsed %+v; want both apps in file order", idx.Apps)
+	}
+	if got := idx.Apps[1]; got.Version != second.Version || got.Identity != second.Identity {
+		t.Fatalf("parsed release %q %q; want %q %q", got.Version, got.Identity, second.Version, second.Identity)
 	}
 }
 
@@ -67,27 +71,34 @@ func TestParseIndexRejectsOversize(t *testing.T) {
 
 func TestIndexValidateRejects(t *testing.T) {
 	cases := map[string]func(*App){
-		"name not a slug":        func(a *App) { a.Name = "Paperless NGX" },
-		"no title":               func(a *App) { a.Title = " " },
-		"no functionality":       func(a *App) { a.Functionality = "" },
-		"one-word functionality": func(a *App) { a.Functionality = "documents" },
-		"six-word functionality": func(a *App) { a.Functionality = "a system for managing all documents" },
-		"no description":         func(a *App) { a.Description = "" },
-		"line break in title":    func(a *App) { a.Title = "Paper\nless" },
-		"http homepage":          func(a *App) { a.Homepage = "http://docs.paperless-ngx.com" },
-		"no homepage":            func(a *App) { a.Homepage = "" },
-		"homepage not a URL":     func(a *App) { a.Homepage = "docs.paperless-ngx.com" },
-		"icon not a data URI":    func(a *App) { a.Icon = "<svg/>" },
-		"icon a PNG":             func(a *App) { a.Icon = "data:image/png;base64,iVBORw0KGgo=" },
-		"icon not base64":        func(a *App) { a.Icon = iconSVG + "!!!" },
-		"icon not SVG":           func(a *App) { a.Icon = iconURI("<html></html>") },
-		"icon too large":         func(a *App) { a.Icon = iconURI(testSVG + strings.Repeat(" ", maxIconSize)) },
-		"icon with script":       func(a *App) { a.Icon = iconURI(`<svg><script>alert(1)</script></svg>`) },
-		"icon with handler":      func(a *App) { a.Icon = iconURI(`<svg onload="alert(1)"></svg>`) },
-		"icon with javascript:":  func(a *App) { a.Icon = iconURI(`<svg><a href="javascript:alert(1)"/></svg>`) },
-		"icon with external ref": func(a *App) { a.Icon = iconURI(`<svg><image href="https://x.example/a.png"/></svg>`) },
-		"icon with foreign HTML": func(a *App) { a.Icon = iconURI(`<svg><foreignObject><div/></foreignObject></svg>`) },
-		"icon with @import":      func(a *App) { a.Icon = iconURI(`<svg><style>@import url(x.css)</style></svg>`) },
+		"name not a slug":                 func(a *App) { a.Name = "Paperless NGX" },
+		"no title":                        func(a *App) { a.Title = " " },
+		"no functionality":                func(a *App) { a.Functionality = "" },
+		"one-word functionality":          func(a *App) { a.Functionality = "documents" },
+		"six-word functionality":          func(a *App) { a.Functionality = "a system for managing all documents" },
+		"no description":                  func(a *App) { a.Description = "" },
+		"line break in title":             func(a *App) { a.Title = "Paper\nless" },
+		"http homepage":                   func(a *App) { a.Homepage = "http://docs.paperless-ngx.com" },
+		"no homepage":                     func(a *App) { a.Homepage = "" },
+		"homepage not a URL":              func(a *App) { a.Homepage = "docs.paperless-ngx.com" },
+		"icon not a data URI":             func(a *App) { a.Icon = "<svg/>" },
+		"icon a PNG":                      func(a *App) { a.Icon = "data:image/png;base64,iVBORw0KGgo=" },
+		"icon not base64":                 func(a *App) { a.Icon = iconSVG + "!!!" },
+		"icon not SVG":                    func(a *App) { a.Icon = iconURI("<html></html>") },
+		"icon too large":                  func(a *App) { a.Icon = iconURI(testSVG + strings.Repeat(" ", maxIconSize)) },
+		"icon with script":                func(a *App) { a.Icon = iconURI(`<svg><script>alert(1)</script></svg>`) },
+		"icon with handler":               func(a *App) { a.Icon = iconURI(`<svg onload="alert(1)"></svg>`) },
+		"icon with javascript:":           func(a *App) { a.Icon = iconURI(`<svg><a href="javascript:alert(1)"/></svg>`) },
+		"icon with external ref":          func(a *App) { a.Icon = iconURI(`<svg><image href="https://x.example/a.png"/></svg>`) },
+		"icon with foreign HTML":          func(a *App) { a.Icon = iconURI(`<svg><foreignObject><div/></foreignObject></svg>`) },
+		"icon with @import":               func(a *App) { a.Icon = iconURI(`<svg><style>@import url(x.css)</style></svg>`) },
+		"release on an app not available": func(a *App) { a.Version, a.Identity = "1.0", Identity("sha256:"+strings.Repeat("a", 64)) },
+		"version without identity":        func(a *App) { a.Available, a.Version = true, "1.0" },
+		"identity without version":        func(a *App) { a.Available, a.Identity = true, Identity("sha256:"+strings.Repeat("a", 64)) },
+		"identity not a hash":             func(a *App) { a.Available, a.Version, a.Identity = true, "1.0", "sha256:xyz" },
+		"line break in version": func(a *App) {
+			a.Available, a.Version, a.Identity = true, "1.0\n2", Identity("sha256:"+strings.Repeat("a", 64))
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

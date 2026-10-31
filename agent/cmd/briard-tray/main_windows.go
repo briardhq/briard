@@ -167,6 +167,7 @@ type tray struct {
 	pending string            // see reading.pending
 	toastN  int               // a toast to show: the open count it is about; 0 none
 	note    string            // a balloon to show: an action's failure, in words
+	offer   string            // a balloon to show: an update newly on offer (offerToast)
 
 	// A Start menu click being carried out (launch): when it came, whether its start of briard
 	// is under way or has returned, and whether its "starting" balloon has been shown.
@@ -320,8 +321,8 @@ func (t *tray) add() {
 func (t *tray) show() {
 	t.mu.Lock()
 	v := show(t.last)
-	n, note := t.toastN, t.note
-	t.toastN, t.note = 0, ""
+	n, note, offer := t.toastN, t.note, t.offer
+	t.toastN, t.note, t.offer = 0, "", ""
 	t.mu.Unlock()
 	t.notify(nimModify, func(d *notifyIconData) {
 		d.Flags = nifIcon | nifTip | nifShowTip
@@ -338,6 +339,11 @@ func (t *tray) show() {
 			d.InfoFlags = niifWarning
 			copyUTF16(d.InfoTitle[:], "Briard")
 			copyUTF16(d.Info[:], alerts(n)+". Click to open Briard.")
+		case offer != "":
+			d.Flags |= nifInfo
+			d.InfoFlags = niifInfo
+			copyUTF16(d.InfoTitle[:], "Briard")
+			copyUTF16(d.Info[:], offer)
 		}
 	})
 }
@@ -356,6 +362,9 @@ func (t *tray) menu() {
 	setMenuDefaultItem.Call(m, cmdOpen, 0)
 	if v.open > 0 {
 		item(mfString, cmdOpen, alerts(v.open))
+	}
+	if v.updates != "" {
+		item(mfString, cmdOpen, v.updates)
 	}
 	appendMenu.Call(m, mfSeparator, 0, 0)
 	switch v.action {
@@ -537,6 +546,9 @@ func (t *tray) poll(exe string, self os.FileInfo) {
 			t.pending = ""
 		}
 		r.pending = t.pending
+		if s := offerToast(t.prev, r); s != "" {
+			t.offer = s
+		}
 		if toast(t.prev, r) {
 			t.toastN = r.status.Open
 		}

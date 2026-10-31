@@ -36,6 +36,7 @@ import (
 	"briard.io/shared/atomicfile"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
+	"briard.io/shared/model"
 	"briard.io/shared/notify"
 )
 
@@ -207,9 +208,15 @@ func (s *catalogState) toggle(d api.Directive) api.DirectiveOutcome {
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "the wish for " + s.idx.Apps[i].Title + " is recorded"}
 }
 
-// view is what the page is told: every listed app in the index's order, with this node's two
-// facts about each. Nil-safe; a node without a catalog tells the page nothing.
-func (s *catalogState) view() dashboard.Catalog {
+// view is what the page is told: every listed app in the index's order, with this node's facts
+// about each -- wished, installed, and whether the index offers an update to what it runs.
+// Nil-safe; a node without a catalog tells the page nothing.
+//
+// THE OFFER IS DERIVED, NEVER STORED: the index's identity against the installed one, at every
+// look, so an update that commits or an undo that moves the app back changes the offer at the
+// next push with nothing to clear. An index that names no identity (one published before the
+// field) offers nothing.
+func (s *catalogState) view(installed map[string]model.ServiceSpec) dashboard.Catalog {
 	if s == nil {
 		return dashboard.Catalog{}
 	}
@@ -218,8 +225,12 @@ func (s *catalogState) view() dashboard.Catalog {
 	s.load()
 	v := dashboard.Catalog{Fetched: s.c.Fetched, Apps: []dashboard.CatalogApp{}}
 	for _, a := range s.idx.Apps {
-		v.Apps = append(v.Apps, dashboard.CatalogApp{App: a,
-			Wished: slices.Contains(s.wishes, a.Name)})
+		ca := dashboard.CatalogApp{App: a, Wished: slices.Contains(s.wishes, a.Name)}
+		if spec, ok := installed[a.Name]; ok {
+			ca.Installed, ca.Running = true, spec.Version
+			ca.Update = a.Available && a.Identity != "" && string(a.Identity) != spec.Manifest
+		}
+		v.Apps = append(v.Apps, ca)
 	}
 	return v
 }
@@ -227,7 +238,7 @@ func (s *catalogState) view() dashboard.Catalog {
 // notices asserts, for every wished app, whether its wish has been met: open while the app
 // has gained a manifest and is not installed, resolved once it is installed or the wish is taken
 // back. Asserted at every look, like every other alerter here; the store makes it an edge.
-func (s *catalogState) notices(ctx context.Context, n notify.Notifier, installed map[string]bool) {
+func (s *catalogState) notices(ctx context.Context, n notify.Notifier, installed map[string]model.ServiceSpec) {
 	if s == nil {
 		return
 	}
@@ -240,7 +251,8 @@ func (s *catalogState) notices(ctx context.Context, n notify.Notifier, installed
 	var ws []wish
 	for _, a := range s.idx.Apps {
 		if slices.Contains(s.wishes, a.Name) {
-			ws = append(ws, wish{app: a, met: a.Available && !installed[a.Name]})
+			_, have := installed[a.Name]
+			ws = append(ws, wish{app: a, met: a.Available && !have})
 		}
 	}
 	// A wish taken back has no entry above, so its resolved is asserted here, by name.
@@ -290,18 +302,13 @@ func (cfg Config) pushCatalogView(ctx context.Context, r any, n notify.Notifier,
 	if cfg.catalog == nil {
 		return
 	}
-	installed := map[string]bool{}
-	if specs, _, ok := cfg.installedServices(logf); ok {
-		for _, s := range specs {
-			installed[s.Name] = true
-		}
-	}
+	installed := cfg.installedByName(logf)
 	cfg.catalog.notices(ctx, n, installed)
 	g, ok := r.(catalogGuest)
 	if !ok || !g.SupportsDashboardCatalog() {
 		return
 	}
-	v := cfg.catalog.view()
+	v := cfg.catalog.view(installed)
 	raw, err := json.Marshal(v)
 	if err != nil || string(raw) == *pushed {
 		return
@@ -373,4 +380,16 @@ func tellWish(ctx context.Context, send func(context.Context) error, app string,
 func (cfg Config) wishVoter() string {
 	h := sha256.Sum256([]byte("briard-wish-voter:" + orNode(cfg.FlockID, cfg.Node)))
 	return hex.EncodeToString(h[:16])
+}
+
+// installedByName is what this node runs, by service name, from the node-local cache: the
+// installed side of every catalog question (notices, view).
+func (cfg Config) installedByName(logf func(string, ...any)) map[string]model.ServiceSpec {
+	out := map[string]model.ServiceSpec{}
+	if specs, _, ok := cfg.installedServices(logf); ok {
+		for _, s := range specs {
+			out[s.Name] = s
+		}
+	}
+	return out
 }

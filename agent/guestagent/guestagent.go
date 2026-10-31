@@ -1396,6 +1396,24 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 					return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
 				}
 			}
+			if c, ok := v.(*dashboard.Catalog); ok {
+				// The same view, as Home Assistant's integration reads it: the installed apps'
+				// releases, beside the alert copy in the directory its container sees.
+				raw, err := json.Marshal(c.Releases())
+				if err != nil {
+					return nil, err
+				}
+				if out, err := x.Run(ctx, "mkdir", "-p", "-m", "0755", dashboard.AlertsDir); err != nil {
+					return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
+				}
+				tmp := dashboard.AppsPath + ".new"
+				if err := x.WriteFile(tmp, raw); err != nil {
+					return nil, fmt.Errorf("%s: %w", verb, err)
+				}
+				if out, err := x.Run(ctx, "mv", "-f", tmp, dashboard.AppsPath); err != nil {
+					return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
+				}
+			}
 			return nil, nil
 		case verbMosquittoProbe:
 			var req mosquittoProbeRequest
