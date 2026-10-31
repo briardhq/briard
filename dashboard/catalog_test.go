@@ -89,7 +89,8 @@ func TestCardsAreBuiltFromTheIndex(t *testing.T) {
 	c := r.trust()
 	body := html.UnescapeString(r.get(t, "/apps", c)) // the data URI's + is an entity in the attribute, as a browser reads it back
 	for _, want := range []string{"Smart home control", "Smart device messaging", "The message broker many smart devices",
-		`<img class="app-icon" src="` + testIcon + `"`, "Coming soon", "Document management system", "I want this", `href="https://docs.paperless-ngx.com"`} {
+		`<img class="app-icon" src="` + testIcon + `"`, "Coming soon", "Document management system", "I want this",
+		"tells the Briard team which app you want", `href="https://docs.paperless-ngx.com"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("apps page lacks %q", want)
 		}

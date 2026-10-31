@@ -43,11 +43,12 @@
 {{end}}
 
 {{/* THE COMING-SOON CARD: an app the catalog lists and cannot install yet. One button records
-     the household's wish on this machine; pressed again, it takes the wish back. */}}
+     the household's wish on this machine and counts it with us; pressed again, it takes the wish
+     back. The line before the press says what is sent, because the press sends it. */}}
 {{define "soon-card"}}
   <div class="card"><header><h2>{{template "app-title" .}}</h2>{{with .Functionality}}<p>{{.}}</p>{{end}}</header>
     <section><p>{{.Description}}</p>
-    {{if .Wished}}<p class="ok">Your wish is recorded. Briard will notify you when this app becomes available.</p>{{end}}</section>
+    {{if .Wished}}<p class="ok">Your wish is recorded. Briard will notify you when this app becomes available.</p>{{else}}<p class="note">Pressing it also tells the Briard team which app you want, with an anonymous code that counts your home once.</p>{{end}}</section>
     <footer><form method="post" action="/wish/{{.Name}}" hx-post="/wish/{{.Name}}" hx-target="closest .card" hx-swap="outerHTML"><button type="submit" class="btn" data-variant="{{if .Wished}}ghost{{else}}outline{{end}}">{{if .Wished}}Never mind{{else}}I want this{{end}}</button></form>
     {{with .Homepage}}<a class="btn" data-variant="ghost" href="{{.}}" target="_blank" rel="noopener">About</a>{{end}}</footer></div>
 {{end}}

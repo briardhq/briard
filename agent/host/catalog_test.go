@@ -176,6 +176,87 @@ func TestCatalogWishTogglesAndIsRefusedWhereItMakesNoSense(t *testing.T) {
 	}
 }
 
+// A wish is counted when it is recorded and at no other press: not on a refusal, not when it
+// is taken back -- and again when it is pressed a third time, which the cloud de-duplicates.
+func TestCatalogWishIsCountedOnlyWhenRecorded(t *testing.T) {
+	_, cat := newFakeCatalog(t)
+	s, _ := newTestCatalog(t, cat)
+	var told []string
+	s.tell = func(app string) { told = append(told, app) }
+	wish := func(name string) { s.toggle(api.Directive{ID: "w", Kind: api.DirectiveWish, Payload: name}) }
+	wish("paperless-ngx") // before the index: refused
+	s.refresh(context.Background())
+	wish("immich")         // unlisted: refused
+	wish("home-assistant") // installable: refused
+	if len(told) != 0 {
+		t.Fatalf("a refused wish was counted: %v", told)
+	}
+	wish("paperless-ngx")
+	wish("paperless-ngx") // taken back
+	if strings.Join(told, ",") != "paperless-ngx" {
+		t.Fatalf("counted %v, want the one recorded wish", told)
+	}
+	wish("paperless-ngx")
+	if len(told) != 2 {
+		t.Fatalf("a wish recorded again must be told again, counted %v", told)
+	}
+}
+
+// The count's retry: tried again after each wait, then dropped; a stopping agent ends it.
+func TestTellWishRetriesThenGivesUp(t *testing.T) {
+	logf := func(f string, v ...any) { t.Logf(f, v...) }
+	waits := []time.Duration{0, 0}
+	calls := 0
+	failTwice := func(context.Context) error {
+		calls++
+		if calls < 3 {
+			return errors.New("offline")
+		}
+		return nil
+	}
+	tellWish(context.Background(), failTwice, "paperless-ngx", waits, logf)
+	if calls != 3 {
+		t.Errorf("a send that succeeds on the third try: %d calls, want 3", calls)
+	}
+	calls = 0
+	never := func(context.Context) error { calls++; return errors.New("offline") }
+	tellWish(context.Background(), never, "paperless-ngx", waits, logf)
+	if calls != 3 {
+		t.Errorf("a send that never succeeds: %d calls, want 3 and then nothing", calls)
+	}
+	calls = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tellWish(ctx, never, "paperless-ngx", []time.Duration{time.Hour, time.Hour}, logf)
+	if calls != 1 {
+		t.Errorf("a stopped agent: %d calls, want the one try and no wait", calls)
+	}
+}
+
+// The voter is one value per flock, the same from every node of it, and is not the flock's id:
+// the count must match nothing else that id feeds.
+func TestWishVoterIsAHashOfTheFlock(t *testing.T) {
+	const flock = "6f1c2a9e-0b7d-4e3a-9c55-2d8f4b1a7e60"
+	a := Config{FlockID: flock, Node: "briard-node-a"}.wishVoter()
+	b := Config{FlockID: flock, Node: "briard-node-b"}.wishVoter()
+	other := Config{FlockID: "0d4e7b21-5f3c-4a8e-b1d9-7c6a2e9f0b13", Node: "briard-node-a"}.wishVoter()
+	if a != b {
+		t.Errorf("two nodes of one flock vote as %q and %q, want one voter", a, b)
+	}
+	if a == other {
+		t.Error("two flocks share a voter")
+	}
+	if len(a) != 32 || strings.Trim(a, "0123456789abcdef") != "" {
+		t.Errorf("voter = %q, want 32 hex digits", a)
+	}
+	if strings.Contains(a, strings.ReplaceAll(flock, "-", "")[:8]) {
+		t.Errorf("voter %q carries the flock id", a)
+	}
+	if (Config{Node: "briard-node-a"}).wishVoter() == (Config{Node: "briard-node-b"}).wishVoter() {
+		t.Error("with no flock id the node's name must stand in")
+	}
+}
+
 // The notice: nothing while the wished app has no manifest; one open alert when a refresh finds
 // one; silence while that holds; resolved once the app is installed -- or, in the other
 // scenario, once the wish is taken back.

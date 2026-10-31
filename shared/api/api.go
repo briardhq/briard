@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/url"
 	"time"
 
 	"briard.io/shared/model"
@@ -439,7 +440,7 @@ const (
 	//                        recorded on the node when absent, removed when present. The node
 	//                        tells the household from its own dashboard and alerts when a wished
 	//                        app gains a manifest. Local-only: a wish is the household's, asked
-	//                        from its dashboard; nothing about it leaves the node.
+	//                        from its dashboard. A new wish is also counted with us (Wish).
 
 	DirectivePair = "pair" // Payload = a JSON MeshSpec: reconcile this node's DRBD to a target mesh
 	//                        (runtime anchor pairing). The serving primary adjusts in place
@@ -663,6 +664,34 @@ const (
 	DiagPath      = "/v1/diag"      // read the controller's self-diagnostics (footprint + store size)
 	ReadyzPath    = "/readyz"       // deploy readiness: 200+serving when the schema matches this binary, else 503
 )
+
+// WishPath is where a node tells us a household's wish (Wish). No token and no node name ride
+// it, and it is served outside the managed channel: a node that is not managed sends it too.
+const WishPath = "/v1/wish"
+
+// Wish is the one thing a node sends that is neither health nor control. A household pressed
+// "I want this" on an app the catalog lists but cannot install yet, and the node tells us which
+// app, once, so the next app built is the one most asked for. Taking the wish back sends
+// nothing.
+//
+// Voter is not the flock's id but a one-way hash of it made for this alone: it lets us count a
+// household once however often it presses, and it matches nothing else the id feeds (the
+// service address, the backup's group). The cloud forgets it after a while and keeps the
+// count. Form-encoded rather than JSON, so a plain HTML form with no node behind it can post
+// the same fields, Voter empty.
+type Wish struct {
+	App   string // the catalog name, as the index lists it
+	Voter string // 32 hex digits; "" from a form
+}
+
+// Form is the request body's fields.
+func (w Wish) Form() url.Values {
+	v := url.Values{"app": {w.App}}
+	if w.Voter != "" {
+		v.Set("voter", w.Voter)
+	}
+	return v
+}
 
 // Readyz is a controller instance's deploy-readiness self-report: the /readyz body,
 // also the 503 body the gate returns while not serving. State is "serving" (200),

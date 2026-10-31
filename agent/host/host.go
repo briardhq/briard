@@ -610,7 +610,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		cfg.backupDocs.Store(&docs)
 	}
 	cfg.refreshDocuments(userDocuments, logf)
-	cfg.catalog = cfg.newCatalog(logf)
+	cfg.catalog = cfg.newCatalog(ctx, logf)
 	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
 	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
 	// must not mean; see the sdnotify package doc for the two costs of that coupling, the fatal
@@ -1866,7 +1866,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveBackupFolder:  true, // ...and moves it, as its settings are
 	api.DirectiveCasaClaim:     true, // the household claims its own name; the cloud never does
 	api.DirectiveCasaRecheck:   true, // ...and asks again whether its network resolves it
-	api.DirectiveWish:          true, // ...and wishes for an app from its own page; a wish never leaves the node
+	api.DirectiveWish:          true, // ...and wishes for an app from its own page; the cloud only counts it
 	api.DirectiveConfigSet:     true, // ...and changes its own address
 	api.DirectiveStop:          true, // ...and brings its own node down
 	api.DirectiveStatus:        true, // ...and asks how it is, as doctor does

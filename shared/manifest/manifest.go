@@ -58,6 +58,10 @@ import (
 // naming "../../etc/systemd/system/anything" or a unit that collides with ours.
 var slug = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`)
 
+// ValidName reports whether name has the shape of a catalog name, for a reader that receives
+// one from outside the catalog and must not hold anything else.
+func ValidName(name string) bool { return slug.MatchString(name) }
+
 // envKey mirrors the shell/systemd convention. Values are free-form apart from the newline ban.
 var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 

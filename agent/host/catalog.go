@@ -6,16 +6,22 @@ package host
 // network and no copy of the list is baked into any binary: the list has the catalog's clock,
 // not the release's, and a node that has never been online has no list to show.
 //
-// A WISH IS THE HOUSEHOLD'S, AND STAYS HERE. "I want this" on a listed-but-not-installable app
-// records the name on this node and nothing else; when a later read of the index finds a
-// manifest for a wished app, the node tells the household itself -- the card on its page and an
-// alert through the ordinary surface -- so the promise the button makes is kept by the node
-// alone, with no account, no address and no identity anywhere. A household's preference is by
-// nature shared by every node of a flock, but a wish is not worth a file on the replicated
-// volume; node-local is the trade, and it is a trade.
+// A WISH IS THE HOUSEHOLD'S, AND IS KEPT HERE. "I want this" on a listed-but-not-installable
+// app records the name on this node; when a later read of the index finds a manifest for a
+// wished app, the node tells the household itself -- the card on its page and an alert through
+// the ordinary surface -- so the promise the button makes is kept by the node alone, with no
+// account and no address. A household's preference is by nature shared by every node of a
+// flock, but a wish is not worth a file on the replicated volume; node-local is the trade, and
+// it is a trade.
+//
+// A NEW WISH IS ALSO COUNTED, ONCE (api.Wish): the app's name and a voter value that is a
+// one-way hash of the flock's id, sent off the loop with two retries and then dropped. The
+// count is how the next app is chosen; the wish on this node never depends on it.
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -24,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"briard.io/agent/cloud"
 	"briard.io/agent/selfupdate"
 	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
@@ -46,6 +53,10 @@ const (
 	catalogReadBudget = 3 * time.Minute
 )
 
+// wishRetry is the count's patience: the waits between three tries, after which the count is
+// dropped and the wish stands on this node all the same.
+var wishRetry = []time.Duration{30 * time.Second, 5 * time.Minute}
+
 // catalogCache is the file's shape: the verified bytes kept whole (parsed again on load, so a
 // corrupt cache is an empty one rather than a half-list), and which listed apps had a manifest
 // when they were read.
@@ -62,6 +73,8 @@ type catalogState struct {
 	cat  *manifest.Catalog
 	logf func(string, ...any)
 	now  func() time.Time
+	// tell counts a new wish with us, off the caller's goroutine; nil counts nothing.
+	tell func(app string)
 
 	mu     sync.Mutex
 	loaded bool
@@ -188,6 +201,9 @@ func (s *catalogState) toggle(d api.Directive) api.DirectiveOutcome {
 	if wished {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "the wish for " + s.idx.Apps[i].Title + " is removed"}
 	}
+	if s.tell != nil {
+		s.tell(name)
+	}
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "the wish for " + s.idx.Apps[i].Title + " is recorded"}
 }
 
@@ -310,7 +326,7 @@ func (cfg Config) applyWish(d api.Directive) api.DirectiveOutcome {
 // newCatalog builds the node's catalog state where it can exist: a state directory to cache in
 // and the release keyring to verify with. Elsewhere nil, and every caller is nil-safe: the page
 // then shows what is installed and nothing it could add.
-func (cfg Config) newCatalog(logf func(string, ...any)) *catalogState {
+func (cfg Config) newCatalog(ctx context.Context, logf func(string, ...any)) *catalogState {
 	if cfg.stateDir() == "" || cfg.CatalogURL == "" {
 		return nil
 	}
@@ -319,5 +335,42 @@ func (cfg Config) newCatalog(logf func(string, ...any)) *catalogState {
 		logf("catalog: release keyring: %v (the page lists only what is installed)", err)
 		return nil
 	}
-	return newCatalogState(cfg.stateDir(), &manifest.Catalog{BaseURL: cfg.CatalogURL, Verifier: kr}, logf)
+	s := newCatalogState(cfg.stateDir(), &manifest.Catalog{BaseURL: cfg.CatalogURL, Verifier: kr}, logf)
+	if cfg.CasaURL != "" {
+		voter := cfg.wishVoter()
+		s.tell = func(app string) {
+			w := api.Wish{App: app, Voter: voter}
+			go tellWish(ctx, func(ctx context.Context) error { return cloud.SendWish(ctx, cfg.CasaURL, w) }, app, wishRetry, logf)
+		}
+	}
+	return s
+}
+
+// tellWish sends one count, retrying after each of waits, and gives up quietly: a count that
+// never arrives costs one vote in a ranking, and the wish itself is already on disk.
+func tellWish(ctx context.Context, send func(context.Context) error, app string, waits []time.Duration, logf func(string, ...any)) {
+	for i := 0; ; i++ {
+		err := send(ctx)
+		if err == nil {
+			logf("catalog: the wish for %s is counted", app)
+			return
+		}
+		if i == len(waits) || ctx.Err() != nil {
+			logf("catalog: the wish for %s was not counted: %v (it stands on this machine)", app, err)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(waits[i]):
+		}
+	}
+}
+
+// wishVoter is the household's name in the wish count: a one-way hash of the flock's id made
+// for this alone, so the count sees a household once and the value matches nothing else the id
+// feeds. Where there is no flock id it falls back to the node's name, as the service address does.
+func (cfg Config) wishVoter() string {
+	h := sha256.Sum256([]byte("briard-wish-voter:" + orNode(cfg.FlockID, cfg.Node)))
+	return hex.EncodeToString(h[:16])
 }
