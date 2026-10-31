@@ -40,9 +40,7 @@ type Catalog struct {
 
 // CatalogApp is one listed app.
 type CatalogApp struct {
-	manifest.App
-	// Available: the catalog publishes a manifest for it, so this node can install it.
-	Available bool `json:"available,omitempty"`
+	manifest.App // its Available is the index's own word
 	// Wished: the household asked for it from the page.
 	Wished bool `json:"wished,omitempty"`
 }

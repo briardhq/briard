@@ -99,9 +99,13 @@ let
   # only one small file in it (the signature) has to be writable, so copying it would cost the
   # test half a gigabyte of VM disk to add 64 bytes.
   # What install.sh needs to reach the channel: where it lives, and the release public key it
-  # verifies the manifest against. Exactly the two the shipped one-liner sets. The keyring is
-  # minted into /root at test start (see the signing step in the script).
-  channelEnv = "BRIARD_CHANNEL_URL=http://127.0.0.1:8099 BRIARD_UPDATE_KEYRING=/root/keyring.pem";
+  # verifies the manifest against -- the two the shipped one-liner sets -- plus where the
+  # catalog lives, which the one-liner leaves at its default. The keyring is minted into /root
+  # at test start (see the signing step in the script); the catalog served is the real index,
+  # signed with the same key, and NO manifest beside it: the page offers what the index says
+  # is installable, and the install that follows fails closed on the manifest it cannot get.
+  channelEnv = "BRIARD_CHANNEL_URL=http://127.0.0.1:8099 BRIARD_UPDATE_KEYRING=/root/keyring.pem BRIARD_CATALOG_URL=http://127.0.0.1:8099/catalog";
+  catalogIndex = ../catalog/index.json;
   installScript = ../scripts/install.sh;
 in
 pkgs.testers.runNixOSTest {
@@ -354,6 +358,10 @@ pkgs.testers.runNixOSTest {
             host.succeed(f"mkdir -p /srv/{chain}/{ptr}{arm} && cp {d}/manifest.json {d}/manifest.json.sig /srv/{chain}/{ptr}{arm}/")
     for ptr in ("stable", "latest"):
         host.succeed(f"ln -sf ${channel}/briard/{V}/linux-amd64/briard-agent /srv/briard/{ptr}/linux-amd64/briard-agent")
+    # The catalog's index, as published: the real one, signed here with the rig's key. No
+    # manifest is served beside it (see channelEnv).
+    host.succeed(f"mkdir -p /srv/catalog && cp ${catalogIndex} /srv/catalog/index.json")
+    host.succeed(f"{stub} sign /root/release.key /srv/catalog/index.json | base64 -d > /srv/catalog/index.json.sig")
 
     host.succeed(
         f"systemd-run --unit=briard-channel --collect {stub} serve 127.0.0.1:8099 /srv"
@@ -601,15 +609,27 @@ pkgs.testers.runNixOSTest {
 
     # THE GUEST'S ADMIN PORT, END TO END: the trusted browser presses "Install Home
     # Assistant"; the dashboard relays a service-install directive over the second virtio-serial
-    # port; the host agent dispatches it exactly as it would the CLI's. This VM has no WAN, so
-    # the install FAILS -- and that is the measurement: the page must carry the host's own
-    # refusal back, which proves the whole wire (device -> qemu -> host acceptor -> dispatch ->
-    # outcome -> device -> page) rather than a page that merely says "installing" forever.
-    # (The alert list's copy across the channel is measured where this rig opens an alert:
-    # "A NODE THAT HAS STOPPED UPDATING" below.)
+    # port; the host agent dispatches it exactly as it would the CLI's. The catalog here is the
+    # signed index and no manifest, so the install FAILS -- and that is the measurement: the
+    # page must carry the host's own refusal back, which proves the whole wire (device -> qemu
+    # -> host acceptor -> dispatch -> outcome -> device -> page) rather than a page that merely
+    # says "installing" forever. (The alert list's copy across the channel is measured where
+    # this rig opens an alert: "A NODE THAT HAS STOPPED UPDATING" below.)
+    # The button is the index's word: the page offers nothing until the host has read the
+    # index (its update watcher's first tick) and pushed the list to the guest, so it is waited
+    # for, not assumed.
     session = [l.split(":", 1)[1].split(";")[0].strip() for l in redeemed.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
-    node_page = client.succeed(f"curl -fsS -H 'Host: {install_link_host}' -H 'Cookie: {session}' http://{vip}/")
-    assert "Install Home Assistant" in node_page and 'action="/install/home-assistant"' in node_page, node_page
+    def node_page_offering():
+        p = client.succeed(f"curl -fsS -H 'Host: {install_link_host}' -H 'Cookie: {session}' http://{vip}/")
+        return p if "Install Home Assistant" in p and 'action="/install/home-assistant"' in p else None
+    deadline = time.time() + 120
+    node_page = None
+    while time.time() < deadline and node_page is None:
+        node_page = node_page_offering()
+        if node_page is None:
+            time.sleep(5)
+    assert node_page, "the page never offered Home Assistant: the host did not read the index, or the list did not reach the guest"
+    host.succeed("journalctl -u briard-agent | grep -q 'catalog: index read: '")
     host.succeed("test -S /run/briard-admin.sock")  # qemu serves the host end
     pressed = client.succeed(
         f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {install_link_host}' -H 'Cookie: {session}' "
@@ -684,7 +704,7 @@ pkgs.testers.runNixOSTest {
         "QEMU", "QEMU_DATADIR", "NET_WRAP_BIN",                     # staged here
         "GUEST_IMAGE", "DATA_DISK", "STATE_DISK",                   # created here
     }
-    copied = {"CHANNEL_URL", "UPDATE_KEYRING"}  # exactly what channelEnv carried
+    copied = {"CHANNEL_URL", "UPDATE_KEYRING", "CATALOG_URL"}  # exactly what channelEnv carried
     assert set(keys) == computed | copied, (
         f"config.env is {keys}: unexpected {sorted(set(keys) - computed - copied)}, "
         f"missing {sorted((computed | copied) - set(keys))}"

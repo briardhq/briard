@@ -67,13 +67,18 @@ func TestEveryPublishedEntryParses(t *testing.T) {
 
 // TestIndexListsEveryManifest parses the index with the function a node uses and checks the one
 // relation between it and the manifests beside it: an app is installable when its manifest
-// exists, so a manifest with no index entry is an installable app no page can show. The other
-// direction is the point of the index -- an entry with no manifest is an app a household may
-// ask for -- and needs no check.
+// exists, so a manifest with no index entry is an installable app no page can show, and an
+// entry is marked available exactly when its manifest is here: the index's word is the only
+// one a node reads, so the two documents must agree where both are written. An entry with no
+// manifest and no mark is the point of the index -- an app a household may ask for.
 func TestIndexListsEveryManifest(t *testing.T) {
 	idx, err := manifest.ParseIndex(read(t, manifest.IndexName))
 	if err != nil {
 		t.Fatalf("a node would refuse the index: %v", err)
+	}
+	published := make(map[string]bool)
+	for _, path := range manifests(t) {
+		published[strings.TrimSuffix(path, ".json")] = true
 	}
 	listed := make(map[string]bool, len(idx.Apps))
 	for _, a := range idx.Apps {
@@ -83,14 +88,16 @@ func TestIndexListsEveryManifest(t *testing.T) {
 		if a.Icon == "" {
 			t.Errorf("%s has no icon", a.Name)
 		}
-	}
-	paths := manifests(t)
-	for _, path := range paths {
-		if name := strings.TrimSuffix(path, ".json"); !listed[name] {
-			t.Errorf("manifest %s is not listed in the index", path)
+		if a.Available != published[a.Name] {
+			t.Errorf("%s: available=%v in the index, manifest beside it=%v", a.Name, a.Available, published[a.Name])
 		}
 	}
-	t.Logf("%d apps listed, %d installable", len(idx.Apps), len(paths))
+	for name := range published {
+		if !listed[name] {
+			t.Errorf("manifest %s.json is not listed in the index", name)
+		}
+	}
+	t.Logf("%d apps listed, %d installable", len(idx.Apps), len(published))
 }
 
 // TestMosquittoEntryMatchesTheProductsConfig is the cross-document check: this entry and the

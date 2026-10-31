@@ -35,21 +35,23 @@ One entry per line, so a diff reads per app. Each carries:
 | Field | What it is |
 |---|---|
 | `name` | the catalog slug — the key; the manifest for an installable app is `<name>.json` beside this file |
+| `available` | `true` when that manifest is published beside this file; omitted otherwise |
 | `title` | the app's name for a person |
 | `functionality` | two to five brand-less words on what it does, shown beside the title ("document management system") |
 | `description` | a few lines on what it does for a household; no promise, no version |
 | `icon` | the app's mark as an SVG data URI, at most 16 KB decoded, with no script, handler, external reference or foreign content |
 | `homepage` | the upstream project's site |
 
-**Availability is by omission.** An app is installable when `<name>.json` + `.sig` exist beside
-the index, and not otherwise. There is no status field: it would be a second statement of the
-same fact, one that could disagree with the first, and flipping it would mean re-signing the
-index while a manifest's arrival already is a signed act. `catalog_test.go` checks the one
-relation that must hold — every manifest here is listed — and parses the index with the
-function a node uses. A node learns availability literally: when it re-reads the index (daily,
-on its update watcher's tick) it asks for each listed `<name>.json` with a HEAD
-(`Catalog.Has`), caches the index and the answers node-locally, and pushes the result to its
-dashboard, which renders every card from it and never reaches the network itself.
+**The index says what is installable.** An entry marked `available` has `<name>.json` + `.sig`
+beside the index; an entry without the mark is listed for a household to ask for. The mark
+restates the manifest's presence, and `catalog_test.go` holds the two together where both are
+written — every manifest here is listed, and an entry is marked exactly when its manifest is
+here — parsing the index with the function a node uses. The pair goes to the CDN in one act, so
+a node never sees one without the other. The node reads this one document (daily, on its update
+watcher's tick), caches it node-locally, and pushes it to its dashboard, which renders every
+card from it and never reaches the network itself. One signed listing read whole is what every
+add-on store and package index does; asking the server per app is the shape they left behind,
+and what the install path does on its own when a button is pressed.
 
 **Choosing what to list.** The index is for apps a household wants, not a mirror of everything
 that can be self-hosted. Left out on purpose: anything whose role the platform already fills

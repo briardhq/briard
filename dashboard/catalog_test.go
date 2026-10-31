@@ -25,7 +25,7 @@ var testIcon = "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(
 // manifests, and two it lists and cannot install yet.
 func testCatalog() dashboard.Catalog {
 	app := func(name, title, fn, desc, home string, available bool) dashboard.CatalogApp {
-		return dashboard.CatalogApp{App: manifest.App{Name: name, Title: title, Functionality: fn, Description: desc, Icon: testIcon, Homepage: home}, Available: available}
+		return dashboard.CatalogApp{App: manifest.App{Name: name, Title: title, Functionality: fn, Description: desc, Icon: testIcon, Homepage: home, Available: available}}
 	}
 	return dashboard.Catalog{Fetched: time.Date(2026, 10, 30, 3, 0, 0, 0, time.UTC), Apps: []dashboard.CatalogApp{
 		app("home-assistant", "Home Assistant", "Smart home control", "Runs your home from one place: lights, heating, cameras, locks and thousands of other devices.", "https://www.home-assistant.io", true),

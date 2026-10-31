@@ -30,18 +30,19 @@ func (r indexRing) Verify(artifact, sig []byte) error {
 	return nil
 }
 
-// fakeCatalog is a published catalog: a signed index of two apps and the manifests it chooses
-// to publish -- Home Assistant from the start, Paperless-ngx when a test says so. Only
-// existence is served for a manifest, which is all a refresh asks.
+// fakeCatalog is a published catalog: a signed index of two apps -- Home Assistant installable
+// from the start, Paperless-ngx when a test publishes it, which re-signs the index with the
+// mark. Nothing but the index is served: a refresh that asks for anything else is the shape
+// this node no longer has, and the test says so.
 type fakeCatalog struct {
-	srv       *httptest.Server
-	mu        sync.Mutex
-	published map[string]bool
-	heads     int
+	srv  *httptest.Server
+	priv ed25519.PrivateKey
+	mu   sync.Mutex
+	idx  string
 }
 
 const testIndex = `{"apps":[` +
-	`{"name":"home-assistant","title":"Home Assistant","functionality":"Smart home control","description":"Runs your home.","homepage":"https://www.home-assistant.io"},` + "\n" +
+	`{"name":"home-assistant","available":true,"title":"Home Assistant","functionality":"Smart home control","description":"Runs your home.","homepage":"https://www.home-assistant.io"},` + "\n" +
 	`{"name":"paperless-ngx","title":"Paperless-ngx","functionality":"Document management system","description":"Scan it, find it.","homepage":"https://docs.paperless-ngx.com"}` +
 	`]}`
 
@@ -51,27 +52,32 @@ func newFakeCatalog(t *testing.T) (*fakeCatalog, *manifest.Catalog) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeCatalog{published: map[string]bool{"home-assistant": true}}
+	f := &fakeCatalog{priv: priv, idx: testIndex}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/index.json", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(testIndex)) })
-	mux.HandleFunc("/index.json.sig", func(w http.ResponseWriter, r *http.Request) { w.Write(ed25519.Sign(priv, []byte(testIndex))) })
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/index.json", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		f.heads++
-		if !f.published[strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".json")] {
-			http.NotFound(w, r)
-		}
+		w.Write([]byte(f.idx))
+	})
+	mux.HandleFunc("/index.json.sig", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		w.Write(ed25519.Sign(f.priv, []byte(f.idx)))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the node asked the catalog for %s; the index is the whole read", r.URL.Path)
+		http.NotFound(w, r)
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f, &manifest.Catalog{BaseURL: f.srv.URL, Verifier: indexRing{pub}, Client: f.srv.Client()}
 }
 
+// publish marks name available in the index, as the catalog's publish does beside the manifest.
 func (f *fakeCatalog) publish(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.published[name] = true
+	f.idx = strings.Replace(f.idx, `{"name":"`+name+`",`, `{"name":"`+name+`","available":true,`, 1)
 }
 
 // newTestCatalog is a catalog state over a temp directory on a fixed clock.
@@ -94,11 +100,10 @@ func appOf(t *testing.T, v dashboard.Catalog, name string) dashboard.CatalogApp 
 	return dashboard.CatalogApp{}
 }
 
-// A refresh reads the index, asks for each listed manifest, and keeps both answers on disk: a
-// fresh state over the same directory knows them with no network, and is not due again until
-// the cache is a day old.
+// A refresh reads the index, and nothing else, and keeps it on disk: a fresh state over the
+// same directory knows it with no network, and is not due again until the cache is a day old.
 func TestCatalogRefreshReadsTheIndexAndWhatIsInstallable(t *testing.T) {
-	f, cat := newFakeCatalog(t)
+	_, cat := newFakeCatalog(t)
 	s, now := newTestCatalog(t, cat)
 	ctx := context.Background()
 	if v := s.view(); len(v.Apps) != 0 || !v.Fetched.IsZero() {
@@ -110,13 +115,10 @@ func TestCatalogRefreshReadsTheIndexAndWhatIsInstallable(t *testing.T) {
 		t.Fatalf("view = %+v", v)
 	}
 	if !appOf(t, v, "home-assistant").Available || appOf(t, v, "paperless-ngx").Available {
-		t.Errorf("availability is the manifest's presence: %+v", v.Apps)
+		t.Errorf("availability is the index's word: %+v", v.Apps)
 	}
 	if appOf(t, v, "paperless-ngx").Functionality != "Document management system" {
 		t.Errorf("the index's text must reach the view: %+v", appOf(t, v, "paperless-ngx"))
-	}
-	if f.heads != 2 {
-		t.Errorf("one existence question per listed app, got %d", f.heads)
 	}
 
 	// The same directory, a catalog that cannot be reached: the cache answers, and nothing is

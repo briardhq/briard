@@ -89,41 +89,6 @@ func (c *Catalog) Fetch(ctx context.Context, name string) (Manifest, Identity, [
 	return m, id, raw, nil
 }
 
-// Has reports whether the catalog publishes a manifest for name: a HEAD of <name>.json, where
-// 200 is yes and 404 is no. Any other answer is an error rather than a no -- a mirror that is
-// down says nothing about what is published, and a caller keeps what it last knew. Existence is
-// the whole question: the index lists an app as installable by the presence of its manifest
-// beside it, and the install path verifies the bytes when it fetches them.
-func (c *Catalog) Has(ctx context.Context, name string) (bool, error) {
-	if !slug.MatchString(name) {
-		return false, fmt.Errorf("%w: catalog name %q is not a slug", ErrInvalid, name)
-	}
-	u, err := joinURL(c.BaseURL, name+".json")
-	if err != nil {
-		return false, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, u, nil)
-	if err != nil {
-		return false, err
-	}
-	client := c.Client
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, err
-	}
-	resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return true, nil
-	case http.StatusNotFound:
-		return false, nil
-	}
-	return false, fmt.Errorf("%s: %s", u, resp.Status)
-}
-
 func (c *Catalog) get(ctx context.Context, name string) ([]byte, error) {
 	u, err := joinURL(c.BaseURL, name)
 	if err != nil {

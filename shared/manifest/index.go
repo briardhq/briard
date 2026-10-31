@@ -16,11 +16,14 @@ import (
 // detached signature over the same bytes, signed by the same release key, fetched and verified
 // the same way, so a mirror that cannot forge a manifest cannot forge the list either.
 //
-// THE INDEX HOLDS NO AVAILABILITY. An app is installable when its signed manifest,
-// `<name>.json` + `.sig`, exists beside the index, and not otherwise. A status field would be
-// a second statement of the same fact, one that could disagree with the first, and flipping it
-// would mean re-signing the index while the manifest's own arrival is already a signed act.
-// Omission is the LESS capable shape, the same discipline the manifest schema keeps.
+// THE INDEX SAYS WHICH APPS ARE INSTALLABLE. An entry marked available has its signed
+// manifest, `<name>.json` + `.sig`, beside the index; the rest are listed so a household can
+// ask for them. The flag restates the manifest's presence, so the two are kept from
+// disagreeing where both are written (the catalog's own test) and are published together.
+// Omission is the LESS capable shape, the same discipline the manifest schema keeps: an entry
+// that says nothing is one a node cannot install. A node learns the whole list from this one
+// document, read whole and cached, the way every add-on store and package index is read;
+// asking the catalog per app is what those moved away from.
 //
 // IT IS PROSE AND PICTURES, NOT CAPABILITY, which is why its rules are about size and safety
 // rather than about what a node may do: nothing here is rendered into a unit file. The icon is
@@ -52,6 +55,9 @@ type App struct {
 	// when the app is installable is `<Name>.json`, and the product's own knowledge of a
 	// service is keyed on it.
 	Name string `json:"name"`
+	// Available: the app's signed manifest is published beside the index, so a node can
+	// install it. Absent for an app a household can only ask for.
+	Available bool `json:"available,omitempty"`
 	// Title is the app's name for a person ("Paperless-ngx").
 	Title string `json:"title"`
 	// Functionality says in two to five brand-less words what the app does ("document

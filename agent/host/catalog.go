@@ -1,8 +1,8 @@
 package host
 
 // THE CATALOG'S INDEX, AS THIS NODE HOLDS IT. The published index lists every app a household
-// can see; this node fetches it, asks the catalog which listed apps have a manifest beside it,
-// and keeps the answer node-locally for its dashboard to render. The page never reaches the
+// can see and which of them it can install; this node fetches it, whole, on a daily read,
+// and keeps it node-locally for its dashboard to render. The page never reaches the
 // network and no copy of the list is baked into any binary: the list has the catalog's clock,
 // not the release's, and a node that has never been online has no list to show.
 //
@@ -42,7 +42,7 @@ const (
 	// the index: daily, the update check's own cadence. A failed read leaves the cache as it
 	// was, so it is retried at the next tick.
 	catalogRefreshEvery = 24 * time.Hour
-	// catalogReadBudget bounds one refresh: the index and one HEAD per listed app.
+	// catalogReadBudget bounds one refresh: the one read of the index.
 	catalogReadBudget = 3 * time.Minute
 )
 
@@ -50,9 +50,8 @@ const (
 // corrupt cache is an empty one rather than a half-list), and which listed apps had a manifest
 // when they were read.
 type catalogCache struct {
-	Fetched   time.Time       `json:"fetched"`
-	Index     json.RawMessage `json:"index"`
-	Available []string        `json:"available"`
+	Fetched time.Time       `json:"fetched"`
+	Index   json.RawMessage `json:"index"`
 }
 
 // catalogState is what this node knows of the catalog's index and of the household's wishes.
@@ -103,9 +102,9 @@ func (s *catalogState) load() {
 	}
 }
 
-// refresh re-reads the index when the cache is due, then asks the catalog which listed apps
-// have a manifest. Nil-safe, for a node built without a catalog. The network is touched off the
-// loop, on the watcher's goroutine, and the lock is held only around the state.
+// refresh re-reads the index when the cache is due. Nil-safe, for a node built without a
+// catalog. The network is touched off the loop, on the watcher's goroutine, and the lock is
+// held only around the state.
 func (s *catalogState) refresh(ctx context.Context) {
 	if s == nil {
 		return
@@ -113,10 +112,6 @@ func (s *catalogState) refresh(ctx context.Context) {
 	s.mu.Lock()
 	s.load()
 	due := s.c.Fetched.IsZero() || s.now().Sub(s.c.Fetched) >= catalogRefreshEvery
-	was := map[string]bool{}
-	for _, n := range s.c.Available {
-		was[n] = true
-	}
 	s.mu.Unlock()
 	if !due {
 		return
@@ -128,21 +123,7 @@ func (s *catalogState) refresh(ctx context.Context) {
 		s.logf("catalog: index: %v (keeping what was read before)", err)
 		return
 	}
-	// Availability is by omission: an app is installable when its manifest exists beside the
-	// index. One HEAD per listed app; an app the catalog could not be asked about keeps the
-	// answer it had, so a mirror hiccup never flips a card.
-	var available []string
-	for _, a := range idx.Apps {
-		has, err := s.cat.Has(rctx, a.Name)
-		if err != nil {
-			s.logf("catalog: %s: %v (keeping its last answer)", a.Name, err)
-			has = was[a.Name]
-		}
-		if has {
-			available = append(available, a.Name)
-		}
-	}
-	c := catalogCache{Fetched: s.now(), Index: raw, Available: available}
+	c := catalogCache{Fetched: s.now(), Index: raw}
 	out, err := json.Marshal(c)
 	if err != nil {
 		s.logf("catalog: %v", err)
@@ -155,7 +136,13 @@ func (s *catalogState) refresh(ctx context.Context) {
 		return
 	}
 	s.c, s.idx = c, idx
-	s.logf("catalog: index read: %d apps listed, %d installable", len(idx.Apps), len(available))
+	installable := 0
+	for _, a := range idx.Apps {
+		if a.Available {
+			installable++
+		}
+	}
+	s.logf("catalog: index read: %d apps listed, %d installable", len(idx.Apps), installable)
 }
 
 // toggle is the household's "I want this", and its second press: the wish recorded when
@@ -178,7 +165,7 @@ func (s *catalogState) toggle(d api.Directive) api.DirectiveOutcome {
 		return failed(fmt.Sprintf("the catalog does not list %q", name))
 	}
 	wished := slices.Contains(s.wishes, name)
-	if !wished && slices.Contains(s.c.Available, name) {
+	if !wished && s.idx.Apps[i].Available {
 		return failed(s.idx.Apps[i].Title + " is available; install it instead")
 	}
 	wishes := slices.Clone(s.wishes)
@@ -216,7 +203,7 @@ func (s *catalogState) view() dashboard.Catalog {
 	v := dashboard.Catalog{Fetched: s.c.Fetched, Apps: []dashboard.CatalogApp{}}
 	for _, a := range s.idx.Apps {
 		v.Apps = append(v.Apps, dashboard.CatalogApp{App: a,
-			Available: slices.Contains(s.c.Available, a.Name), Wished: slices.Contains(s.wishes, a.Name)})
+			Wished: slices.Contains(s.wishes, a.Name)})
 	}
 	return v
 }
@@ -237,7 +224,7 @@ func (s *catalogState) notices(ctx context.Context, n notify.Notifier, installed
 	var ws []wish
 	for _, a := range s.idx.Apps {
 		if slices.Contains(s.wishes, a.Name) {
-			ws = append(ws, wish{app: a, met: slices.Contains(s.c.Available, a.Name) && !installed[a.Name]})
+			ws = append(ws, wish{app: a, met: a.Available && !installed[a.Name]})
 		}
 	}
 	// A wish taken back has no entry above, so its resolved is asserted here, by name.
