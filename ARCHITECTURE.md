@@ -236,21 +236,30 @@ phone. Nothing is sent anywhere else.
 **The home keeps working with the internet down, and with our cloud down.** Local access is
 the floor. Nothing on the critical path to serving your smart home requires reaching us.
 
-What you install here goes further: it **reports nothing, ever**. No account, no telemetry,
-no callback. A free install contacts us in exactly two ways, both of them code you can read in
-this tree: it downloads signed files from the same static channel the installer used — the
-daily update check (`briard-update.timer`), and the catalog entry when you install an app — and
-a household that has chosen a `briard.casa` name sends its claim, the address the name should
-answer at, and its certificate requests. Nothing else leaves. You can verify that claim rather than trust it — the whole agent is
-here.
+What you install here goes further: it **reports nothing on its own**. No account, no
+telemetry, nothing periodic. A free install contacts us in exactly three ways, all of them code
+you can read in this tree:
 
-**What the download channel records**, since it is the one place we see anything at all:
-`get.briard.io` serves signed static files, and its own request logs give a per-day, per-file
-count of successful fetches. Nothing else is kept, and nothing in that log identifies you. The
-count is deliberately **not de-duplicated** — telling a returning visitor from a new one would
-mean tracking someone — so it over-counts, and we would rather say that than imply a precision we
-did not earn. Briard itself never reports a download, or anything at all: once installed, it never
-calls home unless you choose a `briard.casa` name.
+- It downloads signed files from the same static channel the installer used: the daily update
+  check (`briard-update.timer`), the daily read of the catalog's index, and an app's catalog
+  entry when you install it.
+- A household that has chosen a `briard.casa` name sends its claim, the address the name should
+  answer at, and its certificate requests.
+- When you press **"I want this"** on an app that cannot be installed yet, your machine tells us
+  which app, once (`shared/api` `Wish`), so we build the most-wanted one next. With it goes an
+  anonymous code: a one-way hash of your home's id, made for this alone, so your home counts
+  once however often you press. We store the app, the code and the time, never your address,
+  and forget the code after 30 days. Taking the wish back sends nothing, and the button says
+  what it sends before you press it.
+
+Nothing else leaves. You can verify that claim rather than trust it — the whole agent is here.
+
+**What the download channel records:** `get.briard.io` serves signed static files, and its own
+request logs give a per-day, per-file count of successful fetches. Nothing else is kept, and
+nothing in that log identifies you. The count is deliberately **not de-duplicated** — telling a
+returning visitor from a new one would mean tracking someone — so it over-counts, and we would
+rather say that than imply a precision we did not earn. Briard itself never reports a download:
+once installed, it calls home only for a `briard.casa` name you chose or a wish you pressed.
 
 A managed tier — where we operate the machines and are on the hook for them — is the one
 case where minimal health signals leave the house. What may ever be sent is a **closed
