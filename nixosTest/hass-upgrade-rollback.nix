@@ -30,6 +30,8 @@
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
+  # HA's address and readiness path come from its fixture's manifest, never restated here.
+  haVip = "http://192.168.1.100:${toString fixture.port}";
   node = h.mkNode {
     inherit fixture;
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
@@ -93,7 +95,7 @@ pkgs.testers.runNixOSTest {
 
     # HA (`from`) boots and serves; the recorder initializes + commits real history, and
     # HA writes its default configuration.yaml.
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=360)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null ${haVip}${fixture.healthPath}", timeout=360)
     node1.wait_until_succeeds("test -f ${db}", timeout=60)
     node1.wait_until_succeeds("test $(sqlite3 ${db} 'SELECT COUNT(*) FROM states') -gt 0", timeout=180)
     node1.wait_until_succeeds("test -f ${cfg}", timeout=60)
@@ -112,7 +114,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed(f"systemctl stop {units[-1]}")
     for u in units:
         node1.succeed(f"systemctl start {u}")
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=360)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null ${haVip}${fixture.healthPath}", timeout=360)
 
     # ---- Baseline: canary loaded, schema 51, named history present (while `from` LIVE) ----
     # Wait for the canary's periodic dump to report ITS entry as loaded (jq, so a loaded
@@ -152,7 +154,7 @@ pkgs.testers.runNixOSTest {
     install_fixture(node1, variant="to")
 
     # ---- Post-upgrade: HA serves, the recorder migrates, the canary regresses ----
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=360)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null ${haVip}${fixture.healthPath}", timeout=360)
     node1.wait_until_succeeds("test $(sqlite3 ${db} '${schemaQ}') -eq 53", timeout=300)
     # The canary's entry lands migration_error (HA ran async_migrate_entry, which refused).
     node1.wait_until_succeeds(canary_is("migration_error"), timeout=300)
@@ -170,7 +172,7 @@ pkgs.testers.runNixOSTest {
     assert "VERDICT=rollback" in verdict, f"health-gate did not trip on the regression: {verdict!r}"
     # And the floor it sits above was HAPPY throughout -- which is the entire reason this layer
     # exists. A gate that only fired when the service was also down would be the floor again.
-    node1.succeed("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json")
+    node1.succeed("curl -fsS -o /dev/null ${haVip}${fixture.healthPath}")
 
     # ---- Rollback-with-history-intact: the {code+data} snapshot is a valid rollback point ----
     # The live swap-and-reserve (stop service → restore subvolume → re-pin `from` → re-serve)

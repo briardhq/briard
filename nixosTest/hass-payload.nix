@@ -20,6 +20,9 @@
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
+  # HA's address and readiness path come from its fixture's manifest, never restated here.
+  ha = "http://127.0.0.1:${toString fixture.port}";
+  haVip = "http://192.168.1.100:${toString fixture.port}";
   # The zeroconf probe, as its OWN file rather than a heredoc inside the test script. Nix's
   # indented strings strip the SMALLEST indentation found in the string, so a Python body sitting
   # at column 0 stops anything from being stripped and silently de-indents the whole test script
@@ -70,7 +73,7 @@ let
 
     async def main():
         async with aiohttp.ClientSession() as s:
-            async with s.ws_connect("http://127.0.0.1:8123/api/websocket") as ws:
+            async with s.ws_connect("${ha}/api/websocket") as ws:
                 await ws.receive_json()
                 await ws.send_json({"type": "auth", "access_token": os.environ["TOKEN"]})
                 assert (await ws.receive_json())["type"] == "auth_ok"
@@ -94,7 +97,7 @@ let
 
     async def main():
         async with aiohttp.ClientSession() as s:
-            async with s.ws_connect("http://127.0.0.1:8123/api/websocket") as ws:
+            async with s.ws_connect("${ha}/api/websocket") as ws:
                 await ws.receive_json()
                 await ws.send_json({"type": "auth", "access_token": os.environ["TOKEN"]})
                 assert (await ws.receive_json())["type"] == "auth_ok"
@@ -185,7 +188,7 @@ pkgs.testers.runNixOSTest {
     # HA serves at the VIP. /manifest.json is static + unauthenticated, so a 200
     # means HA's HTTP stack is up — the readiness signal the health-gate will use.
     # Generous timeout: first boot initializes the recorder DB + onboarding store.
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=300)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null ${haVip}${fixture.healthPath}", timeout=300)
 
     # The unit that runs HA came from the RENDERER, not from this file.
     for unit in fixture_units(node1):
@@ -208,7 +211,7 @@ pkgs.testers.runNixOSTest {
     def exchange(refresh):
         """Refresh -> access, the documented exchange, client_id omitted."""
         return node1.succeed(
-            "curl -fsS -X POST http://127.0.0.1:8123/auth/token "
+            "curl -fsS -X POST ${ha}/auth/token "
             f"-d grant_type=refresh_token -d refresh_token={refresh} "
             "| sed 's/.*\"access_token\":\"\\([^\"]*\\)\".*/\\1/'"
         ).strip()
@@ -292,12 +295,12 @@ pkgs.testers.runNixOSTest {
     # also the stronger claim: the entries appear and stay readable.
     node1.wait_until_succeeds(
         f"curl -fsS -H 'Authorization: Bearer {access}' "
-        "http://127.0.0.1:8123/api/config/config_entries/entry | grep -q entry_id",
+        "${ha}/api/config/config_entries/entry | grep -q entry_id",
         timeout=300,
     )
     entries = node1.succeed(
         f"curl -fsS -H 'Authorization: Bearer {access}' "
-        "http://127.0.0.1:8123/api/config/config_entries/entry"
+        "${ha}/api/config/config_entries/entry"
     )
     assert '"state"' in entries, f"config entries carry no state: {entries[:200]}"
 
@@ -321,7 +324,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds(
         f"curl -fsS -o /dev/null -X POST -H 'Authorization: Bearer {access}' "
         "-H 'Content-Type: application/json' -d '{\"hold\":false}' "
-        "http://127.0.0.1:8123/api/briard/quiesce",
+        "${ha}/api/briard/quiesce",
         timeout=120,
     )
     # The trigger is the harness's (`--clock`, which supplies what the host would); everything
@@ -396,7 +399,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed("head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n' > /run/briard/home-assistant/token")
     rotated = node1.succeed("cat /run/briard/home-assistant/token").strip()
     assert rotated != token, "the rotation wrote the same value"
-    node1.fail(f"curl -fsS -X POST http://127.0.0.1:8123/auth/token -d grant_type=refresh_token -d refresh_token={rotated}")
+    node1.fail(f"curl -fsS -X POST ${ha}/auth/token -d grant_type=refresh_token -d refresh_token={rotated}")
 
     # ⚠️ ASK WHETHER HA CAN BE RESTARTED; THAT IT ANSWERS IS A DIFFERENT FACT. `homeassistant.restart`
     # creates a task for `hass.async_stop` and returns 200 without waiting for it, and `async_stop`
@@ -409,7 +412,7 @@ pkgs.testers.runNixOSTest {
     # restart in this file already uses. Measured, the alternative: two of six contended
     # tier runs lost the restart exactly here, and HA served on for the next thirty minutes.
     node1.wait_until_succeeds(
-        f"curl -fsS -H 'Authorization: Bearer {access}' http://127.0.0.1:8123/api/config "
+        f"curl -fsS -H 'Authorization: Bearer {access}' ${ha}/api/config "
         "| grep -qE '\"state\": ?\"RUNNING\"'",
         timeout=300,
     )
@@ -421,9 +424,9 @@ pkgs.testers.runNixOSTest {
     # the admin group.
     node1.succeed(
         f"curl -fsS -X POST -H 'Authorization: Bearer {access}' "
-        "http://127.0.0.1:8123/api/services/homeassistant/restart"
+        "${ha}/api/services/homeassistant/restart"
     )
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json", timeout=300)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null ${ha}${fixture.healthPath}", timeout=300)
 
     # WAIT FOR THE TRANSITION, DO NOT ASSUME IT. HA's in-process restart is not instant and
     # /manifest.json keeps answering from the OLD process for a moment after the call is accepted
@@ -432,7 +435,7 @@ pkgs.testers.runNixOSTest {
     # the honest form: it was proven REFUSED four lines above, so this is the boundary being
     # crossed, with a deadline rather than a hope.
     node1.wait_until_succeeds(
-        "curl -fsS -o /dev/null -X POST http://127.0.0.1:8123/auth/token "
+        "curl -fsS -o /dev/null -X POST ${ha}/auth/token "
         f"-d grant_type=refresh_token -d refresh_token={rotated}",
         timeout=300,
     )
@@ -441,7 +444,7 @@ pkgs.testers.runNixOSTest {
     assert exchange(rotated).startswith("ey"), "the mint did not heal the token at the restart boundary"
     # ...and the prune revoked the old one, which is what makes a token resurrected by a
     # backup restore harmless.
-    node1.fail(f"curl -fsS -X POST http://127.0.0.1:8123/auth/token -d grant_type=refresh_token -d refresh_token={token}")
+    node1.fail(f"curl -fsS -X POST ${ha}/auth/token -d grant_type=refresh_token -d refresh_token={token}")
     # ...without the container ever restarting.
     started_after = node1.succeed(f"podman inspect -f '{{{{.State.StartedAt}}}}' {ctr}").strip()
     assert started_before == started_after, (
@@ -463,7 +466,7 @@ pkgs.testers.runNixOSTest {
 
     # HA itself, through the door, on :80 -- no port in the address.
     node1.wait_until_succeeds(
-        f"curl -fsS -o /dev/null -H 'Host: {host}' http://192.168.1.100/manifest.json", timeout=120
+        f"curl -fsS -o /dev/null -H 'Host: {host}' http://192.168.1.100${fixture.healthPath}", timeout=120
     )
     # And /healthz under that name is NOT the node's answer: under a name we route, EVERY path
     # belongs to the service (HA has no /healthz of its own, so what comes back is HA's 404 --
@@ -596,7 +599,7 @@ pkgs.testers.runNixOSTest {
     # the manifest passed the loader's version check, the `briard:` line reached the config HA
     # read, and the stub resolved an implementation that lives outside /config.
     node1.wait_until_succeeds(
-        f"curl -fsS -H 'Authorization: Bearer {wired}' http://127.0.0.1:8123/api/config "
+        f"curl -fsS -H 'Authorization: Bearer {wired}' ${ha}/api/config "
         "| grep -q '\"briard\"'",
         timeout=300,
     )
@@ -610,7 +613,7 @@ pkgs.testers.runNixOSTest {
     # Briard's mark, served by HA's own brands API from beside the planted stub -- the URL HA's
     # integration page and Repairs ask for. Compared with the staged copy, byte for byte.
     node1.succeed(
-        f"curl -fsS -H 'Authorization: Bearer {wired}' http://127.0.0.1:8123/api/brands/integration/briard/icon.png "
+        f"curl -fsS -H 'Authorization: Bearer {wired}' ${ha}/api/brands/integration/briard/icon.png "
         "| cmp - /run/briard/home-assistant/stub/brand/icon.png"
     )
     import shlex
@@ -687,7 +690,7 @@ pkgs.testers.runNixOSTest {
     # passed with a different URL offered.
     def ext_url():
         return _zj.loads(node1.succeed(
-            f"curl -fsS -H 'Authorization: Bearer {wired}' http://127.0.0.1:8123/api/config"
+            f"curl -fsS -H 'Authorization: Bearer {wired}' ${ha}/api/config"
         )).get("external_url")
     def offer(url):
         node1.succeed(
@@ -697,7 +700,7 @@ pkgs.testers.runNixOSTest {
     assert ext_url() is None, f"a fresh Home Assistant already has an external URL: {ext_url()}"
     offer("https://home-assistant.brave-elf.briard.casa")
     node1.wait_until_succeeds(
-        f"curl -fsS -H 'Authorization: Bearer {wired}' http://127.0.0.1:8123/api/config "
+        f"curl -fsS -H 'Authorization: Bearer {wired}' ${ha}/api/config "
         "| grep -q '\"external_url\": *\"https://home-assistant.brave-elf.briard.casa\"'",
         timeout=120,
     )
@@ -711,12 +714,12 @@ pkgs.testers.runNixOSTest {
     # existence check.
     node1.wait_until_succeeds(
         f"curl -fsS -H 'Authorization: Bearer {wired}' "
-        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt' | grep -q entry_id",
+        "'${ha}/api/config/config_entries/entry?domain=mqtt' | grep -q entry_id",
         timeout=300,
     )
     mqtt_entries = _zj.loads(node1.succeed(
         f"curl -fsS -H 'Authorization: Bearer {wired}' "
-        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt'"
+        "'${ha}/api/config/config_entries/entry?domain=mqtt'"
     ))
     assert len(mqtt_entries) == 1, f"want exactly one mqtt entry, got {mqtt_entries}"
     # It LOADED -- the flow validated the broker by connecting to it, so a state of "loaded" is
@@ -739,28 +742,28 @@ pkgs.testers.runNixOSTest {
     # still coming back, failing the test for a reason unrelated to the guard under test.
     # `/api/config` reports HA's own state, so "RUNNING" is that boundary rather than a sleep.
     node1.wait_until_succeeds(
-        f"curl -fsS -H 'Authorization: Bearer {wired}' http://127.0.0.1:8123/api/config "
+        f"curl -fsS -H 'Authorization: Bearer {wired}' ${ha}/api/config "
         "| grep -qE '\"state\": ?\"RUNNING\"'",
         timeout=300,
     )
     node1.succeed(
         f"curl -fsS -X POST -H 'Authorization: Bearer {wired}' "
-        "http://127.0.0.1:8123/api/services/homeassistant/restart"
+        "${ha}/api/services/homeassistant/restart"
     )
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json", timeout=300)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null ${ha}${fixture.healthPath}", timeout=300)
     # A fresh exchange again, and WAITED FOR rather than assumed: the mint at the restart boundary
     # replaces the refresh token object behind our value, so every access token issued before it
     # is revoked -- and /auth/token starts answering only once HA's auth store is back up.
     token_now = node1.succeed("cat /run/briard/home-assistant/token").strip()
     node1.wait_until_succeeds(
-        "curl -fsS -o /dev/null -X POST http://127.0.0.1:8123/auth/token "
+        "curl -fsS -o /dev/null -X POST ${ha}/auth/token "
         f"-d grant_type=refresh_token -d refresh_token={token_now}",
         timeout=300,
     )
     restarted = exchange(token_now)
     again = _zj.loads(node1.succeed(
         f"curl -fsS -H 'Authorization: Bearer {restarted}' "
-        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt'"
+        "'${ha}/api/config/config_entries/entry?domain=mqtt'"
     ))
     assert len(again) == 1, f"a second start created another entry: {again}"
     assert again[0]["entry_id"] == mqtt_entries[0]["entry_id"], (
@@ -793,11 +796,11 @@ pkgs.testers.runNixOSTest {
     # who removed it and then reinstalled the broker would have done.
     node1.succeed(
         f"curl -fsS -X DELETE -H 'Authorization: Bearer {restarted}' "
-        f"http://127.0.0.1:8123/api/config/config_entries/entry/{again[0]['entry_id']}"
+        f"${ha}/api/config/config_entries/entry/{again[0]['entry_id']}"
     )
     node1.wait_until_fails(
         f"curl -fsS -H 'Authorization: Bearer {restarted}' "
-        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt' | grep -q entry_id",
+        "'${ha}/api/config/config_entries/entry?domain=mqtt' | grep -q entry_id",
         timeout=60,
     )
 
@@ -805,20 +808,20 @@ pkgs.testers.runNixOSTest {
     # while HA is still starting is DROPPED on purpose (the start hook is what will run, against a
     # settled Home Assistant), so nudging a `starting` HA would prove nothing and pass anyway.
     node1.wait_until_succeeds(
-        f"curl -fsS -H 'Authorization: Bearer {restarted}' http://127.0.0.1:8123/api/config "
+        f"curl -fsS -H 'Authorization: Bearer {restarted}' ${ha}/api/config "
         "| grep -qE '\"state\": ?\"RUNNING\"'",
         timeout=300,
     )
-    print(node1.succeed("hass-nudge 8123"))
+    print(node1.succeed("hass-nudge ${toString fixture.port}"))
 
     node1.wait_until_succeeds(
         f"curl -fsS -H 'Authorization: Bearer {restarted}' "
-        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt' | grep -q entry_id",
+        "'${ha}/api/config/config_entries/entry?domain=mqtt' | grep -q entry_id",
         timeout=120,
     )
     rewired = _zj.loads(node1.succeed(
         f"curl -fsS -H 'Authorization: Bearer {restarted}' "
-        "'http://127.0.0.1:8123/api/config/config_entries/entry?domain=mqtt'"
+        "'${ha}/api/config/config_entries/entry?domain=mqtt'"
     ))
     assert len(rewired) == 1, f"want exactly one mqtt entry after the nudge, got {rewired}"
     # LOADED again, so the flow validated the broker by connecting to it a second time -- the whole

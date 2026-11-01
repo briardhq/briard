@@ -36,22 +36,11 @@ let
   # This is how a test gets a workload onto a node (converge-at-promotion deleted the build-time slot that
   # was the alternative) — the same fixture, delivered the way a shipped node actually gets one.
   fixture = import ./fixture-service.nix { inherit pkgs; };
-  # HOME ASSISTANT AS A CATALOGUED SERVICE. HA used to reach a guest through the
-  # build-time payload slot, which is how nothing else could: the slot is gone, and HA is now
-  # exactly what a user's service is -- a signed manifest naming a digest-pinned image, installed
-  # onto the volume after promotion. Only the manifest's fields differ from the dummy's: /config,
-  # :8123, and /manifest.json as the readiness path (HA has no /healthz, and `/` redirects into
-  # onboarding).
-  hassFixture = import ./fixture-service.nix {
-    inherit pkgs;
-    name = "home-assistant";
-    mount = "/config";
-    port = 8123;
-    healthPath = "/manifest.json";
-    version = "2026.7.1";
-    imageFile = pkgs.home-assistant-image;
-    imageName = "ghcr.io/home-assistant/home-assistant";
-  };
+  # HOME ASSISTANT AS A CATALOGUED SERVICE: a signed manifest naming a digest-pinned image,
+  # installed onto the volume after promotion -- exactly what a user's service is. Read from its
+  # catalog entry (/config, :8123, /manifest.json as the readiness path because HA has no /healthz
+  # and `/` redirects into onboarding), so the tests run the version the catalog ships.
+  hassFixture = import ./catalog-fixture.nix { inherit pkgs; entry = ../catalog/home-assistant.json; };
   # The upgrade PAIR, as two published versions of one service: 2025.11.0 (recorder schema 51)
   # with 2025.12.0 (schema 53) as a variant. Installing the variant IS the upgrade -- same name,
   # new manifest, converge bounces the container onto it -- which is the shape a household's HA
@@ -77,23 +66,9 @@ let
   # "N services" rather than "one service, twice". Its manifest differs from HA's in the way that
   # matters: `port` is the broker's HTTP MANAGEMENT endpoint (the only thing the liveness floor can
   # probe -- MQTT is not HTTP), bound to the guest's loopback by the config the product renders
-  # for it (agent/mosquitto), while the port a household uses is 1883.
-  mosquittoFixture = import ./fixture-service.nix {
-    inherit pkgs;
-    name = "mosquitto";
-    container = "broker";
-    mount = "/mosquitto/data";
-    port = 9883;
-    healthPath = "/api/v1/listeners";
-    # PRIVATE, PUBLISHING ONLY MQTT -- the shape the real catalog entry carries. The fixture has to
-    # match it or the tests prove a deployment no household runs: the manifest'"'"'s port is the
-    # management API, which stays inside the pod, and 1883 is the whole of what is reachable.
-    network = "private";
-    ports = [ 1883 ];
-    version = "2.1.2";
-    imageFile = pkgs.mosquitto-upgrade-pair.to;
-    imageName = "docker.io/library/eclipse-mosquitto";
-  };
+  # for it (agent/mosquitto), while the port a household uses is 1883. Read from its catalog
+  # entry, so the tests run the private, MQTT-only pod households run.
+  mosquittoFixture = import ./catalog-fixture.nix { inherit pkgs; entry = ../catalog/mosquitto.json; };
   # The same service published twice, 2.1.1 with 2.1.2 as a variant: installing the variant IS the
   # upgrade. Both ends serve the same management API under Briard's config (measured before the
   # pair was pinned -- guest-image/pkgs/mosquitto-image), so an upgrade that failed here would be
@@ -142,10 +117,13 @@ let
 
   # Kill the primary → HA fails over with config intact at the same VIP.
   hassFailover = import ./hass-failover.nix { inherit pkgs guestModule; fixture = hassFixture; };
+  # Latent damage in the recorder database found before Home Assistant finds it, and the
+  # newest copy that checks clean swapped back in; an unchecked copy resets on the full read.
+  hassRecorderCheck = import ./hass-recorder-check.nix { inherit pkgs guestModule; fixture = hassFixture; };
 
   # The encryption conversion: the DRBD backing moves between a plaintext and an encrypted PV, live, both ways,
-  # with HA serving throughout. Carries HA's cost because the claim is about a running household.
-  luksConvert = import ./luks-convert.nix { inherit pkgs guestModule; fixture = hassFixture; };
+  # with a service writing throughout. The dummy: the claim is about the storage stack, not an app.
+  luksConvert = import ./luks-convert.nix { inherit pkgs guestModule fixture; };
 
   # A real HA upgrade (2025.11.0 → 2025.12.0) carrying a real recorder schema
   # migration (v52 unit_class) through the pipeline, its data intact.
@@ -416,6 +394,7 @@ in
       # rule 5's consequence is a HANDOVER -- on one node the demote is followed 40ms later
       # by the same node re-promoting, which is what hid this defect's severity.
       chain-member-contract = import ./chain-member-contract.nix { inherit pkgs fixture guestModule; };
+      luks-convert = luksConvert;
       # `witness-proxy` + `witness-tap-link` join this tag from outputs-private.nix —
       # both build the cloud witness. The three tests above mention the cloud only in prose.
     };
@@ -438,18 +417,26 @@ in
       mosquitto = mosquittoTest; # the broker: its config in effect, its data on the volume
       services-pair = servicesPair; # two services: upgrade one, the other keeps serving
     };
+    # EACH APP'S CONTRACT: the tests of Briard's own code for one catalogued app (agent/hass,
+    # agent/mosquitto, its agent/services entry), on the entry the catalog ships. The tier runs them
+    # every night, because a change to Briard can break them; an update to the app runs `@app-<name>`
+    # against the new entry. A test sits here and in its subject's group alike.
+    app-home-assistant = {
+      hass-payload = hassPayload;
+      hass-recorder-check = hassRecorderCheck;
+    };
+    app-mosquitto = {
+      mosquitto = mosquittoTest;
+    };
     # Real Home Assistant as an INSTALLED SERVICE (2.4 GB image boot).
     ha = {
       hass-payload = hassPayload;
       hass-failover = hassFailover;
       hass-upgrade = hassUpgrade; # real recorder schema migration through the upgrade
       hass-upgrade-rollback = hassUpgradeRollback; # real regression trips the gate → {code+data} rollback
-      # Latent damage in the recorder database found before Home Assistant finds it, and the
-      # newest copy that checks clean swapped back in; an unchecked copy resets on the full read.
-      hass-recorder-check = import ./hass-recorder-check.nix { inherit pkgs guestModule; fixture = hassFixture; };
+      hass-recorder-check = hassRecorderCheck;
       # The storage seam under all of them: arming a node is a pvmove and disarming it is the
       # same move back, neither of which HA notices.
-      luks-convert = luksConvert;
     };
 
     # Agent-in-the-loop: the agent drives a real guest under *nested*

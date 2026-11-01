@@ -20,6 +20,8 @@
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
+  # HA's address and readiness path come from its fixture's manifest, never restated here.
+  haVip = "http://192.168.1.100:${toString fixture.port}";
 
   node = h.mkNode {
     inherit fixture;
@@ -112,7 +114,7 @@ pkgs.testers.runNixOSTest {
 
     install_fixture(node1)
     t_install = time.monotonic()
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=900)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null ${haVip}${fixture.healthPath}", timeout=900)
     print(f"HA serving {time.monotonic() - t_install:.0f}s after install")
     s("ha-serving")
 
@@ -124,7 +126,7 @@ pkgs.testers.runNixOSTest {
 
     print("BREAKDOWN ha-idle\n" + node1.succeed("${breakdown}"))
     ooms = node1.succeed("journalctl -k --no-pager | grep -c 'Out of memory' || true").strip()
-    serving = node1.succeed("curl -fsS -o /dev/null -w '%{http_code}' http://192.168.1.100:8123/manifest.json || true").strip()
+    serving = node1.succeed("curl -fsS -o /dev/null -w '%{http_code}' ${haVip}${fixture.healthPath} || true").strip()
     print(f"RESULT oom_kills={ooms} ha_manifest_http={serving}")
   '';
 }

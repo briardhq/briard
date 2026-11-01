@@ -8,7 +8,9 @@
 # close and reopen its backing device.
 #
 # So this rig proves the claim in the direction that actually matters — BOTH — on the shape a
-# household runs: real Home Assistant, on a btrfs volume, over a promoted DRBD.
+# household runs: a service writing to a btrfs volume over a promoted DRBD. The service is the
+# dummy, whose tick is an fsync'd write every second and whose counter may only grow -- a
+# workload that dies on the first write that fails, which is what makes it the right witness here.
 #
 #   the shipped ENCRYPTED node → (hotplug a blank disk, pvcreate, vgextend) → pvmove → vgreduce
 #                              → (device_del the retired disk) → and all the way back onto LUKS.
@@ -24,7 +26,7 @@
 # asserted by an I/O prober that writes and fsyncs continuously across both moves, records what
 # every write cost, and would record the failures if the queue became an error instead. DRBD must
 # never demote, never detach and never resync; btrfs must see no error, in the log or in its own
-# counters; HA must keep answering.
+# counters; the service must keep answering, and its counter keep climbing.
 #
 # AND IT MEASURES, because "a latency bump" is a number or it is a hope. The run prints the stall
 # distribution per move and the copy throughput, which is what the rule of thumb in the docs is
@@ -72,15 +74,15 @@ let
     done
   '';
 
-  haProbe = pkgs.writeShellScript "convert-ha-probe" ''
+  svcProbe = pkgs.writeShellScript "convert-svc-probe" ''
     export PATH=${pkgs.lib.makeBinPath [ pkgs.coreutils pkgs.curl ]}
-    : >/run/briard-ha.err
-    : >/run/briard-ha.ok
+    : >/run/briard-svc.err
+    : >/run/briard-svc.ok
     while [ -e /run/briard-probe.run ]; do
-      if curl -fsS -o /dev/null --max-time 5 http://192.168.1.100:8123/manifest.json; then
-        echo ok >>/run/briard-ha.ok
+      if curl -fsS -o /dev/null --max-time 5 http://192.168.1.100:${toString fixture.port}${fixture.healthPath}; then
+        echo ok >>/run/briard-svc.ok
       else
-        echo "$(date +%s%N) unreachable" >>/run/briard-ha.err
+        echo "$(date +%s%N) unreachable" >>/run/briard-svc.err
       fi
       sleep 1
     done
@@ -105,10 +107,6 @@ pkgs.testers.runNixOSTest {
     { lib, ... }:
     {
       imports = [ node ];
-      # HA's numbers, measured in hass-payload: the 2.4 GB image is read from its prebuilt store
-      # and HA's Python stack wants ~1 GB live.
-      virtualisation.memorySize = 2048;
-      virtualisation.diskSize = 10240;
       # The data disk the seam unit will claim, resized from lib.nix's 256 MiB (a 4 GiB volume is
       # what `install.sh` lays down by default, and a 256 MiB move would measure nothing) and given
       # a qdev id + a serial. Both are load-bearing: the id is what `device_del` names when the
@@ -125,7 +123,7 @@ pkgs.testers.runNixOSTest {
       ];
     };
 
-  # HA boot is slow and the promoter selects the primary dynamically.
+  # The promoter selects the primary dynamically.
   skipTypeCheck = true;
 
   testScript = ''
@@ -237,7 +235,7 @@ pkgs.testers.runNixOSTest {
     def undisturbed(m, since, label):
         """WHAT HAD TO STAY TRUE, as negatives. DRBD never demoted, never detached, never
         resynced; btrfs saw no error in the log OR in its own counters; the prober lost no write;
-        HA answered every poll; and the resource still names the same backing device it was
+        the service answered every poll; and the resource still names the same backing device it was
         created with, which is the property the seam exists for."""
         m.fail(f"journalctl -k --since '{since}' | grep -q 'role( Primary -> Secondary )'")
         m.fail(f"journalctl -k --since '{since}' | grep -q 'disk( UpToDate -> '")
@@ -250,15 +248,15 @@ pkgs.testers.runNixOSTest {
         m.succeed(f"drbdsetup show r0 | grep -q '{LV}'")
         errs = m.succeed("cat /run/briard-probe.err")
         assert not errs.strip(), f"[{label}] the volume failed a write: {errs}"
-        ha_errs = m.succeed("cat /run/briard-ha.err")
-        assert not ha_errs.strip(), f"[{label}] HA stopped answering: {ha_errs}"
-        polls = len(m.succeed("cat /run/briard-ha.ok").splitlines())
-        print(f"[{label}] undisturbed: {polls} HA polls answered, no DRBD or btrfs event")
+        svc_errs = m.succeed("cat /run/briard-svc.err")
+        assert not svc_errs.strip(), f"[{label}] the service stopped answering: {svc_errs}"
+        polls = len(m.succeed("cat /run/briard-svc.ok").splitlines())
+        print(f"[{label}] undisturbed: {polls} service polls answered, no DRBD or btrfs event")
 
 
     node1.start()
     node1.wait_for_unit("multi-user.target")
-    # HA's 2.4 GB image is resident before anything promotes, as on a real node.
+    # The service's image is resident before anything promotes, as on a real node.
     node1.wait_for_unit("briard-test-fixture-install.service", timeout=600)
     # ── THE SEAM, BUILT BY THE PRODUCT ─────────────────────────────────────────────────────────
     # briard-node-storage.service lays this down from the spec the host writes, and
@@ -288,12 +286,16 @@ pkgs.testers.runNixOSTest {
     # of the test is measuring something else.
     node1.succeed(f"drbdsetup show r0 | grep -q '{LV}'")
 
-    # THE WORKLOAD: real HA, installed onto the volume it now holds, through the product's converge.
+    # THE WORKLOAD, installed onto the volume it now holds, through the product's converge.
     dataroot = install_fixture(node1)
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=300)
-    node1.wait_until_succeeds(f"test -f {dataroot}/app/home-assistant_v2.db", timeout=120)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:${toString fixture.port}${fixture.healthPath}", timeout=300)
+    import json
+    state = "curl -fsS http://192.168.1.100:${toString fixture.port}/state"
+    node1.wait_until_succeeds(f"{state} | grep -q '\"ticks\":[1-9]'", timeout=60)
+    ticks_before = int(json.loads(node1.succeed(state))["ticks"])
 
-    # A megabyte of data whose checksum has to survive both moves. HA's own recorder DB is the
+    # A megabyte of data whose checksum has to survive both moves. The service's ticks are the
+    # live load; this is the deterministic witness beside it.
     # realistic load; this is the deterministic witness beside it.
     node1.succeed("head -c 1048576 /dev/urandom >/var/lib/briard/.convert-token")
     node1.succeed("sync -f /var/lib/briard")
@@ -302,7 +304,7 @@ pkgs.testers.runNixOSTest {
     # ── ARM THE PROBERS, AND THE CLOCK THE NEGATIVES ARE READ FROM ─────────────────────────────
     node1.succeed("touch /run/briard-probe.run")
     node1.succeed("systemd-run --unit=convert-io-probe ${ioProbe}")
-    node1.succeed("systemd-run --unit=convert-ha-probe ${haProbe}")
+    node1.succeed("systemd-run --unit=convert-svc-probe ${svcProbe}")
     node1.sleep(5)
     assert int(node1.succeed("wc -l </run/briard-probe.lat")) > 0, "the I/O prober wrote nothing"
     since = node1.succeed("date -u +'%Y-%m-%d %H:%M:%S'").strip()
@@ -377,19 +379,19 @@ pkgs.testers.runNixOSTest {
     # ── STOP PROBING, THEN JUDGE ───────────────────────────────────────────────────────────────
     node1.succeed("rm /run/briard-probe.run")
     node1.wait_until_fails("systemctl is-active convert-io-probe.service", timeout=60)
-    node1.wait_until_fails("systemctl is-active convert-ha-probe.service", timeout=60)
+    node1.wait_until_fails("systemctl is-active convert-svc-probe.service", timeout=60)
 
     undisturbed(node1, since, "rearm")
     assert witness == node1.succeed("sha256sum /var/lib/briard/.convert-token").split()[0], \
         "the witness file did not survive the round trip"
 
-    # HA is not merely still answering -- it is still the same HA, with the recorder DB it wrote
-    # before the volume moved underneath it twice.
-    node1.succeed(f"test -f {dataroot}/app/home-assistant_v2.db")
-    node1.succeed(f"test -d {dataroot}/app/.storage")
+    # The service is not merely still answering -- it is still the same service, counting on from
+    # the state it wrote before the volume moved underneath it twice.
+    ticks_after = int(json.loads(node1.succeed(state))["ticks"])
+    assert ticks_after > ticks_before, f"the counter did not carry across the moves: {ticks_before} -> {ticks_after}"
     for unit in fixture_units(node1):
         node1.succeed(f"systemctl is-active {unit}")
-    node1.succeed("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json")
+    node1.succeed("curl -fsS -o /dev/null http://192.168.1.100:${toString fixture.port}${fixture.healthPath}")
 
     # And the seam is exactly what it was: one linear segment, on one PV, under the same name.
     table = node1.succeed(f"dmsetup table {LV}").strip().splitlines()

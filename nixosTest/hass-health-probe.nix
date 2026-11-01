@@ -24,6 +24,8 @@
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
+  # HA's address and readiness path come from its fixture's manifest, never restated here.
+  ha = "http://127.0.0.1:${toString fixture.port}";
   driver = ./health-probe.py;
 
   node = h.mkNode {
@@ -61,17 +63,17 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("test -S /run/briard/agent.sock", timeout=60)
 
     dataroot = install_fixture(node1)
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json", timeout=300)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null ${ha}${fixture.healthPath}", timeout=300)
 
     # Up means the briard integration is set up too -- its view exists only then, which is later
     # than the door answering (hass-payload records the trap).
     token = node1.succeed("cat /run/briard/home-assistant/token").strip()
     node1.wait_until_succeeds(
-        "curl -fsS -X POST http://127.0.0.1:8123/auth/token "
+        "curl -fsS -X POST ${ha}/auth/token "
         f"-d grant_type=refresh_token -d refresh_token={token} "
         "| sed 's/.*\"access_token\":\"\\([^\"]*\\)\".*/\\1/' "
         "| xargs -I{} curl -fsS -o /dev/null -X POST -H 'Authorization: Bearer {}' "
-        "-H 'Content-Type: application/json' -d '{\"hold\":false}' http://127.0.0.1:8123/api/briard/quiesce",
+        "-H 'Content-Type: application/json' -d '{\"hold\":false}' ${ha}/api/briard/quiesce",
         timeout=300,
     )
 

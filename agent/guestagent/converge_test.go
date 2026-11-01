@@ -21,7 +21,7 @@ const otherManifest = `{"name":"other","version":"1","network":"host","container
 	`"image":"localhost/briard-other@sha256:2222222222222222222222222222222222222222222222222222222222222222",` +
 	`"primary":true,"port":9090,"healthPath":"/healthz"}]}`
 
-// mosquitto's REAL catalog shape: the manifest port is 9883, the management API the broker binds
+// mosquitto where it matters here: the manifest port is 9883, the management API the broker binds
 // to the guest's loopback -- which is exactly why the front door must not route to it.
 const mosquittoManifest = `{"name":"mosquitto","version":"2.1.2","containers":[{"name":"broker",` +
 	`"image":"docker.io/library/eclipse-mosquitto@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +

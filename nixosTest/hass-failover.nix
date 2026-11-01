@@ -14,6 +14,8 @@
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
+  # HA's address and readiness path come from its fixture's manifest, never restated here.
+  haVip = "http://192.168.1.100:${toString fixture.port}";
   baseNode = h.mkNode {
     inherit fixture;
     resource = h.mkResource [
@@ -50,7 +52,7 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     ${h.fixtureHelpers}
     USER = "briard-test"
-    VIP = "http://192.168.1.100:8123"
+    VIP = "${haVip}"
 
     machines = [node1, node2, node3]
     start_all()
@@ -91,7 +93,7 @@ pkgs.testers.runNixOSTest {
     primary = next(m for m in machines if role(m) == "Primary")
     print(f"primary={primary.name}")
     dataroot = install_fixture(primary)
-    node1.wait_until_succeeds(f"curl -fsS -o /dev/null {VIP}/manifest.json", timeout=300)
+    node1.wait_until_succeeds(f"curl -fsS -o /dev/null {VIP}${fixture.healthPath}", timeout=300)
 
     # Write real, durable HA config: the owner user, via the no-auth onboarding
     # step (first step, available as soon as the onboarding API is up). This lands
@@ -130,7 +132,7 @@ pkgs.testers.runNixOSTest {
 
     # The two survivors keep quorum, promote one of their own, reload the HA image
     # and boot HA, and the VIP answers again — same address, moved by gratuitous ARP.
-    survivors[0].wait_until_succeeds(f"curl -fsS -o /dev/null {VIP}/manifest.json", timeout=400)
+    survivors[0].wait_until_succeeds(f"curl -fsS -o /dev/null {VIP}${fixture.healthPath}", timeout=400)
 
     # Config intact: the owner user crossed the DRBD link and the new primary's HA
     # re-adopted the replicated `.storage`. Assert on whichever survivor is now primary.

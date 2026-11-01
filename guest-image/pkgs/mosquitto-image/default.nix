@@ -1,6 +1,6 @@
 # Mosquitto as a hermetically-pinned OCI image, in the two versions the upgrade tests need.
 #
-# Same discipline as ./home-assistant-image: pull the official container by per-arch content
+# Same discipline as ./home-assistant-image-pair: pull the official container by per-arch content
 # digest, never a mutable tag, so Nix reproduces it bit-for-bit. A pair rather than a single pin
 # because an upgrade test needs a real version change on both sides of the switch — the identity
 # a node upgrades to is the manifest's content hash, and a manifest naming the same image is not
@@ -8,7 +8,7 @@
 #
 # ── Why THIS pair (measured 2026-08-30, not reasoned) ────────────────────────────────────
 #   from = 2.1.1
-#   to   = 2.1.2   (what the published catalog entry pins; `:2` resolves here today)
+#   to   = 2.1.2   (the catalog's entry when the pair was written; the pair is frozen, the catalog moves)
 #
 # Both were run under Briard's own config before the pair was written, and both answer
 # `/api/v1/listeners` on the loopback management listener. That matters: the health floor probes
@@ -22,8 +22,8 @@
 #
 # ── Pin provenance / refresh procedure ───────────────────────────────────────────────────
 # Per-arch amd64 manifest digests under each release's multi-arch index, resolved 2026-08-30 from
-# the registry (`docker manifest inspect eclipse-mosquitto:<tag>`). v0 is x86_64-only (see
-# ./home-assistant-image); arm64 waits for the Pi target. To (re)compute the FOD `sha256`: leave
+# the registry (`docker manifest inspect eclipse-mosquitto:<tag>`). v0 is x86_64-only; arm64
+# waits for the Pi target. To (re)compute the FOD `sha256`: leave
 # it `lib.fakeSha256`, run `nix build .#mosquitto-image-2_1_2` (and `..._2_1_1`), and paste the
 # hash the build prints back here.
 { dockerTools, lib, stdenv }:

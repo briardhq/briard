@@ -29,6 +29,8 @@
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
+  # HA's address and readiness path come from its fixture's manifest, never restated here.
+  haVip = "http://192.168.1.100:${toString fixture.port}";
   node = h.mkNode {
     inherit fixture;
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
@@ -98,7 +100,7 @@ pkgs.testers.runNixOSTest {
     install_fixture(node1)
 
     # HA (`from`) boots and serves. Generous: first boot initializes the recorder DB.
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=360)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null ${haVip}${fixture.healthPath}", timeout=360)
     node1.wait_until_succeeds("test -f ${db}", timeout=60)
     # Non-vacuous 'data survived': wait for the recorder to commit real history first.
     node1.wait_until_succeeds("test $(sqlite3 ${db} 'SELECT COUNT(*) FROM states') -gt 0", timeout=180)
@@ -145,7 +147,7 @@ pkgs.testers.runNixOSTest {
     # ---- Health-gate + migration completion ----
     # HA may answer HTTP while the recorder migrates live in the background, so the real
     # gate is schema==53 (migration DONE), not merely manifest 200.
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://192.168.1.100:8123/manifest.json", timeout=360)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null ${haVip}${fixture.healthPath}", timeout=360)
     node1.wait_until_succeeds("test $(sqlite3 ${db} '${schemaQ}') -eq 53", timeout=300)
 
     # ---- Migrated AND kept its data ----

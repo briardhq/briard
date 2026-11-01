@@ -2,7 +2,7 @@
 # real recorder schema migration, so the upgrade tests can drive a *real* `Manager.Upgrade`
 # (not a dummy) through the pipeline and assert the DB actually migrated + survived.
 #
-# Same hermetic-pin discipline as ./home-assistant-image: pull the
+# Hermetically pinned: pull the
 # official container by per-arch content digest, never a mutable tag, so Nix
 # reproduces it bit-for-bit. This file just pins TWO of them.
 #
@@ -56,7 +56,7 @@
 # ── Pin provenance / refresh procedure ────────────────────────────────────────
 # Per-arch amd64 manifest digests, resolved 2026-07-23 from the ghcr registry API
 # (anonymous pull token → manifest list → linux/amd64 sub-manifest digest). v0 is
-# x86_64-only (see ./home-assistant-image); arm64 waits for the Pi target.
+# x86_64-only; arm64 waits for the Pi target.
 # To (re)compute the FOD `sha256`: leave it `lib.fakeSha256`, run
 #   nix build .#home-assistant-image-2025_11   (and .#..._2025_12)
 # and paste the real hash the build prints back here.

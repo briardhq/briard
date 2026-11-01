@@ -88,6 +88,13 @@ of it: for Home Assistant that includes booting under the token wrapper (`agent/
 image whose s6 furniture moved would otherwise become a fleet incident rather than a failed
 promotion.
 
+**The tests run these entries.** The VM tests build Home Assistant's and mosquitto's fixtures from
+the files here (`nixosTest/catalog-fixture.nix`), so a changed entry is what they boot, and an
+app's own tests are tagged `app-<name>` to run as its gate. The one thing they need that no entry
+says is the hash nix checks the pulled image against — the hash of the archive nix repacks it
+into, which no registry digest gives. A new image's goes in `nixosTest/catalog-images.json`; build
+once without it and nix prints it.
+
 ## What an entry costs: `size` and `installedSize`
 
 Every entry declares two totals, measured once when the entry is made and signed with the rest:

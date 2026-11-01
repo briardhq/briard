@@ -36,6 +36,8 @@
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
+  # HA's address and readiness path come from its fixture's manifest, never restated here.
+  ha = "http://127.0.0.1:${toString fixture.port}";
   helper = ./recorder-check.py;
   node = h.mkNode {
     fixtures = [ fixture ];
@@ -85,7 +87,7 @@ pkgs.testers.runNixOSTest {
     units = fixture_units(node1)
 
     def healthy():
-        node1.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json", timeout=360)
+        node1.wait_until_succeeds("curl -fsS -o /dev/null ${ha}${fixture.healthPath}", timeout=360)
         # Through the token, which is the API a household's history is written by.
         node1.wait_until_succeeds(f"{helper} set sensor.b31_alive {time.time()}", timeout=180)
 

@@ -130,8 +130,6 @@
         dummy-service = final.callPackage ./nixosTest/dummy-service/package.nix { };
         reverse-proxy = final.callPackage ./reverse-proxy/package.nix { }; # front door at the VIP
         dashboard = final.callPackage ./dashboard/package.nix { }; # the household dashboard behind the door
-        # HA as a digest-pinned upstream OCI image — the real service.
-        home-assistant-image = final.callPackage ./guest-image/pkgs/home-assistant-image { };
         # The upgrade-pair fixture: {from = 2025.11.0 (schema 51); to =
         # 2025.12.0 (schema 53)}, straddling the recorder v52 `unit_class` migration.
         home-assistant-upgrade-pair = final.callPackage ./guest-image/pkgs/home-assistant-image-pair { };
@@ -142,7 +140,6 @@
       packages = forAllSystems (pkgs: {
         drbd-reactor = pkgs.callPackage ./guest-image/pkgs/drbd-reactor { };
         dummy-service = pkgs.callPackage ./nixosTest/dummy-service/package.nix { };
-        home-assistant-image = pkgs.callPackage ./guest-image/pkgs/home-assistant-image { };
         # The upgrade-pair, surfaced flat + by name so the FOD sha256 can be
         # filled with `nix build .#home-assistant-image-2025_11` (see the pair's
         # refresh procedure) and each end can be built directly.

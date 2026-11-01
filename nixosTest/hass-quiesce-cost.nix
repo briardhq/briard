@@ -28,6 +28,8 @@
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
+  # HA's address and readiness path come from its fixture's manifest, never restated here.
+  ha = "http://127.0.0.1:${toString fixture.port}";
   driver = ./quiesce-cost.py;
 
   # The probe: a state change on sensor.probe increments counter.probe, and the driver times the
@@ -87,27 +89,27 @@ pkgs.testers.runNixOSTest {
     root = node1.succeed("cat /run/briard/fixture/dataroot").strip()
     node1.succeed(f"btrfs subvolume create {root} && mkdir -p {root}/app && cp ${probeConfig} {root}/app/configuration.yaml")
     dataroot = install_fixture(node1)
-    node1.wait_until_succeeds("curl -fsS -o /dev/null http://127.0.0.1:8123/manifest.json", timeout=300)
+    node1.wait_until_succeeds("curl -fsS -o /dev/null ${ha}${fixture.healthPath}", timeout=300)
 
     # A token that works, which also waits out Home Assistant's own first-boot setup.
     token = node1.succeed("cat /run/briard/home-assistant/token").strip()
 
     def access():
         return node1.succeed(
-            "curl -fsS -X POST http://127.0.0.1:8123/auth/token "
+            "curl -fsS -X POST ${ha}/auth/token "
             f"-d grant_type=refresh_token -d refresh_token={token} "
             "| sed 's/.*\"access_token\":\"\\([^\"]*\\)\".*/\\1/'"
         ).strip()
 
     node1.wait_until_succeeds(
-        "curl -fsS -X POST http://127.0.0.1:8123/auth/token "
+        "curl -fsS -X POST ${ha}/auth/token "
         f"-d grant_type=refresh_token -d refresh_token={token} | grep -q access_token",
         timeout=300,
     )
     # The probe automation loaded with everything else: its counter exists.
 
     node1.wait_until_succeeds(
-        f"curl -fsS -H 'Authorization: Bearer {access()}' http://127.0.0.1:8123/api/states/counter.probe",
+        f"curl -fsS -H 'Authorization: Bearer {access()}' ${ha}/api/states/counter.probe",
         timeout=120,
     )
 
@@ -116,7 +118,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds(
         f"curl -fsS -o /dev/null -X POST -H 'Authorization: Bearer {access()}' "
         "-H 'Content-Type: application/json' -d '{\"hold\":false}' "
-        "http://127.0.0.1:8123/api/briard/quiesce",
+        "${ha}/api/briard/quiesce",
         timeout=120,
     )
 

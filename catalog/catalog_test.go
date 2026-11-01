@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/shared/manifest"
 )
@@ -135,6 +136,25 @@ func TestMosquittoEntryMatchesTheProductsConfig(t *testing.T) {
 	}
 	if p.Mount != mosquitto.DataMount {
 		t.Errorf("the replicated volume is bound at %q; the config persists into %q", p.Mount, mosquitto.DataMount)
+	}
+}
+
+// TestHomeAssistantEntryMatchesWhatTheProductAssumes is HA's half of the same check, against what
+// agent/hass takes for granted rather than a config it renders. Its scripts (plant.py, the token
+// mint) write into /config, Home Assistant's config directory in its image, so an entry mounting
+// the replicated volume anywhere else leaves the integration, the token and the household's whole
+// configuration on the container's own disk, gone at the next start. And HA exists to find the
+// devices on the household's network: off host networking its mDNS and SSDP discovery sees nothing.
+func TestHomeAssistantEntryMatchesWhatTheProductAssumes(t *testing.T) {
+	m, _, err := manifest.Parse(read(t, hass.Name+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := m.Primary(); p.Mount != "/config" {
+		t.Errorf("the replicated volume is bound at %q; agent/hass writes into /config", p.Mount)
+	}
+	if !m.HostNetwork() {
+		t.Error("Home Assistant is off host networking; its discovery would see nothing on the household's LAN")
 	}
 }
 
