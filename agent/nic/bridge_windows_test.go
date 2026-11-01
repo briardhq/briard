@@ -118,3 +118,55 @@ func TestDestroyBridge(t *testing.T) {
 		}
 	}
 }
+
+// TestNetshBridgeCommands reads the two command lists Windows prints for `netsh bridge ?` -- 10
+// 22H2's, which can make no bridge, and 11 24H2's -- and an output that is not a list at all,
+// which must leave netsh the way.
+func TestNetshBridgeCommands(t *testing.T) {
+	const win10 = `
+The following commands are available:
+
+Commands in this context:
+?              - Displays a list of commands.
+dump           - Displays a configuration script.
+help           - Displays a list of commands.
+install        - Installs the component corresponding to the current context.
+set            - Sets configuration information.
+show           - Displays information.
+uninstall      - Removes the component corresponding to the current context.
+
+To view help for a command, type the command, followed by a space, and then
+ type ?.
+`
+	const win11 = `
+The following commands are available:
+
+Commands in this context:
+?              - Displays a list of commands.
+add            - Add a network adapter onto an existing bridge.
+create         - Create a bridge with two user-provided network adapters.
+destroy        - Remove ALL bridged network adapters from the existing bridge and destroy that bridge.
+dump           - Displays a configuration script.
+help           - Displays a list of commands.
+list           - Display all available created bridges.
+remove         - Remove network adapter(s) from a bridge, and destroy the bridge when all network adapters are removed.
+set            - Sets configuration information.
+show           - Displays information.
+`
+	for _, tc := range []struct {
+		name, out string
+		lacks     bool
+	}{
+		{"windows 10", win10, true},
+		{"windows 11", win11, false},
+		{"no list", "The following command was not found: bridge ?.\n", false},
+		{"nothing", "", false},
+	} {
+		cmds := netshBridgeCommands(tc.out)
+		for _, cmd := range []string{"create", "add", "remove", "destroy"} {
+			if got := lacks(cmds, cmd); got != tc.lacks {
+				t.Errorf("%s: lacks(%q) = %v, want %v", tc.name, cmd, got, tc.lacks)
+			}
+		}
+	}
+}

@@ -74,8 +74,17 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 		}
 	}
 	// 3. The bridge, created WITH the TAP, by GUID -- the one adapter id netsh takes that no name
-	// or index change can make ambiguous.
-	if out, err := exec.CommandContext(ctx, "netsh", "bridge", "create", m.guid, t.guid).CombinedOutput(); err != nil {
+	// or index change can make ambiguous. Where netsh cannot create one, Network Connections does,
+	// by name, and only on a desktop (shellverb_windows.go).
+	if netshLacks("create") {
+		if sessionZero() {
+			return rec, errors.New("this Windows has no `netsh bridge create`, and builds a bridge only for a " +
+				"signed-in user: run the installer from your desktop, as an administrator")
+		}
+		if err := shellVerb(ctx, "createbridge", m.name, TapName); err != nil {
+			return rec, fmt.Errorf("Bridge Connections: %w", err)
+		}
+	} else if out, err := exec.CommandContext(ctx, "netsh", "bridge", "create", m.guid, t.guid).CombinedOutput(); err != nil {
 		return rec, fmt.Errorf("netsh bridge create: %s", firstLine(out, err))
 	}
 	br, err := waitBridge(ctx, m.name)
@@ -178,8 +187,8 @@ func SwapMember(ctx context.Context, bridge, to string, prev Offload) (Offload, 
 		return rec, err
 	}
 	if from != "" {
-		if err := netsh(ctx, "bridge", "remove", from, "from", b.guid); err != nil {
-			return rec, fmt.Errorf("netsh bridge remove %s: %w", from, err)
+		if err := bridgeRemove(ctx, from, b.guid); err != nil {
+			return rec, err
 		}
 		if err := waitMaster(ctx, from, ""); err != nil {
 			return rec, fmt.Errorf("%s did not leave %s, so %s was not added: %w", from, bridge, to, err)
@@ -193,13 +202,31 @@ func SwapMember(ctx context.Context, bridge, to string, prev Offload) (Offload, 
 		psQuote(bridge), t.mac)); err != nil {
 		return rec, fmt.Errorf("re-pinning the bridge's MAC to %s's: %w", to, err)
 	}
-	if err := netsh(ctx, "bridge", "add", to, "to", b.guid); err != nil {
+	if netshLacks("add") {
+		if err := shellVerb(ctx, "addtobridge", to); err != nil {
+			return rec, fmt.Errorf("Add to Bridge %s: %w", to, err)
+		}
+	} else if err := netsh(ctx, "bridge", "add", to, "to", b.guid); err != nil {
 		return rec, fmt.Errorf("netsh bridge add %s: %w", to, err)
 	}
 	if err := waitMaster(ctx, to, bridge); err != nil {
 		return rec, fmt.Errorf("%s did not join %s: %w", to, bridge, err)
 	}
 	return rec, nil
+}
+
+// bridgeRemove takes dev out of the bridge whose GUID is bridge.
+func bridgeRemove(ctx context.Context, dev, bridge string) error {
+	if netshLacks("remove") {
+		if err := shellVerb(ctx, "removefrombridge", dev); err != nil {
+			return fmt.Errorf("Remove from Bridge %s: %w", dev, err)
+		}
+		return nil
+	}
+	if err := netsh(ctx, "bridge", "remove", dev, "from", bridge); err != nil {
+		return fmt.Errorf("netsh bridge remove %s: %w", dev, err)
+	}
+	return nil
 }
 
 // waitMaster waits up to 30 s for dev's bridge to read want ("" for none).
@@ -228,7 +255,7 @@ func waitBridge(ctx context.Context, member string) (string, error) {
 			return br, nil
 		}
 		if time.Now().After(deadline) {
-			return "", errors.New("netsh created the bridge, but no bridge holds the member a minute later")
+			return "", errors.New("the bridge was created, but no bridge holds the member a minute later")
 		}
 		select {
 		case <-ctx.Done():
@@ -367,7 +394,27 @@ func DestroyBridge(ctx context.Context, rec Offload) error {
 	as := adapters()
 	if b, ok := byName(as, BridgeName); ok && IsBridge(BridgeName) {
 		member, _, _ := Member(BridgeName)
-		if err := netsh(ctx, "bridge", "destroy", b.guid); err != nil {
+		if netshLacks("destroy") {
+			// Without netsh: the bridge goes with its last member, asking nothing. The folder's
+			// Delete asks first, and a service or SYSTEM task has no one to answer. Before the
+			// install's restart the TAP may not be a member yet, and the household's NIC is the last.
+			for _, dev := range []string{member, TapName} {
+				if dev == "" || !IsBridge(BridgeName) {
+					continue
+				}
+				if err := bridgeRemove(ctx, dev, b.guid); err != nil {
+					return err
+				}
+				if err := waitMaster(ctx, dev, ""); err != nil {
+					return fmt.Errorf("%s did not leave %s: %w", dev, BridgeName, err)
+				}
+			}
+			for deadline := time.Now().Add(30 * time.Second); IsBridge(BridgeName); time.Sleep(time.Second) {
+				if time.Now().After(deadline) {
+					return fmt.Errorf("%s outlived its last member", BridgeName)
+				}
+			}
+		} else if err := netsh(ctx, "bridge", "destroy", b.guid); err != nil {
 			return fmt.Errorf("netsh bridge destroy: %w", err)
 		}
 		if member != "" {
