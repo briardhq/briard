@@ -24,9 +24,16 @@ import (
 // DLLs: a dozen calls do not earn a library.
 //
 // Measured on Windows 10 22H2:
-//   - createbridge builds the whole bridge only on a signed-in user's desktop. In session 0 (a
-//     service, a SYSTEM task) it bridges the first adapter and never returns, so it is refused
-//     there rather than started.
+//   - createbridge binds the selection in its order, and the first member's binding creates the
+//     multiplexor adapter the bridge stands on, whose device then installs. Binding a physical NIC
+//     resets its link, and a reset during that install tears the adapter down under it: the
+//     install fails, Windows shows "An unexpected error occurred while configuring the Network
+//     Bridge", the other member is never bound, and every later attempt fails the same way until
+//     a restart. Ethernet first failed that way in every traced trial; the TAP first -- whose link
+//     never drops -- never did. So the TAP is always selected first.
+//   - that error is a modal dialog, and createbridge returns only once it is dismissed: in
+//     session 0 (a service, a SYSTEM task) no one can, so createbridge is refused there rather
+//     than started.
 //   - removefrombridge and addtobridge return within seconds in session 0, with no UI.
 //   - removing a bridge's last member removes the bridge, which is how it is destroyed here: the
 //     folder's Delete asks a question, and session 0 has no one to answer it.

@@ -81,7 +81,7 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 			return rec, errors.New("this Windows has no `netsh bridge create`, and builds a bridge only for a " +
 				"signed-in user: run the installer from your desktop, as an administrator")
 		}
-		if err := shellVerb(ctx, "createbridge", m.name, TapName); err != nil {
+		if err := shellVerb(ctx, "createbridge", TapName, m.name); err != nil { // the TAP first: shellverb_windows.go says why
 			return rec, fmt.Errorf("Bridge Connections: %w", err)
 		}
 	} else if out, err := exec.CommandContext(ctx, "netsh", "bridge", "create", m.guid, t.guid).CombinedOutput(); err != nil {
