@@ -89,6 +89,31 @@ func TestRestartGate(t *testing.T) {
 		}
 	})
 
+	// A RE-RUN AFTER A BUILD THAT FAILED PART-WAY: the first build turned the offload off, so the
+	// re-run reads back "0" -- the record keeps the user's own value for uninstall to put back.
+	// Another adapter's record is that adapter's, and replaces it.
+	t.Run("re-run after a failed build", func(t *testing.T) {
+		_, path := setup(t)
+		if err := keepBuiltBridge(path, off, built); err != nil {
+			t.Fatal(err)
+		}
+		readBack := off
+		readBack.Value = "0"
+		if err := keepBuiltBridge(path, readBack, built.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if rec, _, _ := readBridgeRecord(path); rec.Offload != off || !rec.Built.Equal(built) {
+			t.Fatalf("record %+v, want the first read's offload %+v and time kept", rec, off)
+		}
+		other := nic.Offload{GUID: "{h}", Keyword: off.Keyword, Value: "1"}
+		if err := keepBuiltBridge(path, other, built.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if rec, _, _ := readBridgeRecord(path); rec.Offload != other {
+			t.Fatalf("record %+v, want the other adapter's %+v", rec, other)
+		}
+	})
+
 	// AN UNINSTALL THEN AN INSTALL: the record went with the bridge, so the new bridge owes its own
 	// restart -- the earlier cold boots are before its build and do not count.
 	t.Run("uninstall then install", func(t *testing.T) {

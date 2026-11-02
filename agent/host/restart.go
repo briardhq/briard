@@ -67,7 +67,9 @@ func writeBridgeRecord(path string, rec bridgeRec) error {
 // keepBuiltBridge is the install's half: the record of a bridge build at built, carrying the
 // offload it changed (zero when it changed none). An existing record is the same bridge -- a
 // reinstall, or a re-run after a build that failed part-way -- so its count is kept; an absent
-// one is this build's, and owes a restart.
+// one is this build's, and owes a restart. An existing record of the same adapter's offload is
+// kept too: after a build that failed part-way, the re-run reads back the values the first one
+// turned off, and only the first read saw the user's own.
 func keepBuiltBridge(path string, off nic.Offload, built time.Time) error {
 	rec, ok, err := readBridgeRecord(path)
 	if err != nil {
@@ -76,7 +78,7 @@ func keepBuiltBridge(path string, off nic.Offload, built time.Time) error {
 	if !ok {
 		rec = bridgeRec{Built: built}
 	}
-	if off != (nic.Offload{}) {
+	if off != (nic.Offload{}) && rec.GUID != off.GUID {
 		rec.Offload = off
 	}
 	return writeBridgeRecord(path, rec)
