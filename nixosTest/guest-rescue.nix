@@ -185,6 +185,13 @@ pkgs.testers.runNixOSTest {
     # the rescue ends. The loop is paused for the stretch the guest is down (there is nothing to
     # read, and the host-side alerters pause with it -- a known, accepted gap). Asserted
     # strictly between the journal marks, each claim on its own line.
+    #
+    # Run's wait line IS the proof the loop was not held: Run sees the channel die only when the
+    # loop's read fails, so a loop held by the rescue would reach Run after the rescue had ended,
+    # with nothing left in flight to wait for. A status line between the submit and the channel
+    # dying proves nothing either way: a request wakes the loop without running a cycle, and the
+    # tick that follows can land after the guest has stopped answering, its reads held until the
+    # channel resets.
     cursor = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
     host.succeed("${agent}/bin/briard-agent rescue -yes -sock /run/briard/admin.sock")
     host.wait_until_succeeds(
@@ -195,12 +202,11 @@ pkgs.testers.runNixOSTest {
     first = next(i for i, l in enumerate(lines) if "directive kind=rescue submitted locally" in l)
     last = next(i for i, l in enumerate(lines) if "rescue: the guest was rebuilt and has re-converged" in l)
     down = next(i for i, l in enumerate(lines) if i > first and "control channel down" in l)
-    before = sum(1 for l in lines[first:down] if "status node=" in l)
-    assert before >= 1, f"no status line between the rescue's submit and the channel dying ({down - first} lines) -- the rescue held the loop:\n" + "\n".join(lines[first:down + 1])
     assert not any("guest-recovery:" in l for l in lines[first:last]), "the recovery ladder ran during the rescue:\n" + "\n".join(l for l in lines[first:last] if "guest-recovery:" in l)
-    assert any("control channel replaced by a rescue in flight; waiting for it" in l for l in lines[down:last]), "Run never saw the rescue replace the channel -- the wait path was not exercised"
-    host.wait_until_succeeds(f"test $(journalctl -u briard-agent -o cat --after-cursor='{cursor}' | grep -c 'status node=') -gt {before}", timeout=30)
-    print(f"rescue: {before} status lines before the channel died, none owed while the guest was down, ticking again after")
+    assert any("control channel replaced by a rescue in flight; waiting for it" in l for l in lines[down:last]), "Run never waited for the rescue while it was in flight -- the rescue held the loop, or the wait path was not exercised:\n" + "\n".join(lines[first:last + 1])
+    seen = sum(1 for l in lines if "status node=" in l)
+    host.wait_until_succeeds(f"test $(journalctl -u briard-agent -o cat --after-cursor='{cursor}' | grep -c 'status node=') -gt {seen}", timeout=30)
+    print("rescue: Run waited for the rescue in flight, no ladder, ticking again after")
 
     # === THE CLEAN STOP MUST ACTUALLY BE THE CLEAN ROUTE ===
     # The stop above goes through host.stopCleanly, which asks the guest agent first (`os.poweroff`
