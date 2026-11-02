@@ -417,7 +417,7 @@ func freshDir(dir string) error {
 // the caller says so.
 func removeRetried(dir string, logf func(string, ...any)) error {
 	deadline := time.Now().Add(removeBound)
-	for {
+	for first := true; ; first = false {
 		err := os.RemoveAll(dir)
 		if err == nil {
 			return nil
@@ -425,7 +425,7 @@ func removeRetried(dir string, logf func(string, ...any)) error {
 		if time.Now().After(deadline) {
 			return err
 		}
-		if time.Until(deadline) > removeBound-time.Second {
+		if first {
 			logf("%v; retrying for up to %s", err, removeBound)
 		}
 		time.Sleep(500 * time.Millisecond)
