@@ -752,7 +752,11 @@ func takeSnapshot(ctx context.Context, x Executor, run func(string, ...string) e
 	if _, err := x.Run(ctx, "btrfs", "subvolume", "show", member); err == nil {
 		return fmt.Errorf("snapshot %s already exists -- refusing to replace a ring member", member)
 	}
-	if err := run("btrfs", "subvolume", "snapshot", "-r", dataDir, member); err != nil {
+	group, err := areaGroup(ctx, x, dataDir)
+	if err != nil {
+		return err
+	}
+	if err := run("btrfs", "subvolume", "snapshot", "-r", "-i", group, dataDir, member); err != nil {
 		return err
 	}
 	if sidecar == "" {

@@ -16,14 +16,23 @@ type mountFake struct {
 	mounted bool
 }
 
+// fakeVolumeUUID is the mounted volume's filesystem uuid, which names its sysfs directory.
+const fakeVolumeUUID = "5f0e3c2a-0000-4000-8000-000000000001"
+
+func quotaModePath() string { return "/sys/fs/btrfs/" + fakeVolumeUUID + "/qgroups/mode" }
+
 func newMountFake() *mountFake {
 	m := &mountFake{fakeExec: &fakeExec{}}
 	m.runFn = func(name string, args []string) ([]byte, error) {
 		if name == "mountpoint" && !m.mounted {
 			return nil, errors.New("exit status 32")
 		}
+		if name == "findmnt" {
+			return []byte(fakeVolumeUUID + "\n"), nil
+		}
 		return nil, nil
 	}
+	_ = m.WriteFile(quotaModePath(), []byte("squota\n"))
 	raw, err := demoSpec(nodestorage.ModeAuto, true).Marshal()
 	if err != nil {
 		panic(err)
@@ -56,6 +65,7 @@ func TestPrimaryStorageNeverFormats(t *testing.T) {
 		{"mkdir", "-p", dataMountRoot},
 		{"mountpoint", "-q", dataMountRoot},
 		{"mount", "-o", "compress=zstd:1", "/dev/drbd0", dataMountRoot},
+		{"findmnt", "-no", "UUID", dataMountRoot},
 		{"mkdir", "-p", snapshotsDir()},
 	}
 	for i, w := range want {
@@ -88,6 +98,30 @@ func TestPrimaryStorageDoesNotRemount(t *testing.T) {
 	}
 	if f.ran("mount") {
 		t.Errorf("an already-mounted volume was mounted again: %v", f.runs)
+	}
+}
+
+// A volume not in simple-quota mode is refused and left unmounted, and nothing is made on it:
+// classic qgroups (the slow mode), quotas off (no mode file at all), and a mode the kernel
+// names that we have never heard of. Each is a different read, and each must refuse.
+func TestPrimaryStorageRefusesAVolumeWithoutSimpleQuotas(t *testing.T) {
+	for _, mode := range []string{"qgroup\n", "", "something-newer\n"} {
+		f := newMountFake()
+		if mode == "" {
+			delete(f.files, quotaModePath())
+		} else {
+			_ = f.WriteFile(quotaModePath(), []byte(mode))
+		}
+		err := PrimaryStorage(context.Background(), f)
+		if err == nil || !strings.Contains(err.Error(), "reinstall") {
+			t.Errorf("mode %q: err = %v, want a refusal that says reinstall", mode, err)
+		}
+		if !f.ran("umount", dataMountRoot) {
+			t.Errorf("mode %q: the refused volume was left mounted: %v", mode, f.runs)
+		}
+		if f.ran("mkdir", "-p", snapshotsDir()) {
+			t.Errorf("mode %q: the refused volume was written to: %v", mode, f.runs)
+		}
 	}
 }
 

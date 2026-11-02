@@ -110,7 +110,7 @@ func TestServiceProvisionCreatesAndRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ServiceProvision: %v", err)
 	}
-	if !ran(f, "btrfs", "subvolume", "create", "/var/lib/briard/home-assistant") {
+	if !ran(f, "btrfs", "subvolume", "create", "-i", appQgroup(tierService, "home-assistant"), "/var/lib/briard/home-assistant") {
 		t.Fatalf("no subvolume create; runs=%v", f.runs)
 	}
 	for _, d := range []string{"ha", "cache"} {

@@ -104,7 +104,7 @@ func tookMember(t *testing.T, f *fakeExec) (string, quadlet.SnapshotMeta) {
 	var took string
 	for _, r := range f.runs {
 		if len(r) > 4 && r[1] == "subvolume" && r[2] == "snapshot" && r[3] == "-r" {
-			took = r[5]
+			took = r[len(r)-1]
 		}
 	}
 	if took == "" {
@@ -253,7 +253,7 @@ func TestInboundStartingTakesAMember(t *testing.T) {
 	var took string
 	for _, r := range f.runs {
 		if len(r) > 4 && r[1] == "subvolume" && r[2] == "snapshot" && r[3] == "-r" {
-			took = r[5]
+			took = r[len(r)-1]
 		}
 	}
 	if took == "" {
@@ -396,7 +396,7 @@ func TestInboundRequestCannotNameItsService(t *testing.T) {
 	var took string
 	for _, r := range f.runs {
 		if len(r) > 5 && r[2] == "snapshot" {
-			took = r[5]
+			took = r[len(r)-1]
 		}
 	}
 	if svc, _ := quadlet.SnapshotMemberService(took); svc != "home-assistant" {
@@ -435,7 +435,7 @@ func TestInboundResolvesEachServiceToItsOwnToken(t *testing.T) {
 	var took string
 	for _, r := range f.runs {
 		if len(r) > 5 && r[2] == "snapshot" {
-			took = r[5]
+			took = r[len(r)-1]
 		}
 	}
 	if svc, _ := quadlet.SnapshotMemberService(took); svc != "mosquitto" {

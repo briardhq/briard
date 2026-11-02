@@ -518,7 +518,11 @@ func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreReque
 	if _, err := x.Run(ctx, "btrfs", "subvolume", "show", member); err == nil {
 		return "", fmt.Errorf("%s already exists -- refusing to replace a ring member", member)
 	}
-	if _, err := run("btrfs", "subvolume", "create", member); err != nil {
+	group, err := areaGroup(ctx, x, quadlet.DataRoot(req.Service))
+	if err != nil {
+		return "", err
+	}
+	if _, err := run("btrfs", "subvolume", "create", "-i", group, member); err != nil {
 		return "", err
 	}
 	undo := func(err error) (string, error) {

@@ -827,7 +827,8 @@ type resourcesRequest struct {
 	Services []resourceService `json:"services,omitempty"`
 	DataDir  string            `json:"data_dir,omitempty"` // the DRBD data volume mount
 	// Soak adds the reads that only the soak's oracle consumes and that cost real I/O: the two
-	// du walks and the snapshot listing. A shipped node never sets it, because this verb runs
+	// du walks and the snapshot listing (and the quota tree, which only the oracle reads). A
+	// shipped node never sets it, because this verb runs
 	// every tick on the one-call-at-a-time channel under the host's 5s deadline: a du over a
 	// freshly pulled multi-GB container store can outlast that, the deadline closes the
 	// channel, and the verb queued behind the read fails with it.
@@ -1139,7 +1140,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 					return nil, err
 				}
 			}
-			if err := run("btrfs", "subvolume", "snapshot", req.Path, staged); err != nil {
+			// Born into the live area's group, so a limit there keeps counting across the swap.
+			group, err := areaGroup(ctx, x, req.DataDir)
+			if err != nil {
+				return nil, err
+			}
+			if err := run("btrfs", "subvolume", "snapshot", "-i", group, req.Path, staged); err != nil {
 				return nil, err
 			}
 			// THE SWEEP, ON THE STAGED COPY AND NOWHERE ELSE. A member taken around a
@@ -2291,9 +2297,26 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 // ensureServiceData creates a service's subvolume and its per-container subdirectories, reusing
 // an existing subvolume (re-creating it would silently delete the user's state), and the manifest
 // directory beside them.
+//
+// AND THE APP'S USER AREA, beside it under userRoot: every app has one, empty until the app uses
+// it. Both are born into their tier's group of the quota tree (qgroup.go).
 func ensureServiceData(ctx context.Context, x Executor, run func(string, ...string) error, dataDir string, subdirs []string) error {
-	if out, err := x.Run(ctx, "btrfs", "subvolume", "show", dataDir); err != nil || len(out) == 0 {
-		if err := run("btrfs", "subvolume", "create", dataDir); err != nil {
+	_, app, err := areaOf(dataDir)
+	if err != nil {
+		return err
+	}
+	if err := run("mkdir", "-p", userRoot()); err != nil {
+		return err
+	}
+	for _, area := range []string{dataDir, userArea(app)} {
+		if out, err := x.Run(ctx, "btrfs", "subvolume", "show", area); err == nil && len(out) > 0 {
+			continue
+		}
+		group, err := areaGroup(ctx, x, area)
+		if err != nil {
+			return err
+		}
+		if err := run("btrfs", "subvolume", "create", "-i", group, area); err != nil {
 			return err
 		}
 	}
@@ -2400,6 +2423,17 @@ func gatherResources(ctx context.Context, x Executor, req resourcesRequest) tele
 	// other field here: no dmsetup, or no dm device, yields no lines.
 	if out, err := x.Run(ctx, "dmsetup", "table"); err == nil {
 		r.DMTargets = dmTableLines(out)
+	}
+	// The quota tree, where the volume is mounted: the mode the kernel states and every group
+	// with its parents (qgroup.go). Mechanism only, like the dm tables; soak-only, because only
+	// the oracle reads it. A node without the volume mounted reports neither.
+	if req.Soak {
+		if mode, err := quotaMode(ctx, x); err == nil {
+			r.QuotaMode = mode
+			if out, err := x.Run(ctx, "btrfs", "qgroup", "show", "-p", "--raw", dataMountRoot); err == nil {
+				r.Qgroups = qgroupRows(out)
+			}
+		}
 	}
 	return r
 }

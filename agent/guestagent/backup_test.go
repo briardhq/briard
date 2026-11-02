@@ -449,7 +449,7 @@ func TestANightIsMaterialisedAsAMember(t *testing.T) {
 		t.Fatalf("member %q, want %q", member, want)
 	}
 	dump := step(f, func(r []string) bool { return r[0] == "restic" && slices.Contains(r, "dump") })
-	create := runIndex(f, 0, "btrfs", "subvolume", "create", member)
+	create := runIndex(f, 0, "btrfs", "subvolume", "create", "-i", appQgroup(tierService, "home-assistant"), member)
 	restore := step(f, func(r []string) bool {
 		return r[0] == "restic" && slices.Contains(r, "restore") && slices.Contains(r, "abc12345:"+backupServices+"/home-assistant") && slices.Contains(r, member)
 	})
@@ -521,7 +521,7 @@ func TestANightIsRefusedBeforeAnythingIsRead(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 		for _, r := range f.runs {
-			if r[0] == "btrfs" && len(r) > 2 && r[2] == "create" {
+			if r[0] == "btrfs" && len(r) > 2 && r[1] == "subvolume" && r[2] == "create" {
 				t.Errorf("%s: a member was created: %v", name, r)
 			}
 		}

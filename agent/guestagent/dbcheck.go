@@ -223,7 +223,11 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 	if _, err := x.Run(ctx, "test", "-e", staged); err == nil {
 		return unchanged("stage a copy of the data", fmt.Errorf("%s is in the way and is not a subvolume", staged))
 	}
-	if err := run("btrfs", "subvolume", "snapshot", root, staged); err != nil {
+	group, err := areaGroup(ctx, x, root)
+	if err != nil {
+		return unchanged("stage a copy of the data", err)
+	}
+	if err := run("btrfs", "subvolume", "snapshot", "-i", group, root, staged); err != nil {
 		return unchanged("stage a copy of the data", err)
 	}
 	if err := hass.RestoreDB(ctx, x, from.Dir, staged+"/"+c.Name); err != nil {

@@ -73,6 +73,8 @@ func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]
 	case name == "rm" && len(args) == 2 && args[0] == "-f" && strings.HasPrefix(args[1], manifestDir+"/"):
 		delete(c.fakeExec.files, args[1])
 		return nil, nil
+	case name == "btrfs" && len(args) > 0 && args[0] == "qgroup":
+		return c.fakeExec.qgroup(args[1:])
 	case name == "ls" && len(args) == 2 && args[1] == quadletDir:
 		return []byte(strings.Join(c.quadlet, "\n") + "\n"), nil
 	case name == "podman" && len(args) >= 2 && args[0] == "network" && args[1] == "inspect":

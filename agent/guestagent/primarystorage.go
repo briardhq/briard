@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"briard.io/shared/nodestorage"
 )
@@ -63,10 +64,37 @@ func PrimaryStorage(ctx context.Context, x Executor) error {
 			return err
 		}
 	}
+	// SIMPLE QUOTAS, OR NO VOLUME. Every subvolume is born into the quota tree (qgroup.go), which
+	// needs the mode the format set, so a volume without it is refused rather than converted:
+	// enabling quotas on a populated volume leaves what is already there owned by nobody. Read
+	// positively -- the mode file names the mode, and a volume with quotas off has no such file --
+	// and unmounted on refusal, so the demote that follows a failed chain finds the device free.
+	if mode, err := quotaMode(ctx, x); err != nil || mode != "squota" {
+		_, _ = x.Run(ctx, "umount", dataMountRoot)
+		return fmt.Errorf("the volume is not in simple-quota mode (mode %q, %v): it was formatted by an older Briard and needs a reinstall", mode, err)
+	}
 	// First use: the snapshots dir. Idempotent. A service's own data subvolume is created when
 	// that service is INSTALLED (the guest's renderer makes it), so a node nobody has given a
 	// workload to mounts an empty volume -- which is the honest state of one.
 	return run("mkdir", "-p", snapshotsDir())
+}
+
+// quotaMode is the mounted volume's quota mode as the kernel states it: `squota`, `qgroup`, or an
+// error when quotas are off (the qgroups directory does not exist then).
+func quotaMode(ctx context.Context, x Executor) (string, error) {
+	out, err := x.Run(ctx, "findmnt", "-no", "UUID", dataMountRoot)
+	if err != nil {
+		return "", fmt.Errorf("findmnt %s: %w: %s", dataMountRoot, err, out)
+	}
+	uuid := strings.TrimSpace(string(out))
+	if uuid == "" || strings.ContainsAny(uuid, "/\n") {
+		return "", fmt.Errorf("findmnt %s gave no filesystem uuid: %q", dataMountRoot, out)
+	}
+	raw, err := x.ReadFile("/sys/fs/btrfs/" + uuid + "/qgroups/mode")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
 }
 
 // PrimaryStorageStop unmounts the volume: briard-primary-storage.service's ExecStop, which

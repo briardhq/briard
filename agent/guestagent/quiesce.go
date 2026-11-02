@@ -55,6 +55,10 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 	// still is made only by the code that watched it happen.
 	meta.Consistency = quadlet.Crash
 
+	group, err := areaGroup(ctx, x, req.DataDir)
+	if err != nil {
+		return quiescedResult{}, err
+	}
 	start := time.Now()
 	release, why := quiesceService(ctx, x, req.Service)
 	var acquire, hold time.Duration
@@ -74,7 +78,7 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 			}
 		}()
 	}
-	if err := run("btrfs", "subvolume", "snapshot", "-r", req.DataDir, req.Path); err != nil {
+	if err := run("btrfs", "subvolume", "snapshot", "-r", "-i", group, req.DataDir, req.Path); err != nil {
 		return quiescedResult{Why: why}, err
 	}
 	if release != nil {

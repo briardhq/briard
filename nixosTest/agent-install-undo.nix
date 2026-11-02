@@ -14,6 +14,14 @@
 # volume and the data is poisoned, so a pass cannot come from an install that never got that far;
 # after it, the poison must be gone, the stage gone, the accepted manifest the old version and the
 # service healthy again.
+#
+# AND THE QUOTA TREE, on the same volume, because this is the rig where the real agent both
+# installs an app and restores its data by swap. Every subvolume the product made must be born
+# into the tree (the app's service area, its user area, the area the undo put back), the
+# volume must be in simple-quota mode, and a limit on the app's group must stop ROOT with full
+# capabilities -- after the swap, which is when a limit held on the subvolume itself would
+# have reset. Each assertion proves itself live: the write the limit stops goes through once
+# `quota_override` is set, and the tree check flags a stray subvolume made without `-i`.
 { pkgs, guestDisk, agent, netWrap, dressBase, fixture }:
 pkgs.testers.runNixOSTest {
   name = "agent-install-undo";
@@ -133,6 +141,15 @@ pkgs.testers.runNixOSTest {
     good = ticked()
     assert 0 < good < poison, f"the good version wrote no data to undo back to (tick={good})"
 
+    # The live area's subvolume, so the quota section can tell the undo really swapped it.
+    btrfs = "$(ls /nix/store/*-btrfs-progs-*/bin/btrfs | head -1)"
+    def rootid(path):
+        out = guest(f'echo R""ID=$({btrfs} inspect-internal rootid {path})')
+        m = re.search(r"RID=(\d+)", out)
+        assert m, f"no subvolume id for {path}:\n{out}"
+        return int(m.group(1))
+    before_swap = rootid(f"/var/lib/briard/{svc}")
+
     # === THE BROKEN UPGRADE, killed inside its gate. ===
     publish("${fixture}/variants/bad/catalog")
     # From here only: the good install already logged the same "waiting for health" line.
@@ -170,5 +187,77 @@ pkgs.testers.runNixOSTest {
     out = guest("curl -fsS -o /dev/null -w CODE=%{http_code} http://127.0.0.1:8080/healthz; echo", wait=15)
     assert "CODE=200" in out, f"the good version is not healthy after the undo:\n{out}"
     print("the interrupted install was undone from the volume alone")
+
+    # === THE QUOTA TREE. ===
+    import hashlib
+
+    def group(tier, app):
+        """The app's level-1 group: the tier in the top byte of 48 bits, then the first 40 bits of
+        SHA-256 of its name. Written here a second time, independently of the agent's Go."""
+        return f"1/{tier << 40 | int.from_bytes(hashlib.sha256(app.encode()).digest()[:5], 'big')}"
+
+    def aggregate(tier):
+        return f"2/{tier << 40}"
+
+    uuid = "$(findmnt -no UUID /var/lib/briard)"
+    out = guest(f'echo M""ODE=$(cat /sys/fs/btrfs/{uuid}/qgroups/mode)')
+    assert re.search(r"MODE=squota", out), f"the volume is not in simple-quota mode:\n{out}"
+
+    def tree():
+        """`qgroup show -p` as {id: (exclusive bytes, [parents])}."""
+        out = guest(f'echo Q""T=$({btrfs} qgroup show -p --raw /var/lib/briard | tr -s " " | cut -d " " -f1,3,4 | tr "\\n" ";")')
+        m = re.search(r"QT=(.*)", out)
+        assert m, f"no quota tree from the guest:\n{out}"
+        groups = {}
+        for row in m.group(1).split(";"):
+            f = row.split()
+            if len(f) == 3 and f[0][0].isdigit():
+                groups[f[0]] = (int(f[1]), [] if f[2] == "-" else f[2].split(","))
+        assert groups, f"the quota tree is empty:\n{out}"
+        return groups
+
+    def outside(groups):
+        """The runtime check: a level-0 group other than the top level that owns bytes and has
+        no parent is a subvolume no limit can see."""
+        return [g for g, (excl, parents) in groups.items() if g.startswith("0/") and g != "0/5" and excl > 0 and not parents]
+
+    groups = tree()
+    print(f"the quota tree: {groups}")
+    assert outside(groups) == [], f"subvolumes outside the tree: {outside(groups)}"
+    svc_group, user_group = group(1, svc), group(2, svc)
+    live = rootid(f"/var/lib/briard/{svc}")
+    assert live != before_swap, f"the undo did not swap the live area ({live}); the restore claim would be vacuous"
+    for sub, want in [(f"/var/lib/briard/{svc}", svc_group), (f"/var/lib/briard/user/{svc}", user_group)]:
+        sid = f"0/{rootid(sub)}"
+        assert groups.get(sid, (0, []))[1] == [want], f"{sub} ({sid}) is in {groups.get(sid)}, want {want}"
+    assert groups[svc_group][1] == [aggregate(1)], f"{svc_group} is under {groups[svc_group][1]}"
+    assert groups[user_group][1] == [aggregate(2)], f"{user_group} is under {groups[user_group][1]}"
+
+    # A limit on the app's group stops root, on the area the swap put back. 4 MiB of headroom
+    # over what the group holds now, and a 16 MiB write.
+    limit = groups[svc_group][0] + 4 * 1024 * 1024
+    fill = f"/var/lib/briard/{svc}/quota-fill"
+    def write():
+        out = guest(f'rm -f {fill}; echo D""Q=$(dd if=/dev/urandom of={fill} bs=1M count=16 conv=fsync 2>&1 | grep -c "Disk quota exceeded") S""Z=$(stat -c %s {fill})', wait=8)
+        m = re.search(r"DQ=(\d+) SZ=(\d+)", out)
+        assert m, f"no answer from the write:\n{out}"
+        return int(m.group(1)), int(m.group(2))
+    guest(f"{btrfs} qgroup limit {limit} {svc_group} /var/lib/briard")
+    refused, landed = write()
+    print(f"under the limit: EDQUOT={refused}, {landed} bytes landed")
+    assert refused >= 1 and landed < 8 * 1024 * 1024, f"root wrote past the limit (EDQUOT={refused}, {landed} bytes)"
+    guest(f"echo 1 > /sys/fs/btrfs/{uuid}/quota_override")
+    refused, landed = write()
+    guest(f"echo 0 > /sys/fs/btrfs/{uuid}/quota_override; rm -f {fill}; {btrfs} qgroup limit none {svc_group} /var/lib/briard")
+    print(f"with quota_override: EDQUOT={refused}, {landed} bytes landed")
+    assert refused == 0 and landed == 16 * 1024 * 1024, f"the override did not let the write through: the limit assertion proves nothing (EDQUOT={refused}, {landed} bytes)"
+
+    # And the tree check is live: a subvolume made without -i is the one it names.
+    guest(f"{btrfs} subvolume create /var/lib/briard/.snapshots/quota-stray && head -c 1048576 /dev/urandom > /var/lib/briard/.snapshots/quota-stray/x && sync -f /var/lib/briard")
+    stray = f"0/{rootid('/var/lib/briard/.snapshots/quota-stray')}"
+    flagged = outside(tree())
+    guest(f"{btrfs} subvolume delete /var/lib/briard/.snapshots/quota-stray")
+    assert flagged == [stray], f"the tree check flagged {flagged}, want exactly the stray {stray}"
+    print("every subvolume the product made is in the quota tree, and its limit binds root")
   '';
 }

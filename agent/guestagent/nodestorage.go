@@ -138,9 +138,13 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 		// releases (6.19 added block-group-tree), and the image that formats the volume is not the
 		// one that will mount it after the next update. These are the 6.19 defaults, so a node
 		// formatted before the flags were written has the same layout.
+		//
+		// SIMPLE QUOTAS FROM THE FIRST BYTE, the one flag that is not a default: the quota tree
+		// (qgroup.go) is how the user tier is bounded, and squota owns an extent by who allocated
+		// it, so anything written before it is enabled belongs to nobody. Only a format can say it.
 		if err := run("mkfs.btrfs", "-f", "--nodesize", "16384", "--sectorsize", "4096",
 			"--metadata", "dup", "--data", "single", "--csum", "crc32c",
-			"--features", "extref,skinny-metadata,no-holes,free-space-tree,block-group-tree",
+			"--features", "extref,skinny-metadata,no-holes,free-space-tree,block-group-tree,squota",
 			data.Mapper()); err != nil {
 			return err
 		}

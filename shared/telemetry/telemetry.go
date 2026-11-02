@@ -78,6 +78,14 @@ type NodeResources struct {
 	// Mechanism only, like KernelErrors: the guest reports the tables, the oracle applies the
 	// policy. Empty on a node whose data disk has no seam (a diskless witness).
 	DMTargets []string `json:"dm_targets,omitempty"`
+
+	// QuotaMode and Qgroups are the replicated volume's quota tree, the input to the invariant
+	// that every subvolume is born into it: the mode as the kernel states it (`squota` is the
+	// only one the product formats), and every group as `<id> <referenced> <exclusive>
+	// <parents>`. A subvolume outside the tree is one no limit can see, and nothing else here
+	// would show it. Mechanism only; reported by the node with the volume mounted, in a soak.
+	QuotaMode string   `json:"quota_mode,omitempty"`
+	Qgroups   []string `json:"qgroups,omitempty"`
 }
 
 // ServiceResources is one service's footprint inside the appliance. Name is the service's own
