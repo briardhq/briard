@@ -404,14 +404,18 @@ func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)
 	// An NSIS uninstaller copies itself out and returns at once unless told where it lives with
 	// _?=, which must come last and unquoted even with spaces in it -- so the command line is
 	// written by hand rather than escaped argument by argument. Run in place, it cannot delete
-	// itself: the folder goes after.
+	// itself: the folder goes after, retried -- the just-run Uninstall.exe can still be held a
+	// moment after its process exits (`Access is denied`, measured on Windows 11). A folder that
+	// outlasts the retry is reported, and the driver goes regardless: it, not the folder, is what
+	// another install would trip on.
 	c := exec.CommandContext(ctx, exe)
 	c.SysProcAttr = &syscall.SysProcAttr{CmdLine: windows.EscapeArg(exe) + " /S _?=" + dir}
 	if out, err := c.CombinedOutput(); err != nil {
 		return fmt.Errorf("the TAP driver's uninstaller: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("removing %s: %w", dir, err)
+	var left error
+	if err := removeRetried(dir, logf); err != nil {
+		left = fmt.Errorf("removing %s: %w (the folder is left; delete it by hand)", dir, err)
 	}
 	// What that uninstaller leaves (measured on the rig): the driver package in Windows' driver
 	// store, its .sys, and the driver's service entry. The package is found by its provider,
@@ -419,14 +423,14 @@ func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)
 	out, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
 		"Get-WindowsDriver -Online | Where-Object { $_.ProviderName -eq '"+tapProvider+"' } | ForEach-Object { $_.Driver }").Output()
 	if err != nil {
-		return fmt.Errorf("finding the TAP driver package: %w", err)
+		return errors.Join(left, fmt.Errorf("finding the TAP driver package: %w", err))
 	}
 	for _, inf := range strings.Fields(string(out)) {
 		if err := run(ctx, "pnputil", "/delete-driver", inf, "/uninstall"); err != nil {
-			return fmt.Errorf("removing the TAP driver package %s: %w", inf, err)
+			return errors.Join(left, fmt.Errorf("removing the TAP driver package %s: %w", inf, err))
 		}
 	}
 	_ = run(ctx, "sc.exe", "delete", tapService) // best-effort: absent once the package took it
 	logf("removed the TAP driver briard installed")
-	return os.Remove(marker)
+	return errors.Join(left, os.Remove(marker))
 }
