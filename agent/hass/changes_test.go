@@ -59,12 +59,19 @@ func TestDetectNamesEachSignal(t *testing.T) {
 }
 
 // TestDetectSaysWhenACustomIntegrationIsNotLoadedYet: a sample taken while Home Assistant RUNS sees
-// the files on disk before Home Assistant has loaded them.
+// an update or a removal on disk while the old code still runs, and an install as it is.
 func TestDetectSaysWhenACustomIntegrationIsNotLoadedYet(t *testing.T) {
-	next := sig("custom_components/frigate/manifest.json", `{"name":"Frigate"}`)
-	got := Detect(sig(), next, true)
-	if len(got) != 1 || got[0] != "Installed Frigate (takes effect at next restart)" {
-		t.Errorf("Detect(running) = %q", got)
+	prev := sig("custom_components/frigate/manifest.json", `{"name":"Frigate","version":"1"}`,
+		"custom_components/old/manifest.json", `{"name":"Old Thing"}`)
+	next := sig("custom_components/frigate/manifest.json", `{"name":"Frigate","version":"2"}`,
+		"custom_components/hue2/manifest.json", `{"name":"Hue Two"}`)
+	want := []string{
+		"Installed Hue Two",
+		"Updated Frigate to 2 (takes effect at next restart)",
+		"Removed Old Thing (takes effect at next restart)",
+	}
+	if got := Detect(prev, next, true); !slices.Equal(got, want) {
+		t.Errorf("Detect(running) = %q, want %q", got, want)
 	}
 }
 

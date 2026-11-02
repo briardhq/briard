@@ -162,8 +162,11 @@ func ResetPhrase(rels []string) string {
 // Detect names what changed between two samples' signals, as phrases a household reads ("Added
 // the Hue integration"), or nothing. Pure: the reading is Signals'.
 //
-// running says the later sample was taken while Home Assistant RAN, so a custom integration that
-// arrived is on disk but not loaded yet; a sample at a start is taken just before it loads.
+// running says the later sample was taken while Home Assistant RAN. A custom integration updated
+// or removed on disk keeps its loaded code running until Home Assistant restarts, and the phrase
+// says so. An install says nothing: Home Assistant's Marketplace loads a new integration as soon
+// as it is installed, and one that is not loaded yet has no running code to differ from. A sample
+// at a start is taken just before anything loads.
 func Detect(prev, next map[string][]byte, running bool) []string {
 	var out []string
 	later := ""
@@ -188,7 +191,7 @@ func Detect(prev, next map[string][]byte, running bool) []string {
 			removed = append(removed, prevCC[d].Name)
 		}
 	}
-	out = appendGroup(out, "Installed", installed, "custom integrations", later)
+	out = appendGroup(out, "Installed", installed, "custom integrations", "")
 	out = appendGroup(out, "Updated", updated, "custom integrations", later)
 	out = appendGroup(out, "Removed", removed, "custom integrations", later)
 
