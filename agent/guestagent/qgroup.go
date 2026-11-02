@@ -124,6 +124,19 @@ func (t qgroupTree) rows() []string {
 	return rows
 }
 
+// charged is everything the tree charges, each byte once: the sum over the groups with no parent
+// -- the tier aggregates, the top level, and any subvolume outside the tree. The hierarchy is
+// strict, so a byte under an aggregate is counted there and nowhere else.
+func (t qgroupTree) charged() int64 {
+	var n int64
+	for _, g := range t {
+		if len(g.parents) == 0 {
+			n += g.referenced
+		}
+	}
+	return n
+}
+
 func (t qgroupTree) holds(group, parent string) bool {
 	_, agg := t[parent]
 	return agg && slices.Contains(t[group].parents, parent)

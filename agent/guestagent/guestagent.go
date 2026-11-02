@@ -284,7 +284,7 @@ const (
 	verbDataBackup       = "data.backup"
 	verbDataBackupResult = "data.backup.result"
 	// user.tick STARTS the user tier's tick in the background (userring.go) -- the hourly user ring
-	// member where one is due, its retention, the allocation rule's limit, the valve -- and
+	// member where one is due, its retention, the allocation rule's limits, the valve -- and
 	// answers whether it did; user.tick.result is whether one is running, with a finished one's
 	// report once. The same two-verb shape: the valve waits on the cleaner.
 	verbUserTick       = "user.tick"

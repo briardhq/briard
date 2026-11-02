@@ -233,9 +233,65 @@ pkgs.testers.runNixOSTest {
     assert groups[svc_group][1] == [aggregate(1)], f"{svc_group} is under {groups[svc_group][1]}"
     assert groups[user_group][1] == [aggregate(2)], f"{user_group} is under {groups[user_group][1]}"
 
+    # === THE USER TIER'S TICK: the allocation rule's cap, the valve, the warning. ===
+    # The real agent's tick, which runs at its start and every ten minutes after; a restart is
+    # how this rig asks for one now. The volume is 3 GB, so the rule leaves a cap a test can fill.
+    def last_tick(after, want, timeout=900):
+        """The agent's latest `user tier:` line after the cursor, once one matching `want` exists."""
+        host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep 'user tier: cap=' | grep -q '{want}'", timeout=timeout)
+        return host.succeed(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep 'user tier: cap=' | grep '{want}' | tail -1")
+
+    def restart_for_a_tick():
+        c = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
+        host.succeed("systemctl restart briard-agent")
+        host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=600)
+        return c
+
+    def limit_of(gid):
+        out = guest(f'echo L""IM=$({btrfs} qgroup show -pr --raw /var/lib/briard | grep -a "^{gid} " | tr -s " " | cut -d " " -f4)')
+        m = re.search(r"LIM=(\S+)", out)
+        assert m, f"no limit read for {gid}:\n{out}"
+        return m.group(1)
+
+    # The first tick after the undo's restart: the area's first member, and every limit set.
+    line = last_tick(cursor, "cap=")
+    print(f"the first tick: {line}")
+    cap = int(re.search(r"cap=(\d+)", line).group(1))
+    target = int(re.search(r"target=(\d+)", line).group(1))
+    slack = int(re.search(r"slack=(\d+)", line).group(1))
+    # The rule, written a second time from btrfs's own numbers: the slack is what is on the disk
+    # past what the tree charges (the groups with no parent), and one metadata chunk in every
+    # copy. The service tier moves a little between the tick and now.
+    out = guest(f'echo U""SE=$({btrfs} filesystem usage -b /var/lib/briard | grep -E "Device size:|^[[:space:]]+Used:|Metadata ratio:" | tr -s " \\t" " " | tr "\\n" ";")')
+    m = re.search(r"USE= ?Device size: (\d+); Used: (\d+); Metadata ratio: ([\d.]+);", out)
+    assert m, f"no usage from the guest:\n{out}"
+    volume, on_disk, copies = int(m.group(1)), int(m.group(2)), float(m.group(3))
+    groups = tree()
+    charged = sum(excl for excl, parents in groups.values() if not parents)
+    chunk = min(1 << 30 if volume > 50 << 30 else 256 << 20, volume // 10)
+    want_slack = max(on_disk - charged, 0) + int(chunk * copies)
+    user_used = groups[aggregate(2)][0]
+    svc_used = charged - user_used
+    expected = volume - svc_used - max(svc_used // 5, 300_000_000) - want_slack
+    print(f"volume {volume}, on the disk {on_disk}, charged {charged}, slack {want_slack} (the tick's {slack})")
+    assert abs(slack - want_slack) < 64 * 1024 * 1024, f"slack {slack}, btrfs's numbers give {want_slack}"
+    assert abs(cap - expected) < 64 * 1024 * 1024, f"cap {cap}, the rule gives {expected} (volume {volume}, service {svc_used})"
+    assert target == max(1_000_000_000, cap // 20), f"target {target} for cap {cap}"
+    assert limit_of(aggregate(2)) == str(cap), f"the user tier's limit is {limit_of(aggregate(2))}, the tick's cap {cap}"
+    # Each app's share: the volume's physical free space for its service group, the user tier's
+    # for its user group, less a tenth or the tier's keep.
+    def app_cap(total, keep):
+        return max(total * 9 // 10, total - keep, 0)
+    for gid, free, keep in [(svc_group, volume - want_slack - charged, max(300_000_000, volume // 100)),
+                            (user_group, cap - user_used, max(300_000_000, cap // 100))]:
+        got, want = limit_of(gid), app_cap(groups[gid][0] + free, keep)
+        assert got != "none" and abs(int(got) - want) < 64 * 1024 * 1024, f"{gid}'s limit is {got}, the rule gives {want}"
+    assert "short=false" in line, f"a fresh install is short: {line}"
+    assert "alert open user-storage-short" not in host.succeed("journalctl -u briard-agent -o cat"), "a fresh install warned"
+
     # A limit on the app's group stops root, on the area the swap put back. 4 MiB of headroom
-    # over what the group holds now, and a 16 MiB write.
-    limit = groups[svc_group][0] + 4 * 1024 * 1024
+    # over what the group holds now, and a 16 MiB write; the tick owns the limit again at its next run.
+    limit = tree()[svc_group][0] + 4 * 1024 * 1024
     fill = f"/var/lib/briard/{svc}/quota-fill"
     def write():
         out = guest(f'rm -f {fill}; echo D""Q=$(dd if=/dev/urandom of={fill} bs=1M count=16 conv=fsync 2>&1 | grep -c "Disk quota exceeded") S""Z=$(stat -c %s {fill})', wait=8)
@@ -260,42 +316,6 @@ pkgs.testers.runNixOSTest {
     assert flagged == [stray], f"the tree check flagged {flagged}, want exactly the stray {stray}"
     print("every subvolume the product made is in the quota tree, and its limit binds root")
 
-    # === THE USER TIER'S TICK: the allocation rule's cap, the valve, the warning. ===
-    # The real agent's tick, which runs at its start and every ten minutes after; a restart is
-    # how this rig asks for one now. The volume is 3 GB, so the rule leaves a cap a test can fill.
-    def last_tick(after, want, timeout=900):
-        """The agent's latest `user tier:` line after the cursor, once one matching `want` exists."""
-        host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep 'user tier: cap=' | grep -q '{want}'", timeout=timeout)
-        return host.succeed(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep 'user tier: cap=' | grep '{want}' | tail -1")
-
-    def restart_for_a_tick():
-        c = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
-        host.succeed("systemctl restart briard-agent")
-        host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=600)
-        return c
-
-    def limit_of(gid):
-        out = guest(f'echo L""IM=$({btrfs} qgroup show -pr --raw /var/lib/briard | grep -a "^{gid} " | tr -s " " | cut -d " " -f4)')
-        m = re.search(r"LIM=(\S+)", out)
-        assert m, f"no limit read for {gid}:\n{out}"
-        return m.group(1)
-
-    # The first tick after the undo's restart: the area's first member, and the cap set.
-    line = last_tick(cursor, "cap=")
-    print(f"the first tick: {line}")
-    cap = int(re.search(r"cap=(\d+)", line).group(1))
-    target = int(re.search(r"target=(\d+)", line).group(1))
-    out = guest(f'echo V""OL=$({btrfs} filesystem usage -b /var/lib/briard | grep "Device size:" | tr -dc 0-9)')
-    volume = int(re.search(r"VOL=(\d+)", out).group(1))
-    svc_used = tree()[aggregate(1)][0]
-    # The rule, written a second time: the service tier moves a little between the tick and now.
-    expected = volume - svc_used - max(svc_used // 5, 300_000_000) - max(1_000_000_000, volume // 50)
-    assert abs(cap - expected) < 64 * 1024 * 1024, f"cap {cap}, the rule gives {expected} (volume {volume}, service {svc_used})"
-    assert target == max(1_000_000_000, cap // 20), f"target {target} for cap {cap}"
-    assert limit_of(aggregate(2)) == str(cap), f"the user tier's limit is {limit_of(aggregate(2))}, the tick's cap {cap}"
-    assert "short=false" in line, f"a fresh install is short: {line}"
-    assert "alert open user-storage-short" not in host.succeed("journalctl -u briard-agent -o cat"), "a fresh install warned"
-
     # History to shed: a member ten days old and one two hours old, each pinning its own bytes,
     # and the household's files on top -- together past the room the target leaves, and under it
     # once the old member is gone.
@@ -315,9 +335,10 @@ pkgs.testers.runNixOSTest {
     assert "OLD=0" in there and "YOUNG=1" in there, f"the valve did not shed the old member alone:\n{there}"
     assert "short=false" in line, f"ten days of history were enough, and the tick says short: {line}"
 
-    # At the floor: the household's files fill the cap. The uploader meets EDQUOT while the service
-    # tier keeps writing, and the next tick has only the day's members -- it sheds none of them
-    # and warns.
+    # At the floor: the household's files fill the cap. The uploader meets EDQUOT at its app's
+    # share -- the tier's last tenth or keep is left for other apps, so the tier is not at zero --
+    # while the service tier keeps writing, and the next tick has only the day's members: it sheds
+    # none of them and warns.
     out = guest(f'echo D""Q=$(head -c {cap // 1_000_000}M /dev/urandom 2>/dev/null > {area}/more; echo $?) S""VC=$(head -c 32M /dev/urandom > /var/lib/briard/{svc}/svc-fill && sync -f /var/lib/briard && rm /var/lib/briard/{svc}/svc-fill && echo ok)', wait=90)
     print(f"at the floor: {out}")
     assert re.search(r"DQ=[1-9]", out), f"the uploader wrote past the cap:\n{out}"
@@ -326,6 +347,8 @@ pkgs.testers.runNixOSTest {
     line = last_tick(after, "short=true")
     print(f"the floor's tick: {line}")
     assert "shed=0" in line, f"the valve shed a member younger than a day: {line}"
+    left = int(re.search(r"free=(-?\d+)", line).group(1))
+    assert left > 50_000_000, f"the one app took the user tier to {left} bytes: its share did not stop it"
     assert "YOUNG=1" in guest(f"test -e {young} && echo Y""OUNG=1"), "the day's member is gone"
     host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep -q 'alert open user-storage-short'", timeout=60)
     print("the user tier is capped by the rule, its valve sheds the oldest history, and at the floor it warns")

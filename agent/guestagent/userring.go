@@ -3,6 +3,7 @@ package guestagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -25,9 +26,15 @@ import (
 // THE ALLOCATION RULE gives the user tier whatever the service tier does not need, and keeps it
 // there by shedding history when the household's files need the room:
 //
-//	userCap  = volume − svcUsed − max(20 % × svcUsed, 300 MB) − max(1 GB, 2 % × volume)
+//	slack    = (raw used − charged) + one metadata chunk     what btrfs keeps for itself, and room to grow it
+//	userCap  = volume − svcUsed − max(20 % × svcUsed, 300 MB) − slack
 //	userFree = userCap − referenced(user tier)
 //	target   = max(1 GB, 5 % × userCap)
+//
+// svcUsed is everything charged outside the user tier. The slack is measured, not guessed: what
+// the disk holds (each metadata copy counted) less what the quota tree charges is the
+// filesystem's own trees and the second copy of every metadata block, and one more metadata chunk
+// is kept free so btrfs can always allocate the next one.
 //
 // The cap is the user aggregate's limit, re-set only when it changes. The service tier has no
 // limit of its own: its reserve is the cap's headroom, so a growing service lowers the cap and the
@@ -37,6 +44,18 @@ import (
 // ring or a member younger than a day: when those hold the space, the uploader meets EDQUOT and
 // the house keeps running. Short says the valve could not buy five days of history, which is the
 // household's warning before the uploader's error.
+//
+// NO APP TAKES THE LAST OF ITS TIER'S FREE SPACE. Each app's group in each tier is limited to
+//
+//	appCap = max(90 % × (used + free), used + free − R)
+//
+// where free is what the tier has left (the volume's physical free space for a service, userFree
+// for a user area) and R = max(300 MB, 1 % of what the tier divides: the volume, or userCap). An
+// app growing alone does not move its own cap, since its growth is the tier's loss; it stops with
+// a tenth of the two together or R left for the others, whichever is less. Its history counts, as
+// it does in the tier. An app's room is never less than free − R, the valve holds userFree at a
+// target no smaller than R, and a service's free space is userFree and the headroom: while the
+// household has not been warned, no app in either tier is at its cap.
 //
 // THE HOST SCHEDULES IT AND TELLS THE HOUSEHOLD; the work is here because only the guest mounts
 // the volume. It runs in the guest's background, one at a time, like the recorder check: a
@@ -62,6 +81,7 @@ func userSnapshots() string { return filepath.Join(userRoot(), ".snapshots") }
 type UserTickReport struct {
 	At          time.Time `json:"at"`
 	Volume      int64     `json:"volume"`
+	Slack       int64     `json:"slack"`
 	ServiceUsed int64     `json:"service_used"`
 	UserUsed    int64     `json:"user_used"`
 	UserCap     int64     `json:"user_cap"`
@@ -173,9 +193,9 @@ func userTick(ctx context.Context, x Executor, now time.Time) UserTickReport {
 	}
 
 	// THE ALLOCATION. Nothing to bound until an app has a user area.
-	volume, err := volumeSize(ctx, x)
+	use, err := volumeUsage(ctx, x)
 	if err != nil {
-		failed("read the volume's size", err)
+		failed("read the volume's usage", err)
 		return rep
 	}
 	tree, err := readQgroups(ctx, x)
@@ -183,13 +203,16 @@ func userTick(ctx context.Context, x Executor, now time.Time) UserTickReport {
 		failed("read the quota tree", err)
 		return rep
 	}
-	userAgg := tierQgroup(tierUser)
+	userAgg, svcAgg := tierQgroup(tierUser), tierQgroup(tierService)
 	if _, ok := tree[userAgg]; !ok {
 		return rep
 	}
+	// The slack once a tick: what btrfs keeps for itself does not move while the valve deletes.
+	slack := fsSlack(use, tree.charged())
 	measure := func() {
-		rep.Volume, rep.ServiceUsed, rep.UserUsed = volume, tree[tierQgroup(tierService)].referenced, tree[userAgg].referenced
-		rep.UserCap, rep.Target = userAllocation(volume, rep.ServiceUsed)
+		rep.Volume, rep.Slack, rep.UserUsed = use.size, slack, tree[userAgg].referenced
+		rep.ServiceUsed = tree.charged() - rep.UserUsed
+		rep.UserCap, rep.Target = userAllocation(use.size, slack, rep.ServiceUsed)
 		rep.UserFree = rep.UserCap - rep.UserUsed
 	}
 	measure()
@@ -228,18 +251,56 @@ func userTick(ctx context.Context, x Executor, now time.Time) UserTickReport {
 		}
 		measure()
 	}
+
+	// THE APPS' CAPS, from what the valve left: each tier's free space and the share it keeps back.
+	tiers := map[string]struct{ free, keep int64 }{
+		svcAgg:  {rep.Volume - rep.Slack - rep.ServiceUsed - rep.UserUsed, max(300*mb, rep.Volume/100)},
+		userAgg: {rep.UserFree, max(300*mb, rep.UserCap/100)},
+	}
+	for id, g := range tree {
+		for agg, t := range tiers {
+			if !strings.HasPrefix(id, "1/") || !tree.holds(id, agg) {
+				continue
+			}
+			if c := appCap(g.referenced+t.free, t.keep); g.limit != c {
+				if err := run("btrfs", "qgroup", "limit", strconv.FormatInt(c, 10), id, dataMountRoot); err != nil {
+					failed("set "+id+"'s limit", err)
+				}
+			}
+		}
+	}
 	return rep
 }
 
-// userAllocation is the rule's cap and target for a volume of this size holding this much
-// service state. A cap below what the user tier already holds is still the cap: the limit takes
-// it, and the next write meets EDQUOT while the valve makes room.
-func userAllocation(volume, svcUsed int64) (userCap, target int64) {
-	const mb, gb = 1_000_000, 1_000_000_000
+const mb, gb = 1_000_000, 1_000_000_000
+
+// userAllocation is the rule's cap and target for a volume of this size, with this much slack,
+// holding this much outside the user tier. A cap below what the user tier already holds is still
+// the cap: the limit takes it, and the next write meets EDQUOT while the valve makes room.
+func userAllocation(volume, slack, svcUsed int64) (userCap, target int64) {
 	headroom := max(svcUsed/5, 300*mb)
-	slack := max(gb, volume/50)
 	userCap = max(volume-svcUsed-headroom-slack, 0)
 	return userCap, max(gb, userCap/20)
+}
+
+// appCap is an app's limit when it and its tier's free space come to `total` and the tier keeps
+// back `keep`: a tenth of the total for a small app, `keep` for one over ten times it.
+func appCap(total, keep int64) int64 {
+	return max(total*9/10, total-keep, 0)
+}
+
+// fsSlack is the space btrfs needs that the quota tree charges to nobody: what is on the disk
+// beyond what is charged (its own trees, the second copy of each metadata block), and one
+// metadata chunk -- the kernel's size for it, every copy -- so the next one can always be
+// allocated. A volume with no room for that chunk turns writes into ENOSPC however much data
+// space is free.
+func fsSlack(u volumeUse, charged int64) int64 {
+	chunk := int64(256 << 20)
+	if u.size > 50<<30 {
+		chunk = 1 << 30
+	}
+	chunk = min(chunk, u.size/10)
+	return max(u.used-charged, 0) + int64(float64(chunk)*u.metaCopies)
 }
 
 // userRetention is the members of one app's ring that its retention lets go: every one younger
@@ -313,16 +374,42 @@ func deleteUserMember(run func(string, ...string) error, member string) error {
 	return run("rm", "-f", quadlet.SnapshotSidecar(member))
 }
 
-// volumeSize is the volume's size as btrfs states it.
-func volumeSize(ctx context.Context, x Executor) (int64, error) {
+// volumeUse is the volume as btrfs states it: its size, what is on the disk (every copy of
+// every block), and how many copies of metadata it keeps.
+type volumeUse struct {
+	size, used int64
+	metaCopies float64
+}
+
+// volumeUsage reads the overall lines of `btrfs filesystem usage`; the per-profile lines start
+// with their profile, so no prefix below matches one of them.
+func volumeUsage(ctx context.Context, x Executor) (volumeUse, error) {
 	out, err := x.Run(ctx, "btrfs", "filesystem", "usage", "-b", dataMountRoot)
 	if err != nil {
-		return 0, fmt.Errorf("btrfs filesystem usage: %w: %s", err, strings.TrimSpace(string(out)))
+		return volumeUse{}, fmt.Errorf("btrfs filesystem usage: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	var u volumeUse
+	var errs []error
+	read := func(line, prefix string) (string, bool) {
+		v, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
+		return strings.TrimSpace(v), ok
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "Device size:"); ok {
-			return strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		var err error
+		if v, ok := read(line, "Device size:"); ok {
+			u.size, err = strconv.ParseInt(v, 10, 64)
+		} else if v, ok := read(line, "Used:"); ok {
+			u.used, err = strconv.ParseInt(v, 10, 64)
+		} else if v, ok := read(line, "Metadata ratio:"); ok {
+			u.metaCopies, err = strconv.ParseFloat(v, 64)
 		}
+		errs = append(errs, err)
 	}
-	return 0, fmt.Errorf("btrfs filesystem usage names no device size")
+	if err := errors.Join(errs...); err != nil {
+		return volumeUse{}, fmt.Errorf("btrfs filesystem usage: %w", err)
+	}
+	if u.size == 0 || u.used == 0 || u.metaCopies == 0 {
+		return volumeUse{}, fmt.Errorf("btrfs filesystem usage names no size, used or metadata ratio")
+	}
+	return u, nil
 }

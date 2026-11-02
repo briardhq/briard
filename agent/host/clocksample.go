@@ -388,8 +388,8 @@ func (cfg Config) collectUserTick(ctx context.Context, g userTicker, u *userTick
 	u.waiting = false
 	rep := *s.Report
 	// One line a tick, six an hour: what the cap is and what the tick did is the trail a full disk is read back from.
-	logf("user tier: cap=%d free=%d target=%d took=%d pruned=%d shed=%d short=%t errors=%q",
-		rep.UserCap, rep.UserFree, rep.Target, len(rep.Taken), len(rep.Pruned), len(rep.Shed), rep.Short, rep.Errors)
+	logf("user tier: cap=%d free=%d target=%d slack=%d took=%d pruned=%d shed=%d short=%t errors=%q",
+		rep.UserCap, rep.UserFree, rep.Target, rep.Slack, len(rep.Taken), len(rep.Pruned), len(rep.Shed), rep.Short, rep.Errors)
 	if rep.Volume == 0 {
 		return // nothing measured: no app has a user area, or the read failed (logged above)
 	}
@@ -399,7 +399,8 @@ func (cfg Config) collectUserTick(ctx context.Context, g userTicker, u *userTick
 // userStorageAlert is a CONDITION: open while the user tier is short of its target and the valve
 // cannot make the room without cutting into the last five days of file history -- which includes
 // a node whose service state has grown into the room with no history to give -- resolved once
-// there is room. Asserted every tick; the store decides what is news.
+// there is room. It is every app's warning too: while the tier keeps its target free, no app in
+// either tier is at its cap. Asserted every tick; the store decides what is news.
 func userStorageAlert(node string, rep guestagent.UserTickReport) notify.Alert {
 	if !rep.Short {
 		return notify.Alert{
@@ -416,6 +417,7 @@ func userStorageAlert(node string, rep guestagent.UserTickReport) notify.Alert {
 		Title:    "Briard: storage for your files is running out",
 		Body: fmt.Sprintf("Storage on node %s is running low: %.1f GB is left for your apps' files, and briard cannot "+
 			"make more room by removing older versions of them without losing the last five days. "+
-			"When it runs out, new uploads will fail; your apps keep running.", node, float64(max(rep.UserFree, 0))/1e9),
+			"When it runs out, new uploads will fail; your apps keep running, and none of them can take the last "+
+			"of the space from the others.", node, float64(max(rep.UserFree, 0))/1e9),
 	}
 }
