@@ -31,6 +31,10 @@ import (
 //     Bridge", the other member is never bound, and every later attempt fails the same way until
 //     a restart. Ethernet first failed that way in every traced trial; the TAP first -- whose link
 //     never drops -- never did. So the TAP is always selected first.
+//   - changing a NIC's advanced properties (the member's offload, turned off for the bridge)
+//     removes and re-adds its miniport, and the network stack re-binds it; a member doing that
+//     while createbridge or addtobridge binds it is never bound, with the same error. So on this
+//     path the member's offload is turned off after it is in the bridge, never just before.
 //   - that error is a modal dialog, and createbridge returns only once it is dismissed: in
 //     session 0 (a service, a SYSTEM task) no one can, so createbridge is refused there rather
 //     than started.

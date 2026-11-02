@@ -61,10 +61,20 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 	if !ok {
 		return Offload{}, tapAmbiguity(tapCandidates(as))
 	}
+	// Where netsh cannot create a bridge, Network Connections does, by name, only on a desktop, and
+	// with the member's offload turned off AFTER it is bound rather than before (shellverb_windows.go).
+	shell := netshLacks("create")
+	if shell && sessionZero() {
+		return Offload{}, errors.New("this Windows has no `netsh bridge create`, and builds a bridge only for a " +
+			"signed-in user: run the installer from your desktop, as an administrator")
+	}
 	// 1. THE RECORD, FIRST: after the change there is nothing left to read.
-	rec, err := offloadOff(ctx, m)
-	if err != nil {
-		return rec, err
+	var rec Offload
+	var err error
+	if !shell {
+		if rec, err = offloadOff(ctx, m); err != nil {
+			return rec, err
+		}
 	}
 	// 2. Our TAP named for us, before the bridge exists (so the bridge is created with its final
 	// member name).
@@ -74,13 +84,8 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 		}
 	}
 	// 3. The bridge, created WITH the TAP, by GUID -- the one adapter id netsh takes that no name
-	// or index change can make ambiguous. Where netsh cannot create one, Network Connections does,
-	// by name, and only on a desktop (shellverb_windows.go).
-	if netshLacks("create") {
-		if sessionZero() {
-			return rec, errors.New("this Windows has no `netsh bridge create`, and builds a bridge only for a " +
-				"signed-in user: run the installer from your desktop, as an administrator")
-		}
+	// or index change can make ambiguous.
+	if shell {
 		if err := shellVerb(ctx, "createbridge", TapName, m.name); err != nil { // the TAP first: shellverb_windows.go says why
 			return rec, fmt.Errorf("Bridge Connections: %w", err)
 		}
@@ -90,6 +95,14 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 	br, err := waitBridge(ctx, m.name)
 	if err != nil {
 		return rec, err
+	}
+	if shell {
+		if rec, err = offloadOff(ctx, m); err != nil {
+			return rec, err
+		}
+		if _, err := waitBridge(ctx, m.name); err != nil { // the change restarts the member
+			return rec, err
+		}
 	}
 	// 4. The bridge keeps the household's own MAC, so the desktop keeps its identity on the LAN
 	// (its DHCP reservation, its router's view of it) through being bridged.
@@ -182,9 +195,15 @@ func SwapMember(ctx context.Context, bridge, to string, prev Offload) (Offload, 
 		return Offload{}, fmt.Errorf("%q is not a standalone physical adapter to swap into %s", to, bridge)
 	}
 	from, _, _ := Member(bridge)
-	rec, err := offloadOff(ctx, t)
-	if err != nil {
-		return rec, err
+	// Where netsh has no add, the arriving member's offload is turned off after it joins, never
+	// just before (shellverb_windows.go).
+	shell := netshLacks("add")
+	var rec Offload
+	var err error
+	if !shell {
+		if rec, err = offloadOff(ctx, t); err != nil {
+			return rec, err
+		}
 	}
 	if from != "" {
 		if err := bridgeRemove(ctx, from, b.guid); err != nil {
@@ -202,7 +221,7 @@ func SwapMember(ctx context.Context, bridge, to string, prev Offload) (Offload, 
 		psQuote(bridge), t.mac)); err != nil {
 		return rec, fmt.Errorf("re-pinning the bridge's MAC to %s's: %w", to, err)
 	}
-	if netshLacks("add") {
+	if shell {
 		if err := shellVerb(ctx, "addtobridge", to); err != nil {
 			return rec, fmt.Errorf("Add to Bridge %s: %w", to, err)
 		}
@@ -211,6 +230,14 @@ func SwapMember(ctx context.Context, bridge, to string, prev Offload) (Offload, 
 	}
 	if err := waitMaster(ctx, to, bridge); err != nil {
 		return rec, fmt.Errorf("%s did not join %s: %w", to, bridge, err)
+	}
+	if shell {
+		if rec, err = offloadOff(ctx, t); err != nil {
+			return rec, err
+		}
+		if err := waitMaster(ctx, to, bridge); err != nil { // the change restarts the member
+			return rec, fmt.Errorf("%s did not rejoin %s after its offload change: %w", to, bridge, err)
+		}
 	}
 	return rec, nil
 }
