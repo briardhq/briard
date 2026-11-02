@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -43,6 +44,8 @@ type fakeExec struct {
 	// writes as the kernel does: create and assign refuse an id that exists. Every fake has one,
 	// so no test has to stand in for the tree to reach the code it is about.
 	qgroups map[string][]string
+	qlimits map[string]string // a group's limit as `qgroup limit` set it; none when absent
+	qused   map[string]int64  // a group's referenced bytes; 16384 when absent
 }
 
 func (f *fakeExec) Run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -72,14 +75,30 @@ func (f *fakeExec) qgroup(args []string) ([]byte, error) {
 			return []byte("ERROR: unable to assign quota group: File exists"), exists
 		}
 		f.qgroups[args[1]] = append(f.qgroups[args[1]], args[2])
+	case len(args) == 4 && args[0] == "limit":
+		if _, ok := f.qgroups[args[2]]; !ok {
+			return []byte("ERROR: unable to limit requested quota group: No such file or directory"), exists
+		}
+		if f.qlimits == nil {
+			f.qlimits = map[string]string{}
+		}
+		f.qlimits[args[2]] = args[1]
 	case len(args) > 0 && args[0] == "show":
-		out := "Qgroupid Referenced Exclusive Parent Path\n-------- ---------- --------- ------ ----\n"
+		out := "Qgroupid Referenced Exclusive  Max referenced Parent Path\n-------- ---------- --------- -------------- ------ ----\n"
 		for id, parents := range f.qgroups {
 			p := "-"
 			if len(parents) > 0 {
 				p = strings.Join(parents, ",")
 			}
-			out += id + " 16384 16384 " + p + " x\xff\n"
+			used := int64(16384)
+			if u, ok := f.qused[id]; ok {
+				used = u
+			}
+			limit := "none"
+			if l, ok := f.qlimits[id]; ok {
+				limit = l
+			}
+			out += fmt.Sprintf("%s %d %d %s %s x\xff\n", id, used, used, limit, p)
 		}
 		return []byte(out), nil
 	default:

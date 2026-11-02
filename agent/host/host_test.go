@@ -1465,3 +1465,10 @@ func (g edgeGuest) ServiceList(context.Context) ([]string, error) {
 	atomic.AddInt32(g.lists, 1)
 	return nil, nil
 }
+
+// The user tier's tick: a guest that does not run one, unless a test gives it fakeUserTick.
+func (fakeStatus) UserTick(context.Context) (bool, error) { return false, errors.New("unknown verb") }
+func (fakeStatus) UserTickResult(context.Context) (guestagent.UserTickState, error) {
+	return guestagent.UserTickState{}, errors.New("unknown verb")
+}
+func (fakeStatus) SupportsUserTick() bool { return false }

@@ -556,6 +556,8 @@ type guestReader interface {
 	recorderChecker
 	// ...and the nightly backup (backup.go).
 	backupRunner
+	// ...and the user tier's ten-minute tick (clocksample.go).
+	userTicker
 	SystemPath(ctx context.Context) (string, error)
 	Resources(ctx context.Context, services map[string]string, dataDir string, soak bool) (telemetry.NodeResources, error)
 }
@@ -1474,6 +1476,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	dc := newDBChecker()
 	// Which night was last backed up (backup.go), for the same reason.
 	bs := newBackupScheduler()
+	// When the user tier was last ticked (clocksample.go), for the same reason.
+	ut := &userTickScheduler{}
 	// How long the host's clock has gone unsynchronised; lives here for the same reason.
 	ca := &clockAlerter{read: reportcard.NTPSynced}
 	// How long each installed service has been down (alert.go); same reason.
@@ -1625,6 +1629,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cfg.checkRecorder(ctx, r, dc, cfg.Services, cl.Serving(), time.Now(), n, logf)
 		// THE BACKUP, once a night on the node that holds the volume, the same way (backup.go).
 		cfg.backup(ctx, r, bs, cl.Serving(), time.Now(), n, logf)
+		// THE USER TIER, every ten minutes on the node that holds the volume, the same way.
+		cfg.tickUser(ctx, r, ut, cl.Serving(), time.Now(), n, logf)
 		cfg.beat.Beat()
 		st.Overlay = cfg.overlayStatus(ctx) // remote-reach signal (nil when no overlay)
 		st.Tenant = tenant                  // tag the report with the assigned tenant

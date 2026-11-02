@@ -283,6 +283,12 @@ const (
 	// a run reads for minutes, and this channel serves one verb at a time.
 	verbDataBackup       = "data.backup"
 	verbDataBackupResult = "data.backup.result"
+	// user.tick STARTS the user tier's tick in the background (userring.go) -- the hourly user ring
+	// member where one is due, its retention, the allocation rule's limit, the valve -- and
+	// answers whether it did; user.tick.result is whether one is running, with a finished one's
+	// report once. The same two-verb shape: the valve waits on the cleaner.
+	verbUserTick       = "user.tick"
+	verbUserTickResult = "user.tick.result"
 	// data.backup.key answers the household's repository key, minting it on the volume the first
 	// time it is asked for (backup.go), and records the household's word that it is saved.
 	verbDataBackupKey = "data.backup.key"
@@ -447,6 +453,7 @@ var guestCapabilities = []string{
 	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
+	verbUserTick, verbUserTickResult,
 	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataBackupList, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
@@ -484,6 +491,9 @@ var besideActs = map[string]bool{
 	verbHassReadiness: true, verbMosquittoProbe: true, verbHassDBCheck: true,
 	verbHassDBCheckResult: true, verbServicePending: true, verbDataBackup: true,
 	verbDataBackupResult: true, verbDataBackupKey: true, verbDataBackupList: true,
+	// started in the background like the backup, whose shape it shares: the start returns at once,
+	// and what the tick writes (the user ring, the user tier's limit) no act touches
+	verbUserTick: true, verbUserTickResult: true,
 	// pushes
 	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true, verbDashboardBackup: true,
 	verbDashboardCatalog: true,
@@ -1263,6 +1273,10 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			return startBackup(x, req)
 		case verbDataBackupResult:
 			return backupResult(), nil
+		case verbUserTick:
+			return startUserTick(x), nil
+		case verbUserTickResult:
+			return userTickResult(), nil
 		case verbDataBackupKey:
 			var req backupKeyRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2430,8 +2444,8 @@ func gatherResources(ctx context.Context, x Executor, req resourcesRequest) tele
 	if req.Soak {
 		if mode, err := quotaMode(ctx, x); err == nil {
 			r.QuotaMode = mode
-			if out, err := x.Run(ctx, "btrfs", "qgroup", "show", "-p", "--raw", dataMountRoot); err == nil {
-				r.Qgroups = qgroupRows(out)
+			if tree, err := readQgroups(ctx, x); err == nil {
+				r.Qgroups = tree.rows()
 			}
 		}
 	}
@@ -3001,6 +3015,24 @@ func (g *Client) DataBackupResult(ctx context.Context) (BackupState, error) {
 	err := g.c.Call(ctx, verbDataBackupResult, nil, &s)
 	return s, err
 }
+
+// UserTick starts the user tier's tick in the guest's background and answers whether it did:
+// false while one runs, or while a finished one's report waits to be collected.
+func (g *Client) UserTick(ctx context.Context) (bool, error) {
+	var started bool
+	err := g.c.Call(ctx, verbUserTick, nil, &started)
+	return started, err
+}
+
+// UserTickResult answers whether a tick is running, with a finished one's report, once.
+func (g *Client) UserTickResult(ctx context.Context) (UserTickState, error) {
+	var s UserTickState
+	err := g.c.Call(ctx, verbUserTickResult, nil, &s)
+	return s, err
+}
+
+// SupportsUserTick reports whether the guest runs the user tier's tick.
+func (g *Client) SupportsUserTick() bool { return g.Supports(verbUserTick) }
 
 // HassDBRestore puts the recorder database back from the member a report named.
 func (g *Client) HassDBRestore(ctx context.Context, member string) error {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -68,49 +69,64 @@ func areaOf(area string) (tier uint64, app string, err error) {
 	return 0, "", fmt.Errorf("%s is not an app's area on the volume", area)
 }
 
-// qgroupTree is `btrfs qgroup show -p`: which ids exist, and each one's parents.
-type qgroupTree map[string][]string
+// qgroup is one row of the tree: what it holds, its limit, and its parents.
+type qgroup struct {
+	referenced int64
+	limit      int64 // -1 when it has none
+	parents    []string
+	row        string // `<id> <referenced> <exclusive> <parents>`, what the soak reads
+}
+
+// qgroupTree is `btrfs qgroup show -pr --raw`, keyed by id.
+type qgroupTree map[string]qgroup
+
+// qgroupShow is the one read of the tree: parents (-p) and limits (-r), in bytes.
+var qgroupShow = []string{"qgroup", "show", "-pr", "--raw", dataMountRoot}
 
 func readQgroups(ctx context.Context, x Executor) (qgroupTree, error) {
-	out, err := x.Run(ctx, "btrfs", "qgroup", "show", "-p", "--raw", dataMountRoot)
+	out, err := x.Run(ctx, "btrfs", qgroupShow...)
 	if err != nil {
 		return nil, fmt.Errorf("btrfs qgroup show: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	tree := qgroupTree{}
-	for _, row := range qgroupRows(out) {
-		f := strings.Fields(row)
-		var parents []string
-		if f[3] != "-" {
-			parents = strings.Split(f[3], ",")
-		}
-		tree[f[0]] = parents
-	}
-	return tree, nil
+	return parseQgroups(out), nil
 }
 
-// qgroupRows is `btrfs qgroup show -p --raw` as `<id> <referenced> <exclusive> <parents>`, one
-// row per group. The header and its rule are dropped (they start with a letter and a dash), and
-// so is the Path column: an aggregate's cell carries a non-UTF-8 byte, and nothing reads it.
-func qgroupRows(out []byte) []string {
-	var rows []string
+// parseQgroups reads `Qgroupid Referenced Exclusive Max-referenced Parent Path`. The header and
+// its rule are dropped (they start with a letter and a dash), and so is the Path column: an
+// aggregate's cell carries a non-UTF-8 byte, and nothing reads it.
+func parseQgroups(out []byte) qgroupTree {
+	tree := qgroupTree{}
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
-		if len(f) < 4 || f[0][0] < '0' || f[0][0] > '9' {
+		if len(f) < 5 || f[0][0] < '0' || f[0][0] > '9' {
 			continue
 		}
-		rows = append(rows, strings.Join(f[:4], " "))
+		g := qgroup{limit: -1, row: strings.Join([]string{f[0], f[1], f[2], f[4]}, " ")}
+		g.referenced, _ = strconv.ParseInt(f[1], 10, 64)
+		if f[3] != "none" {
+			g.limit, _ = strconv.ParseInt(f[3], 10, 64)
+		}
+		if f[4] != "-" {
+			g.parents = strings.Split(f[4], ",")
+		}
+		tree[f[0]] = g
 	}
+	return tree
+}
+
+// rows is the tree as the soak reads it, one `<id> <referenced> <exclusive> <parents>` per group.
+func (t qgroupTree) rows() []string {
+	var rows []string
+	for _, g := range t {
+		rows = append(rows, g.row)
+	}
+	slices.Sort(rows)
 	return rows
 }
 
 func (t qgroupTree) holds(group, parent string) bool {
 	_, agg := t[parent]
-	for _, p := range t[group] {
-		if p == parent {
-			return agg
-		}
-	}
-	return false
+	return agg && slices.Contains(t[group].parents, parent)
 }
 
 // areaGroup is the level-1 group a subvolume of this area is born into, made -- with its tier

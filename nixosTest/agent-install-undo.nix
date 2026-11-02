@@ -90,7 +90,7 @@ pkgs.testers.runNixOSTest {
         "ip tuntap add briard-priv0 mode tap && ip addr add 10.11.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
     )
     host.succeed("ln -s ${guestDisk}/nixos.qcow2 /tmp/guest.qcow2")
-    host.succeed("truncate -s 512M /tmp/data.img")
+    host.succeed("truncate -s 3G /tmp/data.img")
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     def publish(src):
@@ -259,5 +259,75 @@ pkgs.testers.runNixOSTest {
     guest(f"{btrfs} subvolume delete /var/lib/briard/.snapshots/quota-stray")
     assert flagged == [stray], f"the tree check flagged {flagged}, want exactly the stray {stray}"
     print("every subvolume the product made is in the quota tree, and its limit binds root")
+
+    # === THE USER TIER'S TICK: the allocation rule's cap, the valve, the warning. ===
+    # The real agent's tick, which runs at its start and every ten minutes after; a restart is
+    # how this rig asks for one now. The volume is 3 GB, so the rule leaves a cap a test can fill.
+    def last_tick(after, want, timeout=900):
+        """The agent's latest `user tier:` line after the cursor, once one matching `want` exists."""
+        host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep 'user tier: cap=' | grep -q '{want}'", timeout=timeout)
+        return host.succeed(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep 'user tier: cap=' | grep '{want}' | tail -1")
+
+    def restart_for_a_tick():
+        c = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
+        host.succeed("systemctl restart briard-agent")
+        host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=600)
+        return c
+
+    def limit_of(gid):
+        out = guest(f'echo L""IM=$({btrfs} qgroup show -pr --raw /var/lib/briard | grep -a "^{gid} " | tr -s " " | cut -d " " -f4)')
+        m = re.search(r"LIM=(\S+)", out)
+        assert m, f"no limit read for {gid}:\n{out}"
+        return m.group(1)
+
+    # The first tick after the undo's restart: the area's first member, and the cap set.
+    line = last_tick(cursor, "cap=")
+    print(f"the first tick: {line}")
+    cap = int(re.search(r"cap=(\d+)", line).group(1))
+    target = int(re.search(r"target=(\d+)", line).group(1))
+    out = guest(f'echo V""OL=$({btrfs} filesystem usage -b /var/lib/briard | grep "Device size:" | tr -dc 0-9)')
+    volume = int(re.search(r"VOL=(\d+)", out).group(1))
+    svc_used = tree()[aggregate(1)][0]
+    # The rule, written a second time: the service tier moves a little between the tick and now.
+    expected = volume - svc_used - max(svc_used // 5, 300_000_000) - max(1_000_000_000, volume // 50)
+    assert abs(cap - expected) < 64 * 1024 * 1024, f"cap {cap}, the rule gives {expected} (volume {volume}, service {svc_used})"
+    assert target == max(1_000_000_000, cap // 20), f"target {target} for cap {cap}"
+    assert limit_of(aggregate(2)) == str(cap), f"the user tier's limit is {limit_of(aggregate(2))}, the tick's cap {cap}"
+    assert "short=false" in line, f"a fresh install is short: {line}"
+    assert "alert open user-storage-short" not in host.succeed("journalctl -u briard-agent -o cat"), "a fresh install warned"
+
+    # History to shed: a member ten days old and one two hours old, each pinning its own bytes,
+    # and the household's files on top -- together past the room the target leaves, and under it
+    # once the old member is gone.
+    area, snaps = f"/var/lib/briard/user/{svc}", "/var/lib/briard/user/.snapshots"
+    room = (cap - target) // 1_000_000
+    def plant(age, mb):
+        out = guest(f'head -c {mb}M /dev/urandom > {area}/plant && S={snaps}/{svc}-clock-$(date -u -d "-{age}" +%Y%m%dT%H%M%SZ) && {btrfs} subvolume snapshot -r -i {user_group} {area} $S >/dev/null && echo "{{}}" > $S.json && rm {area}/plant && sync -f /var/lib/briard && echo P""M=$S', wait=45)
+        m = re.search(r"PM=(\S+)", out)
+        assert m, f"could not plant a member:\n{out}"
+        return m.group(1)
+    old = plant("10 days", room * 6 // 10)
+    young = plant("2 hours", room * 2 // 10)
+    guest(f"head -c {room * 3 // 10}M /dev/urandom > {area}/files && sync -f /var/lib/briard", wait=45)
+    line = last_tick(restart_for_a_tick(), "shed=1")
+    print(f"the valve's tick: {line}")
+    there = guest(f"test -e {old} && echo O""LD=1 || echo O""LD=0; test -e {young} && echo Y""OUNG=1 || echo Y""OUNG=0")
+    assert "OLD=0" in there and "YOUNG=1" in there, f"the valve did not shed the old member alone:\n{there}"
+    assert "short=false" in line, f"ten days of history were enough, and the tick says short: {line}"
+
+    # At the floor: the household's files fill the cap. The uploader meets EDQUOT while the service
+    # tier keeps writing, and the next tick has only the day's members -- it sheds none of them
+    # and warns.
+    out = guest(f'echo D""Q=$(head -c {cap // 1_000_000}M /dev/urandom 2>/dev/null > {area}/more; echo $?) S""VC=$(head -c 32M /dev/urandom > /var/lib/briard/{svc}/svc-fill && sync -f /var/lib/briard && rm /var/lib/briard/{svc}/svc-fill && echo ok)', wait=90)
+    print(f"at the floor: {out}")
+    assert re.search(r"DQ=[1-9]", out), f"the uploader wrote past the cap:\n{out}"
+    assert "SVC=ok" in out, f"the service tier could not write while the user tier was full:\n{out}"
+    after = restart_for_a_tick()
+    line = last_tick(after, "short=true")
+    print(f"the floor's tick: {line}")
+    assert "shed=0" in line, f"the valve shed a member younger than a day: {line}"
+    assert "YOUNG=1" in guest(f"test -e {young} && echo Y""OUNG=1"), "the day's member is gone"
+    host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep -q 'alert open user-storage-short'", timeout=60)
+    print("the user tier is capped by the rule, its valve sheds the oldest history, and at the floor it warns")
   '';
 }

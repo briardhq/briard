@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"briard.io/agent/guestagent"
 	"briard.io/agent/hass"
 	"briard.io/agent/quadlet"
 	"briard.io/shared/model"
@@ -321,5 +322,100 @@ func recorderAlert(node, why string, from time.Time, loc *time.Location) notify.
 		Body: fmt.Sprintf("Home Assistant's history database on node %s was damaged. Briard put back the last good copy, from %s; "+
 			"history recorded after that is lost. Undoing \"Restored corrupted database\" in the app's History puts the damaged copy back.",
 			node, from.In(loc).Format("Mon 2 Jan, 15:04")),
+	}
+}
+
+// THE USER TIER'S TICK, every ten minutes on the node that holds the volume: the user ring's
+// hourly members where due, their retention, the allocation rule's cap and its valve
+// (agent/guestagent/userring.go). It ACTS -- the cap moves as services grow, and the valve makes
+// room before an upload meets EDQUOT -- which is what earns it a cadence. Started in the guest's
+// background and collected over later cycles, like the recorder check: the valve waits on the
+// btrfs cleaner, and nothing here may wait with it.
+const userTickEvery = 10 * time.Minute
+
+// userTicker is the slice of the guest the tick costs.
+type userTicker interface {
+	UserTick(ctx context.Context) (bool, error)
+	UserTickResult(ctx context.Context) (guestagent.UserTickState, error)
+	SupportsUserTick() bool
+}
+
+// userTickScheduler remembers when it last started a tick, and whether one's report is awaited.
+type userTickScheduler struct {
+	last    time.Time
+	waiting bool
+}
+
+// tickUser collects a tick that is running, or starts the next one when it is due.
+func (cfg Config) tickUser(ctx context.Context, g userTicker, u *userTickScheduler, serving bool, now time.Time, n notify.Notifier, logf func(string, ...any)) {
+	if !serving || !g.SupportsUserTick() {
+		return
+	}
+	if u.waiting {
+		cfg.collectUserTick(ctx, g, u, n, logf)
+		return
+	}
+	if now.Sub(u.last) < userTickEvery {
+		return
+	}
+	u.last = now // a failure waits a tick rather than being retried every cycle
+	sctx, cancel := context.WithTimeout(ctx, dbCallTimeout)
+	started, err := g.UserTick(sctx)
+	cancel()
+	if err != nil {
+		logf("user tier: could not start the tick: %v", err)
+		return
+	}
+	if !started {
+		logf("user tier: the guest has a tick running or a report waiting; collecting that one")
+	}
+	u.waiting = true
+}
+
+// collectUserTick asks for a started tick's report, and tells the household what it means.
+func (cfg Config) collectUserTick(ctx context.Context, g userTicker, u *userTickScheduler, n notify.Notifier, logf func(string, ...any)) {
+	sctx, cancel := context.WithTimeout(ctx, dbCallTimeout)
+	s, err := g.UserTickResult(sctx)
+	cancel()
+	switch {
+	case err != nil, s.Report == nil && s.Running:
+		return // asked again next cycle
+	case s.Report == nil:
+		logf("user tier: the tick left no report") // the guest agent restarted and lost it
+		u.waiting = false
+		return
+	}
+	u.waiting = false
+	rep := *s.Report
+	// One line a tick, six an hour: what the cap is and what the tick did is the trail a full disk is read back from.
+	logf("user tier: cap=%d free=%d target=%d took=%d pruned=%d shed=%d short=%t errors=%q",
+		rep.UserCap, rep.UserFree, rep.Target, len(rep.Taken), len(rep.Pruned), len(rep.Shed), rep.Short, rep.Errors)
+	if rep.Volume == 0 {
+		return // nothing measured: no app has a user area, or the read failed (logged above)
+	}
+	fireAlert(ctx, n, logf, userStorageAlert(cfg.Node, rep))
+}
+
+// userStorageAlert is a CONDITION: open while the user tier is short of its target and the valve
+// cannot make the room without cutting into the last five days of file history -- which includes
+// a node whose service state has grown into the room with no history to give -- resolved once
+// there is room. Asserted every tick; the store decides what is news.
+func userStorageAlert(node string, rep guestagent.UserTickReport) notify.Alert {
+	if !rep.Short {
+		return notify.Alert{
+			Key:   "user-storage-short",
+			Kind:  notify.Resolved,
+			Title: "Briard: there is room for your files again",
+			Body:  fmt.Sprintf("The space for your apps' files on node %s has room again.", node),
+		}
+	}
+	return notify.Alert{
+		Key:      "user-storage-short",
+		Kind:     notify.Open,
+		Severity: notify.Warning,
+		Title:    "Briard: storage for your files is running out",
+		Body: fmt.Sprintf("Storage on node %s is running low: %.1f GB is left for your apps' files, and briard cannot "+
+			"make more room by removing older versions of them without losing the last five days. "+
+			"When it runs out, new uploads will fail; your apps keep running.", node, float64(max(rep.UserFree, 0))/1e9),
 	}
 }

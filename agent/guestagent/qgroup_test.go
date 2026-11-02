@@ -237,7 +237,7 @@ func TestTheSoakReportCarriesTheQuotaTree(t *testing.T) {
 		if r.QuotaMode != "" || r.Qgroups != nil {
 			t.Errorf("%s reported the tree: %q %q", tc.name, r.QuotaMode, r.Qgroups)
 		}
-		if runIndex(f, 0, "btrfs", "qgroup", "show", "-p", "--raw", dataMountRoot) >= 0 {
+		if runIndex(f, 0, append([]string{"btrfs"}, qgroupShow...)...) >= 0 {
 			t.Errorf("%s read the tree", tc.name)
 		}
 	}
