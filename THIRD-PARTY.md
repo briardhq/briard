@@ -92,9 +92,9 @@ The household dashboard's one stylesheet, `dashboard/static/app.css`, and its on
 `catalog/index.json` carries one vector mark per listed app, inline as a data URI:
 
 - [homarr-labs/dashboard-icons](https://github.com/homarr-labs/dashboard-icons) (Apache-2.0) —
-  the collection every mark but one is taken from, unchanged but for Karakeep's single-colour
-  mark, which is black or white with the reader's colour scheme, as the project's own logo is
-  in its two variants. The marks themselves are the
+  the collection every mark but one is taken from, unchanged but for the single-colour marks
+  (Frigate, Karakeep, Vaultwarden), which are black or white with the reader's colour scheme,
+  as the collection's own dark and light variants are. The marks themselves are the
   logos and trademarks of their respective projects, used to identify them.
 - [Memos](https://www.usememos.com) (MIT) — its logo from the project's own repository
   (`web/public/logo.svg`), because the collection's copy is a bitmap.
