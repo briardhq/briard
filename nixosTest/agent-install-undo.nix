@@ -35,7 +35,7 @@ pkgs.testers.runNixOSTest {
       virtualisation.diskSize = 10240;
       virtualisation.vlans = [ ];
       virtualisation.qemu.options = [ "-cpu" "host" ];
-      environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl pkgs.darkhttpd ];
+      environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl pkgs.darkhttpd pkgs.socat ];
 
       # A REAL systemd service, so SIGKILL is a crash systemd restarts -- the shape a power cut of
       # the agent alone takes, and the one an installed node is in.
@@ -234,7 +234,7 @@ pkgs.testers.runNixOSTest {
     assert groups[user_group][1] == [aggregate(2)], f"{user_group} is under {groups[user_group][1]}"
 
     # === THE USER TIER'S TICK: the allocation rule's cap, the valve, the warning. ===
-    # The real agent's tick, which runs at its start and every ten minutes after; a restart is
+    # The real agent's tick, which runs at its start and every five minutes after; a restart is
     # how this rig asks for one now. The volume is 3 GB, so the rule leaves a cap a test can fill.
     def last_tick(after, want, timeout=900):
         """The agent's latest `user tier:` line after the cursor, once one matching `want` exists."""
@@ -288,6 +288,40 @@ pkgs.testers.runNixOSTest {
         assert got != "none" and abs(int(got) - want) < 64 * 1024 * 1024, f"{gid}'s limit is {got}, the rule gives {want}"
     assert "short=false" in line, f"a fresh install is short: {line}"
     assert "alert open user-storage-short" not in host.succeed("journalctl -u briard-agent -o cat"), "a fresh install warned"
+
+    # === WHAT THE APP STORES, as its page's Storage card asks it: the real agent relays it, the
+    # guest walks the real volume with compsize. 32 MiB of text in the live area first, which zstd
+    # shrinks many times over: du would call it 32 MiB, and on the disk it is a fraction of that.
+    import json, time
+    text = f"/var/lib/briard/{svc}/storage-text"
+    guest(f'yes "the storage card reads the extent tree" | head -c 33554432 > {text}; sync -f {text}; echo D""ONE', wait=8)
+    def usage():
+        out = host.succeed(f"""echo '{{"id":"u","kind":"service-usage","payload":"{svc}"}}' | socat -t30 - UNIX-CONNECT:/run/briard/admin.sock""")
+        o = json.loads(out)
+        assert o["state"] == "done", f"service-usage: {o}"
+        return json.loads(o["detail"])
+    u = usage()
+    assert u.get("measuring") and not u["service"].get("measured"), f"the first ask did not start a walk: {u}"
+    for _ in range(60):
+        u = usage()
+        if not u.get("measuring"):
+            break
+        time.sleep(2)
+    print(f"what {svc} stores: {u}")
+    s, usr = u["service"], u["user"]
+    assert s.get("measured") and usr.get("measured"), f"the walk did not finish: {u}"
+    assert s["files"] >= 32 << 20 and s["current"] < s["files"] // 4, \
+        f"the current data is {s['current']} on disk for {s['files']} of files; 32 MiB of text should shrink many times over"
+    assert s["history"] == max(s["total"] - s["current"], 0), \
+        f"the history is not the group less the current data: {s}"
+    groups = tree()
+    for t, gid in [(s, svc_group), (usr, user_group)]:
+        assert abs(t["total"] - groups[gid][0]) < 16 << 20, f"{gid} holds {groups[gid][0]}, the card says {t['total']}"
+        assert t["cap"] == int(limit_of(gid)), f"{gid}'s limit is {limit_of(gid)}, the card says {t['cap']}"
+    out = guest(f'echo M""EM=$(ls -1 /var/lib/briard/.snapshots | grep "^{svc}-" | grep -vc "\\.json$") U""MEM=$(ls -1 /var/lib/briard/user/.snapshots | grep "^{svc}-" | grep -vc "\\.json$")')
+    m = re.search(r"MEM=(\d+) UMEM=(\d+)", out)
+    assert m and (s["members"], usr["members"]) == (int(m.group(1)), int(m.group(2))), f"the card counts {s['members']}/{usr['members']} snapshots:\n{out}"
+    guest(f"rm -f {text}; sync -f /var/lib/briard; echo D\"\"ONE")
 
     # A limit on the app's group stops root, on the area the swap put back. 4 MiB of headroom
     # over what the group holds now, and a 16 MiB write; the tick owns the limit again at its next run.

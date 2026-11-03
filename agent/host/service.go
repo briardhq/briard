@@ -23,6 +23,7 @@ import (
 	"briard.io/agent/services"
 	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
+	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
 	"briard.io/shared/notify"
@@ -1433,6 +1434,37 @@ func (cfg Config) applyServiceMembers(ctx context.Context, g serviceInstaller, d
 	// EMPTY IS AN ANSWER, not a failure: a service installed a minute ago has no history yet, and
 	// saying so is what lets the history say "nothing yet" instead of an error.
 	body, err := json.Marshal(members)
+	if err != nil {
+		return failed(err.Error())
+	}
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: string(body)}
+}
+
+// usageReader is the slice of the guest applyServiceUsage needs. Narrow interface for DI, not a seam.
+type usageReader interface {
+	Usage(ctx context.Context, app string) (dashboard.AppUsage, error)
+	SupportsUsage() bool
+}
+
+// applyServiceUsage answers what one app's data and history hold, as JSON. Read-only, and quick:
+// the guest answers from its last walk and starts the next one in its background.
+func (cfg Config) applyServiceUsage(ctx context.Context, g usageReader, d api.Directive) api.DirectiveOutcome {
+	failed := func(detail string) api.DirectiveOutcome {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
+	}
+	if d.Payload == "" {
+		return failed("no app named")
+	}
+	if !g.SupportsUsage() {
+		return failed("this guest is too old to measure an app; update the guest OS first")
+	}
+	uctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	u, err := g.Usage(uctx, d.Payload)
+	if err != nil {
+		return failed(fmt.Sprintf("measure %s: %v", d.Payload, err))
+	}
+	body, err := json.Marshal(u)
 	if err != nil {
 		return failed(err.Error())
 	}

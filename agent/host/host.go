@@ -1629,7 +1629,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cfg.checkRecorder(ctx, r, dc, cfg.Services, cl.Serving(), time.Now(), n, logf)
 		// THE BACKUP, once a night on the node that holds the volume, the same way (backup.go).
 		cfg.backup(ctx, r, bs, cl.Serving(), time.Now(), n, logf)
-		// THE USER TIER, every ten minutes on the node that holds the volume, the same way.
+		// THE USER TIER, every five minutes on the node that holds the volume, the same way.
 		cfg.tickUser(ctx, r, ut, cl.Serving(), time.Now(), n, logf)
 		cfg.beat.Beat()
 		st.Overlay = cfg.overlayStatus(ctx) // remote-reach signal (nil when no overlay)
@@ -1868,6 +1868,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveDoctor:        true,
 	api.DirectiveBackupRestore: true,
 	api.DirectiveBackupList:    true, // what the household backed up is the household's to see
+	api.DirectiveServiceUsage:  true, // ...and how much it stores
 	api.DirectiveBackupNow:     true, // ...and backs it up now
 	api.DirectiveBackupFolder:  true, // ...and moves it, as its settings are
 	api.DirectiveCasaClaim:     true, // the household claims its own name; the cloud never does
@@ -1935,6 +1936,13 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectiveBackupFolder {
 		return cfg.applyBackupFolder(ctx, d, r, logf)
+	}
+	if d.Kind == api.DirectiveServiceUsage {
+		u, ok := r.(usageReader)
+		if !ok {
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "guest client cannot measure an app"}
+		}
+		return cfg.applyServiceUsage(ctx, u, d)
 	}
 	if d.Kind == api.DirectiveBackupList {
 		l, ok := r.(backupLister)

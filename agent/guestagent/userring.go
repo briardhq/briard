@@ -15,7 +15,7 @@ import (
 	"briard.io/agent/quadlet"
 )
 
-// THE USER TIER'S TICK: the user ring and the allocation rule, one job every ten minutes.
+// THE USER TIER'S TICK: the user ring and the allocation rule, one job every five minutes.
 //
 // THE USER RING is the History mechanism with a file-version product's retention: one trigger,
 // the clock, hourly, taken live (crash-consistent always; nothing evaluates it), kept hourly for

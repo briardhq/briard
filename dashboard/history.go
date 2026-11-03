@@ -46,10 +46,13 @@ type restoreOp struct {
 	Backup bool
 }
 
-// appPageView is an app's page: its card, with the one button, and its history.
+// appPageView is an app's page: its card, with the one button, its storage and its history.
+// Storage is the card rendered in the page (/apps/<app>?storage, the link a browser without a
+// script follows); nil otherwise, and the card loads itself.
 type appPageView struct {
 	App     *appView
 	History historyView
+	Storage *storageView
 }
 
 // historyView is the history card, with what the newest member says about the app as it runs now.
@@ -110,6 +113,10 @@ func (a *app) showApp(w http.ResponseWriter, r *http.Request, self device, servi
 	defer cancel()
 	v := appPageView{App: a.view(ctx, r, self).app(service), History: a.history(ctx, service)}
 	v.App.Here = true
+	if r.URL.Query().Has("storage") {
+		s := a.storage(ctx, service)
+		v.Storage = &s
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := page.ExecuteTemplate(w, "app-page", v); err != nil {
 		log.Printf("dashboard: app page: %v", err)

@@ -68,13 +68,25 @@
   {{template "app-card" .App}}
   <div class="card"><header><h2>About</h2></header><section><div class="item-group">
     <div class="item"><section><h3>Version</h3><p>{{with .History.Version}}{{.}}{{else}}Not known yet{{end}}{{with .App.Offer}} · {{.}} is available{{end}}</p></section></div>
-    <div class="item"><section><h3>On disk</h3><p>{{with .History.OnDisk}}Its image takes {{.}} of this machine; your own data comes on top.{{else}}Not known yet{{end}}</p></section></div>
+    <div class="item"><section><h3>On disk</h3><p>{{with .History.OnDisk}}Its image takes {{.}} of this machine; what it keeps is under Storage.{{else}}Not known yet{{end}}</p></section></div>
     {{with .App.HA}}<div class="item"><section><h3>Address</h3><p><code>{{.Host}}</code> on your home network.</p></section></div>{{end}}
     {{with .App.Homepage}}<div class="item"><section><h3>Project</h3><p><a href="{{.}}" target="_blank" rel="noopener">{{.}}</a></p></section></div>{{end}}
   </div></section></div>
+  {{with .Storage}}{{template "storage-card" .}}{{else}}<div class="card" id="storage" hx-get="/f/storage?app={{.App.Name}}" hx-trigger="load" hx-swap="outerHTML"><header><h2>Storage</h2></header><section><p class="note">Reading what it keeps on this machine…</p><noscript><p><a href="/apps/{{.App.Name}}?storage">Show it</a></p></noscript></section></div>{{end}}
   {{template "history-card" .History}}
 </div>
 {{template "foot" (shell "apps" false)}}{{end}}
+
+{{/* THE STORAGE CARD: per tier, the data as it is now and its history, then how far each may grow.
+     It asks again while the guest is still measuring, and stops once it has the numbers. */}}
+{{define "storage-card"}}
+  <div class="card" id="storage"{{if .Measuring}} hx-get="/f/storage?app={{.Service}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>Storage</h2></header><section>
+    {{with .Error}}<p class="note">Could not read it: {{.}}</p>{{else}}<div class="item-group">
+    {{range $i, $t := .Tiers}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{.Name}} data</h3><p>{{.Data}}</p></section></div>
+    <div class="item"><section><h3>{{.Name}} history</h3><p>{{.History}}</p></section></div>{{end}}
+    </div>{{with .Room}}<p class="note">{{.}}</p>{{end}}{{end}}
+  </section></div>
+{{end}}
 
 {{/* THE APPS PAGE: what runs, then what could, then what the catalog lists and cannot install
      yet. Before the host has read the catalog, only the first. */}}

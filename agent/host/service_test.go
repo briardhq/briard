@@ -29,6 +29,7 @@ import (
 	"briard.io/agent/quadlet"
 	"briard.io/agent/services"
 	"briard.io/shared/api"
+	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
 	"briard.io/shared/notify"
@@ -2317,5 +2318,39 @@ func TestRestoreOntoANodeWithoutTheAppSaysWhatItLeft(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(f.steps, ","), "restore:") {
 		t.Errorf("the data was swapped after the undo failed: %v", f.steps)
+	}
+}
+
+// usageGuest is a guest that measures apps: the answer it gives, and the app it was asked about.
+type usageGuest struct {
+	old   bool
+	usage dashboard.AppUsage
+	asked string
+}
+
+func (g *usageGuest) Usage(_ context.Context, app string) (dashboard.AppUsage, error) {
+	g.asked = app
+	return g.usage, nil
+}
+func (g *usageGuest) SupportsUsage() bool { return !g.old }
+
+// THE STORAGE CARD'S READ: the app page may ask it, the cloud may not, and the guest's answer is
+// relayed whole; a guest too old to measure is told so without being asked.
+func TestTheAppPageMayAskWhatAnAppStores(t *testing.T) {
+	if !guestMayAsk(api.Directive{Kind: api.DirectiveServiceUsage}) || !localOnlyKinds[api.DirectiveServiceUsage] {
+		t.Fatal("service-usage is not the page's to ask, or the cloud may ask it")
+	}
+	g := &usageGuest{usage: dashboard.AppUsage{Service: &dashboard.TierUsage{Total: 3e9, Cap: 4e10, Members: 3, Measured: true, Current: 2e9, Files: 5e9, History: 1e9}, Measuring: true}}
+	o := Config{}.applyServiceUsage(context.Background(), g, api.Directive{ID: "d", Kind: api.DirectiveServiceUsage, Payload: "immich"})
+	var got dashboard.AppUsage
+	if o.State != api.OutcomeDone || json.Unmarshal([]byte(o.Detail), &got) != nil || g.asked != "immich" {
+		t.Fatalf("outcome %+v, asked %q", o, g.asked)
+	}
+	if !got.Measuring || got.User != nil || *got.Service != *g.usage.Service {
+		t.Errorf("relayed %+v, want %+v", got, g.usage)
+	}
+	old := &usageGuest{old: true}
+	if o := (Config{}).applyServiceUsage(context.Background(), old, api.Directive{ID: "d", Payload: "immich"}); o.State != api.OutcomeFailed || old.asked != "" {
+		t.Errorf("a guest too old to measure: %+v, asked %q", o, old.asked)
 	}
 }

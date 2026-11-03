@@ -277,6 +277,10 @@ const (
 	// first. It is what the picker reads, and it is a verb rather than a directory the
 	// host could stat because only the guest has the volume mounted.
 	verbDataMembers = "data.members"
+	// data.usage answers one app's share of the volume per tier (appusage.go): its group's total,
+	// cap and history count fresh, and the split between its current data and its history from
+	// the last walk -- starting one in the background when that is stale. A read for the app's page.
+	verbDataUsage = "data.usage"
 	// data.backup STARTS a backup of the newest member of every service into the repository the
 	// request names (backup.go) and answers whether it did; data.backup.result answers whether one
 	// is running and hands over a finished one's report once. The recorder check's two-verb shape:
@@ -454,7 +458,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
 	verbUserTick, verbUserTickResult,
-	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataBackupList, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
+	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataUsage, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataBackupList, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
@@ -494,6 +498,8 @@ var besideActs = map[string]bool{
 	// started in the background like the backup, whose shape it shares: the start returns at once,
 	// and what the tick writes (the user ring, the user tier's limit) no act touches
 	verbUserTick: true, verbUserTickResult: true,
+	// a read that may start its walk in the background, the same way
+	verbDataUsage: true,
 	// pushes
 	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true, verbDashboardBackup: true,
 	verbDashboardCatalog: true,
@@ -1211,6 +1217,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return listMembers(ctx, x, req.Service)
+		case verbDataUsage:
+			var req serviceRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return appUsage(ctx, x, req.Service, time.Now())
 		case verbImageRemove:
 			var req serviceWarmRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -3725,3 +3737,14 @@ func (g *Client) Members(ctx context.Context, service string) ([]quadlet.Snapsho
 
 // SupportsMembers reports whether this guest can list a service's ring.
 func (g *Client) SupportsMembers() bool { return g.Supports(verbDataMembers) }
+
+// Usage answers one app's share of the volume, starting a walk of its current data when the last
+// one is stale.
+func (g *Client) Usage(ctx context.Context, app string) (dashboard.AppUsage, error) {
+	var u dashboard.AppUsage
+	err := g.c.Call(ctx, verbDataUsage, serviceRequest{Service: app}, &u)
+	return u, err
+}
+
+// SupportsUsage reports whether this guest can measure an app's share of the volume.
+func (g *Client) SupportsUsage() bool { return g.Supports(verbDataUsage) }

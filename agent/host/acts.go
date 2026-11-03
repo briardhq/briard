@@ -98,6 +98,7 @@ var (
 	offLoopPulls = map[string]bool{
 		api.DirectiveDoctor:         true,
 		api.DirectiveServiceMembers: true,
+		api.DirectiveServiceUsage:   true, // answers at once; the walk is the guest's background
 		api.DirectiveBackupList:     true, // restic reads the repository: seconds
 		// `briard backup` waits on the scheduler's run, minutes to an hour: off the loop, and holding
 		// no act's turn -- the run is the scheduler's, in the guest's background, as at 02:00.

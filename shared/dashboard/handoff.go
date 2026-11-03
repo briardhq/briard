@@ -306,3 +306,26 @@ type BackupApp struct {
 	Version string    `json:"version,omitempty"`
 	TakenAt time.Time `json:"takenAt"`
 }
+
+// AppUsage is one app's share of the volume, as its page's Storage card shows it: the guest
+// measures it (data.usage), the host relays it (api.DirectiveServiceUsage). A tier is nil when
+// the app has no group in it.
+type AppUsage struct {
+	Service *TierUsage `json:"service,omitempty"`
+	User    *TierUsage `json:"user,omitempty"`
+	// Measuring: a walk this answer waits on is running, or waits for another app's to end.
+	Measuring bool `json:"measuring,omitempty"`
+}
+
+// TierUsage is one app in one tier. Bytes throughout.
+type TierUsage struct {
+	Total   int64 `json:"total"`   // the app's group: its current data and its history, on disk
+	Cap     int64 `json:"cap"`     // the group's limit, -1 for none
+	Members int   `json:"members"` // the history's ring members
+	// Measured: a walk of the current data has finished. Current is that data on disk, Files its
+	// bytes before compression, History the group less Current.
+	Measured bool  `json:"measured,omitempty"`
+	Current  int64 `json:"current,omitempty"`
+	Files    int64 `json:"files,omitempty"`
+	History  int64 `json:"history,omitempty"`
+}

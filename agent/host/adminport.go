@@ -33,6 +33,9 @@ import (
 
 // guestMayAsk is the allowlist: the directives whose effect stays inside the guest.
 //
+// service-usage joins service-members for the app page's Storage card: a read of what one app
+// keeps on this node, whose walk the guest runs in its own background.
+//
 // service-restore joins them: its effect is one service's data and code on this node,
 // the same blast radius an install already has, and the picker that asks for it is the dashboard
 // behind the same door.
@@ -58,7 +61,7 @@ import (
 func guestMayAsk(d api.Directive) bool {
 	switch d.Kind {
 	case api.DirectiveServiceInstall, api.DirectiveServicePrewarm, api.DirectiveServiceRestore,
-		api.DirectiveServiceMembers,
+		api.DirectiveServiceMembers, api.DirectiveServiceUsage, // the app page's History and Storage
 		api.DirectiveBackupRestore, api.DirectiveBackupList, // the Backup page's restore
 		api.DirectiveBackupNow, api.DirectiveBackupFolder, // its Back up now, and its Change
 		api.DirectiveCasaClaim,   // a name for this household, asked from its own page

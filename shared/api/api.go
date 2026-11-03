@@ -393,6 +393,13 @@ const (
 	//                        directive channel for one query, and two ways to ask a node something
 	//                        is how they drift. Both readers want structure: the CLI prints a
 	//                        table, the dashboard renders a list.
+	DirectiveServiceUsage = "service-usage" // Payload = a SERVICE NAME. Outcome.Detail is a JSON
+	//                        dashboard.AppUsage: what the app's data and history hold on the
+	//                        volume, per tier, for its page's Storage card. Read-only; the split
+	//                        between current data and history comes from a walk the guest runs in
+	//                        its background when the last one is stale, so the first answer may
+	//                        say it is still measuring. Local-only: what a household stores is the
+	//                        household's to see.
 	DirectiveServiceRestore = "service-restore" // Payload = a RING MEMBER's subvolume path
 	//                        exactly as the listing the picker read returned it. The
 	//                        node puts that service back to the member: its data, and — when the

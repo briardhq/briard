@@ -361,6 +361,9 @@ let
           pkgs.systemd # systemctl, for service.* / reactor.* / os.*
           pkgs.coreutils # readlink, for os.system
           pkgs.btrfs-progs # btrfs for data.member/restore, mkfs.btrfs for the one-time format
+          # compsize, for data.usage: an app's current data on disk, each extent once -- what du
+          # cannot say on a compressed btrfs, where it reports the bytes before compression
+          pkgs.compsize
           pkgs.iproute2 # ip, for net.configure (the system/DRBD NIC)
           pkgs.lvm2.bin # dmsetup, for the storage-seam telemetry
           pkgs.util-linux # blockdev, for storage.grow: the state disk's size as the kernel sees it

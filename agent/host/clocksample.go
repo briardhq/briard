@@ -325,13 +325,13 @@ func recorderAlert(node, why string, from time.Time, loc *time.Location) notify.
 	}
 }
 
-// THE USER TIER'S TICK, every ten minutes on the node that holds the volume: the user ring's
+// THE USER TIER'S TICK, every five minutes on the node that holds the volume: the user ring's
 // hourly members where due, their retention, the allocation rule's cap and its valve
 // (agent/guestagent/userring.go). It ACTS -- the cap moves as services grow, and the valve makes
 // room before an upload meets EDQUOT -- which is what earns it a cadence. Started in the guest's
 // background and collected over later cycles, like the recorder check: the valve waits on the
 // btrfs cleaner, and nothing here may wait with it.
-const userTickEvery = 10 * time.Minute
+const userTickEvery = 5 * time.Minute
 
 // userTicker is the slice of the guest the tick costs.
 type userTicker interface {
@@ -387,7 +387,7 @@ func (cfg Config) collectUserTick(ctx context.Context, g userTicker, u *userTick
 	}
 	u.waiting = false
 	rep := *s.Report
-	// One line a tick, six an hour: what the cap is and what the tick did is the trail a full disk is read back from.
+	// One line a tick, twelve an hour: what the cap is and what the tick did is the trail a full disk is read back from.
 	logf("user tier: cap=%d free=%d target=%d slack=%d took=%d pruned=%d shed=%d short=%t errors=%q",
 		rep.UserCap, rep.UserFree, rep.Target, rep.Slack, len(rep.Taken), len(rep.Pruned), len(rep.Shed), rep.Short, rep.Errors)
 	if rep.Volume == 0 {

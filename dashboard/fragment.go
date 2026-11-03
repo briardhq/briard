@@ -94,6 +94,14 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 		}
 		hv := a.history(ctx, name)
 		tmpl, data, moving = "history-card", hv, hv.Refresh
+	case "storage":
+		// ALWAYS ANSWERED, as the backups below: the card loads itself once, and then polls only
+		// while the guest is still measuring.
+		if !a.knows(name) {
+			http.NotFound(w, r)
+			return
+		}
+		tmpl, data, moving = "storage-card", a.storage(ctx, name), true
 	case "backups":
 		// ALWAYS ANSWERED, unlike the parts above: the card loads itself once, and then polls only
 		// while a restore runs (its template says so), so a still card is a list, not an ending.
