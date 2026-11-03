@@ -12,7 +12,8 @@
 # labelled with the manifest it was written under, which is what the host's restore then puts
 # back exactly as it puts back any member -- and that a folder holding a backup under another key
 # is named as such rather than written, and is this household's to write once that key has added
-# ours.
+# ours -- and that the household's files go in as a snapshot of their own, tagged and on their own
+# path, which a "latest" restore of an app passes over and the next night builds on.
 #
 # Agent-less, as every rig that runs a service is: `briard-guest-agent --backup` runs the guest's
 # backup in line (the product starts it through the host's verb, in the background), and
@@ -195,5 +196,45 @@ pkgs.testers.runNixOSTest {
     # Both keys open it now: ours (the night above wrote under it) and the earlier household's.
     assert len(json.loads(node1.succeed("RESTIC_PASSWORD=earlier-key restic --no-cache -r '${folder2}' snapshots --json"))) == 1, "the earlier key no longer opens the adopted folder"
     assert len(json.loads(plain("snapshots --json", repo="'${folder2}'"))) == 1, "the volume's key does not open the adopted folder"
+
+    # ---- the household's files: a snapshot of their own, after the apps' ----
+    # The app's user area as a product install makes it -- this rig installs the fixture by hand,
+    # without one -- born into the app's user group, with 3 MiB of the household's own in it, and a
+    # member of its ring as the hourly tick takes one: read-only, into the same group.
+    import hashlib
+    app, area = "${fixture.name}", "/var/lib/briard/user/${fixture.name}"
+    ugroup = f"1/{2 << 40 | int.from_bytes(hashlib.sha256(app.encode()).digest()[:5], 'big')}"
+    node1.succeed(f"btrfs qgroup create {ugroup} /var/lib/briard && mkdir -p /var/lib/briard/user && btrfs subvolume create -i {ugroup} {area}")
+    node1.succeed(f"head -c 3M /dev/urandom > {area}/photo.jpg && echo mine > {area}/note.txt && sync -f {area}")
+    def user_member():
+        time.sleep(1)  # a member's name carries its second
+        stamp = node1.succeed("date -u +%Y%m%dT%H%M%SZ").strip()
+        node1.succeed(f"mkdir -p /var/lib/briard/user/.snapshots && btrfs subvolume snapshot -r -i {ugroup} {area} /var/lib/briard/user/.snapshots/{app}-clock-{stamp} && sync -f /var/lib/briard")
+    user_member()
+    files = backup()
+    assert files.get("userSnapshot") and files.get("userAreas") == [app], f"the files were not backed up: {files}"
+    snaps = json.loads(plain("snapshots --json", repo="'${folder2}'"))
+    usnap = next(s for s in snaps if s["id"].startswith(files["userSnapshot"]))
+    assert usnap.get("tags") == ["user"] and usnap["paths"] == ["/run/briard/backup-user"], f"the files' snapshot: {usnap}"
+    listed = plain(f"ls {usnap['id']}", repo="'${folder2}'").split()
+    assert f"/run/briard/backup-user/user/{app}/photo.jpg" in listed, f"the files' snapshot holds {listed}"
+    asnap = next(s for s in snaps if s["id"].startswith(files["snapshot"]))
+    assert not asnap.get("tags") and asnap["paths"] == ["/run/briard/backup"], f"the apps' snapshot: {asnap}"
+    node1.fail(f"findmnt /run/briard/backup-user/user/{app}")
+    # The folder's README, followed by hand: one command brings back the apps' data, the other the files.
+    plain("restore latest --path /run/briard/backup --target /tmp/readme-apps", repo="'${folder2}'")
+    node1.succeed(f"test -s /tmp/readme-apps/run/briard/backup/services/{app}/${fixture.container}/payload.txt")
+    plain("restore latest --tag user --target /tmp/readme-files", repo="'${folder2}'")
+    node1.succeed(f"cmp {area}/photo.jpg /tmp/readme-files/run/briard/backup-user/user/{app}/photo.jpg")
+    # "latest" is the newest APP snapshot, though the files' is newer: the restore gets the app's
+    # data as that snapshot holds it.
+    member = node1.succeed(f"briard-guest-agent --backup-restore=${url} -service {app} -snapshot latest").strip()
+    got = node1.succeed(f"cat {member}/${fixture.container}/payload.txt").strip()
+    want = plain(f"dump {asnap['id']} /run/briard/backup/services/{app}/${fixture.container}/payload.txt", repo="'${folder2}'").strip()
+    assert got == want, f"a latest restore holds {got!r}, the newest app night {want!r}"
+    # The next night finds last night's files as its parent, on their own path: nothing re-sent.
+    user_member()
+    again = backup()
+    assert again.get("userSnapshot") and again["bytesAdded"] < 1 << 20, f"the second night re-sent the files: {files} then {again}"
   '';
 }

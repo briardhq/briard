@@ -61,19 +61,23 @@ type backupStore struct {
 // get the files out with no Briard anywhere.
 const backupReadme = `This folder holds the encrypted nightly backups of a Briard home server.
 
-Every night Briard copies the apps' data into it. It is a standard restic
-repository (https://restic.net), and only the recovery key opens it: the key
-shown in the Backup section of the Briard dashboard. Whoever holds this folder
-and that key holds everything in it; without the key it cannot be read.
+Every night Briard copies the apps' data into it, and then your own files in
+the apps (photos, media, documents) as a backup of their own. It is a standard
+restic repository (https://restic.net), and only the recovery key opens it: the
+key shown in the Backup section of the Briard dashboard. Whoever holds this
+folder and that key holds everything in it; without the key it cannot be read.
 
 To get the files back on any computer, without Briard:
 
   1. Install restic.
-  2. Run, with the path of this folder and a folder to put the files in:
+  2. Run, with the path of this folder and a folder to put the files in, one or
+     both of:
 
-       restic -r "/path/to/Briard Backup" restore latest --target ~/briard-restore
+       restic -r "/path/to/Briard Backup" restore latest --path /run/briard/backup --target ~/briard-restore
+       restic -r "/path/to/Briard Backup" restore latest --tag user --target ~/briard-restore
 
-     and type the recovery key when it asks for the password.
+     the first for the apps' data, the second for your files, and type the
+     recovery key when it asks for the password.
 
 Deleting this folder deletes the backups. Briard never deletes it.
 `

@@ -692,3 +692,129 @@ func TestTheListKeepsABackupItCannotReadInto(t *testing.T) {
 		t.Fatalf("list = %+v, err %v; want the one backup, with no apps", list, err)
 	}
 }
+
+// filesRig is backupRig with home-assistant's user area holding 5 MB and mosquitto's empty, both
+// with a ring (the rig's listing answers every directory with the same members, so each app's
+// clock members stand for its user ring too); restic's backup of the files answers userErr.
+func filesRig(userErr error) (*fakeExec, string) {
+	user := `{"message_type":"summary","total_files_processed":7,"data_added":5000,"snapshot_id":"fff999"}`
+	f, _ := backupRig(map[string]func() ([]byte, error){
+		"backup": func() ([]byte, error) { return []byte(resticSummary), nil },
+	})
+	f.qgroups = map[string][]string{"0/5": nil, tierQgroup(tierUser): nil}
+	f.qgroups[appQgroup(tierUser, "home-assistant")] = []string{tierQgroup(tierUser)}
+	f.qgroups[appQgroup(tierUser, "mosquitto")] = []string{tierQgroup(tierUser)}
+	f.qused = map[string]int64{appQgroup(tierUser, "home-assistant"): 5e6, appQgroup(tierUser, "mosquitto"): 35 * 16384}
+	inner := f.runFn
+	f.runFn = func(n string, args []string) ([]byte, error) {
+		if n == "restic" && slices.Contains(args, "--tag") {
+			return []byte(user), userErr
+		}
+		return inner(n, args)
+	}
+	var newest string
+	for _, m := range userRing(context.Background(), f) {
+		if m.app == "home-assistant" && (newest == "" || m.path > newest) {
+			newest = m.path
+		}
+	}
+	return f, newest
+}
+
+// THE HOUSEHOLD'S FILES ARE A SNAPSHOT OF THEIR OWN, after the apps': the newest member of every
+// user area that holds something, bind-mounted read-only under its own root, backed up tagged and
+// on that root alone, unmounted after; an empty area is left out; one forget, after both, applies
+// the policy to each group; the report counts both.
+func TestTheHouseholdsFilesAreASnapshotOfTheirOwn(t *testing.T) {
+	f, member := filesRig(nil)
+	if !strings.HasPrefix(member, userSnapshots()+"/home-assistant-clock-") {
+		t.Fatalf("the rig's newest user member is %q", member)
+	}
+	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://10.0.0.129:7791/", Group: "f1d"})
+	if rep.Error != "" || rep.Snapshot != "abc123" || rep.UserSnapshot != "fff999" || !slices.Equal(rep.UserAreas, []string{"home-assistant"}) {
+		t.Fatalf("report %+v", rep)
+	}
+	if rep.Files != 42+7 || rep.BytesAdded != 1234+5000 {
+		t.Errorf("the report counts %d files, %d bytes; want both snapshots'", rep.Files, rep.BytesAdded)
+	}
+	b := resticRuns(f, "backup")
+	if len(b) != 2 {
+		t.Fatalf("restic backup ran %d times, want the apps' and the files'", len(b))
+	}
+	if slices.Contains(b[0], "--tag") || b[0][len(b[0])-1] != backupRoot {
+		t.Errorf("the first backup is not the apps': %v", b[0])
+	}
+	files := strings.Join(b[1], " ")
+	if !strings.Contains(files, "--host f1d --tag user "+backupUser) || strings.HasSuffix(files, backupRoot) || strings.Contains(files, "app/backups") {
+		t.Errorf("the files' backup %q", files)
+	}
+	p := backupUser + "/user/home-assistant"
+	userBackup := step(f, func(r []string) bool { return r[0] == "restic" && slices.Contains(r, "--tag") })
+	at := runIndex(f, 0, "mount", "-o", "bind,ro", member, p)
+	if at < 0 || at > userBackup || runIndex(f, userBackup, "umount", p) < 0 {
+		t.Errorf("%s not mounted at %s before the files' backup and unmounted after: %v", member, p, f.runs)
+	}
+	for _, r := range f.runs {
+		if slices.Contains(r, backupUser+"/user/mosquitto") {
+			t.Errorf("an empty user area was backed up: %v", r)
+		}
+	}
+	fg := resticRuns(f, "forget")
+	if len(fg) != 1 || step(f, func(r []string) bool { return r[0] == "restic" && slices.Contains(r, "forget") }) < userBackup {
+		t.Errorf("forget %v, want once, after both backups", fg)
+	}
+}
+
+// A FAILED FILES' SNAPSHOT IS THE NIGHT'S ERROR, and the apps' snapshot stands: it landed first.
+func TestAFailedFilesSnapshotKeepsTheAppsBackup(t *testing.T) {
+	f, _ := filesRig(errors.New("exit status 1"))
+	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://10.0.0.129:7791/", Group: "f1d"})
+	if rep.Snapshot != "abc123" || !strings.Contains(rep.Error, "your files:") {
+		t.Fatalf("report %+v; want the apps' snapshot and the files' error", rep)
+	}
+	if len(resticRuns(f, "forget")) != 1 {
+		t.Error("the retention did not run after a failed files' snapshot")
+	}
+	files := step(f, func(r []string) bool { return r[0] == "restic" && slices.Contains(r, "--tag") })
+	if files < 0 || runIndex(f, files, "umount", backupUser+"/user/home-assistant") < 0 {
+		t.Error("the files' mount was left after their snapshot failed")
+	}
+}
+
+// THE LIST AND "LATEST" ARE THE APPS': the files' snapshots are not backups the page restores an
+// app from, and the newest of them is newer than any app's every night.
+func TestTheFilesSnapshotsAreNotAppBackups(t *testing.T) {
+	f, _ := backupRig(map[string]func() ([]byte, error){
+		"snapshots": func() ([]byte, error) {
+			return []byte(`[{"id":"aaaa1111","time":"2026-10-29T09:00:00Z","hostname":"f1d"},` +
+				`{"id":"ffff9999","time":"2026-10-29T09:05:00Z","hostname":"f1d","tags":["user"]}]`), nil
+		},
+		"dump": func() ([]byte, error) { return sidecarTar(t), nil },
+	})
+	list, err := listBackups(context.Background(), f, backupListRequest{Repository: "http://h/", Group: "f1d"})
+	if err != nil || len(list) != 1 || list[0].ID != "aaaa1111" {
+		t.Fatalf("list %+v (%v); want the apps' snapshot alone", list, err)
+	}
+
+	for _, snapshot := range []string{"latest", "abc12345"} {
+		side, _ := json.Marshal(quadlet.SnapshotMeta{Service: "home-assistant", Manifest: `{"name":"home-assistant"}`})
+		f, _ := backupRig(map[string]func() ([]byte, error){"dump": func() ([]byte, error) { return side, nil }})
+		inner := f.runFn
+		f.runFn = func(n string, args []string) ([]byte, error) {
+			if n == "btrfs" && args[1] == "show" {
+				return nil, errors.New("not found")
+			}
+			return inner(n, args)
+		}
+		if _, err := restoreBackupMember(context.Background(), f, backupRestoreRequest{Repository: "http://h/", Snapshot: snapshot, Service: "home-assistant"}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		for _, sub := range []string{"dump", "restore"} {
+			r := resticRuns(f, sub)
+			filtered := len(r) == 1 && strings.Contains(strings.Join(r[0], " "), "--path "+backupRoot)
+			if filtered != (snapshot == "latest") {
+				t.Errorf("%s of %s: %v; want the apps' path filter on latest alone", sub, snapshot, r)
+			}
+		}
+	}
+}

@@ -329,3 +329,8 @@ type TierUsage struct {
 	Files    int64 `json:"files,omitempty"`
 	History  int64 `json:"history,omitempty"`
 }
+
+// UserAreaMin is what a user area must hold, with its history, to count as holding anything:
+// every app has one, and an empty area with a month of its snapshots stays under it. The Storage
+// card does not show an area under it, and the nightly backup leaves it out.
+const UserAreaMin = 1_000_000

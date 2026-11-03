@@ -152,8 +152,12 @@ func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupSc
 		cfg.ended(started, false, "nothing to back up: no app has a snapshot yet")
 		return
 	default:
-		logf("backup: snapshot %s of %s: %d files, %d bytes added", rep.Snapshot, strings.Join(rep.Services, ", "), rep.Files, rep.BytesAdded)
-		cfg.ended(started, false, fmt.Sprintf("backed up %s: %d files, %s added (snapshot %.8s)", strings.Join(rep.Services, ", "), rep.Files, sizeWords(rep.BytesAdded), rep.Snapshot))
+		what := strings.Join(rep.Services, ", ")
+		if len(rep.UserAreas) > 0 {
+			what += " and the files of " + strings.Join(rep.UserAreas, ", ")
+		}
+		logf("backup: snapshot %s of %s (files: %s): %d files, %d bytes added", rep.Snapshot, what, cmp.Or(rep.UserSnapshot, "none"), rep.Files, rep.BytesAdded)
+		cfg.ended(started, false, fmt.Sprintf("backed up %s: %d files, %s added (snapshot %.8s)", what, rep.Files, sizeWords(rep.BytesAdded), rep.Snapshot))
 	}
 	night := dashboard.BackupRun{At: started, Snapshot: rep.Snapshot, BytesAdded: rep.BytesAdded, Size: folderSize(cfg.backupFolder()), WrongKey: rep.WrongKey}
 	if rep.WrongKey {

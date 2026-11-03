@@ -30,9 +30,6 @@ type storageView struct {
 	Room      string // "" when neither tier has a cap
 }
 
-// userShown is what a user area must hold, with its history, before the card shows it.
-const userShown = 1_000_000
-
 // storageTierView is one tier in words: Name is "App" or "User".
 type storageTierView struct {
 	Name, Data, History string
@@ -63,7 +60,7 @@ func (a *app) storage(ctx context.Context, service string) storageView {
 	}{{"App", "its data and history", u.Service}, {"User", "your files and their history", u.User}} {
 		// EVERY APP HAS A USER AREA, empty until it uses it, and an empty one is not shown -- as
 		// it is not exported. An empty area and a month of its snapshots stay under a megabyte.
-		if t.u == nil || t.name == "User" && t.u.Total < userShown {
+		if t.u == nil || t.name == "User" && t.u.Total < dashboard.UserAreaMin {
 			continue
 		}
 		v.Tiers = append(v.Tiers, storageTierView{Name: t.name, Data: dataWords(*t.u, u.Measuring), History: historyWords(*t.u)})

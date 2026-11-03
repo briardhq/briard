@@ -242,7 +242,7 @@ func TestTheStoreLeavesAReadme(t *testing.T) {
 	resp.Body.Close()
 	readme := filepath.Join(s.dir, "README.txt")
 	b, err := os.ReadFile(readme)
-	if err != nil || !strings.Contains(string(b), "restic -r") || !strings.Contains(string(b), "recovery key") {
+	if err != nil || !strings.Contains(string(b), "restore latest --path /run/briard/backup ") || !strings.Contains(string(b), "restore latest --tag user ") || !strings.Contains(string(b), "recovery key") {
 		t.Fatalf("README.txt: %v\n%s", err, b)
 	}
 	// Written as every object is -- a temp beside it, given the owner, renamed -- so a temp in the
