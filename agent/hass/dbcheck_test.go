@@ -92,7 +92,7 @@ func (f *dbFake) state(m Member) string {
 const (
 	answerClean   = `{"check": "ok", "detail": "ok", "schema": 48}`
 	answerCorrupt = `{"check": "corrupt", "detail": "database disk image is malformed"}`
-	liveDir       = "/var/lib/briard/home-assistant/config"
+	liveDir       = "/var/lib/briard/data/home-assistant/config"
 	testImage     = "ghcr.io/home-assistant/home-assistant@sha256:00"
 )
 
@@ -100,7 +100,7 @@ var dbNow = time.Date(2026, 10, 1, 5, 30, 0, 0, time.UTC)
 
 // ringAt is a quiesced member taken `ago` before dbNow.
 func ringAt(name string, ago time.Duration) Member {
-	p := "/var/lib/briard/.snapshots/home-assistant-clock-" + name
+	p := "/var/lib/briard/data/.snapshots/home-assistant-clock-" + name
 	return Member{Path: p, Dir: p + "/config", App: p + ".app.json", At: dbNow.Add(-ago), Quiesced: true}
 }
 
@@ -292,7 +292,7 @@ func TestACheckingLeftByACrashIsCleared(t *testing.T) {
 func TestRestoreDBReplacesTheWalBeforeTheDatabase(t *testing.T) {
 	f := newDBFake()
 	from := ringAt("a", time.Hour).Dir
-	into := "/var/lib/briard/home-assistant.dbrestore/config"
+	into := "/var/lib/briard/data/home-assistant.dbrestore/config"
 	f.files[from+"/"+dbName] = "clean"
 	f.files[from+"/"+dbName+"-wal"] = "frames"
 	f.files[into+"/"+dbName] = "damaged"

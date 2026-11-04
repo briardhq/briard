@@ -27,7 +27,7 @@ func (c *convergeExec) index(argv ...string) int {
 func TestStageWritesTheRollbackPointBeforeTheStagedManifest(t *testing.T) {
 	x := dummyNode(t)
 	g := dial(t, x)
-	if err := g.ServiceStage(context.Background(), "dummy", "/var/lib/briard/dummy", nil, dummyManifestStaged, "/snap/m1"); err != nil {
+	if err := g.ServiceStage(context.Background(), "dummy", "/var/lib/briard/data/dummy", nil, dummyManifestStaged, "/snap/m1"); err != nil {
 		t.Fatal(err)
 	}
 	f := x.fakeExec.files
@@ -56,7 +56,7 @@ func TestStageWithoutARollbackPointRemovesAStaleOne(t *testing.T) {
 	x := dummyNode(t)
 	x.fakeExec.files[rollbackPath("dummy")] = "/snap/old\n"
 	g := dial(t, x)
-	if err := g.ServiceStage(context.Background(), "dummy", "/var/lib/briard/dummy", nil, dummyManifestStaged, ""); err != nil {
+	if err := g.ServiceStage(context.Background(), "dummy", "/var/lib/briard/data/dummy", nil, dummyManifestStaged, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := x.fakeExec.files[rollbackPath("dummy")]; ok {

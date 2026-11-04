@@ -73,10 +73,11 @@ To get the files back on any computer, without Briard:
   2. Run, with the path of this folder and a folder to put the files in, one or
      both of:
 
-       restic -r "/path/to/Briard Backup" restore latest --path /run/briard/backup --target ~/briard-restore
-       restic -r "/path/to/Briard Backup" restore latest --tag user --target ~/briard-restore
+       restic -r "/path/to/Briard Backup" restore latest --tag data --target ~/briard-restore
+       restic -r "/path/to/Briard Backup" restore latest --tag files --target ~/briard-restore
 
-     the first for the apps' data, the second for your files, and type the
+     the first for the apps' data (under run/briard/backup/data), the second
+     for your files (under run/briard/backup/files), and type the
      recovery key when it asks for the password.
 
 Deleting this folder deletes the backups. Briard never deletes it.

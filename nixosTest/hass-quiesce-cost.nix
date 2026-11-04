@@ -87,7 +87,7 @@ pkgs.testers.runNixOSTest {
 
     # The probe's configuration goes in before Home Assistant first reads /config.
     root = node1.succeed("cat /run/briard/fixture/dataroot").strip()
-    node1.succeed(f"btrfs subvolume create {root} && mkdir -p {root}/app && cp ${probeConfig} {root}/app/configuration.yaml")
+    node1.succeed(f"mkdir -p $(dirname {root}) && btrfs subvolume create {root} && mkdir -p {root}/app && cp ${probeConfig} {root}/app/configuration.yaml")
     dataroot = install_fixture(node1)
     node1.wait_until_succeeds("curl -fsS -o /dev/null ${ha}${fixture.healthPath}", timeout=300)
 

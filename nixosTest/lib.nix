@@ -205,7 +205,7 @@ let
         name, which is what an upgrade is. Both go through the product's own converge."""
         d = fixture_dir(service)
         dataroot = m.succeed(f"cat {d}/dataroot").strip()
-        m.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || btrfs subvolume create {dataroot}")
+        m.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || (mkdir -p $(dirname {dataroot}) && btrfs subvolume create {dataroot})")
         for sub in m.succeed(f"cat {d}/subdirs").split():
             m.succeed(f"mkdir -p {dataroot}/{sub}")
         # The service's name IS the last element of its data root -- taken from the renderer

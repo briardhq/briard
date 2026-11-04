@@ -155,7 +155,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed(f"cat > /tmp/manifest.json <<'EOF'\n{manifest}\nEOF")
     node1.succeed("quadlet-render /tmp/manifest.json /tmp/rendered")
     dataroot = node1.succeed("cat /tmp/rendered/dataroot").strip()
-    node1.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || btrfs subvolume create {dataroot}")
+    node1.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || (mkdir -p $(dirname {dataroot}) && btrfs subvolume create {dataroot})")
     for sub in node1.succeed("cat /tmp/rendered/subdirs").split():
         node1.succeed(f"mkdir -p {dataroot}/{sub}")
     # The .image unit's NAME comes from the renderer too -- a name restated here would assert our

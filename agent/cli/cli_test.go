@@ -483,7 +483,7 @@ func TestUpdateDefaultsToStableAndTheOldVerbsAreGone(t *testing.T) {
 // start -- so "undo 3" would act on a different point than the one the operator read. This is
 // the assertion that keeps the safe shape: what the CLI sends is what the operator saw.
 func TestAppUndoNamesThePointExactly(t *testing.T) {
-	const point = "/var/lib/briard/.snapshots/home-assistant-upgrade-20260920T101500Z"
+	const point = "/var/lib/briard/data/.snapshots/home-assistant-upgrade-20260920T101500Z"
 	sock, sent := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: `restored "x", data only`})
 	var out, errb bytes.Buffer
 	if code := runService(context.Background(), []string{"undo", "-sock", sock, point}, &out, &errb); code != 0 {
@@ -505,7 +505,7 @@ func TestAppUndoNamesThePointExactly(t *testing.T) {
 // it does not re-derive titles or times, so there is one place either can be wrong.
 func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
 	entries := []quadlet.SnapshotEntry{{
-		Member: "/var/lib/briard/.snapshots/home-assistant-app-update-before-20260920T101500Z",
+		Member: "/var/lib/briard/data/.snapshots/home-assistant-app-update-before-20260920T101500Z",
 		Meta: quadlet.SnapshotMeta{
 			Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore,
 			TakenAt: time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC),
@@ -533,11 +533,11 @@ func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
 func TestAppHistoryTellsTheTwoKindsOfPointApart(t *testing.T) {
 	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)
 	entries := []quadlet.SnapshotEntry{
-		{Member: "/var/lib/briard/.snapshots/home-assistant-app-update-before-20260920T101500Z",
+		{Member: "/var/lib/briard/data/.snapshots/home-assistant-app-update-before-20260920T101500Z",
 			Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Quiesced, Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonChanged, What: "clean point"}}}}},
-		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260921T101500Z",
+		{Member: "/var/lib/briard/data/.snapshots/home-assistant-start-20260921T101500Z",
 			Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Crash, Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonChanged, What: "nightly point"}}}}},
-		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260922T101500Z",
+		{Member: "/var/lib/briard/data/.snapshots/home-assistant-start-20260922T101500Z",
 			Meta: quadlet.SnapshotMeta{TakenAt: at, Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonChanged, What: "older briard's point"}}}}},
 	}
 	body, _ := json.Marshal(entries)
@@ -577,10 +577,10 @@ func TestAppHistoryOnAnAppWithNoPoints(t *testing.T) {
 func TestAppHistoryShowsEventsNotSamples(t *testing.T) {
 	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)
 	entries := []quadlet.SnapshotEntry{
-		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260920T101500Z",
+		{Member: "/var/lib/briard/data/.snapshots/home-assistant-start-20260920T101500Z",
 			Meta: quadlet.SnapshotMeta{TakenAt: at, Consistency: quadlet.Quiesced,
 				Event: &quadlet.Event{At: at.Add(time.Hour), Reasons: []quadlet.Reason{{Kind: quadlet.ReasonChanged, What: "Changed automations"}}}}},
-		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260920T111500Z",
+		{Member: "/var/lib/briard/data/.snapshots/home-assistant-start-20260920T111500Z",
 			Meta: quadlet.SnapshotMeta{TakenAt: at.Add(time.Hour), Consistency: quadlet.Quiesced}},
 	}
 	body, _ := json.Marshal(entries)
@@ -602,11 +602,11 @@ func TestAppHistoryShowsEventsNotSamples(t *testing.T) {
 // banner a line naming the last healthy state, while the app is unhealthy.
 func TestAppHistoryMarksAnAppThatDidNotStart(t *testing.T) {
 	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)
-	point := "/var/lib/briard/.snapshots/home-assistant-app-update-before-20260920T101500Z"
+	point := "/var/lib/briard/data/.snapshots/home-assistant-app-update-before-20260920T101500Z"
 	entries := []quadlet.SnapshotEntry{
 		{Member: point, Meta: quadlet.SnapshotMeta{Service: "home-assistant", TakenAt: at, Consistency: quadlet.Quiesced,
 			Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonUnhealthy}}}}},
-		{Member: "/var/lib/briard/.snapshots/home-assistant-start-20260920T101600Z",
+		{Member: "/var/lib/briard/data/.snapshots/home-assistant-start-20260920T101600Z",
 			Meta: quadlet.SnapshotMeta{TakenAt: at.Add(time.Minute), Health: services.Unhealthy}},
 	}
 	body, _ := json.Marshal(entries)

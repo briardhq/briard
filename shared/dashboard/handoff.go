@@ -308,29 +308,29 @@ type BackupApp struct {
 }
 
 // AppUsage is one app's share of the volume, as its page's Storage card shows it: the guest
-// measures it (data.usage), the host relays it (api.DirectiveServiceUsage). A tier is nil when
+// measures it (storage.usage), the host relays it (api.DirectiveServiceUsage). A tier is nil when
 // the app has no group in it.
 type AppUsage struct {
-	Service *TierUsage `json:"service,omitempty"`
-	User    *TierUsage `json:"user,omitempty"`
+	Data  *TierUsage `json:"data,omitempty"`
+	Files *TierUsage `json:"files,omitempty"`
 	// Measuring: a walk this answer waits on is running, or waits for another app's to end.
 	Measuring bool `json:"measuring,omitempty"`
 }
 
 // TierUsage is one app in one tier. Bytes throughout.
 type TierUsage struct {
-	Total   int64 `json:"total"`   // the app's group: its current data and its history, on disk
+	Total   int64 `json:"total"`   // the app's group: what is in it now and its history, on disk
 	Cap     int64 `json:"cap"`     // the group's limit, -1 for none
-	Members int   `json:"members"` // the history's ring members
-	// Measured: a walk of the current data has finished. Current is that data on disk, Files its
-	// bytes before compression, History the group less Current.
-	Measured bool  `json:"measured,omitempty"`
-	Current  int64 `json:"current,omitempty"`
-	Files    int64 `json:"files,omitempty"`
-	History  int64 `json:"history,omitempty"`
+	Members int   `json:"members"` // the History's (or the Versions') members
+	// Measured: a walk of the area has finished. Current is what it holds on disk, Uncompressed
+	// its bytes before compression, History the group less Current (the Versions, for files).
+	Measured     bool  `json:"measured,omitempty"`
+	Current      int64 `json:"current,omitempty"`
+	Uncompressed int64 `json:"uncompressed,omitempty"`
+	History      int64 `json:"history,omitempty"`
 }
 
-// UserAreaMin is what a user area must hold, with its history, to count as holding anything:
+// FilesAreaMin is what a files area must hold, with its versions, to count as holding anything:
 // every app has one, and an empty area with a month of its snapshots stays under it. The Storage
 // card does not show an area under it, and the nightly backup leaves it out.
-const UserAreaMin = 1_000_000
+const FilesAreaMin = 1_000_000

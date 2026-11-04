@@ -106,15 +106,15 @@ func TestServiceProvisionCreatesAndRecords(t *testing.T) {
 		return nil, nil
 	}}
 	g := dial(t, f)
-	err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/home-assistant", []string{"ha", "cache"}, `{"name":"home-assistant"}`)
+	err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/data/home-assistant", []string{"ha", "cache"}, `{"name":"home-assistant"}`)
 	if err != nil {
 		t.Fatalf("ServiceProvision: %v", err)
 	}
-	if !ran(f, "btrfs", "subvolume", "create", "-i", appQgroup(tierService, "home-assistant"), "/var/lib/briard/home-assistant") {
+	if !ran(f, "btrfs", "subvolume", "create", "-i", appQgroup(tierData, "home-assistant"), "/var/lib/briard/data/home-assistant") {
 		t.Fatalf("no subvolume create; runs=%v", f.runs)
 	}
 	for _, d := range []string{"ha", "cache"} {
-		if !ran(f, "mkdir", "-p", "/var/lib/briard/home-assistant/"+d) {
+		if !ran(f, "mkdir", "-p", "/var/lib/briard/data/home-assistant/"+d) {
 			t.Fatalf("subdir %s not created; runs=%v", d, f.runs)
 		}
 	}
@@ -134,10 +134,10 @@ func TestServiceProvisionCreatesAndRecords(t *testing.T) {
 func TestServiceProvisionKeepsExistingData(t *testing.T) {
 	f := &fakeExec{output: []byte("Name: \t\thome-assistant\n")} // `subvolume show` succeeds
 	g := dial(t, f)
-	if err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/home-assistant", []string{"ha"}, `{}`); err != nil {
+	if err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/data/home-assistant", []string{"ha"}, `{}`); err != nil {
 		t.Fatalf("ServiceProvision: %v", err)
 	}
-	if ran(f, "btrfs", "subvolume", "create", "/var/lib/briard/home-assistant") {
+	if ran(f, "btrfs", "subvolume", "create", "/var/lib/briard/data/home-assistant") {
 		t.Fatalf("re-created an existing subvolume — the service's data would be gone; runs=%v", f.runs)
 	}
 }
@@ -147,7 +147,7 @@ func TestServiceProvisionRefusesIncomplete(t *testing.T) {
 	if err := g.ServiceProvision(context.Background(), "x", "", nil, `{}`); err == nil {
 		t.Fatal("accepted an empty data dir")
 	}
-	if err := g.ServiceProvision(context.Background(), "x", "/var/lib/briard/x", nil, ""); err == nil {
+	if err := g.ServiceProvision(context.Background(), "x", "/var/lib/briard/data/x", nil, ""); err == nil {
 		t.Fatal("accepted an empty manifest")
 	}
 }
@@ -259,7 +259,7 @@ func TestServiceProvisionRecordsPerService(t *testing.T) {
 		{"home-assistant", `{"name":"home-assistant"}`},
 		{"mosquitto", `{"name":"mosquitto"}`},
 	} {
-		if err := g.ServiceProvision(context.Background(), s.name, "/var/lib/briard/"+s.name, nil, s.body); err != nil {
+		if err := g.ServiceProvision(context.Background(), s.name, "/var/lib/briard/data/"+s.name, nil, s.body); err != nil {
 			t.Fatalf("ServiceProvision(%s): %v", s.name, err)
 		}
 	}
@@ -281,7 +281,7 @@ func TestServiceProvisionRecordsPerService(t *testing.T) {
 // trusting the host to have validated its own input.
 func TestServiceVerbsRefuseAnEscapingName(t *testing.T) {
 	g := dial(t, &fakeExec{})
-	if err := g.ServiceProvision(context.Background(), "../../etc/x", "/var/lib/briard/x", nil, `{}`); err == nil {
+	if err := g.ServiceProvision(context.Background(), "../../etc/x", "/var/lib/briard/data/x", nil, `{}`); err == nil {
 		t.Error("service.provision accepted a name that escapes the manifest directory")
 	}
 	if _, err := g.ServiceInstalled(context.Background(), "../../etc/passwd"); err == nil {

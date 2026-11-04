@@ -175,7 +175,7 @@ pkgs.testers.runNixOSTest {
     # THE INSTALL: HA's manifest onto the volume, then the product's own converge renders it,
     # warms it (already resident) and starts it.
     dataroot = install_fixture(node1)
-    assert dataroot == "/var/lib/briard/home-assistant", f"the renderer chose {dataroot}"
+    assert dataroot == "/var/lib/briard/data/home-assistant", f"the renderer chose {dataroot}"
     # The broker, for the zeroconf claim at the bottom. Installed through the same converge as HA.
     install_fixture(node1, service="${mosquitto.name}")
 
@@ -237,17 +237,17 @@ pkgs.testers.runNixOSTest {
     assert tok_perms == "600", f"the inbound token is mode {tok_perms}; it is what identifies a caller"
 
     members = node1.succeed(
-        "ls -1 /var/lib/briard/.snapshots | grep '^home-assistant-start-' || true"
+        "ls -1 /var/lib/briard/data/.snapshots | grep '^home-assistant-start-' || true"
     ).split()
     assert members, (
         "Home Assistant started and no ring member was taken:\n"
-        + node1.succeed("ls -la /var/lib/briard/.snapshots || true")
+        + node1.succeed("ls -la /var/lib/briard/data/.snapshots || true")
         + node1.succeed("systemctl status briard-test-inbound --no-pager -l || true")
     )
     member = members[0]
     # A real read-only subvolume, not a copied directory.
-    node1.succeed(f"btrfs subvolume show /var/lib/briard/.snapshots/{member} >/dev/null")
-    ro = node1.succeed(f"btrfs property get -ts /var/lib/briard/.snapshots/{member} ro").strip()
+    node1.succeed(f"btrfs subvolume show /var/lib/briard/data/.snapshots/{member} >/dev/null")
+    ro = node1.succeed(f"btrfs property get -ts /var/lib/briard/data/.snapshots/{member} ro").strip()
     assert ro == "ro=true", f"the member is writable ({ro}); a rollback point must not be"
 
     # EVERY MEMBER HAS A SIDECAR, and it carries the manifest the service was running -- which is
@@ -255,7 +255,7 @@ pkgs.testers.runNixOSTest {
     # sibling of the data subvolume the snapshot copies.
     import json as _sj
 
-    sidecar = _sj.loads(node1.succeed(f"cat /var/lib/briard/.snapshots/{member}.json"))
+    sidecar = _sj.loads(node1.succeed(f"cat /var/lib/briard/data/.snapshots/{member}.json"))
     assert sidecar["service"] == "home-assistant", sidecar
     assert sidecar["trigger"] == "start", sidecar
 
@@ -267,10 +267,10 @@ pkgs.testers.runNixOSTest {
     # The HEALTH match is what makes this fail when the evaluator does not run: only it writes one,
     # and a missing sidecar fails the first grep rather than passing the negated second.
     node1.wait_until_succeeds(
-        "f=$(ls -1 /var/lib/briard/.snapshots | grep '^home-assistant-start-' | grep -v '[.]json$' | tail -n1)"
+        "f=$(ls -1 /var/lib/briard/data/.snapshots | grep '^home-assistant-start-' | grep -v '[.]json$' | tail -n1)"
         " && test -n \"$f\""
-        " && grep -q '\"health\":\"healthy\"' \"/var/lib/briard/.snapshots/$f.json\""
-        " && ! grep -q '\"pending\":true' \"/var/lib/briard/.snapshots/$f.json\"",
+        " && grep -q '\"health\":\"healthy\"' \"/var/lib/briard/data/.snapshots/$f.json\""
+        " && ! grep -q '\"pending\":true' \"/var/lib/briard/data/.snapshots/$f.json\"",
         timeout=420,
     )
 
@@ -331,14 +331,14 @@ pkgs.testers.runNixOSTest {
     # under it is the product's own path.
     node1.succeed("briard-guest-agent --clock=home-assistant")
     nightlies = node1.succeed(
-        "ls -1 /var/lib/briard/.snapshots | grep '^home-assistant-clock-' || true"
+        "ls -1 /var/lib/briard/data/.snapshots | grep '^home-assistant-clock-' || true"
     ).split()
     assert nightlies, (
         "the clock sample took no member:\n"
         + node1.succeed("journalctl -t briard-guest-agent --no-pager -l | tail -40 || true")
     )
     nightly = nightlies[0]
-    nightly_meta = _sj.loads(node1.succeed(f"cat /var/lib/briard/.snapshots/{nightly}.json"))
+    nightly_meta = _sj.loads(node1.succeed(f"cat /var/lib/briard/data/.snapshots/{nightly}.json"))
     assert nightly_meta["trigger"] == "clock", nightly_meta
     # THE CLAIM, and it is the guest's to make: the host renders `crash`, and only the code that
     # watched Home Assistant hold still upgrades it. `quiesced` here means the view answered, the

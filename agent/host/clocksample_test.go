@@ -352,15 +352,15 @@ func TestALongCheckIsWaitedFor(t *testing.T) {
 	}
 }
 
-// fakeUserTick is a guest's user tier tick: started in the background, its report handed over
+// fakeFilesTick is a guest's files tier tick: started in the background, its report handed over
 // once it is done.
-type fakeUserTick struct {
+type fakeFilesTick struct {
 	starts  int
 	running bool
-	report  *guestagent.UserTickReport
+	report  *guestagent.FilesTickReport
 }
 
-func (f *fakeUserTick) UserTick(context.Context) (bool, error) {
+func (f *fakeFilesTick) FilesTick(context.Context) (bool, error) {
 	if f.running || f.report != nil {
 		return false, nil
 	}
@@ -369,65 +369,65 @@ func (f *fakeUserTick) UserTick(context.Context) (bool, error) {
 	return true, nil
 }
 
-func (f *fakeUserTick) UserTickResult(context.Context) (guestagent.UserTickState, error) {
-	s := guestagent.UserTickState{Running: f.running, Report: f.report}
+func (f *fakeFilesTick) FilesTickResult(context.Context) (guestagent.FilesTickState, error) {
+	s := guestagent.FilesTickState{Running: f.running, Report: f.report}
 	f.report = nil
 	return s, nil
 }
 
-func (f *fakeUserTick) SupportsUserTick() bool { return true }
+func (f *fakeFilesTick) SupportsFilesTick() bool { return true }
 
 // finish ends the running tick with this report.
-func (f *fakeUserTick) finish(r guestagent.UserTickReport) { f.running, f.report = false, &r }
+func (f *fakeFilesTick) finish(r guestagent.FilesTickReport) { f.running, f.report = false, &r }
 
 // EVERY FIVE MINUTES, ON THE NODE THAT HOLDS THE VOLUME, AND NEVER WAITED FOR: the loop starts a
 // tick, keeps cycling while it runs, collects its report, and starts the next one five minutes
 // after the last began.
 func TestTheUserTickRunsEveryFiveMinutesAndIsNeverWaitedFor(t *testing.T) {
-	cfg, g, u, n := Config{Node: "n1"}, &fakeUserTick{}, &userTickScheduler{}, &fakeNotifier{}
+	cfg, g, u, n := Config{Node: "n1"}, &fakeFilesTick{}, &filesTickScheduler{}, &fakeNotifier{}
 	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
-	cfg.tickUser(context.Background(), g, u, false, at, n, t.Logf)
+	cfg.tickFiles(context.Background(), g, u, false, at, n, t.Logf)
 	if g.starts != 0 {
 		t.Fatal("a node that does not hold the volume started a tick")
 	}
-	cfg.tickUser(context.Background(), g, u, true, at, n, t.Logf)
-	cfg.tickUser(context.Background(), g, u, true, at.Add(5*time.Second), n, t.Logf) // still running
+	cfg.tickFiles(context.Background(), g, u, true, at, n, t.Logf)
+	cfg.tickFiles(context.Background(), g, u, true, at.Add(5*time.Second), n, t.Logf) // still running
 	if g.starts != 1 || len(n.alerts) != 0 {
 		t.Fatalf("starts %d alerts %v", g.starts, n.alerts)
 	}
-	g.finish(guestagent.UserTickReport{Volume: 100e9, UserCap: 86e9, UserFree: 80e9, Target: 4e9})
-	cfg.tickUser(context.Background(), g, u, true, at.Add(10*time.Second), n, t.Logf)
+	g.finish(guestagent.FilesTickReport{Volume: 100e9, FilesCap: 86e9, FilesFree: 80e9, Target: 4e9})
+	cfg.tickFiles(context.Background(), g, u, true, at.Add(10*time.Second), n, t.Logf)
 	if len(n.alerts) != 1 || n.alerts[0].Kind != notify.Resolved {
 		t.Fatalf("a tick with room did not assert the condition resolved: %v", n.alerts)
 	}
-	cfg.tickUser(context.Background(), g, u, true, at.Add(4*time.Minute), n, t.Logf)
+	cfg.tickFiles(context.Background(), g, u, true, at.Add(4*time.Minute), n, t.Logf)
 	if g.starts != 1 {
 		t.Error("a tick started before five minutes had passed")
 	}
-	cfg.tickUser(context.Background(), g, u, true, at.Add(5*time.Minute), n, t.Logf)
+	cfg.tickFiles(context.Background(), g, u, true, at.Add(5*time.Minute), n, t.Logf)
 	if g.starts != 2 {
 		t.Error("no tick five minutes after the last")
 	}
 }
 
 // SHORT REACHES THE HOUSEHOLD, as an open condition with the free space in it; a tick that
-// measured nothing (no app has a user area yet) says nothing either way.
+// measured nothing (no app has a files area yet) says nothing either way.
 func TestAShortUserTierReachesTheHousehold(t *testing.T) {
 	cfg, n := Config{Node: "n1"}, &fakeNotifier{}
-	for _, rep := range []guestagent.UserTickReport{
+	for _, rep := range []guestagent.FilesTickReport{
 		{},
-		{Volume: 100e9, UserCap: 20e9, UserFree: 0.4e9, Target: 1e9, Short: true},
+		{Volume: 100e9, FilesCap: 20e9, FilesFree: 0.4e9, Target: 1e9, Short: true},
 	} {
-		g, u := &fakeUserTick{}, &userTickScheduler{}
-		cfg.tickUser(context.Background(), g, u, true, time.Now(), n, t.Logf)
+		g, u := &fakeFilesTick{}, &filesTickScheduler{}
+		cfg.tickFiles(context.Background(), g, u, true, time.Now(), n, t.Logf)
 		g.finish(rep)
-		cfg.tickUser(context.Background(), g, u, true, time.Now(), n, t.Logf)
+		cfg.tickFiles(context.Background(), g, u, true, time.Now(), n, t.Logf)
 	}
 	if len(n.alerts) != 1 {
 		t.Fatalf("alerts %v, want one: the unmeasured tick says nothing", n.alerts)
 	}
 	a := n.alerts[0]
-	if a.Key != "user-storage-short" || a.Kind != notify.Open || a.Severity != notify.Warning || !strings.Contains(a.Body, "0.4 GB is left") {
+	if a.Key != "files-storage-short" || a.Kind != notify.Open || a.Severity != notify.Warning || !strings.Contains(a.Body, "0.4 GB is left") {
 		t.Errorf("alert %+v", a)
 	}
 }

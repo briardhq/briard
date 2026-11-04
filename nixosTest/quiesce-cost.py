@@ -23,8 +23,8 @@ import time
 
 HOST, PORT = "127.0.0.1", 8123
 TOKEN_FILE = "/run/briard/home-assistant/token"
-RING = "/var/lib/briard/.snapshots/"
-DB = "/var/lib/briard/home-assistant/app/home-assistant_v2.db"
+RING = "/var/lib/briard/data/.snapshots/"
+DB = "/var/lib/briard/data/home-assistant/app/home-assistant_v2.db"
 
 
 def log(*a):

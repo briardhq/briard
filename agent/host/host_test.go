@@ -1466,9 +1466,9 @@ func (g edgeGuest) ServiceList(context.Context) ([]string, error) {
 	return nil, nil
 }
 
-// The user tier's tick: a guest that does not run one, unless a test gives it fakeUserTick.
-func (fakeStatus) UserTick(context.Context) (bool, error) { return false, errors.New("unknown verb") }
-func (fakeStatus) UserTickResult(context.Context) (guestagent.UserTickState, error) {
-	return guestagent.UserTickState{}, errors.New("unknown verb")
+// The files tier's tick: a guest that does not run one, unless a test gives it fakeFilesTick.
+func (fakeStatus) FilesTick(context.Context) (bool, error) { return false, errors.New("unknown verb") }
+func (fakeStatus) FilesTickResult(context.Context) (guestagent.FilesTickState, error) {
+	return guestagent.FilesTickState{}, errors.New("unknown verb")
 }
-func (fakeStatus) SupportsUserTick() bool { return false }
+func (fakeStatus) SupportsFilesTick() bool { return false }

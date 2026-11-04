@@ -82,8 +82,8 @@
 {{define "storage-card"}}
   <div class="card" id="storage"{{if .Measuring}} hx-get="/f/storage?app={{.Service}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>Storage</h2></header><section>
     {{with .Error}}<p class="note">Could not read it: {{.}}</p>{{else}}<div class="item-group">
-    {{range $i, $t := .Tiers}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{.Name}} data</h3><p>{{.Data}}</p></section></div>
-    <div class="item"><section><h3>{{.Name}} history</h3><p>{{.History}}</p></section></div>{{end}}
+    {{range $i, $t := .Tiers}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{.Name}}</h3><p>{{.Now}}</p></section></div>
+    <div class="item"><section><h3>{{.Past}}</h3><p>{{.PastWords}}</p></section></div>{{end}}
     </div>{{with .Room}}<p class="note">{{.}}</p>{{end}}{{end}}
   </section></div>
 {{end}}

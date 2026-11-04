@@ -864,17 +864,17 @@ func absentDest() *fakeExec {
 func TestDataSnapshotCommand(t *testing.T) {
 	f := absentDest()
 	g := dial(t, f)
-	if err := g.Snapshot(context.Background(), "/var/lib/briard/ha", "/var/lib/briard/.snapshots/ha-upgrade-1", `{"title":"x"}`); err != nil {
+	if err := g.Snapshot(context.Background(), "/var/lib/briard/data/ha", "/var/lib/briard/data/.snapshots/ha-upgrade-1", `{"title":"x"}`); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
-		{"btrfs", "subvolume", "show", "/var/lib/briard/.snapshots/ha-upgrade-1"},
-		{"btrfs", "subvolume", "snapshot", "-r", "-i", appQgroup(tierService, "ha"), "/var/lib/briard/ha", "/var/lib/briard/.snapshots/ha-upgrade-1"},
+		{"btrfs", "subvolume", "show", "/var/lib/briard/data/.snapshots/ha-upgrade-1"},
+		{"btrfs", "subvolume", "snapshot", "-r", "-i", appQgroup(tierData, "ha"), "/var/lib/briard/data/ha", "/var/lib/briard/data/.snapshots/ha-upgrade-1"},
 	}
 	if !reflect.DeepEqual(withoutQgroups(f.runs), want) {
 		t.Errorf("runs = %v, want %v", f.runs, want)
 	}
-	if got := f.files["/var/lib/briard/.snapshots/ha-upgrade-1.json"]; got != `{"title":"x"}` {
+	if got := f.files["/var/lib/briard/data/.snapshots/ha-upgrade-1.json"]; got != `{"title":"x"}` {
 		t.Errorf("sidecar = %q, want the host's bytes written beside the member", got)
 	}
 }
@@ -891,7 +891,7 @@ func TestDataSnapshotCommand(t *testing.T) {
 func TestDataSnapshotRefusesAnExistingMember(t *testing.T) {
 	f := &fakeExec{} // `show` succeeds => the destination already holds a subvolume
 	g := dial(t, f)
-	err := g.Snapshot(context.Background(), "/var/lib/briard/ha", "/var/lib/briard/.snapshots/ha-upgrade-1", `{"title":"x"}`)
+	err := g.Snapshot(context.Background(), "/var/lib/briard/data/ha", "/var/lib/briard/data/.snapshots/ha-upgrade-1", `{"title":"x"}`)
 	if err == nil {
 		t.Fatal("a collision was accepted; the earlier member would have been destroyed")
 	}
@@ -913,13 +913,13 @@ func TestDataSnapshotDropsAMemberItCannotLabel(t *testing.T) {
 	f := absentDest()
 	f.writeErr = errors.New("no space left on device")
 	g := dial(t, f)
-	err := g.Snapshot(context.Background(), "/var/lib/briard/ha", "/var/lib/briard/.snapshots/ha-upgrade-1", `{"title":"x"}`)
+	err := g.Snapshot(context.Background(), "/var/lib/briard/data/ha", "/var/lib/briard/data/.snapshots/ha-upgrade-1", `{"title":"x"}`)
 	if err == nil {
 		t.Fatal("an unlabelled member was accepted")
 	}
 	var deleted bool
 	for _, r := range f.runs {
-		if len(r) > 3 && r[2] == "delete" && r[3] == "/var/lib/briard/.snapshots/ha-upgrade-1" {
+		if len(r) > 3 && r[2] == "delete" && r[3] == "/var/lib/briard/data/.snapshots/ha-upgrade-1" {
 			deleted = true
 		}
 	}
@@ -945,16 +945,16 @@ func TestSidecarPathMatchesTheRenderer(t *testing.T) {
 func TestDataRestoreCommands(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.Restore(context.Background(), "/var/lib/briard/ha", "/var/lib/briard/.snapshots/ha-1", nil); err != nil {
+	if err := g.Restore(context.Background(), "/var/lib/briard/data/ha", "/var/lib/briard/data/.snapshots/ha-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
-		{"btrfs", "subvolume", "show", "/var/lib/briard/.snapshots/ha-1"},
-		{"btrfs", "subvolume", "show", "/var/lib/briard/ha.restoring"},
-		{"btrfs", "subvolume", "delete", "/var/lib/briard/ha.restoring"},
-		{"btrfs", "subvolume", "snapshot", "-i", appQgroup(tierService, "ha"), "/var/lib/briard/.snapshots/ha-1", "/var/lib/briard/ha.restoring"},
-		{"btrfs", "subvolume", "delete", "/var/lib/briard/ha"},
-		{"mv", "/var/lib/briard/ha.restoring", "/var/lib/briard/ha"},
+		{"btrfs", "subvolume", "show", "/var/lib/briard/data/.snapshots/ha-1"},
+		{"btrfs", "subvolume", "show", "/var/lib/briard/data/ha.restoring"},
+		{"btrfs", "subvolume", "delete", "/var/lib/briard/data/ha.restoring"},
+		{"btrfs", "subvolume", "snapshot", "-i", appQgroup(tierData, "ha"), "/var/lib/briard/data/.snapshots/ha-1", "/var/lib/briard/data/ha.restoring"},
+		{"btrfs", "subvolume", "delete", "/var/lib/briard/data/ha"},
+		{"mv", "/var/lib/briard/data/ha.restoring", "/var/lib/briard/data/ha"},
 	}
 	if !reflect.DeepEqual(withoutQgroups(f.runs), want) {
 		t.Errorf("runs = %v, want %v", f.runs, want)
@@ -971,13 +971,13 @@ func TestDataRestoreCommands(t *testing.T) {
 func TestDataReplaceSweepsTheStagedCopyBeforeItGoesLive(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.Restore(context.Background(), "/var/lib/briard/ha", "/var/lib/briard/.snapshots/ha-1", []string{"app/.HA_RESTORE"}); err != nil {
+	if err := g.Restore(context.Background(), "/var/lib/briard/data/ha", "/var/lib/briard/data/.snapshots/ha-1", []string{"app/.HA_RESTORE"}); err != nil {
 		t.Fatal(err)
 	}
 	sweep, mv := -1, -1
 	for i, r := range f.runs {
 		if r[0] == "rm" {
-			if got, want := r[len(r)-1], "/var/lib/briard/ha.restoring/app/.HA_RESTORE"; got != want {
+			if got, want := r[len(r)-1], "/var/lib/briard/data/ha.restoring/app/.HA_RESTORE"; got != want {
 				t.Errorf("swept %q, want the STAGED copy's %q", got, want)
 			}
 			sweep = i
@@ -1001,7 +1001,7 @@ func TestDataReplaceRefusesAPathOutsideTheMember(t *testing.T) {
 	for _, bad := range []string{"/etc/passwd", "../../etc/passwd", "app/../../x", ""} {
 		f := &fakeExec{}
 		g := dial(t, f)
-		if err := g.Restore(context.Background(), "/var/lib/briard/ha", "/snap", []string{bad}); err == nil {
+		if err := g.Restore(context.Background(), "/var/lib/briard/data/ha", "/snap", []string{bad}); err == nil {
 			t.Errorf("sweep %q was accepted", bad)
 		}
 		for _, r := range f.runs {
@@ -1026,7 +1026,7 @@ func TestDataRestoreRefusesAnUnusableRestorePoint(t *testing.T) {
 		return nil, nil
 	}}
 	g := dial(t, f)
-	if err := g.Restore(context.Background(), "/var/lib/briard/ha", "/snap", nil); err == nil {
+	if err := g.Restore(context.Background(), "/var/lib/briard/data/ha", "/snap", nil); err == nil {
 		t.Fatal("restore accepted a restore point it could not read")
 	}
 	for _, r := range f.runs {

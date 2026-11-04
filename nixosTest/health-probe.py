@@ -14,7 +14,7 @@ import time
 
 HOST, PORT = "127.0.0.1", 8123
 TOKEN_FILE = "/run/briard/home-assistant/token"
-ROOT = "/var/lib/briard/home-assistant"
+ROOT = "/var/lib/briard/data/home-assistant"
 CONFIG = ROOT + "/app"
 PRISTINE = "/var/lib/briard/.probe-pristine"
 UNITS = open("/run/briard/fixture/units").read().split()

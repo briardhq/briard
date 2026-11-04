@@ -1,13 +1,15 @@
 package main
 
-// THE STORAGE CARD: what an app keeps on this machine, per tier -- its data as it is now, and its
-// history -- and how far each may grow. The guest measures it (service-usage, relayed by the host
-// like the History's list); the page loads the card once it is up, and the card asks again while
-// the guest is still walking the app's files, so the page never waits on the walk.
+// THE STORAGE CARD: what an app keeps on this machine, per storage tier -- its data and its
+// History, the household's files in it and their Versions -- and how far each may grow. The guest
+// measures it (service-usage, relayed by the host like the History's list); the page loads the
+// card once it is up, and the card asks again while the guest is still walking the app's areas,
+// so the page never waits on the walk.
 //
 // ON DISK IS THE NUMBER, because it is what fills the disk: the volume is compressed, so the
-// files' own size is said beside it only where compression made a difference. The history is
-// what deleting it would free, which is why it can be far smaller than the data it keeps.
+// files' own size is said beside it only where compression made a difference. The History and
+// the Versions are what deleting them would free, which is why they can be far smaller than what
+// they keep.
 
 import (
 	"context"
@@ -20,8 +22,8 @@ import (
 	"briard.io/shared/dashboard"
 )
 
-// storageView is the card: one tier per row pair, the app's then the household's files', and
-// how far each may grow.
+// storageView is the card: one tier per row pair, the app's data then the household's files,
+// and how far each may grow.
 type storageView struct {
 	Service   string // the app's slug, for the card's poll
 	Measuring bool   // the guest is still walking: the card asks again
@@ -30,9 +32,10 @@ type storageView struct {
 	Room      string // "" when neither tier has a cap
 }
 
-// storageTierView is one tier in words: Name is "App" or "User".
+// storageTierView is one tier in words: what it holds now under Name, its older copies under
+// Past ("History" or "Versions").
 type storageTierView struct {
-	Name, Data, History string
+	Name, Now, Past, PastWords string
 }
 
 // storage asks the host what the app keeps, and says it.
@@ -55,15 +58,18 @@ func (a *app) storage(ctx context.Context, service string) storageView {
 	v.Measuring = u.Measuring
 	var room []string
 	for _, t := range []struct {
-		name, room string
-		u          *dashboard.TierUsage
-	}{{"App", "its data and history", u.Service}, {"User", "your files and their history", u.User}} {
-		// EVERY APP HAS A USER AREA, empty until it uses it, and an empty one is not shown -- as
-		// it is not exported. An empty area and a month of its snapshots stay under a megabyte.
-		if t.u == nil || t.name == "User" && t.u.Total < dashboard.UserAreaMin {
+		name, past, point, with, room string
+		u                             *dashboard.TierUsage
+	}{
+		{"Data", "History", "snapshot", "with its history", "its data and history", u.Data},
+		{"Your files", "Versions", "version", "with their versions", "your files and their versions", u.Files},
+	} {
+		// EVERY APP HAS A FILES AREA, empty until it uses it, and an empty one is not shown -- as
+		// it is not exported. An empty area and a month of its versions stay under a megabyte.
+		if t.u == nil || t.u == u.Files && t.u.Total < dashboard.FilesAreaMin {
 			continue
 		}
-		v.Tiers = append(v.Tiers, storageTierView{Name: t.name, Data: dataWords(*t.u, u.Measuring), History: historyWords(*t.u)})
+		v.Tiers = append(v.Tiers, storageTierView{Name: t.name, Now: nowWords(*t.u, u.Measuring, t.with), Past: t.past, PastWords: pastWords(*t.u, t.point)})
 		if t.u.Cap >= 0 {
 			room = append(room, gb(t.u.Cap)+" for "+t.room)
 		}
@@ -74,27 +80,27 @@ func (a *app) storage(ctx context.Context, service string) storageView {
 	return v
 }
 
-// dataWords is the tier's current data: on disk, and the files' size where compression shrank them.
-func dataWords(t dashboard.TierUsage, measuring bool) string {
+// nowWords is what the tier's area holds now: on disk, and its size where compression shrank it.
+func nowWords(t dashboard.TierUsage, measuring bool, with string) string {
 	switch {
 	case !t.Measured && measuring:
-		return "Measuring… (" + gb(t.Total) + " with its history)"
+		return "Measuring… (" + gb(t.Total) + " " + with + ")"
 	case !t.Measured:
-		return "Not measured (" + gb(t.Total) + " with its history)"
-	case t.Files > t.Current:
-		return gb(t.Current) + " on disk · " + gb(t.Files) + " before compression"
+		return "Not measured (" + gb(t.Total) + " " + with + ")"
+	case t.Uncompressed > t.Current:
+		return gb(t.Current) + " on disk · " + gb(t.Uncompressed) + " before compression"
 	}
 	return gb(t.Current) + " on disk"
 }
 
-// historyWords is what the tier's history holds, and how many points it keeps.
-func historyWords(t dashboard.TierUsage) string {
-	points := fmt.Sprintf("%d snapshots", t.Members)
+// pastWords is what the tier's older copies hold, and how many it keeps.
+func pastWords(t dashboard.TierUsage, point string) string {
+	points := fmt.Sprintf("%d %ss", t.Members, point)
 	switch t.Members {
 	case 0:
 		return "None yet"
 	case 1:
-		points = "1 snapshot"
+		points = "1 " + point
 	}
 	if !t.Measured {
 		return points

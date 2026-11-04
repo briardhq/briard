@@ -26,16 +26,16 @@ func withoutQgroups(runs [][]string) [][]string {
 // the same way, because nothing is stored: the id is recomputed at every creation. So one is
 // pinned, and the shape of every id is checked against the layout qgroup.go draws.
 func TestQgroupIDsAreTheLayout(t *testing.T) {
-	if got, want := appQgroup(tierService, "home-assistant"), "1/1150203105091"; got != want {
+	if got, want := appQgroup(tierData, "home-assistant"), "1/1150203105091"; got != want {
 		t.Errorf("home-assistant's service group = %s, want %s: the id changed, and every installed volume still holds the old one", got, want)
 	}
-	if got, want := tierQgroup(tierService), "2/"+strconv.FormatUint(1<<40, 10); got != want {
+	if got, want := tierQgroup(tierData), "2/"+strconv.FormatUint(1<<40, 10); got != want {
 		t.Errorf("the service aggregate = %s, want %s", got, want)
 	}
-	if got, want := tierQgroup(tierUser), "2/"+strconv.FormatUint(2<<40, 10); got != want {
-		t.Errorf("the user aggregate = %s, want %s", got, want)
+	if got, want := tierQgroup(tierFiles), "2/"+strconv.FormatUint(2<<40, 10); got != want {
+		t.Errorf("the files aggregate = %s, want %s", got, want)
 	}
-	for _, tier := range []uint64{tierService, tierUser} {
+	for _, tier := range []uint64{tierData, tierFiles} {
 		for _, app := range []string{"home-assistant", "jellyfin", "jellyseerr", "a"} {
 			id := appQgroup(tier, app)
 			n, err := strconv.ParseUint(strings.TrimPrefix(id, "1/"), 10, 64)
@@ -48,10 +48,10 @@ func TestQgroupIDsAreTheLayout(t *testing.T) {
 		}
 	}
 	// The collision a name-prefix scheme hits at once.
-	if appQgroup(tierUser, "jellyfin") == appQgroup(tierUser, "jellyseerr") {
+	if appQgroup(tierFiles, "jellyfin") == appQgroup(tierFiles, "jellyseerr") {
 		t.Error("jellyfin and jellyseerr share a group")
 	}
-	if appQgroup(tierService, "jellyfin") == appQgroup(tierUser, "jellyfin") {
+	if appQgroup(tierData, "jellyfin") == appQgroup(tierFiles, "jellyfin") {
 		t.Error("an app's two tiers share a group")
 	}
 }
@@ -64,16 +64,16 @@ func TestAreaOfReadsTheTierOffThePath(t *testing.T) {
 		tier uint64
 		app  string
 	}{
-		{"/var/lib/briard/home-assistant", tierService, "home-assistant"},
-		{"/var/lib/briard/home-assistant/", tierService, "home-assistant"},
-		{"/var/lib/briard/user/home-assistant", tierUser, "home-assistant"},
+		{"/var/lib/briard/data/home-assistant", tierData, "home-assistant"},
+		{"/var/lib/briard/data/home-assistant/", tierData, "home-assistant"},
+		{"/var/lib/briard/files/home-assistant", tierFiles, "home-assistant"},
 	} {
 		tier, app, err := areaOf(tc.area)
 		if err != nil || tier != tc.tier || app != tc.app {
 			t.Errorf("areaOf(%s) = %d %q %v, want %d %q", tc.area, tier, app, err, tc.tier, tc.app)
 		}
 	}
-	for _, bad := range []string{"/var/lib/briard/user", "/var/lib/briard/.snapshots/ha-start-x", "/data/ha", "/var/lib/briard/user/ha/x"} {
+	for _, bad := range []string{"/var/lib/briard/files", "/var/lib/briard/data/.snapshots/ha-start-x", "/data/ha", "/var/lib/briard/files/ha/x"} {
 		if _, _, err := areaOf(bad); err == nil {
 			t.Errorf("areaOf(%s) was accepted", bad)
 		}
@@ -103,20 +103,20 @@ func TestAnInstallBearsBothAreasIntoTheTree(t *testing.T) {
 		_, err := f.Run(context.Background(), name, args...)
 		return err
 	}
-	svc, user := "/var/lib/briard/home-assistant", "/var/lib/briard/user/home-assistant"
+	svc, user := "/var/lib/briard/data/home-assistant", "/var/lib/briard/files/home-assistant"
 	if err := ensureServiceData(context.Background(), f, run, svc, []string{"app"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range [][]string{
-		{"btrfs", "subvolume", "create", "-i", appQgroup(tierService, "home-assistant"), svc},
-		{"btrfs", "subvolume", "create", "-i", appQgroup(tierUser, "home-assistant"), user},
+		{"btrfs", "subvolume", "create", "-i", appQgroup(tierData, "home-assistant"), svc},
+		{"btrfs", "subvolume", "create", "-i", appQgroup(tierFiles, "home-assistant"), user},
 	} {
 		if runIndex(f, 0, want...) < 0 {
 			t.Errorf("never ran %v: %v", want, f.runs)
 		}
 	}
-	if !slices.Equal(f.qgroups[appQgroup(tierService, "home-assistant")], []string{tierQgroup(tierService)}) ||
-		!slices.Equal(f.qgroups[appQgroup(tierUser, "home-assistant")], []string{tierQgroup(tierUser)}) {
+	if !slices.Equal(f.qgroups[appQgroup(tierData, "home-assistant")], []string{tierQgroup(tierData)}) ||
+		!slices.Equal(f.qgroups[appQgroup(tierFiles, "home-assistant")], []string{tierQgroup(tierFiles)}) {
 		t.Errorf("the groups are not under their aggregates: %v", f.qgroups)
 	}
 
@@ -137,11 +137,11 @@ func TestAnInstallBearsBothAreasIntoTheTree(t *testing.T) {
 func TestAreaGroupLosesARaceGracefully(t *testing.T) {
 	f := &fakeExec{}
 	racer := &racingExec{fakeExec: f}
-	group, err := areaGroup(context.Background(), racer, "/var/lib/briard/mosquitto")
+	group, err := areaGroup(context.Background(), racer, "/var/lib/briard/data/mosquitto")
 	if err != nil {
 		t.Fatalf("a lost race was reported as a failure: %v", err)
 	}
-	if group != appQgroup(tierService, "mosquitto") {
+	if group != appQgroup(tierData, "mosquitto") {
 		t.Errorf("group = %s", group)
 	}
 	if !racer.raced {
@@ -161,9 +161,9 @@ func (r *racingExec) Run(ctx context.Context, name string, args ...string) ([]by
 	if !r.raced && name == "btrfs" && len(args) > 1 && args[1] == "show" {
 		r.raced = true
 		for _, a := range [][]string{
-			{"create", tierQgroup(tierService), dataMountRoot},
-			{"create", appQgroup(tierService, "mosquitto"), dataMountRoot},
-			{"assign", appQgroup(tierService, "mosquitto"), tierQgroup(tierService), dataMountRoot},
+			{"create", tierQgroup(tierData), dataMountRoot},
+			{"create", appQgroup(tierData, "mosquitto"), dataMountRoot},
+			{"assign", appQgroup(tierData, "mosquitto"), tierQgroup(tierData), dataMountRoot},
 		} {
 			_, _ = r.fakeExec.qgroup(a)
 		}
@@ -179,7 +179,7 @@ func TestNoSubvolumeIsBornOutsideTheTree(t *testing.T) {
 		_, err := x.Run(context.Background(), name, args...)
 		return err
 	}
-	if err := ensureServiceData(context.Background(), x, run, "/var/lib/briard/home-assistant", nil); err == nil {
+	if err := ensureServiceData(context.Background(), x, run, "/var/lib/briard/data/home-assistant", nil); err == nil {
 		t.Fatal("an install whose group could not be made was accepted")
 	}
 	for _, r := range x.runs {
@@ -215,14 +215,14 @@ func TestTheSoakReportCarriesTheQuotaTree(t *testing.T) {
 			return nil, nil
 		}}
 		_ = f.WriteFile(quotaModePath(), []byte("squota\n"))
-		_, _ = f.qgroup([]string{"create", tierQgroup(tierUser), dataMountRoot})
+		_, _ = f.qgroup([]string{"create", tierQgroup(tierFiles), dataMountRoot})
 		return f
 	}
 	r := gatherResources(context.Background(), soak(true), resourcesRequest{Soak: true})
 	if r.QuotaMode != "squota" {
 		t.Errorf("mode = %q", r.QuotaMode)
 	}
-	want := []string{"0/5 16384 16384 -", tierQgroup(tierUser) + " 16384 16384 -"}
+	want := []string{"0/5 16384 16384 -", tierQgroup(tierFiles) + " 16384 16384 -"}
 	slices.Sort(r.Qgroups)
 	if !slices.Equal(r.Qgroups, want) {
 		t.Errorf("tree = %q, want %q", r.Qgroups, want)

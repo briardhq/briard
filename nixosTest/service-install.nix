@@ -244,7 +244,7 @@ pkgs.testers.runNixOSTest {
     # ONE subvolume with plain per-container subdirectories: `btrfs subvolume delete` refuses on a
     # subvolume that contains nested subvolumes, so data.restore would break outright.
     dataroot = node1.succeed("cat /tmp/rendered/dataroot").strip()
-    primary.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || btrfs subvolume create {dataroot}")
+    primary.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || (mkdir -p $(dirname {dataroot}) && btrfs subvolume create {dataroot})")
     primary.succeed(f"mkdir -p {dataroot}/app")
     # The MANIFEST is the service's identity, and putting it on the volume is what an install
     # actually does. Everything after this point is the product's own code.
@@ -404,8 +404,8 @@ pkgs.testers.runNixOSTest {
     #
     #     The .snapshots dir is created by briard-primary-storage at mount, and the snapshot
     #     replicates with the volume. No restart: the converge below starts the units again. ---
-    snap = "/var/lib/briard/.snapshots/fixture-preupgrade"
-    primary.succeed("test -d /var/lib/briard/.snapshots")
+    snap = "/var/lib/briard/data/.snapshots/fixture-preupgrade"
+    primary.succeed("test -d /var/lib/briard/data/.snapshots")
     primary.succeed("systemctl stop briard-fixture-app.service")
     primary.succeed(f"btrfs subvolume snapshot -r {dataroot} {snap}")
 

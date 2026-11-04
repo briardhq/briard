@@ -280,19 +280,19 @@ const (
 	// data.usage answers one app's share of the volume per tier (appusage.go): its group's total,
 	// cap and history count fresh, and the split between its current data and its history from
 	// the last walk -- starting one in the background when that is stale. A read for the app's page.
-	verbDataUsage = "data.usage"
+	verbStorageUsage = "storage.usage"
 	// data.backup STARTS a backup of the newest member of every service into the repository the
 	// request names (backup.go) and answers whether it did; data.backup.result answers whether one
 	// is running and hands over a finished one's report once. The recorder check's two-verb shape:
 	// a run reads for minutes, and this channel serves one verb at a time.
 	verbDataBackup       = "data.backup"
 	verbDataBackupResult = "data.backup.result"
-	// user.tick STARTS the user tier's tick in the background (userring.go) -- the hourly user ring
-	// member where one is due, its retention, the allocation rule's limits, the valve -- and
-	// answers whether it did; user.tick.result is whether one is running, with a finished one's
+	// files.tick STARTS the files tier's tick in the background (filestier.go) -- an hourly version
+	// where one is due, its retention, the allocation rule's limits, the valve -- and
+	// answers whether it did; files.tick.result is whether one is running, with a finished one's
 	// report once. The same two-verb shape: the valve waits on the cleaner.
-	verbUserTick       = "user.tick"
-	verbUserTickResult = "user.tick.result"
+	verbFilesTick       = "files.tick"
+	verbFilesTickResult = "files.tick.result"
 	// data.backup.key answers the household's repository key, minting it on the volume the first
 	// time it is asked for (backup.go), and records the household's word that it is saved.
 	verbDataBackupKey = "data.backup.key"
@@ -457,8 +457,8 @@ var guestCapabilities = []string{
 	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
-	verbUserTick, verbUserTickResult,
-	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbDataUsage, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataBackupList, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
+	verbFilesTick, verbFilesTickResult,
+	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbStorageUsage, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataBackupList, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
@@ -496,10 +496,10 @@ var besideActs = map[string]bool{
 	verbHassDBCheckResult: true, verbServicePending: true, verbDataBackup: true,
 	verbDataBackupResult: true, verbDataBackupKey: true, verbDataBackupList: true,
 	// started in the background like the backup, whose shape it shares: the start returns at once,
-	// and what the tick writes (the user ring, the user tier's limit) no act touches
-	verbUserTick: true, verbUserTickResult: true,
+	// and what the tick writes (the versions, the files tier's limit) no act touches
+	verbFilesTick: true, verbFilesTickResult: true,
 	// a read that may start its walk in the background, the same way
-	verbDataUsage: true,
+	verbStorageUsage: true,
 	// pushes
 	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true, verbDashboardBackup: true,
 	verbDashboardCatalog: true,
@@ -1217,7 +1217,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return listMembers(ctx, x, req.Service)
-		case verbDataUsage:
+		case verbStorageUsage:
 			var req serviceRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
@@ -1285,10 +1285,10 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			return startBackup(x, req)
 		case verbDataBackupResult:
 			return backupResult(), nil
-		case verbUserTick:
-			return startUserTick(x), nil
-		case verbUserTickResult:
-			return userTickResult(), nil
+		case verbFilesTick:
+			return startFilesTick(x), nil
+		case verbFilesTickResult:
+			return filesTickResult(), nil
 		case verbDataBackupKey:
 			var req backupKeyRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2324,17 +2324,17 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 // an existing subvolume (re-creating it would silently delete the user's state), and the manifest
 // directory beside them.
 //
-// AND THE APP'S USER AREA, beside it under userRoot: every app has one, empty until the app uses
+// AND THE APP'S FILES AREA, beside it in the files tier: every app has one, empty until the app uses
 // it. Both are born into their tier's group of the quota tree (qgroup.go).
 func ensureServiceData(ctx context.Context, x Executor, run func(string, ...string) error, dataDir string, subdirs []string) error {
 	_, app, err := areaOf(dataDir)
 	if err != nil {
 		return err
 	}
-	if err := run("mkdir", "-p", userRoot()); err != nil {
+	if err := run("mkdir", "-p", dataRoot(), filesRoot()); err != nil {
 		return err
 	}
-	for _, area := range []string{dataDir, userArea(app)} {
+	for _, area := range []string{dataDir, filesArea(app)} {
 		if out, err := x.Run(ctx, "btrfs", "subvolume", "show", area); err == nil && len(out) > 0 {
 			continue
 		}
@@ -3028,23 +3028,23 @@ func (g *Client) DataBackupResult(ctx context.Context) (BackupState, error) {
 	return s, err
 }
 
-// UserTick starts the user tier's tick in the guest's background and answers whether it did:
+// FilesTick starts the files tier's tick in the guest's background and answers whether it did:
 // false while one runs, or while a finished one's report waits to be collected.
-func (g *Client) UserTick(ctx context.Context) (bool, error) {
+func (g *Client) FilesTick(ctx context.Context) (bool, error) {
 	var started bool
-	err := g.c.Call(ctx, verbUserTick, nil, &started)
+	err := g.c.Call(ctx, verbFilesTick, nil, &started)
 	return started, err
 }
 
-// UserTickResult answers whether a tick is running, with a finished one's report, once.
-func (g *Client) UserTickResult(ctx context.Context) (UserTickState, error) {
-	var s UserTickState
-	err := g.c.Call(ctx, verbUserTickResult, nil, &s)
+// FilesTickResult answers whether a tick is running, with a finished one's report, once.
+func (g *Client) FilesTickResult(ctx context.Context) (FilesTickState, error) {
+	var s FilesTickState
+	err := g.c.Call(ctx, verbFilesTickResult, nil, &s)
 	return s, err
 }
 
-// SupportsUserTick reports whether the guest runs the user tier's tick.
-func (g *Client) SupportsUserTick() bool { return g.Supports(verbUserTick) }
+// SupportsFilesTick reports whether the guest runs the files tier's tick.
+func (g *Client) SupportsFilesTick() bool { return g.Supports(verbFilesTick) }
 
 // HassDBRestore puts the recorder database back from the member a report named.
 func (g *Client) HassDBRestore(ctx context.Context, member string) error {
@@ -3742,9 +3742,9 @@ func (g *Client) SupportsMembers() bool { return g.Supports(verbDataMembers) }
 // one is stale.
 func (g *Client) Usage(ctx context.Context, app string) (dashboard.AppUsage, error) {
 	var u dashboard.AppUsage
-	err := g.c.Call(ctx, verbDataUsage, serviceRequest{Service: app}, &u)
+	err := g.c.Call(ctx, verbStorageUsage, serviceRequest{Service: app}, &u)
 	return u, err
 }
 
 // SupportsUsage reports whether this guest can measure an app's share of the volume.
-func (g *Client) SupportsUsage() bool { return g.Supports(verbDataUsage) }
+func (g *Client) SupportsUsage() bool { return g.Supports(verbStorageUsage) }

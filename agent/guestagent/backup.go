@@ -30,16 +30,17 @@ import (
 // read the host makes behind it on this one-verb-at-a-time channel.
 //
 // WHAT IS BACKED UP is everything a fresh install needs to come back as this household, laid out
-// under one root (backupRoot):
+// under one root (backupRoot), one directory per storage tier, in two snapshots. The data's,
+// tagged data:
 //
-//	services/<service>/          the newest member of the service's ring, bind-mounted read-only
+//	data/<service>/                the newest member of the service's ring, bind-mounted read-only
 //	briard/members/<service>.json  that member's sidecar: the manifest its data was written under
-//	briard/volume/               the volume's flock-scoped facts -- .vip-address, .services/, tls/
-//	briard/host/<name>           the host's own facts, handed over in the request
+//	briard/volume/                 the volume's flock-scoped facts -- .vip-address, .services/, tls/
+//	briard/host/<name>             the host's own facts, handed over in the request
 //
-// and then, as a snapshot of its own under backupUser, the household's files:
+// and then the household's files', tagged files:
 //
-//	user/<app>/                  the newest member of the app's user ring, for every area holding something
+//	files/<app>/                   the newest version of the app's files, for every area holding something
 //
 // The data is the History sample, whatever trigger took it, so consistency comes with it and
 // there is no second snapshot schedule; crash-consistent is what every nightly tool gives, and
@@ -157,19 +158,21 @@ func backupKeyState(ctx context.Context, x Executor, req backupKeyRequest) (Back
 }
 
 const (
-	// backupRoot is the one path restic backs up, so its paths never change: restic finds a run's
-	// parent snapshot by them, and member names carry their stamp -- backing up `.snapshots/...`
+	// backupRoot holds the paths restic backs up, which never change: restic finds a run's parent
+	// snapshot by them, and member names carry their stamp -- backing up `.snapshots/...`
 	// directly, or one path per service, would rescan every file whenever either changed.
 	backupRoot = "/run/briard/backup"
-	// backupServices holds the mount points; backupFacts the copies, which are ours alone and
-	// never a mount, so clearing them cannot reach a member.
-	backupServices = backupRoot + "/services"
-	backupFacts    = backupRoot + "/briard"
-	// backupUser is the household's files' own root, user/<app>/ under it: a path of its own, so
-	// restic's forget (grouped by host and paths) keeps its nights apart from the apps' and finds
-	// its parent among its own; tagged backupUserTag, so the list and a "latest" can tell it apart.
-	backupUser    = "/run/briard/backup-user"
-	backupUserTag = "user"
+	// The data's snapshot is backupData, the mount points, and backupFacts, the copies -- ours
+	// alone and never a mount, so clearing them cannot reach a member.
+	backupData  = backupRoot + "/data"
+	backupFacts = backupRoot + "/briard"
+	// The files' snapshot is backupFiles: a path of its own, so restic's forget (grouped by host
+	// and paths) keeps its nights apart from the data's and finds its parent among its own.
+	backupFiles = backupRoot + "/files"
+	// Each snapshot is tagged with its tier: the list and a "latest" restore read the data's by
+	// it, and a person reading `restic snapshots` tells the two apart by it.
+	backupDataTag  = "data"
+	backupFilesTag = "files"
 	// backupPasswordFile holds the repository password for the run only, 0600 on tmpfs and outside
 	// backupRoot: an argument or an environment variable would put it in /proc for the run's whole
 	// length, and inside the root it would be backed up beside what it opens.
@@ -207,13 +210,13 @@ type backupRequest struct {
 type BackupReport struct {
 	Snapshot string   `json:"snapshot,omitempty"`
 	Services []string `json:"services,omitempty"`
-	// UserSnapshot is the household's files' snapshot and UserAreas the apps whose files it holds;
+	// FilesSnapshot is the household's files' snapshot and FilesAreas the apps whose files it holds;
 	// Files and BytesAdded count both snapshots.
-	UserSnapshot string   `json:"userSnapshot,omitempty"`
-	UserAreas    []string `json:"userAreas,omitempty"`
-	Files        int      `json:"files"`
-	BytesAdded   int64    `json:"bytesAdded"`
-	Error        string   `json:"error,omitempty"`
+	FilesSnapshot string   `json:"filesSnapshot,omitempty"`
+	FilesAreas    []string `json:"filesAreas,omitempty"`
+	Files         int      `json:"files"`
+	BytesAdded    int64    `json:"bytesAdded"`
+	Error         string   `json:"error,omitempty"`
 	// WrongKey says the Error is a repository the volume's key does not open: one an earlier
 	// install of this folder wrote, or one made with another key. The page offers to adopt it.
 	WrongKey bool `json:"wrongKey,omitempty"`
@@ -287,17 +290,17 @@ func newestMembers(ctx context.Context, x Executor) (map[string]string, error) {
 	return out, nil
 }
 
-// newestUserMembers is the member each user area's backup reads: the newest of its ring, for every
-// area that holds something -- dashboard.UserAreaMin with its history, as the Storage card counts.
+// newestFileVersions is the version each files area's backup reads: the newest, for every area
+// that holds something -- dashboard.FilesAreaMin with its versions, as the Storage card counts.
 // Every app has an area, and most are empty.
-func newestUserMembers(ctx context.Context, x Executor) (map[string]string, error) {
+func newestFileVersions(ctx context.Context, x Executor) (map[string]string, error) {
 	tree, err := readQgroups(ctx, x)
 	if err != nil {
 		return nil, err
 	}
 	out, at := map[string]string{}, map[string]time.Time{}
-	for _, m := range userRing(ctx, x) {
-		if g, ok := tree[appQgroup(tierUser, m.app)]; !ok || g.referenced < dashboard.UserAreaMin {
+	for _, m := range fileVersions(ctx, x) {
+		if g, ok := tree[appQgroup(tierFiles, m.app)]; !ok || g.referenced < dashboard.FilesAreaMin {
 			continue
 		}
 		if m.at.After(at[m.app]) {
@@ -371,7 +374,7 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 		}
 	}
 	for _, svc := range slices.Sorted(maps.Keys(members)) {
-		member, p := members[svc], backupServices+"/"+svc
+		member, p := members[svc], backupData+"/"+svc
 		_, _ = x.Run(ctx, "umount", p)
 		if _, err := run("mkdir", "-p", p); err != nil {
 			return fail(err)
@@ -428,8 +431,8 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 		group = backupHost
 	}
 	// HA's own backup tarballs are a second copy of the same data inside the first.
-	out, err := restic("backup", "--json", "--quiet", "--host", group,
-		"--exclude", "**/app/backups", backupRoot)
+	out, err := restic("backup", "--json", "--quiet", "--host", group, "--tag", backupDataTag,
+		"--exclude", "**/app/backups", backupData, backupFacts)
 	rep := backupSummary(out)
 	rep.Services = services
 	if err != nil {
@@ -439,17 +442,17 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 			return rep
 		}
 	}
-	// THE HOUSEHOLD'S FILES, AFTER THE APPS, IN A SNAPSHOT OF THEIR OWN: a library's first copy can
+	// THE HOUSEHOLD'S FILES, AFTER THE DATA, IN A SNAPSHOT OF THEIR OWN: a library's first copy can
 	// run for hours and a folder can fill on it, and neither may cost the night its apps' backup,
 	// which has landed by now. An interrupted run is not lost either: the next reuses every block
 	// this one wrote. Not restored by anything yet -- the household's files are never rolled back.
-	user := func() error {
-		members, err := newestUserMembers(ctx, x)
+	files := func() error {
+		members, err := newestFileVersions(ctx, x)
 		if err != nil || len(members) == 0 {
 			return err
 		}
 		for _, app := range slices.Sorted(maps.Keys(members)) {
-			p := backupUser + "/user/" + app
+			p := backupFiles + "/" + app
 			_, _ = x.Run(ctx, "umount", p)
 			if _, err := run("mkdir", "-p", p); err != nil {
 				return err
@@ -458,28 +461,28 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 				return err
 			}
 			mounted = append(mounted, p)
-			rep.UserAreas = append(rep.UserAreas, app)
+			rep.FilesAreas = append(rep.FilesAreas, app)
 		}
-		out, err := restic("backup", "--json", "--quiet", "--host", group, "--tag", backupUserTag, backupUser)
+		out, err := restic("backup", "--json", "--quiet", "--host", group, "--tag", backupFilesTag, backupFiles)
 		u := backupSummary(out)
-		rep.UserSnapshot, rep.Files, rep.BytesAdded = u.Snapshot, rep.Files+u.Files, rep.BytesAdded+u.BytesAdded
+		rep.FilesSnapshot, rep.Files, rep.BytesAdded = u.Snapshot, rep.Files+u.Files, rep.BytesAdded+u.BytesAdded
 		return err
 	}
-	if err := user(); err != nil {
+	if err := files(); err != nil {
 		rep.Error = strings.TrimSpace(rep.Error + "\nyour files: " + err.Error())
 		log.Printf("backup: your files: %v", err)
 	}
 	// OUR GROUP ONLY (backupRequest.Group): restic applies the policy per group and keep-* counts
 	// snapshots, not days, so another household's nights in this repository stay exactly as they
-	// are -- but the flag says so, rather than the policy's arithmetic. The apps' and the files'
+	// are -- but the flag says so, rather than the policy's arithmetic. The data's and the files'
 	// snapshots have different paths, so they are two groups under the one policy.
 	if _, err := restic("forget", "--host", group, "--keep-daily", "2", "--keep-weekly", "1", "--prune"); err != nil {
 		rep.Error = strings.TrimSpace(rep.Error + "\n" + err.Error())
 		log.Printf("backup: %v", err)
 	}
 	log.Printf("backup: snapshot %s of %s: %d files, %d bytes added", rep.Snapshot, strings.Join(services, ", "), rep.Files, rep.BytesAdded)
-	if rep.UserSnapshot != "" {
-		log.Printf("backup: snapshot %s of the files of %s", rep.UserSnapshot, strings.Join(rep.UserAreas, ", "))
+	if rep.FilesSnapshot != "" {
+		log.Printf("backup: snapshot %s of the files of %s", rep.FilesSnapshot, strings.Join(rep.FilesAreas, ", "))
 	}
 	return rep
 }
@@ -568,10 +571,10 @@ func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreReque
 		return run("restic", append([]string{"--repo", "rest:" + req.Repository, "--password-file", backupPasswordFile, "--no-cache"}, args...)...)
 	}
 
-	// "latest" is the newest APP snapshot: the files' own is newer every night, and holds no app.
+	// "latest" is the newest DATA snapshot: the files' own is newer every night, and holds no app.
 	var apps []string
 	if req.Snapshot == "latest" {
-		apps = []string{"--path", backupRoot}
+		apps = []string{"--tag", backupDataTag}
 	}
 	raw, err := restic(append([]string{"dump", req.Snapshot, backupFacts + "/members/" + req.Service + ".json"}, apps...)...)
 	if err != nil {
@@ -603,7 +606,7 @@ func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreReque
 		}
 		return "", fmt.Errorf("%w (nothing was left in the ring)", err)
 	}
-	if _, err := restic(append([]string{"restore", req.Snapshot + ":" + backupServices + "/" + req.Service, "--target", member}, apps...)...); err != nil {
+	if _, err := restic(append([]string{"restore", req.Snapshot + ":" + backupData + "/" + req.Service, "--target", member}, apps...)...); err != nil {
 		return undo(err)
 	}
 	if _, err := run("btrfs", "property", "set", "-ts", member, "ro", "true"); err != nil {
@@ -689,8 +692,8 @@ func listBackups(ctx context.Context, x Executor, req backupListRequest) ([]dash
 	slices.SortFunc(snaps, func(a, b snapshot) int { return b.Time.Compare(a.Time) })
 	list := make([]dashboard.BackupListing, 0, len(snaps))
 	for _, s := range snaps {
-		// The household's files' own snapshots are not backups the page restores an app from.
-		if slices.Contains(s.Tags, backupUserTag) {
+		// Only the data's snapshots are backups the page restores an app from; the files' are not.
+		if !slices.Contains(s.Tags, backupDataTag) {
 			continue
 		}
 		b := dashboard.BackupListing{ID: s.ID, At: s.Time, Own: s.Hostname == req.Group, Added: s.Summary.DataAdded, Size: s.Summary.TotalBytes}

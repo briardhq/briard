@@ -17,8 +17,8 @@ import (
 // The volume is formatted with simple quotas (nodestorage.go), and its subvolumes sit in a
 // three-level tree:
 //
-//	level 2  tier aggregates   2/(1<<40) service      2/(2<<40) user
-//	level 1  per app           1/(tier<<40 | app40)   tier 1 = service, 2 = user, 0 reserved
+//	level 2  tier aggregates   2/(1<<40) data         2/(2<<40) files
+//	level 1  per app           1/(tier<<40 | app40)   tier 1 = data, 2 = files, 0 reserved
 //	level 0  subvolumes        the app's live area, its ring members, its restores
 //
 // A limit on a level-0 group would RESET on every restore-by-swap: the new subvolume allocates
@@ -34,17 +34,24 @@ import (
 // already exists, and a container's start (a separate process) may race an install for the
 // same group. So the missing parts are made, and a re-read decides whether the tree is right.
 
+// THE STORAGE TIERS are named for what they hold, never for whose it is -- every area is an
+// app's, and the household's: an app's DATA is what it keeps to run (its settings, its
+// database), rolled back with it; its FILES are what the household keeps in it, never rolled
+// back, versioned. Each tier is a plain directory holding one subvolume per app, so a job over a
+// tier reads one directory and a data rollback never reaches a file.
 const (
-	tierService = 1
-	tierUser    = 2
+	tierData  = 1
+	tierFiles = 2
 )
 
-// userRoot is where every app's user area lives: a plain directory holding one subvolume per
-// app, beside the service areas rather than inside them, so a service rollback never reaches it.
-func userRoot() string { return filepath.Join(dataMountRoot, "user") }
+// dataRoot is the data tier's directory; quadlet.DataRoot names an app's area in it.
+func dataRoot() string { return filepath.Join(dataMountRoot, "data") }
 
-// userArea is one app's user area.
-func userArea(app string) string { return filepath.Join(userRoot(), app) }
+// filesRoot is the files tier's directory.
+func filesRoot() string { return filepath.Join(dataMountRoot, "files") }
+
+// filesArea is one app's files area.
+func filesArea(app string) string { return filepath.Join(filesRoot(), app) }
 
 func appQgroup(tier uint64, app string) string {
 	sum := sha256.Sum256([]byte(app))
@@ -53,18 +60,15 @@ func appQgroup(tier uint64, app string) string {
 
 func tierQgroup(tier uint64) string { return "2/" + strconv.FormatUint(tier<<40, 10) }
 
-// areaOf reads the tier and the app off a live area's path. The path is what decides it: a
-// service area is a child of the volume's root, a user area a child of userRoot.
+// areaOf reads the tier and the app off a live area's path. The path is what decides it: the
+// tier's directory is the area's parent.
 func areaOf(area string) (tier uint64, app string, err error) {
 	app = filepath.Base(area)
 	switch filepath.Dir(filepath.Clean(area)) {
-	case dataMountRoot:
-		if app == "user" {
-			return 0, "", fmt.Errorf("%s is the user tier's root, not an app's area", area)
-		}
-		return tierService, app, nil
-	case userRoot():
-		return tierUser, app, nil
+	case dataRoot():
+		return tierData, app, nil
+	case filesRoot():
+		return tierFiles, app, nil
 	}
 	return 0, "", fmt.Errorf("%s is not an app's area on the volume", area)
 }

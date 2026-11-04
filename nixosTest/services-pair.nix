@@ -53,8 +53,8 @@ let
   # The broker's rollback point, in the product's own layout: a read-only sibling of the service's
   # subvolume under the btrfs root's .snapshots dir (agent/quadlet.SnapshotPath), so it replicates
   # with the volume rather than living on the node that took it.
-  subvol = "/var/lib/briard/${mosquitto.name}";
-  snap = "/var/lib/briard/.snapshots/${mosquitto.name}-preupgrade";
+  subvol = "/var/lib/briard/data/${mosquitto.name}";
+  snap = "/var/lib/briard/data/.snapshots/${mosquitto.name}-preupgrade";
 in
 pkgs.testers.runNixOSTest {
   name = "services-pair";
@@ -204,7 +204,7 @@ pkgs.testers.runNixOSTest {
     mq_containers = [u for u in mq_units if not u.endswith("-pod.service")]
     for u in reversed(mq_containers):
         primary.succeed(f"systemctl stop {u}")
-    primary.succeed("mkdir -p /var/lib/briard/.snapshots")
+    primary.succeed("mkdir -p /var/lib/briard/data/.snapshots")
     primary.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}")
     for u in mq_units:
         primary.succeed(f"systemctl start {u}")

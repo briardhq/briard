@@ -617,17 +617,17 @@ var galleryStates = []galleryState{
 			answerHistory(port, galleryRing(true))
 			return "/apps/home-assistant", c
 		}},
-	{"app-storage", "The Storage card measured, as a browser without a script gets it (?storage; with one the card loads itself): the data on disk beside its size before compression, the history and its count, the room -- with a user area, to show its rows.",
+	{"app-storage", "The Storage card measured, as a browser without a script gets it (?storage; with one the card loads itself): the data on disk beside its size before compression, the history and its count, the room -- with a files area, to show its rows.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			answerUsage(port, galleryRing(false)).set(dashboard.AppUsage{
-				Service: &dashboard.TierUsage{Total: 1.84e9, Cap: 41.2e9, Members: 38, Measured: true, Current: 1.21e9, Files: 3.87e9, History: 0.63e9},
-				User:    &dashboard.TierUsage{Total: 61.3e9, Cap: 412e9, Members: 52, Measured: true, Current: 58.9e9, Files: 59.4e9, History: 2.4e9}})
+				Data:  &dashboard.TierUsage{Total: 1.84e9, Cap: 41.2e9, Members: 38, Measured: true, Current: 1.21e9, Uncompressed: 3.87e9, History: 0.63e9},
+				Files: &dashboard.TierUsage{Total: 61.3e9, Cap: 412e9, Members: 52, Measured: true, Current: 58.9e9, Uncompressed: 59.4e9, History: 2.4e9}})
 			return "/apps/home-assistant?storage", c
 		}},
 	{"app-storage-measuring", "The Storage card while the guest walks the app's files: the totals and the counts, and the card asks again.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			answerUsage(port, galleryRing(false)).set(dashboard.AppUsage{Measuring: true,
-				Service: &dashboard.TierUsage{Total: 1.84e9, Cap: 41.2e9, Members: 38}})
+				Data: &dashboard.TierUsage{Total: 1.84e9, Cap: 41.2e9, Members: 38}})
 			return "/apps/home-assistant?storage", c
 		}},
 	{"app-empty", "No history yet.",

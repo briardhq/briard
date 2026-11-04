@@ -140,7 +140,7 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 		// formatted before the flags were written has the same layout.
 		//
 		// SIMPLE QUOTAS FROM THE FIRST BYTE, the one flag that is not a default: the quota tree
-		// (qgroup.go) is how the user tier is bounded, and squota owns an extent by who allocated
+		// (qgroup.go) is how the files tier is bounded, and squota owns an extent by who allocated
 		// it, so anything written before it is enabled belongs to nobody. Only a format can say it.
 		if err := run("mkfs.btrfs", "-f", "--nodesize", "16384", "--sectorsize", "4096",
 			"--metadata", "dup", "--data", "single", "--csum", "crc32c",

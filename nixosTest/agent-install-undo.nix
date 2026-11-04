@@ -17,7 +17,7 @@
 #
 # AND THE QUOTA TREE, on the same volume, because this is the rig where the real agent both
 # installs an app and restores its data by swap. Every subvolume the product made must be born
-# into the tree (the app's service area, its user area, the area the undo put back), the
+# into the tree (the app's data area, its files area, the area the undo put back), the
 # volume must be in simple-quota mode, and a limit on the app's group must stop ROOT with full
 # capabilities -- after the swap, which is when a limit held on the subvolume itself would
 # have reset. Each assertion proves itself live: the write the limit stops goes through once
@@ -116,7 +116,7 @@ pkgs.testers.runNixOSTest {
         """The volume's .services listing and the service's tick, read in one shell."""
         # The console echoes the typed line, so each marker is split by a "" there and whole only in
         # the output: a regex can then match nothing but the answer.
-        out = guest(f"echo L\"\"S=$(ls -1 /var/lib/briard/.services | tr \"\\n\" \" \"); echo T\"\"ICKS=$(cat /var/lib/briard/{svc}/app/state.json 2>/dev/null | tr -dc 0-9)")
+        out = guest(f"echo L\"\"S=$(ls -1 /var/lib/briard/.services | tr \"\\n\" \" \"); echo T\"\"ICKS=$(cat /var/lib/briard/data/{svc}/app/state.json 2>/dev/null | tr -dc 0-9)")
         ls = re.search(r"LS=(.*)", out)
         ticks = re.search(r"TICKS=(\d*)", out)
         assert ls and ticks, f"no answer from the guest:\n{out}"
@@ -148,7 +148,7 @@ pkgs.testers.runNixOSTest {
         m = re.search(r"RID=(\d+)", out)
         assert m, f"no subvolume id for {path}:\n{out}"
         return int(m.group(1))
-    before_swap = rootid(f"/var/lib/briard/{svc}")
+    before_swap = rootid(f"/var/lib/briard/data/{svc}")
 
     # === THE BROKEN UPGRADE, killed inside its gate. ===
     publish("${fixture}/variants/bad/catalog")
@@ -224,22 +224,22 @@ pkgs.testers.runNixOSTest {
     groups = tree()
     print(f"the quota tree: {groups}")
     assert outside(groups) == [], f"subvolumes outside the tree: {outside(groups)}"
-    svc_group, user_group = group(1, svc), group(2, svc)
-    live = rootid(f"/var/lib/briard/{svc}")
+    data_group, files_group = group(1, svc), group(2, svc)
+    live = rootid(f"/var/lib/briard/data/{svc}")
     assert live != before_swap, f"the undo did not swap the live area ({live}); the restore claim would be vacuous"
-    for sub, want in [(f"/var/lib/briard/{svc}", svc_group), (f"/var/lib/briard/user/{svc}", user_group)]:
+    for sub, want in [(f"/var/lib/briard/data/{svc}", data_group), (f"/var/lib/briard/files/{svc}", files_group)]:
         sid = f"0/{rootid(sub)}"
         assert groups.get(sid, (0, []))[1] == [want], f"{sub} ({sid}) is in {groups.get(sid)}, want {want}"
-    assert groups[svc_group][1] == [aggregate(1)], f"{svc_group} is under {groups[svc_group][1]}"
-    assert groups[user_group][1] == [aggregate(2)], f"{user_group} is under {groups[user_group][1]}"
+    assert groups[data_group][1] == [aggregate(1)], f"{data_group} is under {groups[data_group][1]}"
+    assert groups[files_group][1] == [aggregate(2)], f"{files_group} is under {groups[files_group][1]}"
 
-    # === THE USER TIER'S TICK: the allocation rule's cap, the valve, the warning. ===
+    # === THE FILES TIER'S TICK: the allocation rule's cap, the valve, the warning. ===
     # The real agent's tick, which runs at its start and every five minutes after; a restart is
     # how this rig asks for one now. The volume is 3 GB, so the rule leaves a cap a test can fill.
     def last_tick(after, want, timeout=900):
-        """The agent's latest `user tier:` line after the cursor, once one matching `want` exists."""
-        host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep 'user tier: cap=' | grep -q '{want}'", timeout=timeout)
-        return host.succeed(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep 'user tier: cap=' | grep '{want}' | tail -1")
+        """The agent's latest `files tier:` line after the cursor, once one matching `want` exists."""
+        host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep 'files tier: cap=' | grep -q '{want}'", timeout=timeout)
+        return host.succeed(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep 'files tier: cap=' | grep '{want}' | tail -1")
 
     def restart_for_a_tick():
         c = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
@@ -261,7 +261,7 @@ pkgs.testers.runNixOSTest {
     slack = int(re.search(r"slack=(\d+)", line).group(1))
     # The rule, written a second time from btrfs's own numbers: the slack is what is on the disk
     # past what the tree charges (the groups with no parent), and one metadata chunk in every
-    # copy. The service tier moves a little between the tick and now.
+    # copy. The data tier moves a little between the tick and now.
     out = guest(f'echo U""SE=$({btrfs} filesystem usage -b /var/lib/briard | grep -E "Device size:|^[[:space:]]+Used:|Metadata ratio:" | tr -s " \\t" " " | tr "\\n" ";")')
     m = re.search(r"USE= ?Device size: (\d+); Used: (\d+); Metadata ratio: ([\d.]+);", out)
     assert m, f"no usage from the guest:\n{out}"
@@ -270,30 +270,30 @@ pkgs.testers.runNixOSTest {
     charged = sum(excl for excl, parents in groups.values() if not parents)
     chunk = min(1 << 30 if volume > 50 << 30 else 256 << 20, volume // 10)
     want_slack = max(on_disk - charged, 0) + int(chunk * copies)
-    user_used = groups[aggregate(2)][0]
-    svc_used = charged - user_used
-    expected = volume - svc_used - max(svc_used // 5, 300_000_000) - want_slack
+    files_used = groups[aggregate(2)][0]
+    data_used = charged - files_used
+    expected = volume - data_used - max(data_used // 5, 300_000_000) - want_slack
     print(f"volume {volume}, on the disk {on_disk}, charged {charged}, slack {want_slack} (the tick's {slack})")
     assert abs(slack - want_slack) < 64 * 1024 * 1024, f"slack {slack}, btrfs's numbers give {want_slack}"
-    assert abs(cap - expected) < 64 * 1024 * 1024, f"cap {cap}, the rule gives {expected} (volume {volume}, service {svc_used})"
+    assert abs(cap - expected) < 64 * 1024 * 1024, f"cap {cap}, the rule gives {expected} (volume {volume}, data {data_used})"
     assert target == max(1_000_000_000, cap // 20), f"target {target} for cap {cap}"
-    assert limit_of(aggregate(2)) == str(cap), f"the user tier's limit is {limit_of(aggregate(2))}, the tick's cap {cap}"
-    # Each app's share: the volume's physical free space for its service group, the user tier's
-    # for its user group, less a tenth or the tier's keep.
+    assert limit_of(aggregate(2)) == str(cap), f"the files tier's limit is {limit_of(aggregate(2))}, the tick's cap {cap}"
+    # Each app's share: the volume's physical free space for its data group, the files tier's
+    # for its files group, less a tenth or the tier's keep.
     def app_cap(total, keep):
         return max(total * 9 // 10, total - keep, 0)
-    for gid, free, keep in [(svc_group, volume - want_slack - charged, max(300_000_000, volume // 100)),
-                            (user_group, cap - user_used, max(300_000_000, cap // 100))]:
+    for gid, free, keep in [(data_group, volume - want_slack - charged, max(300_000_000, volume // 100)),
+                            (files_group, cap - files_used, max(300_000_000, cap // 100))]:
         got, want = limit_of(gid), app_cap(groups[gid][0] + free, keep)
         assert got != "none" and abs(int(got) - want) < 64 * 1024 * 1024, f"{gid}'s limit is {got}, the rule gives {want}"
     assert "short=false" in line, f"a fresh install is short: {line}"
-    assert "alert open user-storage-short" not in host.succeed("journalctl -u briard-agent -o cat"), "a fresh install warned"
+    assert "alert open files-storage-short" not in host.succeed("journalctl -u briard-agent -o cat"), "a fresh install warned"
 
     # === WHAT THE APP STORES, as its page's Storage card asks it: the real agent relays it, the
     # guest walks the real volume with compsize. 32 MiB of text in the live area first, which zstd
     # shrinks many times over: du would call it 32 MiB, and on the disk it is a fraction of that.
     import json, time
-    text = f"/var/lib/briard/{svc}/storage-text"
+    text = f"/var/lib/briard/data/{svc}/storage-text"
     guest(f'yes "the storage card reads the extent tree" | head -c 33554432 > {text}; sync -f {text}; echo D""ONE', wait=8)
     def usage():
         out = host.succeed(f"""echo '{{"id":"u","kind":"service-usage","payload":"{svc}"}}' | socat -t30 - UNIX-CONNECT:/run/briard/admin.sock""")
@@ -301,62 +301,62 @@ pkgs.testers.runNixOSTest {
         assert o["state"] == "done", f"service-usage: {o}"
         return json.loads(o["detail"])
     u = usage()
-    assert u.get("measuring") and not u["service"].get("measured"), f"the first ask did not start a walk: {u}"
+    assert u.get("measuring") and not u["data"].get("measured"), f"the first ask did not start a walk: {u}"
     for _ in range(60):
         u = usage()
         if not u.get("measuring"):
             break
         time.sleep(2)
     print(f"what {svc} stores: {u}")
-    s, usr = u["service"], u["user"]
-    assert s.get("measured") and usr.get("measured"), f"the walk did not finish: {u}"
-    assert s["files"] >= 32 << 20 and s["current"] < s["files"] // 4, \
-        f"the current data is {s['current']} on disk for {s['files']} of files; 32 MiB of text should shrink many times over"
-    assert s["history"] == max(s["total"] - s["current"], 0), \
-        f"the history is not the group less the current data: {s}"
+    dat, fil = u["data"], u["files"]
+    assert dat.get("measured") and fil.get("measured"), f"the walk did not finish: {u}"
+    assert dat["uncompressed"] >= 32 << 20 and dat["current"] < dat["uncompressed"] // 4, \
+        f"the current data is {dat['current']} on disk for {dat['uncompressed']} before compression; 32 MiB of text should shrink many times over"
+    assert dat["history"] == max(dat["total"] - dat["current"], 0), \
+        f"the history is not the group less the current data: {dat}"
     groups = tree()
-    for t, gid in [(s, svc_group), (usr, user_group)]:
+    for t, gid in [(dat, data_group), (fil, files_group)]:
         assert abs(t["total"] - groups[gid][0]) < 16 << 20, f"{gid} holds {groups[gid][0]}, the card says {t['total']}"
         assert t["cap"] == int(limit_of(gid)), f"{gid}'s limit is {limit_of(gid)}, the card says {t['cap']}"
-    out = guest(f'echo M""EM=$(ls -1 /var/lib/briard/.snapshots | grep "^{svc}-" | grep -vc "\\.json$") U""MEM=$(ls -1 /var/lib/briard/user/.snapshots | grep "^{svc}-" | grep -vc "\\.json$")')
+    out = guest(f'echo M""EM=$(ls -1 /var/lib/briard/data/.snapshots | grep "^{svc}-" | grep -vc "\\.json$") U""MEM=$(ls -1 /var/lib/briard/files/.snapshots | grep "^{svc}-" | grep -vc "\\.json$")')
     m = re.search(r"MEM=(\d+) UMEM=(\d+)", out)
-    assert m and (s["members"], usr["members"]) == (int(m.group(1)), int(m.group(2))), f"the card counts {s['members']}/{usr['members']} snapshots:\n{out}"
+    assert m and (dat["members"], fil["members"]) == (int(m.group(1)), int(m.group(2))), f"the card counts {dat['members']}/{fil['members']} snapshots:\n{out}"
     guest(f"rm -f {text}; sync -f /var/lib/briard; echo D\"\"ONE")
 
     # A limit on the app's group stops root, on the area the swap put back. 4 MiB of headroom
     # over what the group holds now, and a 16 MiB write; the tick owns the limit again at its next run.
-    limit = tree()[svc_group][0] + 4 * 1024 * 1024
-    fill = f"/var/lib/briard/{svc}/quota-fill"
+    limit = tree()[data_group][0] + 4 * 1024 * 1024
+    fill = f"/var/lib/briard/data/{svc}/quota-fill"
     def write():
         out = guest(f'rm -f {fill}; echo D""Q=$(dd if=/dev/urandom of={fill} bs=1M count=16 conv=fsync 2>&1 | grep -c "Disk quota exceeded") S""Z=$(stat -c %s {fill})', wait=8)
         m = re.search(r"DQ=(\d+) SZ=(\d+)", out)
         assert m, f"no answer from the write:\n{out}"
         return int(m.group(1)), int(m.group(2))
-    guest(f"{btrfs} qgroup limit {limit} {svc_group} /var/lib/briard")
+    guest(f"{btrfs} qgroup limit {limit} {data_group} /var/lib/briard")
     refused, landed = write()
     print(f"under the limit: EDQUOT={refused}, {landed} bytes landed")
     assert refused >= 1 and landed < 8 * 1024 * 1024, f"root wrote past the limit (EDQUOT={refused}, {landed} bytes)"
     guest(f"echo 1 > /sys/fs/btrfs/{uuid}/quota_override")
     refused, landed = write()
-    guest(f"echo 0 > /sys/fs/btrfs/{uuid}/quota_override; rm -f {fill}; {btrfs} qgroup limit none {svc_group} /var/lib/briard")
+    guest(f"echo 0 > /sys/fs/btrfs/{uuid}/quota_override; rm -f {fill}; {btrfs} qgroup limit none {data_group} /var/lib/briard")
     print(f"with quota_override: EDQUOT={refused}, {landed} bytes landed")
     assert refused == 0 and landed == 16 * 1024 * 1024, f"the override did not let the write through: the limit assertion proves nothing (EDQUOT={refused}, {landed} bytes)"
 
     # And the tree check is live: a subvolume made without -i is the one it names.
-    guest(f"{btrfs} subvolume create /var/lib/briard/.snapshots/quota-stray && head -c 1048576 /dev/urandom > /var/lib/briard/.snapshots/quota-stray/x && sync -f /var/lib/briard")
-    stray = f"0/{rootid('/var/lib/briard/.snapshots/quota-stray')}"
+    guest(f"{btrfs} subvolume create /var/lib/briard/data/.snapshots/quota-stray && head -c 1048576 /dev/urandom > /var/lib/briard/data/.snapshots/quota-stray/x && sync -f /var/lib/briard")
+    stray = f"0/{rootid('/var/lib/briard/data/.snapshots/quota-stray')}"
     flagged = outside(tree())
-    guest(f"{btrfs} subvolume delete /var/lib/briard/.snapshots/quota-stray")
+    guest(f"{btrfs} subvolume delete /var/lib/briard/data/.snapshots/quota-stray")
     assert flagged == [stray], f"the tree check flagged {flagged}, want exactly the stray {stray}"
     print("every subvolume the product made is in the quota tree, and its limit binds root")
 
     # History to shed: a member ten days old and one two hours old, each pinning its own bytes,
     # and the household's files on top -- together past the room the target leaves, and under it
     # once the old member is gone.
-    area, snaps = f"/var/lib/briard/user/{svc}", "/var/lib/briard/user/.snapshots"
+    area, snaps = f"/var/lib/briard/files/{svc}", "/var/lib/briard/files/.snapshots"
     room = (cap - target) // 1_000_000
     def plant(age, mb):
-        out = guest(f'head -c {mb}M /dev/urandom > {area}/plant && S={snaps}/{svc}-clock-$(date -u -d "-{age}" +%Y%m%dT%H%M%SZ) && {btrfs} subvolume snapshot -r -i {user_group} {area} $S >/dev/null && echo "{{}}" > $S.json && rm {area}/plant && sync -f /var/lib/briard && echo P""M=$S', wait=45)
+        out = guest(f'head -c {mb}M /dev/urandom > {area}/plant && S={snaps}/{svc}-clock-$(date -u -d "-{age}" +%Y%m%dT%H%M%SZ) && {btrfs} subvolume snapshot -r -i {files_group} {area} $S >/dev/null && echo "{{}}" > $S.json && rm {area}/plant && sync -f /var/lib/briard && echo P""M=$S', wait=45)
         m = re.search(r"PM=(\S+)", out)
         assert m, f"could not plant a member:\n{out}"
         return m.group(1)
@@ -371,20 +371,20 @@ pkgs.testers.runNixOSTest {
 
     # At the floor: the household's files fill the cap. The uploader meets EDQUOT at its app's
     # share -- the tier's last tenth or keep is left for other apps, so the tier is not at zero --
-    # while the service tier keeps writing, and the next tick has only the day's members: it sheds
+    # while the data tier keeps writing, and the next tick has only the day's members: it sheds
     # none of them and warns.
-    out = guest(f'echo D""Q=$(head -c {cap // 1_000_000}M /dev/urandom 2>/dev/null > {area}/more; echo $?) S""VC=$(head -c 32M /dev/urandom > /var/lib/briard/{svc}/svc-fill && sync -f /var/lib/briard && rm /var/lib/briard/{svc}/svc-fill && echo ok)', wait=90)
+    out = guest(f'echo D""Q=$(head -c {cap // 1_000_000}M /dev/urandom 2>/dev/null > {area}/more; echo $?) S""VC=$(head -c 32M /dev/urandom > /var/lib/briard/data/{svc}/svc-fill && sync -f /var/lib/briard && rm /var/lib/briard/data/{svc}/svc-fill && echo ok)', wait=90)
     print(f"at the floor: {out}")
     assert re.search(r"DQ=[1-9]", out), f"the uploader wrote past the cap:\n{out}"
-    assert "SVC=ok" in out, f"the service tier could not write while the user tier was full:\n{out}"
+    assert "SVC=ok" in out, f"the data tier could not write while the files tier was full:\n{out}"
     after = restart_for_a_tick()
     line = last_tick(after, "short=true")
     print(f"the floor's tick: {line}")
     assert "shed=0" in line, f"the valve shed a member younger than a day: {line}"
     left = int(re.search(r"free=(-?\d+)", line).group(1))
-    assert left > 50_000_000, f"the one app took the user tier to {left} bytes: its share did not stop it"
+    assert left > 50_000_000, f"the one app took the files tier to {left} bytes: its share did not stop it"
     assert "YOUNG=1" in guest(f"test -e {young} && echo Y""OUNG=1"), "the day's member is gone"
-    host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep -q 'alert open user-storage-short'", timeout=60)
-    print("the user tier is capped by the rule, its valve sheds the oldest history, and at the floor it warns")
+    host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep -q 'alert open files-storage-short'", timeout=60)
+    print("the files tier is capped by the rule, its valve sheds the oldest history, and at the floor it warns")
   '';
 }

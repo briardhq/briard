@@ -956,7 +956,7 @@ func TestInstalledServicesAssemblesTheChainFromAll(t *testing.T) {
 	// Each spec keeps its OWN paths -- the per-service derivation that already existed and was
 	// only ever called once.
 	for _, s := range specs {
-		if want := "/var/lib/briard/" + s.Name; s.DataDir != want {
+		if want := "/var/lib/briard/data/" + s.Name; s.DataDir != want {
 			t.Errorf("%s DataDir = %q, want %q", s.Name, s.DataDir, want)
 		}
 		if want := "briard-" + s.Name + "-app.service"; s.ServingUnit() != want {
@@ -2340,13 +2340,13 @@ func TestTheAppPageMayAskWhatAnAppStores(t *testing.T) {
 	if !guestMayAsk(api.Directive{Kind: api.DirectiveServiceUsage}) || !localOnlyKinds[api.DirectiveServiceUsage] {
 		t.Fatal("service-usage is not the page's to ask, or the cloud may ask it")
 	}
-	g := &usageGuest{usage: dashboard.AppUsage{Service: &dashboard.TierUsage{Total: 3e9, Cap: 4e10, Members: 3, Measured: true, Current: 2e9, Files: 5e9, History: 1e9}, Measuring: true}}
+	g := &usageGuest{usage: dashboard.AppUsage{Data: &dashboard.TierUsage{Total: 3e9, Cap: 4e10, Members: 3, Measured: true, Current: 2e9, Uncompressed: 5e9, History: 1e9}, Measuring: true}}
 	o := Config{}.applyServiceUsage(context.Background(), g, api.Directive{ID: "d", Kind: api.DirectiveServiceUsage, Payload: "immich"})
 	var got dashboard.AppUsage
 	if o.State != api.OutcomeDone || json.Unmarshal([]byte(o.Detail), &got) != nil || g.asked != "immich" {
 		t.Fatalf("outcome %+v, asked %q", o, g.asked)
 	}
-	if !got.Measuring || got.User != nil || *got.Service != *g.usage.Service {
+	if !got.Measuring || got.Files != nil || *got.Data != *g.usage.Data {
 		t.Errorf("relayed %+v, want %+v", got, g.usage)
 	}
 	old := &usageGuest{old: true}

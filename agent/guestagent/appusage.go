@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"briard.io/agent/quadlet"
 	"briard.io/shared/dashboard"
 )
 
@@ -72,7 +72,7 @@ func appUsage(ctx context.Context, x Executor, app string, now time.Time) (dashb
 		w, ok := usageWalks.done[area]
 		usageWalks.Unlock()
 		if ok && w.root == root && !w.failed {
-			t.Measured, t.Current, t.Files, t.History = true, w.disk, w.files, max(t.Total-w.disk, 0)
+			t.Measured, t.Current, t.Uncompressed, t.History = true, w.disk, w.files, max(t.Total-w.disk, 0)
 		}
 		if !ok || w.root != root || now.Sub(w.at) >= usageFresh {
 			stale = append(stale, area)
@@ -80,14 +80,14 @@ func appUsage(ctx context.Context, x Executor, app string, now time.Time) (dashb
 		return t
 	}
 	var mine int
-	for _, m := range userRing(ctx, x) {
+	for _, m := range fileVersions(ctx, x) {
 		if m.app == app {
 			mine++
 		}
 	}
 	u := dashboard.AppUsage{
-		Service: tier(tierService, filepath.Join(dataMountRoot, app), len(ringMembers(ctx, x, app))),
-		User:    tier(tierUser, userArea(app), mine),
+		Data:  tier(tierData, quadlet.DataRoot(app), len(ringMembers(ctx, x, app))),
+		Files: tier(tierFiles, filesArea(app), mine),
 	}
 	if len(stale) > 0 {
 		startUsageWalk(x, stale, now)

@@ -14,10 +14,10 @@ import (
 )
 
 // THE RULE AS DESIGNED, on numbers a human can check: a 100 GB volume with 2 GB of slack holding
-// 10 GB of service state gives the user tier 100 − 10 − 2 (20 %) − 2 = 86 GB, with a 4.3 GB
+// 10 GB of service state gives the files tier 100 − 10 − 2 (20 %) − 2 = 86 GB, with a 4.3 GB
 // target. A small service state takes the 300 MB floor, a small cap the 1 GB target, and a volume
-// the service tier fills leaves a cap of zero rather than a negative one.
-func TestUserAllocationIsTheRule(t *testing.T) {
+// the data tier fills leaves a cap of zero rather than a negative one.
+func TestFilesAllocationIsTheRule(t *testing.T) {
 	for _, tc := range []struct {
 		name                string
 		volume, slack, svc  int64
@@ -26,9 +26,9 @@ func TestUserAllocationIsTheRule(t *testing.T) {
 		{"a large volume", 100 * gb, 2 * gb, 10 * gb, 86 * gb, 4.3 * gb},
 		{"the headroom floor", 100 * gb, 2 * gb, 1 * gb, 100*gb - 1*gb - 300*mb - 2*gb, (100*gb - 1*gb - 300*mb - 2*gb) / 20},
 		{"the target floor", 10 * gb, 1 * gb, 1 * gb, 10*gb - 1*gb - 300*mb - 1*gb, 1 * gb},
-		{"a full service tier", 10 * gb, 1 * gb, 9 * gb, 0, 1 * gb},
+		{"a full data tier", 10 * gb, 1 * gb, 9 * gb, 0, 1 * gb},
 	} {
-		cap, target := userAllocation(tc.volume, tc.slack, tc.svc)
+		cap, target := filesAllocation(tc.volume, tc.slack, tc.svc)
 		if cap != tc.wantCap || target != tc.wantTarget {
 			t.Errorf("%s: cap %d target %d, want %d %d", tc.name, cap, target, tc.wantCap, tc.wantTarget)
 		}
@@ -75,7 +75,7 @@ func TestAnAppsCapLeavesTheOthersTheirShare(t *testing.T) {
 }
 
 // EVERY APP IN EACH TIER IS CAPPED: a service app by the volume's physical free space and the
-// volume's keep, a user area by the user tier's free space and its own. An app grown alone keeps
+// volume's keep, a files area by the files tier's free space and its own. An app grown alone keeps
 // its cap -- what it adds, the tier loses -- and a tick with nothing changed sets no limit again.
 func TestTheTickCapsEveryApp(t *testing.T) {
 	v := newUserVolume("immich", "jellyfin")
@@ -83,20 +83,20 @@ func TestTheTickCapsEveryApp(t *testing.T) {
 	v.userFiles = map[string]int64{"immich": 45 * gb, "jellyfin": 5 * gb}
 	v.member("immich", tickNow.Add(-30*time.Minute)) // no take: only the files count
 	v.member("jellyfin", tickNow.Add(-30*time.Minute))
-	rep := userTick(context.Background(), v, tickNow)
+	rep := filesTick(context.Background(), v, tickNow)
 	if len(rep.Errors) > 0 {
 		t.Fatalf("errors: %v", rep.Errors)
 	}
 	// 100 GB, 2 GiB of slack, 10 GB of service, 50 GB of files.
-	free := rep.Volume - rep.Slack - rep.ServiceUsed - rep.UserUsed
+	free := rep.Volume - rep.Slack - rep.DataUsed - rep.FilesUsed
 	if rep.Slack != 2<<30 || free != 100*gb-2<<30-10*gb-50*gb {
 		t.Fatalf("slack %d, free %d", rep.Slack, free)
 	}
 	want := map[string]int64{
-		appQgroup(tierService, "immich"):   appCap(2*gb+free, 1*gb),
-		appQgroup(tierService, "jellyfin"): appCap(8*gb+free, 1*gb),
-		appQgroup(tierUser, "immich"):      appCap(45*gb+rep.UserFree, max(300*mb, rep.UserCap/100)),
-		appQgroup(tierUser, "jellyfin"):    appCap(5*gb+rep.UserFree, max(300*mb, rep.UserCap/100)),
+		appQgroup(tierData, "immich"):    appCap(2*gb+free, 1*gb),
+		appQgroup(tierData, "jellyfin"):  appCap(8*gb+free, 1*gb),
+		appQgroup(tierFiles, "immich"):   appCap(45*gb+rep.FilesFree, max(300*mb, rep.FilesCap/100)),
+		appQgroup(tierFiles, "jellyfin"): appCap(5*gb+rep.FilesFree, max(300*mb, rep.FilesCap/100)),
 	}
 	for g, c := range want {
 		if v.qlimits[g] != strconv.FormatInt(c, 10) {
@@ -105,20 +105,20 @@ func TestTheTickCapsEveryApp(t *testing.T) {
 	}
 	before := len(v.ran("btrfs", "qgroup", "limit"))
 	v.svcApp["jellyfin"] += 3 * gb
-	v.svcUsed += 3 * gb
-	userTick(context.Background(), v, tickNow.Add(10*time.Minute))
-	if v.qlimits[appQgroup(tierService, "jellyfin")] != strconv.FormatInt(want[appQgroup(tierService, "jellyfin")], 10) {
-		t.Errorf("jellyfin grew alone and its cap moved: %q, want %d", v.qlimits[appQgroup(tierService, "jellyfin")], want[appQgroup(tierService, "jellyfin")])
+	v.dataUsed += 3 * gb
+	filesTick(context.Background(), v, tickNow.Add(10*time.Minute))
+	if v.qlimits[appQgroup(tierData, "jellyfin")] != strconv.FormatInt(want[appQgroup(tierData, "jellyfin")], 10) {
+		t.Errorf("jellyfin grew alone and its cap moved: %q, want %d", v.qlimits[appQgroup(tierData, "jellyfin")], want[appQgroup(tierData, "jellyfin")])
 	}
-	userTick(context.Background(), v, tickNow.Add(20*time.Minute))
+	filesTick(context.Background(), v, tickNow.Add(20*time.Minute))
 	limits := len(v.ran("btrfs", "qgroup", "limit"))
-	userTick(context.Background(), v, tickNow.Add(30*time.Minute))
+	filesTick(context.Background(), v, tickNow.Add(30*time.Minute))
 	if n := len(v.ran("btrfs", "qgroup", "limit")); n != limits || limits == before {
 		t.Errorf("limit calls: %d before the growth, %d after it, %d after an unchanged tick", before, limits, n)
 	}
 }
 
-// WHILE THE TIER HAS ROOM, NO APP IS AT ITS CAP: the valve holds userFree at its target, and every
+// WHILE THE TIER HAS ROOM, NO APP IS AT ITS CAP: the valve holds filesFree at its target, and every
 // app in either tier is still short of its limit, so the household's warning comes first -- on
 // the default volume, and on a terabyte whichever tier holds it.
 func TestNoAppIsAtItsCapBeforeTheWarning(t *testing.T) {
@@ -132,7 +132,7 @@ func TestNoAppIsAtItsCapBeforeTheWarning(t *testing.T) {
 		{"a terabyte, services small", 1000 * gb, 10 * gb, 900 * gb},
 	} {
 		v := newUserVolume("immich")
-		v.volume, v.svcUsed = tc.volume, tc.svc
+		v.volume, v.dataUsed = tc.volume, tc.svc
 		v.svcApp = map[string]int64{"immich": tc.svc}
 		v.memberBytes = 100 * mb
 		v.member("immich", tickNow.Add(-30*time.Minute))
@@ -141,12 +141,12 @@ func TestNoAppIsAtItsCapBeforeTheWarning(t *testing.T) {
 		}
 		cap, target := v.allocation()
 		v.userFiles = map[string]int64{"immich": min(tc.files, cap-target-v.memberBytes)} // the hour's member stays
-		rep := userTick(context.Background(), v, tickNow)
-		if rep.Short || rep.UserFree < rep.Target {
-			t.Errorf("%s: free %d target %d short %v", tc.name, rep.UserFree, rep.Target, rep.Short)
+		rep := filesTick(context.Background(), v, tickNow)
+		if rep.Short || rep.FilesFree < rep.Target {
+			t.Errorf("%s: free %d target %d short %v", tc.name, rep.FilesFree, rep.Target, rep.Short)
 			continue
 		}
-		for _, g := range []string{appQgroup(tierService, "immich"), appQgroup(tierUser, "immich")} {
+		for _, g := range []string{appQgroup(tierData, "immich"), appQgroup(tierFiles, "immich")} {
 			if l, _ := strconv.ParseInt(v.qlimits[g], 10, 64); l <= v.qused[g] {
 				t.Errorf("%s: %s holds %d, at or over its limit %d", tc.name, g, v.qused[g], l)
 			}
@@ -159,13 +159,13 @@ func TestNoAppIsAtItsCapBeforeTheWarning(t *testing.T) {
 // thirty days, and nothing older.
 func TestTheUserRingKeepsHoursDaysAndWeeks(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 30, 0, 0, time.UTC)
-	var ring []userMember
+	var ring []fileVersion
 	var now time.Time
 	for h := 0; h < 40*24; h++ {
 		now = start.Add(time.Duration(h) * time.Hour)
-		ring = append(ring, userMember{app: "a", path: strconv.Itoa(h), at: now})
-		for _, m := range userRetention(ring, now) {
-			ring = slices.DeleteFunc(ring, func(r userMember) bool { return r.path == m.path })
+		ring = append(ring, fileVersion{app: "a", path: strconv.Itoa(h), at: now})
+		for _, m := range versionRetention(ring, now) {
+			ring = slices.DeleteFunc(ring, func(r fileVersion) bool { return r.path == m.path })
 		}
 	}
 	var hours, days, weeks int
@@ -199,18 +199,18 @@ func TestTheUserRingKeepsHoursDaysAndWeeks(t *testing.T) {
 	}
 }
 
-// userVolume is a fake guest holding a volume with user areas, their rings and the quota tree.
-// Each member costs memberBytes of the user tier until the cleaner has dropped it.
+// userVolume is a fake guest holding a volume with files areas, their rings and the quota tree.
+// Each member costs memberBytes of the files tier until the cleaner has dropped it.
 type userVolume struct {
 	*fakeExec
 	apps        []string
 	members     map[string]bool // full paths
 	memberBytes int64
-	areaBytes   int64 // the household's own files, across every user area
+	areaBytes   int64 // the household's own files, across every files area
 	volume      int64
-	svcUsed     int64
+	dataUsed    int64
 	// Per app, when a test is about the apps' caps: the service state each holds (inside
-	// svcUsed), and files on top of areaBytes. A member's bytes are its app's.
+	// dataUsed), and files on top of areaBytes. A member's bytes are its app's.
 	svcApp, userFiles map[string]int64
 	own               int64 // on the disk and charged to nobody
 }
@@ -218,7 +218,7 @@ type userVolume struct {
 // allocation is the rule's cap and target for the volume as it stands.
 func (v *userVolume) allocation() (int64, int64) {
 	charged := v.charged()
-	return userAllocation(v.volume, fsSlack(volumeUse{v.volume, charged + v.own, 2}, charged), v.svcUsed)
+	return filesAllocation(v.volume, fsSlack(volumeUse{v.volume, charged + v.own, 2}, charged), v.dataUsed)
 }
 
 func (v *userVolume) charged() int64 {
@@ -226,21 +226,21 @@ func (v *userVolume) charged() int64 {
 	for _, b := range v.userFiles {
 		files += b
 	}
-	return v.svcUsed + v.areaBytes + files + int64(len(v.members))*v.memberBytes
+	return v.dataUsed + v.areaBytes + files + int64(len(v.members))*v.memberBytes
 }
 
 func newUserVolume(apps ...string) *userVolume {
-	v := &userVolume{fakeExec: &fakeExec{}, apps: apps, members: map[string]bool{}, volume: 100 * gb, svcUsed: 10 * gb}
-	v.qgroups = map[string][]string{"0/5": nil, tierQgroup(tierService): nil, tierQgroup(tierUser): nil}
+	v := &userVolume{fakeExec: &fakeExec{}, apps: apps, members: map[string]bool{}, volume: 100 * gb, dataUsed: 10 * gb}
+	v.qgroups = map[string][]string{"0/5": nil, tierQgroup(tierData): nil, tierQgroup(tierFiles): nil}
 	for _, app := range apps {
-		v.qgroups[appQgroup(tierService, app)] = []string{tierQgroup(tierService)}
-		v.qgroups[appQgroup(tierUser, app)] = []string{tierQgroup(tierUser)}
+		v.qgroups[appQgroup(tierData, app)] = []string{tierQgroup(tierData)}
+		v.qgroups[appQgroup(tierFiles, app)] = []string{tierQgroup(tierFiles)}
 	}
 	v.runFn = func(name string, args []string) ([]byte, error) {
 		switch {
-		case name == "ls" && args[1] == userRoot():
+		case name == "ls" && args[1] == filesRoot():
 			return []byte(strings.Join(append(slices.Clone(v.apps), ".snapshots"), "\n")), nil
-		case name == "ls" && args[1] == userSnapshots():
+		case name == "ls" && args[1] == filesVersionsDir():
 			var ls []string
 			for m := range v.members {
 				ls = append(ls, filepath.Base(m), filepath.Base(m)+".json")
@@ -268,15 +268,15 @@ func newUserVolume(apps ...string) *userVolume {
 // Run keeps the tree's numbers true to the volume before every read of it.
 func (v *userVolume) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	v.qused = map[string]int64{
-		"0/5":                   0,
-		tierQgroup(tierService): v.svcUsed,
-		tierQgroup(tierUser):    v.charged() - v.svcUsed,
+		"0/5":                 0,
+		tierQgroup(tierData):  v.dataUsed,
+		tierQgroup(tierFiles): v.charged() - v.dataUsed,
 	}
 	for app, b := range v.svcApp {
-		v.qused[appQgroup(tierService, app)] = b
+		v.qused[appQgroup(tierData, app)] = b
 	}
 	for _, app := range v.apps {
-		g := appQgroup(tierUser, app)
+		g := appQgroup(tierFiles, app)
 		v.qused[g] += v.userFiles[app]
 		for m := range v.members {
 			if a, _, _, _ := quadlet.ParseSnapshotMember(filepath.Base(m)); a == app {
@@ -289,7 +289,7 @@ func (v *userVolume) Run(ctx context.Context, name string, args ...string) ([]by
 
 // member puts a member of app taken at `at` in the ring.
 func (v *userVolume) member(app string, at time.Time) string {
-	m := filepath.Join(userSnapshots(), filepath.Base(quadlet.SnapshotMember(app, quadlet.TriggerClock, at)))
+	m := filepath.Join(filesVersionsDir(), filepath.Base(quadlet.SnapshotMember(app, quadlet.TriggerClock, at)))
 	v.members[m] = true
 	return m
 }
@@ -306,20 +306,20 @@ func (v *userVolume) ran(prefix ...string) [][]string {
 
 var tickNow = time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 
-// A FRESH INSTALL: one member taken into the app's user group, the cap set, nothing shed and no
+// A FRESH INSTALL: one member taken into the app's files group, the cap set, nothing shed and no
 // warning -- there is no pressure. A second tick an hour later takes the next member and does not
 // set the same limit again.
 func TestAFreshInstallTakesAMemberAndSetsTheCap(t *testing.T) {
 	v := newUserVolume("immich")
-	rep := userTick(context.Background(), v, tickNow)
+	rep := filesTick(context.Background(), v, tickNow)
 	if len(rep.Errors) > 0 {
 		t.Fatalf("errors: %v", rep.Errors)
 	}
 	if len(rep.Taken) != 1 || !strings.HasPrefix(filepath.Base(rep.Taken[0]), "immich-clock-") {
 		t.Fatalf("taken %v", rep.Taken)
 	}
-	if len(v.ran("btrfs", "subvolume", "snapshot", "-r", "-i", appQgroup(tierUser, "immich"), userArea("immich"))) != 1 {
-		t.Errorf("the member was not born into immich's user group: %v", v.runs)
+	if len(v.ran("btrfs", "subvolume", "snapshot", "-r", "-i", appQgroup(tierFiles, "immich"), filesArea("immich"))) != 1 {
+		t.Errorf("the member was not born into immich's files group: %v", v.runs)
 	}
 	if _, ok := v.files[quadlet.SnapshotSidecar(rep.Taken[0])]; !ok {
 		t.Error("the member has no sidecar")
@@ -328,16 +328,16 @@ func TestAFreshInstallTakesAMemberAndSetsTheCap(t *testing.T) {
 		t.Errorf("a fresh install warned or shed: %+v", rep)
 	}
 	wantCap, _ := v.allocation()
-	if rep.UserCap != wantCap || v.qlimits[tierQgroup(tierUser)] != strconv.FormatInt(wantCap, 10) {
-		t.Errorf("cap %d, limit %q, want %d", rep.UserCap, v.qlimits[tierQgroup(tierUser)], wantCap)
+	if rep.FilesCap != wantCap || v.qlimits[tierQgroup(tierFiles)] != strconv.FormatInt(wantCap, 10) {
+		t.Errorf("cap %d, limit %q, want %d", rep.FilesCap, v.qlimits[tierQgroup(tierFiles)], wantCap)
 	}
 
 	before := len(v.ran("btrfs", "qgroup", "limit"))
-	rep = userTick(context.Background(), v, tickNow.Add(10*time.Minute))
+	rep = filesTick(context.Background(), v, tickNow.Add(10*time.Minute))
 	if len(rep.Taken) != 0 {
 		t.Errorf("a member ten minutes after the last: %v", rep.Taken)
 	}
-	rep = userTick(context.Background(), v, tickNow.Add(time.Hour))
+	rep = filesTick(context.Background(), v, tickNow.Add(time.Hour))
 	if len(rep.Taken) != 1 {
 		t.Errorf("no member an hour after the last: %v", rep.Taken)
 	}
@@ -346,25 +346,25 @@ func TestAFreshInstallTakesAMemberAndSetsTheCap(t *testing.T) {
 	}
 }
 
-// A GROWING SERVICE LOWERS THE CAP, and the limit follows it -- below what the user tier holds,
+// A GROWING SERVICE LOWERS THE CAP, and the limit follows it -- below what the files tier holds,
 // which the kernel accepts and which stops the next write.
 func TestAGrowingServiceLowersTheCap(t *testing.T) {
 	v := newUserVolume("immich")
 	v.areaBytes = 60 * gb
-	userTick(context.Background(), v, tickNow)
-	v.svcUsed = 40 * gb
-	rep := userTick(context.Background(), v, tickNow.Add(10*time.Minute))
+	filesTick(context.Background(), v, tickNow)
+	v.dataUsed = 40 * gb
+	rep := filesTick(context.Background(), v, tickNow.Add(10*time.Minute))
 	wantCap, _ := v.allocation()
-	if v.qlimits[tierQgroup(tierUser)] != strconv.FormatInt(wantCap, 10) || wantCap >= v.areaBytes {
-		t.Errorf("limit %q after the service grew, want %d (under the %d the user tier holds)", v.qlimits[tierQgroup(tierUser)], wantCap, v.areaBytes)
+	if v.qlimits[tierQgroup(tierFiles)] != strconv.FormatInt(wantCap, 10) || wantCap >= v.areaBytes {
+		t.Errorf("limit %q after the service grew, want %d (under the %d the files tier holds)", v.qlimits[tierQgroup(tierFiles)], wantCap, v.areaBytes)
 	}
-	if rep.UserFree >= 0 {
-		t.Errorf("userFree %d, want it negative: the cap is under what the tier holds", rep.UserFree)
+	if rep.FilesFree >= 0 {
+		t.Errorf("filesFree %d, want it negative: the cap is under what the tier holds", rep.FilesFree)
 	}
 }
 
 // THE VALVE sheds the oldest eligible member first, across apps, and stops when there is room:
-// members younger than a day are never shed, and nothing outside the user ring is ever deleted.
+// members younger than a day are never shed, and nothing outside the versions is ever deleted.
 // History of ten days gave the room, so there is no warning.
 func TestTheValveShedsTheOldestUntilThereIsRoom(t *testing.T) {
 	v := newUserVolume("immich", "jellyfin")
@@ -379,22 +379,22 @@ func TestTheValveShedsTheOldestUntilThereIsRoom(t *testing.T) {
 	v.member("jellyfin", tickNow.Add(-30*time.Minute))
 	// The household's files leave room for exactly 7 of the 12 members' bytes above the target.
 	v.areaBytes = cap - target - 7*v.memberBytes
-	rep := userTick(context.Background(), v, tickNow)
+	rep := filesTick(context.Background(), v, tickNow)
 	if len(rep.Errors) > 0 {
 		t.Fatalf("errors: %v", rep.Errors)
 	}
 	if !slices.Equal(rep.Shed, old[:5]) {
 		t.Errorf("shed %v, want the five oldest %v", rep.Shed, old[:5])
 	}
-	if rep.UserFree < rep.Target || rep.Short {
-		t.Errorf("free %d target %d short %v after the valve", rep.UserFree, rep.Target, rep.Short)
+	if rep.FilesFree < rep.Target || rep.Short {
+		t.Errorf("free %d target %d short %v after the valve", rep.FilesFree, rep.Target, rep.Short)
 	}
 	if !v.members[fresh] {
 		t.Error("a member younger than a day was shed")
 	}
 	for _, d := range v.ran("btrfs", "subvolume", "delete") {
-		if !strings.HasPrefix(d[3], userSnapshots()+"/") {
-			t.Errorf("deleted outside the user ring: %v", d)
+		if !strings.HasPrefix(d[3], filesVersionsDir()+"/") {
+			t.Errorf("deleted outside the versions: %v", d)
 		}
 	}
 	if len(v.ran("btrfs", "subvolume", "sync")) != len(rep.Shed) {
@@ -412,7 +412,7 @@ func TestTheValveStopsAtTheDayAndWarns(t *testing.T) {
 	v.member("immich", tickNow.Add(-3*24*time.Hour))
 	young := v.member("immich", tickNow.Add(-2*time.Hour))
 	v.areaBytes = cap
-	rep := userTick(context.Background(), v, tickNow)
+	rep := filesTick(context.Background(), v, tickNow)
 	if len(rep.Shed) != 1 || !v.members[young] {
 		t.Errorf("shed %v; the day's member kept: %v", rep.Shed, v.members[young])
 	}
@@ -435,19 +435,19 @@ func TestTheWarningIsAboutRecentHistory(t *testing.T) {
 		v.member("immich", tickNow.Add(-tc.age))
 		v.member("immich", tickNow.Add(-30*time.Minute)) // the hour's member: no take, so only these two count
 		v.areaBytes = cap - target - v.memberBytes*3/2
-		rep := userTick(context.Background(), v, tickNow)
+		rep := filesTick(context.Background(), v, tickNow)
 		if len(rep.Shed) != 1 || rep.Short != tc.short {
 			t.Errorf("%s: shed %v short %v, want one shed and short=%v", tc.name, rep.Shed, rep.Short, tc.short)
 		}
 	}
 }
 
-// NOTHING INSTALLED, NOTHING BOUNDED: with no user aggregate there is no limit to set and no
+// NOTHING INSTALLED, NOTHING BOUNDED: with no files aggregate there is no limit to set and no
 // warning to give.
 func TestATickBeforeAnyInstallDoesNothing(t *testing.T) {
 	v := newUserVolume()
-	delete(v.qgroups, tierQgroup(tierUser))
-	rep := userTick(context.Background(), v, tickNow)
+	delete(v.qgroups, tierQgroup(tierFiles))
+	rep := filesTick(context.Background(), v, tickNow)
 	if len(rep.Errors) > 0 || rep.Short || len(rep.Taken) > 0 || len(v.ran("btrfs", "qgroup", "limit")) > 0 {
 		t.Errorf("a tick on an empty volume acted: %+v %v", rep, v.runs)
 	}
@@ -456,15 +456,15 @@ func TestATickBeforeAnyInstallDoesNothing(t *testing.T) {
 // ONE AT A TIME, and a finished report waits to be collected.
 func TestOneTickAtATime(t *testing.T) {
 	v := newUserVolume()
-	if !startUserTick(v) {
+	if !startFilesTick(v) {
 		t.Fatal("the first tick did not start")
 	}
-	if startUserTick(v) {
+	if startFilesTick(v) {
 		t.Error("a second tick started beside the first, or over its uncollected report")
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		s := userTickResult()
+		s := filesTickResult()
 		if s.Report != nil {
 			break
 		}
@@ -473,7 +473,7 @@ func TestOneTickAtATime(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if s := userTickResult(); s.Report != nil || s.Running {
+	if s := filesTickResult(); s.Report != nil || s.Running {
 		t.Errorf("the report was handed over twice: %+v", s)
 	}
 }

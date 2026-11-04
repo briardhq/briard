@@ -3,9 +3,9 @@ package guestagent
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
+	"briard.io/agent/quadlet"
 	"briard.io/shared/nodestorage"
 )
 
@@ -22,9 +22,9 @@ import (
 // the shape the blank probe and the storage spec each had to guard: a destructive operation on a path that runs
 // at every promotion, on every node, forever. There is no such operation on this path now.
 
-// snapshotsDir is the pre-upgrade snapshot store, a sibling of the service data subvolumes rather
+// snapshotsDir is the data tier's History, a sibling of the data areas rather
 // than a child of one: it replicates with the volume, so it survives a failover.
-func snapshotsDir() string { return filepath.Join(dataMountRoot, ".snapshots") }
+func snapshotsDir() string { return strings.TrimSuffix(quadlet.SnapshotsDir, "/") }
 
 // PrimaryStorage mounts the replicated device the node's storage spec names, and makes the
 // snapshots directory.

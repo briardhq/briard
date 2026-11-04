@@ -43,10 +43,10 @@ let
     fixtures = [ fixture ];
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
-  root = "/var/lib/briard/${fixture.name}";
+  root = "/var/lib/briard/data/${fixture.name}";
   live = "${root}/${fixture.container}";
   db = "${live}/home-assistant_v2.db";
-  ring = "/var/lib/briard/.snapshots";
+  ring = "/var/lib/briard/data/.snapshots";
 in
 pkgs.testers.runNixOSTest {
   name = "hass-recorder-check";

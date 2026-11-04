@@ -325,99 +325,99 @@ func recorderAlert(node, why string, from time.Time, loc *time.Location) notify.
 	}
 }
 
-// THE USER TIER'S TICK, every five minutes on the node that holds the volume: the user ring's
+// THE FILES TIER'S TICK, every five minutes on the node that holds the volume: the versions'
 // hourly members where due, their retention, the allocation rule's cap and its valve
-// (agent/guestagent/userring.go). It ACTS -- the cap moves as services grow, and the valve makes
+// (agent/guestagent/filestier.go). It ACTS -- the cap moves as services grow, and the valve makes
 // room before an upload meets EDQUOT -- which is what earns it a cadence. Started in the guest's
 // background and collected over later cycles, like the recorder check: the valve waits on the
 // btrfs cleaner, and nothing here may wait with it.
-const userTickEvery = 5 * time.Minute
+const filesTickEvery = 5 * time.Minute
 
-// userTicker is the slice of the guest the tick costs.
-type userTicker interface {
-	UserTick(ctx context.Context) (bool, error)
-	UserTickResult(ctx context.Context) (guestagent.UserTickState, error)
-	SupportsUserTick() bool
+// filesTicker is the slice of the guest the tick costs.
+type filesTicker interface {
+	FilesTick(ctx context.Context) (bool, error)
+	FilesTickResult(ctx context.Context) (guestagent.FilesTickState, error)
+	SupportsFilesTick() bool
 }
 
-// userTickScheduler remembers when it last started a tick, and whether one's report is awaited.
-type userTickScheduler struct {
+// filesTickScheduler remembers when it last started a tick, and whether one's report is awaited.
+type filesTickScheduler struct {
 	last    time.Time
 	waiting bool
 }
 
-// tickUser collects a tick that is running, or starts the next one when it is due.
-func (cfg Config) tickUser(ctx context.Context, g userTicker, u *userTickScheduler, serving bool, now time.Time, n notify.Notifier, logf func(string, ...any)) {
-	if !serving || !g.SupportsUserTick() {
+// tickFiles collects a tick that is running, or starts the next one when it is due.
+func (cfg Config) tickFiles(ctx context.Context, g filesTicker, u *filesTickScheduler, serving bool, now time.Time, n notify.Notifier, logf func(string, ...any)) {
+	if !serving || !g.SupportsFilesTick() {
 		return
 	}
 	if u.waiting {
-		cfg.collectUserTick(ctx, g, u, n, logf)
+		cfg.collectFilesTick(ctx, g, u, n, logf)
 		return
 	}
-	if now.Sub(u.last) < userTickEvery {
+	if now.Sub(u.last) < filesTickEvery {
 		return
 	}
 	u.last = now // a failure waits a tick rather than being retried every cycle
 	sctx, cancel := context.WithTimeout(ctx, dbCallTimeout)
-	started, err := g.UserTick(sctx)
+	started, err := g.FilesTick(sctx)
 	cancel()
 	if err != nil {
-		logf("user tier: could not start the tick: %v", err)
+		logf("files tier: could not start the tick: %v", err)
 		return
 	}
 	if !started {
-		logf("user tier: the guest has a tick running or a report waiting; collecting that one")
+		logf("files tier: the guest has a tick running or a report waiting; collecting that one")
 	}
 	u.waiting = true
 }
 
-// collectUserTick asks for a started tick's report, and tells the household what it means.
-func (cfg Config) collectUserTick(ctx context.Context, g userTicker, u *userTickScheduler, n notify.Notifier, logf func(string, ...any)) {
+// collectFilesTick asks for a started tick's report, and tells the household what it means.
+func (cfg Config) collectFilesTick(ctx context.Context, g filesTicker, u *filesTickScheduler, n notify.Notifier, logf func(string, ...any)) {
 	sctx, cancel := context.WithTimeout(ctx, dbCallTimeout)
-	s, err := g.UserTickResult(sctx)
+	s, err := g.FilesTickResult(sctx)
 	cancel()
 	switch {
 	case err != nil, s.Report == nil && s.Running:
 		return // asked again next cycle
 	case s.Report == nil:
-		logf("user tier: the tick left no report") // the guest agent restarted and lost it
+		logf("files tier: the tick left no report") // the guest agent restarted and lost it
 		u.waiting = false
 		return
 	}
 	u.waiting = false
 	rep := *s.Report
 	// One line a tick, twelve an hour: what the cap is and what the tick did is the trail a full disk is read back from.
-	logf("user tier: cap=%d free=%d target=%d slack=%d took=%d pruned=%d shed=%d short=%t errors=%q",
-		rep.UserCap, rep.UserFree, rep.Target, rep.Slack, len(rep.Taken), len(rep.Pruned), len(rep.Shed), rep.Short, rep.Errors)
+	logf("files tier: cap=%d free=%d target=%d slack=%d took=%d pruned=%d shed=%d short=%t errors=%q",
+		rep.FilesCap, rep.FilesFree, rep.Target, rep.Slack, len(rep.Taken), len(rep.Pruned), len(rep.Shed), rep.Short, rep.Errors)
 	if rep.Volume == 0 {
-		return // nothing measured: no app has a user area, or the read failed (logged above)
+		return // nothing measured: no app has a files area, or the read failed (logged above)
 	}
-	fireAlert(ctx, n, logf, userStorageAlert(cfg.Node, rep))
+	fireAlert(ctx, n, logf, filesStorageAlert(cfg.Node, rep))
 }
 
-// userStorageAlert is a CONDITION: open while the user tier is short of its target and the valve
+// filesStorageAlert is a CONDITION: open while the files tier is short of its target and the valve
 // cannot make the room without cutting into the last five days of file history -- which includes
 // a node whose service state has grown into the room with no history to give -- resolved once
 // there is room. It is every app's warning too: while the tier keeps its target free, no app in
 // either tier is at its cap. Asserted every tick; the store decides what is news.
-func userStorageAlert(node string, rep guestagent.UserTickReport) notify.Alert {
+func filesStorageAlert(node string, rep guestagent.FilesTickReport) notify.Alert {
 	if !rep.Short {
 		return notify.Alert{
-			Key:   "user-storage-short",
+			Key:   "files-storage-short",
 			Kind:  notify.Resolved,
 			Title: "Briard: there is room for your files again",
 			Body:  fmt.Sprintf("The space for your apps' files on node %s has room again.", node),
 		}
 	}
 	return notify.Alert{
-		Key:      "user-storage-short",
+		Key:      "files-storage-short",
 		Kind:     notify.Open,
 		Severity: notify.Warning,
 		Title:    "Briard: storage for your files is running out",
 		Body: fmt.Sprintf("Storage on node %s is running low: %.1f GB is left for your apps' files, and briard cannot "+
 			"make more room by removing older versions of them without losing the last five days. "+
 			"When it runs out, new uploads will fail; your apps keep running, and none of them can take the last "+
-			"of the space from the others.", node, float64(max(rep.UserFree, 0))/1e9),
+			"of the space from the others.", node, float64(max(rep.FilesFree, 0))/1e9),
 	}
 }

@@ -45,7 +45,7 @@ func TestRenderShape(t *testing.T) {
 		"Image=" + digestA,
 		"Pod=briard-home-assistant.pod",
 		"Pull=never",
-		"Volume=/var/lib/briard/home-assistant/ha:/config",
+		"Volume=/var/lib/briard/data/home-assistant/ha:/config",
 		"Environment=TZ=Europe/Athens",
 	} {
 		if !strings.Contains(c, want) {
@@ -281,7 +281,7 @@ func TestSubdirsAreFlat(t *testing.T) {
 			t.Fatalf("subdir %q is not flat", d)
 		}
 	}
-	if DataPath("home-assistant", "ha") != "/var/lib/briard/home-assistant/ha" {
+	if DataPath("home-assistant", "ha") != "/var/lib/briard/data/home-assistant/ha" {
 		t.Fatalf("DataPath = %q", DataPath("home-assistant", "ha"))
 	}
 }
@@ -342,7 +342,7 @@ func TestBrokerRendersItsConfigAndItsData(t *testing.T) {
 	got := mustRender(t, m).Files["briard-mosquitto-broker.container"]
 	for _, want := range []string{
 		"Volume=/run/briard/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro",
-		"Volume=/var/lib/briard/mosquitto/broker:/mosquitto/data",
+		"Volume=/var/lib/briard/data/mosquitto/broker:/mosquitto/data",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("mosquitto is missing %q:\n%s", want, got)
@@ -440,7 +440,7 @@ func TestImagesNeedsNoAddress(t *testing.T) {
 func TestSnapshotMemberNamesTheSeries(t *testing.T) {
 	at := time.Date(2026, 9, 22, 10, 30, 5, 0, time.UTC)
 	got := SnapshotMember("home-assistant", TriggerAppUpdateBefore, at)
-	want := "/var/lib/briard/.snapshots/home-assistant-app-update-before-20260922T103005Z"
+	want := "/var/lib/briard/data/.snapshots/home-assistant-app-update-before-20260922T103005Z"
 	if got != want {
 		t.Errorf("SnapshotMember = %q, want %q", got, want)
 	}
@@ -453,7 +453,7 @@ func TestSnapshotMemberNamesTheSeries(t *testing.T) {
 	if other := SnapshotMember("home-assistant", TriggerAppUpdateBefore, at.In(east)); other != want {
 		t.Errorf("a non-UTC clock renamed the member: %q, want %q", other, want)
 	}
-	if strings.Count(strings.TrimPrefix(got, "/var/lib/briard/.snapshots/"), "/") != 0 {
+	if strings.Count(strings.TrimPrefix(got, "/var/lib/briard/data/.snapshots/"), "/") != 0 {
 		t.Errorf("a member must be one path element: %q", got)
 	}
 }

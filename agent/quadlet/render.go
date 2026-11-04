@@ -422,13 +422,14 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	return out, nil
 }
 
-// DataRoot is the service's single btrfs subvolume on the replicated volume.
-func DataRoot(service string) string { return "/var/lib/briard/" + service }
+// DataRoot is the service's data area: its single btrfs subvolume in the data tier of the
+// replicated volume -- what it keeps to run, rolled back with it.
+func DataRoot(service string) string { return "/var/lib/briard/data/" + service }
 
-// SnapshotsDir is where every member of a service's ring lives: read-only siblings of the data
-// subvolume under the btrfs root's .snapshots dir (created by briard-primary-storage at mount), so
-// they replicate with the volume.
-const SnapshotsDir = "/var/lib/briard/.snapshots/"
+// SnapshotsDir is where every member of a service's ring (its History) lives: read-only siblings
+// of the data areas under the data tier's .snapshots dir (created by briard-primary-storage at
+// mount), so they replicate with the volume.
+const SnapshotsDir = "/var/lib/briard/data/.snapshots/"
 
 // snapshotStamp is the member name's time format: fixed width, UTC, and chosen so that lexical
 // order over names IS chronological order. Every reader of the ring leans on that.

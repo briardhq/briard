@@ -39,10 +39,10 @@ let
   # container's subdirectory, bind-mounted to /config inside.
   # The SUBVOLUME is the service's (what a rollback point snapshots); haDir is the container's
   # subdirectory inside it (what HA writes to, bind-mounted as /config).
-  subvol = "/var/lib/briard/${fixture.name}";
+  subvol = "/var/lib/briard/data/${fixture.name}";
   haDir = "${subvol}/${fixture.container}";
   db = "${haDir}/home-assistant_v2.db";
-  snap = "/var/lib/briard/.snapshots/${fixture.name}-preupgrade";
+  snap = "/var/lib/briard/data/.snapshots/${fixture.name}-preupgrade";
   # Current recorder schema = max(schema_version) in HA's schema_changes ledger. This
   # is the migration signal: HA-to must detect the older schema, run migrators 52+53,
   # and record the advance. (Column-shape deltas are NOT a usable signal — HA creates a
@@ -125,7 +125,7 @@ pkgs.testers.runNixOSTest {
     # doesn't react; the volume stays mounted throughout.
     node1.succeed("findmnt /var/lib/briard")            # still mounted (promoter untouched)
     node1.succeed("btrfs subvolume show ${subvol}")  # the service's data dir is a real subvolume
-    node1.succeed("mkdir -p /var/lib/briard/.snapshots")
+    node1.succeed("mkdir -p /var/lib/briard/data/.snapshots")
     # -r read-only, the exact form the guest agent's data.member verb runs.
     #
     # ⚠️ TAKEN LIVE ON PURPOSE, AND THIS IS THE ONLY PLACE THAT STILL IS. Since the

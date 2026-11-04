@@ -40,12 +40,12 @@ let
   # The RENDERER's layout, never restated here: the SUBVOLUME is the service's (what a rollback
   # point snapshots), and HA writes into its container's subdirectory inside it, bind-mounted as
   # /config (the build-time slot used to choose both).
-  subvol = "/var/lib/briard/${fixture.name}";
+  subvol = "/var/lib/briard/data/${fixture.name}";
   haDir = "${subvol}/${fixture.container}";
   db = "${haDir}/home-assistant_v2.db";
   cfg = "${haDir}/configuration.yaml";
   entriesFile = "${haDir}/briard_entry_states.json";
-  snap = "/var/lib/briard/.snapshots/${fixture.name}-preupgrade";
+  snap = "/var/lib/briard/data/.snapshots/${fixture.name}-preupgrade";
   schemaQ = "SELECT COALESCE(MAX(schema_version),0) FROM schema_changes;";
   # A specific named recorder row that must survive into the rollback point (non-vacuous —
   # we assert the exact row content by id, not just a count; see
@@ -146,7 +146,7 @@ pkgs.testers.runNixOSTest {
 
     # ---- Snapshot the rollback point, then pin `to` + cycle onto it IN PLACE ----
     node1.succeed("findmnt /var/lib/briard")
-    node1.succeed("mkdir -p /var/lib/briard/.snapshots")
+    node1.succeed("mkdir -p /var/lib/briard/data/.snapshots")
     node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}")
 
     # THE UPGRADE: the `to` manifest under the same service name, applied by the product's own
