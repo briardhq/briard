@@ -178,7 +178,7 @@ func TestTheCacheHasItsRowAndAClear(t *testing.T) {
 	}
 	port.mu.Unlock()
 	if len(asked) != 1 || asked[0].Payload != "home-assistant" {
-		t.Errorf("the host was asked %v, want one service-cache-empty for home-assistant", asked)
+		t.Errorf("the host was asked %v, want one app-cache-empty for home-assistant", asked)
 	}
 
 	resp = r.form("/cache/clear", c, url.Values{"app": {"home-assistant"}})

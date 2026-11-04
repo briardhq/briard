@@ -153,7 +153,7 @@ pkgs.testers.runNixOSTest {
         print(f"install {label}: rc={rc}\n{out}")
         assert rc == 0, f"installing {label} failed (rc={rc}):\n{out}"
         lines = host.succeed(f"journalctl -u briard-agent -o cat --after-cursor='{cursor}'").splitlines()
-        first = next(i for i, l in enumerate(lines) if "directive kind=service-install submitted locally" in l)
+        first = next(i for i, l in enumerate(lines) if "directive kind=app-install submitted locally" in l)
         last = next(i for i, l in enumerate(lines) if "healthy, serving" in l)
         ticks = sum(1 for l in lines[first:last] if "status node=" in l)
         assert ticks >= 1, f"install {label}: no status line between submit and serving ({last - first} lines) -- the install held the loop:\n" + "\n".join(lines[first:last + 1])

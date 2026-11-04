@@ -321,7 +321,7 @@ func (f *fakeInstaller) AppHealthOf(_ context.Context, app string) (apps.Health,
 	return apps.Healthy, nil
 }
 
-// The service-install path has no opinion about names. "" -- this node publishes none -- is the
+// The app-install path has no opinion about names. "" -- this node publishes none -- is the
 // honest answer here; a fixture name could be mistaken for an assertion that one was published.
 func (f *fakeInstaller) MDNSPublished(context.Context) (string, error) { return "", nil }
 func (f *fakeInstaller) MDNSOther(context.Context) (string, error)     { return "", nil }
@@ -572,7 +572,7 @@ func priorManifest(t *testing.T) (map[string]string, string) {
 // UPGRADE must put back the prior app's DATA and IDENTITY, not merely take the new one out of
 // the chain. So the path snapshots before the switch, and on a tripped gate it restores the
 // subvolume and re-records the prior manifest — the app-level twin of the {code+data} OS
-// rollback. (The real btrfs/quadlet/front-door mechanics are the job of service-install-broken.nix;
+// rollback. (The real btrfs/quadlet/front-door mechanics are the job of app-install-broken.nix;
 // this asserts the host drives them in the right order.)
 func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 	prior, priorRaw := priorManifest(t)
@@ -2167,7 +2167,7 @@ func TestARevertedInstallTellsTheOwner(t *testing.T) {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
 	if len(fn.alerts) != 1 || fn.alerts[0].Key != "upgrade-rolled-back:app-install" {
-		t.Fatalf("a reverted install raised %+v, want one service-install event", fn.alerts)
+		t.Fatalf("a reverted install raised %+v, want one app-install event", fn.alerts)
 	}
 
 	// A committed install.
@@ -2338,7 +2338,7 @@ func (g *usageGuest) SupportsUsage() bool { return !g.old }
 // relayed whole; a guest too old to measure is told so without being asked.
 func TestTheAppPageMayAskWhatAnAppStores(t *testing.T) {
 	if !guestMayAsk(api.Directive{Kind: api.DirectiveAppUsage}) || !localOnlyKinds[api.DirectiveAppUsage] {
-		t.Fatal("service-usage is not the page's to ask, or the cloud may ask it")
+		t.Fatal("app-usage is not the page's to ask, or the cloud may ask it")
 	}
 	g := &usageGuest{usage: dashboard.AppUsage{Data: &dashboard.TierUsage{Total: 3e9, Cap: 4e10, Members: 3, Measured: true, Current: 2e9, Uncompressed: 5e9, History: 1e9}, Measuring: true}}
 	o := Config{}.applyAppUsage(context.Background(), g, api.Directive{ID: "d", Kind: api.DirectiveAppUsage, Payload: "immich"})

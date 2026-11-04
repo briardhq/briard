@@ -382,7 +382,7 @@ The words the code and its comments use, briefly:
 - **Machine / node** — the same thing. The product says *machine* to people; the code says
   *node*.
 - **App / service** — the same thing. What you install from the catalog is an *app*, in the
-  docs and comments too; only code identifiers and fixed names (`service-install`,
+  docs and comments too; only code identifiers and fixed names (`app-install`,
   `.apps/`) say *service*.
 - **Flock** — the home's nodes under one name. Every install has one, and a **lone node** is a
   flock of one, running no DRBD.

@@ -1085,7 +1085,7 @@ func (cfg Config) undoPending(ctx context.Context, g appInstaller, logf func(str
 	if len(all) == 0 {
 		return true
 	}
-	return cfg.acts.runInternal("service-undo", func() {
+	return cfg.acts.runInternal("app-undo", func() {
 		uctx, ucancel := cfg.beat.budget(ctx, revertBudget*time.Duration(len(all)))
 		defer ucancel()
 		for _, p := range all {

@@ -179,7 +179,7 @@ func galleryRing(broken bool) string {
 	return string(raw)
 }
 
-// answerHistory lets the port answer every service-members with the given ring.
+// answerHistory lets the port answer every app-members with the given ring.
 func answerHistory(port *fakePort, ring string) {
 	go func() {
 		for range port.waiting {

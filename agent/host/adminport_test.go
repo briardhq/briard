@@ -58,7 +58,7 @@ func TestAdminPortRelaysOnlyInGuestDirectives(t *testing.T) {
 		}
 		return o
 	}
-	if o := ask(`{"id":"a1","kind":"service-install","payload":"home-assistant"}` + "\n"); o.ID != "a1" || o.State != api.OutcomeDone || o.Detail != "installed home-assistant" {
+	if o := ask(`{"id":"a1","kind":"app-install","payload":"home-assistant"}` + "\n"); o.ID != "a1" || o.State != api.OutcomeDone || o.Detail != "installed home-assistant" {
 		t.Errorf("install outcome = %+v", o)
 	}
 	for _, kind := range []string{api.DirectiveHandover, "upgrade", api.DirectiveSync, ""} {
@@ -72,7 +72,7 @@ func TestAdminPortRelaysOnlyInGuestDirectives(t *testing.T) {
 	if o := ask(`{"id":"half","kind":"serv` + "\n"); o.ID != "" || o.State != api.OutcomeFailed {
 		t.Errorf("half-line = %+v; want an ID-less failure", o)
 	}
-	if o := ask(`{"id":"a2","kind":"service-prewarm","payload":"mosquitto"}` + "\n"); o.ID != "a2" || o.State != api.OutcomeDone {
+	if o := ask(`{"id":"a2","kind":"app-prewarm","payload":"mosquitto"}` + "\n"); o.ID != "a2" || o.State != api.OutcomeDone {
 		t.Errorf("prewarm after the half-line = %+v", o)
 	}
 	// The wire drops (the guest rebooted): the agent reconnects to the next qemu end.
@@ -84,7 +84,7 @@ func TestAdminPortRelaysOnlyInGuestDirectives(t *testing.T) {
 	defer guest2.Close()
 	rd = bufio.NewReader(guest2)
 	guest = guest2
-	if o := ask(`{"id":"a3","kind":"service-install","payload":"home-assistant"}` + "\n"); o.ID != "a3" || o.State != api.OutcomeDone {
+	if o := ask(`{"id":"a3","kind":"app-install","payload":"home-assistant"}` + "\n"); o.ID != "a3" || o.State != api.OutcomeDone {
 		t.Errorf("install after a reconnect = %+v", o)
 	}
 	joined := strings.Join(logs, "\n")

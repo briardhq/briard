@@ -608,7 +608,7 @@ pkgs.testers.runNixOSTest {
     print(f"the installer's link redeemed once at {install_link_host}")
 
     # THE GUEST'S ADMIN PORT, END TO END: the trusted browser presses "Install Home
-    # Assistant"; the dashboard relays a service-install directive over the second virtio-serial
+    # Assistant"; the dashboard relays a app-install directive over the second virtio-serial
     # port; the host agent dispatches it exactly as it would the CLI's. The catalog here is the
     # signed index and no manifest, so the install FAILS -- and that is the measurement: the
     # page must carry the host's own refusal back, which proves the whole wire (device -> qemu
@@ -636,7 +636,7 @@ pkgs.testers.runNixOSTest {
         f"http://{vip}/install/home-assistant"
     ).strip()
     assert pressed == "303", f"the button answered {pressed}"
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'admin port: directive kind=service-install submitted by the guest'", timeout=30)
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'admin port: directive kind=app-install submitted by the guest'", timeout=30)
     def outcome_on_page():
         p = client.succeed(f"curl -fsS -H 'Host: {install_link_host}' -H 'Cookie: {session}' http://{vip}/")
         return p if "Could not install Home Assistant" in p else None

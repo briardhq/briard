@@ -161,7 +161,7 @@ func (c *degradedClient) ReportMetrics(context.Context, string, []api.MetricAggr
 func TestReportDegradedSendsIdentityAndRefusesTerminally(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, Version: "v3.test"}
 	cc := &degradedClient{give: []api.Directive{
-		{ID: "d1", Kind: "service-install"},
+		{ID: "d1", Kind: "app-install"},
 		{ID: "d2", Kind: "os-upgrade"},
 	}}
 	dg := &degraded{rep: cc, tenant: "default"}

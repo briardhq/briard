@@ -265,7 +265,7 @@ func (a *fakeAssessor) Assess(_ context.Context, base Baseline) (Verdict, string
 	return a.verdict, string(a.verdict) + "-reason", a.assessErr
 }
 
-// The S1 gate's verdicts, driven on the pair the service-install path calls -- capture a
+// The S1 gate's verdicts, driven on the pair the app-install path calls -- capture a
 // baseline while the old code still serves, then judge once the floor has passed -- so the
 // semantics are asserted once, here.
 //

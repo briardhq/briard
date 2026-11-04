@@ -605,7 +605,7 @@ in
     # starts inside a promotion.
     haAdvertProbe
     # Exported because two rigs write their OWN reactor snippet -- runtime-join needs
-    # no baked r0.res, service-install installs one from the testScript -- and both restated the
+    # no baked r0.res, app-install installs one from the testScript -- and both restated the
     # chain by hand. That was survivable while every non-member rode briard-vip on wantedBy; it is
     # not now that the door and the publishers are MEMBERS, because a rig whose list is short does
     # not merely differ, it never starts them. One definition, three consumers.

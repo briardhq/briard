@@ -2,7 +2,7 @@ package main
 
 // THE STORAGE CARD: what an app keeps on this machine, per storage tier -- its data and its
 // History, the household's files in it and their Versions -- and how far each may grow. The guest
-// measures it (service-usage, relayed by the host like the History's list); the page loads the
+// measures it (app-usage, relayed by the host like the History's list); the page loads the
 // card once it is up, and the card asks again while the guest is still walking the app's areas,
 // so the page never waits on the walk.
 //

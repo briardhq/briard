@@ -263,7 +263,7 @@ pkgs.testers.runNixOSTest {
     # NOT A RACE -- IT SHIPPED. `WatchdogSec=20` landed 2026-08-13 on a `service install` measured
     # at 48.8 s from the published channel a week earlier, and the next person to run the verb was
     # a stranger, seven days after that. Twenty-one seconds from `directive
-    # kind=service-install submitted locally` to `Watchdog timeout (limit 20s)!`, then SIGABRT and
+    # kind=app-install submitted locally` to `Watchdog timeout (limit 20s)!`, then SIGABRT and
     # a CLI printing "the agent closed the connection without reporting an outcome" -- because the
     # admin socket died with the process holding it.
     #
@@ -297,7 +297,7 @@ pkgs.testers.runNixOSTest {
     # It really did reach dispatch -- the same line the stranger's journal opens with. Without
     # this, a CLI that failed to connect at all would look like a pass.
     host.succeed(
-        f"journalctl -u briard-agent --since='{long_since}' | grep -q 'kind=service-install'"
+        f"journalctl -u briard-agent --since='{long_since}' | grep -q 'kind=app-install'"
     )
     # THE DEFECT, and the JOURNAL is the witness to assert on first, because it is the only
     # race-free one: systemd logs the trip immediately, while the two counters below are read in

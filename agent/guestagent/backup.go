@@ -506,7 +506,7 @@ func Backup(ctx context.Context, x Executor, url string) BackupReport {
 
 // THE RESTORE'S GUEST HALF: one app's copy from one night of the backup, MATERIALISED AS A
 // RING MEMBER -- a read-only subvolume with a sidecar, beside the members the ring took itself.
-// Putting it back is then the ordinary restore of a member (the host's service-restore: the
+// Putting it back is then the ordinary restore of a member (the host's app-restore: the
 // images first, the undo point, stop, swap, the member's manifest, converge), so there is one
 // restore path and the backup joins it rather than adding a second.
 //

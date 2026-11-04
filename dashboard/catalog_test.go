@@ -245,7 +245,7 @@ func offering(update bool) dashboard.Catalog {
 
 // AN UPDATE THE CATALOG OFFERS is a badge, a line naming both versions and the undo, and an
 // Update button on the app's card wherever it shows; the app's own page also says what Briard
-// does around it. The press relays one service-install, as Install does; while it runs the card
+// does around it. The press relays one app-install, as Install does; while it runs the card
 // says it is updating and polls itself, and the home is not "setting up". An update that did
 // not finish says so with the host's reason and a retry; one that did hides the offer until
 // the host's view drops it.
@@ -288,7 +288,7 @@ func TestAnOfferedUpdateIsShownPressedAndTaken(t *testing.T) {
 	asked := append([]api.Directive(nil), port.asked...)
 	port.mu.Unlock()
 	if len(asked) != 1 || asked[0].Kind != api.DirectiveAppInstall || asked[0].Payload != "home-assistant" {
-		t.Fatalf("the host was asked %+v; want exactly one service-install of home-assistant", asked)
+		t.Fatalf("the host was asked %+v; want exactly one app-install of home-assistant", asked)
 	}
 
 	port.answer <- api.DirectiveOutcome{ID: asked[0].ID, State: api.OutcomeRolledBack, Detail: "home-assistant did not come up"}

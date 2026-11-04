@@ -105,7 +105,7 @@ type selfUpdater interface {
 // polls. Re-delivery of an already-applied directive is an idempotent no-op that re-reports done.
 //
 // IT TAKES NO APP, and that is deliberate: nothing here acts on one.
-// A version change is a service-install directive carrying a catalog name (applyAppInstall),
+// A version change is a app-install directive carrying a catalog name (applyAppInstall),
 // an OS upgrade must not touch apps at all, and the image re-pin that needed a single named
 // app died with the build-time payload slot.
 func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any), upgradeBudget time.Duration, wd *beat) api.DirectiveOutcome {

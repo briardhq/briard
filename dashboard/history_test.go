@@ -15,7 +15,7 @@ import (
 	"briard.io/shared/api"
 )
 
-// ring is what the host answers `service-members` with: quiet time on an older version
+// ring is what the host answers `app-members` with: quiet time on an older version
 // whose point was taken while the app ran, the update to 2026.8.0 on the point before it, and the
 // start after it -- a sample, which anchors nothing and is not a row.
 func ring() string {
@@ -69,7 +69,7 @@ func bodyOf(t *testing.T, resp *http.Response) string {
 	return string(b)
 }
 
-// answerMembers lets the fake port answer the next service-members with the ring above.
+// answerMembers lets the fake port answer the next app-members with the ring above.
 func answerMembers(port *fakePort) {
 	go func() {
 		for range port.waiting {
@@ -176,7 +176,7 @@ func TestHistoryConfirmsBeforeUndoing(t *testing.T) {
 	}
 	port.mu.Unlock()
 
-	// CONFIRMED: exactly one service-restore, naming the point VERBATIM -- never an index into a
+	// CONFIRMED: exactly one app-restore, naming the point VERBATIM -- never an index into a
 	// listing that anything taking a member makes stale.
 	resp = postForm(t, r, "/undo", c, url.Values{"point": {member}, "confirm": {"yes"}, "what": {"x"}})
 	resp.Body.Close()

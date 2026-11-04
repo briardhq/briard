@@ -315,9 +315,9 @@ pkgs.testers.runNixOSTest {
     text = f"/var/lib/briard/data/{svc}/storage-text"
     guest(f'yes "the storage card reads the extent tree" | head -c 33554432 > {text}; head -c 2097152 /dev/urandom > {cache}/cache/blob; sync -f {text}; echo D""ONE', wait=8)
     def usage():
-        out = host.succeed(f"""echo '{{"id":"u","kind":"service-usage","payload":"{svc}"}}' | socat -t30 - UNIX-CONNECT:/run/briard/admin.sock""")
+        out = host.succeed(f"""echo '{{"id":"u","kind":"app-usage","payload":"{svc}"}}' | socat -t30 - UNIX-CONNECT:/run/briard/admin.sock""")
         o = json.loads(out)
-        assert o["state"] == "done", f"service-usage: {o}"
+        assert o["state"] == "done", f"app-usage: {o}"
         return json.loads(o["detail"])
     u = usage()
     assert u.get("measuring") and not u["data"].get("measured"), f"the first ask did not start a walk: {u}"
@@ -352,8 +352,8 @@ pkgs.testers.runNixOSTest {
         assert m, f"no start time for the app's container:\n{out}"
         return int(m.group(1))
     first_start = started()
-    out = host.succeed(f"""echo '{{"id":"c","kind":"service-cache-empty","payload":"{svc}"}}' | socat -t120 - UNIX-CONNECT:/run/briard/admin.sock""")
-    assert json.loads(out)["state"] == "done", f"service-cache-empty: {out}"
+    out = host.succeed(f"""echo '{{"id":"c","kind":"app-cache-empty","payload":"{svc}"}}' | socat -t120 - UNIX-CONNECT:/run/briard/admin.sock""")
+    assert json.loads(out)["state"] == "done", f"app-cache-empty: {out}"
     out = guest(f'echo C""ACHE=$(ls -A {cache}/cache | tr "\\n" ",")E K""EPT=$(stat -c %s {unversioned}/keep/kept.bin)')
     assert re.search(r"CACHE=E KEPT=4194304", out), f"after the Clear the cache and the unversioned area are:\n{out}"
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)

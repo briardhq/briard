@@ -425,9 +425,9 @@ in
       # both build the cloud witness. The three tests above mention the cloud only in prose.
     };
 
-    # Version-change + TLS-serving mechanisms. `service-install` is the version change now
+    # Version-change + TLS-serving mechanisms. `app-install` is the version change now
     # (the baked slot is gone): the three tests that used to live here drove the baked slot's image re-pin,
-    # which no longer exists. Their subjects did not go with them — `service-install`'s upgrade
+    # which no longer exists. Their subjects did not go with them — `app-install`'s upgrade
     # half is the in-place version change, its broken half is the health-gated rollback, and its
     # reboot half is converge-at-promotion (a node that renders from the volume, having been told
     # nothing).

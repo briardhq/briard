@@ -56,7 +56,7 @@ func newFakePort() *fakePort {
 	return &fakePort{answer: make(chan api.DirectiveOutcome, 1), waiting: make(chan struct{}, 1)}
 }
 
-// "SET UP HOME ASSISTANT": the button relays exactly one service-install directive
+// "SET UP HOME ASSISTANT": the button relays exactly one app-install directive
 // to the host and nothing else; while the host works the page says so and polls itself; a second
 // click while it runs asks nothing more; a refusal from the host is shown with its reason and the
 // CLI; success is forgotten the moment the routes table lists the app, and the ordinary card
@@ -98,7 +98,7 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 	asked := append([]api.Directive(nil), port.asked...)
 	port.mu.Unlock()
 	if len(asked) != 1 || asked[0].Kind != api.DirectiveAppInstall || asked[0].Payload != "home-assistant" {
-		t.Fatalf("the host was asked %+v; want exactly one service-install of home-assistant", asked)
+		t.Fatalf("the host was asked %+v; want exactly one app-install of home-assistant", asked)
 	}
 	// The host says no: the reason and the CLI are on the page, and the button is back.
 	port.answer <- api.DirectiveOutcome{ID: asked[0].ID, State: api.OutcomeFailed, Detail: "catalog: no such app"}

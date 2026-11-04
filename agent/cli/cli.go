@@ -355,7 +355,7 @@ func runDirective(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 // runApp is the first verb that is SUGAR over `directive` rather than a separate mechanism —
 // which is the shape every later verb should copy. `briard app install ha` is exactly
-// `briard directive service-install ha`, so there is one path through the agent and the CLI adds
+// `briard directive app-install ha`, so there is one path through the agent and the CLI adds
 // only a name a human would guess. (The verb a user types is `app`; *service* stays the
 // engineering term in identifiers and on the wire.)
 //

@@ -20,7 +20,7 @@ import (
 // app nor data: it is a property of the node, and it leaves the workload alone.
 //
 // NO SNAPSHOT/RESTORE HERE ANY MORE. They were the {data} half of an OS
-// upgrade that no longer touches apps, and the service-install sequence
+// upgrade that no longer touches apps, and the app-install sequence
 // (agent/host/app.go) has owned moving manifest and data back together since the service-warm re-cut —
 // driving the guest agent's data.member/data.restore verbs directly, pinned to the manifest
 // rather than to a system closure.

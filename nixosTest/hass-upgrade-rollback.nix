@@ -182,7 +182,7 @@ pkgs.testers.runNixOSTest {
     # promoter demote + unmount the volume (exactly the hazard the bracket exists to avoid).
     # The real Manager doing the full swap + re-serve is unit-tested in agent/guest; the nested
     # end-to-end proof (managed-upgrade.nix) was retired and is the lab demo's to rebuild
-    # (broken upgrade → gate trips → {code+data} rollback → healthy re-serve; see the service-install tests0). What THIS
+    # (broken upgrade → gate trips → {code+data} rollback → healthy re-serve; see the app-install tests0). What THIS
     # test uniquely proves — needing REAL HA — is the two halves that rig can't: the gate trips on a
     # REAL entry regression (above), and the rollback point holds the pre-migration DB with its
     # history intact (here).

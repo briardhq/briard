@@ -33,15 +33,15 @@ import (
 
 // guestMayAsk is the allowlist: the directives whose effect stays inside the guest.
 //
-// service-usage joins service-members for the app page's Storage card: a read of what one app
+// app-usage joins app-members for the app page's Storage card: a read of what one app
 // keeps on this node, whose walk the guest runs in its own background.
 //
-// service-restore joins them: its effect is one app's data and code on this node,
+// app-restore joins them: its effect is one app's data and code on this node,
 // the same blast radius an install already has, and the picker that asks for it is the dashboard
 // behind the same door.
 //
 // backup-restore and backup-list join them for the Backup page's restore: the restore is one
-// app's data and code put back from the household's own repository -- a service-restore, or
+// app's data and code put back from the household's own repository -- a app-restore, or
 // on a node without the app an install -- and the list only reads what that repository
 // holds. Neither reaches past the guest's own data: the repository is the folder the host already
 // serves the guest, opened with the key on the guest's own volume.

@@ -81,7 +81,7 @@ type NodeStatus struct {
 	//
 	// WHY A FIELD AT ALL: the cloud must be able to confirm an app rollout. It used to read an
 	// `Image` OCI ref, which was the BAKED SLOT's notion of identity -- a runtime-installed
-	// app's identity is its MANIFEST, and its upgrade is a service-install directive carrying
+	// app's identity is its MANIFEST, and its upgrade is a app-install directive carrying
 	// a new one (the change that deleted the slot deleted the field with it). With nothing else
 	// on the wire, a node was held to ONE runtime app by an explicit refusal in
 	// applyAppInstall, because a node running two and describing one would have the cloud
@@ -103,9 +103,9 @@ type NodeStatus struct {
 	// Empty on a witness and on the shipped zero-app node, which is the state `install.sh`
 	// leaves behind. A node that has PROMOTED reports what the volume says it runs, not merely
 	// what it was itself told to install (adoptVolumeApps).
-	Apps []AppStatus `json:"services,omitempty"`
+	Apps []AppStatus `json:"apps,omitempty"`
 	// AgentVersion is the release id of the host-agent binary now running. It makes a
-	// host-agent self-update observable through the seam the same way Services does for what the
+	// host-agent self-update observable through the seam the same way Apps does for what the
 	// node runs: the cloud confirms a canary committed the offered version (its trial went
 	// healthy) before it offers the fleet -- a reverted trial keeps the old version, so a bad
 	// build never advances past the canary. Empty when the binary is built without a version.
@@ -324,7 +324,7 @@ const (
 //
 // There is no payload `upgrade` kind. It named an OCI image ref and re-pinned the build-time
 // payload slot, which is deleted; a runtime-installed app is identified by its
-// MANIFEST, so moving one to a new version is a service-install directive carrying the catalog
+// MANIFEST, so moving one to a new version is a app-install directive carrying the catalog
 // name whose published manifest changed.
 const (
 	DirectiveNoop          = "noop"           // acknowledge only -- proves the round-trip
@@ -345,7 +345,7 @@ const (
 	//                        Host-agent binary, verifies it against its release keyring, and — only on
 	//                        a valid signature — stages+arms it for the Type=notify trial. A
 	//                        bad/absent signature is refused, current kept.
-	DirectiveAppInstall = "service-install" // Payload = a CATALOG NAME (a slug, e.g.
+	DirectiveAppInstall = "app-install" // Payload = a CATALOG NAME (a slug, e.g.
 	//                        "home-assistant"). The node fetches that name's signed manifest from the
 	//                        catalog, verifies it against the release keyring, renders quadlet
 	//                        units, provisions the app subvolume (Primary only), and rewrites the
@@ -356,12 +356,12 @@ const (
 	//                        then be trusting the sender rather than the signature. Sent by the cloud,
 	//                        or injected locally by `briard app install` over the admin socket
 	//                        — both land in the same dispatch.
-	DirectiveAppPrewarm = "service-prewarm" // Payload = a CATALOG NAME, as service-install. Renders
+	DirectiveAppPrewarm = "app-prewarm" // Payload = a CATALOG NAME, as app-install. Renders
 	//                        The quadlet units and pulls the images WITHOUT touching the promoter chain,
 	//                        the volume, or what is currently serving -- the warm-standby half, made a
 	//                        named operation.
 	//
-	//                        WHY IT IS ITS OWN KIND rather than "service-install on a node that happens
+	//                        WHY IT IS ITS OWN KIND rather than "app-install on a node that happens
 	//                        not to be Primary", which is what a secondary already did.
 	//
 	//                        THE REASON THAT MATTERS IS SAFETY, not tidiness. That design inferred the
@@ -383,7 +383,7 @@ const (
 	//                        digest already present is a no-op. It never changes what the node serves,
 	//                        which is what lets the cloud fan it out to every anchor before committing
 	//                        anything.
-	DirectiveAppMembers = "service-members" // Payload = an APP NAME. Outcome.Detail is a
+	DirectiveAppMembers = "app-members" // Payload = an APP NAME. Outcome.Detail is a
 	//                        JSON array of quadlet.SnapshotEntry: one app's ring, oldest
 	//                        first, as the picker shows it. Read-only — it changes
 	//                        nothing and is safe to re-send.
@@ -393,21 +393,21 @@ const (
 	//                        directive channel for one query, and two ways to ask a node something
 	//                        is how they drift. Both readers want structure: the CLI prints a
 	//                        table, the dashboard renders a list.
-	DirectiveAppUsage = "service-usage" // Payload = an APP NAME. Outcome.Detail is a JSON
+	DirectiveAppUsage = "app-usage" // Payload = an APP NAME. Outcome.Detail is a JSON
 	//                        dashboard.AppUsage: what the app's data and history hold on the
 	//                        volume, per tier, for its page's Storage card. Read-only; the split
 	//                        between current data and history comes from a walk the guest runs in
 	//                        its background when the last one is stale, so the first answer may
 	//                        say it is still measuring. Local-only: what a household stores is the
 	//                        household's to see.
-	DirectiveAppRestore = "service-restore" // Payload = a RING MEMBER's subvolume path
+	DirectiveAppRestore = "app-restore" // Payload = a RING MEMBER's subvolume path
 	//                        exactly as the listing the picker read returned it. The
 	//                        node puts that app back to the member: its data, and — when the
 	//                        member's pinned manifest differs from the running one — its CODE with
 	//                        it, which is the designed {code identity + data} rollback reached
 	//                        deliberately rather than through a failed upgrade.
 	//
-	//                        A PATH AND NOT A TITLE, deliberately, and it is service-install's
+	//                        A PATH AND NOT A TITLE, deliberately, and it is app-install's
 	//                        reasoning from the other end: a title is for people, and is neither
 	//                        unique nor stable. The directive names the thing, never a description
 	//                        of it.
@@ -417,7 +417,7 @@ const (
 	//                        be fetched is told while its app is still running. An INSTALL is
 	//                        allowed to stop things, because the household asked for a change; a
 	//                        restore that cannot finish must cost nothing.
-	DirectiveAppCacheEmpty = "service-cache-empty" // Payload = an APP NAME. The node stops
+	DirectiveAppCacheEmpty = "app-cache-empty" // Payload = an APP NAME. The node stops
 	//                        the app, empties its cache area and starts it again: the Storage
 	//                        card's Clear. Refused for an app that keeps no cache. Local-only: a
 	//                        household's app restarting is the household's to ask for.
@@ -534,7 +534,7 @@ const (
 	DirectiveBackupRestore = "backup-restore" // Payload = a JSON BackupRestore. Put one app back to
 	//                        one night of the household's backup: the night's copy is materialised
 	//                        in the app's ring as a member, and that member is restored exactly
-	//                        as service-restore restores one -- images first, the undo point, stop,
+	//                        as app-restore restores one -- images first, the undo point, stop,
 	//                        swap, the member's manifest, converge -- so a night from the backup
 	//                        and a point from the ring are one path, and the restore is itself a
 	//                        row in the history that can be undone. Local-only: the household's
@@ -574,7 +574,7 @@ const (
 // BackupRestore is a DirectiveBackupRestore's payload: the app, and the night -- a restic
 // snapshot id as the dashboard's Backup section lists them, or "latest".
 type BackupRestore struct {
-	App      string `json:"service"`
+	App      string `json:"app"`
 	Snapshot string `json:"snapshot"`
 }
 
