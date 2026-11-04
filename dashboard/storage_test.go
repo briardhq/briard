@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +45,8 @@ func answerUsage(port *fakePort, members string) *usageAnswers {
 				}
 				u.mu.Unlock()
 				port.answer <- o
+			case api.DirectiveServiceCacheEmpty:
+				port.answer <- api.DirectiveOutcome{State: api.OutcomeDone}
 			default:
 				port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "not this test's"}
 			}
@@ -113,12 +116,12 @@ func TestTheStorageCardLoadsItselfAndStopsAskingOnceMeasured(t *testing.T) {
 		}
 	}
 
-	// Every app has a files area; an empty one with a month of its versions is not shown.
-	u.set(dashboard.AppUsage{Data: &dashboard.TierUsage{Total: 3e9, Cap: -1, Members: 3},
-		Files: &dashboard.TierUsage{Total: 35 * 16384, Cap: 300e9, Members: 34, Measured: true}})
+	// An app that mounts no files has no files group, and no rows for them; nor a cache row.
+	u.set(dashboard.AppUsage{Data: &dashboard.TierUsage{Total: 3e9, Cap: -1, Members: 3}})
 	body = r.get(t, "/f/storage?app=home-assistant", c)
-	if !strings.Contains(body, "Not measured (3.00 GB with its history)") || strings.Contains(body, "Your files") || strings.Contains(body, "Room") {
-		t.Errorf("an unmeasured app with an empty files area, and no cap of its own:\n%s", body)
+	if !strings.Contains(body, "Not measured (3.00 GB with its history)") || strings.Contains(body, "Your files") ||
+		strings.Contains(body, "Room") || strings.Contains(body, "Cache") {
+		t.Errorf("an unmeasured app with no files area, no cache, and no cap of its own:\n%s", body)
 	}
 
 	u.mu.Lock()
@@ -129,5 +132,63 @@ func TestTheStorageCardLoadsItselfAndStopsAskingOnceMeasured(t *testing.T) {
 	}
 	if resp := r.do("GET", "/f/storage?app=immich", c, nil); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("an app not offered has a storage card: %d", resp.StatusCode)
+	}
+}
+
+// AN APP WITH A CACHE HAS ITS ROW AND A CLEAR: what the cache holds, a word on what clearing
+// does, and the room said as covering it. The Clear asks the host to empty the app's cache, once,
+// and answers with the card saying so; without a script it comes back to the card's page.
+func TestTheCacheHasItsRowAndAClear(t *testing.T) {
+	r := newRig(t)
+	c := r.trust()
+	port := newFakePort()
+	r.app.port = port
+	u := answerUsage(port, ring())
+	u.set(dashboard.AppUsage{
+		Data:  &dashboard.TierUsage{Total: 4e9, Cap: 40e9, Members: 3, Measured: true, Current: 2e9, Uncompressed: 2e9, History: 5e8},
+		Cache: &dashboard.TierUsage{Cap: -1, Measured: true, Current: 15e8, Uncompressed: 15e8}})
+	body := r.get(t, "/f/storage?app=home-assistant", c)
+	for _, want := range []string{
+		"<h3>Cache</h3><p>1.50 GB on disk</p>",
+		"Clearing it restarts the app",
+		`hx-post="/cache/clear" hx-target="#storage"`,
+		`<input type="hidden" name="app" value="home-assistant">`,
+		"Room: up to 40.00 GB for its data, cache and history.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the card does not say %q:\n%s", want, body)
+		}
+	}
+
+	req, _ := http.NewRequest("POST", r.srv.URL+"/cache/clear", strings.NewReader("app=home-assistant"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	req.AddCookie(c)
+	resp, err := noRedirect.Do(req)
+	must(t, err)
+	if card := bodyOf(t, resp); !strings.Contains(card, `id="storage"`) || !strings.Contains(card, "Cleared. The app is starting again") {
+		t.Errorf("the Clear does not answer with the card saying so:\n%s", card)
+	}
+	var asked []api.Directive
+	port.mu.Lock()
+	for _, d := range port.asked {
+		if d.Kind == api.DirectiveServiceCacheEmpty {
+			asked = append(asked, d)
+		}
+	}
+	port.mu.Unlock()
+	if len(asked) != 1 || asked[0].Payload != "home-assistant" {
+		t.Errorf("the host was asked %v, want one service-cache-empty for home-assistant", asked)
+	}
+
+	resp = r.form("/cache/clear", c, url.Values{"app": {"home-assistant"}})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/apps/home-assistant?storage" {
+		t.Errorf("without a script the Clear answers %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp := r.form("/cache/clear", c, url.Values{"app": {"immich"}}); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("a Clear for an app not offered answered %d", resp.StatusCode)
+	}
+	if resp := r.form("/cache/clear", nil, url.Values{"app": {"home-assistant"}}); resp.StatusCode == http.StatusSeeOther && resp.Header.Get("Location") == "/apps/home-assistant?storage" {
+		t.Error("a Clear without a session was taken")
 	}
 }

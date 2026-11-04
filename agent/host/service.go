@@ -1471,6 +1471,57 @@ func (cfg Config) applyServiceUsage(ctx context.Context, g usageReader, d api.Di
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: string(body)}
 }
 
+// cacheEmptier is the slice of the guest applyServiceCacheEmpty needs beyond an install's. Narrow
+// interface for DI, not a seam.
+type cacheEmptier interface {
+	EmptyCache(ctx context.Context, app string) error
+	SupportsEmptyCache() bool
+}
+
+// applyServiceCacheEmpty empties one app's cache and starts it again: the Storage card's Clear.
+// The app is stopped first -- a running app holds its cache open -- and converge starts what the
+// volume names, as a restore's end does, whether or not the emptying worked.
+func (cfg Config) applyServiceCacheEmpty(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+	failed := func(detail string) api.DirectiveOutcome {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
+	}
+	if !manifest.ValidName(d.Payload) {
+		return failed(fmt.Sprintf("%q is not an app's name", d.Payload))
+	}
+	e, ok := g.(cacheEmptier)
+	if !ok || !e.SupportsEmptyCache() {
+		return failed("this guest cannot empty an app's cache; update the guest OS first")
+	}
+	raw, err := g.ServiceInstalled(ctx, d.Payload)
+	if err != nil {
+		return failed(fmt.Sprintf("read %s's installed manifest: %v", d.Payload, err))
+	}
+	if raw == "" {
+		return failed(d.Payload + " is not installed here")
+	}
+	m, _, err := manifest.Parse([]byte(raw))
+	if err != nil {
+		return failed(fmt.Sprintf("%s's installed manifest does not parse: %v", d.Payload, err))
+	}
+	if !m.UsesTier(manifest.TierCache) {
+		return failed(m.Name + " keeps no cache")
+	}
+	r, err := quadlet.Render(m, "")
+	if err != nil {
+		return failed(fmt.Sprintf("%s's installed manifest does not render: %v", m.Name, err))
+	}
+	cfg.quiesce(ctx, g, r.ContainerUnits, logf)
+	emptied := e.EmptyCache(ctx, m.Name)
+	if _, err := g.ServiceConverge(ctx, ""); err != nil {
+		return failed(fmt.Sprintf("start %s again (its cache emptied: %t): %v", m.Name, emptied == nil, err))
+	}
+	if emptied != nil {
+		return failed(fmt.Sprintf("empty %s's cache: %v; it was started again as it was", m.Name, emptied))
+	}
+	logf("service cache %s: emptied; started again", m.Name)
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: m.Name + "'s cache is empty; it is starting again"}
+}
+
 // imageRemover is the slice of the guest dropSuperseded needs. Narrow interface for DI, not a seam.
 type imageRemover interface {
 	volumeReader

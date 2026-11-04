@@ -311,8 +311,13 @@ type BackupApp struct {
 // measures it (storage.usage), the host relays it (api.DirectiveServiceUsage). A tier is nil when
 // the app has no group in it.
 type AppUsage struct {
+	// Data counts the app's unversioned area with its data area: what it keeps.
 	Data  *TierUsage `json:"data,omitempty"`
 	Files *TierUsage `json:"files,omitempty"`
+	// Cache is the app's cache area, nil when it mounts none: charged to the data group, so
+	// Data's Total holds it and its History does not. Only Measured, Current and Uncompressed
+	// mean anything here.
+	Cache *TierUsage `json:"cache,omitempty"`
 	// Measuring: a walk this answer waits on is running, or waits for another app's to end.
 	Measuring bool `json:"measuring,omitempty"`
 }
@@ -329,8 +334,3 @@ type TierUsage struct {
 	Uncompressed int64 `json:"uncompressed,omitempty"`
 	History      int64 `json:"history,omitempty"`
 }
-
-// FilesAreaMin is what a files area must hold, with its versions, to count as holding anything:
-// every app has one, and an empty area with a month of its snapshots stays under it. The Storage
-// card does not show an area under it, and the nightly backup leaves it out.
-const FilesAreaMin = 1_000_000

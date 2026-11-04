@@ -107,7 +107,7 @@ pkgs.testers.runNixOSTest {
     )
     # HA persisted it; flush the guest page cache so the bytes are on the DRBD
     # device (→ replicated under protocol C) before the abrupt kill.
-    primary.wait_until_succeeds(f"grep -rq {USER} {dataroot}/app/.storage")
+    primary.wait_until_succeeds(f"grep -rq {USER} {dataroot}/${fixture.dataDir}/.storage")
     primary.succeed("sync")
 
     # Warm standby is what makes offline failover possible: every node — the
@@ -137,7 +137,7 @@ pkgs.testers.runNixOSTest {
     # Config intact: the owner user crossed the DRBD link and the new primary's HA
     # re-adopted the replicated `.storage`. Assert on whichever survivor is now primary.
     new_primary = next(m for m in survivors if role(m) == "Primary")
-    new_primary.succeed(f"grep -rq {USER} {dataroot}/app/.storage")
+    new_primary.succeed(f"grep -rq {USER} {dataroot}/${fixture.dataDir}/.storage")
 
     # HA started INSIDE this promotion (briard-services is a chain member), and it reads its network
     # once, at boot: the interface it advertises and answers mDNS on, and the address it builds its
@@ -157,8 +157,8 @@ pkgs.testers.runNixOSTest {
     # the survivor — not quarantined as `.corrupt.<ts>` (the silent-history-loss
     # symptom warns of, which an abrupt crash on a torn DB would trigger). This
     # is the specific SQLite-on-DRBD risk the spike exists to retire.
-    new_primary.succeed(f"test -f {dataroot}/app/home-assistant_v2.db")
-    new_primary.fail(f"ls {dataroot}/app/home-assistant_v2.db.corrupt.*")
+    new_primary.succeed(f"test -f {dataroot}/${fixture.dataDir}/home-assistant_v2.db")
+    new_primary.fail(f"ls {dataroot}/${fixture.dataDir}/home-assistant_v2.db.corrupt.*")
 
     # Single-primary preserved: exactly one survivor holds the DRBD primary role.
     primaries = [m.name for m in survivors if role(m) == "Primary"]

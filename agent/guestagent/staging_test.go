@@ -9,7 +9,7 @@ import (
 
 const dummyManifestStaged = `{"name":"dummy","version":"2","network":"host","containers":[{"name":"app",` +
 	`"image":"localhost/briard-dummy@sha256:9999999999999999999999999999999999999999999999999999999999999999",` +
-	`"mount":"/data","primary":true,"port":8080,"healthPath":"/healthz"}]}`
+	`"mounts":[{"tier":"data","dir":"app","path":"/data"}],"primary":true,"port":8080,"healthPath":"/healthz"}]}`
 
 // index is where argv first appears in what the fake ran, -1 if never.
 func (c *convergeExec) index(argv ...string) int {

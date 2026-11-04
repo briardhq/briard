@@ -17,7 +17,7 @@ func broker() manifest.Manifest {
 		Name:    Name,
 		Version: "2.1.2",
 		Containers: []manifest.Container{{
-			Name: "broker", Image: image, Mount: DataMount,
+			Name: "broker", Image: image, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "data", Path: DataMount}},
 			Primary: true, Port: HealthPort, HealthPath: HealthPath,
 		}},
 	}

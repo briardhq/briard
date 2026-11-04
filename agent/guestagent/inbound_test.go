@@ -83,7 +83,7 @@ func restoreRig(marker string, members ...string) *fakeExec {
 	f.files[manifestPath("home-assistant")] =
 		`{"name":"home-assistant","version":"2026.7.1","containers":[{"name":"app",` +
 			`"image":"ghcr.io/x/ha@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
-			`"mount":"/config","primary":true,"port":8123,"healthPath":"/"}]}`
+			`"mounts":[{"tier":"data","dir":"app","path":"/config"}],"primary":true,"port":8123,"healthPath":"/"}]}`
 	if marker != "" {
 		f.files[quadlet.DataRoot("home-assistant")+"/app/"+hass.RestoreMarker] = marker
 	}
@@ -807,7 +807,7 @@ func TestListMembersIsOldestFirstAcrossTriggers(t *testing.T) {
 // detector reads, and each member gets a sidecar pinned to it.
 const haManifest = `{"name":"home-assistant","version":"2026.7.1","containers":[{"name":"app",` +
 	`"image":"ghcr.io/x/ha@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
-	`"mount":"/config","primary":true,"port":8123,"healthPath":"/"}]}`
+	`"mounts":[{"tier":"data","dir":"app","path":"/config"}],"primary":true,"port":8123,"healthPath":"/"}]}`
 
 func haMember(f *fakeExec, trigger quadlet.Trigger, at time.Time, automations string) (string, quadlet.SnapshotMeta) {
 	member := quadlet.SnapshotMember("home-assistant", trigger, at)
@@ -1155,7 +1155,7 @@ func TestABootsResetLandsOnThePointBeforeTheStart(t *testing.T) {
 	f := recordRing(base, start)
 	haMember(f, quadlet.TriggerClock, baseAt, "same")
 	pendingStart(f, now, "same")
-	setAside(f, quadlet.DataPath("home-assistant", "app"), brokenEntries)
+	setAside(f, quadlet.DataRoot("home-assistant")+"/app", brokenEntries)
 	healthRig(t, f)
 
 	evaluatePending(context.Background(), f, "home-assistant", now.Add(time.Second))
@@ -1200,7 +1200,7 @@ func TestAReplacedBootsResetIsCarried(t *testing.T) {
 	pendingStart(f, s1At, "same")
 	pendingStart(f, now, "same")
 	setAside(f, s2+"/app", brokenEntries) // s1's boot did it; s2 was taken after
-	setAside(f, quadlet.DataPath("home-assistant", "app"), brokenEntries)
+	setAside(f, quadlet.DataRoot("home-assistant")+"/app", brokenEntries)
 
 	recordMember(context.Background(), f, s2, metaOf(t, f, s2))
 	if got := deleted(f); !slices.Equal(got, []string{strings.TrimPrefix(s1, quadlet.SnapshotsDir)}) {

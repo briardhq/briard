@@ -1,5 +1,5 @@
 # A catalogued app's fixture, read from its published entry -- catalog/<name>.json is the one
-# place an app's name, version, networking, container, mount, port, health path, memory and sizes
+# place an app's name, version, networking, container, mounts, port, health path, memory and sizes
 # are written, so a test runs what the catalog ships and a version bump touches nothing here.
 #
 # THE IMAGE is pulled by the entry's own digest. The catalog pins the multi-arch INDEX; pullImage
@@ -34,7 +34,7 @@ import ./fixture-service.nix {
   inherit pkgs variants;
   inherit (m) name version;
   container = c.name;
-  inherit (c) mount port healthPath;
+  inherit (c) mounts port healthPath;
   env = c.env or { };
   # The schema's default: silence means private.
   network = m.network or "private";

@@ -64,7 +64,7 @@ func quiesceRig(t *testing.T, service string, port int) *fakeExec {
 	f.files[hass.TokenPath] = "tok\n"
 	f.files[manifestPath(service)] = `{"name":"` + service + `","version":"2026.7.1","containers":[{"name":"app",` +
 		`"image":"ghcr.io/x/ha@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
-		`"mount":"/config","primary":true,"port":` + strconv.Itoa(port) + `,"healthPath":"/"}]}`
+		`"mounts":[{"tier":"data","dir":"app","path":"/config"}],"primary":true,"port":` + strconv.Itoa(port) + `,"healthPath":"/"}]}`
 	return f
 }
 

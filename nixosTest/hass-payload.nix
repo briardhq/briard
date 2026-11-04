@@ -196,9 +196,16 @@ pkgs.testers.runNixOSTest {
 
     # The claim: HA's state landed on the DRBD subvolume — the recorder SQLite
     # and the `.storage` config, so they replicate + snapshot as one unit.
-    node1.wait_until_succeeds(f"test -f {dataroot}/app/home-assistant_v2.db", timeout=60)
-    node1.succeed(f"test -d {dataroot}/app/.storage")
-    node1.succeed(f"test -f {dataroot}/app/configuration.yaml")
+    node1.wait_until_succeeds(f"test -f {dataroot}/${fixture.dataDir}/home-assistant_v2.db", timeout=60)
+    node1.succeed(f"test -d {dataroot}/${fixture.dataDir}/.storage")
+    node1.succeed(f"test -f {dataroot}/${fixture.dataDir}/configuration.yaml")
+    # Its own backups apart, in the unversioned tier, mounted over /config/backups: an area of its
+    # own, and the nested mount on top of its parent -- what is put in the area is what HA sees
+    # there, and none of it is in the data area.
+    unversioned = "/var/lib/briard/unversioned/home-assistant"
+    node1.succeed(f"btrfs subvolume show {unversioned} && echo briard > {unversioned}/backups/probe")
+    node1.succeed("podman exec briard-home-assistant-app grep -q briard /config/backups/probe")
+    node1.fail(f"test -e {dataroot}/${fixture.dataDir}/backups/probe")
 
     # ── THE CONTROL CHANNEL (agent/hass) ─────────────────────────────────────────────
     #
@@ -571,10 +578,10 @@ pkgs.testers.runNixOSTest {
     # a REAL package, not a symlink into the mount: a household restoring its backup outside
     # briard would restore a dangling link, and HA's scan skips what is not a directory, leaving
     # a permanent "Integration 'briard' not found" against the `briard:` line below.
-    node1.succeed(f"test -f {dataroot}/app/custom_components/briard/__init__.py")
-    node1.succeed(f"test -f {dataroot}/app/custom_components/briard/manifest.json")
+    node1.succeed(f"test -f {dataroot}/${fixture.dataDir}/custom_components/briard/__init__.py")
+    node1.succeed(f"test -f {dataroot}/${fixture.dataDir}/custom_components/briard/manifest.json")
     # And the line that switches it on, in a file the household owns. Re-planted at every start.
-    node1.succeed(f"grep -q '^briard:' {dataroot}/app/configuration.yaml")
+    node1.succeed(f"grep -q '^briard:' {dataroot}/${fixture.dataDir}/configuration.yaml")
 
     # ⚠️ WHAT THE HOUSEHOLD IS LEFT HOLDING IS STOCK HOME ASSISTANT PLUS ONE LINE, and the line
     # above alone would not have caught the failure that matters. On a node's first boot /config
@@ -585,13 +592,13 @@ pkgs.testers.runNixOSTest {
     # (most of Home Assistant) and the three `!include` files it names. That regression leaves
     # `^briard:` perfectly satisfied, which is why the stock half is asserted separately.
     for stock in ("default_config:", "automation: !include automations.yaml"):
-        node1.succeed(f"grep -qF '{stock}' {dataroot}/app/configuration.yaml")
+        node1.succeed(f"grep -qF '{stock}' {dataroot}/${fixture.dataDir}/configuration.yaml")
     for made in ("automations.yaml", "scripts.yaml", "scenes.yaml", "secrets.yaml", ".HA_VERSION"):
-        node1.succeed(f"test -f {dataroot}/app/{made}")
-    print("the household's configuration.yaml:\n" + node1.succeed(f"cat {dataroot}/app/configuration.yaml"))
+        node1.succeed(f"test -f {dataroot}/${fixture.dataDir}/{made}")
+    print("the household's configuration.yaml:\n" + node1.succeed(f"cat {dataroot}/${fixture.dataDir}/configuration.yaml"))
     # THE IMPLEMENTATION IS NOT IN /config, which is the whole placement decision: what is not
     # there cannot be wiped by a restore and cannot ride out in a backup.
-    node1.fail(f"test -e {dataroot}/app/custom_components/briard/briard_ha.py")
+    node1.fail(f"test -e {dataroot}/${fixture.dataDir}/custom_components/briard/briard_ha.py")
     node1.succeed("test -f /run/briard/home-assistant/integration/briard_ha.py")
 
     # HOME ASSISTANT LOADED IT. `/api/config` lists the components HA actually set up, so this is
@@ -609,7 +616,7 @@ pkgs.testers.runNixOSTest {
     # in. An open alert becomes one issue keyed by the alert's key; a resolved one and an event
     # make none; resolving the open one removes its issue. HA's own websocket is the judge, and the
     # strings HA loaded for the domain prove the planted translation reached it.
-    node1.succeed(f"test -f {dataroot}/app/custom_components/briard/translations/en.json")
+    node1.succeed(f"test -f {dataroot}/${fixture.dataDir}/custom_components/briard/translations/en.json")
     # Briard's mark, served by HA's own brands API from beside the planted stub -- the URL HA's
     # integration page and Repairs ask for. Compared with the staged copy, byte for byte.
     node1.succeed(
@@ -946,7 +953,7 @@ pkgs.testers.runNixOSTest {
     # THE OWNER FLAG, read from the store on the volume rather than asked of HA: the household's
     # user holds it, alone, and our system user is still system_generated and not owner.
     # (The auth store saves on a short delay; wait for the flag to land, then parse.)
-    auth_store = f"{dataroot}/app/.storage/auth"
+    auth_store = f"{dataroot}/${fixture.dataDir}/.storage/auth"
     node1.wait_until_succeeds(f"grep -q '\"is_owner\": true' {auth_store}", timeout=30)
     users = _zj.loads(node1.succeed(f"cat {auth_store}"))["data"]["users"]
     owners = [u for u in users if u.get("is_owner")]

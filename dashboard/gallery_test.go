@@ -163,7 +163,7 @@ func galleryRing(broken bool) string {
 	manifestOf := func(v string) string {
 		return `{"name":"home-assistant","version":"` + v + `","size":622000000,"installedSize":2490000000,"containers":[{"name":"app",` +
 			`"image":"ghcr.io/x/ha@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
-			`"mount":"/config","primary":true,"port":8123,"healthPath":"/"}]}`
+			`"mounts":[{"tier":"data","dir":"app","path":"/config"}],"primary":true,"port":8123,"healthPath":"/"}]}`
 	}
 	entries := []quadlet.SnapshotEntry{
 		{Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, older),

@@ -1,6 +1,7 @@
 package quadlet
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ func ha() manifest.Manifest {
 		Name:    "home-assistant",
 		Version: "2026.7.1",
 		Containers: []manifest.Container{{
-			Name: "ha", Image: digestA, Mount: "/config",
+			Name: "ha", Image: digestA, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "ha", Path: "/config"}},
 			Primary: true, Port: 8123, HealthPath: "/manifest.json",
 			Env: map[string]string{"TZ": "Europe/Athens"},
 		}},
@@ -194,7 +195,7 @@ func TestImagePullIsBounded(t *testing.T) {
 // them in.
 func TestUnitOrder(t *testing.T) {
 	m := ha()
-	m.Containers = append(m.Containers, manifest.Container{Name: "cache", Image: digestB, Mount: "/data"})
+	m.Containers = append(m.Containers, manifest.Container{Name: "cache", Image: digestB, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "cache", Path: "/data"}}})
 	got := mustRender(t, m).Units
 	want := []string{
 		"briard-home-assistant-pod.service",
@@ -211,7 +212,7 @@ func TestUnitOrder(t *testing.T) {
 	}
 }
 
-// TestStatelessContainerGetsNoVolume: an empty Mount means the container keeps nothing, so it
+// TestStatelessContainerGetsNoVolume: no mounts means the container keeps nothing, so it
 // must not be handed a directory it will never write.
 //
 // Deliberately NOT the ha() fixture: `home-assistant` is a name the renderer knows, and it always
@@ -220,7 +221,7 @@ func TestUnitOrder(t *testing.T) {
 func TestStatelessContainerGetsNoVolume(t *testing.T) {
 	m := ha()
 	m.Name = "sample-app"
-	m.Containers[0].Mount = ""
+	m.Containers[0].Mounts = nil
 	r := mustRender(t, m)
 	if strings.Contains(r.Files["briard-sample-app-ha.container"], "Volume=") {
 		t.Fatalf("stateless container got a Volume:\n%s", r)
@@ -266,23 +267,47 @@ func TestControlChannelIsKeyedOnTheServiceName(t *testing.T) {
 	}
 }
 
-// TestSubdirsAreFlat: per-container storage is plain subdirectories of ONE subvolume. Nested
-// subvolumes would break data.restore outright (`btrfs subvolume delete` refuses on a subvolume
-// containing nested ones), so this shape is a requirement, not a layout preference.
-func TestSubdirsAreFlat(t *testing.T) {
+// TestMountsAreDirectoriesOfTheTiersAreas: each mount is a plain directory of the service's area
+// in its tier -- never a subvolume of its own, which would break data.restore outright (`btrfs
+// subvolume delete` refuses on a subvolume containing nested ones) -- and Subdirs names each once,
+// with its tier. A nested mount renders after its parent whatever order the manifest lists them,
+// or the parent's bind would land on top of it. Only a container that mounts the data takes the
+// History's members at its start.
+func TestMountsAreDirectoriesOfTheTiersAreas(t *testing.T) {
 	m := ha()
-	m.Containers = append(m.Containers, manifest.Container{Name: "cache", Image: digestB, Mount: "/data"})
-	dirs := Subdirs(m)
-	if len(dirs) != 2 || dirs[0] != "ha" || dirs[1] != "cache" {
-		t.Fatalf("Subdirs = %v, want [ha cache]", dirs)
+	m.Containers[0].Mounts = []manifest.Mount{
+		{Tier: manifest.TierUnversioned, Dir: "backups", Path: "/config/backups"},
+		{Tier: manifest.TierData, Dir: "config", Path: "/config"},
+		{Tier: manifest.TierFiles, Dir: "media", Path: "/media"},
 	}
-	for _, d := range dirs {
-		if strings.Contains(d, "/") {
-			t.Fatalf("subdir %q is not flat", d)
-		}
+	m.Containers = append(m.Containers, manifest.Container{Name: "worker", Image: digestB, Mounts: []manifest.Mount{
+		{Tier: manifest.TierCache, Dir: "thumbs", Path: "/cache"},
+		{Tier: manifest.TierFiles, Dir: "media", Path: "/media"},
+	}})
+	want := []string{"cache/thumbs", "data/config", "files/media", "unversioned/backups"}
+	if got := Subdirs(m); !slices.Equal(got, want) {
+		t.Fatalf("Subdirs = %v, want %v", got, want)
 	}
-	if DataPath("home-assistant", "ha") != "/var/lib/briard/data/home-assistant/ha" {
-		t.Fatalf("DataPath = %q", DataPath("home-assistant", "ha"))
+	r := mustRender(t, m)
+	ha := r.Files["briard-home-assistant-ha.container"]
+	parent := strings.Index(ha, "Volume=/var/lib/briard/data/home-assistant/config:/config\n")
+	child := strings.Index(ha, "Volume=/var/lib/briard/unversioned/home-assistant/backups:/config/backups\n")
+	if parent < 0 || child < 0 || child < parent {
+		t.Fatalf("the nested mount is missing or renders before its parent:\n%s", ha)
+	}
+	if !strings.Contains(ha, "Volume=/var/lib/briard/files/home-assistant/media:/media\n") {
+		t.Fatalf("the files mount is missing:\n%s", ha)
+	}
+	worker := r.Files["briard-home-assistant-worker.container"]
+	if !strings.Contains(worker, "Volume=/var/lib/briard/cache/home-assistant/thumbs:/cache\n") ||
+		!strings.Contains(worker, "Volume=/var/lib/briard/files/home-assistant/media:/media\n") {
+		t.Fatalf("the worker's mounts are missing:\n%s", worker)
+	}
+	if !strings.Contains(ha, "--service-starting=") || strings.Contains(worker, "--service-starting=") {
+		t.Fatalf("the start hook belongs to the container that mounts the data, and only to it")
+	}
+	if DataRoot("home-assistant") != "/var/lib/briard/data/home-assistant" {
+		t.Fatalf("DataRoot = %q", DataRoot("home-assistant"))
 	}
 }
 
@@ -335,7 +360,7 @@ func TestBrokerRendersItsConfigAndItsData(t *testing.T) {
 		Name:    "mosquitto",
 		Version: "2.1.2",
 		Containers: []manifest.Container{{
-			Name: "broker", Image: digestB, Mount: "/mosquitto/data",
+			Name: "broker", Image: digestB, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "broker", Path: "/mosquitto/data"}},
 			Primary: true, Port: 9883, HealthPath: "/api/v1/listeners",
 		}},
 	}
@@ -501,7 +526,7 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 	m := manifest.Manifest{
 		Name: "home-assistant", Version: "1",
 		Containers: []manifest.Container{
-			{Name: "app", Image: digestA, Mount: "/config", Primary: true, Port: 8123, HealthPath: "/x"},
+			{Name: "app", Image: digestA, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/config"}}, Primary: true, Port: 8123, HealthPath: "/x"},
 			{Name: "sidecar", Image: digestA}, // no Mount: shares nothing of its own
 		},
 	}

@@ -1863,20 +1863,21 @@ func (o origin) String() string {
 // could reach one anyway. It is that the cloud has no business changing a node's local debug
 // state, made structural instead of incidental.
 var localOnlyKinds = map[string]bool{
-	api.DirectiveDebugArm:      true,
-	api.DirectiveDebugDisarm:   true,
-	api.DirectiveDoctor:        true,
-	api.DirectiveBackupRestore: true,
-	api.DirectiveBackupList:    true, // what the household backed up is the household's to see
-	api.DirectiveServiceUsage:  true, // ...and how much it stores
-	api.DirectiveBackupNow:     true, // ...and backs it up now
-	api.DirectiveBackupFolder:  true, // ...and moves it, as its settings are
-	api.DirectiveCasaClaim:     true, // the household claims its own name; the cloud never does
-	api.DirectiveCasaRecheck:   true, // ...and asks again whether its network resolves it
-	api.DirectiveWish:          true, // ...and wishes for an app from its own page; the cloud only counts it
-	api.DirectiveConfigSet:     true, // ...and changes its own address
-	api.DirectiveStop:          true, // ...and brings its own node down
-	api.DirectiveStatus:        true, // ...and asks how it is, as doctor does
+	api.DirectiveDebugArm:          true,
+	api.DirectiveDebugDisarm:       true,
+	api.DirectiveDoctor:            true,
+	api.DirectiveBackupRestore:     true,
+	api.DirectiveBackupList:        true, // what the household backed up is the household's to see
+	api.DirectiveServiceUsage:      true, // ...and how much it stores
+	api.DirectiveServiceCacheEmpty: true, // ...and empties an app's cache, restarting it
+	api.DirectiveBackupNow:         true, // ...and backs it up now
+	api.DirectiveBackupFolder:      true, // ...and moves it, as its settings are
+	api.DirectiveCasaClaim:         true, // the household claims its own name; the cloud never does
+	api.DirectiveCasaRecheck:       true, // ...and asks again whether its network resolves it
+	api.DirectiveWish:              true, // ...and wishes for an app from its own page; the cloud only counts it
+	api.DirectiveConfigSet:         true, // ...and changes its own address
+	api.DirectiveStop:              true, // ...and brings its own node down
+	api.DirectiveStatus:            true, // ...and asks how it is, as doctor does
 }
 
 // Dispatch routes one directive to the subsystem that can act on it, and is the single place
@@ -1952,7 +1953,8 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		return cfg.applyBackupList(ctx, l, d)
 	}
 	if d.Kind == api.DirectiveServiceInstall || d.Kind == api.DirectiveServicePrewarm ||
-		d.Kind == api.DirectiveServiceRestore || d.Kind == api.DirectiveServiceMembers || d.Kind == api.DirectiveBackupRestore {
+		d.Kind == api.DirectiveServiceRestore || d.Kind == api.DirectiveServiceMembers || d.Kind == api.DirectiveBackupRestore ||
+		d.Kind == api.DirectiveServiceCacheEmpty {
 		// A service install needs the render/provision/bracket verbs, none of which the narrow upgrader has.
 		i, ok := r.(serviceInstaller)
 		if !ok {
@@ -1967,6 +1969,8 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 			return cfg.applyBackupRestore(ctx, i, d, logf)
 		case api.DirectiveServiceMembers:
 			return cfg.applyServiceMembers(ctx, i, d, logf)
+		case api.DirectiveServiceCacheEmpty:
+			return cfg.applyServiceCacheEmpty(ctx, i, d, logf)
 		}
 		return cfg.applyServiceInstall(ctx, i, d, n, logf)
 	}

@@ -248,3 +248,38 @@ func TestOneWalkAtATime(t *testing.T) {
 		t.Errorf("%d walks once the other ended, want two", v.walked())
 	}
 }
+
+// THE UNVERSIONED AREA IS PART OF THE DATA AND THE CACHE IS SAID APART: both are charged to the
+// data group, so the data's current is the data and unversioned areas together, the history is
+// the group less both and the cache, and the cache is its own walk. Until every area of the group
+// is walked, the data is not measured: a history that counted the cache would be wrong.
+func TestUnversionedCountsAsDataAndTheCacheApart(t *testing.T) {
+	v := newUsageVolume()
+	unversioned, cache := quadlet.Area("unversioned", usageApp), quadlet.Area("cache", usageApp)
+	v.set(func() {
+		v.roots[unversioned], v.roots[cache] = "301", "302"
+		v.compsize[unversioned] = compsizeTotal("500000000", "600000000", "600000000")
+		v.compsize[cache] = compsizeTotal("300000000", "900000000", "900000000")
+	})
+	u := v.ask(t, usageNow)
+	if u.Data.Measured || u.Cache == nil || u.Cache.Measured {
+		t.Fatalf("before the walk: data %+v, cache %+v", *u.Data, u.Cache)
+	}
+	waitUsage()
+	u = v.ask(t, usageNow.Add(time.Minute))
+	want := dashboard.TierUsage{Total: 3 * gb, Cap: 40 * gb, Members: 3, Measured: true,
+		Current: 2*gb + 500*mb, Uncompressed: 5*gb + 600*mb, History: 200 * mb}
+	if *u.Data != want {
+		t.Errorf("data: %+v, want %+v", *u.Data, want)
+	}
+	if want := (dashboard.TierUsage{Cap: -1, Measured: true, Current: 300 * mb, Uncompressed: 900 * mb}); *u.Cache != want {
+		t.Errorf("cache: %+v, want %+v", *u.Cache, want)
+	}
+	if v.walked() != 4 {
+		t.Errorf("%d walks, want one per area", v.walked())
+	}
+	v.set(func() { delete(v.roots, cache) })
+	if u := v.ask(t, usageNow.Add(2*time.Minute)); u.Cache != nil {
+		t.Errorf("an app with no cache area has a cache: %+v", *u.Cache)
+	}
+}

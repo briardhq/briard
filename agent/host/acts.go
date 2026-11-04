@@ -79,21 +79,22 @@ var (
 		leaseRelaunch:              true, // internal: the guest takes a new address (lease.go)
 	}
 	offLoopActs = map[string]bool{
-		api.DirectiveServiceInstall: true,
-		api.DirectiveServicePrewarm: true,
-		api.DirectiveServiceRestore: true,
-		api.DirectiveBackupRestore:  true, // a restic restore then a service restore: an act, like the one it ends in
-		api.DirectiveHandover:       true,
-		api.DirectiveSync:           true,
-		api.DirectiveCert:           true,
-		api.DirectiveAgentUpdate:    true,
-		install.DirectiveUpdateVM:   true,
-		api.DirectiveUpgradeSystem:  true,
-		api.DirectiveConfigSet:      true,
-		api.DirectiveBackupFolder:   true, // a read, then config.env written: one at a time, as config-set
-		api.DirectivePair:           true,
-		api.DirectiveUnpair:         true,
-		api.DirectiveRescue:         true,
+		api.DirectiveServiceInstall:    true,
+		api.DirectiveServicePrewarm:    true,
+		api.DirectiveServiceRestore:    true,
+		api.DirectiveServiceCacheEmpty: true, // stops the app and starts it again, as a restore does
+		api.DirectiveBackupRestore:     true, // a restic restore then a service restore: an act, like the one it ends in
+		api.DirectiveHandover:          true,
+		api.DirectiveSync:              true,
+		api.DirectiveCert:              true,
+		api.DirectiveAgentUpdate:       true,
+		install.DirectiveUpdateVM:      true,
+		api.DirectiveUpgradeSystem:     true,
+		api.DirectiveConfigSet:         true,
+		api.DirectiveBackupFolder:      true, // a read, then config.env written: one at a time, as config-set
+		api.DirectivePair:              true,
+		api.DirectiveUnpair:            true,
+		api.DirectiveRescue:            true,
 	}
 	offLoopPulls = map[string]bool{
 		api.DirectiveDoctor:         true,

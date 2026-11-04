@@ -29,12 +29,18 @@
   pkgs,
   # The manifest slug: the unit prefix, the subvolume name, the handle a user would type.
   name ? "dummy",
-  # The single container's slug within the service, and its data subdirectory's name.
+  # The single container's slug within the service, and its unit's.
   container ? "app",
-  # The fixture's data path is a CONST in its own source, so the container's mount point is
-  # dictated by the fixture while the host-side directory is the renderer's to choose — the normal
-  # asymmetry for a catalogued service.
-  mount ? "/var/lib/briard/dummy",
+  # The container's mounts, as the manifest says them. The fixture's data path is a CONST in its own
+  # source, so its mount point is dictated by the fixture while the host-side directory is the
+  # renderer's to choose -- the normal asymmetry for a catalogued service.
+  mounts ? [
+    {
+      tier = "data";
+      dir = container;
+      path = "/var/lib/briard/dummy";
+    }
+  ],
   port ? 8080,
   healthPath ? "/healthz",
   env ? { },
@@ -226,7 +232,7 @@ let
     ref="${p.image.repo}@$digest"
     printf '%s' "$ref" > $out/${p.dir}/ref
     cat > $out/${p.dir}/manifest.json <<EOF
-    {"name":"${name}","version":"${p.version}","network":"${network}"${portsJSON ports},"containers":[{"name":"${container}","image":"$ref","mount":"${mount}","primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]${minMemJSON}${sizeJSON}}
+    {"name":"${name}","version":"${p.version}","network":"${network}"${portsJSON ports},"containers":[{"name":"${container}","image":"$ref","mounts":${builtins.toJSON mounts},"primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]${minMemJSON}${sizeJSON}}
     EOF
     # The heredoc above is indented for readability; the manifest's BYTES are its identity, so
     # strip the indentation rather than shipping it into the content hash.
@@ -248,10 +254,12 @@ pkgs.runCommand "briard-fixture-${name}"
     passthru = {
       inherit
         container
-        mount
+        mounts
         port
         healthPath
         ;
+      # The data mount's directory in the app's data area: where a test finds what the app keeps.
+      dataDir = (pkgs.lib.findFirst (m: m.tier == "data") null mounts).dir;
       name = name;
       serviceName = name;
       image = base.tarball;

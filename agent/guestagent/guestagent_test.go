@@ -950,6 +950,7 @@ func TestDataRestoreCommands(t *testing.T) {
 	}
 	want := [][]string{
 		{"btrfs", "subvolume", "show", "/var/lib/briard/data/.snapshots/ha-1"},
+		{"btrfs", "subvolume", "show", "/var/lib/briard/cache/ha"}, // no cache: nothing to empty
 		{"btrfs", "subvolume", "show", "/var/lib/briard/data/ha.restoring"},
 		{"btrfs", "subvolume", "delete", "/var/lib/briard/data/ha.restoring"},
 		{"btrfs", "subvolume", "snapshot", "-i", appQgroup(tierData, "ha"), "/var/lib/briard/data/.snapshots/ha-1", "/var/lib/briard/data/ha.restoring"},
@@ -958,6 +959,53 @@ func TestDataRestoreCommands(t *testing.T) {
 	}
 	if !reflect.DeepEqual(withoutQgroups(f.runs), want) {
 		t.Errorf("runs = %v, want %v", f.runs, want)
+	}
+}
+
+// EVERY ROLLBACK EMPTIES THE CACHE, before the data is touched: the cache's subvolume is
+// deleted and made again in the app's data group, holding the directories it held, so the
+// containers' mounts find them. A restore point that is not there costs the cache nothing.
+func TestARollbackEmptiesTheCacheFirst(t *testing.T) {
+	cache := "/var/lib/briard/cache/ha"
+	gone := false
+	f := &fakeExec{}
+	f.runFn = func(name string, args []string) ([]byte, error) {
+		switch {
+		case name == "btrfs" && args[1] == "show" && args[2] == cache && gone:
+			return nil, errors.New("not a subvolume")
+		case name == "btrfs" && args[1] == "show" && args[2] == cache:
+			return []byte(cache), nil
+		case name == "btrfs" && args[1] == "show" && strings.HasSuffix(args[2], ".restoring"):
+			return nil, errors.New("not a subvolume")
+		case name == "btrfs" && args[1] == "show" && args[2] == "/var/lib/briard/data/.snapshots/ha-gone":
+			return nil, errors.New("not a subvolume")
+		case name == "btrfs" && args[1] == "show":
+			return []byte(args[2]), nil
+		case name == "btrfs" && args[1] == "delete" && args[2] == cache:
+			gone = true
+		case name == "btrfs" && args[1] == "create" && args[len(args)-1] == cache:
+			gone = false
+		case name == "ls" && args[1] == cache:
+			return []byte("thumbs\nmodels\n"), nil
+		}
+		return nil, nil
+	}
+	g := dial(t, f)
+	if err := g.Restore(context.Background(), "/var/lib/briard/data/ha", "/var/lib/briard/data/.snapshots/ha-gone", nil); err == nil {
+		t.Fatal("a restore from a missing point succeeded")
+	}
+	if ran(f, "btrfs", "subvolume", "delete", cache) {
+		t.Fatalf("a restore that could not start emptied the cache: %v", f.runs)
+	}
+	if err := g.Restore(context.Background(), "/var/lib/briard/data/ha", "/var/lib/briard/data/.snapshots/ha-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	del := runIndex(f, 0, "btrfs", "subvolume", "delete", cache)
+	made := runIndex(f, 0, "btrfs", "subvolume", "create", "-i", appQgroup(tierData, "ha"), cache)
+	thumbs, models := runIndex(f, 0, "mkdir", "-p", cache+"/thumbs"), runIndex(f, 0, "mkdir", "-p", cache+"/models")
+	data := runIndex(f, 0, "btrfs", "subvolume", "delete", "/var/lib/briard/data/ha")
+	if del < 0 || made < del || thumbs < made || models < made || data < max(thumbs, models) {
+		t.Errorf("the cache was not emptied and made again before the data: %v", f.runs)
 	}
 }
 

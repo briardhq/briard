@@ -62,6 +62,7 @@ func guestMayAsk(d api.Directive) bool {
 	switch d.Kind {
 	case api.DirectiveServiceInstall, api.DirectiveServicePrewarm, api.DirectiveServiceRestore,
 		api.DirectiveServiceMembers, api.DirectiveServiceUsage, // the app page's History and Storage
+		api.DirectiveServiceCacheEmpty,                      // and its Storage card's Clear
 		api.DirectiveBackupRestore, api.DirectiveBackupList, // the Backup page's restore
 		api.DirectiveBackupNow, api.DirectiveBackupFolder, // its Back up now, and its Change
 		api.DirectiveCasaClaim,   // a name for this household, asked from its own page

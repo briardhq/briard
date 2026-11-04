@@ -150,14 +150,14 @@ pkgs.testers.runNixOSTest {
     manifest = (
         '{"name":"fixture","version":"v0","network":"host","containers":[{'
         f'"name":"app","image":"{ref}",'
-        '"mount":"${fixtureMount}","primary":true,"port":8080,"healthPath":"/healthz"}]}'
+        '"mounts":[{"tier":"data","dir":"app","path":"${fixtureMount}"}],"primary":true,"port":8080,"healthPath":"/healthz"}]}'
     )
     node1.succeed(f"cat > /tmp/manifest.json <<'EOF'\n{manifest}\nEOF")
     node1.succeed("quadlet-render /tmp/manifest.json /tmp/rendered")
     dataroot = node1.succeed("cat /tmp/rendered/dataroot").strip()
     node1.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || (mkdir -p $(dirname {dataroot}) && btrfs subvolume create {dataroot})")
     for sub in node1.succeed("cat /tmp/rendered/subdirs").split():
-        node1.succeed(f"mkdir -p {dataroot}/{sub}")
+        node1.succeed(f"mkdir -p {sub}")  # in the data area, the one tier this fixture mounts
     # The .image unit's NAME comes from the renderer too -- a name restated here would assert our
     # own arithmetic about unit naming rather than watching the unit converge actually starts.
     image_unit = node1.succeed("cat /tmp/rendered/images").split()[0]

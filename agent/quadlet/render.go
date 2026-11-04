@@ -30,6 +30,7 @@ package quadlet
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -236,12 +237,15 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 			"Pod=" + base + ".pod",
 			"Pull=never",
 		}
-		if c.Mount != "" {
-			// The service's data is ONE subvolume with per-container plain SUBDIRECTORIES. Not a
-			// preference: data.restore runs `btrfs subvolume delete`, which refuses on a
-			// subvolume containing nested subvolumes, so per-container storage cannot itself be
-			// a subvolume or rollback breaks outright.
-			lines = append(lines, "Volume="+DataPath(m.Name, c.Name)+":"+c.Mount)
+		// Each mount is a plain DIRECTORY of the service's area in its tier, never a subvolume of
+		// its own: data.restore runs `btrfs subvolume delete`, which refuses on a subvolume
+		// containing nested subvolumes, so rollback would break outright. PARENT FIRST, so a
+		// mount nested in another lands on top of it rather than under it: a parent's path is a
+		// prefix of its child's, so it sorts first.
+		mounts := slices.Clone(c.Mounts)
+		slices.SortFunc(mounts, func(a, b manifest.Mount) int { return strings.Compare(a.Path, b.Path) })
+		for _, mt := range mounts {
+			lines = append(lines, "Volume="+Area(mt.Tier, m.Name)+"/"+mt.Dir+":"+mt.Path)
 		}
 		// The binds one CATALOGUED SERVICE needs beyond its own data — Home Assistant's control
 		// channel, mosquitto's config (agent/services). They cannot come from the manifest — the
@@ -303,9 +307,10 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// itself to the same bar and exits 0 regardless, so this is belt-and-braces — `-` alone
 		// hides the reason, and the agent's own line in the journal is what says it.
 		//
-		// ONLY the container that holds the data. A service's other containers share its
-		// subvolume and would each take a member of the same bytes at every start.
-		if c.Mount != "" {
+		// ONLY a container that mounts the data. A service's other containers share its area and
+		// would each take a member of the same bytes at every start. The same start is when the
+		// app's cache is emptied, if space is short (guestagent.TakeStartMember).
+		if c.UsesTier(manifest.TierData) {
 			lines = append(lines, "ExecStartPre=-"+agentBin()+" --service-starting="+m.Name)
 			// AND THE OTHER HALF OF THE SAME QUESTION: a stop that ended cleanly leaves a
 			// marker saying this service's data was flushed, and the next start reads it to say
@@ -422,9 +427,12 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	return out, nil
 }
 
-// DataRoot is the service's data area: its single btrfs subvolume in the data tier of the
-// replicated volume -- what it keeps to run, rolled back with it.
-func DataRoot(service string) string { return "/var/lib/briard/data/" + service }
+// Area is the service's area in a storage tier: its one btrfs subvolume in the tier's directory
+// of the replicated volume, holding the directories its containers mount.
+func Area(tier, service string) string { return "/var/lib/briard/" + tier + "/" + service }
+
+// DataRoot is the service's data area -- what it keeps to run, rolled back with it.
+func DataRoot(service string) string { return Area(manifest.TierData, service) }
 
 // SnapshotsDir is where every member of a service's ring (its History) lives: read-only siblings
 // of the data areas under the data tier's .snapshots dir (created by briard-primary-storage at
@@ -643,19 +651,18 @@ type SnapshotMeta struct {
 	Resets []string `json:"resets,omitempty"`
 }
 
-// DataPath is one container's plain subdirectory inside that subvolume.
-func DataPath(service, container string) string { return DataRoot(service) + "/" + container }
-
-// Subdirs lists the per-container directories the install step must create inside the subvolume,
-// for the containers that actually keep state.
+// Subdirs lists the directories the install step must create, each `<tier>/<dir>`, once each and
+// sorted: the areas they name are the ones the service has, beside the data area every service
+// has.
 func Subdirs(m manifest.Manifest) []string {
 	var dirs []string
 	for _, c := range m.Containers {
-		if c.Mount != "" {
-			dirs = append(dirs, c.Name)
+		for _, mt := range c.Mounts {
+			dirs = append(dirs, mt.Tier+"/"+mt.Dir)
 		}
 	}
-	return dirs
+	slices.Sort(dirs)
+	return slices.Compact(dirs)
 }
 
 func join(lines ...string) string { return strings.Join(lines, "\n") + "\n" }

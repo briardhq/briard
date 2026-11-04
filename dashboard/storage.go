@@ -15,6 +15,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -29,6 +31,8 @@ type storageView struct {
 	Measuring bool   // the guest is still walking: the card asks again
 	Error     string
 	Tiers     []storageTierView
+	Cache     string // what the app's cache holds, "" when it keeps none
+	Cleared   string // what the Clear just did, said once on the card it answers with
 	Room      string // "" when neither tier has a cap
 }
 
@@ -57,16 +61,20 @@ func (a *app) storage(ctx context.Context, service string) storageView {
 	}
 	v.Measuring = u.Measuring
 	var room []string
+	dataRoom := "its data and history"
+	if u.Cache != nil {
+		dataRoom = "its data, cache and history"
+		v.Cache = cacheWords(*u.Cache, u.Measuring)
+	}
 	for _, t := range []struct {
 		name, past, point, with, room string
 		u                             *dashboard.TierUsage
 	}{
-		{"Data", "History", "snapshot", "with its history", "its data and history", u.Data},
+		{"Data", "History", "snapshot", "with its history", dataRoom, u.Data},
 		{"Your files", "Versions", "version", "with their versions", "your files and their versions", u.Files},
 	} {
-		// EVERY APP HAS A FILES AREA, empty until it uses it, and an empty one is not shown -- as
-		// it is not exported. An empty area and a month of its versions stay under a megabyte.
-		if t.u == nil || t.u == u.Files && t.u.Total < dashboard.FilesAreaMin {
+		// A tier the app does not mount has no group: no row.
+		if t.u == nil {
 			continue
 		}
 		v.Tiers = append(v.Tiers, storageTierView{Name: t.name, Now: nowWords(*t.u, u.Measuring, t.with), Past: t.past, PastWords: pastWords(*t.u, t.point)})
@@ -78,6 +86,49 @@ func (a *app) storage(ctx context.Context, service string) storageView {
 		v.Room = "Room: up to " + strings.Join(room, ", and ") + ". No app can take the last of the space from the others."
 	}
 	return v
+}
+
+// cacheWords is what the app's cache holds, as nowWords says an area.
+func cacheWords(t dashboard.TierUsage, measuring bool) string {
+	switch {
+	case !t.Measured && measuring:
+		return "Measuring…"
+	case !t.Measured:
+		return "Not measured"
+	}
+	return nowWords(t, measuring, "")
+}
+
+// requestClearCache is the Storage card's Clear: the host stops the app, empties its cache and
+// starts it again, and the card answers with what it did. Seconds, so it is answered in the
+// request; the app's own start, which may take longer, is the app card's to show.
+func (a *app) requestClearCache(w http.ResponseWriter, r *http.Request) {
+	name := r.FormValue("app")
+	if !a.knows(name) {
+		http.NotFound(w, r)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveServiceCacheEmpty, Payload: name})
+	cleared := "Cleared. The app is starting again and rebuilds what it needs, which can take a while."
+	switch {
+	case err != nil:
+		cleared = "Could not clear it: " + err.Error()
+	case o.State != api.OutcomeDone:
+		cleared = "Could not clear it: " + o.Detail
+	}
+	log.Printf("dashboard: clear %s's cache: outcome=%+v err=%v", name, o, err)
+	if r.Header.Get("HX-Request") == "" {
+		http.Redirect(w, r, "/apps/"+name+"?storage", http.StatusSeeOther)
+		return
+	}
+	v := a.storage(ctx, name)
+	v.Cleared = cleared
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := page.ExecuteTemplate(w, "storage-card", v); err != nil {
+		log.Printf("dashboard: storage card: %v", err)
+	}
 }
 
 // nowWords is what the tier's area holds now: on disk, and its size where compression shrank it.

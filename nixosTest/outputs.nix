@@ -38,7 +38,7 @@ let
   fixture = import ./fixture-service.nix { inherit pkgs; };
   # HOME ASSISTANT AS A CATALOGUED SERVICE: a signed manifest naming a digest-pinned image,
   # installed onto the volume after promotion -- exactly what a user's service is. Read from its
-  # catalog entry (/config, :8123, /manifest.json as the readiness path because HA has no /healthz
+  # catalog entry (its mounts, :8123, /manifest.json as the readiness path because HA has no /healthz
   # and `/` redirects into onboarding), so the tests run the version the catalog ships.
   hassFixture = import ./catalog-fixture.nix { inherit pkgs; entry = ../catalog/home-assistant.json; };
   # The upgrade PAIR, as two published versions of one service: 2025.11.0 (recorder schema 51)
@@ -48,7 +48,19 @@ let
   hassPairFixture = import ./fixture-service.nix {
     inherit pkgs;
     name = "home-assistant";
-    mount = "/config";
+    # As the catalog entry mounts them: its config in its data, its own backups apart.
+    mounts = [
+      {
+        tier = "data";
+        dir = "config";
+        path = "/config";
+      }
+      {
+        tier = "unversioned";
+        dir = "backups";
+        path = "/config/backups";
+      }
+    ];
     port = 8123;
     healthPath = "/manifest.json";
     version = "2025.11.0";
@@ -77,7 +89,13 @@ let
     inherit pkgs;
     name = "mosquitto";
     container = "broker";
-    mount = "/mosquitto/data";
+    mounts = [
+      {
+        tier = "data";
+        dir = "data";
+        path = "/mosquitto/data";
+      }
+    ];
     port = 9883;
     healthPath = "/api/v1/listeners";
     # PRIVATE, PUBLISHING ONLY MQTT -- the shape the real catalog entry carries. The fixture has to
@@ -205,6 +223,14 @@ let
   # back; both images are staged, so nothing pulls.
   undoFixture = import ./fixture-service.nix {
     inherit pkgs;
+    # A MOUNT IN EVERY TIER, so the rig's quota tree, the undo, the Storage card and its Clear meet
+    # each area the real agent makes.
+    mounts = [
+      { tier = "data"; dir = "app"; path = "/var/lib/briard/dummy"; }
+      { tier = "files"; dir = "media"; path = "/media"; }
+      { tier = "cache"; dir = "cache"; path = "/cache"; }
+      { tier = "unversioned"; dir = "keep"; path = "/keep"; }
+    ];
     variants.bad = { version = "0.0.0-bad"; env = { BRIARD_BROKEN = "1"; }; };
   };
   agentInstallUndo = import ./agent-install-undo.nix {

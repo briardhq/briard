@@ -15,7 +15,7 @@ import (
 // exists-or-pull warm safe (converge.go argues why).
 const dummyManifest = `{"name":"dummy","version":"1","network":"host","containers":[{"name":"app",` +
 	`"image":"localhost/briard-dummy@sha256:1111111111111111111111111111111111111111111111111111111111111111",` +
-	`"mount":"/data","primary":true,"port":8080,"healthPath":"/healthz"}]}`
+	`"mounts":[{"tier":"data","dir":"app","path":"/data"}],"primary":true,"port":8080,"healthPath":"/healthz"}]}`
 
 const otherManifest = `{"name":"other","version":"1","network":"host","containers":[{"name":"app",` +
 	`"image":"localhost/briard-other@sha256:2222222222222222222222222222222222222222222222222222222222222222",` +
@@ -25,7 +25,7 @@ const otherManifest = `{"name":"other","version":"1","network":"host","container
 // to the guest's loopback -- which is exactly why the front door must not route to it.
 const mosquittoManifest = `{"name":"mosquitto","version":"2.1.2","containers":[{"name":"broker",` +
 	`"image":"docker.io/library/eclipse-mosquitto@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +
-	`"mount":"/mosquitto/data","primary":true,"port":9883,"healthPath":"/api/v1/listeners"}]}`
+	`"mounts":[{"tier":"data","dir":"broker","path":"/mosquitto/data"}],"primary":true,"port":9883,"healthPath":"/api/v1/listeners"}]}`
 
 // convergeExec is a fakeExec taught the two directory listings converge reads and the podman
 // image store it asks about. Everything else falls through to fakeExec's defaults.
@@ -317,7 +317,7 @@ func keys(m map[string]string) []string {
 // and the one a start alone cannot deliver.
 const dummyManifestV2 = `{"name":"dummy","version":"2","network":"host","containers":[{"name":"app",` +
 	`"image":"localhost/briard-dummy@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +
-	`"mount":"/data","primary":true,"port":8080,"healthPath":"/healthz"}]}`
+	`"mounts":[{"tier":"data","dir":"app","path":"/data"}],"primary":true,"port":8080,"healthPath":"/healthz"}]}`
 
 // TestConvergeBouncesAServiceWhoseRenderingChanged is the upgrade case. systemd does not restart
 // an already-active unit on daemon-reload, so a converge that only ever STARTS would leave the
@@ -446,7 +446,7 @@ func TestConvergeVerbsAreAdvertised(t *testing.T) {
 // what makes it different, which is the point of the assertions below.
 const hassManifest = `{"name":"home-assistant","version":"2026.7.1","network":"host","containers":[{"name":"app",` +
 	`"image":"ghcr.io/home-assistant/home-assistant@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +
-	`"mount":"/config","primary":true,"port":8123,"healthPath":"/manifest.json"}]}`
+	`"mounts":[{"tier":"data","dir":"app","path":"/config"}],"primary":true,"port":8123,"healthPath":"/manifest.json"}]}`
 
 func hassNode(t *testing.T) *convergeExec {
 	t.Helper()

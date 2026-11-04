@@ -40,6 +40,9 @@ func backupRig(restic map[string]func() ([]byte, error)) (*fakeExec, map[string]
 	f.files[backupKeyFile] = "s3cret\n"
 	inner := f.runFn
 	f.runFn = func(n string, args []string) ([]byte, error) {
+		if n == "ls" && len(args) > 1 && args[1] == filesVersionsDir() {
+			return nil, nil // neither app mounts the files tier
+		}
 		if n == "ls" && len(args) > 1 && args[1] == manifestDir {
 			return []byte("home-assistant.json\nmosquitto.json\n"), nil
 		}
@@ -196,12 +199,15 @@ func TestTheBackupCommandLines(t *testing.T) {
 	args := strings.Join(b[0], " ")
 	for _, want := range []string{
 		"--repo rest:http://10.0.0.129:7791/", "--password-file " + backupPasswordFile,
-		"--exclude **/app/backups", "--host f1d",
-		"--tag data --exclude **/app/backups " + backupData + " " + backupFacts,
+		"--host f1d",
+		"--tag data " + backupData + " " + backupFacts,
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("restic backup %q lacks %q", args, want)
 		}
+	}
+	if strings.Contains(args, "--exclude") {
+		t.Errorf("restic backup excludes something; an app's own backups are never in its data: %q", args)
 	}
 	if strings.Contains(args, quadlet.SnapshotsDir) {
 		t.Errorf("restic backup reads a stamped member path: %q", args)
@@ -693,22 +699,28 @@ func TestTheListKeepsABackupItCannotReadInto(t *testing.T) {
 	}
 }
 
-// filesRig is backupRig with home-assistant's files area holding 5 MB and mosquitto's empty, both
-// with a ring (the rig's listing answers every directory with the same members, so each app's
-// clock members stand for its versions too); restic's backup of the files answers userErr.
+// filesRig is backupRig with home-assistant mounting the files tier and mosquitto not: its
+// versions are home-assistant's clock members (the rig's ring listing answers every directory
+// with the same members); restic's backup of the files answers userErr.
 func filesRig(userErr error) (*fakeExec, string) {
 	user := `{"message_type":"summary","total_files_processed":7,"data_added":5000,"snapshot_id":"fff999"}`
 	f, _ := backupRig(map[string]func() ([]byte, error){
 		"backup": func() ([]byte, error) { return []byte(resticSummary), nil },
 	})
-	f.qgroups = map[string][]string{"0/5": nil, tierQgroup(tierFiles): nil}
-	f.qgroups[appQgroup(tierFiles, "home-assistant")] = []string{tierQgroup(tierFiles)}
-	f.qgroups[appQgroup(tierFiles, "mosquitto")] = []string{tierQgroup(tierFiles)}
-	f.qused = map[string]int64{appQgroup(tierFiles, "home-assistant"): 5e6, appQgroup(tierFiles, "mosquitto"): 35 * 16384}
 	inner := f.runFn
 	f.runFn = func(n string, args []string) ([]byte, error) {
 		if n == "restic" && slices.Contains(args, backupFiles) {
 			return []byte(user), userErr
+		}
+		if n == "ls" && len(args) > 1 && args[1] == filesVersionsDir() {
+			out, err := inner(n, []string{"-1", strings.TrimSuffix(quadlet.SnapshotsDir, "/")})
+			var ha []string
+			for _, m := range strings.Fields(string(out)) {
+				if strings.HasPrefix(m, "home-assistant-") {
+					ha = append(ha, m)
+				}
+			}
+			return []byte(strings.Join(ha, "\n")), err
 		}
 		return inner(n, args)
 	}
@@ -722,8 +734,8 @@ func filesRig(userErr error) (*fakeExec, string) {
 }
 
 // THE HOUSEHOLD'S FILES ARE A SNAPSHOT OF THEIR OWN, after the apps': the newest member of every
-// files area that holds something, bind-mounted read-only under its own root, backed up tagged and
-// on that root alone, unmounted after; an empty area is left out; one forget, after both, applies
+// app that mounts the files tier, bind-mounted read-only under its own root, backed up tagged and
+// on that root alone, unmounted after; an app with no files area is left out; one forget, after both, applies
 // the policy to each group; the report counts both.
 func TestTheHouseholdsFilesAreASnapshotOfTheirOwn(t *testing.T) {
 	f, member := filesRig(nil)
@@ -756,7 +768,7 @@ func TestTheHouseholdsFilesAreASnapshotOfTheirOwn(t *testing.T) {
 	}
 	for _, r := range f.runs {
 		if slices.Contains(r, backupFiles+"/mosquitto") {
-			t.Errorf("an empty files area was backed up: %v", r)
+			t.Errorf("an app with no files area had files backed up: %v", r)
 		}
 	}
 	fg := resticRuns(f, "forget")

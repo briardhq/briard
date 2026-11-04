@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"briard.io/agent/quadlet"
 )
 
 // withoutQgroups drops the quota tree's bookkeeping from a run list, so a test about the order
@@ -80,11 +82,12 @@ func TestAreaOfReadsTheTierOffThePath(t *testing.T) {
 	}
 }
 
-// AN INSTALL MAKES BOTH AREAS, EACH BORN INTO ITS TIER: the service's data and the app's user
-// area, each created with -i to its own group, each group under its tier's aggregate. And a
-// second install of the same app makes nothing: its subvolumes exist, and the tree already
-// holds them.
-func TestAnInstallBearsBothAreasIntoTheTree(t *testing.T) {
+// AN INSTALL MAKES AN AREA IN EVERY TIER THE APP MOUNTS, EACH BORN INTO ITS GROUP: created with
+// -i, the cache and unversioned areas into the data group, each group under its tier's
+// aggregate, the mounted directories inside them. An app that mounts only its data gets no other
+// area. And a second install of the same app makes nothing: its subvolumes exist, and the tree
+// already holds them.
+func TestAnInstallBearsItsAreasIntoTheTree(t *testing.T) {
 	made := map[string]bool{}
 	f := &fakeExec{}
 	f.runFn = func(name string, args []string) ([]byte, error) {
@@ -103,31 +106,50 @@ func TestAnInstallBearsBothAreasIntoTheTree(t *testing.T) {
 		_, err := f.Run(context.Background(), name, args...)
 		return err
 	}
-	svc, user := "/var/lib/briard/data/home-assistant", "/var/lib/briard/files/home-assistant"
-	if err := ensureServiceData(context.Background(), f, run, svc, []string{"app"}); err != nil {
+	svc := "/var/lib/briard/data/home-assistant"
+	subdirs := []string{"cache/thumbs", "data/config", "files/media", "unversioned/backups"}
+	if err := ensureServiceData(context.Background(), f, run, svc, subdirs); err != nil {
 		t.Fatal(err)
 	}
+	data, files := appQgroup(tierData, "home-assistant"), appQgroup(tierFiles, "home-assistant")
 	for _, want := range [][]string{
-		{"btrfs", "subvolume", "create", "-i", appQgroup(tierData, "home-assistant"), svc},
-		{"btrfs", "subvolume", "create", "-i", appQgroup(tierFiles, "home-assistant"), user},
+		{"btrfs", "subvolume", "create", "-i", data, svc},
+		{"btrfs", "subvolume", "create", "-i", files, "/var/lib/briard/files/home-assistant"},
+		{"btrfs", "subvolume", "create", "-i", data, "/var/lib/briard/cache/home-assistant"},
+		{"btrfs", "subvolume", "create", "-i", data, "/var/lib/briard/unversioned/home-assistant"},
+		{"mkdir", "-p", "/var/lib/briard/cache/home-assistant/thumbs"},
+		{"mkdir", "-p", svc + "/config"},
+		{"mkdir", "-p", "/var/lib/briard/files/home-assistant/media"},
+		{"mkdir", "-p", "/var/lib/briard/unversioned/home-assistant/backups"},
 	} {
 		if runIndex(f, 0, want...) < 0 {
 			t.Errorf("never ran %v: %v", want, f.runs)
 		}
 	}
-	if !slices.Equal(f.qgroups[appQgroup(tierData, "home-assistant")], []string{tierQgroup(tierData)}) ||
-		!slices.Equal(f.qgroups[appQgroup(tierFiles, "home-assistant")], []string{tierQgroup(tierFiles)}) {
+	if !slices.Equal(f.qgroups[data], []string{tierQgroup(tierData)}) || !slices.Equal(f.qgroups[files], []string{tierQgroup(tierFiles)}) {
 		t.Errorf("the groups are not under their aggregates: %v", f.qgroups)
 	}
 
 	before := len(f.runs)
-	if err := ensureServiceData(context.Background(), f, run, svc, []string{"app"}); err != nil {
+	if err := ensureServiceData(context.Background(), f, run, svc, subdirs); err != nil {
 		t.Fatalf("a re-install failed: %v", err)
 	}
 	for _, r := range f.runs[before:] {
 		if len(r) > 2 && r[0] == "btrfs" && (r[2] == "create" || r[2] == "assign") {
 			t.Errorf("a re-install made %v again", r)
 		}
+	}
+
+	if err := ensureServiceData(context.Background(), f, run, "/var/lib/briard/data/mosquitto", []string{"data/data"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tier := range []string{"files", "cache", "unversioned"} {
+		if made["/var/lib/briard/"+tier+"/mosquitto"] {
+			t.Errorf("an app that mounts only its data got a %s area", tier)
+		}
+	}
+	if err := ensureServiceData(context.Background(), f, run, svc, []string{"backups/x"}); err == nil {
+		t.Error("a subdir naming no tier was made")
 	}
 }
 
@@ -239,6 +261,54 @@ func TestTheSoakReportCarriesTheQuotaTree(t *testing.T) {
 		}
 		if runIndex(f, 0, append([]string{"btrfs"}, qgroupShow...)...) >= 0 {
 			t.Errorf("%s read the tree", tc.name)
+		}
+	}
+}
+
+// A START EMPTIES THE CACHE WHEN SPACE IS SHORT: under a tenth of the app's data group's limit
+// left, for an app of one container that mounts a cache. Not with room to spare, not with no
+// limit, not for an app with no cache, and not for an app of two containers, where the other
+// may be running with the cache open.
+func TestAStartEmptiesTheCacheWhenSpaceIsShort(t *testing.T) {
+	const one = `{"name":"immich","version":"1","containers":[{"name":"app","image":"ghcr.io/x/i@sha256:` +
+		`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mounts":[{"tier":"data","dir":"app","path":"/data"},` +
+		`{"tier":"cache","dir":"thumbs","path":"/cache"}],"primary":true,"port":8080,"healthPath":"/"}]}`
+	two := strings.Replace(one, `}]}`, `},{"name":"ml","image":"ghcr.io/x/m@sha256:`+
+		`bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}`, 1)
+	none := strings.Replace(one, `,{"tier":"cache","dir":"thumbs","path":"/cache"}`, "", 1)
+	cache := quadlet.Area("cache", "immich")
+	group := appQgroup(tierData, "immich")
+	for _, c := range []struct {
+		name, manifest, limit string
+		used                  int64
+		emptied               bool
+	}{
+		{"short", one, "10000000000", 9_500_000_000, true},
+		{"room to spare", one, "10000000000", 8_000_000_000, false},
+		{"no limit", one, "", 9_500_000_000, false},
+		{"no cache", none, "10000000000", 9_500_000_000, false},
+		{"two containers", two, "10000000000", 9_500_000_000, false},
+	} {
+		f := &fakeExec{files: map[string]string{manifestPath("immich"): c.manifest}}
+		f.qgroups = map[string][]string{tierQgroup(tierData): nil, group: {tierQgroup(tierData)}}
+		f.qused = map[string]int64{group: c.used}
+		if c.limit != "" {
+			f.qlimits = map[string]string{group: c.limit}
+		}
+		f.runFn = func(name string, args []string) ([]byte, error) {
+			if name == "btrfs" && args[1] == "show" {
+				return []byte(args[2]), nil
+			}
+			if name == "ls" && args[1] == cache {
+				return []byte("thumbs\n"), nil
+			}
+			return nil, nil
+		}
+		if _, err := cacheAtStart(context.Background(), f, "immich"); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := runIndex(f, 0, "btrfs", "subvolume", "delete", cache) >= 0; got != c.emptied {
+			t.Errorf("%s: emptied %t, want %t: %v", c.name, got, c.emptied, f.runs)
 		}
 	}
 }

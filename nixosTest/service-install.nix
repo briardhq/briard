@@ -165,7 +165,7 @@ pkgs.testers.runNixOSTest {
     manifest = (
         '{"name":"fixture","version":"v0","network":"host","containers":[{'
         f'"name":"app","image":"${registryHost}/briard-fixture@{digest}",'
-        '"mount":"${fixtureMount}","primary":true,"port":8080,"healthPath":"/healthz"}]}'
+        '"mounts":[{"tier":"data","dir":"app","path":"${fixtureMount}"}],"primary":true,"port":8080,"healthPath":"/healthz"}]}'
     )
     for m in disk_nodes:
         m.succeed(f"cat > /tmp/manifest.json <<'EOF'\n{manifest}\nEOF")
@@ -416,7 +416,7 @@ pkgs.testers.runNixOSTest {
     broken_manifest = (
         '{"name":"fixture","version":"v1-broken","network":"host","containers":[{'
         f'"name":"app","image":"${registryHost}/briard-fixture@{digest}",'
-        '"mount":"${fixtureMount}","primary":true,"port":8080,"healthPath":"/healthz",'
+        '"mounts":[{"tier":"data","dir":"app","path":"${fixtureMount}"}],"primary":true,"port":8080,"healthPath":"/healthz",'
         '"env":{"BRIARD_BROKEN":"1"}}]}'
     )
 

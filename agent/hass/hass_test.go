@@ -19,7 +19,7 @@ func ha() manifest.Manifest {
 		Name:    Name,
 		Version: "2026.7.1",
 		Containers: []manifest.Container{{
-			Name: "app", Image: image, Mount: "/config",
+			Name: "app", Image: image, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/config"}},
 			Primary: true, Port: 8123, HealthPath: "/manifest.json",
 		}},
 	}
@@ -554,5 +554,23 @@ func TestExternalURLOnlyForAResolvingName(t *testing.T) {
 		if got := ExternalURL(c); got != "" {
 			t.Errorf("%s: ExternalURL = %q, want empty", name, got)
 		}
+	}
+}
+
+// THE CONFIG DIRECTORY IS THE DATA MOUNT AT /config, whatever else is mounted and in whatever
+// order: its backups mounted inside it are not it, and /config from any tier but the data's is
+// not a directory the History holds.
+func TestConfigDirIsTheDataMountAtConfig(t *testing.T) {
+	m := ha()
+	m.Containers[0].Mounts = []manifest.Mount{
+		{Tier: manifest.TierUnversioned, Dir: "backups", Path: "/config/backups"},
+		{Tier: manifest.TierData, Dir: "config", Path: "/config"},
+	}
+	if c, dir, ok := ConfigDir(m); !ok || dir != "config" || c.Name != "app" {
+		t.Errorf("ConfigDir = %q, %q, %t; want app's config", c.Name, dir, ok)
+	}
+	m.Containers[0].Mounts = []manifest.Mount{{Tier: manifest.TierCache, Dir: "config", Path: "/config"}}
+	if _, dir, ok := ConfigDir(m); ok {
+		t.Errorf("ConfigDir found %q in the cache", dir)
 	}
 }

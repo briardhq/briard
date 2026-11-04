@@ -960,10 +960,15 @@ func ToolsBin() string { return toolsBin() }
 // TakeStartMember takes the ring member for a service that is about to start, for a caller
 // outside this package. The inbound channel reaches the same code through its own verb; this is
 // the entry point the generic pre-start hook uses, on a node where nothing is inside a container
-// yet to ask.
+// yet to ask. The same start is when the app's cache is emptied, if its space is short.
 func TakeStartMember(ctx context.Context, x Executor, service string) (string, error) {
 	ensureToolsOnPath()
 	defer signalDoor(ctx, x)
+	if done, err := cacheAtStart(ctx, x, service); err != nil {
+		log.Printf("service-starting %s: the cache: %v", service, err)
+	} else if done != "" {
+		log.Printf("service-starting %s: %s", service, done)
+	}
 	return startingMember(ctx, x, service, true)
 }
 

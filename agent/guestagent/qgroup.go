@@ -10,6 +10,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"briard.io/agent/quadlet"
+	"briard.io/shared/manifest"
 )
 
 // THE QUOTA TREE: EVERY SUBVOLUME IS BORN INTO IT.
@@ -19,7 +22,10 @@ import (
 //
 //	level 2  tier aggregates   2/(1<<40) data         2/(2<<40) files
 //	level 1  per app           1/(tier<<40 | app40)   tier 1 = data, 2 = files, 0 reserved
-//	level 0  subvolumes        the app's live area, its ring members, its restores
+//	level 0  subvolumes        the app's live areas, its ring members, its restores
+//
+// The cache and unversioned tiers have no groups of their own: an app's areas in them are charged
+// to its data group, so what it keeps to run, however the node treats it, is one share.
 //
 // A limit on a level-0 group would RESET on every restore-by-swap: the new subvolume allocates
 // fresh, while the deleted original keeps its charge as a space holder. The level-1 group keeps
@@ -37,21 +43,26 @@ import (
 // THE STORAGE TIERS are named for what they hold, never for whose it is -- every area is an
 // app's, and the household's: an app's DATA is what it keeps to run (its settings, its
 // database), rolled back with it; its FILES are what the household keeps in it, never rolled
-// back, versioned. Each tier is a plain directory holding one subvolume per app, so a job over a
-// tier reads one directory and a data rollback never reaches a file.
+// back, versioned; its CACHE is what it can make again; and UNVERSIONED is what it keeps
+// without copies (manifest.Tier*). Each tier is a plain directory holding one subvolume per app
+// that mounts it, so a job over a tier reads one directory and a data rollback never reaches a
+// file. These are the tiers' groups in the quota tree.
 const (
 	tierData  = 1
 	tierFiles = 2
 )
 
-// dataRoot is the data tier's directory; quadlet.DataRoot names an app's area in it.
-func dataRoot() string { return filepath.Join(dataMountRoot, "data") }
+// tierRoot is a tier's directory; quadlet.Area names an app's area in it.
+func tierRoot(tier string) string { return filepath.Join(dataMountRoot, tier) }
+
+// dataRoot is the data tier's directory.
+func dataRoot() string { return tierRoot(manifest.TierData) }
 
 // filesRoot is the files tier's directory.
-func filesRoot() string { return filepath.Join(dataMountRoot, "files") }
+func filesRoot() string { return tierRoot(manifest.TierFiles) }
 
 // filesArea is one app's files area.
-func filesArea(app string) string { return filepath.Join(filesRoot(), app) }
+func filesArea(app string) string { return quadlet.Area(manifest.TierFiles, app) }
 
 func appQgroup(tier uint64, app string) string {
 	sum := sha256.Sum256([]byte(app))
@@ -60,12 +71,12 @@ func appQgroup(tier uint64, app string) string {
 
 func tierQgroup(tier uint64) string { return "2/" + strconv.FormatUint(tier<<40, 10) }
 
-// areaOf reads the tier and the app off a live area's path. The path is what decides it: the
-// tier's directory is the area's parent.
+// areaOf reads the group's tier and the app off a live area's path. The path is what decides
+// it: the tier's directory is the area's parent.
 func areaOf(area string) (tier uint64, app string, err error) {
 	app = filepath.Base(area)
 	switch filepath.Dir(filepath.Clean(area)) {
-	case dataRoot():
+	case dataRoot(), tierRoot(manifest.TierCache), tierRoot(manifest.TierUnversioned):
 		return tierData, app, nil
 	case filesRoot():
 		return tierFiles, app, nil

@@ -44,7 +44,7 @@ let
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
   root = "/var/lib/briard/data/${fixture.name}";
-  live = "${root}/${fixture.container}";
+  live = "${root}/${fixture.dataDir}";
   db = "${live}/home-assistant_v2.db";
   ring = "/var/lib/briard/data/.snapshots";
 in
@@ -155,8 +155,8 @@ pkgs.testers.runNixOSTest {
     assert app_state(fresh) == "", f"{fresh} is held ({app_state(fresh)}); the scenario needs a copy nobody holds"
     # NON-VACUITY: the fresh copy holds the row and the floor does not, so the row being back
     # after the restore says which copy was restored.
-    assert row(f"${ring}/{fresh}/${fixture.container}/home-assistant_v2.db", 1, "sensor.b31_named", "before-damage") == named
-    assert row(f"${ring}/{floor}/${fixture.container}/home-assistant_v2.db", 1, "sensor.b31_named", "before-damage") == "", (
+    assert row(f"${ring}/{fresh}/${fixture.dataDir}/home-assistant_v2.db", 1, "sensor.b31_named", "before-damage") == named
+    assert row(f"${ring}/{floor}/${fixture.dataDir}/home-assistant_v2.db", 1, "sensor.b31_named", "before-damage") == "", (
         "the floor already holds the row, so restoring it would pass this test too"
     )
 
@@ -216,7 +216,7 @@ pkgs.testers.runNixOSTest {
     umeta = json.loads(node1.succeed(f"cat ${ring}/{undo}.json"))
     kinds = [r["kind"] for r in (umeta.get("event") or {}).get("reasons", [])]
     assert "hass-db-restore" in kinds, f"the undo point carries no restore event: {umeta.get('event')}"
-    undodb = f"${ring}/{undo}/${fixture.container}/home-assistant_v2.db"
+    undodb = f"${ring}/{undo}/${fixture.dataDir}/home-assistant_v2.db"
     assert quick(undodb, 1) != "ok", "the undo point does not hold the damaged database it would put back"
 
     # ---- 7. HOME ASSISTANT'S FULL READ on the checked copy: nothing is reset ----

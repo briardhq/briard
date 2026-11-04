@@ -28,7 +28,7 @@ let
     fixtures = [ fixture ];
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
-  live = "/var/lib/briard/data/${fixture.name}/${fixture.container}";
+  live = "/var/lib/briard/data/${fixture.name}/${fixture.dataDir}";
   folder = "/home/ana/Briard Backup";
   folder2 = "/home/ana/Earlier Backup";
   url = "http://127.0.0.1:7791/";
@@ -96,9 +96,12 @@ pkgs.testers.runNixOSTest {
 
     # ---- the first night ----
     # WEIGHT, so the sizes below mean something: 4 MiB of the service's own data (random, so it
-    # neither compresses nor dedups) and 8 MiB of tarball where Home Assistant keeps its own backups.
+    # neither compresses nor dedups) and 8 MiB of tarball in its unversioned area, where Home Assistant
+    # keeps its own backups -- an area of its own, never in a member, so never in the backup.
     node1.succeed("head -c 4M /dev/urandom > ${live}/big.bin")
-    node1.succeed("mkdir -p ${live}/backups && head -c 8M /dev/urandom > ${live}/backups/ha.tar")
+    unversioned = "/var/lib/briard/unversioned/${fixture.name}"
+    node1.succeed(f"mkdir -p $(dirname {unversioned}) && btrfs subvolume create {unversioned} && mkdir {unversioned}/backups")
+    node1.succeed(f"head -c 8M /dev/urandom > {unversioned}/backups/ha.tar")
     sample("first")
     first = backup()
     # The key was minted on the volume by that first run, for the household alone.
@@ -108,12 +111,12 @@ pkgs.testers.runNixOSTest {
 
     files = plain("ls latest").split()
     for want in [
-        "/run/briard/backup/data/${fixture.name}/${fixture.container}/payload.txt",
+        "/run/briard/backup/data/${fixture.name}/${fixture.dataDir}/payload.txt",
         "/run/briard/backup/briard/members/${fixture.name}.json",
         "/run/briard/backup/briard/volume/.services/${fixture.name}.json",
     ]:
         assert want in files, f"{want} is not in the snapshot: {files}"
-    assert not any("/app/backups" in f for f in files), "Home Assistant's own tarballs were backed up"
+    assert not any("ha.tar" in f or "unversioned" in f for f in files), "an app's unversioned area was backed up"
     assert not any("backup-key" in f for f in files), "the key went into the repository it opens"
     side = json.loads(plain("dump latest /run/briard/backup/briard/members/${fixture.name}.json"))
     assert side.get("manifest"), f"the member's sidecar carries no manifest: {side}"
@@ -139,7 +142,7 @@ pkgs.testers.runNixOSTest {
     assert second["bytesAdded"] < 1 << 20, f"the second night re-sent the unchanged data: {first} then {second}"
     assert len(json.loads(plain("snapshots --json"))) == 2, "two nights, not two snapshots"
     plain("restore latest --target /tmp/restored")
-    got = node1.succeed("cat /tmp/restored/run/briard/backup/data/${fixture.name}/${fixture.container}/payload.txt").strip()
+    got = node1.succeed("cat /tmp/restored/run/briard/backup/data/${fixture.name}/${fixture.dataDir}/payload.txt").strip()
     assert got == "second", f"restored {got!r}, want the second night's"
     plain("check --read-data")
 
@@ -165,7 +168,7 @@ pkgs.testers.runNixOSTest {
     # payload and the sidecar that names the manifest, beside the members the ring took itself.
     member = node1.succeed(f"briard-guest-agent --backup-restore=${url} -service ${fixture.name} -snapshot {first['snapshot']}").strip()
     assert member.startswith("/var/lib/briard/data/.snapshots/${fixture.name}-from-backup-"), f"member {member}"
-    got = node1.succeed(f"cat {member}/${fixture.container}/payload.txt").strip()
+    got = node1.succeed(f"cat {member}/${fixture.dataDir}/payload.txt").strip()
     assert got == "first", f"the member holds {got!r}, want the first night's"
     node1.succeed(f"btrfs subvolume show {member} | grep -q 'readonly'")
     node1.fail(f"touch {member}/x")
@@ -223,14 +226,14 @@ pkgs.testers.runNixOSTest {
     node1.fail(f"findmnt /run/briard/backup/files/{app}")
     # The folder's README, followed by hand: one command brings back the apps' data, the other the files.
     plain("restore latest --tag data --target /tmp/readme-apps", repo="'${folder2}'")
-    node1.succeed(f"test -s /tmp/readme-apps/run/briard/backup/data/{app}/${fixture.container}/payload.txt")
+    node1.succeed(f"test -s /tmp/readme-apps/run/briard/backup/data/{app}/${fixture.dataDir}/payload.txt")
     plain("restore latest --tag files --target /tmp/readme-files", repo="'${folder2}'")
     node1.succeed(f"cmp {area}/photo.jpg /tmp/readme-files/run/briard/backup/files/{app}/photo.jpg")
     # "latest" is the newest DATA snapshot, though the files' is newer: the restore gets the app's
     # data as that snapshot holds it.
     member = node1.succeed(f"briard-guest-agent --backup-restore=${url} -service {app} -snapshot latest").strip()
-    got = node1.succeed(f"cat {member}/${fixture.container}/payload.txt").strip()
-    want = plain(f"dump {asnap['id']} /run/briard/backup/data/{app}/${fixture.container}/payload.txt", repo="'${folder2}'").strip()
+    got = node1.succeed(f"cat {member}/${fixture.dataDir}/payload.txt").strip()
+    want = plain(f"dump {asnap['id']} /run/briard/backup/data/{app}/${fixture.dataDir}/payload.txt", repo="'${folder2}'").strip()
     assert got == want, f"a latest restore holds {got!r}, the newest app night {want!r}"
     # The next night finds last night's files as its parent, on their own path: nothing re-sent.
     take_version()

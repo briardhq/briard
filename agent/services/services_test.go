@@ -17,7 +17,7 @@ func svc(name string, port int) manifest.Manifest {
 	return manifest.Manifest{
 		Name: name, Version: "1",
 		Containers: []manifest.Container{{
-			Name: "app", Image: image, Mount: "/data",
+			Name: "app", Image: image, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/data"}},
 			Primary: true, Port: port, HealthPath: "/healthz",
 		}},
 	}
@@ -55,11 +55,12 @@ func TestAnUnknownServiceGetsNothing(t *testing.T) {
 // marker list that leaked to another service would have the restore path unlinking a file inside
 // somebody else's data on the strength of a name Home Assistant chose.
 //
-// RELATIVE TO THE DATA ROOT, with the container in the path: the guest resolves them against a
+// RELATIVE TO THE DATA ROOT, with the config directory in the path: the guest resolves them against a
 // live subvolume and the restore against a staged copy, so an absolute path here would make that
 // verb able to unlink anywhere on the volume.
 func TestRestoreMarkersAreHomeAssistantsAlone(t *testing.T) {
 	ha := svc(hass.Name, 8123)
+	ha.Containers[0].Mounts[0].Path = "/config"
 	got := RestoreMarkers(ha)
 	if len(got) != 1 || got[0] != "app/"+hass.RestoreMarker {
 		t.Errorf("RestoreMarkers(home-assistant) = %v, want [app/%s]", got, hass.RestoreMarker)
@@ -73,7 +74,7 @@ func TestRestoreMarkersAreHomeAssistantsAlone(t *testing.T) {
 	// point inside a directory the member does not have.
 	ha.Containers = append(ha.Containers, manifest.Container{Name: "sidecar", Image: image})
 	if got := RestoreMarkers(ha); len(got) != 1 {
-		t.Errorf("RestoreMarkers = %v, want only the container that holds the data", got)
+		t.Errorf("RestoreMarkers = %v, want only the config directory's", got)
 	}
 }
 
@@ -282,7 +283,7 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 // outlive the boot that minted it and a token read out of a backup or a snapshot is worth
 // nothing.
 func TestPrepareMintsAFreshInboundToken(t *testing.T) {
-	ha := manifest.Manifest{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mount: "/config"}}}
+	ha := manifest.Manifest{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/config"}}}}}
 	f := &tokenExec{files: map[string]string{}}
 	// Prepare's own per-service work fails on this stub fixture, and that is deliberately not
 	// what is asserted: the mint runs AHEAD of the switch on the service name, so a service whose
@@ -358,8 +359,8 @@ func (f *tokenExec) ran(want ...string) bool {
 // obvious and will recur.
 func TestNoBindNestsInsideAnother(t *testing.T) {
 	for _, m := range []manifest.Manifest{
-		{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mount: "/config"}}},
-		{Name: "mosquitto", Containers: []manifest.Container{{Name: "broker", Primary: true, Mount: "/data"}}},
+		{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/config"}}}}},
+		{Name: "mosquitto", Containers: []manifest.Container{{Name: "broker", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "broker", Path: "/data"}}}}},
 	} {
 		for _, c := range m.Containers {
 			var dests []string
@@ -370,12 +371,17 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 				}
 				dests = append(dests, parts[1])
 			}
-			// The container's own data bind counts too: it is a destination like any other.
-			if c.Mount != "" {
-				dests = append(dests, c.Mount)
+			// The container's own mounts count too: they are destinations like any other. Only
+			// two of them may nest, in each other, because the renderer orders them parent first.
+			product := len(dests)
+			for _, mt := range c.Mounts {
+				dests = append(dests, mt.Path)
 			}
-			for _, a := range dests {
-				for _, b := range dests {
+			for i, a := range dests {
+				for j, b := range dests {
+					if i >= product && j >= product {
+						continue
+					}
 					if a != b && strings.HasPrefix(b, strings.TrimSuffix(a, "/")+"/") {
 						t.Errorf("%s/%s: bind %q is nested inside %q; the runtime must create it under an already-mounted parent", m.Name, c.Name, b, a)
 					}

@@ -66,26 +66,26 @@ func dbCheckResult() hass.DBCheckState {
 	return s
 }
 
-// recorderOnVolume reads Home Assistant's manifest off the volume and the container that holds
-// its config directory.
-func recorderOnVolume(x Executor) (manifest.Manifest, string, manifest.Container, error) {
+// recorderOnVolume reads Home Assistant's manifest off the volume, the container that mounts its
+// config directory, and that directory's name in the data area.
+func recorderOnVolume(x Executor) (manifest.Manifest, string, manifest.Container, string, error) {
 	raw, err := x.ReadFile(manifestPath(hass.Name))
 	if err != nil {
-		return manifest.Manifest{}, "", manifest.Container{}, fmt.Errorf("no Home Assistant on this volume")
+		return manifest.Manifest{}, "", manifest.Container{}, "", fmt.Errorf("no Home Assistant on this volume")
 	}
 	m, _, err := manifest.Parse(raw)
 	if err != nil {
-		return manifest.Manifest{}, "", manifest.Container{}, fmt.Errorf("%s's manifest does not parse: %w", hass.Name, err)
+		return manifest.Manifest{}, "", manifest.Container{}, "", fmt.Errorf("%s's manifest does not parse: %w", hass.Name, err)
 	}
-	c, ok := hass.ConfigContainer(m)
+	c, dir, ok := hass.ConfigDir(m)
 	if !ok {
-		return manifest.Manifest{}, "", manifest.Container{}, fmt.Errorf("%s's manifest names no config directory", hass.Name)
+		return manifest.Manifest{}, "", manifest.Container{}, "", fmt.Errorf("%s's manifest names no config directory", hass.Name)
 	}
-	return m, string(raw), c, nil
+	return m, string(raw), c, dir, nil
 }
 
 // recorderRing is Home Assistant's ring as the recorder check sees it.
-func recorderRing(ctx context.Context, x Executor, c manifest.Container) ([]hass.Member, error) {
+func recorderRing(ctx context.Context, x Executor, dir string) ([]hass.Member, error) {
 	entries, err := listMembers(ctx, x, hass.Name)
 	if err != nil {
 		return nil, err
@@ -94,7 +94,7 @@ func recorderRing(ctx context.Context, x Executor, c manifest.Container) ([]hass
 	for _, e := range entries {
 		at, _ := quadlet.SnapshotMemberTime(e.Member)
 		ring = append(ring, hass.Member{
-			Path: e.Member, Dir: e.Member + "/" + c.Name, App: quadlet.AppSidecar(e.Member), At: at,
+			Path: e.Member, Dir: e.Member + "/" + dir, App: quadlet.AppSidecar(e.Member), At: at,
 			Quiesced: e.Meta.Consistency == quadlet.Quiesced,
 		})
 	}
@@ -105,15 +105,15 @@ func recorderRing(ctx context.Context, x Executor, c manifest.Container) ([]hass
 // ring. Everything that stops it becomes the report's reason.
 func hassDBCheck(ctx context.Context, x Executor) hass.DBReport {
 	ensureToolsOnPath()
-	_, _, c, err := recorderOnVolume(x)
+	_, _, c, dir, err := recorderOnVolume(x)
 	if err != nil {
 		return hass.DBReport{Why: err.Error()}
 	}
-	ring, err := recorderRing(ctx, x, c)
+	ring, err := recorderRing(ctx, x, dir)
 	if err != nil {
 		return hass.DBReport{Why: "the ring could not be read: " + err.Error()}
 	}
-	rep := hass.Nightly(ctx, x, c.Image, quadlet.DataPath(hass.Name, c.Name), ring)
+	rep := hass.Nightly(ctx, x, c.Image, quadlet.DataRoot(hass.Name)+"/"+dir, ring)
 	log.Printf("hass-db: checked %s: verdict=%q candidate=%s %s", path.Base(rep.Checked), rep.Verdict, path.Base(rep.Candidate), rep.Why)
 	return rep
 }
@@ -135,11 +135,11 @@ func hassDBRestore(ctx context.Context, x Executor, run func(string, ...string) 
 		dbChecks.Unlock()
 	}()
 	ensureToolsOnPath()
-	m, raw, c, err := recorderOnVolume(x)
+	m, raw, c, dir, err := recorderOnVolume(x)
 	if err != nil {
 		return err
 	}
-	ring, err := recorderRing(ctx, x, c)
+	ring, err := recorderRing(ctx, x, dir)
 	if err != nil {
 		return fmt.Errorf("the ring could not be read: %w", err)
 	}
@@ -152,11 +152,11 @@ func hassDBRestore(ctx context.Context, x Executor, run func(string, ...string) 
 	if from == nil {
 		return fmt.Errorf("%s has no member %q", hass.Name, member)
 	}
-	live := quadlet.DataPath(hass.Name, c.Name)
+	live := quadlet.DataRoot(hass.Name) + "/" + dir
 	if err := hass.Restorable(ctx, x, c.Image, live, *from); err != nil {
 		return fmt.Errorf("not restoring: %w", err)
 	}
-	return restoreRecorder(ctx, x, run, m, raw, *from, c)
+	return restoreRecorder(ctx, x, run, m, raw, *from, dir)
 }
 
 // restoreRecorder puts the recorder database back from one member: stop Home Assistant, build the
@@ -178,7 +178,7 @@ func hassDBRestore(ctx context.Context, x Executor, run func(string, ...string) 
 //
 // ONLY THE UNITS THAT WERE RUNNING are stopped and started. Container units, never the pod: a pod
 // stop unmounts the shared volume under every other service (quadlet.Rendered.ContainerUnits).
-func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string) error, m manifest.Manifest, rawManifest string, from hass.Member, c manifest.Container) error {
+func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string) error, m manifest.Manifest, rawManifest string, from hass.Member, dir string) error {
 	rendered, err := quadlet.Render(m, "")
 	if err != nil {
 		return fmt.Errorf("render the running manifest: %w", err)
@@ -230,7 +230,7 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 	if err := run("btrfs", "subvolume", "snapshot", "-i", group, root, staged); err != nil {
 		return unchanged("stage a copy of the data", err)
 	}
-	if err := hass.RestoreDB(ctx, x, from.Dir, staged+"/"+c.Name); err != nil {
+	if err := hass.RestoreDB(ctx, x, from.Dir, staged+"/"+dir); err != nil {
 		return unchanged("put the database into the staged copy", err)
 	}
 	if err := run("sync", "-f", staged); err != nil {

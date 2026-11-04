@@ -40,7 +40,7 @@ import (
 //
 // and then the household's files', tagged files:
 //
-//	files/<app>/                   the newest version of the app's files, for every area holding something
+//	files/<app>/                   the newest version of the files of every app that mounts the files tier
 //
 // The data is the History sample, whatever trigger took it, so consistency comes with it and
 // there is no second snapshot schedule; crash-consistent is what every nightly tool gives, and
@@ -290,24 +290,17 @@ func newestMembers(ctx context.Context, x Executor) (map[string]string, error) {
 	return out, nil
 }
 
-// newestFileVersions is the version each files area's backup reads: the newest, for every area
-// that holds something -- dashboard.FilesAreaMin with its versions, as the Storage card counts.
-// Every app has an area, and most are empty.
-func newestFileVersions(ctx context.Context, x Executor) (map[string]string, error) {
-	tree, err := readQgroups(ctx, x)
-	if err != nil {
-		return nil, err
-	}
+// newestFileVersions is the version each files area's backup reads: the newest. An app has a
+// files area only if it mounts the files tier, so every app with a version is one the household
+// keeps files in.
+func newestFileVersions(ctx context.Context, x Executor) map[string]string {
 	out, at := map[string]string{}, map[string]time.Time{}
 	for _, m := range fileVersions(ctx, x) {
-		if g, ok := tree[appQgroup(tierFiles, m.app)]; !ok || g.referenced < dashboard.FilesAreaMin {
-			continue
-		}
 		if m.at.After(at[m.app]) {
 			out[m.app], at[m.app] = m.path, m.at
 		}
 	}
-	return out, nil
+	return out
 }
 
 // runBackup is one run: lay out the tree, open (or create) the repository, clear a stale lock,
@@ -430,9 +423,9 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 	if group == "" {
 		group = backupHost
 	}
-	// HA's own backup tarballs are a second copy of the same data inside the first.
-	out, err := restic("backup", "--json", "--quiet", "--host", group, "--tag", backupDataTag,
-		"--exclude", "**/app/backups", backupData, backupFacts)
+	// An app's own backups are no second copy here: they are in its unversioned area, never in a
+	// member.
+	out, err := restic("backup", "--json", "--quiet", "--host", group, "--tag", backupDataTag, backupData, backupFacts)
 	rep := backupSummary(out)
 	rep.Services = services
 	if err != nil {
@@ -447,9 +440,9 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 	// which has landed by now. An interrupted run is not lost either: the next reuses every block
 	// this one wrote. Not restored by anything yet -- the household's files are never rolled back.
 	files := func() error {
-		members, err := newestFileVersions(ctx, x)
-		if err != nil || len(members) == 0 {
-			return err
+		members := newestFileVersions(ctx, x)
+		if len(members) == 0 {
+			return nil
 		}
 		for _, app := range slices.Sorted(maps.Keys(members)) {
 			p := backupFiles + "/" + app

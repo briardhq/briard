@@ -187,11 +187,11 @@ let
   # volume and only a Primary has it mounted. That is not a harness quirk; it is the exact
   # constraint the product's install path lives under, and the reason converge exists.
   #
-  # ONE subvolume with plain per-container SUBDIRECTORIES, never nested subvolumes: `btrfs
+  # ONE subvolume per tier the service mounts, plain SUBDIRECTORIES in it, never nested: `btrfs
   # subvolume delete` refuses on a subvolume containing them, so data.restore would break.
   # Podman does NOT create a missing bind-mount source (measured — the container dies with
   # `statfs …/app: no such file or directory`), so the provision step is required, not defensive.
-  # Both the subvolume path and the subdirectory list come from the RENDERER's sidecars, so a
+  # Both the data root and the directories, in full, come from the RENDERER's sidecars, so a
   # test never restates the layout the product decides.
   fixtureHelpers = ''
     def fixture_dir(service=None):
@@ -207,7 +207,9 @@ let
         dataroot = m.succeed(f"cat {d}/dataroot").strip()
         m.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || (mkdir -p $(dirname {dataroot}) && btrfs subvolume create {dataroot})")
         for sub in m.succeed(f"cat {d}/subdirs").split():
-            m.succeed(f"mkdir -p {dataroot}/{sub}")
+            area = sub.rsplit("/", 1)[0]
+            m.succeed(f"btrfs subvolume show {area} >/dev/null 2>&1 || (mkdir -p $(dirname {area}) && btrfs subvolume create {area})")
+            m.succeed(f"mkdir -p {sub}")
         # The service's name IS the last element of its data root -- taken from the renderer
         # rather than restated, like everything else here.
         name = dataroot.rstrip("/").split("/")[-1]

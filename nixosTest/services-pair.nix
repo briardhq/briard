@@ -248,7 +248,7 @@ pkgs.testers.runNixOSTest {
     # that much retained state, and a test that crashed the node the instant after a publish would
     # be asserting on a race rather than on replication. Waiting for the bytes to reach the file
     # is what makes this a claim about DRBD carrying what the service durably wrote.
-    primary.wait_until_succeeds(f"grep -aq before-the-kill {broker_root}/broker/mosquitto.db", timeout=120)
+    primary.wait_until_succeeds(f"grep -aq before-the-kill {broker_root}/${mosquitto.dataDir}/mosquitto.db", timeout=120)
     primary.succeed("sync")
     # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
     # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
@@ -273,7 +273,7 @@ pkgs.testers.runNixOSTest {
     reader = next(m for m in survivors if m != new_primary)
     got = reader.succeed(f"mosquitto_sub -h {VIP} -t briard/pair -C 1 -W 20").strip()
     assert got == "before-the-kill", f"the broker's retained state did not cross the failover: {got!r}"
-    new_primary.succeed(f"test -s {broker_root}/broker/mosquitto.db")
+    new_primary.succeed(f"test -s {broker_root}/${mosquitto.dataDir}/mosquitto.db")
 
 
     # ---- (5) THE S1 PROBE, ON A REAL BROKER ---------------------------------------------------
@@ -307,7 +307,7 @@ pkgs.testers.runNixOSTest {
     ctrs = [u for u in units if not u.endswith("-pod.service")]
     for u in reversed(ctrs):
         new_primary.succeed(f"systemctl stop {u}")
-    new_primary.succeed(f"rm -f {broker_root}/broker/mosquitto.db")
+    new_primary.succeed(f"rm -f {broker_root}/${mosquitto.dataDir}/mosquitto.db")
     for u in units:
         new_primary.succeed(f"systemctl start {u}")
     new_primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(new_primary, '/api/v1/version')}", timeout=180)

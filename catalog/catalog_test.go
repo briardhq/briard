@@ -11,6 +11,7 @@ package catalog
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -134,8 +135,8 @@ func TestMosquittoEntryMatchesTheProductsConfig(t *testing.T) {
 	if p.HealthPath != mosquitto.HealthPath {
 		t.Errorf("nodes are told to probe %q; the broker's API serves %q", p.HealthPath, mosquitto.HealthPath)
 	}
-	if p.Mount != mosquitto.DataMount {
-		t.Errorf("the replicated volume is bound at %q; the config persists into %q", p.Mount, mosquitto.DataMount)
+	if want := []manifest.Mount{{Tier: manifest.TierData, Dir: "data", Path: mosquitto.DataMount}}; !slices.Equal(p.Mounts, want) {
+		t.Errorf("the broker mounts %v; the config persists into %q, in its data", p.Mounts, mosquitto.DataMount)
 	}
 }
 
@@ -145,13 +146,22 @@ func TestMosquittoEntryMatchesTheProductsConfig(t *testing.T) {
 // the replicated volume anywhere else leaves the integration, the token and the household's whole
 // configuration on the container's own disk, gone at the next start. And HA exists to find the
 // devices on the household's network: off host networking its mDNS and SSDP discovery sees nothing.
+//
+// ITS OWN BACKUPS ARE THE ONE NESTED MOUNT, in the unversioned tier: a second copy of its data,
+// not to be snapshotted or backed up again. Nothing else under /config may be a mount -- a
+// restore from one of those backups removes every entry of /config but `backups`, and a mount
+// point refuses its removal, leaving /config half cleared (homeassistant/backup_restore.py).
 func TestHomeAssistantEntryMatchesWhatTheProductAssumes(t *testing.T) {
 	m, _, err := manifest.Parse(read(t, hass.Name+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := m.Primary(); p.Mount != "/config" {
-		t.Errorf("the replicated volume is bound at %q; agent/hass writes into /config", p.Mount)
+	want := []manifest.Mount{
+		{Tier: manifest.TierData, Dir: "config", Path: "/config"},
+		{Tier: manifest.TierUnversioned, Dir: "backups", Path: "/config/backups"},
+	}
+	if p := m.Primary(); !slices.Equal(p.Mounts, want) {
+		t.Errorf("Home Assistant mounts %v; agent/hass writes into /config, in its data, and only backups may sit apart", p.Mounts)
 	}
 	if !m.HostNetwork() {
 		t.Error("Home Assistant is off host networking; its discovery would see nothing on the household's LAN")

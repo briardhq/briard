@@ -15,7 +15,7 @@ import (
 
 const dbRigManifest = `{"name":"home-assistant","version":"2026.7.1","containers":[{"name":"app",` +
 	`"image":"ghcr.io/x/ha@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
-	`"mount":"/config","primary":true,"port":8123,"healthPath":"/"}]}`
+	`"mounts":[{"tier":"data","dir":"app","path":"/config"}],"primary":true,"port":8123,"healthPath":"/"}]}`
 
 // dbRig is a ring holding Home Assistant, whose `podman run` answers the recorder check from a
 // table keyed by the directory mounted at /db, and whose rm, cp and test act on its files.
@@ -173,7 +173,7 @@ func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 	now := time.Now().UTC()
 	good := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, now.Add(-20*time.Hour)), quadlet.SnapshotsDir)
 	bad := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, now.Add(-time.Hour)), quadlet.SnapshotsDir)
-	live := quadlet.DataPath("home-assistant", "app")
+	live := quadlet.DataRoot("home-assistant") + "/app"
 	f := dbRig(map[string]string{
 		quadlet.SnapshotsDir + bad + "/app":  `{"check": "corrupt", "detail": "database disk image is malformed"}`,
 		quadlet.SnapshotsDir + good + "/app": `{"check": "ok", "schema": 48}`,
@@ -316,8 +316,8 @@ func TestTheRestoreAsksTheGateAgain(t *testing.T) {
 	ctx := context.Background()
 	good := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-20*time.Hour)), quadlet.SnapshotsDir)
 	f := dbRig(map[string]string{
-		quadlet.SnapshotsDir + good + "/app":      `{"check": "ok", "schema": 48}`,
-		quadlet.DataPath("home-assistant", "app"): `{"schema": 47}`,
+		quadlet.SnapshotsDir + good + "/app":        `{"check": "ok", "schema": 48}`,
+		quadlet.DataRoot("home-assistant") + "/app": `{"schema": 47}`,
 	}, good)
 	f.files[quadlet.AppSidecar(quadlet.SnapshotsDir+good)] = `{"hass-db":{"state":"clean"}}`
 	err := hassDBRestore(ctx, f, func(name string, args ...string) error { _, err := f.Run(ctx, name, args...); return err }, quadlet.SnapshotsDir+good)
@@ -373,7 +373,7 @@ func TestAFailedRestoreChangesNothingAndRestarts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			good := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-20*time.Hour)), quadlet.SnapshotsDir)
-			live := quadlet.DataPath("home-assistant", "app")
+			live := quadlet.DataRoot("home-assistant") + "/app"
 			f := dbRig(map[string]string{
 				quadlet.SnapshotsDir + good + "/app": `{"check": "ok", "schema": 48}`,
 				live:                                 `{"schema": 48}`,
@@ -431,7 +431,7 @@ func TestTheUndoPointClaimsQuiescedOnlyOnACleanStop(t *testing.T) {
 	for _, clean := range []bool{true, false} {
 		ctx := context.Background()
 		good := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-20*time.Hour)), quadlet.SnapshotsDir)
-		live := quadlet.DataPath("home-assistant", "app")
+		live := quadlet.DataRoot("home-assistant") + "/app"
 		f := dbRig(map[string]string{
 			quadlet.SnapshotsDir + good + "/app": `{"check": "ok", "schema": 48}`,
 			live:                                 `{"schema": 48}`,

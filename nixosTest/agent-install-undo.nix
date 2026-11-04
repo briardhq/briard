@@ -17,11 +17,16 @@
 #
 # AND THE QUOTA TREE, on the same volume, because this is the rig where the real agent both
 # installs an app and restores its data by swap. Every subvolume the product made must be born
-# into the tree (the app's data area, its files area, the area the undo put back), the
+# into the tree (the app's area in each tier, the area the undo put back), the
 # volume must be in simple-quota mode, and a limit on the app's group must stop ROOT with full
 # capabilities -- after the swap, which is when a limit held on the subvolume itself would
 # have reset. Each assertion proves itself live: the write the limit stops goes through once
 # `quota_override` is set, and the tree check flags a stray subvolume made without `-i`.
+#
+# AND THE OTHER TIERS, since the fixture mounts one of each: the undo empties the app's cache (a
+# newer version's cache beside older data is how a downgrade breaks an app) and leaves its
+# unversioned area; the Storage card counts the unversioned area as data and the cache apart; and
+# the card's Clear empties the cache and starts the app again on the new one.
 { pkgs, guestDisk, agent, netWrap, dressBase, fixture }:
 pkgs.testers.runNixOSTest {
   name = "agent-install-undo";
@@ -149,6 +154,11 @@ pkgs.testers.runNixOSTest {
         assert m, f"no subvolume id for {path}:\n{out}"
         return int(m.group(1))
     before_swap = rootid(f"/var/lib/briard/data/{svc}")
+    # What the undo must empty, and what it must leave: a cache the newer version would have
+    # written, and 4 MiB in the unversioned area, which is never rolled back.
+    cache, unversioned = f"/var/lib/briard/cache/{svc}", f"/var/lib/briard/unversioned/{svc}"
+    guest(f"echo newer > {cache}/cache/stale; head -c 4194304 /dev/urandom > {unversioned}/keep/kept.bin; sync -f /var/lib/briard; echo D\"\"ONE")
+    cache_before = rootid(cache)
 
     # === THE BROKEN UPGRADE, killed inside its gate. ===
     publish("${fixture}/variants/bad/catalog")
@@ -187,6 +197,12 @@ pkgs.testers.runNixOSTest {
     out = guest("curl -fsS -o /dev/null -w CODE=%{http_code} http://127.0.0.1:8080/healthz; echo", wait=15)
     assert "CODE=200" in out, f"the good version is not healthy after the undo:\n{out}"
     print("the interrupted install was undone from the volume alone")
+    # The undo emptied the cache -- a new subvolume, holding the directory its container mounts and
+    # nothing else -- and left the unversioned area as it was.
+    out = guest(f'echo C""ACHE=$(ls -A {cache} | tr "\\n" ",")$(ls -A {cache}/cache | tr "\\n" ",") K""EPT=$(stat -c %s {unversioned}/keep/kept.bin)')
+    assert re.search(r"CACHE=cache, KEPT=4194304", out), f"after the undo the cache and the unversioned area are:\n{out}"
+    assert rootid(cache) != cache_before, "the undo did not make the cache again"
+    print("the undo emptied the cache and kept the unversioned area")
 
     # === THE QUOTA TREE. ===
     import hashlib
@@ -227,7 +243,8 @@ pkgs.testers.runNixOSTest {
     data_group, files_group = group(1, svc), group(2, svc)
     live = rootid(f"/var/lib/briard/data/{svc}")
     assert live != before_swap, f"the undo did not swap the live area ({live}); the restore claim would be vacuous"
-    for sub, want in [(f"/var/lib/briard/data/{svc}", data_group), (f"/var/lib/briard/files/{svc}", files_group)]:
+    for sub, want in [(f"/var/lib/briard/data/{svc}", data_group), (f"/var/lib/briard/files/{svc}", files_group),
+                      (cache, data_group), (unversioned, data_group)]:
         sid = f"0/{rootid(sub)}"
         assert groups.get(sid, (0, []))[1] == [want], f"{sub} ({sid}) is in {groups.get(sid)}, want {want}"
     assert groups[data_group][1] == [aggregate(1)], f"{data_group} is under {groups[data_group][1]}"
@@ -292,9 +309,11 @@ pkgs.testers.runNixOSTest {
     # === WHAT THE APP STORES, as its page's Storage card asks it: the real agent relays it, the
     # guest walks the real volume with compsize. 32 MiB of text in the live area first, which zstd
     # shrinks many times over: du would call it 32 MiB, and on the disk it is a fraction of that.
+    # Beside it the 4 MiB kept in the unversioned area, counted as data, and 2 MiB in the cache,
+    # said apart and in neither the data nor its history.
     import json, time
     text = f"/var/lib/briard/data/{svc}/storage-text"
-    guest(f'yes "the storage card reads the extent tree" | head -c 33554432 > {text}; sync -f {text}; echo D""ONE', wait=8)
+    guest(f'yes "the storage card reads the extent tree" | head -c 33554432 > {text}; head -c 2097152 /dev/urandom > {cache}/cache/blob; sync -f {text}; echo D""ONE', wait=8)
     def usage():
         out = host.succeed(f"""echo '{{"id":"u","kind":"service-usage","payload":"{svc}"}}' | socat -t30 - UNIX-CONNECT:/run/briard/admin.sock""")
         o = json.loads(out)
@@ -308,12 +327,13 @@ pkgs.testers.runNixOSTest {
             break
         time.sleep(2)
     print(f"what {svc} stores: {u}")
-    dat, fil = u["data"], u["files"]
-    assert dat.get("measured") and fil.get("measured"), f"the walk did not finish: {u}"
-    assert dat["uncompressed"] >= 32 << 20 and dat["current"] < dat["uncompressed"] // 4, \
-        f"the current data is {dat['current']} on disk for {dat['uncompressed']} before compression; 32 MiB of text should shrink many times over"
-    assert dat["history"] == max(dat["total"] - dat["current"], 0), \
-        f"the history is not the group less the current data: {dat}"
+    dat, fil, cac = u["data"], u["files"], u.get("cache", {})
+    assert dat.get("measured") and fil.get("measured") and cac.get("measured"), f"the walk did not finish: {u}"
+    assert dat["uncompressed"] >= 36 << 20 and 4 << 20 <= dat["current"] < dat["uncompressed"] // 4, \
+        f"the current data is {dat['current']} on disk for {dat['uncompressed']} before compression; 32 MiB of text should shrink many times over, beside 4 MiB kept unversioned"
+    assert 2 << 20 <= cac["current"] < 3 << 20, f"the cache holds 2 MiB; the card says {cac}"
+    assert dat["history"] == max(dat["total"] - dat["current"] - cac["current"], 0), \
+        f"the history is not the group less the current data and the cache: {dat}, {cac}"
     groups = tree()
     for t, gid in [(dat, data_group), (fil, files_group)]:
         assert abs(t["total"] - groups[gid][0]) < 16 << 20, f"{gid} holds {groups[gid][0]}, the card says {t['total']}"
@@ -322,6 +342,23 @@ pkgs.testers.runNixOSTest {
     m = re.search(r"MEM=(\d+) UMEM=(\d+)", out)
     assert m and (dat["members"], fil["members"]) == (int(m.group(1)), int(m.group(2))), f"the card counts {dat['members']}/{fil['members']} snapshots:\n{out}"
     guest(f"rm -f {text}; sync -f /var/lib/briard; echo D\"\"ONE")
+
+    # THE CARD'S CLEAR, through the real agent: the app stopped, its cache emptied and made again,
+    # the app started again on it -- a new start of its container, whose bind source exists or
+    # podman would refuse it, serving again.
+    def started():
+        out = guest(f'echo S""TART=$(systemctl show -p ActiveEnterTimestampMonotonic --value briard-{svc}-${fixture.container}.service)')
+        m = re.search(r"START=(\d+)", out)
+        assert m, f"no start time for the app's container:\n{out}"
+        return int(m.group(1))
+    first_start = started()
+    out = host.succeed(f"""echo '{{"id":"c","kind":"service-cache-empty","payload":"{svc}"}}' | socat -t120 - UNIX-CONNECT:/run/briard/admin.sock""")
+    assert json.loads(out)["state"] == "done", f"service-cache-empty: {out}"
+    out = guest(f'echo C""ACHE=$(ls -A {cache}/cache | tr "\\n" ",")E K""EPT=$(stat -c %s {unversioned}/keep/kept.bin)')
+    assert re.search(r"CACHE=E KEPT=4194304", out), f"after the Clear the cache and the unversioned area are:\n{out}"
+    host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
+    assert started() > first_start, "the Clear did not start the app's container again"
+    print("the Clear emptied the cache and started the app again on it")
 
     # A limit on the app's group stops root, on the area the swap put back. 4 MiB of headroom
     # over what the group holds now, and a 16 MiB write; the tick owns the limit again at its next run.

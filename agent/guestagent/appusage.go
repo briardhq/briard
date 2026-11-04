@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"briard.io/agent/quadlet"
 	"briard.io/shared/dashboard"
+	"briard.io/shared/manifest"
 )
 
 // AN APP'S SHARE OF THE VOLUME, as its page shows it: per tier, what its group holds -- its
@@ -58,25 +60,52 @@ func appUsage(ctx context.Context, x Executor, app string, now time.Time) (dashb
 		return dashboard.AppUsage{}, err
 	}
 	var stale []string
-	tier := func(tier uint64, area string, members int) *dashboard.TierUsage {
+	// live is one live area as its last walk found it: absent (only history, or a tier the app
+	// does not mount -- nothing to walk, and nothing to count), or there and measured or not.
+	type live struct {
+		there, measured bool
+		disk, files     int64
+	}
+	walked := func(area string) live {
+		root, err := subvolumeID(ctx, x, area)
+		if err != nil {
+			return live{measured: true}
+		}
+		usageWalks.Lock()
+		w, ok := usageWalks.done[area]
+		usageWalks.Unlock()
+		if !ok || w.root != root || now.Sub(w.at) >= usageFresh {
+			stale = append(stale, area)
+		}
+		if ok && w.root == root && !w.failed {
+			return live{there: true, measured: true, disk: w.disk, files: w.files}
+		}
+		return live{there: true}
+	}
+	// tier is one group, its current data the areas `now`, and its history what is left of the
+	// group after them and the areas `besides` -- charged to it, but neither current nor history.
+	tier := func(tier uint64, members int, now []live, besides ...live) *dashboard.TierUsage {
 		g, ok := tree[appQgroup(tier, app)]
 		if !ok {
 			return nil
 		}
 		t := &dashboard.TierUsage{Total: g.referenced, Cap: g.limit, Members: members}
-		root, err := subvolumeID(ctx, x, area)
-		if err != nil {
-			return t // no current data, only history: nothing to walk
+		for _, a := range append(slices.Clone(now), besides...) {
+			if !a.measured {
+				return t
+			}
 		}
-		usageWalks.Lock()
-		w, ok := usageWalks.done[area]
-		usageWalks.Unlock()
-		if ok && w.root == root && !w.failed {
-			t.Measured, t.Current, t.Uncompressed, t.History = true, w.disk, w.files, max(t.Total-w.disk, 0)
+		if !slices.ContainsFunc(now, func(a live) bool { return a.there }) {
+			return t // no current data, only history
 		}
-		if !ok || w.root != root || now.Sub(w.at) >= usageFresh {
-			stale = append(stale, area)
+		t.Measured, t.History = true, t.Total
+		for _, a := range now {
+			t.Current, t.Uncompressed = t.Current+a.disk, t.Uncompressed+a.files
 		}
+		for _, a := range append(slices.Clone(now), besides...) {
+			t.History -= a.disk
+		}
+		t.History = max(t.History, 0)
 		return t
 	}
 	var mine int
@@ -85,9 +114,16 @@ func appUsage(ctx context.Context, x Executor, app string, now time.Time) (dashb
 			mine++
 		}
 	}
+	// AN APP'S UNVERSIONED AREA IS PART OF ITS DATA, as the household sees it: what the app keeps,
+	// in the same group. Its cache is charged there too, and said apart, because it can be emptied.
+	data, unversioned := walked(quadlet.DataRoot(app)), walked(quadlet.Area(manifest.TierUnversioned, app))
+	cache := walked(quadlet.Area(manifest.TierCache, app))
 	u := dashboard.AppUsage{
-		Data:  tier(tierData, quadlet.DataRoot(app), len(ringMembers(ctx, x, app))),
-		Files: tier(tierFiles, filesArea(app), mine),
+		Data:  tier(tierData, len(ringMembers(ctx, x, app)), []live{data, unversioned}, cache),
+		Files: tier(tierFiles, mine, []live{walked(filesArea(app))}),
+	}
+	if cache.there {
+		u.Cache = &dashboard.TierUsage{Cap: -1, Measured: cache.measured, Current: cache.disk, Uncompressed: cache.files}
 	}
 	if len(stale) > 0 {
 		startUsageWalk(x, stale, now)

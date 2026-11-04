@@ -265,21 +265,15 @@ func RestoreMarkers(m manifest.Manifest) []string {
 	if m.Name != hass.Name {
 		return nil
 	}
-	var out []string
-	for _, c := range m.Containers {
-		// The container that holds the data is the one whose config directory HA writes into.
-		// The others share the subvolume and write nothing of their own.
-		if c.Mount != "" {
-			out = append(out, c.Name+"/"+hass.RestoreMarker)
-		}
+	if _, dir, ok := hass.ConfigDir(m); ok {
+		return []string{dir + "/" + hass.RestoreMarker}
 	}
-	return out
+	return nil
 }
 
 // Detect says what a household changed in a service between two ring members, as the one line its
-// history shows, or "". prev and next are member paths, which hold the data subvolume's
-// layout: one directory per container that keeps state. running says next was taken while the
-// service ran.
+// history shows, or "". prev and next are member paths, which hold the data area's layout: one
+// directory per data mount. running says next was taken while the service ran.
 //
 // OPTIONAL PER SERVICE, and the default is nothing, as everywhere here: a service with no detector
 // still has quiet time, which is what catches what no detector sees. Only Home Assistant has one.
@@ -292,25 +286,22 @@ func Detect(ctx context.Context, x Executor, m manifest.Manifest, prev, next str
 	if m.Name != hass.Name {
 		return "", nil, nil
 	}
-	var out []string
-	for _, c := range m.Containers {
-		if c.Mount == "" {
-			continue // shares the subvolume and writes nothing of its own
-		}
-		before, err := hass.Signals(ctx, x, prev+"/"+c.Name)
-		if err != nil {
-			return "", nil, err
-		}
-		after, err := hass.Signals(ctx, x, next+"/"+c.Name)
-		if err != nil {
-			return "", nil, err
-		}
-		out = append(out, hass.Detect(before, after, running)...)
-		for _, r := range hass.Resets(before, after) {
-			resets = append(resets, c.Name+"/"+r)
-		}
+	_, dir, ok := hass.ConfigDir(m)
+	if !ok {
+		return "", nil, nil
 	}
-	return hass.Sentence(out), resets, nil
+	before, err := hass.Signals(ctx, x, prev+"/"+dir)
+	if err != nil {
+		return "", nil, err
+	}
+	after, err := hass.Signals(ctx, x, next+"/"+dir)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, r := range hass.Resets(before, after) {
+		resets = append(resets, dir+"/"+r)
+	}
+	return hass.Sentence(hass.Detect(before, after, running)), resets, nil
 }
 
 // RingMember is one ring member as an app's sampling sees it. The ring's own type lives in
@@ -332,12 +323,12 @@ func Sampled(ctx context.Context, x Executor, m manifest.Manifest, ring []RingMe
 	if m.Name != hass.Name {
 		return nil
 	}
-	c, ok := hass.ConfigContainer(m)
+	_, dir, ok := hass.ConfigDir(m)
 	if !ok {
 		return nil
 	}
 	conv := func(r RingMember) hass.Member {
-		return hass.Member{Path: r.Path, Dir: r.Path + "/" + c.Name, App: r.App, At: r.At, Quiesced: r.Quiesced}
+		return hass.Member{Path: r.Path, Dir: r.Path + "/" + dir, App: r.App, At: r.At, Quiesced: r.Quiesced}
 	}
 	var all []hass.Member
 	for _, r := range ring {
@@ -347,19 +338,18 @@ func Sampled(ctx context.Context, x Executor, m manifest.Manifest, ring []RingMe
 }
 
 // Corrupt names what the app has set aside as undecodable under root -- a member, or the live
-// data root -- as paths relative to it, each under its container's directory.
+// data root -- as paths relative to it, each under its mount's directory.
 func Corrupt(ctx context.Context, x Executor, m manifest.Manifest, root string) []string {
 	if m.Name != hass.Name {
 		return nil
 	}
+	_, dir, ok := hass.ConfigDir(m)
+	if !ok {
+		return nil
+	}
 	var out []string
-	for _, c := range m.Containers {
-		if c.Mount == "" {
-			continue
-		}
-		for _, r := range hass.Corrupt(ctx, x, root+"/"+c.Name) {
-			out = append(out, c.Name+"/"+r)
-		}
+	for _, r := range hass.Corrupt(ctx, x, root+"/"+dir) {
+		out = append(out, dir+"/"+r)
 	}
 	return out
 }
@@ -368,7 +358,7 @@ func Corrupt(ctx context.Context, x Executor, m manifest.Manifest, root string) 
 func ResetPhrase(resets []string) string {
 	var rels []string
 	for _, r := range resets {
-		_, rel, _ := strings.Cut(r, "/") // the container's directory, which a household never sees
+		_, rel, _ := strings.Cut(r, "/") // the mount's directory, which a household never sees
 		rels = append(rels, rel)
 	}
 	return hass.ResetPhrase(rels)

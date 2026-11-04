@@ -40,7 +40,7 @@ let
   # The SUBVOLUME is the service's (what a rollback point snapshots); haDir is the container's
   # subdirectory inside it (what HA writes to, bind-mounted as /config).
   subvol = "/var/lib/briard/data/${fixture.name}";
-  haDir = "${subvol}/${fixture.container}";
+  haDir = "${subvol}/${fixture.dataDir}";
   db = "${haDir}/home-assistant_v2.db";
   snap = "/var/lib/briard/data/.snapshots/${fixture.name}-preupgrade";
   # Current recorder schema = max(schema_version) in HA's schema_changes ledger. This
@@ -166,7 +166,7 @@ pkgs.testers.runNixOSTest {
     # read (which ignores the WAL) misses them. Copy the DB set to a writable dir and open it
     # normally: sqlite replays the WAL, exactly as HA-from would when it reopens this snapshot
     # on a rollback — so this also proves the snapshot is a recoverable rollback point.
-    node1.succeed("mkdir -p /tmp/snapchk && cp -a ${snap}/${fixture.container}/home-assistant_v2.db* /tmp/snapchk/")
+    node1.succeed("mkdir -p /tmp/snapchk && cp -a ${snap}/${fixture.dataDir}/home-assistant_v2.db* /tmp/snapchk/")
     snap_schema = node1.succeed("sqlite3 /tmp/snapchk/home-assistant_v2.db '${schemaQ}'").strip()
     assert snap_schema == "51", f"pre-upgrade snapshot schema = {snap_schema}, want 51 — not a valid rollback point"
     print("pre-upgrade snapshot kept and still schema 51 — a valid rollback point")

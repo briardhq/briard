@@ -281,6 +281,9 @@ const (
 	// cap and history count fresh, and the split between its current data and its history from
 	// the last walk -- starting one in the background when that is stale. A read for the app's page.
 	verbStorageUsage = "storage.usage"
+	// cache.empty empties one app's cache area (clearCache), the host having stopped the app: the
+	// Storage card's Clear.
+	verbCacheEmpty = "cache.empty"
 	// data.backup STARTS a backup of the newest member of every service into the repository the
 	// request names (backup.go) and answers whether it did; data.backup.result answers whether one
 	// is running and hands over a finished one's report once. The recorder check's two-verb shape:
@@ -458,7 +461,7 @@ var guestCapabilities = []string{
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
 	verbFilesTick, verbFilesTickResult,
-	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbStorageUsage, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataBackupList, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
+	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbStorageUsage, verbCacheEmpty, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataBackupList, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
 	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
@@ -1147,6 +1150,16 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, fmt.Errorf("restore point %s is not a usable subvolume (%w) -- refusing to delete %s",
 					req.Path, err, req.DataDir)
 			}
+			// THE CACHE GOES WITH EVERY ROLLBACK: a newer version's cache beside older data is how
+			// a downgrade breaks an app, and nothing in a cache is worth that. Emptied before the
+			// data is touched, so a failure here costs only what the app can make again.
+			_, app, err := areaOf(req.DataDir)
+			if err != nil {
+				return nil, err
+			}
+			if err := clearCache(ctx, x, run, app); err != nil {
+				return nil, fmt.Errorf("empty %s's cache: %w", app, err)
+			}
 			// A staging name beside the live one, on the same btrfs so the rename below is a
 			// metadata operation. Cleared first: `btrfs subvolume snapshot` given an existing
 			// directory creates the new snapshot INSIDE it rather than replacing it.
@@ -1223,6 +1236,15 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return appUsage(ctx, x, req.Service, time.Now())
+		case verbCacheEmpty:
+			var req serviceRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if err := safeUnitName(req.Service); err != nil {
+				return nil, err
+			}
+			return nil, clearCache(ctx, x, run, req.Service)
 		case verbImageRemove:
 			var req serviceWarmRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2320,42 +2342,119 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 	return err
 }
 
-// ensureServiceData creates a service's subvolume and its per-container subdirectories, reusing
-// an existing subvolume (re-creating it would silently delete the user's state), and the manifest
-// directory beside them.
+// ensureServiceData creates a service's areas and the directories its containers mount in them,
+// each subdir `<tier>/<dir>` (quadlet.Subdirs), reusing an existing area (re-creating it would
+// silently delete the household's state), and the manifest directory beside them.
 //
-// AND THE APP'S FILES AREA, beside it in the files tier: every app has one, empty until the app uses
-// it. Both are born into their tier's group of the quota tree (qgroup.go).
+// AN AREA EXISTS ONLY IN A TIER THE APP MOUNTS -- and in the data tier always, where its History
+// and its manifest's record hang. Each is born into its group of the quota tree (qgroup.go).
 func ensureServiceData(ctx context.Context, x Executor, run func(string, ...string) error, dataDir string, subdirs []string) error {
 	_, app, err := areaOf(dataDir)
 	if err != nil {
 		return err
 	}
-	if err := run("mkdir", "-p", dataRoot(), filesRoot()); err != nil {
+	if err := makeArea(ctx, x, run, dataDir); err != nil {
 		return err
 	}
-	for _, area := range []string{dataDir, filesArea(app)} {
-		if out, err := x.Run(ctx, "btrfs", "subvolume", "show", area); err == nil && len(out) > 0 {
-			continue
+	for _, s := range subdirs {
+		tier, d, _ := strings.Cut(s, "/")
+		if !slices.Contains(manifest.Tiers, tier) {
+			return fmt.Errorf("subdir %q names no storage tier", s)
 		}
-		group, err := areaGroup(ctx, x, area)
-		if err != nil {
-			return err
-		}
-		if err := run("btrfs", "subvolume", "create", "-i", group, area); err != nil {
-			return err
-		}
-	}
-	for _, d := range subdirs {
 		if err := safeUnitName(d); err != nil { // same escape check; a subdir is a bare name
 			return err
 		}
-		if err := run("mkdir", "-p", dataDir+"/"+d); err != nil {
+		area := quadlet.Area(tier, app)
+		if err := makeArea(ctx, x, run, area); err != nil {
+			return err
+		}
+		if err := run("mkdir", "-p", area+"/"+d); err != nil {
 			return err
 		}
 	}
 	return run("mkdir", "-p", manifestDir)
 }
+
+// makeArea makes an app's area in its group of the quota tree, unless it exists.
+func makeArea(ctx context.Context, x Executor, run func(string, ...string) error, area string) error {
+	if out, err := x.Run(ctx, "btrfs", "subvolume", "show", area); err == nil && len(out) > 0 {
+		return nil
+	}
+	if err := run("mkdir", "-p", filepath.Dir(area)); err != nil {
+		return err
+	}
+	group, err := areaGroup(ctx, x, area)
+	if err != nil {
+		return err
+	}
+	return run("btrfs", "subvolume", "create", "-i", group, area)
+}
+
+// clearCache empties an app's cache area, the app stopped: the subvolume deleted -- at once, where
+// removing its files one by one is minutes for a large cache -- and made again with the
+// directories it held, which its containers mount. An app with no cache area has nothing to
+// empty. The delete is gated on the area being a subvolume, said positively by btrfs.
+func clearCache(ctx context.Context, x Executor, run func(string, ...string) error, app string) error {
+	area := quadlet.Area(manifest.TierCache, app)
+	if out, err := x.Run(ctx, "btrfs", "subvolume", "show", area); err != nil || len(out) == 0 {
+		return nil
+	}
+	out, err := x.Run(ctx, "ls", "-1", area)
+	if err != nil {
+		return fmt.Errorf("ls %s: %w: %s", area, err, strings.TrimSpace(string(out)))
+	}
+	dirs := strings.Fields(string(out))
+	if err := run("btrfs", "subvolume", "delete", area); err != nil {
+		return err
+	}
+	if err := makeArea(ctx, x, run, area); err != nil {
+		return err
+	}
+	for _, d := range dirs {
+		if err := run("mkdir", "-p", area+"/"+d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cacheAtStart empties the app's cache as it starts, when its space is short (spaceShort). Only
+// at a start that happens anyway -- no restart is forced for it -- and only for an app of one
+// container: a second may be running, holding the cache open.
+func cacheAtStart(ctx context.Context, x Executor, service string) (string, error) {
+	raw, err := x.ReadFile(manifestPath(service))
+	if err != nil {
+		return "", fmt.Errorf("read the running manifest: %w", err)
+	}
+	m, _, err := manifest.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if !m.UsesTier(manifest.TierCache) || len(m.Containers) != 1 {
+		return "", nil
+	}
+	tree, err := readQgroups(ctx, x)
+	if err != nil {
+		return "", err
+	}
+	if g, ok := tree[appQgroup(tierData, service)]; !ok || !spaceShort(g) {
+		return "", nil
+	}
+	run := func(name string, args ...string) error {
+		if out, err := x.Run(ctx, name, args...); err != nil {
+			return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+	if err := clearCache(ctx, x, run, service); err != nil {
+		return "", err
+	}
+	return "its space is short: emptied its cache", nil
+}
+
+// spaceShort: the app's data group -- its data, cache and unversioned areas, and its History --
+// has less than a tenth of its limit left.
+func spaceShort(g qgroup) bool { return g.limit >= 0 && g.limit-g.referenced < g.limit/10 }
 
 // gatherResources measures the appliance's resource footprint for the soak trend oracle
 // . Every sub-metric is best-effort: a failed read leaves its field zero (the host
@@ -3748,3 +3847,11 @@ func (g *Client) Usage(ctx context.Context, app string) (dashboard.AppUsage, err
 
 // SupportsUsage reports whether this guest can measure an app's share of the volume.
 func (g *Client) SupportsUsage() bool { return g.Supports(verbStorageUsage) }
+
+// EmptyCache empties one app's cache; the caller has stopped the app.
+func (g *Client) EmptyCache(ctx context.Context, app string) error {
+	return g.c.Call(ctx, verbCacheEmpty, serviceRequest{Service: app}, nil)
+}
+
+// SupportsEmptyCache reports whether this guest can empty an app's cache.
+func (g *Client) SupportsEmptyCache() bool { return g.Supports(verbCacheEmpty) }

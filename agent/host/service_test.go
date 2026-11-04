@@ -382,7 +382,7 @@ func testManifest() manifest.Manifest {
 		Name: "home-assistant", Version: "2026.7.1",
 		Containers: []manifest.Container{{
 			Name: "ha", Image: "ghcr.io/x/ha@sha256:" + strings.Repeat("a", 64),
-			Mount: "/config", Primary: true, Port: 8123, HealthPath: "/manifest.json",
+			Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "ha", Path: "/config"}}, Primary: true, Port: 8123, HealthPath: "/manifest.json",
 		}},
 	}
 }
@@ -810,7 +810,7 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 	raw := []byte(`{"name":"home-assistant","version":"2026.7.1","containers":[` +
 		`{"name":"app","image":"ghcr.io/home-assistant/home-assistant@sha256:` +
 		`f73512ba4fe06bb4d57636fe3578d0820cdec46f81e8f837ab59e451662ff3cb",` +
-		`"mount":"/config","primary":true,"port":8123,"healthPath":"/manifest.json"}]}`)
+		`"mounts":[{"tier":"data","dir":"app","path":"/config"}],"primary":true,"port":8123,"healthPath":"/manifest.json"}]}`)
 	if err := os.WriteFile(filepath.Join(dir, "home-assistant.json"), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -916,7 +916,7 @@ func TestInstallWithoutAPublishedNameNamesOnlyThePort(t *testing.T) {
 func manifestJSON(name, digest string) []byte {
 	return []byte(`{"name":"` + name + `","version":"1","containers":[` +
 		`{"name":"app","image":"ghcr.io/x/` + name + `@sha256:` + digest + `",` +
-		`"mount":"/data","primary":true,"port":8123,"healthPath":"/healthz"}]}`)
+		`"mounts":[{"tier":"data","dir":"app","path":"/data"}],"primary":true,"port":8123,"healthPath":"/healthz"}]}`)
 }
 
 const (
@@ -2352,5 +2352,71 @@ func TestTheAppPageMayAskWhatAnAppStores(t *testing.T) {
 	old := &usageGuest{old: true}
 	if o := (Config{}).applyServiceUsage(context.Background(), old, api.Directive{ID: "d", Payload: "immich"}); o.State != api.OutcomeFailed || old.asked != "" {
 		t.Errorf("a guest too old to measure: %+v, asked %q", o, old.asked)
+	}
+}
+
+// cacheGuest is a guest that can empty an app's cache, the fake installer's steps recording it.
+type cacheGuest struct {
+	*fakeInstaller
+	emptyEr error
+}
+
+func (g cacheGuest) EmptyCache(_ context.Context, app string) error {
+	g.steps = append(g.steps, "empty-cache:"+app)
+	return g.emptyEr
+}
+func (g cacheGuest) SupportsEmptyCache() bool { return true }
+
+// THE STORAGE CARD'S CLEAR stops the app's containers, empties its cache and starts it again by
+// converge -- in that order, and the start whether or not the emptying worked, since the app was
+// running when the household asked. Refused, with nothing stopped, for an app that keeps no
+// cache, one not installed, and a guest that cannot empty one.
+func TestClearingTheCacheStopsEmptiesAndStartsTheApp(t *testing.T) {
+	withCache := testManifest()
+	withCache.Containers[0].Mounts = append(withCache.Containers[0].Mounts, manifest.Mount{Tier: manifest.TierCache, Dir: "c", Path: "/cache"})
+	raw, err := json.Marshal(withCache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := json.Marshal(testManifest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := func(g serviceInstaller) api.DirectiveOutcome {
+		return Config{}.applyServiceCacheEmpty(context.Background(), g, api.Directive{Kind: api.DirectiveServiceCacheEmpty, Payload: "home-assistant"}, t.Logf)
+	}
+
+	f := &fakeInstaller{prior: map[string]string{"home-assistant": string(raw)}}
+	if o := ask(cacheGuest{fakeInstaller: f}); o.State != api.OutcomeDone {
+		t.Fatalf("outcome %+v", o)
+	}
+	stop := slices.Index(f.steps, "stop:briard-home-assistant-ha.service")
+	empty := slices.Index(f.steps, "empty-cache:home-assistant")
+	start := slices.Index(f.steps, "converge")
+	if stop < 0 || empty < stop || start < empty {
+		t.Errorf("steps %v, want stop, empty, converge", f.steps)
+	}
+
+	f = &fakeInstaller{prior: map[string]string{"home-assistant": string(raw)}}
+	if o := ask(cacheGuest{fakeInstaller: f, emptyEr: errors.New("busy")}); o.State != api.OutcomeFailed || !slices.Contains(f.steps, "converge") {
+		t.Errorf("a failed emptying: outcome %+v, steps %v; want failed, and the app started again", o, f.steps)
+	}
+
+	for name, g := range map[string]serviceInstaller{
+		"no cache":      cacheGuest{fakeInstaller: &fakeInstaller{prior: map[string]string{"home-assistant": string(plain)}}},
+		"not installed": cacheGuest{fakeInstaller: &fakeInstaller{}},
+		"old guest":     &fakeInstaller{prior: map[string]string{"home-assistant": string(raw)}},
+	} {
+		o := ask(g)
+		var steps []string
+		switch g := g.(type) {
+		case cacheGuest:
+			steps = g.steps
+		case *fakeInstaller:
+			steps = g.steps
+		}
+		if o.State != api.OutcomeFailed || slices.ContainsFunc(steps, func(s string) bool { return strings.HasPrefix(s, "stop:") }) {
+			t.Errorf("%s: outcome %+v, steps %v; want refused with nothing stopped", name, o, steps)
+		}
 	}
 }

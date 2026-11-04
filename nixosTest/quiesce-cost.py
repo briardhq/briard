@@ -24,7 +24,7 @@ import time
 HOST, PORT = "127.0.0.1", 8123
 TOKEN_FILE = "/run/briard/home-assistant/token"
 RING = "/var/lib/briard/data/.snapshots/"
-DB = "/var/lib/briard/data/home-assistant/app/home-assistant_v2.db"
+DB = "/var/lib/briard/data/home-assistant/config/home-assistant_v2.db"
 
 
 def log(*a):
@@ -153,7 +153,7 @@ def sample():
 def wal_bytes(member):
     """The -wal a member carries beside its database: frames the recorder had not yet folded in."""
     try:
-        return os.path.getsize(f"{RING}{member}/app/home-assistant_v2.db-wal")
+        return os.path.getsize(f"{RING}{member}/config/home-assistant_v2.db-wal")
     except FileNotFoundError:
         return 0
 

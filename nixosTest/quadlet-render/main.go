@@ -73,10 +73,16 @@ func main() {
 	write("images", r.ImageUnits)
 	write("identity", []string{string(id)})
 	write("dataroot", []string{quadlet.DataRoot(m.Name)})
-	// The per-container subdirectories the install path's provision step creates inside that
-	// subvolume. A harness that has to stand in for `service.provision` needs the same list, and
-	// deriving it a second time in a test is how the two drift.
-	write("subdirs", quadlet.Subdirs(m))
+	// The directories the install path's provision step creates, each in the service's area in its
+	// tier, as full paths: a harness that has to stand in for `service.provision` makes each
+	// path's parent a subvolume and the path a directory in it, and deriving the layout a second
+	// time in a test is how the two drift.
+	var subdirs []string
+	for _, s := range quadlet.Subdirs(m) {
+		tier, dir, _ := strings.Cut(s, "/")
+		subdirs = append(subdirs, quadlet.Area(tier, m.Name)+"/"+dir)
+	}
+	write("subdirs", subdirs)
 	fmt.Printf("rendered %s (%s): %d files\n", m.Name, id, len(r.Files))
 }
 

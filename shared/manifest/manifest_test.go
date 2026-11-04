@@ -18,7 +18,7 @@ func good() Manifest {
 		Containers: []Container{{
 			Name:       "ha",
 			Image:      digestA,
-			Mount:      "/config",
+			Mounts:     []Mount{{Tier: TierData, Dir: "config", Path: "/config"}},
 			Primary:    true,
 			Port:       8123,
 			HealthPath: "/manifest.json",
@@ -98,9 +98,18 @@ func TestValidateRejects(t *testing.T) {
 		{"tagged image", func(m *Manifest) { m.Containers[0].Image = "ghcr.io/foo/bar:latest" }},
 		{"bare image", func(m *Manifest) { m.Containers[0].Image = "redis" }},
 		{"short digest", func(m *Manifest) { m.Containers[0].Image = "r@sha256:abc" }},
-		{"relative mount", func(m *Manifest) { m.Containers[0].Mount = "config" }},
-		{"mount with dotdot", func(m *Manifest) { m.Containers[0].Mount = "/config/../../etc" }},
-		{"unclean mount", func(m *Manifest) { m.Containers[0].Mount = "/config/" }},
+		{"relative mount", func(m *Manifest) { m.Containers[0].Mounts[0].Path = "config" }},
+		{"mount with dotdot", func(m *Manifest) { m.Containers[0].Mounts[0].Path = "/config/../../etc" }},
+		{"unclean mount", func(m *Manifest) { m.Containers[0].Mounts[0].Path = "/config/" }},
+		{"unknown tier", func(m *Manifest) { m.Containers[0].Mounts[0].Tier = "backup" }},
+		{"no tier", func(m *Manifest) { m.Containers[0].Mounts[0].Tier = "" }},
+		{"mount dir a path", func(m *Manifest) { m.Containers[0].Mounts[0].Dir = "a/b" }},
+		{"mount dir dotdot", func(m *Manifest) { m.Containers[0].Mounts[0].Dir = ".." }},
+		{"no mount dir", func(m *Manifest) { m.Containers[0].Mounts[0].Dir = "" }},
+		{"mount path with newline", func(m *Manifest) { m.Containers[0].Mounts[0].Path = "/config\nPodmanArgs=--privileged" }},
+		{"two mounts at one path", func(m *Manifest) {
+			m.Containers[0].Mounts = append(m.Containers[0].Mounts, Mount{Tier: TierCache, Dir: "c", Path: "/config"})
+		}},
 		{"bad env key", func(m *Manifest) { m.Containers[0].Env = map[string]string{"a b": "c"} }},
 		{"port zero", func(m *Manifest) { m.Containers[0].Port = 0 }},
 		{"port too high", func(m *Manifest) { m.Containers[0].Port = 70000 }},
@@ -201,11 +210,11 @@ func TestStillRejectsMalformedRegistryForms(t *testing.T) {
 	}
 }
 
-// TestStatelessContainerNeedsNoMount: an empty Mount is legitimate and means "keeps nothing",
+// TestStatelessContainerNeedsNoMount: no mounts is legitimate and means "keeps nothing",
 // which must not be confused with a validation failure.
 func TestStatelessContainerNeedsNoMount(t *testing.T) {
 	m := good()
-	m.Containers[0].Mount = ""
+	m.Containers[0].Mounts = nil
 	if err := m.Validate(); err != nil {
 		t.Fatalf("Validate rejected a stateless container: %v", err)
 	}
@@ -215,9 +224,9 @@ func TestStatelessContainerNeedsNoMount(t *testing.T) {
 func TestMultiContainerPod(t *testing.T) {
 	m := good()
 	m.Containers = append(m.Containers, Container{
-		Name:  "cache",
-		Image: digestB,
-		Mount: "/data",
+		Name:   "cache",
+		Image:  digestB,
+		Mounts: []Mount{{Tier: TierData, Dir: "cache", Path: "/data"}},
 	})
 	if err := m.Validate(); err != nil {
 		t.Fatalf("Validate rejected a two-container pod: %v", err)
@@ -273,5 +282,34 @@ func TestAManifestWithoutTheFieldParsesAsPrivate(t *testing.T) {
 	}
 	if m.HostNetwork() {
 		t.Error("a manifest that says nothing about networking got host networking")
+	}
+}
+
+// TestMountsInEveryTier: each tier is sayable, a mount may sit inside another (Home Assistant's
+// backups inside its config), and two containers may share one directory. UsesTier answers for
+// the service and for each container.
+func TestMountsInEveryTier(t *testing.T) {
+	m := good()
+	m.Containers[0].Mounts = []Mount{
+		{Tier: TierData, Dir: "config", Path: "/config"},
+		{Tier: TierUnversioned, Dir: "backups", Path: "/config/backups"},
+		{Tier: TierFiles, Dir: "media", Path: "/media"},
+	}
+	m.Containers = append(m.Containers, Container{Name: "worker", Image: digestB,
+		Mounts: []Mount{{Tier: TierCache, Dir: "thumbs", Path: "/cache"}, {Tier: TierFiles, Dir: "media", Path: "/media"}}})
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate refused mounts in every tier: %v", err)
+	}
+	for _, tier := range Tiers {
+		if !m.UsesTier(tier) {
+			t.Errorf("UsesTier(%q) = false", tier)
+		}
+	}
+	if m.Containers[0].UsesTier(TierCache) || !m.Containers[1].UsesTier(TierCache) {
+		t.Error("UsesTier answered for the service, not the container")
+	}
+	m.Containers = m.Containers[:1]
+	if m.UsesTier(TierCache) {
+		t.Error("UsesTier(cache) = true for a service that mounts no cache")
 	}
 }

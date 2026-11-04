@@ -471,15 +471,18 @@ func RestoreDB(ctx context.Context, x Executor, from, into string) error {
 	return nil
 }
 
-// ConfigContainer is the container whose data directory is Home Assistant's config directory:
-// the one that keeps state. The others share the subvolume and write nothing of their own.
-func ConfigContainer(m manifest.Manifest) (manifest.Container, bool) {
+// ConfigDir is Home Assistant's config directory: the container that mounts it, from the data
+// tier at /config, and the directory's name in the app's data area -- where every path this
+// package reads in the live data or a member starts.
+func ConfigDir(m manifest.Manifest) (c manifest.Container, dir string, ok bool) {
 	for _, c := range m.Containers {
-		if c.Mount != "" {
-			return c, true
+		for _, mt := range c.Mounts {
+			if mt.Tier == manifest.TierData && mt.Path == "/config" {
+				return c, mt.Dir, true
+			}
 		}
 	}
-	return manifest.Container{}, false
+	return manifest.Container{}, "", false
 }
 
 // DBCheckState is what the host reads back of a check running in the background: whether it is

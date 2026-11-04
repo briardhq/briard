@@ -106,7 +106,7 @@ func TestServiceProvisionCreatesAndRecords(t *testing.T) {
 		return nil, nil
 	}}
 	g := dial(t, f)
-	err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/data/home-assistant", []string{"ha", "cache"}, `{"name":"home-assistant"}`)
+	err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/data/home-assistant", []string{"data/ha", "data/cache"}, `{"name":"home-assistant"}`)
 	if err != nil {
 		t.Fatalf("ServiceProvision: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestServiceProvisionCreatesAndRecords(t *testing.T) {
 func TestServiceProvisionKeepsExistingData(t *testing.T) {
 	f := &fakeExec{output: []byte("Name: \t\thome-assistant\n")} // `subvolume show` succeeds
 	g := dial(t, f)
-	if err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/data/home-assistant", []string{"ha"}, `{}`); err != nil {
+	if err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/data/home-assistant", []string{"data/ha"}, `{}`); err != nil {
 		t.Fatalf("ServiceProvision: %v", err)
 	}
 	if ran(f, "btrfs", "subvolume", "create", "/var/lib/briard/data/home-assistant") {

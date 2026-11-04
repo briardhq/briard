@@ -152,7 +152,7 @@ pkgs.testers.runNixOSTest {
     # And the file is on the REPLICATED subvolume, not in the container's own layer -- the
     # difference between a broker whose state fails over and one whose state is lost with the node.
     # mosquitto writes it on a clean stop, so by here it exists and holds what was published.
-    primary.succeed(f"test -s {dataroot}/broker/mosquitto.db")
+    primary.succeed(f"test -s {dataroot}/${fixture.dataDir}/mosquitto.db")
 
     # THE CRASH, which is the household's actual failure mode and a claim converge-at-promotion rests on:
     # service units are NOT promoter chain members, so nothing outside the unit brings a dead

@@ -308,6 +308,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.requestUndo(w, r)
+	case r.URL.Path == "/cache/clear" && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w, r)
+			return
+		}
+		a.requestClearCache(w, r)
 	case r.URL.Path == "/join" && r.Method == http.MethodPost:
 		a.ask(w, r)
 	case r.URL.Path == "/join" && r.Method == http.MethodGet:

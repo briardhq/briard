@@ -41,7 +41,7 @@ let
   # point snapshots), and HA writes into its container's subdirectory inside it, bind-mounted as
   # /config (the build-time slot used to choose both).
   subvol = "/var/lib/briard/data/${fixture.name}";
-  haDir = "${subvol}/${fixture.container}";
+  haDir = "${subvol}/${fixture.dataDir}";
   db = "${haDir}/home-assistant_v2.db";
   cfg = "${haDir}/configuration.yaml";
   entriesFile = "${haDir}/briard_entry_states.json";
@@ -190,7 +190,7 @@ pkgs.testers.runNixOSTest {
     # WAL-replay copy: the snapshot was taken while HA-from was live, so recent commits sit in the
     # -wal, not the main file — copy the set + open normally (sqlite replays it), exactly as HA-from
     # would when it reopens this snapshot on a rollback. This also proves it's a recoverable point.
-    node1.succeed("mkdir -p /tmp/rb && cp -a ${snap}/${fixture.container}/home-assistant_v2.db* /tmp/rb/")
+    node1.succeed("mkdir -p /tmp/rb && cp -a ${snap}/${fixture.dataDir}/home-assistant_v2.db* /tmp/rb/")
     rbdb = "/tmp/rb/home-assistant_v2.db"
     rb_schema = node1.succeed(f"sqlite3 {rbdb} '${schemaQ}'").strip()
     rb_states = int(node1.succeed(f"sqlite3 {rbdb} 'SELECT COUNT(*) FROM states'").strip())

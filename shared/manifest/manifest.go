@@ -50,6 +50,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -80,13 +81,11 @@ var digestRef = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*(:[0-9]{1,5})?(/[
 var ErrInvalid = errors.New("manifest: invalid")
 
 // Manifest describes one installable service. A service is one or more containers sharing a
-// network namespace (a pod) and one data subvolume, with per-container plain subdirectories
-// inside it — the layer-1 shape, and a requirement rather than a preference:
-// `data.restore` runs `btrfs subvolume delete`, which REFUSES on a subvolume that contains
-// nested subvolumes, so per-container storage cannot itself be a subvolume.
-//
-// Layer 2 (service user areas — Immich originals, Jellyfin libraries) is v5's, so
-// there is deliberately no field for it here: the catalog starts at entries with no user area.
+// network namespace (a pod), and what they keep lives in the STORAGE TIERS: one area per tier the
+// service mounts, each a subvolume of its own, with the directories its containers mount as plain
+// subdirectories inside it. Plain, and a requirement rather than a preference: `data.restore`
+// runs `btrfs subvolume delete`, which REFUSES on a subvolume that contains nested subvolumes, so
+// a mounted directory cannot itself be a subvolume.
 type Manifest struct {
 	// Name is the service slug — its unit prefix, its subvolume name, and the handle a user
 	// types. Stable across versions; changing it is a different service, not an upgrade.
@@ -123,8 +122,8 @@ type Manifest struct {
 	// the reason: this document names WHAT a service is, never how one podman version spells it, so
 	// that the renderer stays swappable. A raw directive would weld a permanently-identified signed
 	// artifact to podman's config syntax, and because the content hash is the identity you could
-	// not quietly fix the spelling later — you would re-mint every entry in the catalog. `Mount`
-	// already draws this line correctly: it says `/config`, not `Volume=…:/config`.
+	// not quietly fix the spelling later — you would re-mint every entry in the catalog. `Mounts`
+	// already draw this line correctly: they say `/config`, not `Volume=…:/config`.
 	//
 	// HOST NETWORKING IS FOR THE DISCOVERY-DEPENDENT FEW. Home Assistant needs mDNS/SSDP to find
 	// devices on the household LAN, and the HASS periphery skews the same way (ESPHome, Music
@@ -161,17 +160,17 @@ type Manifest struct {
 
 // Container is one member of the service's pod.
 type Container struct {
-	// Name is the container's slug within the service; it is also the name of its plain
-	// subdirectory inside the service's single data subvolume.
+	// Name is the container's slug within the service, and its unit's.
 	Name string `json:"name"`
 	// Image is a digest-pinned OCI reference. Digest-pinned means trust is source-independent,
 	// which is what lets the image come from upstream, from our mirror, or from a tarball
 	// without changing what "this service" means.
 	Image string `json:"image"`
-	// Mount is the absolute path INSIDE the container where its data subdirectory appears.
-	// Empty means the container is stateless and gets no mount at all — the honest encoding of
-	// "this one keeps nothing", rather than handing it a directory it will never write.
-	Mount string `json:"mount,omitempty"`
+	// Mounts are the only places the container may write that outlive it. None means the
+	// container is stateless — the honest encoding of "this one keeps nothing", rather than
+	// handing it a directory it will never write. There is no access to a tier as a whole: a
+	// tier is what the node does with a directory, and the manifest names the directories.
+	Mounts []Mount `json:"mounts,omitempty"`
 	// Env is the container's environment. Values are opaque; only newlines are forbidden.
 	Env map[string]string `json:"env,omitempty"`
 	// Primary marks the container the front door forwards to and the health gate probes.
@@ -182,6 +181,52 @@ type Container struct {
 	// built from them.
 	Port       int    `json:"port,omitempty"`
 	HealthPath string `json:"healthPath,omitempty"`
+}
+
+// Mount is one directory of the service's area in a tier, at Path inside the container. Two
+// containers naming the same tier and Dir share the directory.
+//
+// A MOUNT IS A RENAME AND A RMDIR BOUNDARY: the container cannot move a file across it, nor
+// remove the mount point itself. So a mount nested inside another goes only where the app's own
+// code tolerates both, read in its upstream source for each entry.
+type Mount struct {
+	// Tier is what the node does with the directory: one of the Tier* values.
+	Tier string `json:"tier"`
+	// Dir is the directory's name in the service's area. In the files tier it is what the
+	// household sees.
+	Dir string `json:"dir"`
+	// Path is where it appears inside the container: absolute and clean.
+	Path string `json:"path"`
+}
+
+// THE STORAGE TIERS, named for what the node does with what they hold. A closed set, spelled here
+// rather than at each end, so a catalog entry and a node cannot disagree about one.
+const (
+	// TierData is what the app keeps to run -- its settings, its database: snapshotted as its
+	// History, backed up, rolled back with the app.
+	TierData = "data"
+	// TierFiles is what the household keeps in the app: versioned, backed up, never rolled back.
+	TierFiles = "files"
+	// TierCache is what the app can make again: neither snapshotted nor backed up, and emptied
+	// whenever its data is rolled back -- a newer version's cache beside older data is how a
+	// downgrade breaks an app.
+	TierCache = "cache"
+	// TierUnversioned is what is kept but not copied: neither snapshotted nor backed up, never
+	// emptied -- an app's own backups, its exports.
+	TierUnversioned = "unversioned"
+)
+
+// Tiers lists the storage tiers.
+var Tiers = []string{TierData, TierFiles, TierCache, TierUnversioned}
+
+// UsesTier reports whether any container of the service mounts the tier.
+func (m Manifest) UsesTier(tier string) bool {
+	return slices.ContainsFunc(m.Containers, func(c Container) bool { return c.UsesTier(tier) })
+}
+
+// UsesTier reports whether the container mounts the tier.
+func (c Container) UsesTier(tier string) bool {
+	return slices.ContainsFunc(c.Mounts, func(mt Mount) bool { return mt.Tier == tier })
 }
 
 // Identity is the manifest's content hash — the service identity (property 3 above). It is
@@ -289,13 +334,26 @@ func (m Manifest) Validate() error {
 		if strings.Contains(c.Image, "..") {
 			return fmt.Errorf("%w: container %q image %q contains %q", ErrInvalid, c.Name, c.Image, "..")
 		}
-		if c.Mount != "" {
-			if !path.IsAbs(c.Mount) || path.Clean(c.Mount) != c.Mount || strings.Contains(c.Mount, "..") {
-				return fmt.Errorf("%w: container %q mount %q is not a clean absolute path", ErrInvalid, c.Name, c.Mount)
+		paths := map[string]bool{}
+		for _, mt := range c.Mounts {
+			if !slices.Contains(Tiers, mt.Tier) {
+				// A closed enum, refused rather than defaulted, as Network is: a misspelt tier
+				// read as data would roll a household's files back with the app.
+				return fmt.Errorf("%w: container %q mounts tier %q, not one of %q", ErrInvalid, c.Name, mt.Tier, Tiers)
 			}
-			if err := safeValue("mount", c.Mount); err != nil {
+			if !slug.MatchString(mt.Dir) {
+				return fmt.Errorf("%w: container %q mount dir %q is not one plain name", ErrInvalid, c.Name, mt.Dir)
+			}
+			if !path.IsAbs(mt.Path) || path.Clean(mt.Path) != mt.Path || strings.Contains(mt.Path, "..") {
+				return fmt.Errorf("%w: container %q mount %q is not a clean absolute path", ErrInvalid, c.Name, mt.Path)
+			}
+			if err := safeValue("mount", mt.Path); err != nil {
 				return err
 			}
+			if paths[mt.Path] {
+				return fmt.Errorf("%w: container %q mounts two directories at %q", ErrInvalid, c.Name, mt.Path)
+			}
+			paths[mt.Path] = true
 		}
 		for k, v := range c.Env {
 			if !envKey.MatchString(k) {
