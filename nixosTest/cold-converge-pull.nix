@@ -194,7 +194,7 @@ pkgs.testers.runNixOSTest {
             return node1.succeed(f"systemctl show -p {prop} --value {unit} 2>/dev/null || true").strip()
         return {
             "t": round(time.monotonic() - t0, 1),
-            "services": show("briard-apps.service", "ActiveState") + "/" + show("briard-apps.service", "SubState"),
+            "apps": show("briard-apps.service", "ActiveState") + "/" + show("briard-apps.service", "SubState"),
             "result": show("briard-apps.service", "Result"),
             "restarts": show("briard-apps.service", "NRestarts"),
             "image_unit": node1.execute(f"systemctl show -p ActiveState --value {image_unit}")[1].strip(),
@@ -205,7 +205,7 @@ pkgs.testers.runNixOSTest {
             "tx_kb": (counters() - tx0) // 1024,
         }
 
-    print("t     services              result    restarts image           role       mnt vip mask   txKB")
+    print("t     apps                  result    restarts image           role       mnt vip mask   txKB")
     settled = None
     # LATCHED ON `activating` FIRST, and the first run of this rig is why. `--no-block` returns
     # before systemd has moved the unit, so the t=0 probe still saw the PREVIOUS generation's
@@ -217,12 +217,12 @@ pkgs.testers.runNixOSTest {
     while time.monotonic() - t0 < ${toString windowSecs}:
         p = probe()
         print(
-            f"{p['t']:<5} {p['services']:<21} {p['result']:<9} {p['restarts']:<8} "
+            f"{p['t']:<5} {p['apps']:<21} {p['result']:<9} {p['restarts']:<8} "
             f"{p['image_unit']:<15} {p['role']:<10} {p['mounted']:<3} {p['vip']:<3} {p['masked']:<6} {p['tx_kb']}"
         )
         # "Settled" = the start job is over, one way or the other. Recorded, not asserted: the
         # interesting outcome is the one where this never happens.
-        sub = p["services"].split("/")[1]
+        sub = p["apps"].split("/")[1]
         if sub in ("start", "start-pre", "start-post", "auto-restart"):
             seen_activating = True
         elif settled is None and seen_activating:
@@ -237,12 +237,12 @@ pkgs.testers.runNixOSTest {
     print(f"BYTES PULLED: {tx_total} KB -- the transfer was {'PROGRESSING' if tx_total > 64 else 'NOT PROGRESSING'}")
     if settled is None:
         print("VERDICT: the converge start job NEVER completed inside the window.")
-        print(f"  briard-apps: {final['services']} after {final['t']}s, restarts={final['restarts']}")
+        print(f"  briard-apps: {final['apps']} after {final['t']}s, restarts={final['restarts']}")
         print(f"  the node held the promotion throughout: role={final['role']} mounted={final['mounted']} vip={final['vip']}")
         print("  nothing bounded the pull: no timeout fired, the member never failed, so the")
         print("  demote-and-hand-over of chain-member-contract rules 5/7/8 was never reached.")
     else:
-        print(f"VERDICT: the start job settled at t={settled['t']}s -> {settled['services']} result={settled['result']}")
+        print(f"VERDICT: the start job settled at t={settled['t']}s -> {settled['apps']} result={settled['result']}")
         print(f"  something DOES bound it. Final: role={final['role']} vip={final['vip']} masked={final['masked']}")
     print("=" * 78)
 

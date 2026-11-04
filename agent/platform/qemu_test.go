@@ -66,8 +66,8 @@ func TestQEMUArgsTwoNICOrder(t *testing.T) {
 	}
 }
 
-// The witness NIC must enumerate last: system (net1/eth1) < service (net2/eth2) <
-// witness (net3/eth3), so eth3 is the private guest<->host link on a uniform
+// The witness NIC must enumerate last: system NIC (net1/eth1) < service NIC (net2/eth2) <
+// witness NIC (net3/eth3), so eth3 is the private guest<->host link on a uniform
 // managed guest. Ordering is by -device position (net.ifnames=0).
 func TestQEMUArgsWitnessNICOrder(t *testing.T) {
 	got := strings.Join(qemuArgs(QEMUSpec{
@@ -92,8 +92,8 @@ func TestQEMUArgsSystemTapOnly(t *testing.T) {
 }
 
 // NetMacvtap renders the service + system NICs as fd-attached macvtaps: qemu
-// gets `-netdev tap,fd=N` (no ifname=), with the deterministic fd map system->3,
-// service->4. MACs still render (pinned onto the macvtap by the launch wrapper).
+// gets `-netdev tap,fd=N` (no ifname=), with the deterministic fd map system NIC 3,
+// service NIC 4. MACs still render (pinned onto the macvtap by the launch wrapper).
 func TestQEMUArgsMacvtap(t *testing.T) {
 	got := strings.Join(qemuArgs(QEMUSpec{
 		Accel: "tcg", ControlSock: "/s", NetMode: NetMacvtap,
@@ -160,7 +160,7 @@ func TestLaunchExecBridge(t *testing.T) {
 }
 
 // LaunchExec in macvtap mode runs the fd-passing wrapper: the wrapper binary, then a
-// `<dev> <mac> <fd>` triple per macvtap NIC (system fd 3, service fd 4), then `--`, then
+// `<dev> <mac> <fd>` triple per macvtap NIC (system NIC fd 3, service NIC fd 4), then `--`, then
 // qemu. The MAC is a plain argv word (its colons need no escaping). The witness NIC never
 // appears in the triples (it is a plain tap qemu opens by name).
 func TestLaunchExecMacvtap(t *testing.T) {
@@ -439,7 +439,7 @@ func TestWaitUnitFreeGivesUpAndNamesTheState(t *testing.T) {
 //
 // The positive case needs a real invocation to point at, so it BORROWS one that is already
 // running on this machine rather than inventing a fixture: an id we made up would prove only
-// that two strings compare equal, which is not the claim. No systemd, or no running service to
+// that two strings compare equal, which is not the claim. No systemd, or no running systemd service to
 // borrow from, is a skip -- the honest answer for a machine that cannot host the question.
 func TestInsideUnitRecognisesItsOwnInvocation(t *testing.T) {
 	unit, id := borrowedInvocation(t)
@@ -461,7 +461,7 @@ func TestInsideUnitRecognisesItsOwnInvocation(t *testing.T) {
 }
 
 // borrowedInvocation returns a running unit and its current InvocationID, skipping if this
-// machine has no systemd to ask or no running service to ask about.
+// machine has no systemd to ask or no running systemd service to ask about.
 func borrowedInvocation(t *testing.T) (unit, id string) {
 	t.Helper()
 	out, err := exec.Command("systemctl", "list-units", "--type=service", "--state=running",
@@ -482,7 +482,7 @@ func borrowedInvocation(t *testing.T) (unit, id string) {
 			return name, got
 		}
 	}
-	t.Skip("no running service with an InvocationID to borrow")
+	t.Skip("no running systemd service with an InvocationID to borrow")
 	return "", ""
 }
 

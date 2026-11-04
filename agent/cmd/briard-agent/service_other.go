@@ -42,7 +42,7 @@ func runWarden() int {
 	return 2
 }
 
-// updateStop and updateStart are the self-update's two service verbs (runUpdate): the agent
+// updateStop and updateStart are the self-update's two systemd service verbs (runUpdate): the agent
 // unit's ordinary stop, with patience, and its start to READY. systemd's watchdog needs nothing
 // of its own.
 func updateStop(ctx context.Context, patience time.Duration) error {

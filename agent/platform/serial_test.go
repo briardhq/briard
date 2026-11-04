@@ -93,7 +93,7 @@ func TestPrepareSerialLogWithNoCaptureCreatesNothing(t *testing.T) {
 }
 
 // ⚠️ NEVER A REASON A GUEST DOES NOT LAUNCH. A host with a read-only or absent /var/log is a host
-// whose logging convenience fails; it is not a host that should refuse to run its service. The
+// whose logging convenience fails; it is not a host that should refuse to run its apps. The
 // shell this replaced learned that the hard way (a POSIX special builtin made a redirection
 // failure fatal to the whole script), so the property is pinned rather than assumed.
 func TestPrepareSerialLogSurvivesAnUnwritablePath(t *testing.T) {

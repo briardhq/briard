@@ -84,7 +84,7 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     import re
 
-    svc = "${fixture.serviceName}"
+    svc = "${fixture.appName}"
     poison = 999_999_999  # the dummy's BRIARD_BROKEN tick (nixosTest/dummy-app)
 
     host.wait_for_unit("multi-user.target")

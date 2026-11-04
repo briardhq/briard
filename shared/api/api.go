@@ -147,7 +147,7 @@ type NodeStatus struct {
 }
 
 // AppStatus is one runtime-installed app as the node reports it: what it is, which
-// version of what it is, and whether it is actually running. See NodeStatus.Services for why the
+// version of what it is, and whether it is actually running. See NodeStatus.Apps for why the
 // first two are what they are, and State below for why the third had to join them.
 type AppStatus struct {
 	// Name is the catalog slug the app was installed under ("home-assistant"). Stable
@@ -162,7 +162,7 @@ type AppStatus struct {
 	// StateStopped, or EMPTY when the question does not apply or could not be answered.
 	//
 	// Widening the closed allowlist is a deliberate act, so here is the argument, and it is a
-	// MEASURED one. NodeStatus.Services deliberately carried no health, on the grounds that an
+	// MEASURED one. NodeStatus.Apps deliberately carried no health, on the grounds that an
 	// app's own endpoint is not probed from here and Healthy covers the node. A fleet run on
 	// 2026-08-27 showed what that costs: a survivor promoted, ran no app at all, and reported
 	// `healthy=true` -- because Healthy is the FRONT DOOR at the VIP, and the front door answers

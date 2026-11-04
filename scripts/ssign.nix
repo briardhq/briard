@@ -1,7 +1,7 @@
 # ssign: Authenticode signing with a Certum SimplySign cloud certificate, over HTTPS -- the
 # signer `publish-release.sh` runs on every PE of the windows arm and on the Store exe. Built from
 # a pinned release, never fetched at run time: the program holds the code-signing login while it
-# runs, so what runs is exactly what was read. It talks to Certum's login and signing service and
+# runs, so what runs is exactly what was read. It talks to Certum's login and signing web services and
 # its timestamp authority, nothing else.
 { rustPlatform, fetchFromGitHub }:
 

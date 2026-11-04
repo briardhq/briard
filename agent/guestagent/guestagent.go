@@ -167,7 +167,7 @@ const (
 	// (appHealth). A separate verb rather than a field on app.health, so an older guest
 	// refuses it loudly instead of silently probing an empty URL and reporting the app
 	// unhealthy -- which on the install gate would revert a perfectly good install. Named for
-	// its three-valued answer: the two-valued `service.healthof` it replaced is gone.
+	// its three-valued answer, which a healthy-or-not verb could not give.
 	verbAppHealthOf = "app.health.state"
 	// verbDataMember takes one RING member: refuses a collision instead of replacing, and writes
 	// the sidecar beside it. A NEW NAME rather than a field on the verb it replaced, and that
@@ -224,8 +224,8 @@ const (
 const (
 	verbAppRender    = "app.render"    // write quadlet units to /run + daemon-reload (every node)
 	verbAppProvision = "app.provision" // create the app subvolume + record the manifest (Primary only)
-	// app.installed READS ONE NAMED APP's manifest off the volume, or "". It REPLACES
-	// the unnamed service.manifest rather than widening it, because a verb whose meaning changes
+	// app.installed READS ONE NAMED APP's manifest off the volume, or "". It is a verb of
+	// its own rather than a widened unnamed one, because a verb whose meaning changes
 	// under an unchanged name is the one thing nothing on this channel can police: the guest
 	// advertises names, and a name that still resolves reports success from a guest doing the old
 	// thing. So the rule is that meaning moves with the name. A NEW verb is refused by exactly the
@@ -322,8 +322,8 @@ const (
 	// verb here works on ANY app: app.health probes whatever URL it is handed,
 	// app.converge renders whatever the volume says. These two do not — each knows one
 	// app's API, returns that app's own shape, and refuses every other name. A verb set is
-	// a CAPABILITY LIST, so it has to say what it grants: `service.readiness` promised a generic
-	// power the guest never had, while `app.home-assistant.readiness` grants exactly the one
+	// a CAPABILITY LIST, so it has to say what it grants: a generic `readiness` would promise a
+	// power the guest never has, while `app.home-assistant.readiness` grants exactly the one
 	// it does. It also puts the app in the name rather than in a request field, so there is no
 	// name to steer from the wire and no unknown-name branch to write.
 	//
@@ -564,7 +564,7 @@ type resourceRequest struct {
 	Resource string `json:"resource"`
 }
 
-// unitRequest names a systemd unit (service start/stop/is-active).
+// unitRequest names a systemd unit (systemctl start/stop/is-active).
 type unitRequest struct {
 	Unit string `json:"unit"`
 }
@@ -576,7 +576,7 @@ type healthRequest struct {
 }
 
 // appRequest names an app by its catalog slug — the form every verb takes once the guest
-// resolves what it needs from its own state rather than from the caller's (service.healthof).
+// resolves what it needs from its own state rather than from the caller's.
 type appRequest struct {
 	App string `json:"app"`
 }
@@ -2124,7 +2124,7 @@ const deadmanStatePath = "/var/lib/briard-deadman/episode.json"
 var deadmanLastEpisodePath = deadman.FileState{Path: deadmanStatePath}.LastPath()
 
 // RunDeadman runs the host-agent deadman as its OWN long-running process — the briard-deadman
-// guest service. It watches the contact stamp ServeStamped bumps and, once the host agent has
+// guest unit. It watches the contact stamp ServeStamped bumps and, once the host agent has
 // been silent past T_deadman, reboots the guest — gracefully (so the promoter teardown demotes
 // cleanly and the reboot IS the failover trigger), and ONLY when deadman.RebootAllowed says no
 // peer loses quorum over it. It is a separate process from the guest agent precisely so a
@@ -3401,7 +3401,7 @@ func (g *Client) AppList(ctx context.Context) ([]string, error) {
 func (g *Client) SupportsAppList() bool { return g.Supports(verbAppList) }
 
 // Resources reads the appliance's resource telemetry -- per-app RSS/fds/restarts, load, and
-// the disk sub-series -- for the soak's trend oracle. services pairs each app's name with the
+// the disk sub-series -- for the soak's trend oracle. apps pairs each app's name with the
 // unit whose footprint is its own, and dataDir is the DRBD volume; both empty on a witness and on
 // a zero-app node, which still get every node-scoped series. soak adds the soak-only reads
 // (resourcesRequest.Soak). Best-effort on the guest, so a partial read comes back as a struct

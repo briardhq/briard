@@ -11,7 +11,7 @@
 #   zram a->b      what zram holds (uncompressed) -> the RAM that costs
 #   swpin/swpout   cumulative pages; a CLIMBING swpin is parked memory coming back
 #   psi_some/full  avg60 of the memory stall -- the cost users feel
-#   top cgroups    the two services holding the most anonymous memory
+#   top cgroups    the two systemd units holding the most anonymous memory
 #
 # It asserts only what makes the numbers mean anything: the guest really has ~1 GB, and zram is
 # really active as swap (the image's module list is forced, so a zram module that was never

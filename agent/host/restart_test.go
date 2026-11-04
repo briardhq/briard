@@ -64,7 +64,7 @@ func TestRestartGate(t *testing.T) {
 		if !rec.Restarted || rec.Offload != off {
 			t.Fatalf("record %+v, want marked with the offload kept", rec)
 		}
-		// Restart-Service afterwards: no query at all.
+		// A Windows service restart afterwards: no query at all.
 		if refused, _ = gate(cfg, b); refused || b.asked != 2 {
 			t.Fatalf("a later start: refused=%v asked=%d, want a start with no query", refused, b.asked)
 		}

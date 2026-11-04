@@ -36,7 +36,7 @@ import (
 // THE GATE, AND WHY IT IS THE GUEST'S ANSWER RATHER THAN THE HOST'S QUESTION.
 //
 // The guard anyone asks for first is "don't reboot a guest that is still serving". The host
-// cannot evaluate that itself: DRBD's quorum view lives in the guest, the service-health verb
+// cannot evaluate that itself: DRBD's quorum view lives in the guest, the app-health verb
 // rides the channel that just died, and under the default macvtap substrate the host cannot
 // reach the VIP either. Every question that would gate the decision is asked over the channel
 // whose death is the trigger.
@@ -585,8 +585,8 @@ func (u *osUpgrade) announce(ctx context.Context, n notify.Notifier, r *guestRec
 // recoverAnswering runs the ladder while the local door is answered (holdDoor): a stop is taken,
 // and anything else is refused with what the ladder is doing and when it next acts. Without a
 // reader the door had none for as long as the ladder ran -- `briard status` hung, the tray read a
-// healthy process that said nothing, and `briard stop` worked only through its service-manager
-// fallback, after the door's timeout and blaming an agent that "does not answer". It is what
+// healthy process that said nothing, and `briard stop` worked only through its fallback, the service manager,
+// after the door's timeout and blaming an agent that "does not answer". It is what
 // makes stop + start the ordinary way to cut a wait short rather than a fallback.
 func (cfg Config) recoverAnswering(ctx context.Context, local <-chan localRequest, u *osUpgrade, r *guestRecovery, n notify.Notifier, logf func(string, ...any)) (*guestagent.Client, error) {
 	done := make(chan struct{})

@@ -376,7 +376,7 @@ pkgs.testers.runNixOSTest {
 
     # ── HEALING, AT A BOUNDARY THAT DOES NOT RESTART THE CONTAINER ───────────────────
     #
-    # s6 re-executes `run` at every SERVICE start, and `homeassistant.restart` is one
+    # s6 re-executes `run` at every s6 service start, and `homeassistant.restart` is one
     # (HA exits 100; s6 restarts the service, the container never dies). That is the same
     # boundary a config restore comes back through — a restore wipes /config including
     # `.storage/auth`, then returns via exactly this exit-100 path — so proving the mint
@@ -456,7 +456,7 @@ pkgs.testers.runNixOSTest {
     started_after = node1.succeed(f"podman inspect -f '{{{{.State.StartedAt}}}}' {ctr}").strip()
     assert started_before == started_after, (
         f"the container restarted ({started_before} -> {started_after}); the mint must ride "
-        "the service-start boundary, not a container bounce"
+        "the s6 service-start boundary, not a container bounce"
     )
     # ...and that restart, the container's second run, is the one `run` notifies for.
     node1.wait_until_succeeds(f"test \"$({unit_log} | grep -c '\\]: briard: ')\" = 1", timeout=60)
@@ -515,8 +515,8 @@ pkgs.testers.runNixOSTest {
     # probe run outside the container cannot refute it. This runs HA's OWN zeroconf library, in
     # HA's own interpreter, in the namespace HA actually lives in.
     #
-    # ⚠️ WHAT A GREEN HERE DOES NOT BUY, so nobody reads more into it: HA browses only the service
-    # types some manifest declares (`async_get_zeroconf`), and `_mqtt._tcp` appears NOWHERE in
+    # ⚠️ WHAT A GREEN HERE DOES NOT BUY, so nobody reads more into it: HA browses only the
+    # service types some manifest declares (`async_get_zeroconf`), and `_mqtt._tcp` appears NOWHERE in
     # home-assistant/core. So Home Assistant will not act on this record until (d) teaches mqtt to
     # ask for it. What is proven is the TRANSPORT -- that a record the guest publishes is visible
     # to HA's stack -- which is the leg an earlier spike could not verify.
@@ -745,7 +745,7 @@ pkgs.testers.runNixOSTest {
     # starts, so the honest way to run it twice is to start Home Assistant twice.
     #
     # ⚠️ WAIT FOR THE FIRST START TO FINISH BEFORE ASKING FOR THE SECOND. Measured on the wirer:
-    # restarting seconds after a previous restart had the service API answer 4xx while HA was
+    # restarting seconds after a previous restart had `/api/services` answer 4xx while HA was
     # still coming back, failing the test for a reason unrelated to the guard under test.
     # `/api/config` reports HA's own state, so "RUNNING" is that boundary rather than a sleep.
     node1.wait_until_succeeds(

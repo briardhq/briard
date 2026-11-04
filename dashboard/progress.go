@@ -95,7 +95,7 @@ func (pp pullPaths) finishedSince(t time.Time) int64 {
 
 // inFlight is the bytes under the app's pull units' private tmp: systemd names each
 // PrivateTmp root systemd-private-<boot>-<unit>-<random>, and the units are
-// briard-<service>-<container>-image.service.
+// briard-<app>-<container>-image.service.
 func (pp pullPaths) inFlight(app string) int64 {
 	dirs, _ := filepath.Glob(filepath.Join(pp.tmp, "systemd-private-*-briard-"+app+"-*-image.service-*"))
 	var n int64

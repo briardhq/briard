@@ -479,7 +479,7 @@ func (a *allocator) inUse(addr string) bool {
 type convergedApp struct {
 	name string
 	// m is the manifest as the volume gave it, kept beside the rendering because the units are
-	// not the only thing derived from it: services.Prepare is handed the manifest so that the
+	// not the only thing derived from it: apps.Prepare is handed the manifest so that the
 	// per-app knowledge stays keyed on the app's NAME and its pinned image, never on a
 	// unit filename it would have to parse back out.
 	m manifest.Manifest
@@ -872,7 +872,7 @@ func appHealthURL(x Executor, name string) (string, error) {
 }
 
 // appHealth is APP HEALTH, the one answer to "does this app work": the registry's
-// override for a curated app that has one (services.HealthOverride), otherwise the manifest's
+// override for a curated app that has one (apps.HealthOverride), otherwise the manifest's
 // healthPath answering 200. The status report, the app-update gate and the history all ask here.
 //
 // An unresolvable app is an ERROR, never a verdict (appHealthURL says why). A manifest

@@ -353,7 +353,7 @@ func TestCachedMeshFallsBackWhenUnusable(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"unparseable", "{not json"},
 		// A spec that does not name this node -- a rename, or a cache carried onto another node.
-		{"does not name this node", `{"resource":"r0","peers":[{"name":"someone-else","node_id":0,"address":"10.0.0.9:7789","disk":"/dev/mapper/briardservice-data"}]}`},
+		{"does not name this node", `{"resource":"r0","peers":[{"name":"someone-else","node_id":0,"address":"10.0.0.9:7789","disk":"/dev/mapper/briardvol-data"}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cache := filepath.Join(dir, tc.name+".json")

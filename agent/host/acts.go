@@ -244,7 +244,7 @@ func (a *actLane) ch() <-chan actResult {
 
 // finish is the loop's end of a directive, wherever it ran: the CLI's answer or the cloud's
 // pending outcome, then adopting what an install changed. On the loop, because pendingOutcomes
-// and cfg.Services are the loop's own.
+// and cfg.Apps are the loop's own.
 func (cfg *Config) finish(res actResult, pending *[]api.DirectiveOutcome, logf func(string, ...any)) {
 	if res.rq != nil {
 		res.rq.resp <- res.o // answer the CLI first; adopting is bookkeeping it need not wait on

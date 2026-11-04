@@ -208,14 +208,14 @@ pkgs.testers.runNixOSTest {
     # ⚠️ WHAT THIS DELIBERATELY DOES NOT ASSERT, and why, so nobody adds it back and spends the
     # day: the SRV record's own target/port fields as read by `avahi-browse -r`. Those fields ARE
     # correct -- observed resolving to `briard-brave-elf-mosquitto.local / 192.168.1.100 / 1883`
-    # in runs 33445936181, 33448573206 and 33449242156 -- but avahi's SERVICE resolver cannot be
+    # in runs 33445936181, 33448573206 and 33449242156 -- but avahi's service-record resolver cannot be
     # made to produce them on demand. MEASURED: it does not fetch the SRV target's address itself,
     # so `-r` returns "Failed to resolve … Timeout reached" indefinitely -- through 120s of
     # repeated short browses, a single 90s browse, on the off-box client AND on the node that
     # publishes the records, with both records established and the name resolvable on that very
     # box. Resolving the host first fixes it sometimes (33449242156) and not others (33475931135,
     # 180s of exactly that sequence). It is avahi's client, not our records, and the three claims
-    # above cover what a household actually needs: the name is on the LAN, the service is on the
-    # LAN under its type, and the endpoint serves.
+    # above cover what a household actually needs: the name is on the LAN, the service instance is on
+    # the LAN under its type, and the endpoint serves.
   '';
 }

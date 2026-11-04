@@ -27,7 +27,7 @@ import (
 	"briard.io/shared/nodestorage"
 )
 
-// vipHealth is where the service answers on the harness L2 (guest-image bakes the VIP).
+// vipHealth is where the app answers on the harness L2 (guest-image bakes the VIP).
 const vipHealth = "http://192.168.1.100:8080/healthz"
 
 func env(k, def string) string {

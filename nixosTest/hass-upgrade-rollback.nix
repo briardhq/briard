@@ -178,7 +178,7 @@ pkgs.testers.runNixOSTest {
     # The live swap-and-reserve (stop app → restore subvolume → re-pin `from` → re-serve)
     # is Manager orchestration under the maintenance bracket, and can't run in THIS rig: the
     # bracket (drbd-reactor pause-defused) lives in the guest agent's reactor.pause verb,
-    # which is virtio-serial-only — so a bare `systemctl stop <service>` here makes the running
+    # which is virtio-serial-only — so a bare `systemctl stop <app>` here makes the running
     # promoter demote + unmount the volume (exactly the hazard the bracket exists to avoid).
     # The real Manager doing the full swap + re-serve is unit-tested in agent/guest; the nested
     # end-to-end proof (managed-upgrade.nix) was retired and is the lab demo's to rebuild

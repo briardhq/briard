@@ -951,7 +951,7 @@ func serialArgs(s QEMUSpec) []string {
 }
 
 // UnitState is unitState for callers outside this package: one unit's ActiveState, read
-// through the same service-manager seam every other systemctl call goes through, so the host
+// through the same service manager seam every other systemctl call goes through, so the host
 // agent does not grow a second way to ask systemd a question.
 //
 // The error return keeps unitState's meaning and it is the part a caller must not flatten: the

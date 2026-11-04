@@ -82,7 +82,7 @@ func socket() string {
 func Ready() error { return notify("READY=1") }
 
 // Watchdog sends one watchdog keep-alive (WATCHDOG=1). systemd expects these at least every
-// WATCHDOG_USEC while the service is running and kills the unit on a miss (WatchdogSignal=,
+// WATCHDOG_USEC while the unit is running and kills the unit on a miss (WatchdogSignal=,
 // SIGABRT by default). No-op when $NOTIFY_SOCKET is unset.
 //
 // Cheap by construction — one datagram to a socket systemd already holds open — which is what

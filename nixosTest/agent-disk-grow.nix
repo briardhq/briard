@@ -53,7 +53,7 @@ pkgs.testers.runNixOSTest {
         host.succeed(f"mkdir -p /srv/catalog && cp -f {src}/* /srv/catalog/ && chmod -R u+w /srv/catalog")
     publish("${fixture}/catalog")
     host.succeed("systemd-run --unit=catalog --collect darkhttpd /srv/catalog --addr 127.0.0.1 --port 8098")
-    host.wait_until_succeeds("curl -fsS http://127.0.0.1:8098/${fixture.serviceName}.json -o /dev/null", timeout=30)
+    host.wait_until_succeeds("curl -fsS http://127.0.0.1:8098/${fixture.appName}.json -o /dev/null", timeout=30)
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
@@ -93,7 +93,7 @@ pkgs.testers.runNixOSTest {
     f, s = host.succeed("stat -f -c '%f %S' /tmp").split()
     free_now = int(f) * int(s)
     host.succeed(f"fallocate -l {free_now - 3 * gib} /tmp/filler")
-    rc, out = host.execute("briard-agent app install ${fixture.serviceName} 2>&1")
+    rc, out = host.execute("briard-agent app install ${fixture.appName} 2>&1")
     print(f"install with a full host: rc={rc}\n{out}")
     assert rc != 0 and "not enough free space on this computer" in out, \
         f"an install the host could not pay for was not refused by name (rc={rc}):\n{out}"
@@ -101,7 +101,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("rm /tmp/filler")
 
     # === THE GROW: the same install, with room on the host. ===
-    rc, out = host.execute("briard-agent app install ${fixture.serviceName} 2>&1")
+    rc, out = host.execute("briard-agent app install ${fixture.appName} 2>&1")
     print(f"install: rc={rc}\n{out}")
     print(host.succeed("journalctl -u briard-agent -o cat | grep -E 'state disk|app install' || true"))
     assert rc == 0, f"the install failed after the grow (rc={rc}):\n{out}"
@@ -149,7 +149,7 @@ pkgs.testers.runNixOSTest {
         # by construction -- the app is ready 3 s after its start and the health gate polls every
         # 5 s -- and asserted as such: an install that spans no tick fails here too.
         cursor = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
-        rc, out = host.execute("briard-agent app install ${fixture.serviceName} 2>&1")
+        rc, out = host.execute("briard-agent app install ${fixture.appName} 2>&1")
         print(f"install {label}: rc={rc}\n{out}")
         assert rc == 0, f"installing {label} failed (rc={rc}):\n{out}"
         lines = host.succeed(f"journalctl -u briard-agent -o cat --after-cursor='{cursor}'").splitlines()

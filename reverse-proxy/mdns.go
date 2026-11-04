@@ -13,13 +13,13 @@ package main
 // inside it — and a responder with no probe has no such state. "What address does
 // this name have" is a field read when the answer is written.
 //
-// ⚠️ THE COST, ACCEPTED ON THE OWNER'S CALL: a browsing client learns of a NEW service
+// ⚠️ THE COST, ACCEPTED ON THE OWNER'S CALL: a browsing client learns of a NEW app
 // on its next periodic query rather than instantly, and an uninstalled one leaves a stale PTR
 // until its TTL. Failover needs none of it — both nodes publish byte-identical records, because
 // every name points at a VIP whose address does not change when it moves.
 //
 // ⚠️ NO PROBING ALSO MEANS NO CONFLICT DETECTION, and the bare names rely on that being
-// acceptable: `briard.local` and `briard-<service>.local` are answered by every flock beside its
+// acceptable: `briard.local` and `briard-<app>.local` are answered by every flock beside its
 // flock-scoped names, so two flocks in one house both answer them and a client gets whichever
 // replies first (routes.BareHostName). The flock-scoped names stay unambiguous, and nothing the
 // node does depends on the bare ones.
@@ -81,7 +81,7 @@ func mdnsWorldFor(addr, flock string, t routes.Table) mdnsWorld {
 	seen := map[string]bool{}
 	add := func(n string) {
 		// Only `.local` is ours to claim on the LAN: the table also carries each app's
-		// `<service>.<flock>.briard.casa` name, which public DNS answers for and
+		// `<app>.<flock>.briard.casa` name, which public DNS answers for and
 		// mDNS must not -- a multicast responder for a unicast name is a name that lies.
 		if n == "" || seen[n] || !strings.HasSuffix(n, ".local") {
 			return

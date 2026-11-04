@@ -108,7 +108,7 @@ type AppSpec struct {
 
 	// Units is the ordered set of systemd units the promoter starts for this app, between
 	// the data mount and the VIP, as the quadlet renderer produced them: the pod first, then its
-	// members, because starting a pod service does NOT start its containers (proven by the
+	// members, because starting a pod unit does NOT start its containers (proven by the
 	// quadlet spike).
 	Units []string
 	// Unit is the single unit Start/Stop/Health act on — the container that actually serves, so
@@ -136,7 +136,7 @@ type AppSpec struct {
 // measure an app's footprint from.
 //
 // The app names it explicitly: its units come from the quadlet renderer
-// (briard-<service>-<container>.service, plus a pod unit) and the SERVING container is the one
+// (briard-<app>-<container>.service, plus a pod unit) and the SERVING container is the one
 // whose state is the app's state. The zero spec names nothing, which is the honest answer —
 // asking systemd about a unit assembled from an empty name is what once reported "inactive"
 // forever.

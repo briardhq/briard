@@ -117,9 +117,9 @@ func runStageManifest(dir, chain, platform, version, system, minBriard, vm, inpu
 // runInstall is `briard-agent install [-wait]`, the installer's body (host.Install). Without
 // -wait: the machine report card, then the layout -- the card FIRST, so a refusal is truthful
 // when it says nothing was installed and its disk check measures a disk the install has not
-// eaten into. With -wait: the closing, once the installer has enabled the service
-// (host.InstallWait). Failures read as the installer's own (`briard: ERROR: ...`), since that is
-// whose output they are.
+// eaten into. With -wait: the closing, once the installer has enabled the agent's
+// systemd or Windows service (host.InstallWait). Failures read as the installer's own
+// (`briard: ERROR: ...`), since that is whose output they are.
 func runInstall(args []string) int {
 	fs := flag.NewFlagSet("briard install", flag.ContinueOnError)
 	wait := fs.Bool("wait", false, "wait for the installed node to answer, then print its one-time link")
@@ -143,8 +143,8 @@ func runInstall(args []string) int {
 	if !elevated() {
 		return fail(errors.New(elevateHint))
 	}
-	// The card is told the two things it cannot infer. VIP_ADDR, because judging a service
-	// address against THIS LAN is the one check that compares our intent with the household's
+	// The card is told the two things it cannot infer. VIP_ADDR, because judging a
+	// service address against THIS LAN is the one check that compares our intent with the household's
 	// network. BRIARD_NIC (read as is), because the card SELECTS the device the guest's L2 will
 	// hang off and validates it by creating a throwaway macvtap on it -- judging a different device
 	// than the install will use is the worst possible half-truth. The substrate is not passed at
@@ -198,7 +198,7 @@ func runUninstall(args []string) int {
 			keep = "-delete-data DELETES " + dataTree + " as well: the data volume, every app's data\n" +
 				"on it, and this machine's identity. That cannot be undone.\n"
 		}
-		what := "this stops briard and its VM (cleanly), and removes its services,\n" +
+		what := "this stops briard and its VM (cleanly), and removes its systemd or Windows services,\n" +
 			"network devices, " + installTree + " and the `briard` command.\n\n" + keep
 		if !win {
 			fmt.Fprint(os.Stderr, "briard uninstall: "+what+"\nRe-run with -yes to go ahead.\n")

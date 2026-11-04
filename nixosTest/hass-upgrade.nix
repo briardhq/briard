@@ -71,7 +71,7 @@ pkgs.testers.runNixOSTest {
       virtualisation.memorySize = 3072;
       virtualisation.diskSize = 20480;
       # Sqlite3 to read the recorder DB + btrfs to take the pre-upgrade snapshot
-      # directly (lib.nix nodes ship only curl; the guest services carry their own paths).
+      # directly (lib.nix nodes ship only curl; the guest's systemd units carry their own paths).
       environment.systemPackages = [ pkgs.sqlite pkgs.btrfs-progs ];
     };
 

@@ -411,7 +411,7 @@ let
         };
       };
 
-      # The host-agent deadman as its OWN long-running service — decoupled from the
+      # The host-agent deadman as its OWN long-running systemd service — decoupled from the
       # per-connection guest agent (which crash-loops while the host is down, so an in-process
       # timer would keep resetting). It watches the contact stamp the guest agent bumps and, once
       # the host agent is silent past T_deadman, reboots the guest — gated + graceful

@@ -298,7 +298,7 @@ pkgs.testers.runNixOSTest {
     # is a two-node rig's to catch. Nothing here can stand in for it.
     #
     # What IS provable with one node, and is asserted below:
-    #   1. a demote really stops service, seen from off-box rather than from the node's own opinion;
+    #   1. a demote really stops serving, seen from off-box rather than from the node's own opinion;
     #   2. re-promotion brings the VIP back on the SAME MAC -- the service identity survives a role
     #      change unchanged. That one is failable and worth having in bridge mode especially: eth2
     #      is a device the GUEST creates, so a re-promotion that rebuilt it without re-applying the
@@ -315,8 +315,8 @@ pkgs.testers.runNixOSTest {
     back = client.succeed("ip -4 neigh show 192.168.1.100 dev eth1").split()
     print(f"off-box after re-promotion: {' '.join(back)}")
     assert "lladdr" in back and back[back.index("lladdr") + 1] == vip_mac, (
-        f"the VIP came back on a different MAC ({' '.join(back)}, was {vip_mac}) -- the service "
-        f"identity is supposed to be the one thing a role change leaves unchanged, and in this "
+        f"the VIP came back on a different MAC ({' '.join(back)}, was {vip_mac}) -- the "
+        f"service identity is supposed to be the one thing a role change leaves unchanged, and in this "
         f"mode it is a device the guest rebuilt"
     )
 

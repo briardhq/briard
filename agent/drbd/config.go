@@ -20,7 +20,7 @@ const (
 	// restated beside them: the host names the VG and the LVs separately when it renders the
 	// node's storage spec (shared/nodestorage), and literals that must agree are
 	// places for them to stop agreeing.
-	DataVG = "briardservice"
+	DataVG = "briardvol"
 	DataLV = "data"
 	// MetaLV holds DRBD's EXTERNAL metadata, at the end of the PV at a computed size
 	// -- DRBD's own internal-metadata placement, spelled in LVM so the data LV can carry a

@@ -225,7 +225,7 @@ func TestWriteUnitsChainsTheMembersInOrder(t *testing.T) {
 // EVERY CHAIN MEMBER HANDS THE RESOURCE ON WHEN IT GIVES UP. OnFailure= is the
 // STATE hook that fires on the transition into failed, and the start limit is what decides when
 // that is -- a member rendered without either would crash quietly forever while the household
-// had no service, which is the shape the budget exists to end.
+// had no apps running, which is the shape the budget exists to end.
 func TestWriteUnitsEveryMemberCanHandTheResourceOn(t *testing.T) {
 	guestWithTools(t)
 	u := units()
@@ -248,7 +248,7 @@ func TestWriteUnitsEveryMemberCanHandTheResourceOn(t *testing.T) {
 	if strings.Contains(u[holdUnit], "OnFailure=") {
 		t.Errorf("the hold must not hand the resource on to itself:\n%s", u[holdUnit])
 	}
-	// NOR IS THE RENEWAL TIMER'S SERVICE: a renewal that fails must never be able to
+	// NOR IS THE RENEWAL TIMER'S SYSTEMD SERVICE: a renewal that fails must never be able to
 	// demote a serving node.
 	if strings.Contains(u[vipRenewUnit], "OnFailure=") || strings.Contains(u[vipRenewUnit], "PartOf="+chain.Target) {
 		t.Errorf("the lease renewal must not be able to demote a serving node:\n%s", u[vipRenewUnit])

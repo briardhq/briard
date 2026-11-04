@@ -380,7 +380,7 @@ func TestAppAlerter(t *testing.T) {
 			{Name: "mosquitto", State: api.StateRunning, Health: api.StateHealthy},
 		}
 		as := run(t, on(0, two), on(10, two))
-		if len(as) != 1 || as[0].Key != "service:home-assistant" || as[0].Severity != notify.Critical {
+		if len(as) != 1 || as[0].Key != "app:home-assistant" || as[0].Severity != notify.Critical {
 			t.Fatalf("alerts = %+v, want one critical open for home-assistant only", as)
 		}
 		if !strings.Contains(as[0].Body, "has not been running") {

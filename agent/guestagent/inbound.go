@@ -41,7 +41,7 @@ import (
 //
 //   - THE CALLER DOES NOT NAME ITSELF. It presents a TOKEN minted per app at converge and
 //     mounted read-only into that app's container alone, and the agent maps that back to a
-//     name. A `service` field in the request would be a field a hostile custom component could
+//     name. An `app` field in the request would be a field a hostile custom component could
 //     set; a token it can only hold if it was given one.
 //   - NO VERB NAMES A PATH. Every path is derived from the resolved app (quadlet.DataRoot,
 //     quadlet.SnapshotMember). A verb taking a path is a verb that reads or writes anywhere the
@@ -82,7 +82,7 @@ const (
 //
 // It carries a TOKEN and never an app name, and the difference is the whole trust story: the
 // token was minted for one app and written where only that app's container can read it,
-// so a caller cannot name itself — it can only present something it was given. A `service` field
+// so a caller cannot name itself — it can only present something it was given. An `app` field
 // here would be a field a hostile custom component could set.
 type inboundRequest struct {
 	Verb  InboundVerb `json:"verb"`
@@ -250,7 +250,7 @@ func recordMember(ctx context.Context, x Executor, member string, meta quadlet.S
 	pruneRing(ctx, x, meta.App, meta.TakenAt)
 }
 
-// sampled gives the member's app its say (services.Sampled) before the prune, so a hold it places
+// sampled gives the member's app its say (apps.Sampled) before the prune, so a hold it places
 // counts there.
 //
 // NOT FOR THE RECORDER RESTORE'S OWN SAMPLE: it holds the database the check just found damaged,
@@ -564,7 +564,7 @@ func EvaluateStarts(ctx context.Context, x Executor) {
 }
 
 // evaluatePending evaluates an app's newest pending start if its boot has a verdict: HEALTHY
-// as soon as it is, anything else once services.HealthGate has passed since the start. A booting
+// as soon as it is, anything else once apps.HealthGate has passed since the start. A booting
 // app refuses connections and answers 5xx, so nothing but healthy is conclusive early.
 //
 // UNHEALTHY REGISTERS ONLY ON A TRANSITION: the newest evaluated sample carried healthy (or no
@@ -729,7 +729,7 @@ func backupName(body []byte) string {
 // takeSnapshot makes one ring member: the read-only subvolume and the sidecar beside it.
 //
 // REFUSE A COLLISION; do not resolve it. This used to DELETE an existing destination first, and
-// that was right for exactly as long as the name was fixed: one `<service>-preupgrade` per app
+// that was right for exactly as long as the name was fixed: one `<app>-preupgrade` per app
 // meant the second upgrade found the first one's snapshot sitting there, and `btrfs subvolume
 // snapshot` given an existing directory creates the new snapshot INSIDE it -- which on a read-only
 // snapshot fails with "Read-only file system". Measured on a soak run 2026-08-28: every upgrade
@@ -796,7 +796,7 @@ func ringMembers(ctx context.Context, x Executor, app string) []string {
 			names = append(names, n)
 		}
 	}
-	// ⚠️ SORT ON THE PARSED TIME, NOT THE NAME. A member is `<service>-<trigger>-<stamp>`, so the
+	// ⚠️ SORT ON THE PARSED TIME, NOT THE NAME. A member is `<app>-<trigger>-<stamp>`, so the
 	// TRIGGER sits between the app and the stamp and dominates any string comparison: every
 	// `-clock-` member sorts before every `-start-` one whatever their times, and every reader that
 	// asks for "the newest" or "the one before" would get the alphabet's answer.

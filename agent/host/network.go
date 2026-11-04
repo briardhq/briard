@@ -168,7 +168,7 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 	//
 	// It READS THE PARENT OFF THE DEVICE rather than selecting, so the tick has a parent to
 	// re-assert against and the guest keeps the one it stands on. Re-selecting here would turn a
-	// self-update into the household's service moving networks, and an upgrade's rollback would
+	// self-update into the household's apps moving networks, and an upgrade's rollback would
 	// then compare health across two changes rather than one; the parent moves only at a cold
 	// start (the loop below) or when it is gone (reparent.go). BRIARD_NIC does not move it either:
 	// the live rule takes it as the answer once the standing parent is gone. A device stacked on

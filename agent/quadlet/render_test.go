@@ -187,7 +187,7 @@ func TestImagePullIsBounded(t *testing.T) {
 }
 
 // TestUnitOrder: the pod, then its members. Naming the members explicitly is required — the
-// quadlet spike proved that starting the pod service does not start its containers.
+// quadlet spike proved that starting the pod's systemd service does not start its containers.
 //
 // This used to assert a promoter start-list (data -> pod -> members -> VIP), which converge-at-promotion
 // retired along with the function that built it: the chain is static and these units are not

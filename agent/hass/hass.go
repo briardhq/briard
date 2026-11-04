@@ -33,7 +33,7 @@
 //     compromise we refused — it does not exist.
 //
 //   - The stopped window is s6's `run` script, which the image re-executes at EVERY
-//     service start: container start, every exit-100 restart (`homeassistant.restart`),
+//     s6 service start: container start, every exit-100 restart (`homeassistant.restart`),
 //     and the boot after a config restore. That last one is why this hook and no other:
 //     a restore WIPES /config, `.storage/auth` included, and the restore is itself an
 //     exit-100 restart — so the mint that lands after it is the one that sticks, with
@@ -280,7 +280,7 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 // ⚠️ IT IS ALSO A LANDMINE INSIDE A RING MEMBER. A member taken while it is present carries it,
 // and HA's wipe deliberately keeps `backups/` — so restoring that member naively would hand HA
 // back both the request and the tar, and the household would land straight back where they were
-// trying to leave. Members are swept of it as they are materialised: services.RestoreMarkers
+// trying to leave. Members are swept of it as they are materialised: apps.RestoreMarkers
 // names it, and the guest's data.replace removes it from the staged copy.
 const RestoreMarker = ".HA_RESTORE"
 
@@ -408,7 +408,7 @@ func extractOriginal(ctx context.Context, x Executor, image string) error {
 
 // serviceRoots are the two places an s6-overlay image can keep its service definitions: the
 // legacy tree (what Home Assistant uses, and what s6-overlay v3 still supports through its
-// `legacy-services` bundle) and the native s6-rc tree beside it.
+// s6 legacy-services bundle) and the native s6-rc tree beside it.
 //
 // They are here to DESCRIBE, never to search. Finding the script elsewhere and adapting to it
 // would defeat the point of relaying it at all: the bind path is fixed when the unit is rendered,

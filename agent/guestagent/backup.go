@@ -511,7 +511,7 @@ func Backup(ctx context.Context, x Executor, url string) BackupReport {
 // restore path and the backup joins it rather than adding a second.
 //
 // WHAT IT READS is what the backup wrote (runBackup): the app's data from
-// services/<app>/ and the member's own sidecar from briard/members/<app>.json, which
+// data/<app>/ and the member's own sidecar from briard/members/<app>.json, which
 // names the manifest the data was written under -- the sidecar is the member's, verbatim, except
 // for its trigger (TriggerFromBackup says where these bytes come from) and Pending (nothing is
 // waiting to evaluate it). The snapshot may be any night's, of any group in the repository

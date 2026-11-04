@@ -13,5 +13,5 @@ buildGoModule {
   src = ../../.;
   vendorHash = import ../../vendor-hash.nix;
   subPackages = [ "nixosTest/dummy-app" ];
-  meta.description = "Briard dummy stateful service (failover/upgrade fixture)";
+  meta.description = "Briard dummy stateful app (failover/upgrade fixture)";
 }

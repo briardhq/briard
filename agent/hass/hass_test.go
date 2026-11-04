@@ -336,7 +336,7 @@ func TestExtractionRefusesWhatIsNotAScript(t *testing.T) {
 // migration off the legacy one would use — instead of an errno.
 func TestExtractionFailureNamesTheLayout(t *testing.T) {
 	f := &fake{}
-	// The image answers the layout probe but not the script itself: the shape of a service that
+	// The image answers the layout probe but not the script itself: the shape of an s6 service that
 	// moved.
 	f.fail = func(name string, args []string) error {
 		if name == "podman" && len(args) == 3 && args[0] == "cp" && strings.HasSuffix(args[1], s6Run) {

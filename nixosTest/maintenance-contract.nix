@@ -46,7 +46,7 @@ let
   };
   # The app's own unit, named by the RENDERER rather than restated here -- it is the fixture's
   # container unit, and what the contract is about is that a pause does not touch it.
-  serviceUnit = "briard-${fixture.name}-${fixture.container}.service";
+  appUnit = "briard-${fixture.name}-${fixture.container}.service";
   # Mirrors `reactorBeforeOverride` in agent/guestagent/guestagent.go — see the pause below.
   beforeOverride = "/run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf";
 in
@@ -74,13 +74,13 @@ pkgs.testers.runNixOSTest {
         assert r == "Primary" and q, f"CONTRACT VIOLATED ({when}): not Primary+quorate (role={r} quorum={q})"
 
     def active():
-        return node1.execute("systemctl is-active ${serviceUnit}")[0] == 0
+        return node1.execute("systemctl is-active ${appUnit}")[0] == 0
 
     def since():
         # The app's process identity. A pause or a resume that BOUNCED it would move this;
         # comparing it is how "the same process is still running" becomes checkable.
         return node1.succeed(
-            "systemctl show -p ActiveEnterTimestampMonotonic --value ${serviceUnit}"
+            "systemctl show -p ActiveEnterTimestampMonotonic --value ${appUnit}"
         ).strip()
 
     def chain_since():
@@ -113,7 +113,7 @@ pkgs.testers.runNixOSTest {
     # that ordering is the product's, not the harness's. The front door answers meanwhile.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
     install_fixture(node1)
-    assert "${serviceUnit}" in fixture_units(node1), "the renderer stopped producing the unit this test names"
+    assert "${appUnit}" in fixture_units(node1), "the renderer stopped producing the unit this test names"
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
     require_primary("baseline")
     assert active(), "CONTRACT PRECOND: the app is not active at baseline"
@@ -160,10 +160,10 @@ pkgs.testers.runNixOSTest {
     # written as a bare `systemctl stop` the job cascaded to drbd-services@r0.target, took the
     # promote unit with it, and the node was Secondary by the next check. That flag is the
     # `app.stop` verb's one real decision (agent/guestagent/guestagent.go, verbAppStop:
-    # "a planned service quiesce can't cascade to the promoter target / data mount / VIP"), so a
+    # "a planned app quiesce can't cascade to the promoter target / data mount / VIP"), so a
     # mirror that drops it is not testing the product's quiesce at all. `app.start` needs no
     # counterpart — it is a plain start.
-    node1.succeed("systemctl --job-mode=ignore-dependencies stop ${serviceUnit}")
+    node1.succeed("systemctl --job-mode=ignore-dependencies stop ${appUnit}")
     time.sleep(8)  # long enough for a promoter reaction to manifest, if any
     assert not active(), "CONTRACT PRECOND: the app is still active after a deliberate stop"
     require_primary("after-stop-while-paused")  # the core guarantee: the stop drew no failover
@@ -171,7 +171,7 @@ pkgs.testers.runNixOSTest {
 
     # ...and the mount survived. /healthz recovers and the tick counter is continuous with the
     # pre-stop value; a torn-down /var/lib/briard would reload from tick 0.
-    node1.succeed("systemctl start ${serviceUnit}")
+    node1.succeed("systemctl start ${appUnit}")
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=60)
     time.sleep(2)  # let at least one post-ready tick land before comparing
     post = ticks()
@@ -190,13 +190,13 @@ pkgs.testers.runNixOSTest {
 
     # Belt-and-suspenders: green here ⇒ the promoter resumed onto a live, mounted node.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=30)
-    node1.succeed("systemctl is-active briard-primary-storage.service ${serviceUnit} briard-vip.service")
+    node1.succeed("systemctl is-active briard-primary-storage.service ${appUnit} briard-vip.service")
 
     # === #5 THE PAUSE ACROSS A DAEMON-RELOAD =================================================
     # #3 proves the paused promoter ignores a deliberate APP stop. This asks about a CHAIN
     # MEMBER, which after converge-at-promotion is a different question: app units are not members any
     # more -- briard-apps converges them from the volume -- so a crashed container cannot
-    # reach the promoter's target at all ("a service error alerts, never demotes"). Six units
+    # reach the promoter's target at all ("an app error alerts, never demotes"). Six units
     # still are members, and the target `Requires=` them.
     #
     # ONLY THE RELOAD IS ASSERTED HERE, AND THE TWO GESTURES THAT ARE NOT ARE THE POINT OF

@@ -9,5 +9,5 @@ buildGoModule {
   src = ../.;
   vendorHash = import ../vendor-hash.nix;
   subPackages = [ "nixosTest/quadlet-render" ];
-  meta.description = "Render a Briard service manifest to quadlet units (test helper)";
+  meta.description = "Render a Briard app manifest to quadlet units (test helper)";
 }

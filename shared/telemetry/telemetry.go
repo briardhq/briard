@@ -4,7 +4,7 @@
 // what leaves the house -- privacy-as-schema). It rides only the internal
 // paths: the host↔guest control channel (the guest returns it to the host) and the
 // host→lab collector file the soak reads out-of-band. Removing it from shared/api is the
-// point -- the cloud stops receiving agent/service RSS+FDs, load, log/store sizes, guest
+// point -- the cloud stops receiving agent/app RSS+FDs, load, log/store sizes, guest
 // kernel errors. A product-health subset (volume used/free, crash-loop restarts) is re-added
 // to shared/api *deliberately* if/when the cloud consumes it.
 package telemetry

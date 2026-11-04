@@ -258,7 +258,7 @@ ExecStart=` + agent + ` --node-storage
 	//
 	// ⚠️ IT CARRIES THE PROFILE even though every Exec line here is absolute, and the reason is
 	// upstream's shim: `drbd-service-shim.sh` is someone else's shell, and what it resolves by
-	// bare name is not ours to assume. As a NixOS unit it ran on the default service PATH this
+	// bare name is not ours to assume. As a NixOS unit it ran on the default systemd service PATH this
 	// profile is a superset of, so the PATH is how the move stays a move rather than a
 	// narrowing -- at the one step whose failure mode is a stuck Primary and a reboot.
 	u[holdUnit] = `[Unit]
@@ -320,7 +320,7 @@ ExecStop=` + agent + ` --primary-storage-stop
 	// (agent/quadlet), and the STOP is ExecStop below, because reverse-order chain unwinding
 	// would otherwise leave containers running on a volume about to be unmounted.
 	u[appsUnit] = `[Unit]
-Description=Briard services, converged from the replicated volume at promotion
+Description=Briard apps, converged from the replicated volume at promotion
 ` + chainEdges(2, members) + chainMemberFailure + `
 [Service]
 Restart=on-failure
@@ -411,7 +411,7 @@ ExecStart=` + tool("briard-vip-renew") + `
 	//
 	// ⚠️ THE PICKER IS THE REASON THIS UNIT HAS A PATH AT ALL. The door is a self-contained Go
 	// binary and needed none while it was a NixOS unit -- but `briard-bin-exec` is shell, and it
-	// `rm`s the trial flag as it execs. Under NixOS that resolved through the default service
+	// `rm`s the trial flag as it execs. Under NixOS that resolved through the default systemd service
 	// PATH nixpkgs hands every unit; a runtime unit gets no such gift, and a picker that cannot
 	// consume its own single-use flag would let a crashing candidate re-trial forever.
 	//
@@ -420,7 +420,7 @@ ExecStart=` + tool("briard-vip-renew") + `
 	// and demotes the node on ONE crash, measured, with a peer taking the resource about half the
 	// time. `direct` restarts through activating instead of failed, so dependents are not
 	// notified of the temporary failure, and it is what lets the StartLimit above finally
-	// accumulate. NOT on primary-storage/services/vip: for those, failure really does mean this
+	// accumulate. NOT on primary-storage/apps/vip: for those, failure really does mean this
 	// node must not hold the volume.
 	u[reverseProxyUnit] = `[Unit]
 Description=Briard front door (serves the VIP on :80/:443)

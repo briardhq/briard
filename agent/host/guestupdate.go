@@ -69,7 +69,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		return failed("no VM on this machine")
 	}
 	// Fail closed, as every verifier here does: no key, no release. The same PEM the catalog
-	// path verifies with (service.go), parsed the same way.
+	// path verifies with (app.go), parsed the same way.
 	kr, err := selfupdate.NewKeyring(cfg.UpdateKeyring)
 	if err != nil || kr.Len() == 0 {
 		logf("directive kind=update-vm refused: no usable release keyring on this node (%v)", err)

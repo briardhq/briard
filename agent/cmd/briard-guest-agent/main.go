@@ -80,7 +80,7 @@ func runDaemon(args []string) {
 
 	switch {
 	case *deadman:
-		// The deadman runs as its OWN guest service (briard-deadman), decoupled from the
+		// The deadman runs as its OWN guest unit (briard-deadman), decoupled from the
 		// per-connection guest agent, which crash-loops while the host is down.
 		if err := guestagent.RunDeadman(ctx); err != nil {
 			log.Fatalf("deadman: %v", err)
@@ -134,7 +134,7 @@ func runInternal(args []string) {
 	dbCheck := fs.Bool("dbcheck", false, "run Home Assistant's recorder check in line and print its report as JSON -- an internal flag a harness invokes; the product drives this verb from the host")
 	dbRestore := fs.String("dbrestore", "", "restore Home Assistant's recorder database from this ring member -- an internal flag a harness invokes; the product drives this verb from the host")
 	backup := fs.String("backup", "", "run the backup in line into the REST repository at this URL, under the key the volume holds, and print its report as JSON -- an internal flag a harness invokes; the product drives this verb from the host")
-	backupRestore := fs.String("backup-restore", "", "put one night of the backup at this REST URL into the ring as a member (-service, -snapshot) and print the member's path -- an internal flag a harness invokes; the product drives this verb from the host")
+	backupRestore := fs.String("backup-restore", "", "put one night of the backup at this REST URL into the ring as a member (-app, -snapshot) and print the member's path -- an internal flag a harness invokes; the product drives this verb from the host")
 	restoreApp := fs.String("app", "", "with -backup-restore: the app")
 	restoreSnapshot := fs.String("snapshot", "latest", "with -backup-restore: the night, a snapshot id or latest")
 	backupAdopt := fs.String("backup-adopt", "", "add the volume's key to the repository at this REST URL, opened once with -key -- an internal flag a harness invokes; the product drives this verb from the host")

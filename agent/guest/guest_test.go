@@ -185,7 +185,7 @@ func TestHealthPropagatesControlError(t *testing.T) {
 	}
 }
 
-// When the guest supports the service-health verb, readiness follows the IN-GUEST probe, NOT a host-side
+// When the guest supports the app-health verb, readiness follows the IN-GUEST probe, NOT a host-side
 // GET of the VIP — so the health-gate works under a substrate where the host can't reach the VIP
 // (macvtap). A failable pair: the host URL always says the opposite of the verb.
 func TestHealthPrefersInGuestProbe(t *testing.T) {
@@ -403,7 +403,7 @@ func TestResolveHealthURL(t *testing.T) {
 		{"never ask about an unnamed device", false, "", configured, "192.168.9.50/24", nil, configured},
 
 		// An old guest predating net.vip is one that still has a baked address to fall back
-		// to -- the same compatibility posture probeReady takes for the service-health verb.
+		// to -- the same compatibility posture probeReady takes for the app-health verb.
 		{"verb error falls back", false, "eth2", configured, "", errors.New("unknown verb"), configured},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,10 +1,11 @@
 // `briard-agent install`: lay this node down from a verified artifact set, and -- as a second
-// call once the service runs -- wait for it to answer and hand the household its link.
+// call once the agent's systemd or Windows service runs -- wait for it to answer and hand the
+// household its link.
 //
 // THE INSTALLER'S BODY, IN THE BINARY THE CHANNEL CAN FIX. install.sh is fetched from the channel
 // root and run once, so whatever it does in shell is frozen where no release can reach it. It now
 // does only what supervises the agent's own arrival -- root, the bootstrap fetch, this call,
-// enabling the service, the hand-over -- and everything that lays files down is here. A Windows
+// enabling the systemd unit, the hand-over -- and everything that lays files down is here. A Windows
 // installer calls the same verb rather than re-implementing it.
 //
 // Two tests decide what belongs in the layout at all, the second wider than the first:
@@ -463,8 +464,8 @@ var (
 	installHealthy = regexp.MustCompile(`primary=true.*healthy=true`)
 )
 
-// InstallWait is `briard-agent install -wait`, the installer's hand-over once the service runs:
-// wait, bounded, for the agent's OWN word that the node is primary and its chain (the front door,
+// InstallWait is `briard-agent install -wait`, the installer's hand-over once the agent's
+// systemd or Windows service runs: wait, bounded, for the agent's OWN word that the node is primary and its chain (the front door,
 // the dashboard) passed its health gate -- the status line it logs, the same signal the tier-4 rig
 // waits on, and local (no name to resolve, no address to know under DHCP) -- then print what
 // `briard open` says, its one-time link included, and hand that link to a desktop browser.

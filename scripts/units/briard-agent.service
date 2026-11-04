@@ -30,7 +30,7 @@ StartLimitIntervalSec=0
 # (/usr/sbin, /sbin) AND on NixOS (/run/current-system/sw/bin), since a unit's default is minimal.
 # `ip` in particular lives in *sbin on a stock host, which is why both are listed and neither is
 # decoration -- a nixosTest launching the agent without this PATH lost exactly that binary.
-# It cannot move to the file: systemd SETS a PATH for every service, so the environment would
+# It cannot move to the file: systemd SETS a PATH for every systemd service, so the environment would
 # already have spoken and the file's value would correctly lose.
 Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
 # Where the file is. Stated rather than left to the agent's baked default (agent/host/config.go),

@@ -237,7 +237,7 @@ func (a *appAlerter) observe(ctx context.Context, n notify.Notifier, node string
 		a.down = map[string]time.Time{}
 	}
 	for _, s := range svcs {
-		key := "service:" + s.Name
+		key := "app:" + s.Name
 		switch {
 		case known && !serving:
 			delete(a.down, s.Name)

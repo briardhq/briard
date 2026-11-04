@@ -9,8 +9,8 @@
 #
 # ⚠️ THIS SCRIPT IS OUTSIDE THE VERSIONING SYSTEM. It is fetched from the channel root and run
 # once; nothing it does can be reached by a release afterwards. So it does only what supervises
-# the agent's own arrival: be root, get an agent onto the box, call it, enable the service it laid
-# down, and hand over to it.
+# the agent's own arrival: be root, get an agent onto the box, call it, enable the
+# systemd service it laid down, and hand over to it.
 #
 # EVERYTHING ELSE IS THE AGENT'S -- `briard-agent install` (agent/host/install.go): the machine
 # report card, the signed fetch, the /opt/briard layout, config.env, the units, and the closing
@@ -114,7 +114,7 @@ if ! "$AGENT" install; then
 fi
 [ -z "$BOOT" ] || rm -f "$BOOT"
 
-# ---- 3. the service ------------------------------------------------------------------
+# ---- 3. the systemd service ----------------------------------------------------------
 # Belt, not the gate: the report card refuses a host that is not systemd-booted before anything
 # is written. Reaching HERE without systemctl is not a shape worth a nicer message -- it is worth
 # not pretending the install finished.

@@ -1,7 +1,7 @@
 #!/bin/sh
 # briard's shadow of Home Assistant's s6 `run` script.
 #
-# s6 re-executes `run` at EVERY service start — container start, every exit-100
+# s6 re-executes `run` at EVERY s6 service start — container start, every exit-100
 # restart (`homeassistant.restart`), and the boot after a config restore — and each of
 # those is a window with Home Assistant stopped. That is the whole reason briard's
 # stopped-window steps hang here: they heal at every boundary, with no extra restart

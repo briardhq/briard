@@ -41,7 +41,7 @@ const (
 	// ReasonHassRestore is Home Assistant restoring one of its OWN backups, which briard sees from
 	// the inside and did not perform, on its hass-restore-before sample.
 	ReasonHassRestore ReasonKind = "hass-restore"
-	// ReasonChanged is what an app's detector found (services.Detect).
+	// ReasonChanged is what an app's detector found (apps.Detect).
 	ReasonChanged ReasonKind = "changed"
 	// ReasonReset is the app setting its own data aside and starting empty: Home Assistant renaming
 	// an undecodable store or database to `*.corrupt.*`. Silent data loss that no health

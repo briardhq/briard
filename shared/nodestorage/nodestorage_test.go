@@ -9,14 +9,14 @@ import (
 // a whole document.
 func good() Spec {
 	return Spec{
-		Tiers:    []Tier{{Name: TierData, Device: "/dev/vdb", VG: "briardservice", LV: "data", MetaLV: "metadata", Mode: ModeAuto}},
+		Tiers:    []Tier{{Name: TierData, Device: "/dev/vdb", VG: "briardvol", LV: "data", MetaLV: "metadata", Mode: ModeAuto}},
 		Resource: Resource{Name: "r0", Device: "/dev/drbd0", Replicated: true, Config: "resource r0 {}\n", FreshInit: true, MaxPeers: 4},
 	}
 }
 
 func TestMapper(t *testing.T) {
-	if got := (Tier{VG: "briardservice", LV: "data"}).Mapper(); got != "/dev/mapper/briardservice-data" {
-		t.Errorf("Mapper() = %q; DRBD is pointed at /dev/mapper/briardservice-data and would attach nothing", got)
+	if got := (Tier{VG: "briardvol", LV: "data"}).Mapper(); got != "/dev/mapper/briardvol-data" {
+		t.Errorf("Mapper() = %q; DRBD is pointed at /dev/mapper/briardvol-data and would attach nothing", got)
 	}
 }
 
@@ -171,7 +171,7 @@ func TestParseValidates(t *testing.T) {
 }
 
 func TestMetaMapper(t *testing.T) {
-	if got := (Tier{VG: "briardservice", MetaLV: "metadata"}).MetaMapper(); got != "/dev/mapper/briardservice-metadata" {
+	if got := (Tier{VG: "briardvol", MetaLV: "metadata"}).MetaMapper(); got != "/dev/mapper/briardvol-metadata" {
 		t.Errorf("MetaMapper() = %q", got)
 	}
 }

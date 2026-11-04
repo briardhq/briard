@@ -125,7 +125,7 @@ func (b *beat) Lease(ctx context.Context) {
 // those two facts must agree and nothing made them.
 //
 // This is what a disagreement cost. Every long operation here already declared a budget;
-// what none of the forward paths did was lease it, so `service install` — a verb measured at
+// what none of the forward paths did was lease it, so `app install` — a verb measured at
 // 48.8 s — ran unpinged under WatchdogSec=20 and was SIGABRTed on every shipped node for a week.
 // The leases that DID exist were all on recovery and rollback paths (annotated where a
 // wedge was feared and not where work is merely long), and the two sets did not overlap at all.

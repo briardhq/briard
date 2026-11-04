@@ -167,8 +167,8 @@ const healthGate = apps.HealthGate
 // install went wrong. So the undo path never shares a deadline with the thing it undoes.
 const revertBudget = 3 * time.Minute
 
-// ApplyServicePrewarm renders a catalogued app's units and pulls its images, and stops there
-// . It is the warm-standby half on its own: no provisioning, no promoter change, no
+// applyAppPrewarm renders a catalogued app's units and pulls its images, and stops there.
+// It is the warm-standby half on its own: no provisioning, no promoter change, no
 // health gate — nothing that alters what this node is currently serving.
 //
 // It runs the same fetch/verify/render/warm prefix as an install, deliberately sharing the code
@@ -233,7 +233,7 @@ func (cfg Config) applyAppPrewarm(ctx context.Context, g appInstaller, d api.Dir
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "prewarmed"}
 }
 
-// ApplyServiceInstall installs — or UPGRADES — the catalogued app named by the directive,
+// applyAppInstall installs — or UPGRADES — the catalogued app named by the directive,
 // returning the terminal outcome (announce-before-act). Install and upgrade are the
 // SAME path: install is an upgrade from "empty" to the target. Idempotent by construction —
 // re-installing the same manifest re-renders identical units and reuses the existing subvolume.
@@ -334,7 +334,7 @@ func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Dir
 	// a seam: a node running two and describing one would have had the cloud confirm a rollout
 	// against whichever came first and a crash-loop in the other go unseen.
 	//
-	// It is gone because all three of those are now plural: `NodeStatus.Services` carries one
+	// It is gone because all three of those are now plural: `NodeStatus.Apps` carries one
 	// manifest identity per app, the volume's `.apps/<name>.json` says which app a
 	// manifest belongs to, and `telemetry.NodeResources.Payloads` measures each app's own
 	// footprint and restart count. `Healthy` and `System` deliberately stayed node-scoped — a
@@ -364,7 +364,7 @@ func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Dir
 	// the failure, whereas the failover path must never pull. The boot-time unit
 	// stays what it is — a RE-warm on subsequent boots, not the primary fetch.
 	//
-	// This is also the one point where an offline node legitimately fails: `briard service
+	// This is also the one point where an offline node legitimately fails: `briard app
 	// install` needs the network, while running an installed app never does.
 	//
 	// The pull record for the dashboard's bar: the totals before the first byte,
@@ -617,7 +617,7 @@ func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Dir
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: reach}
 }
 
-// CacheService writes one app's manifest into the node-local cache directory, named for the
+// cacheApp writes one app's manifest into the node-local cache directory, named for the
 // app. Written only after the health gate passes, so a failed install is never the thing a
 // restart converges to.
 //
@@ -657,7 +657,7 @@ func (cfg Config) manifestPath(name string) string {
 
 // adoptInstalledApps refreshes the LIVE config from the node-local manifest cache after a
 // directive that changed what is installed. Run() does this once at startup; without it here, the
-// very process that performed the install kept its old (usually empty) view of cfg.Services until
+// very process that performed the install kept its old (usually empty) view of cfg.Apps until
 // something restarted it.
 //
 // That is not cosmetic: cfg.resources() is gated on there being an app, so a node that had just
@@ -685,7 +685,7 @@ func (cfg *Config) adoptInstalledApps(d api.Directive, o api.DirectiveOutcome, l
 	}
 }
 
-// InstalledServices reads the node-local manifest DIRECTORY and returns the app specs plus the
+// installedApps reads the node-local manifest DIRECTORY and returns the app specs plus the
 // UNION of their RENDERED UNITS. Called at bring-up so a restarted agent knows what it runs,
 // rather than reverting to whatever the environment describes.
 //
@@ -749,7 +749,7 @@ func (cfg Config) installedApps(logf func(string, ...any)) ([]model.AppSpec, qua
 // specOf turns one manifest's bytes into the spec the node reports and the units it runs. ONE
 // implementation, because the two readers must agree about what a manifest means: the node-local
 // cache (installedApps, what this host was told) and the replicated volume
-// (volumeServices, what this node actually promoted into).
+// (adoptVolumeApps, what this node actually promoted into).
 func specOf(raw []byte) (model.AppSpec, quadlet.Rendered, error) {
 	m, id, err := manifest.Parse(raw)
 	if err != nil {
@@ -859,7 +859,7 @@ func same(a, b []model.AppSpec) bool {
 }
 
 // mergeRendered folds one app's rendering into the union restoreApp replays. Unit
-// filenames are app-prefixed by the renderer (briard-<service>-…), so the Files merge cannot
+// filenames are app-prefixed by the renderer (briard-<app>-…), so the Files merge cannot
 // collide; the unit lists concatenate in the order their apps were read.
 func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
 	for name, body := range r.Files {
@@ -876,7 +876,7 @@ func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
 	all.ContainerUnits = append(all.ContainerUnits, r.ContainerUnits...)
 }
 
-// PriorService reads the manifest currently on the volume FOR THIS APP and renders it — the
+// priorApp reads the manifest currently on the volume FOR THIS APP and renders it — the
 // rollback target for an upgrade. Naming the app is what makes it correct at N>1: reading the
 // volume's single unnamed manifest meant installing a second app found the FIRST one's
 // manifest, called it this install's prior, and then had filesToRemove delete that app's

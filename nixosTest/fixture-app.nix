@@ -246,7 +246,7 @@ pkgs.runCommand "briard-fixture-${name}"
       (pkgs.callPackage ./catalog-sign/package.nix { })
     ];
     # Surfaced as passthru so a caller can stage the tarball without reaching into $out.
-    # serviceName is the manifest slug a caller passes to `service install`; `name` is the same
+    # appName is the manifest slug a caller passes to `app install`; `name` is the same
     # string, exposed under both spellings because callers read as one or the other. `variants`
     # carries each extra version's IMAGE, which a guest disk has to stage before the node can be
     # rolled onto it (nothing pulls: `app.warm` starts an .image unit only when the image is
@@ -261,7 +261,7 @@ pkgs.runCommand "briard-fixture-${name}"
       # The data mount's directory in the app's data area: where a test finds what the app keeps.
       dataDir = (pkgs.lib.findFirst (m: m.tier == "data") null mounts).dir;
       name = name;
-      serviceName = name;
+      appName = name;
       image = base.tarball;
       # Each extra version's IMAGE and the label it is published under. A guest disk stages these
       # so a node can be rolled onto one without a pull, and a hermetic test stages them the same

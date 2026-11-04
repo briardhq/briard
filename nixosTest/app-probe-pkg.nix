@@ -8,5 +8,5 @@ buildGoModule {
   src = ../.;
   vendorHash = import ../vendor-hash.nix;
   subPackages = [ "nixosTest/app-probe" ];
-  meta.description = "Run a catalogued service's S1 probe against a container (test helper)";
+  meta.description = "Run a catalogued app's S1 probe against a container (test helper)";
 }

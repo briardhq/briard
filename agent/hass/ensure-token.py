@@ -3,7 +3,7 @@
 Run one-shot, on the image's own python, in a STOPPED window — the wrapper runs it from s6's `run`
 script, before Home Assistant is launched. It cannot run against a live HA: the auth store is
 memory-cached, so a write under a running HA is invisible to it until restart and is clobbered by
-its next save. That is why the mint lives at the service-start boundary and nowhere else.
+its next save. That is why the mint lives at the s6 service-start boundary and nowhere else.
 
 It ENSURES rather than creates. The value is chosen by the caller (briard writes it to tmpfs at
 converge), so consumers know the token from t=0 and need no return channel; validating a refresh

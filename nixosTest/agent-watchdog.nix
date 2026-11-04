@@ -260,7 +260,7 @@ pkgs.testers.runNixOSTest {
     # report "alive" straight through the wedge step 4 builds. So while a directive runs, nothing
     # pings, and any directive longer than WatchdogSec=20 ends in SIGABRT instead of an outcome.
     #
-    # NOT A RACE -- IT SHIPPED. `WatchdogSec=20` landed 2026-08-13 on a `service install` measured
+    # NOT A RACE -- IT SHIPPED. `WatchdogSec=20` landed 2026-08-13 on an `app install` measured
     # at 48.8 s from the published channel a week earlier, and the next person to run the verb was
     # a stranger, seven days after that. Twenty-one seconds from `directive
     # kind=app-install submitted locally` to `Watchdog timeout (limit 20s)!`, then SIGABRT and

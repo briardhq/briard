@@ -110,7 +110,7 @@ func (s *storageFake) argsOf(words ...string) string {
 }
 
 func demoTier(mode nodestorage.Mode) nodestorage.Tier {
-	return nodestorage.Tier{Name: nodestorage.TierData, Device: "/dev/vdb", VG: "briardservice", LV: "data", MetaLV: "metadata", Mode: mode}
+	return nodestorage.Tier{Name: nodestorage.TierData, Device: "/dev/vdb", VG: "briardvol", LV: "data", MetaLV: "metadata", Mode: mode}
 }
 
 func demoSpec(mode nodestorage.Mode, fresh bool) nodestorage.Spec {
@@ -133,11 +133,11 @@ func TestNodeStorageFreshEncrypted(t *testing.T) {
 		{"cryptsetup", "luksFormat"},
 		{"cryptsetup", "token", "import", "--token-id", "0"},
 		{"cryptsetup", "open"},
-		{"pvcreate", "/dev/mapper/briardservice-crypt"},
-		{"vgcreate", "briardservice", "/dev/mapper/briardservice-crypt"},
-		{"lvcreate", "-l", "61", "-n", "data", "briardservice"},
-		{"lvcreate", "-l", "100%FREE", "-n", "metadata", "briardservice"},
-		{"mkfs.btrfs", "-f", "--nodesize", "16384", "--sectorsize", "4096", "--metadata", "dup", "--data", "single", "--csum", "crc32c", "--features", "extref,skinny-metadata,no-holes,free-space-tree,block-group-tree,squota", "/dev/mapper/briardservice-data"},
+		{"pvcreate", "/dev/mapper/briardvol-crypt"},
+		{"vgcreate", "briardvol", "/dev/mapper/briardvol-crypt"},
+		{"lvcreate", "-l", "61", "-n", "data", "briardvol"},
+		{"lvcreate", "-l", "100%FREE", "-n", "metadata", "briardvol"},
+		{"mkfs.btrfs", "-f", "--nodesize", "16384", "--sectorsize", "4096", "--metadata", "dup", "--data", "single", "--csum", "crc32c", "--features", "extref,skinny-metadata,no-holes,free-space-tree,block-group-tree,squota", "/dev/mapper/briardvol-data"},
 		{"drbdadm", "create-md", "--max-peers=4", "--force", "r0"},
 		{"systemctl", "start", "drbd@r0.target"},
 		{"drbdadm", "new-current-uuid", "--clear-bitmap", "r0/0"},
@@ -227,7 +227,7 @@ func TestNodeStorageAdiantum(t *testing.T) {
 	if !strings.Contains(args, "--cipher xchacha12,aes-adiantum-plain64") {
 		t.Errorf("luksFormat args = %q, want the Adiantum cipher on a CPU with no AES", args)
 	}
-	if !f.ran("pvcreate", "/dev/mapper/briardservice-crypt") {
+	if !f.ran("pvcreate", "/dev/mapper/briardvol-crypt") {
 		t.Errorf("the PV is not the crypt device; runs = %v", f.runs)
 	}
 }
@@ -238,8 +238,8 @@ func TestNodeStorageAdiantum(t *testing.T) {
 // created by this run.
 func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardservice-data"] = true
-	f.present["/dev/mapper/briardservice-metadata"] = true
+	f.present["/dev/mapper/briardvol-data"] = true
+	f.present["/dev/mapper/briardvol-metadata"] = true
 	f.mdPresent = true
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, true)); err != nil {
 		t.Fatal(err)
@@ -257,10 +257,10 @@ func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 			t.Errorf("a returning node ran %v; runs = %v", forbidden, f.runs)
 		}
 	}
-	if !f.ran("vgchange", "-ay", "briardservice") {
+	if !f.ran("vgchange", "-ay", "briardvol") {
 		t.Errorf("the VG was never activated; runs = %v", f.runs)
 	}
-	if !f.ran("drbdmeta", loneProbeDevice, "v09", "/dev/mapper/briardservice-metadata", "flex-external", "dump-md") || !f.ran("systemctl", "start", "drbd@r0.target") {
+	if !f.ran("drbdmeta", loneProbeDevice, "v09", "/dev/mapper/briardvol-metadata", "flex-external", "dump-md") || !f.ran("systemctl", "start", "drbd@r0.target") {
 		t.Errorf("the resource was not brought up; runs = %v", f.runs)
 	}
 }
@@ -279,8 +279,8 @@ func TestNodeStorageReturningEncryptedNodeOpensItself(t *testing.T) {
 			return nil, nil
 		}
 		if name == "vgchange" {
-			f.present["/dev/mapper/briardservice-data"] = true
-			f.present["/dev/mapper/briardservice-metadata"] = true
+			f.present["/dev/mapper/briardvol-data"] = true
+			f.present["/dev/mapper/briardvol-metadata"] = true
 			return nil, nil
 		}
 		return f.storageRun(name, args)
@@ -288,7 +288,7 @@ func TestNodeStorageReturningEncryptedNodeOpensItself(t *testing.T) {
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false)); err != nil {
 		t.Fatal(err)
 	}
-	if !f.ran("cryptsetup", "open", "--key-file", luksKeyPath, "/dev/vdb", "briardservice-crypt") {
+	if !f.ran("cryptsetup", "open", "--key-file", luksKeyPath, "/dev/vdb", "briardvol-crypt") {
 		t.Errorf("the volume was not opened from its own token; runs = %v", f.runs)
 	}
 	if f.files[luksKeyPath] != "s3cret" {
@@ -418,7 +418,7 @@ func TestNodeStorageJoinerBuildsButNeverFormats(t *testing.T) {
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false)); err != nil {
 		t.Fatal(err)
 	}
-	if !f.ran("lvcreate", "-l", "61", "-n", "data", "briardservice") || !f.ran("lvcreate", "-l", "100%FREE", "-n", "metadata", "briardservice") {
+	if !f.ran("lvcreate", "-l", "61", "-n", "data", "briardvol") || !f.ran("lvcreate", "-l", "100%FREE", "-n", "metadata", "briardvol") {
 		t.Errorf("the joiner did not build its LVs; runs = %v", f.runs)
 	}
 	if !f.ran("drbdadm", "create-md", "--max-peers=4", "--force", "r0") {
@@ -436,7 +436,7 @@ func TestNodeStorageJoinerBuildsButNeverFormats(t *testing.T) {
 // answer is a reinstall, and the message says so.
 func TestNodeStorageRefusesAVolumeWithoutAMetadataLV(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardservice-data"] = true
+	f.present["/dev/mapper/briardvol-data"] = true
 	err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false))
 	if err == nil || !strings.Contains(err.Error(), "reinstall") {
 		t.Fatalf("err = %v, want a refusal that says to reinstall", err)
@@ -504,7 +504,7 @@ func TestNodeStorageLoneNodeRunsNoDRBD(t *testing.T) {
 	if err := nodeStorage(context.Background(), f, loneSpec(true)); err != nil {
 		t.Fatal(err)
 	}
-	if !f.ran("mkfs.btrfs", "-f", "--nodesize", "16384", "--sectorsize", "4096", "--metadata", "dup", "--data", "single", "--csum", "crc32c", "--features", "extref,skinny-metadata,no-holes,free-space-tree,block-group-tree,squota", "/dev/mapper/briardservice-data") {
+	if !f.ran("mkfs.btrfs", "-f", "--nodesize", "16384", "--sectorsize", "4096", "--metadata", "dup", "--data", "single", "--csum", "crc32c", "--features", "extref,skinny-metadata,no-holes,free-space-tree,block-group-tree,squota", "/dev/mapper/briardvol-data") {
 		t.Errorf("the seed's LV was not formatted; runs = %v", f.runs)
 	}
 	if got := f.files[topologyEnvPath]; got != "BRIARD_TOPOLOGY=alone\n" {
@@ -527,8 +527,8 @@ func TestNodeStorageLoneNodeRunsNoDRBD(t *testing.T) {
 // A returning lone node activates its VG and stops: nothing destructive, and still no DRBD.
 func TestNodeStorageReturningLoneNode(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardservice-data"] = true
-	f.present["/dev/mapper/briardservice-metadata"] = true
+	f.present["/dev/mapper/briardvol-data"] = true
+	f.present["/dev/mapper/briardvol-metadata"] = true
 	if err := nodeStorage(context.Background(), f, loneSpec(true)); err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +537,7 @@ func TestNodeStorageReturningLoneNode(t *testing.T) {
 			t.Errorf("a returning lone node ran %v; runs = %v", forbidden, f.runs)
 		}
 	}
-	if !f.ran("vgchange", "-ay", "briardservice") {
+	if !f.ran("vgchange", "-ay", "briardvol") {
 		t.Errorf("the VG was not activated; runs = %v", f.runs)
 	}
 }
@@ -547,8 +547,8 @@ func TestNodeStorageReturningLoneNode(t *testing.T) {
 // replicating against is a split-brain factory. Bring-up stops; the volume is not mounted.
 func TestNodeStorageLoneNodeRefusesForeignMetadata(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardservice-data"] = true
-	f.present["/dev/mapper/briardservice-metadata"] = true
+	f.present["/dev/mapper/briardvol-data"] = true
+	f.present["/dev/mapper/briardvol-metadata"] = true
 	f.mdPresent = true
 	err := nodeStorage(context.Background(), f, loneSpec(true))
 	if err == nil || !strings.Contains(err.Error(), "holds DRBD metadata") {
@@ -574,8 +574,8 @@ func TestNodeStorageFlockWritesTheTopologyWord(t *testing.T) {
 // UpToDate without a sync (the harness lesson).
 func TestNodeStorageConvertsALoneNodeToReplicated(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardservice-data"] = true
-	f.present["/dev/mapper/briardservice-metadata"] = true
+	f.present["/dev/mapper/briardvol-data"] = true
+	f.present["/dev/mapper/briardvol-metadata"] = true
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, true)); err != nil {
 		t.Fatal(err)
 	}
@@ -613,8 +613,8 @@ func TestNodeStorageConvertsALoneNodeToReplicated(t *testing.T) {
 // what "blank join" means. FreshInit=false is what separates it from the convert row.
 func TestNodeStorageRejoinerWithOldLVsNeverSeeds(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardservice-data"] = true
-	f.present["/dev/mapper/briardservice-metadata"] = true
+	f.present["/dev/mapper/briardvol-data"] = true
+	f.present["/dev/mapper/briardvol-metadata"] = true
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false)); err != nil {
 		t.Fatal(err)
 	}
@@ -631,15 +631,15 @@ func TestNodeStorageRejoinerWithOldLVsNeverSeeds(t *testing.T) {
 // it) and the flock's .res goes with it; nothing else of DRBD runs.
 func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardservice-data"] = true
-	f.present["/dev/mapper/briardservice-metadata"] = true
+	f.present["/dev/mapper/briardvol-data"] = true
+	f.present["/dev/mapper/briardvol-metadata"] = true
 	f.mdPresent = true
 	spec := loneSpec(true)
 	spec.Resource.Convert = nodestorage.ConvertDisable
 	if err := nodeStorage(context.Background(), f, spec); err != nil {
 		t.Fatal(err)
 	}
-	if !f.ran("drbdmeta", "--force", loneProbeDevice, "v09", "/dev/mapper/briardservice-metadata", "flex-external", "wipe-md") {
+	if !f.ran("drbdmeta", "--force", loneProbeDevice, "v09", "/dev/mapper/briardvol-metadata", "flex-external", "wipe-md") {
 		t.Errorf("the metadata was not wiped; runs = %v", f.runs)
 	}
 	if !f.ran("rm", "-f", resPath("r0")) {
@@ -652,8 +652,8 @@ func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
 	}
 	// ...and without the intent the same disk is still refused: the intent is the whole lift.
 	g := newStorageFake(aesCPU)
-	g.present["/dev/mapper/briardservice-data"] = true
-	g.present["/dev/mapper/briardservice-metadata"] = true
+	g.present["/dev/mapper/briardvol-data"] = true
+	g.present["/dev/mapper/briardvol-metadata"] = true
 	g.mdPresent = true
 	if err := nodeStorage(context.Background(), g, loneSpec(true)); err == nil || g.ran("drbdmeta", "--force") {
 		t.Errorf("alone + metadata + no intent was not refused (err=%v, runs=%v)", err, g.runs)
@@ -665,8 +665,8 @@ func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
 // same -- so a lone spec over it is refused, and only the phrase that means garbage lets it pass.
 func TestNodeStorageUncleanMetadataIsStillMetadata(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardservice-data"] = true
-	f.present["/dev/mapper/briardservice-metadata"] = true
+	f.present["/dev/mapper/briardvol-data"] = true
+	f.present["/dev/mapper/briardvol-metadata"] = true
 	f.runFn = func(name string, args []string) ([]byte, error) {
 		if name == "drbdmeta" && slices.Contains(args, "dump-md") {
 			return []byte("Found meta data is \"unclean\", please apply-al first"), errors.New("exit status 255")

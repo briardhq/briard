@@ -420,7 +420,7 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 		t.Fatalf("health probe asked about %q, want the installed app by name", f.healthOf)
 	}
 	// THE CHAIN IS NOT TOUCHED, and that is the whole shape change. It is static
-	// (data -> vip -> services -> door; the door carries the household's names)
+	// (data -> vip -> apps -> door; the door carries the household's names)
 	// and the installed app is not a member of it, which is what makes an app crash unable
 	// to demote the node.
 	if !slices.Equal(cfg.Promoter, []string{
@@ -1006,7 +1006,7 @@ func TestInstalledAppsSkipsOnlyTheBadFile(t *testing.T) {
 // the opposite: the install path refused a second distinct app, because nothing on any seam
 // could name WHICH app it meant, so a node running two and describing one would have had the
 // cloud confirm a rollout against whichever came first and a crash-loop in the other go unseen.
-// All three of those now name an app -- NodeStatus.Services (per-app manifest identity),
+// All three of those now name an app -- NodeStatus.Apps (per-app manifest identity),
 // the volume's .apps/<name>.json, and telemetry's per-app Payloads -- so the refusal is
 // gone.
 //
@@ -1133,7 +1133,7 @@ func TestInstalledAppsCarriesTheManifestIdentity(t *testing.T) {
 
 // What the node PUTS ON THE WIRE for its apps, and the one thing it must leave off.
 //
-// NodeStatus.Services is compared by the cloud against a catalog hash, so an entry whose identity
+// NodeStatus.Apps is compared by the cloud against a catalog hash, so an entry whose identity
 // is the empty string is worse than no entry at all: dropping it says "this node runs something I
 // cannot name", publishing it says "this node runs the app whose identity is nothing", and a
 // confirmation loop reads the second as a mismatch it can never resolve. specOf builds every spec
@@ -1211,7 +1211,7 @@ func TestAppStatusesLeaveStateEmptyWhenTheGuestCannotAnswer(t *testing.T) {
 }
 
 // A witness and the shipped zero-app node report NOTHING here, and they must report it as an
-// absent field rather than an empty list: `services: []` on the wire says "I looked and there are
+// absent field rather than an empty list: `apps: []` on the wire says "I looked and there are
 // none", which is a claim a node with no app cache is in no position to make.
 func TestAppStatusesAreAbsentWithNoApps(t *testing.T) {
 	if got := (Config{}).appStatuses(context.Background(), fakeStatus{}, true); got != nil {

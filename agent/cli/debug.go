@@ -181,7 +181,7 @@ const banner = `
 !!
 !! Anything you edit in the VM's own filesystem is TEMPORARY: the OS moves by
 !! whole-image swap and ` + "`briard rescue`" + ` rebuilds it, so your change is erased at
-!! the next update, silently and without warning you first. Services, mounts and
+!! the next update, silently and without warning you first. Units, mounts and
 !! network here are managed by the agent, which will fight you for them and win.
 !!
 !! You can break this machine from in here in ways ` + "`briard alerts`" + ` will not explain.

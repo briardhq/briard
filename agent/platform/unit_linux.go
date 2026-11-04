@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// This file is the service-manager half of the platform seam: every place the agent reaches for
+// This file is the service manager half of the platform seam: every place the agent reaches for
 // systemd to start, inspect or stop a transient unit. The policy above it -- what a state MEANS,
 // how long to wait for a name, when a corpse is worth clearing -- stays OS-neutral in qemu.go
 // and forwarder.go, so it reads and tests the same everywhere. What a port owes here is
@@ -96,9 +96,9 @@ func unitTransient(fragment string) bool {
 // unit's behalf, which outlives the unit file unless someone removes it.
 func unitStamp(unit string) string { return "/var/lib/systemd/timers/stamp-" + unit }
 
-// StopService stops a long-running service through its ORDINARY stop path and waits, with
+// StopService stops a long-running systemd service through its ORDINARY stop path and waits, with
 // patience, for it to finish what it is doing: SIGTERM to the main process alone, so the
-// service's TimeoutStopSec is not the bound (raising that would hold every shutdown), then a poll
+// unit's TimeoutStopSec is not the bound (raising that would hold every shutdown), then a poll
 // until that process is gone, then `systemctl stop` -- instant once it has exited, it also
 // cancels a restart the exit queued, and past the patience it is the force (TimeoutStopSec, then
 // SIGKILL). patience 0 is that plain stop alone. The self-update's stop: the agent drains its act
@@ -134,8 +134,8 @@ func StopService(ctx context.Context, unit string, patience time.Duration, logf 
 	return nil
 }
 
-// StartService starts a Type=notify service and returns once it reported READY, or, when the
-// start failed (TimeoutStartSec included), an error carrying the service's last lines since the
+// StartService starts a Type=notify systemd service and returns once it reported READY, or, when the
+// start failed (TimeoutStartSec included), an error carrying the unit's last lines since the
 // start: the reason a candidate did not start is what its revert has to report.
 func StartService(ctx context.Context, unit string) error {
 	since := "@" + strconv.FormatInt(time.Now().Unix(), 10)
@@ -177,7 +177,7 @@ func SystemState(ctx context.Context) string {
 	return strings.TrimSpace(string(out))
 }
 
-// ServiceStopped reports whether a service is down and staying down: stopped, or exited cleanly,
+// ServiceStopped reports whether a systemd service is down and staying down: stopped, or exited cleanly,
 // with no restart queued. A failed unit, and one waiting out its RestartSec (which reads
 // "activating"), are on their way back up or need someone, so neither is.
 func ServiceStopped(unit string) (bool, error) {

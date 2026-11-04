@@ -62,8 +62,8 @@ const (
 // naming its own upgrade floor). agent/install/fetch.go states which directions a floor may point
 // and why a floor from briard at the VM is not one of them.
 //
-// What a name cannot absorb is a RENAME, which breaks a whole family at once (the `payload.*` ->
-// `service.*` cut, agent/guestagent). That is affordable only under the alpha reinstall-only
+// What a name cannot absorb is a RENAME, which breaks a whole family of verbs at once
+// (agent/guestagent). That is affordable only under the alpha reinstall-only
 // policy -- every node re-runs the installer, so there is no
 // fleet to strand -- and it is the policy, not a number on the wire, that makes it safe.
 

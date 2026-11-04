@@ -56,7 +56,7 @@ func main() {
 	}
 }
 
-// trial is the stand-in agent the service runs (ready/slowstop/crash/hang).
+// trial is the stand-in agent the systemd service runs (ready/slowstop/crash/hang).
 func trial(args []string) {
 	mode := "ready"
 	if len(args) > 0 {

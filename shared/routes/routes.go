@@ -53,7 +53,7 @@ type App struct {
 	// Hosts are the names this app answers to, in the order HostNames composes them: the
 	// flock-scoped mDNS label HostName composes, first — it is the SRV target announcements
 	// point at — then the bare alias BareHostName composes, and the per-home
-	// `<service>.<flock>.briard.casa` name CasaHostName composes, which resolves only once the
+	// `<app>.<flock>.briard.casa` name CasaHostName composes, which resolves only once the
 	// household has claimed its name and is harmless in the table until then.
 	//
 	// MATERIALISED RATHER THAN DERIVED, though both forms are computable from (flock, slug). The
@@ -91,14 +91,14 @@ type App struct {
 	// a pod-internal endpoint to the LAN. With no route there is nothing to forward and nothing to
 	// get wrong — the same reason shared/manifest grants capability by omission.
 	Routes []Route `json:"routes,omitempty"`
-	// Ports are what this app publishes to the household, reachable at the node's service
-	// address on the same number. NOT the door's business -- it forwards HTTP and these exist for
-	// the apps that do not speak it -- but the node's, because the page and `briard service
+	// Ports are what this app publishes to the household, reachable at the node's
+	// service address on the same number. NOT the door's business -- it forwards HTTP and these
+	// exist for the apps that do not speak it -- but the node's, because the page and `briard app
 	// install` have to be able to say where an app actually is.
 	//
 	// It stayed out of this table until a manifest could declare exposure, and the reason is worth
-	// keeping: under host networking every port a container listens on is reachable at the service
-	// address, and the manifest names only the primary's -- so any list written then would have
+	// keeping: under host networking every port a container listens on is reachable at the
+	// service address, and the manifest names only the primary's -- so any list written then would have
 	// been partial, and the page would have printed it as though it were the whole truth.
 	Ports []int `json:"ports,omitempty"`
 	// Announce are the mDNS SERVICE records this app wants on the household LAN -- what a
@@ -153,7 +153,7 @@ type Route struct {
 // identically; separating them is a new value, not a new shape.
 const ListenName = "name"
 
-// HostName is the single place an app's LAN name is composed: `briard-<flock>-<service>.local`.
+// HostName is the single place an app's LAN name is composed: `briard-<flock>-<app>.local`.
 //
 // ONE LABEL, and that is measured rather than stylistic: `mdns4_minimal`, the resolver in
 // Debian/Ubuntu's nsswitch, handles exactly ONE label before `.local`. So the flock-scoped
@@ -182,8 +182,8 @@ func HostName(flock, app string) string {
 	return "briard-" + flock + "-" + app + ".local"
 }
 
-// BareHostName is the app's CONVENIENCE name: `briard-<service>.local`, the one a household
-// types and the one every print site shows (the installer, `briard service install`, the
+// BareHostName is the app's CONVENIENCE name: `briard-<app>.local`, the one a household
+// types and the one every print site shows (the installer, `briard app install`, the
 // dashboard's links). Every flock answers it beside its flock-scoped name, and nearly every home
 // holds exactly one flock, so nearly every home gets the short name on its only no-account door.
 //
@@ -215,7 +215,7 @@ func HostNames(flock, app string) []string {
 }
 
 // CasaHostName is the app's name under the household's casa domain:
-// `<service>.<flock>.briard.casa`, covered by the flock's wildcard certificate and answered by
+// `<app>.<flock>.briard.casa`, covered by the flock's wildcard certificate and answered by
 // the same door that answers the `.local` name. Composed for every named flock, claimed or not:
 // a name that does not resolve routes nothing, and the alternative -- the table knowing whether
 // the household has an account -- would put a cloud fact where only local facts live.
@@ -227,7 +227,7 @@ func CasaHostName(flock, app string) string {
 }
 
 // InstanceName is the mDNS SERVICE-INSTANCE label an announcement carries: the same
-// `briard-<flock>-<service>` HostName builds, without the domain. It is what a household sees in
+// `briard-<flock>-<app>` HostName builds, without the domain. It is what a household sees in
 // a device's broker picker, which is why it is the flock-scoped name and not the bare slug -- two
 // briard flocks in one house must be told apart by the person choosing between them.
 //

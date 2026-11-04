@@ -41,7 +41,7 @@
       # live channel already serves an image with THESE inputs and re-stages the 400 MB guest
       # chain only when they changed; what makes that condition honest is that the image bakes
       # ONE binary, briard-guest-firmware, whose graph is the protocol and nothing else. An edit
-      # to the pushed agent -- DRBD, services, converge, telemetry, the deadman -- does not reach
+      # to the pushed agent -- DRBD, apps, converge, telemetry, the deadman -- does not reach
       # this list, because it does not reach the image.
       #
       # The inputs are the paths that reach the image: the image recipe, the packages built into
@@ -157,7 +157,7 @@
         ssign = pkgs.callPackage ./scripts/ssign.nix { };
       });
 
-      # The guest VM image: NixOS + DRBD 9 + drbd-reactor, and NO workload -- a service is
+      # The guest VM image: NixOS + DRBD 9 + drbd-reactor, and NO workload -- an app is
       # installed at runtime from a signed manifest, so there is nothing to select here and no
       # `guest-ha` variant any more. The lab's `fleet-demo*` / `runner-host`
       # hosts join these when `lab/` is present.

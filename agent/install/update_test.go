@@ -106,7 +106,7 @@ func TestDecide(t *testing.T) {
 	}
 }
 
-// fakeAgent stands in for the service the updater stops and starts and for the qemu smoke test:
+// fakeAgent stands in for the agent's OS service the updater stops and starts and for the qemu smoke test:
 // it records every call, and fails where a test tells it to.
 type fakeAgent struct {
 	stops    []time.Duration // the patience of each stop, in order

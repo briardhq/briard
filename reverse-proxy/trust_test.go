@@ -61,7 +61,7 @@ func fastProbes(t *testing.T) {
 	t.Cleanup(func() { probeEvery, probeWaitFor = every, wait })
 }
 
-// settled waits for the door to have an answer for service, which is the probe having finished.
+// settled waits for the door to have an answer for app, which is the probe having finished.
 func settled(t *testing.T, f *frontDoor, app string) {
 	t.Helper()
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {

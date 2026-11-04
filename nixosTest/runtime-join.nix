@@ -165,7 +165,7 @@ pkgs.testers.runNixOSTest {
     assert anchor2.succeed("cat /run/briard/topology.env").strip() == "BRIARD_TOPOLOGY=alone"
     no_resource(anchor2)
     anchor2.fail("test -e /run/briard/drbd.d/r0.res")
-    anchor2.fail("drbdmeta /dev/drbd0 v09 /dev/mapper/briardservice-metadata flex-external dump-md")
+    anchor2.fail("drbdmeta /dev/drbd0 v09 /dev/mapper/briardvol-metadata flex-external dump-md")
     anchor2.succeed("systemctl start briard-chain.target")
     anchor2.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=180)
     alone = ticks(anchor2)

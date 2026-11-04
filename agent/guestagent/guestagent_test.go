@@ -163,7 +163,7 @@ func TestNodeStorageVerbLandsTheSpecAndStartsTheUnit(t *testing.T) {
 	spec := nodestorage.Spec{
 		Tiers: []nodestorage.Tier{{
 			Name: nodestorage.TierData, Device: "/dev/vdb",
-			VG: "briardservice", LV: "data", MetaLV: "metadata", Mode: nodestorage.ModeAdiantum,
+			VG: "briardvol", LV: "data", MetaLV: "metadata", Mode: nodestorage.ModeAdiantum,
 		}},
 		Resource: nodestorage.Resource{Name: "r0", Device: "/dev/drbd0", Replicated: true, Config: "RES", FreshInit: true, MaxPeers: 4},
 	}
@@ -191,7 +191,7 @@ func TestNodeStorageVerbRefusesADriftedSpec(t *testing.T) {
 	g := dial(t, f)
 	if err := g.c.Call(context.Background(), verbNodeStorage, map[string]any{
 		"tiers": []map[string]any{{
-			"name": "data", "device": "/dev/vdb", "vg": "briardservice", "lv": "data", "metaLV": "metadata",
+			"name": "data", "device": "/dev/vdb", "vg": "briardvol", "lv": "data", "metaLV": "metadata",
 			"mode": "auto", "stripes": 4,
 		}},
 		"resource": map[string]any{"name": "r0", "device": "/dev/drbd0", "config": "RES", "maxPeers": 4},
@@ -731,7 +731,7 @@ func demoStorage(fresh bool) nodestorage.Spec {
 	return nodestorage.Spec{
 		Tiers: []nodestorage.Tier{{
 			Name: nodestorage.TierData, Device: "/dev/vdb",
-			VG: "briardservice", LV: "data", MetaLV: "metadata", Mode: nodestorage.ModeAuto,
+			VG: "briardvol", LV: "data", MetaLV: "metadata", Mode: nodestorage.ModeAuto,
 		}},
 		Resource: nodestorage.Resource{
 			Name: "r0", Device: "/dev/drbd0", Replicated: true, Config: demoResource().Config(), FreshInit: fresh, MaxPeers: 4,
@@ -881,7 +881,7 @@ func TestDataSnapshotCommand(t *testing.T) {
 
 // TestDataSnapshotRefusesAnExistingMember is the delete-before-take, retired.
 //
-// It was right while the name was FIXED: one `<service>-preupgrade` per app meant the second
+// It was right while the name was FIXED: one `<app>-preupgrade` per app meant the second
 // upgrade found the first one's read-only snapshot sitting there, and `btrfs subvolume snapshot`
 // given an existing directory writes INSIDE it -- failing with "Read-only file system" and taking
 // the whole upgrade with it (measured on a soak run, 2026-08-28). Members are a series now, so

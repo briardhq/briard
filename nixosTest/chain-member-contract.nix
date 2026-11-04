@@ -12,7 +12,7 @@
 #   4 crashes UNDER the start limit do NOT demote               -- so a transient fault is cheap
 #   5 crossing the start limit DOES demote, and the peer takes over
 #   6 the demotion STOPS A
-#   7 the node that gave up MASKS its services target -- a local "not me, for now", the only
+#   7 the node that gave up MASKS its drbd-services@ target -- a local "not me, for now", the only
 #     lever that exists (reactor has no anti-flap: an UpToDate, Connected node sleeps ZERO
 #     before racing for a resource it just handed away)
 #   8 the hold RELEASES itself and clears the start limit, and the peer keeps serving
@@ -115,7 +115,7 @@ pkgs.testers.runNixOSTest {
     # cannot take over. The first version of this test passed anyway, because rule 5's 90s timeout
     # simply outlasted a 60s hold; the assertion below is what makes that visible instead.
     assert loser.execute("test -L /run/systemd/system/drbd-services@r0.target")[0] != 0, (
-        "RULE 2 VIOLATED: the race loser masked its own services target, so it cannot take over"
+        "RULE 2 VIOLATED: the race loser masked its own drbd-services@r0.target, so it cannot take over"
     )
     assert loser.execute("systemctl is-active briard-promotion-hold.service")[1].strip() != "active", (
         "RULE 2 VIOLATED: the race loser is running the promotion hold"
@@ -195,14 +195,14 @@ pkgs.testers.runNixOSTest {
     # thing that can stop a travelling fault ping-ponging is the node declining locally, which is
     # what masking drbd-services@r0.target says.
     assert holder.execute("test -L /run/systemd/system/drbd-services@r0.target")[0] == 0, (
-        "RULE 7 VIOLATED: the demoted node did not mask its services target, so nothing stops it "
+        "RULE 7 VIOLATED: the demoted node did not mask its drbd-services@r0.target, so nothing stops it "
         "racing for the resource it just gave up"
     )
     assert holder.execute("systemctl is-active briard-promotion-hold.service")[1].strip() == "active", (
         "RULE 7 VIOLATED: the hold is not running on the demoted node "
         f"(state={holder.execute('systemctl is-active briard-promotion-hold.service')[1].strip()})"
     )
-    print("### 7 the demoted node masked its services target and is holding")
+    print("### 7 the demoted node masked its drbd-services@r0.target and is holding")
 
     # === 8 THE HOLD RELEASES ITSELF, AND CLEARS THE START LIMIT ============================
     # Without the reset the member is still inside its StartLimitIntervalSec window when the hold

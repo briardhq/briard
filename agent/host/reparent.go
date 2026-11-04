@@ -40,7 +40,7 @@ import (
 // ⚠️ THESE ARE A STARTING POINT AND ARE MEANT TO BE REVISED. What they are trading is stated so
 // that a later reader can judge them rather than guess at them: too short and an ordinary blip --
 // a switch rebooting, a laptop dock re-enumerating, a driver reloading on a kernel upgrade --
-// costs the household its service for a boot; too long and a node whose NIC really was replaced
+// costs the household its apps for a boot; too long and a node whose NIC really was replaced
 // stays dark for no reason.
 const (
 	// reparentSameWire: the gateway MAC matches, so this is the same router on the same segment
@@ -505,7 +505,7 @@ func (cfg Config) checkMovedLAN(ctx context.Context, n notify.Notifier, logf fun
 
 // alertReparent is sent on EVERY re-parent, unconditionally and whatever the tier.
 //
-// ⚠️ It is never a quiet self-heal. The household's service just moved network segments, which
+// ⚠️ It is never a quiet self-heal. The household's apps just moved network segments, which
 // changes which wire it is on, possibly which addresses it holds, and certainly what a support
 // conversation needs to know. A node that healed itself silently is a node whose next problem
 // starts with nobody knowing this happened.

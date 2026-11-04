@@ -143,7 +143,7 @@ func TestLeaseReleasesOnCancel(t *testing.T) {
 // The defect it exists to catch is not subtle in hindsight and was invisible in practice.
 // dispatch runs synchronously on the observe loop, which is the only thing that pings systemd,
 // so nothing pings for as long as a directive runs. Every forward path declared a budget and
-// leased none of it, and a `service install` measured at 48.8 s was SIGABRTed at 20 s on every
+// leased none of it, and an `app install` measured at 48.8 s was SIGABRTed at 20 s on every
 // shipped node for a week. Nothing failed except the product.
 //
 // HOW THESE ASSERT IT, and why there is no sleep anywhere. A test that slept past a ping

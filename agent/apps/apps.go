@@ -1,4 +1,4 @@
-// Package services is the per-app registry: which catalogued apps the product knows
+// Package apps is the per-app registry: which catalogued apps the product knows
 // something about beyond their manifest, and what it knows.
 //
 // WHY A REGISTRY. A manifest describes what an app IS in terms any node can execute without
@@ -406,7 +406,7 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 // the failure this function exists to end. No published name (a witness, or FLOCK_NAME unset) means no
 // URL to promise: say the port and stop.
 //
-// THE NAME IS THE APP'S OWN: `briard-<flock>-<service>.local`, on the front
+// THE NAME IS THE APP'S OWN: `briard-<flock>-<app>.local`, on the front
 // door's :80, rather than the flock name and the app's port. That is the whole user-facing
 // payoff of the routing table -- a port in the address was the shape of a node that could only
 // reach an app by going around its front door.
@@ -499,8 +499,8 @@ func Fronted(m manifest.Manifest) bool {
 	return m.Name != mosquitto.Name
 }
 
-// Announce is what this app wants said about itself on the household LAN: the mDNS service
-// records converge writes into the routing table for the guest's publisher to claim.
+// Announce is what this app wants said about itself on the household LAN: the mDNS
+// service records converge writes into the routing table for the guest's publisher to claim.
 //
 // THE DEFAULT IS SILENCE, like everything else here. An app that answers HTTP is already
 // reachable by the name the door serves it under, and browsing types it into a category it may

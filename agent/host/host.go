@@ -153,7 +153,7 @@ type Config struct {
 	// guest, this one is the agent LISTENING for an operator.
 	AdminSock string
 	// InstallUser is the SID of the account that installed this node on Windows -- the one that
-	// passed UAC -- and the one account the admin door and the agent's service admit unelevated
+	// passed UAC -- and the one account the admin door and the agent's Windows service admit unelevated
 	// (restrictDoor, registerService): the tray, and `briard` in that account's own terminal. ""
 	// keeps both to SYSTEM and Administrators, as a SYSTEM install leaves them. Unused on Linux,
 	// where the door is root's.
@@ -173,8 +173,8 @@ type Config struct {
 	// required in macvtap mode and unused otherwise.
 	NetMode string
 	// VIPParent is the guest NIC to build VIPDev on, as a macvlan child carrying the flock MAC.
-	// Set only under the bridge substrate, where the host gives the guest ONE tap and the service
-	// identity is therefore the guest's to make. Empty under macvtap, where the host
+	// Set only under the bridge substrate, where the host gives the guest ONE tap and the
+	// service identity is therefore the guest's to make. Empty under macvtap, where the host
 	// built the device itself and the MAC is pinned at launch.
 	VIPParent  string
 	NetWrapBin string
@@ -221,7 +221,7 @@ type Config struct {
 	Promoter  []string      // drbd-reactor units in start order; nil on a witness
 	// AppRendered is the UNION of every runtime-installed app's units, re-derived from
 	// the node-local manifest cache at start-up and handed to bring-up so they exist before the
-	// promoter looks for them. Set alongside Promoter by installedService, for the same reason and
+	// promoter looks for them. Set alongside Promoter by installedApps, for the same reason and
 	// from the same source; zero when no app is installed.
 	//
 	// A union rather than a per-app value because its single consumer (restoreApp) wants
@@ -345,7 +345,7 @@ type Config struct {
 	// per app, so the agent can rebuild the promoter chain at bring-up — before promotion,
 	// when the replicated copies on the volume are not yet mountable. "" disables either.
 	//
-	// A directory rather than the single `service.json` it was, and the manifests are
+	// A directory, one manifest per app, and the manifests are
 	// stored VERBATIM: a manifest's content hash IS the app's identity (shared/manifest), so
 	// re-encoding a set into one array file would destroy the identity of every member. One file
 	// of untouched bytes per app keeps the hash true and makes install/uninstall a file op.
@@ -675,7 +675,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// on 127.0.0.1 — against on-disk DRBD metadata recording real peers and a different node-id.
 	// That is what RescueGuest refuses to do, happening on an ordinary reboot.
 	//
-	// After installedService and for the same reason it is where it is: everything below derives
+	// After installedApps and for the same reason it is where it is: everything below derives
 	// from cfg, so both restores must land before anything reads it.
 	if spec, res, ok := cfg.cachedMesh(logf); ok {
 		logf("paired mesh restored from cache: %s, %d peers (cloud witness: %t)",
@@ -2096,7 +2096,7 @@ func (cfg Config) resources(ctx context.Context, r guestReader) *telemetry.NodeR
 	// so asking always is both the fix and the simpler code.
 	//
 	// ServingUnit, not a name rebuilt here: a runtime-installed app's units come from the
-	// quadlet renderer (briard-<service>-<container>.service), so "podman-<name>.service" named
+	// quadlet renderer (briard-<app>-<container>.service), so "podman-<name>.service" named
 	// nothing, systemd answered with no MainPID, and the whole footprint sat at zero for every
 	// catalog-installed app. Restarts is the crash-loop signal, so an app that crash-looped
 	// read exactly like one that never restarted.
@@ -2363,7 +2363,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, vip guest.VIPRea
 		st.Healthy = !cl.Serving() && cl.Quorate && cl.UpToDate && cl.PeerCanTakeOver()
 	} else {
 		probe = url
-		// Prefer the in-guest probe (the service-health verb) so the health signal survives a substrate
+		// Prefer the in-guest probe (the app-health verb) so the health signal survives a substrate
 		// where the host can't reach the VIP (macvtap). Fall back to the legacy host->VIP GET only
 		// when the verb errors — an old guest built before it existed, which is always tap-based, so
 		// the LAN probe still works there.
@@ -2430,14 +2430,13 @@ func (cfg Config) readVIP(ctx context.Context, r guest.VIPReader) vipAnswer {
 }
 
 // hasApp reports whether this node runs anything at all. The shipped state is FALSE — a node
-// is installed before it is given something to run — so this is the "does it run anything" test the
-// singular `cfg.Service.Name != ""` used to be, with the trap that reading removed: it says
-// nothing about whether the node has a GUEST. A witness is Diskless; a zero-app anchor has a
+// is installed before it is given something to run — and it is the "does it run anything" test
+// and nothing more: it says nothing about whether the node has a GUEST. A witness is Diskless; a zero-app anchor has a
 // guest, a closure and an OS the cloud may roll, and conflating the two is the bug this name exists to prevent.
 func (cfg Config) hasApp() bool { return len(cfg.Apps) > 0 }
 
 // appStatuses is what the node reports for the apps it has INSTALLED at runtime: one
-// entry per app, name plus manifest identity, in cfg.Services' order (by name, per
+// entry per app, name plus manifest identity, in cfg.Apps' order (by name, per
 // installedApps).
 //
 // A spec with no Manifest is SKIPPED. Every app now has one -- it is the hash of the signed
@@ -2492,7 +2491,7 @@ func (cfg Config) appStatuses(ctx context.Context, r appStateReader, primary boo
 			// field whose whole value is that someone acts on it. So does UNKNOWN: an app
 			// our login to it failed for has told us nothing.
 			//
-			// APP HEALTH is the guest's one answer (services.Health), spelled with this
+			// APP HEALTH is the guest's one answer (apps.Health), spelled with this
 			// field's own values, so it is carried rather than translated.
 			if st.State == api.StateRunning {
 				if h, err := r.AppHealthOf(ctx, s.Name); err == nil {
@@ -2564,7 +2563,7 @@ func orDash(s string) string {
 // serviceMAC is the flock-scoped MAC the VIP rides -- the one identity a failover MOVES, which is
 // why it is derived from the FLOCK id rather than the node's (see Config.FlockID). One function
 // because two substrates now need the same answer for different reasons: macvtap pins it on the
-// host's service macvtap at launch, and bridge mode hands it to the GUEST, which builds the device
+// host's service-side macvtap at launch, and bridge mode hands it to the GUEST, which builds the device
 // itself. Two derivations would be two chances for the substrates to disagree about
 // who this flock is.
 func (cfg Config) serviceMAC() string { return deriveMAC(orNode(cfg.FlockID, cfg.Node), "svc") }

@@ -1,6 +1,6 @@
 # the test that owns the WHOLE install chain end to end:
 #   report-card gate -> BUNDLED qemu (no distro qemu on the host) boots the guest -> single-node
-#   DRBD data volume -> service served at the VIP -> an OFF-BOX LAN client reaches it.
+#   DRBD data volume -> app served at the VIP -> an OFF-BOX LAN client reaches it.
 #
 # The macvtap-specific deltas on top of that chain:
 #   1. NO bridge is created and the host's IP never leaves the physical NIC (the invasiveness
@@ -8,10 +8,10 @@
 #   2. the guest's NICs are macvtap children of the host NIC (L2 citizens, no bridge).
 #   3. qemu is launched behind the fd-passing wrapper (briard-net-wrap) and really holds the
 #      /dev/tap<ifindex> chardevs on the inherited fds — the mechanism ifname= can't provide.
-#   4. an OFF-BOX LAN client still reaches the service at the VIP through the macvtap (the guest
+#   4. an OFF-BOX LAN client still reaches the app at the VIP through the macvtap (the guest
 #      is a full L2 citizen), which is the whole point.
 #   5. and so does the INSTALL HOST -- by the VIP and by the name -- over the private link, which
-#      is the one machine macvtap would otherwise hide the household's own service from.
+#      is the one machine macvtap would otherwise hide the household's own apps from.
 #
 # It also proves assertion (d) -- cattle/pet reinstall: after green, `rm -rf /opt/briard`
 # (the cattle) + reinstall reaches green AGAIN with the guest DATA intact (the pet
@@ -957,7 +957,7 @@ pkgs.testers.runNixOSTest {
     # It does NOT prove the two-node standby discipline. That hazard is a Secondary teaching
     # the switch the wrong port for the flock MAC, and on a lone node there is no wrong port -- it
     # is two-node by nature and belongs to a two-node rig. What is proven here: a demote really stops
-    # service seen from off-box, and re-promotion brings the VIP back on the SAME MAC.
+    # serving, seen from off-box, and re-promotion brings the VIP back on the SAME MAC.
     #
     # ⚠️ PLACED HERE, on a freshly-converged node, and it was at the END of this file for one run.
     # That run failed: the self-update section restarts the agent repeatedly, and `systemctl
@@ -990,8 +990,8 @@ pkgs.testers.runNixOSTest {
     back = client.succeed(f"ip -4 neigh show {vip} dev eth1").split()
     print(f"off-box after re-promotion: {' '.join(back)}")
     assert "lladdr" in back and back[back.index("lladdr") + 1] == serving_mac, (
-        f"the VIP came back on a different MAC ({' '.join(back)}, was {serving_mac}) -- the service "
-        f"identity is supposed to be the one thing a role change leaves unchanged"
+        f"the VIP came back on a different MAC ({' '.join(back)}, was {serving_mac}) -- the "
+        f"service identity is supposed to be the one thing a role change leaves unchanged"
     )
 
     # FHS: pet volume under /var/lib, cattle under /opt (the cattle/pet split assertion d builds on).
@@ -1886,7 +1886,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("ip link show briard0 | grep -q ALLMULTI")  # and came back with their flags
     host.succeed("grep -qx 1 /proc/sys/net/ipv6/conf/briard0/disable_ipv6")
 
-    # A RE-PARENT IS NEVER A QUIET SELF-HEAL. The household's service just moved segments, and a
+    # A RE-PARENT IS NEVER A QUIET SELF-HEAL. The household's apps just moved segments, and a
     # node that healed itself silently is a node whose next problem starts with nobody knowing.
     #
     # ⚠️ WAITED FOR, not read once. The alert and the record both land at the END of the move --
@@ -1902,7 +1902,7 @@ pkgs.testers.runNixOSTest {
     # rather than against one that no longer exists.
     host.wait_until_succeeds("grep -q '\"parent\":\"eth9\"' /var/lib/briard/network.json", timeout=600)
 
-    # AND THE HOUSEHOLD GETS ITS SERVICE BACK, off-box, at the same address. This is the assertion
+    # AND THE HOUSEHOLD GETS ITS APPS BACK, off-box, at the same address. This is the assertion
     # the rest of the block exists to make non-vacuous: the guest was stopped and relaunched onto
     # devices that did not exist when it was last running.
     client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=600)

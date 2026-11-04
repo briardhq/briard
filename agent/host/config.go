@@ -227,7 +227,7 @@ func ConfigFromEnv() Config {
 		SystemHostCIDR: os.Getenv("SYSTEM_HOST_CIDR"), // e.g. 10.0.0.129/32
 		WitnessDev:     env("WITNESS_DEV", "eth3"),
 		WitnessCIDR:    os.Getenv("WITNESS_CIDR"),   // the guest's end of the private link, e.g. 10.11.9.2/24
-		PodSubnet:      os.Getenv("POD_SUBNET"),     // the pool private service networks come from, e.g. 10.12.7
+		PodSubnet:      os.Getenv("POD_SUBNET"),     // the pool private app networks come from, e.g. 10.12.7
 		VIPDev:         declared("VIP_DEV", "eth2"), // "" -> this node claims no VIP (a witness)
 		VIPAddr:        os.Getenv("VIP_ADDR"),       // e.g. 192.168.9.50/24; "" -> DHCP (the LAN owns the value)
 		FlockID:        os.Getenv("FLOCK_ID"),       // flock-scoped VIP MAC seed; "" -> fall back to the node name
@@ -246,7 +246,7 @@ func ConfigFromEnv() Config {
 		// the shipped default -- and an unparseable value is refused at bring-up (storageSpec),
 		// not silently rounded to it.
 		DataEncryption: nodestorage.Mode(env("DATA_ENCRYPTION", string(nodestorage.ModeAuto))),
-		// A diskless node has no service/VIP to probe (nor a service NIC to reach it), so
+		// A diskless node has no VIP to probe (nor a service NIC to reach it), so
 		// its health follows quorum ("" -> healthy == quorate); data nodes probe the VIP.
 		//
 		// The probe target is the FRONT DOOR (:80), not an app's own port. That is what makes
@@ -282,7 +282,7 @@ func ConfigFromEnv() Config {
 		// install-macvtap sets it to drive a re-parent without waiting out the shipped tier;
 		// 0 is the shipped behaviour. See Config.ReparentTier.
 		ReparentTier: durEnv("REPARENT_TIER", 0),
-		// Services is NOT read from the environment, and there is nothing here to read it from:
+		// Apps is NOT read from the environment, and there is nothing here to read it from:
 		// what a node runs is installed at runtime and rebuilt from the node-local manifest cache
 		// at bring-up (Run -> installedApps), or read off the volume when this node promotes
 		// (adoptVolumeApps). The environment described the build-time payload slot, which is

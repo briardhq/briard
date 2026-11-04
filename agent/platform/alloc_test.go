@@ -42,7 +42,7 @@ func TestAllocateThickReservesTheSpace(t *testing.T) {
 // is the case a stat WOULD catch; the O_EXCL open is what makes the unreadable one safe as well.
 func TestAllocateThickNeverOverwrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.img")
-	body := []byte("a household's service data")
+	body := []byte("a household's app data")
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestAllocateThickDiscardsAnInterruptedAllocation(t *testing.T) {
 // of the finished volume. The next start drops the name and leaves the volume alone.
 func TestAllocateThickDropsTheSecondNameOfAMadeVolume(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.img")
-	body := []byte("a household's service data")
+	body := []byte("a household's app data")
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatal(err)
 	}

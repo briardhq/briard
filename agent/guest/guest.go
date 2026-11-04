@@ -21,7 +21,7 @@ import (
 //
 // NO SNAPSHOT/RESTORE HERE ANY MORE. They were the {data} half of an OS
 // upgrade that no longer touches apps, and the app-install sequence
-// (agent/host/app.go) has owned moving manifest and data back together since the service-warm re-cut —
+// (agent/host/app.go) owns moving manifest and data back together —
 // driving the guest agent's data.member/data.restore verbs directly, pinned to the manifest
 // rather than to a system closure.
 type GuestManager interface {
@@ -306,7 +306,7 @@ func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 
 // THE APP SNAPSHOT USED TO LIVE HERE, and it had been dead since the day the OS upgrade left.
 // Manager.Snapshot/Restore and their SnapshotRef named
-// `<service>-<id>` members under .snapshots — a SERIES, which is exactly what the ring is —
+// `<app>-<id>` members under .snapshots — a SERIES, which is exactly what the ring is —
 // each pinned to the OS closure, because what they served was the whole-VM {code+data} rollback.
 // That sequence moved to the host (it owns the OS disk) and stopped touching apps at all; the
 // app half moved to agent/host/app.go and pins the MANIFEST. Nothing called these
@@ -504,7 +504,7 @@ type Readiness struct {
 // what a failed sample means, and which verdict is worth undoing an upgrade for — and holds it
 // exactly once.
 //
-// Its one caller is the SERVICE-install path, which has no Manager — it is handed a narrow guest
+// Its one caller is the APP-install path, which has no Manager — it is handed a narrow guest
 // interface. The OS-upgrade path runs no assessor: an OS gate asks only generic questions of the
 // guest, never an app-specific one (agent/host/osupgrade.go).
 type Gate struct {

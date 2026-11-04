@@ -24,7 +24,7 @@ import (
 // WHAT THIS DELIBERATELY IS NOT: a way to publish the private address. The user is never given
 // 10.11.9.2. That address is node-scoped -- it is TRANSPORT -- while the VIP and the name are
 // flock-scoped and survive a failover it does not. A household that bookmarked the private
-// address would have bookmarked a machine instead of a service, which is the same incoherence
+// address would have bookmarked a machine instead of an app, which is the same incoherence
 // an earlier change took out of the mDNS name.
 
 // VIPRoute is the host-side route to the guest's service address over the private link.

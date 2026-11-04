@@ -24,7 +24,7 @@ const (
 	// systemd merging a start into a running job is what makes the unit its own mutual exclusion.
 	DefaultUpdateUnit = "briard-update.service"
 
-	// DefaultAgentUnit is the service the updater stops, swaps under and starts again.
+	// DefaultAgentUnit is the systemd service the updater stops, swaps under and starts again.
 	DefaultAgentUnit = "briard-agent.service"
 )
 

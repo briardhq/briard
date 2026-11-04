@@ -39,7 +39,7 @@ func main() {
 		os.Exit(runUninstall(args[1:]))
 	}
 	// `install` is its inverse and the installer's body: install.sh calls it on the bootstrap
-	// agent and, once the service runs, `install -wait` on the installed one. Nobody types it,
+	// agent and, once the agent's unit runs, `install -wait` on the installed one. Nobody types it,
 	// so the household's help does not list it.
 	if len(args) > 0 && args[0] == "install" {
 		os.Exit(runInstall(args[1:]))
@@ -126,7 +126,7 @@ func runInternal(args []string) {
 	stageVM := fs.String("vm", "", "with --stage-manifest --chain briard: the vm release this briard release is published beside")
 	stageInputs := fs.String("inputs", "", "with --stage-manifest --chain vm: the image's input hash (sha256 hex; nix eval .#artifacts.guest-disk.inputs)")
 	guestShutdown := fs.String("guest-shutdown", "", "power the guest VM at this QMP socket off cleanly, then exit -- the guest unit's ExecStop, not an operator command")
-	warden := fs.Bool("warden", false, "watch the agent's beat and end a wedged agent for the service manager to restart -- the briard-warden service's program, Windows only")
+	warden := fs.Bool("warden", false, "watch the agent's beat and end a wedged agent for the service manager to restart -- the briard-warden Windows service's program, Windows only")
 	_ = fs.Parse(args)
 
 	// The release pipeline's manifest writer, and it is HERE rather than in the shell script that

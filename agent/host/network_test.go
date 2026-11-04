@@ -43,8 +43,8 @@ func TestNetSpecMacvtap(t *testing.T) {
 
 // A BRIDGE PARENT IS A DIFFERENT NODE, and the narrowing is what makes the config true rather
 // than merely quiet: a second tap and a private link do not exist on this substrate, so naming
-// them would render the guest a NIC it cannot use. ONE port, the guest makes its own service
-// identity on top, and the host's address is on the bridge: a /32 and one on-link route to its own
+// them would render the guest a NIC it cannot use. ONE port, the guest makes its own
+// service identity on top, and the host's address is on the bridge: a /32 and one on-link route to its own
 // guest, never the /24 that would claim the whole system subnet on the host's primary device.
 func TestNetSpecAndSubstrateOnABridge(t *testing.T) {
 	s := macvtapCfg().netSpec("br0", true, false)

@@ -33,7 +33,7 @@ const (
 type reading struct {
 	status  host.LocalStatus
 	err     error  // the status directive's failure; nil when status is the answer
-	down    bool   // with err: the agent's service is stopped by a clean exit
+	down    bool   // with err: the agent's Windows service is stopped by a clean exit
 	update  bool   // with err: a self-update's files are on disk beside the agent (staged, or swapped in)
 	refusal string // the agent answered, and said no (the reason): a node with no network refuses every directive
 	pending string // a stop or start this tray asked for and has not seen land: "stop", "start"
@@ -135,7 +135,7 @@ const (
 // restart gate's refusal: the gate is the one way the agent ends cleanly at its start, and every
 // other early end is an error, which the service manager restarts -- so a start that holds
 // is not stopped, and one that fails is not clean. The tray cannot read the gate's own record:
-// it lives where only the service and an elevated administrator can.
+// it lives where only the Windows service and an elevated administrator can.
 const restartNote = "Windows has not restarted since Briard was installed. Restart Windows (Restart, " +
 	"not Shut down) to finish the install; Briard starts by itself afterwards."
 

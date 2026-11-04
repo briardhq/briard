@@ -377,7 +377,7 @@ func TestConfigFromEnv_GuestGetsAMonitor(t *testing.T) {
 	}
 }
 
-// THE ENVIRONMENT CANNOT INSTALL AN APP, which is the end state the services work was after: there
+// THE ENVIRONMENT CANNOT INSTALL AN APP: there
 // is no SERVICE_IMAGE (or any sibling) left to read, so an anchor comes up with the empty set and
 // fills it from what it was actually installed with -- the node-local cache, or the volume once it
 // promotes. Setting the old variables must therefore do NOTHING, which is what this asserts: a
@@ -392,7 +392,7 @@ func TestConfigFromEnv_NoAppComesFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// The chain is STATIC — data -> vip -> services — on every data node, whatever is installed.
+// The chain is STATIC — data -> vip -> apps — on every data node, whatever is installed.
 // That is what makes converge-at-promotion possible: the chain is what drbd-reactor
 // promotes WITH, but the volume it must converge to is only readable AFTER promotion, so the
 // start-list cannot name the apps themselves.
@@ -510,7 +510,7 @@ func TestConfigFromEnv_NICNamesDefaultButAnExplicitEmptyWins(t *testing.T) {
 	t.Setenv("SERVICE_TAP", "")
 	t.Setenv("WITNESS_TAP", "")
 	if c := ConfigFromEnv(); c.ServiceTap != "" || c.WitnessTap != "" {
-		t.Errorf("an explicit empty was overruled by the default: service=%q witness=%q",
+		t.Errorf("an explicit empty was overruled by the default: service tap=%q witness tap=%q",
 			c.ServiceTap, c.WitnessTap)
 	}
 }

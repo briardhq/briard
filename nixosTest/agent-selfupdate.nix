@@ -6,7 +6,7 @@
 # reaches READY and how it stops; everything else is the real thing.
 #
 # The layout is flat, every move a rename on one filesystem:
-#   /var/lib/briard/briard-agent        the committed binary the service runs
+#   /var/lib/briard/briard-agent        the committed binary the agent's systemd service runs
 #   /var/lib/briard/manifest.json       the committed release's signed manifest
 #   /var/lib/briard/briard-net-wrap     the launch shim, cattle riding with the agent
 #   /var/lib/briard/qemu -> qemu-<rel>/ a LINK to the committed qemu tree

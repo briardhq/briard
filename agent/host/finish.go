@@ -47,7 +47,7 @@ import (
 //
 // The wait is counted from the records the update leaves -- its verdict and a revert's failure --
 // never from a timer alone: a candidate that does not start ends THIS process, and the agent the
-// revert starts again is a new one, as is the one a restart of the service starts. Each reads
+// revert starts again is a new one, as is the one a restart of the agent's unit starts. Each reads
 // the records and waits out what is left.
 
 // finishRetryNet and finishRetryRefused space the retries of a finish that failed (above).

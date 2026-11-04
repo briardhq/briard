@@ -125,7 +125,7 @@ func TestResourcesAsksForSoakReadsOnlyUnderASoak(t *testing.T) {
 func TestResourcesProbesTheServingUnit(t *testing.T) {
 	cfg := Config{Apps: []model.AppSpec{{
 		Name:    "home-assistant",
-		DataDir: "/var/lib/briard/services/home-assistant",
+		DataDir: "/var/lib/briard/data/home-assistant",
 		Unit:    "briard-home-assistant-app.service",
 	}}}
 	r := &recordingReader{}
@@ -133,7 +133,7 @@ func TestResourcesProbesTheServingUnit(t *testing.T) {
 	if r.gotApps["home-assistant"] != "briard-home-assistant-app.service" {
 		t.Errorf("probed units = %v, want the quadlet-rendered serving unit", r.gotApps)
 	}
-	if r.gotDataDir != "/var/lib/briard/services/home-assistant" {
+	if r.gotDataDir != "/var/lib/briard/data/home-assistant" {
 		t.Errorf("probed data dir = %q", r.gotDataDir)
 	}
 }

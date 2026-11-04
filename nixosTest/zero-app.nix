@@ -146,8 +146,8 @@ pkgs.testers.runNixOSTest {
     # it. Re-running is the assertion: nothing here supplies a key.
     primary.succeed("briard-test-storage")
     primary.succeed("cryptsetup isLuks /dev/vdb")
-    primary.succeed("test -b /dev/mapper/briardservice-data")
-    assert "briardservice-crypt" in primary.succeed("dmsetup deps -o devname /dev/mapper/briardservice-data"), \
+    primary.succeed("test -b /dev/mapper/briardvol-data")
+    assert "briardvol-crypt" in primary.succeed("dmsetup deps -o devname /dev/mapper/briardvol-data"), \
         "the volume came back unencrypted after a power cut"
     print("the node opened its own encrypted volume after a power cut, unattended")
   '';

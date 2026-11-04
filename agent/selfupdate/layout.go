@@ -1,7 +1,7 @@
 // Package selfupdate holds the on-disk half of the host-agent self-update: a flat layout the
 // updater moves by rename.
 //
-//	<base>/briard-agent        the COMMITTED binary -- what the service runs (mutable state, seeded
+//	<base>/briard-agent        the COMMITTED binary -- what the OS service runs (mutable state, seeded
 //	                           on install, since a /nix/store path can't be overwritten in place)
 //	<base>/manifest.json       the signed manifest of the committed release -- what an update
 //	                           compares the channel against
@@ -49,7 +49,7 @@ import (
 )
 
 // The defaults -- where the committed agent lives, where the update messages pass, the unit an
-// update runs as and the service it stops -- and the agent's own file name are per OS
+// update runs as and the OS service it stops -- and the agent's own file name are per OS
 // (os_other.go, os_windows.go).
 
 const (
@@ -97,7 +97,7 @@ func New(base, runDir string) Layout {
 	return Layout{Base: filepath.Clean(base), RunDir: filepath.Clean(runDir)}
 }
 
-// AgentPath is the committed binary the service runs.
+// AgentPath is the committed binary the OS service runs.
 func (l Layout) AgentPath() string { return filepath.Join(l.Base, agentName) }
 
 // NextPath is the staged candidate — same directory as AgentPath, so the swap is a rename(2).

@@ -88,7 +88,7 @@ let
       pkgs.iproute2 # ip, for the VIP
       pkgs.iputils # arping, for the gratuitous announcement
       config.systemd.package # systemctl, journalctl
-      # ⚠️ THE BASELINE NixOS GAVE EVERY SERVICE FOR FREE, restated because nothing gives it to a
+      # ⚠️ THE BASELINE NixOS GAVE EVERY UNIT FOR FREE, restated because nothing gives it to a
       # runtime unit. nixpkgs defaults `systemd.services.<n>.path` to coreutils + findutils +
       # gnugrep + gnused + systemd and APPENDS each unit's own list to it, so every unit deleted
       # from this file had these five whether it asked or not. Leaving them out would have made
@@ -595,7 +595,7 @@ let
     # TAKE THE NIC DOWN WHEN IT IS OURS ALONE. The MAC on a dedicated service NIC is flock-scoped
     # and therefore shared with the PEER, and a Secondary holding it up teaches the switch the
     # wrong port for the VIP the moment it emits any frame at all (an IPv6 RS, an mDNS query) --
-    # traffic for the service then goes to the node that is not serving. That is the wrong-port
+    # traffic for the service address then goes to the node that is not serving. That is the wrong-port
     # class, and it is silent: nothing is down, the address is gone, and the packets still vanish.
     #
     # ⚠️ THE QUESTION IS THE DEVICE, NOT WHERE THE ADDRESS CAME FROM, and it took a second look to see
@@ -979,7 +979,7 @@ in
     # nothing for long -- and on a node with no registry it is the only copy a later install of
     # that version can use.
     systemd.services.briard-stage = lib.mkIf (config.briard.stagedImages != [ ]) {
-      description = "Pre-stage service images into local podman storage";
+      description = "Pre-stage app images into local podman storage";
       wantedBy = [ "multi-user.target" ];
       path = [ config.virtualisation.podman.package ]; # the module's podman, not a second copy
       serviceConfig = {

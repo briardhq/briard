@@ -158,7 +158,7 @@ func TestConvergeRendersFromTheVolume(t *testing.T) {
 // all. It must promote, not refuse -- refusing would take the VIP down on every node nobody has
 // given a workload to, which is every node at install time.
 func TestConvergeToNothingIsNotAnError(t *testing.T) {
-	x := &convergeExec{} // services nil => `ls` fails => no such directory
+	x := &convergeExec{} // apps nil => `ls` fails => no such directory
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("a zero-app node must converge successfully to nothing, got: %v", err)
 	}
@@ -691,7 +691,7 @@ func TestAppHealthURLResolvesThroughTheTable(t *testing.T) {
 // where the volume is not mounted, and re-rendering there would write an empty table over a good
 // one and take every route down because a name changed.
 func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
-	x := &convergeExec{} // services nil: `ls` fails, exactly like an unmounted volume
+	x := &convergeExec{} // apps nil: `ls` fails, exactly like an unmounted volume
 	x.fakeExec.files = map[string]string{
 		routes.Path: `{"apps":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],` +
 			`"address":"127.0.0.1","health":"http://:8080/healthz",` +

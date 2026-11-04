@@ -307,7 +307,7 @@ func (a *app) confirmUndo(w http.ResponseWriter, r *http.Request, app, point str
 	}
 }
 
-// appOfPath reads the app name out of /apps/<service>, or "" for a path that names none.
+// appOfPath reads the app name out of /apps/<app>, or "" for a path that names none.
 func appOfPath(path string) string {
 	name := strings.TrimPrefix(path, "/apps/")
 	if name == path || name == "" || strings.Contains(name, "/") {

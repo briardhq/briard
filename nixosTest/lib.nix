@@ -45,8 +45,8 @@ let
   # the production safety config. new-current-uuid then needs the
   # volume id (r0/0) — the one testScript quirk of this form.
   #
-  # A diskful node's backing is `/dev/mapper/briardservice-data` on every node in the product and in
-  # every rig, with DRBD's metadata beside it on `briardservice-metadata`: the
+  # A diskful node's backing is `/dev/mapper/briardvol-data` on every node in the product and in
+  # every rig, with DRBD's metadata beside it on `briardvol-metadata`: the
   # two LVs briard-node-storage builds from the host's spec, restated here because a `.res` is text
   # and cannot import Go's `drbd.DataDevice` / `drbd.MetaDevice`.
   mkResource =
@@ -62,7 +62,7 @@ let
               if n.diskless or false then
                 "disk none;"
               else
-                "disk /dev/mapper/briardservice-data; meta-disk /dev/mapper/briardservice-metadata;"
+                "disk /dev/mapper/briardvol-data; meta-disk /dev/mapper/briardvol-metadata;"
             }
           }
         }'';
@@ -149,12 +149,12 @@ let
       # The manifest, plus the RENDERER's sidecars (`dataroot`, `subdirs`, `units`, `identity`)
       # that install_fixture reads. The sidecars exist so a test never restates the layout the
       # product decides; no unit file is copied anywhere, because converge writes those itself.
-      mkdir -p /run/briard/fixtures/${fixture.serviceName}
-      quadlet-render ${fixture}/manifest.json /run/briard/fixtures/${fixture.serviceName}
-      cp ${fixture}/manifest.json /run/briard/fixtures/${fixture.serviceName}/manifest.json
+      mkdir -p /run/briard/fixtures/${fixture.appName}
+      quadlet-render ${fixture}/manifest.json /run/briard/fixtures/${fixture.appName}
+      cp ${fixture}/manifest.json /run/briard/fixtures/${fixture.appName}/manifest.json
       # The image ref the manifest pins, exposed so a test can assert WARMTH by digest
       # rather than by a tag (a tag can match an image the manifest does not name).
-      cp ${fixture}/ref /run/briard/fixtures/${fixture.serviceName}/ref
+      cp ${fixture}/ref /run/briard/fixtures/${fixture.appName}/ref
 
       # EVERY OTHER PUBLISHED VERSION is warmed here too, and only its manifest is kept aside:
       # a test that upgrades installs a different manifest under the SAME name, which is what a
@@ -162,13 +162,13 @@ let
       # must not pull on the promotion path -- so the ordering a test exercises is the real one.
       ${lib.concatMapStrings (label: ''
         podman image exists "$(cat ${fixture}/variants/${label}/ref)"
-        mkdir -p /run/briard/fixtures/${fixture.serviceName}/variants/${label}
-        cp ${fixture}/variants/${label}/manifest.json /run/briard/fixtures/${fixture.serviceName}/variants/${label}/manifest.json
-        cp ${fixture}/variants/${label}/ref /run/briard/fixtures/${fixture.serviceName}/variants/${label}/ref
+        mkdir -p /run/briard/fixtures/${fixture.appName}/variants/${label}
+        cp ${fixture}/variants/${label}/manifest.json /run/briard/fixtures/${fixture.appName}/variants/${label}/manifest.json
+        cp ${fixture}/variants/${label}/ref /run/briard/fixtures/${fixture.appName}/variants/${label}/ref
       '') (fixture.variantLabels or [ ])}
     '') fixtures
     + ''
-      ln -sfn /run/briard/fixtures/${(lib.head fixtures).serviceName} /run/briard/fixture
+      ln -sfn /run/briard/fixtures/${(lib.head fixtures).appName} /run/briard/fixture
     '';
   };
 
@@ -314,14 +314,14 @@ let
           tiers = lib.optional (!diskless) {
             name = "data";
             device = tierDevice; # the framework's emptyDiskImages disk by default, as the product's is
-            vg = "briardservice";
+            vg = "briardvol";
             lv = "data";
             metaLV = "metadata";
             mode = "auto";
           };
           resource = {
             name = "r0";
-            device = if replicated then "/dev/drbd0" else "/dev/mapper/briardservice-data";
+            device = if replicated then "/dev/drbd0" else "/dev/mapper/briardvol-data";
             inherit replicated;
             maxPeers = 4; # the product constant (agent/drbd MaxPeers): baked into the metadata
             config = resource;
@@ -371,7 +371,7 @@ let
         ${pkgs.jq}/bin/jq --argjson s "$seed" --arg m "$mode" --argjson r "$replicated" --arg c "$convert" \
           '.resource.freshInit = $s | (.tiers[]?).mode = $m
            | .resource.replicated = $r
-           | .resource.device = (if $r then "/dev/drbd0" else "/dev/mapper/briardservice-data" end)
+           | .resource.device = (if $r then "/dev/drbd0" else "/dev/mapper/briardvol-data" end)
            | if $c == "" then del(.resource.convert) else .resource.convert = $c end' \
           ${storageSpecFile} >/run/briard/node-storage.json
         exec ${pkgs.systemd}/bin/systemctl start briard-node-storage.service

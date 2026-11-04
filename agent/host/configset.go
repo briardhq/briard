@@ -54,7 +54,7 @@ func (cfg Config) applyConfigSet(ctx context.Context, d api.Directive, r guest.V
 		return failed("unknown setting %q: the settings that can be changed are vip, backup-dir, backup-key-saved and backup-adopt", s.Key)
 	}
 	// THE ADDRESS IS THE FLOCK'S. Changed on one node of a pair, the next failover would move the
-	// service to a different address than the one the household uses; changing it everywhere at
+	// apps to a different address than the one the household uses; changing it everywhere at
 	// once waits for the flock's own settings.
 	if len(cfg.Resource.Peers) > 1 {
 		return failed("this machine has peers, and the service address belongs to all of them: it cannot be changed on one machine")

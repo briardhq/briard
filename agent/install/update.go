@@ -226,7 +226,7 @@ func dateOf(id string) (int64, error) {
 // TimeoutStartSec.
 const StopPatience = 30 * time.Minute
 
-// Update is one run of the verb. The three service verbs are the OS's (the agent's main wires
+// Update is one run of the verb. The three verbs on the agent's OS service are the OS's (the agent's main wires
 // them: systemd's on Linux, the service manager's and the warden's on Windows), handed in so the
 // procedure reads and tests the same on every system.
 type Update struct {
@@ -239,7 +239,7 @@ type Update struct {
 	Start func(ctx context.Context) error
 	// Smoke proves a staged qemu tree runs on this host.
 	Smoke func(ctx context.Context, tree string) error
-	// Stopped reports whether the agent's service is down and staying down -- `briard stop` -- in
+	// Stopped reports whether the agent's OS service is down and staying down -- `briard stop` -- in
 	// which case the run defers. nil never defers.
 	Stopped func(ctx context.Context) (bool, error)
 }
@@ -264,7 +264,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 		return "", err
 	}
 	// A NODE THE USER STOPPED STAYS STOPPED: the run would stop the stopped agent, swap, and start
-	// it -- the guest back at 03:00. A crashed node is not stopped (its service failed, or is
+	// it -- the guest back at 03:00. A crashed node is not stopped (its OS service failed, or is
 	// restarting) and still updates, because the update may be its fix; so does a node whose state
 	// could not be read.
 	if u.Stopped != nil {

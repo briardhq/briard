@@ -8,5 +8,5 @@ buildGoModule {
   src = ../..;
   vendorHash = import ../../vendor-hash.nix;
   subPackages = [ "nixosTest/catalog-sign" ];
-  meta.description = "Sign a Briard service manifest into a minimal catalog (lab helper)";
+  meta.description = "Sign a Briard app manifest into a minimal catalog (lab helper)";
 }

@@ -510,7 +510,7 @@ func SnapshotMemberTime(name string) (time.Time, bool) {
 	return at, ok
 }
 
-// ParseSnapshotMember splits `<service>-<trigger>-<stamp>`. The app may itself contain dashes
+// ParseSnapshotMember splits `<app>-<trigger>-<stamp>`. The app may itself contain dashes
 // ("home-assistant"), so it is parsed from the RIGHT: the stamp is fixed width and the trigger
 // comes from a closed set, which leaves whatever precedes them as the name.
 func ParseSnapshotMember(name string) (app string, trigger Trigger, at time.Time, ok bool) {
@@ -533,7 +533,7 @@ func ParseSnapshotMember(name string) (app string, trigger Trigger, at time.Time
 
 // SnapshotMember is one member's subvolume path: app, trigger and the moment it was taken.
 //
-// A SERIES, WHICH IS THE WHOLE OF THE RING. This replaced a single fixed `<service>-preupgrade`
+// A SERIES, WHICH IS THE WHOLE OF THE RING. This replaced a single fixed `<app>-preupgrade`
 // name whose doc read "a rollback point is one replaceable fact, not a series" — true while the
 // only member was the one an in-flight upgrade needed, and the reason the old verb used to
 // DELETE an existing point before taking the new one. Both are retired together: members are
@@ -644,7 +644,7 @@ type SnapshotMeta struct {
 	// healthy → unhealthy transition survives the pruning of the start that measured it. Empty
 	// means unknown.
 	Health apps.Health `json:"health,omitempty"`
-	// Resets are the renames a start's BOOT made (services.Corrupt's form), found at its verdict
+	// Resets are the renames a start's BOOT made (apps.Corrupt's form), found at its verdict
 	// and landed on the sample before it -- with those of the pending starts it replaced.
 	// No member holds them before the next sample does, so a comparison with this
 	// member as the earlier side does not find them again.
@@ -701,7 +701,7 @@ func (r Rendered) String() string {
 
 // ContainerName is the podman container (and unit prefix) for one container of one app. The
 // renderer decides it, so everything that needs to name a running container asks here rather than
-// rebuilding the string — the host's service spec does, and so does the guest when it has to
+// rebuilding the string — the host's app spec does, and so does the guest when it has to
 // exec into one.
 func ContainerName(app, container string) string { return prefix + app + "-" + container }
 

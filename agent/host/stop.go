@@ -1,12 +1,12 @@
 // The node's way down, and `briard stop` / `briard start`.
 //
-// TWO STOPS, BECAUSE THEY HAVE OPPOSITE PRIORITIES. A STOP -- an update, a restart, a service
-// manager's stop -- swaps the agent under a guest that keeps serving: the act in flight finishes
+// TWO STOPS, BECAUSE THEY HAVE OPPOSITE PRIORITIES. A STOP -- an update, a restart, a
+// service manager's stop -- swaps the agent under a guest that keeps serving: the act in flight finishes
 // and the guest is never touched (acts.go, stopAfter). A SHUTDOWN brings the node down: the loop
 // and its act are cancelled at once -- the act is worthless, its guest is about to leave, and an
 // install keeps its stage and rollback point while a directive with no outcome is re-delivered --
 // then the guest is powered off cleanly, then the agent returns. Draining at a shutdown cost both
-// ways: the wait outlasted the time a machine gives its services, so the halt power-cut the guest
+// ways: the wait outlasted the time a machine gives its system services, so the halt power-cut the guest
 // the drain was keeping, and the still-running loop saw its guest leave and relaunched it.
 //
 // One way down, three triggers, all a context cancelled with ErrShutdown as its cause: the Windows
@@ -119,15 +119,15 @@ func Submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOut
 	return o, nil
 }
 
-// stopWait bounds the wait for the agent's service to stop once the agent has started its
+// stopWait bounds the wait for the agent's unit to stop once the agent has started its
 // shutdown: the guest's powerdown, then the exit.
 const stopWait = shutdownBound + 30*time.Second
 
 // Stop is `briard stop`, and an uninstall's first step: the node down -- the act in flight
-// aborted and named, the guest powered off cleanly, the agent's service stopped -- until `briard
+// aborted and named, the guest powered off cleanly, the agent's unit stopped -- until `briard
 // start` or the next boot. THE FALLBACK IS PART OF THE VERB: an agent that is not there to ask
 // (crashed, crash-looping, half installed) may have left a qemu running, so with nobody answering
-// the service is stopped through the manager and the guest powered off from here (stopNode).
+// the agent's unit is stopped through the service manager and the guest powered off from here (stopNode).
 func (cfg Config) Stop(ctx context.Context, say func(string, ...any)) error {
 	o, err := Submit(ctx, cfg.AdminSock, api.Directive{Kind: api.DirectiveStop})
 	switch {
@@ -154,7 +154,7 @@ func (cfg Config) Stop(ctx context.Context, say func(string, ...any)) error {
 	return nil
 }
 
-// waitStopped waits, bounded, for the agent's service to be down and staying down.
+// waitStopped waits, bounded, for the agent's unit to be down and staying down.
 func waitStopped(ctx context.Context) error {
 	deadline := time.Now().Add(stopWait)
 	for {
@@ -166,7 +166,7 @@ func waitStopped(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("asking whether briard stopped: %w", err)
 			}
-			return fmt.Errorf("briard's service has not stopped %s after the agent began its shutdown", stopWait)
+			return fmt.Errorf("briard has not stopped %s after the agent began its shutdown", stopWait)
 		}
 		select {
 		case <-ctx.Done():
@@ -176,7 +176,7 @@ func waitStopped(ctx context.Context) error {
 	}
 }
 
-// Start is `briard start`: the agent's service started, which brings the guest back. It returns
+// Start is `briard start`: the agent's unit started, which brings the guest back. It returns
 // once the agent reported that it started, never once the node serves -- the guest's bring-up
 // comes after.
 func Start(ctx context.Context, say func(string, ...any)) error {

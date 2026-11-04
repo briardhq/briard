@@ -17,7 +17,7 @@ import (
 //
 // ITS SUBJECT HAS CHANGED TWICE, which is the point of having the mechanism rather than the
 // subject. It was written for the payload slot's `payloadPinPath`/`payloadServeTag`,
-// which the service-warm re-cut deleted; it then paired the TLS directory, which the agent-written units
+// since deleted; it then paired the TLS directory, which the agent-written units
 // deleted from the Nix side when the front door's unit moved to the agent and nothing in the
 // image read the path any more.
 //

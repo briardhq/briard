@@ -184,9 +184,9 @@ pkgs.testers.runNixOSTest {
     # agent-recover cannot stand in for this: it never restarts the agent, so the guest it
     # freezes is one the running agent had already converged, and the ladder is entered from the
     # observe loop. Here the ladder has to be entered from bring-up, with no prior channel, by an
-    # agent that is a real service with a real restart policy -- which only this rig has.
+    # agent that runs as a real systemd service with a real restart policy -- which only this rig has.
     #
-    # Three things only this act proves: the agent does NOT exit (the service invocation that
+    # Three things only this act proves: the agent does NOT exit (the systemd service invocation that
     # adopted the frozen guest is the one that relaunches it); the local door answers while the
     # ladder waits, with what it is doing; and the alert that announces the restart carries the
     # guest's last words from the console capture. The relaunch itself and the window's timing

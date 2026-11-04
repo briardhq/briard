@@ -185,7 +185,7 @@ var commands = []command{
 			"briard is doing is aborted and named, the VM your apps run in powers off cleanly, and the\n" +
 			"agent stops. While it is down nothing alerts -- the alerts come from the agent -- and the\n" +
 			"nightly update waits for `briard start`. Restarting the machine brings briard back too.\n" +
-			"With the agent not answering, it stops briard's service and its VM itself.",
+			"With the agent not answering, it stops briard's systemd or Windows service and its VM itself.",
 		run: runStop, probe: []string{"-h"},
 	},
 	{
@@ -199,7 +199,7 @@ var commands = []command{
 		name: "uninstall", args: "-yes [-delete-data]", group: groupRepair,
 		synopsis: "remove briard from this machine, keeping your data unless told otherwise",
 		detail: "Stops briard as `briard stop` does -- what it is doing aborted, the VM your apps run in\n" +
-			"powered off cleanly -- and removes its services, network\n" +
+			"powered off cleanly -- and removes its systemd or Windows services, network\n" +
 			"devices, /opt/briard (C:\\ProgramData\\briard on Windows) and this command. /var/lib/briard\n" +
 			"(state under that folder on Windows) -- the data volume and this machine's identity -- is\n" +
 			"KEPT, so installing again picks up where it left off.\n\n" +
@@ -356,8 +356,8 @@ func runDirective(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // runApp is the first verb that is SUGAR over `directive` rather than a separate mechanism —
 // which is the shape every later verb should copy. `briard app install ha` is exactly
 // `briard directive app-install ha`, so there is one path through the agent and the CLI adds
-// only a name a human would guess. (The verb a user types is `app`; *service* stays the
-// engineering term in identifiers and on the wire.)
+// only a name a human would guess. (The verb a user types is `app`, the same word the
+// identifiers and the wire use.)
 //
 // It blocks until the node reaches a terminal state, because an install is a maintenance
 // operation on a live promoted resource: returning early would leave an operator guessing whether
@@ -446,7 +446,7 @@ func offeredVersion(ctx context.Context, sock, name string) string {
 }
 
 // runHandover is `briard handover` — give this node's work to a peer, on purpose, while it is
-// perfectly healthy. Sugar over `directive handover`, the shape `service install`
+// perfectly healthy. Sugar over `directive handover`, the shape `app install`
 // established.
 //
 // WHY A HUMAN WANTS THIS. Failover is the claim this product is bought for, and it is the one
@@ -734,7 +734,7 @@ func sayTo(w io.Writer) func(string, ...any) {
 // runDashboard is `briard open`: it asks the agent for a one-time link to the Briard page
 // (the verb a user types is `open`, and *dashboard* stays the engineering name of the
 // guest unit and the directive). The account details ride along because THIS is where
-// the OS account is visible: the agent is a service with no SUDO_USER, and the guest knows
+// the OS account is visible: the agent runs as a systemd or Windows service with no SUDO_USER, and the guest knows
 // nothing about the host's users at all.
 func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard open", flag.ContinueOnError)

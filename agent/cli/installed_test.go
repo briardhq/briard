@@ -8,7 +8,7 @@ import (
 	"briard.io/agent/host"
 )
 
-// ⚠️ THE PIN, same discipline as the unit names and alertMarker above: the CLI reads the service
+// ⚠️ THE PIN, same discipline as the unit names and alertMarker above: the CLI reads the app
 // cache the AGENT writes, so the two must name the same directory. A test may import agent/host
 // where the shipped code may not.
 func TestAppCacheDirMatchesTheAgents(t *testing.T) {

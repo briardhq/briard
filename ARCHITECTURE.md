@@ -130,7 +130,7 @@ a test in this repository you can run yourself:
 
 | guarantee | holds when | run it |
 |---|---|---|
-| single primary | drbd-reactor promotes exactly one node, and starts the service stack only there | `.#tests.drbd-promote` |
+| single primary | drbd-reactor promotes exactly one node, and starts the serving stack only there | `.#tests.drbd-promote` |
 | the minority refuses | an isolated node loses quorum and self-fences rather than promoting | `.#tests.drbd-fence` |
 | failover keeps data | kill the primary; a survivor takes over with data intact | `.#tests.drbd-failover` |
 | a witness is enough | a two-machine home survives losing one machine, and behaves when the witness itself goes | `.#tests.drbd-witness`, `.#tests.drbd-witness-loss` |
@@ -381,9 +381,10 @@ The words the code and its comments use, briefly:
 
 - **Machine / node** — the same thing. The product says *machine* to people; the code says
   *node*.
-- **App / service** — the same thing. What you install from the catalog is an *app*, in the
-  docs and comments too; only code identifiers and fixed names (`app-install`,
-  `.apps/`) say *service*.
+- **App** — what you install from the catalog, everywhere: in identifiers, wire and file names
+  (`app-install`, `.apps/`), messages, comments and docs. The word *service* is kept only for its
+  other meanings: a systemd service, the Windows service the agent runs as, the VIP's
+  service address, and DNS-SD service records.
 - **Flock** — the home's nodes under one name. Every install has one, and a **lone node** is a
   flock of one, running no DRBD.
 - **Anchor** — an always-on node that holds a full copy of the data and can be primary. A

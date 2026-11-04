@@ -350,7 +350,7 @@ func (cfg Config) cacheMesh(spec api.MeshSpec, logf func(string, ...any)) error 
 // nothing has ever been paired -- the shipped single-node state, where PEERS (or its self-peer
 // default) is the right answer and this file is correctly absent.
 //
-// An unusable cache is reported and treated as absent, matching installedService: bringing up on
+// An unusable cache is reported and treated as absent, matching installedApps: bringing up on
 // the env mesh is what this node did before there was a cache at all, so it is the conservative
 // fallback rather than a new failure mode. A spec that no longer names this node is the same case
 // (a rename, or a cache carried onto another node) and says so distinctly, because "your mesh does

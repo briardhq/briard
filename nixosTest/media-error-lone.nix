@@ -81,7 +81,7 @@ pkgs.testers.runNixOSTest {
 
     # The first DATA chunk's physical start on the LV, from the chunk tree; the LV's start on
     # the dust device, from its dm table. Their sum plus 1 MiB is a sector inside one file.
-    tree = node1.succeed("btrfs inspect-internal dump-tree -t chunk /dev/mapper/briardservice-data")
+    tree = node1.succeed("btrfs inspect-internal dump-tree -t chunk /dev/mapper/briardvol-data")
     data_chunk = None
     for block in tree.split("\titem ")[1:]:
         if "type DATA" in block:
@@ -90,7 +90,7 @@ pkgs.testers.runNixOSTest {
             data_chunk = int(m.group(1))
             break
     assert data_chunk is not None, f"no DATA chunk in the chunk tree:\n{tree}"
-    table = node1.succeed("dmsetup table briardservice-data").strip()
+    table = node1.succeed("dmsetup table briardvol-data").strip()
     m = re.match(r"0 \d+ linear \S+ (\d+)$", table)
     assert m, f"the data LV is not one linear segment: {table!r}"
     lv_start = int(m.group(1))

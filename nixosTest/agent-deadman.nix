@@ -140,7 +140,7 @@ pkgs.testers.runNixOSTest {
     # contact, fires — and, being a lone node with nobody to outage, must REBOOT.
     host.succeed("systemctl stop briard-agent")
 
-    # The separate briard-deadman guest service (decoupled from the crash-looping guest agent) sees
+    # The separate briard-deadman.service in the guest (decoupled from the crash-looping guest agent) sees
     # the contact stamp go stale past T_deadman (~8s) and evaluates.
     host.wait_until_succeeds("grep -q 'briard-deadman' /tmp/guest-serial.log", timeout=90)
 

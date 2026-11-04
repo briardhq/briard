@@ -15,9 +15,9 @@ import (
 // file in any of them runs on both, so it may name no mechanism that exists on one.
 var hostOSPackages = []string{"agent/platform", "agent/nic", "agent/reportcard", "agent/host", "agent/subnet"}
 
-// hostOSLiterals are the string constants that mean "this line only runs on Linux": the service
-// manager, iproute2, and the pseudo-filesystems. They are what a per-OS backend REPLACES, so a
-// file that is not tagged for one OS has no business naming them.
+// hostOSLiterals are the string constants that mean "this line only runs on Linux":
+// the service manager, iproute2, and the pseudo-filesystems. They are what a per-OS backend
+// REPLACES, so a file that is not tagged for one OS has no business naming them.
 var hostOSLiterals = []string{"systemctl", "systemd-run", "ip", "drbdadm", "journalctl"}
 
 var hostOSPrefixes = []string{"/proc/", "/sys/", "/run/systemd", "/etc/"}

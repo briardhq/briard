@@ -58,8 +58,8 @@ pkgs.testers.runNixOSTest {
 
     # === 1 THE SEAM, AND NO DRBD =========================================================
     node1.succeed("briard-test-storage --seed")
-    node1.succeed("test -b /dev/mapper/briardservice-data")
-    node1.succeed("test -b /dev/mapper/briardservice-metadata")
+    node1.succeed("test -b /dev/mapper/briardvol-data")
+    node1.succeed("test -b /dev/mapper/briardvol-metadata")
     assert node1.succeed("cat /run/briard/topology.env").strip() == "BRIARD_TOPOLOGY=alone", \
         node1.succeed("cat /run/briard/topology.env")
     node1.fail("test -e /dev/drbd0")
@@ -75,7 +75,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed("systemctl start briard-chain.target")
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
     node1.succeed("mountpoint -q /var/lib/briard")
-    assert node1.succeed("findmnt -no SOURCE /var/lib/briard").strip() == "/dev/mapper/briardservice-data"
+    assert node1.succeed("findmnt -no SOURCE /var/lib/briard").strip() == "/dev/mapper/briardvol-data"
     node1.fail("systemctl is-active drbd-reactor.service")
     node1.fail("systemctl is-active drbd-promote@r0.service")
     node1.succeed("systemctl is-active briard-primary-storage.service briard-apps.service briard-vip.service")

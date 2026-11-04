@@ -14,7 +14,7 @@
 //
 // ORDER IS THE SAFETY. The node down first, exactly as `briard stop` brings it down (Stop): the
 // act in flight aborted and named, the guest powered off cleanly -- or, with no agent answering,
-// the service and the guest stopped from here. Then the services, and a service that will not stop
+// the agent's unit and the guest stopped from here. Then the units, and a unit that will not stop
 // ends the uninstall there: nothing is deleted from under a guest that is still running. The
 // install tree goes last, because it holds this very binary -- an uninstall that stopped half way
 // can be run again.
@@ -36,7 +36,7 @@ func (cfg Config) Uninstall(ctx context.Context, deleteData bool, logf func(stri
 	if err := cfg.removeServices(ctx, logf); err != nil {
 		return fmt.Errorf("%w -- nothing else was removed; fix that and run this again", err)
 	}
-	logf("stopped and removed briard's services")
+	logf("stopped and removed briard's system services")
 
 	var errs []error
 	if err := cfg.removeNetwork(ctx, logf); err != nil {
