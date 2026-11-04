@@ -139,7 +139,7 @@ StartLimitBurst=5
 const (
 	holdUnit           = "briard-promotion-hold.service"
 	primaryStorageUnit = "briard-primary-storage.service"
-	servicesUnit       = "briard-services.service"
+	appsUnit           = "briard-services.service"
 	vipUnit            = "briard-vip.service"
 	vipRenewUnit       = "briard-vip-renew.service"
 	vipRenewTimer      = "briard-vip-renew.timer"
@@ -319,7 +319,7 @@ ExecStop=` + agent + ` --primary-storage-stop
 	// container cannot deactivate the target. A crash is the container unit's own Restart=
 	// (agent/quadlet), and the STOP is ExecStop below, because reverse-order chain unwinding
 	// would otherwise leave containers running on a volume about to be unmounted.
-	u[servicesUnit] = `[Unit]
+	u[appsUnit] = `[Unit]
 Description=Briard services, converged from the replicated volume at promotion
 ` + chainEdges(2, members) + chainMemberFailure + `
 [Service]
@@ -424,7 +424,7 @@ ExecStart=` + tool("briard-vip-renew") + `
 	// node must not hold the volume.
 	u[reverseProxyUnit] = `[Unit]
 Description=Briard front door (serves the VIP on :80/:443)
-After=` + servicesUnit + `
+After=` + appsUnit + `
 ` + chainEdges(3, members) + chainMemberFailure + `
 [Service]
 Type=notify
@@ -443,7 +443,7 @@ TimeoutStartSec=10
 	// control token, both on /run; it writes only under /var/lib/briard/dashboard.
 	u[dashboardUnit] = `[Unit]
 Description=Briard household dashboard (behind the front door)
-After=` + primaryStorageUnit + ` ` + servicesUnit + `
+After=` + primaryStorageUnit + ` ` + appsUnit + `
 ` + chainEdges(4, members) + chainMemberFailure + `
 [Service]
 Type=notify

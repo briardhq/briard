@@ -115,7 +115,7 @@ func TestIndexListsEveryManifest(t *testing.T) {
 }
 
 // TestMosquittoEntryMatchesTheProductsConfig is the cross-document check: this entry and the
-// config agent/services renders for it are two files that must agree, written in two languages,
+// config agent/apps renders for it are two files that must agree, written in two languages,
 // and nothing at runtime would notice them drifting apart. A port changed here and not there is a
 // health gate that can never pass; a mount changed here and not there puts the broker's retained
 // state outside the replicated volume, where a failover silently loses it.

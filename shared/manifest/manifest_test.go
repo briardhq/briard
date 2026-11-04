@@ -88,10 +88,10 @@ func TestValidateRejects(t *testing.T) {
 		name string
 		bend func(*Manifest)
 	}{
-		{"empty service name", func(m *Manifest) { m.Name = "" }},
-		{"service name with slash", func(m *Manifest) { m.Name = "evil/../../etc" }},
-		{"service name with dots", func(m *Manifest) { m.Name = ".." }},
-		{"uppercase service name", func(m *Manifest) { m.Name = "HomeAssistant" }},
+		{"empty app name", func(m *Manifest) { m.Name = "" }},
+		{"app name with slash", func(m *Manifest) { m.Name = "evil/../../etc" }},
+		{"app name with dots", func(m *Manifest) { m.Name = ".." }},
+		{"uppercase app name", func(m *Manifest) { m.Name = "HomeAssistant" }},
 		{"no containers", func(m *Manifest) { m.Containers = nil }},
 		{"negative minimum memory", func(m *Manifest) { m.MinMemoryMB = -1 }},
 		{"container name not a slug", func(m *Manifest) { m.Containers[0].Name = "../escape" }},
@@ -306,10 +306,10 @@ func TestMountsInEveryTier(t *testing.T) {
 		}
 	}
 	if m.Containers[0].UsesTier(TierCache) || !m.Containers[1].UsesTier(TierCache) {
-		t.Error("UsesTier answered for the service, not the container")
+		t.Error("UsesTier answered for the app, not the container")
 	}
 	m.Containers = m.Containers[:1]
 	if m.UsesTier(TierCache) {
-		t.Error("UsesTier(cache) = true for a service that mounts no cache")
+		t.Error("UsesTier(cache) = true for an app that mounts no cache")
 	}
 }

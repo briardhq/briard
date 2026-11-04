@@ -128,8 +128,8 @@ func TestTheBackupRunsInTheBackground(t *testing.T) {
 	if s.Running || s.Report == nil {
 		t.Fatalf("state %+v, want a finished report", s)
 	}
-	want := BackupReport{Snapshot: "abc123", Services: []string{"home-assistant", "mosquitto"}, Files: 42, BytesAdded: 1234}
-	if !slices.Equal(s.Report.Services, want.Services) || s.Report.Snapshot != want.Snapshot ||
+	want := BackupReport{Snapshot: "abc123", Apps: []string{"home-assistant", "mosquitto"}, Files: 42, BytesAdded: 1234}
+	if !slices.Equal(s.Report.Apps, want.Apps) || s.Report.Snapshot != want.Snapshot ||
 		s.Report.Files != want.Files || s.Report.BytesAdded != want.BytesAdded || s.Report.Error != "" {
 		t.Fatalf("report %+v, want %+v", *s.Report, want)
 	}
@@ -313,7 +313,7 @@ func TestTheBackupCarriesWhatARestoreNeeds(t *testing.T) {
 		before(svc+"'s manifest", "cp", "-a", quadlet.SnapshotSidecar(member), backupFacts+"/members/"+svc+".json")
 	}
 	before("the VIP", "cp", "-a", dataMountRoot+"/.vip-address", backupFacts+"/volume/")
-	before("the installed services", "cp", "-a", manifestDir, backupFacts+"/volume/")
+	before("the installed apps", "cp", "-a", manifestDir, backupFacts+"/volume/")
 	if runIndex(f, 0, "cp", "-a", tlsDir, backupFacts+"/volume/") >= 0 {
 		t.Error("copied a certificate directory the volume does not have")
 	}
@@ -432,7 +432,7 @@ func TestANightIsMaterialisedAsAMember(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
 	taken := now.Add(-3 * 24 * time.Hour)
-	side, _ := json.Marshal(quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerStart, TakenAt: taken,
+	side, _ := json.Marshal(quadlet.SnapshotMeta{App: "home-assistant", Trigger: quadlet.TriggerStart, TakenAt: taken,
 		Consistency: quadlet.Quiesced, Manifest: `{"name":"home-assistant"}`, Pending: true})
 	var restoreErr error
 	f, _ := backupRig(map[string]func() ([]byte, error){
@@ -446,7 +446,7 @@ func TestANightIsMaterialisedAsAMember(t *testing.T) {
 		}
 		return inner(n, args)
 	}
-	member, err := restoreBackupMember(ctx, f, backupRestoreRequest{Repository: "http://10.0.0.129:7791/", Snapshot: "abc12345", Service: "home-assistant"}, now)
+	member, err := restoreBackupMember(ctx, f, backupRestoreRequest{Repository: "http://10.0.0.129:7791/", Snapshot: "abc12345", App: "home-assistant"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestANightIsMaterialisedAsAMember(t *testing.T) {
 		}
 		return inner(n, args)
 	}
-	if _, err := restoreBackupMember(ctx, f, backupRestoreRequest{Repository: "http://h/", Snapshot: "latest", Service: "home-assistant"}, now); err == nil || !strings.Contains(err.Error(), "nothing was left") {
+	if _, err := restoreBackupMember(ctx, f, backupRestoreRequest{Repository: "http://h/", Snapshot: "latest", App: "home-assistant"}, now); err == nil || !strings.Contains(err.Error(), "nothing was left") {
 		t.Fatalf("err %v, want the failure and the ring untouched", err)
 	}
 	if runIndex(f, 0, "btrfs", "subvolume", "delete", want) < 0 {
@@ -507,13 +507,13 @@ func TestANightIsMaterialisedAsAMember(t *testing.T) {
 // path, a sidecar that describes another app -- none of them creates a member.
 func TestANightIsRefusedBeforeAnythingIsRead(t *testing.T) {
 	ctx := context.Background()
-	other, _ := json.Marshal(quadlet.SnapshotMeta{Service: "mosquitto", Manifest: "{}"})
+	other, _ := json.Marshal(quadlet.SnapshotMeta{App: "mosquitto", Manifest: "{}"})
 	for name, req := range map[string]backupRestoreRequest{
-		"not a REST url":  {Repository: "/x", Snapshot: "latest", Service: "home-assistant"},
-		"not a snapshot":  {Repository: "http://h/", Snapshot: "latest; rm -rf /", Service: "home-assistant"},
-		"a service path":  {Repository: "http://h/", Snapshot: "latest", Service: "../etc"},
-		"another service": {Repository: "http://h/", Snapshot: "latest", Service: "home-assistant"},
-		"no such night":   {Repository: "http://h/", Snapshot: "ffffffff", Service: "home-assistant"},
+		"not a REST url": {Repository: "/x", Snapshot: "latest", App: "home-assistant"},
+		"not a snapshot": {Repository: "http://h/", Snapshot: "latest; rm -rf /", App: "home-assistant"},
+		"an app path":    {Repository: "http://h/", Snapshot: "latest", App: "../etc"},
+		"another app":    {Repository: "http://h/", Snapshot: "latest", App: "home-assistant"},
+		"no such night":  {Repository: "http://h/", Snapshot: "ffffffff", App: "home-assistant"},
 	} {
 		f, _ := backupRig(map[string]func() ([]byte, error){
 			"dump": func() ([]byte, error) {
@@ -625,7 +625,7 @@ func sidecarTar(t *testing.T, metas ...quadlet.SnapshotMeta) []byte {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := tw.WriteHeader(&tar.Header{Name: "/briard-backup/briard/members/" + m.Service + ".json", Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(raw))}); err != nil {
+		if err := tw.WriteHeader(&tar.Header{Name: "/briard-backup/briard/members/" + m.App + ".json", Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(raw))}); err != nil {
 			t.Fatal(err)
 		}
 		tw.Write(raw)
@@ -641,8 +641,8 @@ func sidecarTar(t *testing.T, metas ...quadlet.SnapshotMeta) []byte {
 func TestTheListReadsEveryBackupWithItsApps(t *testing.T) {
 	taken := time.Date(2026, 10, 30, 8, 34, 13, 0, time.UTC)
 	members := sidecarTar(t,
-		quadlet.SnapshotMeta{Service: "home-assistant", TakenAt: taken, Manifest: haManifest},
-		quadlet.SnapshotMeta{Service: "mosquitto", TakenAt: taken}, // no manifest: not restorable
+		quadlet.SnapshotMeta{App: "home-assistant", TakenAt: taken, Manifest: haManifest},
+		quadlet.SnapshotMeta{App: "mosquitto", TakenAt: taken}, // no manifest: not restorable
 	)
 	f, _ := backupRig(map[string]func() ([]byte, error){
 		"snapshots": func() ([]byte, error) {
@@ -811,7 +811,7 @@ func TestTheListAndLatestAreTheDatas(t *testing.T) {
 	}
 
 	for _, snapshot := range []string{"latest", "abc12345"} {
-		side, _ := json.Marshal(quadlet.SnapshotMeta{Service: "home-assistant", Manifest: `{"name":"home-assistant"}`})
+		side, _ := json.Marshal(quadlet.SnapshotMeta{App: "home-assistant", Manifest: `{"name":"home-assistant"}`})
 		f, _ := backupRig(map[string]func() ([]byte, error){"dump": func() ([]byte, error) { return side, nil }})
 		inner := f.runFn
 		f.runFn = func(n string, args []string) ([]byte, error) {
@@ -820,7 +820,7 @@ func TestTheListAndLatestAreTheDatas(t *testing.T) {
 			}
 			return inner(n, args)
 		}
-		if _, err := restoreBackupMember(context.Background(), f, backupRestoreRequest{Repository: "http://h/", Snapshot: snapshot, Service: "home-assistant"}, time.Now()); err != nil {
+		if _, err := restoreBackupMember(context.Background(), f, backupRestoreRequest{Repository: "http://h/", Snapshot: snapshot, App: "home-assistant"}, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		for _, sub := range []string{"dump", "restore"} {

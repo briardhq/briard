@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
+	apps "briard.io/agent/apps"
 	"briard.io/agent/quadlet"
-	"briard.io/agent/services"
 	"briard.io/shared/manifest"
 )
 
@@ -72,10 +72,10 @@ import (
 type InboundVerb string
 
 const (
-	// VerbServiceStarting says "my app is about to start, and I am holding it until you
+	// VerbAppStarting says "my app is about to start, and I am holding it until you
 	// answer". The WAIT is the point: the caller blocks before handing over to the real
 	// entrypoint, so whatever the agent does happens while the app is genuinely stopped.
-	VerbServiceStarting InboundVerb = "service.starting"
+	VerbAppStarting InboundVerb = "service.starting"
 )
 
 // inboundRequest is one call.
@@ -103,7 +103,7 @@ type inboundResponse struct {
 // caller logs it and carries on (it must never fail a household's app over this), while the
 // return value is what reaches the agent's journal for a human to read afterwards.
 func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) error {
-	var service string
+	var app string
 	reply := func(resp inboundResponse) error {
 		b, err := json.Marshal(resp)
 		if err != nil {
@@ -113,7 +113,7 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 			return err
 		}
 		if resp.Error != "" {
-			return fmt.Errorf("inbound %s: %s", service, resp.Error)
+			return fmt.Errorf("inbound %s: %s", app, resp.Error)
 		}
 		return nil
 	}
@@ -127,17 +127,17 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 	// WHO IS CALLING, BEFORE WHAT THEY WANT. Resolution is the only thing that stands between a
 	// workload and this channel, so it happens once, up front, and nothing below it can be
 	// reached without it. The refusal deliberately says nothing about which tokens exist.
-	service, ok := resolveCaller(ctx, x, req.Token)
+	app, ok := resolveCaller(ctx, x, req.Token)
 	if !ok {
 		return reply(inboundResponse{Error: "unknown caller"})
 	}
 	switch req.Verb {
-	case VerbServiceStarting:
+	case VerbAppStarting:
 		// FROM INSIDE A RUNNING CONTAINER: Home Assistant restarting itself, which is the one
 		// boundary nothing outside the container can see -- and one whose previous instance the
 		// clean-stop marker says nothing about.
 		defer signalDoor(ctx, x)
-		detail, err := startingMember(ctx, x, service, false)
+		detail, err := startingMember(ctx, x, app, false)
 		if err != nil {
 			return reply(inboundResponse{Error: err.Error()})
 		}
@@ -157,15 +157,15 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 // containerStart says this is the CONTAINER's own start (the rendered unit's pre-start) rather than
 // a restart inside a container that stayed up -- the only caller that may read the clean-stop
 // marker, since the marker is a claim about the last container stop.
-func startingMember(ctx context.Context, x Executor, service string, containerStart bool) (string, error) {
-	if err := safeUnitName(service); err != nil { // the name becomes a path element
+func startingMember(ctx context.Context, x Executor, app string, containerStart bool) (string, error) {
+	if err := safeUnitName(app); err != nil { // the name becomes a path element
 		return "", err
 	}
 	at := time.Now()
 	// The manifest is on the volume, node-local to read — which is why this needs no host in the
 	// loop, and why it must not have one: the host is not in the start path on a promotion or a
 	// crash restart, which is most of what this channel exists to catch.
-	raw, err := x.ReadFile(manifestPath(service))
+	raw, err := x.ReadFile(manifestPath(app))
 	if err != nil {
 		return "", fmt.Errorf("read the running manifest: %w", err)
 	}
@@ -178,17 +178,17 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	if containerStart {
 		// A promotion after the other node died, or this node's own power cut: nothing shut the
 		// app down, and the member says so.
-		cons = consumeCleanStop(ctx, x, service)
+		cons = consumeCleanStop(ctx, x, app)
 	}
 	trigger := quadlet.TriggerStart
 	var ev *quadlet.Event
-	if backup, ok := hassRestore(x, service, raw); ok {
+	if backup, ok := hassRestore(x, app, raw); ok {
 		trigger = quadlet.TriggerHassRestoreBefore
 		// The household's own restore is an event, on the point that undoes it.
 		ev = &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonHassRestore, What: "Restored " + backup}}}
 	}
 	meta := quadlet.SnapshotMeta{
-		Service: service,
+		App:     app,
 		Trigger: trigger,
 		TakenAt: at,
 		// WHAT THE BYTES ARE, derived above rather than assumed here. A container start reads the
@@ -205,9 +205,9 @@ func startingMember(ctx context.Context, x Executor, service string, containerSt
 	if err != nil {
 		return "", fmt.Errorf("render the member's sidecar: %w", err)
 	}
-	member := quadlet.SnapshotMember(service, trigger, at)
+	member := quadlet.SnapshotMember(app, trigger, at)
 	run := func(name string, args ...string) error { _, err := x.Run(ctx, name, args...); return err }
-	if err := takeSnapshot(ctx, x, run, quadlet.DataRoot(service), member, string(sidecar)); err != nil {
+	if err := takeSnapshot(ctx, x, run, quadlet.DataRoot(app), member, string(sidecar)); err != nil {
 		return "", err
 	}
 	recordMember(ctx, x, member, meta)
@@ -241,13 +241,13 @@ func recordMember(ctx context.Context, x Executor, member string, meta quadlet.S
 	defer ringMu.Unlock()
 	if meta.Pending {
 		replacePending(ctx, x, member, meta)
-	} else if members, err := listMembers(ctx, x, meta.Service); err != nil {
-		log.Printf("ring %s: could not read the ring to record %s: %v", meta.Service, path.Base(member), err)
+	} else if members, err := listMembers(ctx, x, meta.App); err != nil {
+		log.Printf("ring %s: could not read the ring to record %s: %v", meta.App, path.Base(member), err)
 	} else {
 		settle(ctx, x, members, quadlet.SnapshotEntry{Member: member, Meta: meta}, nil, meta.TakenAt)
 	}
 	sampled(ctx, x, member, meta)
-	pruneRing(ctx, x, meta.Service, meta.TakenAt)
+	pruneRing(ctx, x, meta.App, meta.TakenAt)
 }
 
 // sampled gives the member's app its say (services.Sampled) before the prune, so a hold it places
@@ -263,18 +263,18 @@ func sampled(ctx context.Context, x Executor, member string, meta quadlet.Snapsh
 	if err != nil {
 		return // a member whose manifest we cannot read tells us nothing about its app
 	}
-	members, err := listMembers(ctx, x, meta.Service)
+	members, err := listMembers(ctx, x, meta.App)
 	if err != nil {
 		return
 	}
-	ring := func(e quadlet.SnapshotEntry) services.RingMember {
+	ring := func(e quadlet.SnapshotEntry) apps.RingMember {
 		at, _ := quadlet.SnapshotMemberTime(e.Member)
-		return services.RingMember{Path: e.Member, App: quadlet.AppSidecar(e.Member), At: at, Quiesced: e.Meta.Consistency == quadlet.Quiesced}
+		return apps.RingMember{Path: e.Member, App: quadlet.AppSidecar(e.Member), At: at, Quiesced: e.Meta.Consistency == quadlet.Quiesced}
 	}
 	// THE MEMBER AS THE RING HOLDS IT, not as the caller took it: replacing a pending start can
 	// carry a weaker consistency onto it, and the hold may trust only what the sidecar says.
-	var all []services.RingMember
-	var self *services.RingMember
+	var all []apps.RingMember
+	var self *apps.RingMember
 	for _, e := range members {
 		all = append(all, ring(e))
 		if e.Member == member {
@@ -284,8 +284,8 @@ func sampled(ctx context.Context, x Executor, member string, meta quadlet.Snapsh
 	if self == nil {
 		return
 	}
-	if err := services.Sampled(ctx, x, m, all, *self); err != nil {
-		log.Printf("ring %s: %s's app could not record it: %v", meta.Service, path.Base(member), err)
+	if err := apps.Sampled(ctx, x, m, all, *self); err != nil {
+		log.Printf("ring %s: %s's app could not record it: %v", meta.App, path.Base(member), err)
 	}
 }
 
@@ -306,9 +306,9 @@ func sampled(ctx context.Context, x Executor, member string, meta quadlet.Snapsh
 // start with no event. listMembers leaves out what it cannot read, so an unreadable member is
 // kept. The carried renames are written first, and a failed write keeps the old members.
 func replacePending(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
-	members, err := listMembers(ctx, x, meta.Service)
+	members, err := listMembers(ctx, x, meta.App)
 	if err != nil {
-		log.Printf("ring %s: could not read the ring to replace a pending start: %v", meta.Service, err)
+		log.Printf("ring %s: could not read the ring to replace a pending start: %v", meta.App, err)
 		return
 	}
 	at, ok := quadlet.SnapshotMemberTime(member)
@@ -327,10 +327,10 @@ func replacePending(ctx context.Context, x Executor, member string, meta quadlet
 	}
 	changed := false
 	if mf, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
-		now := services.Corrupt(ctx, x, mf, member)
+		now := apps.Corrupt(ctx, x, mf, member)
 		carried := meta.Resets
 		for _, o := range old {
-			carried = union(carried, o.Meta.Resets, without(now, services.Corrupt(ctx, x, mf, o.Member)))
+			carried = union(carried, o.Meta.Resets, without(now, apps.Corrupt(ctx, x, mf, o.Member)))
 		}
 		if len(carried) > len(meta.Resets) {
 			meta.Resets, changed = carried, true
@@ -350,13 +350,13 @@ func replacePending(ctx context.Context, x Executor, member string, meta quadlet
 	}
 	for _, o := range old {
 		if _, err := x.Run(ctx, "btrfs", "subvolume", "delete", o.Member); err != nil {
-			log.Printf("ring %s: could not replace the pending %s: %v", meta.Service, path.Base(o.Member), err)
+			log.Printf("ring %s: could not replace the pending %s: %v", meta.App, path.Base(o.Member), err)
 			continue
 		}
 		if _, err := x.Run(ctx, "rm", "-f", quadlet.SnapshotSidecar(o.Member), quadlet.AppSidecar(o.Member)); err != nil {
-			log.Printf("ring %s: replaced %s but left its sidecar: %v", meta.Service, path.Base(o.Member), err)
+			log.Printf("ring %s: replaced %s but left its sidecar: %v", meta.App, path.Base(o.Member), err)
 		}
-		log.Printf("ring %s: %s replaced the pending %s", meta.Service, path.Base(member), path.Base(o.Member))
+		log.Printf("ring %s: %s replaced the pending %s", meta.App, path.Base(member), path.Base(o.Member))
 	}
 }
 
@@ -404,7 +404,7 @@ func settle(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, e 
 		}
 	}
 	was := e.Meta
-	if e.Meta.Health == services.HealthUnknown && hasPrev {
+	if e.Meta.Health == apps.HealthUnknown && hasPrev {
 		e.Meta.Health = prev.Meta.Health // carried forward (SnapshotMeta.Health)
 	}
 	e.Meta.Pending = false
@@ -458,9 +458,9 @@ func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, 
 	if !prev.Meta.Trigger.Before() {
 		if m, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
 			// The clock's sample is the one taken while the app RUNS.
-			changed, rs, err := services.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerClock)
+			changed, rs, err := apps.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerClock)
 			if err != nil {
-				log.Printf("ring %s: could not compare %s with %s: %v", meta.Service, path.Base(prev.Member), path.Base(member), err)
+				log.Printf("ring %s: could not compare %s with %s: %v", meta.App, path.Base(prev.Member), path.Base(member), err)
 			}
 			if changed != "" {
 				found = append(found, quadlet.Reason{Kind: quadlet.ReasonChanged, What: changed})
@@ -469,7 +469,7 @@ func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, 
 		}
 	}
 	if resets = union(resets, meta.Resets); len(resets) > 0 {
-		found = append(found, quadlet.Reason{Kind: quadlet.ReasonReset, What: services.ResetPhrase(resets)})
+		found = append(found, quadlet.Reason{Kind: quadlet.ReasonReset, What: apps.ResetPhrase(resets)})
 	}
 	if found = append(found, extra...); len(found) > 0 {
 		return prev, found
@@ -513,21 +513,21 @@ func addReasons(ctx context.Context, x Executor, point quadlet.SnapshotEntry, rs
 func writeMeta(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta, what string) bool {
 	b, err := json.Marshal(meta)
 	if err != nil {
-		log.Printf("ring %s: could not render %s's sidecar: %v", meta.Service, path.Base(member), err)
+		log.Printf("ring %s: could not render %s's sidecar: %v", meta.App, path.Base(member), err)
 		return false
 	}
 	sidecar := quadlet.SnapshotSidecar(member)
 	tmp := sidecar + ".tmp"
 	if err := x.WriteFile(tmp, b); err != nil {
-		log.Printf("ring %s: %s on %s failed: %v", meta.Service, what, path.Base(member), err)
+		log.Printf("ring %s: %s on %s failed: %v", meta.App, what, path.Base(member), err)
 		return false
 	}
 	if _, err := x.Run(ctx, "mv", "-f", tmp, sidecar); err != nil {
-		log.Printf("ring %s: %s on %s failed: %v", meta.Service, what, path.Base(member), err)
+		log.Printf("ring %s: %s on %s failed: %v", meta.App, what, path.Base(member), err)
 		return false
 	}
 	if _, err := x.Run(ctx, "sync", "-f", sidecar); err != nil {
-		log.Printf("ring %s: %s on %s but could not flush it: %v", meta.Service, what, path.Base(member), err)
+		log.Printf("ring %s: %s on %s but could not flush it: %v", meta.App, what, path.Base(member), err)
 		return false
 	}
 	return true
@@ -556,8 +556,8 @@ func EvaluateStarts(ctx context.Context, x Executor) {
 			continue // no volume mounted here: this node serves nothing
 		}
 		for _, n := range strings.Fields(string(out)) {
-			if service, ok := strings.CutSuffix(n, ".json"); ok && safeUnitName(service) == nil {
-				evaluatePending(ctx, x, service, time.Now())
+			if app, ok := strings.CutSuffix(n, ".json"); ok && safeUnitName(app) == nil {
+				evaluatePending(ctx, x, app, time.Now())
 			}
 		}
 	}
@@ -574,10 +574,10 @@ func EvaluateStarts(ctx context.Context, x Executor) {
 // the LIVE data and not in the start's member, which holds the undecodable original. Undoing to
 // the start would put that file back and the next boot would set it aside again, so the reset is
 // the boot's verdict on the start's data, like health.
-func evaluatePending(ctx context.Context, x Executor, service string, now time.Time) {
+func evaluatePending(ctx context.Context, x Executor, app string, now time.Time) {
 	ringMu.Lock()
 	defer ringMu.Unlock()
-	members, err := listMembers(ctx, x, service)
+	members, err := listMembers(ctx, x, app)
 	if err != nil {
 		return
 	}
@@ -590,25 +590,25 @@ func evaluatePending(ctx context.Context, x Executor, service string, now time.T
 	if pending.Member == "" {
 		return
 	}
-	h, err := serviceHealth(ctx, x, service)
+	h, err := appHealth(ctx, x, app)
 	if err != nil {
-		h = services.HealthUnknown
+		h = apps.HealthUnknown
 	}
-	if h != services.Healthy && now.Sub(pending.Meta.TakenAt) < services.HealthGate {
+	if h != apps.Healthy && now.Sub(pending.Meta.TakenAt) < apps.HealthGate {
 		return
 	}
 	h = h.Settled() // HealthGate has passed: still starting is not working
 	var extra []quadlet.Reason
-	if prev, ok := previousEvaluated(members, pending.Member); ok && h == services.Unhealthy && prev.Meta.Health != services.Unhealthy {
+	if prev, ok := previousEvaluated(members, pending.Member); ok && h == apps.Unhealthy && prev.Meta.Health != apps.Unhealthy {
 		extra = append(extra, quadlet.Reason{Kind: quadlet.ReasonUnhealthy})
 	}
 	pending.Meta.Health = h
 	if m, _, err := manifest.Parse([]byte(pending.Meta.Manifest)); err == nil {
-		live := services.Corrupt(ctx, x, m, quadlet.DataRoot(service))
-		pending.Meta.Resets = union(pending.Meta.Resets, without(live, services.Corrupt(ctx, x, m, pending.Member)))
+		live := apps.Corrupt(ctx, x, m, quadlet.DataRoot(app))
+		pending.Meta.Resets = union(pending.Meta.Resets, without(live, apps.Corrupt(ctx, x, m, pending.Member)))
 	}
 	settle(ctx, x, members, pending, extra, now)
-	pruneRing(ctx, x, service, now)
+	pruneRing(ctx, x, app, now)
 }
 
 // THE CLEAN-STOP MARKER: the one fact that says whether an app's data was FLUSHED,
@@ -633,38 +633,38 @@ func evaluatePending(ctx context.Context, x Executor, service string, now time.T
 // is killed while the unit still ends `success`. It is the same evidence the upgrade point has
 // claimed — one stop, believed — and it is strictly better than assuming every
 // start had one.
-func cleanStopPath(service string) string { return manifestDir + "/" + service + ".clean" }
+func cleanStopPath(app string) string { return manifestDir + "/" + app + ".clean" }
 
-// RecordServiceStop writes that marker, or removes it when the stop was not clean. It is what the
+// RecordAppStop writes that marker, or removes it when the stop was not clean. It is what the
 // rendered unit's ExecStopPost calls, and systemd's own SERVICE_RESULT is the evidence.
-func RecordServiceStop(ctx context.Context, x Executor, service, result string) error {
-	if err := safeUnitName(service); err != nil {
+func RecordAppStop(ctx context.Context, x Executor, app, result string) error {
+	if err := safeUnitName(app); err != nil {
 		return err
 	}
 	if result != "success" {
 		// A failed, killed or timed-out stop leaves NO claim behind. Removing rather than leaving
 		// whatever was there keeps "absent means unflushed" true after a stop that half-happened.
-		_, err := x.Run(ctx, "rm", "-f", cleanStopPath(service))
+		_, err := x.Run(ctx, "rm", "-f", cleanStopPath(app))
 		return err
 	}
-	if err := x.WriteFile(cleanStopPath(service), []byte(result+"\n")); err != nil {
+	if err := x.WriteFile(cleanStopPath(app), []byte(result+"\n")); err != nil {
 		return err
 	}
 	// Flushed to the DRBD backing for the same reason the manifest is: the node that reads this is
 	// the one that promotes after this one goes away, and a claim still sitting in the writeback
 	// window is a claim the survivor never sees.
-	_, err := x.Run(ctx, "sync", "-f", cleanStopPath(service))
+	_, err := x.Run(ctx, "sync", "-f", cleanStopPath(app))
 	return err
 }
 
 // consumeCleanStop answers "was this app's data flushed by a clean stop", and spends the
 // answer: the moment the container runs again the claim stops being true.
-func consumeCleanStop(ctx context.Context, x Executor, service string) quadlet.Consistency {
-	if _, err := x.ReadFile(cleanStopPath(service)); err != nil {
+func consumeCleanStop(ctx context.Context, x Executor, app string) quadlet.Consistency {
+	if _, err := x.ReadFile(cleanStopPath(app)); err != nil {
 		return quadlet.Crash
 	}
-	if _, err := x.Run(ctx, "rm", "-f", cleanStopPath(service)); err != nil {
-		log.Printf("ring %s: could not spend the clean-stop marker (%v); the next member may claim more than it should", service, err)
+	if _, err := x.Run(ctx, "rm", "-f", cleanStopPath(app)); err != nil {
+		log.Printf("ring %s: could not spend the clean-stop marker (%v); the next member may claim more than it should", app, err)
 	}
 	return quadlet.Quiesced
 }
@@ -683,13 +683,13 @@ func consumeCleanStop(ctx context.Context, x Executor, service string) quadlet.C
 //
 // hassRestore says whether this start is that first restart, and what to call the backup. The
 // app name has already been checked as a path element by the caller.
-func hassRestore(x Executor, service string, rawManifest []byte) (string, bool) {
+func hassRestore(x Executor, app string, rawManifest []byte) (string, bool) {
 	m, _, err := manifest.Parse(rawManifest)
 	if err != nil {
 		return "", false // a manifest we cannot read tells us nothing about markers
 	}
-	for _, rel := range services.RestoreMarkers(m) {
-		if body, err := x.ReadFile(quadlet.DataRoot(service) + "/" + rel); err == nil {
+	for _, rel := range apps.RestoreMarkers(m) {
+		if body, err := x.ReadFile(quadlet.DataRoot(app) + "/" + rel); err == nil {
 			return backupName(body), true
 		}
 	}
@@ -776,7 +776,7 @@ func takeSnapshot(ctx context.Context, x Executor, run func(string, ...string) e
 // The NAME IS THE INDEX, which is the whole reason quadlet.SnapshotMember puts a fixed-width UTC
 // stamp in it: this needs no sidecar read, no parsing of btrfs output and no walk in timestamp
 // order. A ring of a thousand members costs one listing and a sort.
-func ringMembers(ctx context.Context, x Executor, service string) []string {
+func ringMembers(ctx context.Context, x Executor, app string) []string {
 	out, err := x.Run(ctx, "ls", "-1", quadlet.SnapshotsDir)
 	if err != nil {
 		// An absent .snapshots dir is a node whose volume was just made, not a failure: there
@@ -792,7 +792,7 @@ func ringMembers(ctx context.Context, x Executor, service string) []string {
 		}
 		// Anything whose name we cannot read is somebody else's: a human's copy, a future
 		// feature's, a leftover. The ring counts — and deletes — only what it named.
-		if svc, ok := quadlet.SnapshotMemberService(n); ok && svc == service {
+		if svc, ok := quadlet.SnapshotMemberApp(n); ok && svc == app {
 			names = append(names, n)
 		}
 	}
@@ -828,20 +828,20 @@ func ringMembers(ctx context.Context, x Executor, service string) []string {
 //
 // Both sidecars go with their member, and after it: a member with no sidecar is the state the
 // take path refuses to leave behind, so the delete must not create one either.
-func pruneRing(ctx context.Context, x Executor, service string, now time.Time) {
-	members, err := listMembers(ctx, x, service)
+func pruneRing(ctx context.Context, x Executor, app string, now time.Time) {
+	members, err := listMembers(ctx, x, app)
 	if err != nil {
-		log.Printf("ring %s: could not read the ring to prune it: %v", service, err)
+		log.Printf("ring %s: could not read the ring to prune it: %v", app, err)
 		return
 	}
 	for _, member := range quadlet.RetentionPrune(members, now) {
 		n := path.Base(member)
 		if _, err := x.Run(ctx, "btrfs", "subvolume", "delete", member); err != nil {
-			log.Printf("ring %s: could not prune %s: %v", service, n, err)
+			log.Printf("ring %s: could not prune %s: %v", app, n, err)
 			continue
 		}
 		if _, err := x.Run(ctx, "rm", "-f", quadlet.SnapshotSidecar(member), quadlet.AppSidecar(member)); err != nil {
-			log.Printf("ring %s: pruned %s but left its sidecar: %v", service, n, err)
+			log.Printf("ring %s: pruned %s but left its sidecar: %v", app, n, err)
 		}
 	}
 }
@@ -867,16 +867,16 @@ func pruneRing(ctx context.Context, x Executor, service string, now time.Time) {
 // benign, and it is worth stating rather than discovering.
 func ListenInbound(ctx context.Context, x Executor) error {
 	ensureToolsOnPath()
-	if err := os.MkdirAll(services.RunDir(), 0o755); err != nil {
+	if err := os.MkdirAll(apps.RunDir(), 0o755); err != nil {
 		return fmt.Errorf("inbound: %w", err)
 	}
 	// A socket left by a previous run is not a listener -- bind would fail with EADDRINUSE on a
 	// path nothing is serving. Removing it is safe precisely because /run is tmpfs and this
 	// process is the only thing that ever binds here.
-	if err := os.Remove(services.InboundSocket()); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(apps.InboundSocket()); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("inbound: clear stale socket: %w", err)
 	}
-	ln, err := net.Listen("unix", services.InboundSocket())
+	ln, err := net.Listen("unix", apps.InboundSocket())
 	if err != nil {
 		return fmt.Errorf("inbound: listen: %w", err)
 	}
@@ -884,7 +884,7 @@ func ListenInbound(ctx context.Context, x Executor) error {
 	// container at all; the mode is what keeps every other reader on the node off it. Neither is
 	// the authentication -- that is the token -- but a channel that acts on a household's data
 	// should not be reachable by anything that merely knows the path.
-	if err := os.Chmod(services.InboundSocket(), 0o660); err != nil {
+	if err := os.Chmod(apps.InboundSocket(), 0o660); err != nil {
 		return fmt.Errorf("inbound: %w", err)
 	}
 	go func() { <-ctx.Done(); ln.Close() }()
@@ -930,7 +930,7 @@ func resolveCaller(ctx context.Context, x Executor, token string) (string, bool)
 	if len(token) < 32 {
 		return "", false
 	}
-	out, err := x.Run(ctx, "ls", "-1", services.RunDir())
+	out, err := x.Run(ctx, "ls", "-1", apps.RunDir())
 	if err != nil {
 		return "", false
 	}
@@ -938,7 +938,7 @@ func resolveCaller(ctx context.Context, x Executor, token string) (string, bool)
 	// dirs. Nothing needs to tell them apart: an entry with no readable token inside it is
 	// simply not a candidate, so the filter is the read itself.
 	for _, name := range strings.Fields(string(out)) {
-		want, err := x.ReadFile(services.InboundTokenPath(name))
+		want, err := x.ReadFile(apps.InboundTokenPath(name))
 		if err != nil {
 			continue
 		}
@@ -961,15 +961,15 @@ func ToolsBin() string { return toolsBin() }
 // outside this package. The inbound channel reaches the same code through its own verb; this is
 // the entry point the generic pre-start hook uses, on a node where nothing is inside a container
 // yet to ask. The same start is when the app's cache is emptied, if its space is short.
-func TakeStartMember(ctx context.Context, x Executor, service string) (string, error) {
+func TakeStartMember(ctx context.Context, x Executor, app string) (string, error) {
 	ensureToolsOnPath()
 	defer signalDoor(ctx, x)
-	if done, err := cacheAtStart(ctx, x, service); err != nil {
-		log.Printf("service-starting %s: the cache: %v", service, err)
+	if done, err := cacheAtStart(ctx, x, app); err != nil {
+		log.Printf("service-starting %s: the cache: %v", app, err)
 	} else if done != "" {
-		log.Printf("service-starting %s: %s", service, done)
+		log.Printf("service-starting %s: %s", app, done)
 	}
-	return startingMember(ctx, x, service, true)
+	return startingMember(ctx, x, app, true)
 }
 
 // signalDoor tells the front door an app is starting, so it asks again whether that app
@@ -1012,21 +1012,21 @@ func ensureToolsOnPath() {
 // member it could not label, so one here means something outside the ring made it -- a human's
 // copy, an interrupted older build -- and the history must not offer a household a rollback point
 // whose code identity nobody knows.
-func listMembers(ctx context.Context, x Executor, service string) ([]quadlet.SnapshotEntry, error) {
-	if err := safeUnitName(service); err != nil {
+func listMembers(ctx context.Context, x Executor, app string) ([]quadlet.SnapshotEntry, error) {
+	if err := safeUnitName(app); err != nil {
 		return nil, err
 	}
 	var out []quadlet.SnapshotEntry
-	for _, n := range ringMembers(ctx, x, service) {
+	for _, n := range ringMembers(ctx, x, app) {
 		member := quadlet.SnapshotsDir + n
 		raw, err := x.ReadFile(quadlet.SnapshotSidecar(member))
 		if err != nil {
-			log.Printf("ring %s: %s has no readable sidecar; not offering it", service, n)
+			log.Printf("ring %s: %s has no readable sidecar; not offering it", app, n)
 			continue
 		}
 		var meta quadlet.SnapshotMeta
 		if err := json.Unmarshal(raw, &meta); err != nil {
-			log.Printf("ring %s: %s has an unreadable sidecar (%v); not offering it", service, n, err)
+			log.Printf("ring %s: %s has an unreadable sidecar (%v); not offering it", app, n, err)
 			continue
 		}
 		_, err = x.ReadFile(quadlet.AppSidecar(member))

@@ -11,7 +11,7 @@ func platformChecks(f HostFacts) []Check {
 		cs = append(cs, Check{"kvm", Pass, "/dev/kvm available", ""})
 	case !f.VirtFlags:
 		cs = append(cs, Check{"kvm", Refuse, "no CPU virtualization (vmx/svm) detected",
-			"enable VT-x / AMD-V in the BIOS/UEFI (often labelled \"Virtualization\" or \"SVM Mode\"); if this CPU truly lacks it, it can't be a briard node"})
+			"enable VT-x / AMD-V in the BIOS/UEFI (often labelled \"Virtualization\" or \"SVM Mode\"); if this CPU truly lacks it, it can't run briard"})
 	default:
 		cs = append(cs, Check{"kvm", Refuse, "CPU supports virtualization but /dev/kvm is absent",
 			"load the KVM module: `sudo modprobe kvm_intel` (Intel) or `sudo modprobe kvm_amd` (AMD)"})

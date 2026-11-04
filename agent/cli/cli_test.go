@@ -11,9 +11,9 @@ import (
 
 	"time"
 
+	"briard.io/agent/apps"
 	"briard.io/agent/install"
 	"briard.io/agent/quadlet"
-	"briard.io/agent/services"
 	"briard.io/internal/testsock"
 	"briard.io/shared/api"
 )
@@ -369,12 +369,12 @@ func TestHelpForACommandPrintsItsOwnOptions(t *testing.T) {
 	}
 }
 
-// TestServiceInstallPrintsWhereToReachIt: the CLI relays the agent's address line verbatim. It
+// TestAppInstallPrintsWhereToReachIt: the CLI relays the agent's address line verbatim. It
 // does NOT re-derive the URL -- the agent owns the manifest's port and the node's published name,
 // so there is exactly one place the address can be wrong. The empty-Detail case is the contract
 // with an older agent (and with a witness, which promises no URL): print the outcome, skip the
 // line, never print a bare "reach it at".
-func TestServiceInstallPrintsWhereToReachIt(t *testing.T) {
+func TestAppInstallPrintsWhereToReachIt(t *testing.T) {
 	for _, tc := range []struct {
 		name, detail, want, absent string
 	}{
@@ -486,15 +486,15 @@ func TestAppUndoNamesThePointExactly(t *testing.T) {
 	const point = "/var/lib/briard/data/.snapshots/home-assistant-upgrade-20260920T101500Z"
 	sock, sent := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: `restored "x", data only`})
 	var out, errb bytes.Buffer
-	if code := runService(context.Background(), []string{"undo", "-sock", sock, point}, &out, &errb); code != 0 {
+	if code := runApp(context.Background(), []string{"undo", "-sock", sock, point}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 	}
 	ds := sent()
 	if len(ds) != 1 {
 		t.Fatalf("sent %d directives, want 1: %+v", len(ds), ds)
 	}
-	if ds[0].Kind != api.DirectiveServiceRestore {
-		t.Errorf("kind = %q, want %q", ds[0].Kind, api.DirectiveServiceRestore)
+	if ds[0].Kind != api.DirectiveAppRestore {
+		t.Errorf("kind = %q, want %q", ds[0].Kind, api.DirectiveAppRestore)
 	}
 	if ds[0].Payload != point {
 		t.Errorf("payload = %q, want the point verbatim %q", ds[0].Payload, point)
@@ -507,7 +507,7 @@ func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
 	entries := []quadlet.SnapshotEntry{{
 		Member: "/var/lib/briard/data/.snapshots/home-assistant-app-update-before-20260920T101500Z",
 		Meta: quadlet.SnapshotMeta{
-			Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore,
+			App: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore,
 			TakenAt: time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC),
 			Event:   &quadlet.Event{At: time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC), Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to 2026.7.1"}}},
 		},
@@ -515,7 +515,7 @@ func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
 	body, _ := json.Marshal(entries)
 	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(body)})
 	var out, errb bytes.Buffer
-	if code := runService(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
+	if code := runApp(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 	}
 	got := out.String()
@@ -543,7 +543,7 @@ func TestAppHistoryTellsTheTwoKindsOfPointApart(t *testing.T) {
 	body, _ := json.Marshal(entries)
 	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(body)})
 	var out, errb bytes.Buffer
-	if code := runService(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
+	if code := runApp(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 	}
 	for _, line := range strings.Split(out.String(), "\n") {
@@ -564,7 +564,7 @@ func TestAppHistoryTellsTheTwoKindsOfPointApart(t *testing.T) {
 func TestAppHistoryOnAnAppWithNoPoints(t *testing.T) {
 	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "[]"})
 	var out, errb bytes.Buffer
-	if code := runService(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
+	if code := runApp(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0 -- no history is not a failure (stderr: %s)", code, errb.String())
 	}
 	if !strings.Contains(out.String(), "no history yet") {
@@ -586,7 +586,7 @@ func TestAppHistoryShowsEventsNotSamples(t *testing.T) {
 	body, _ := json.Marshal(entries)
 	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(body)})
 	var out, errb bytes.Buffer
-	if code := runService(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
+	if code := runApp(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d (stderr: %s)", code, errb.String())
 	}
 	got := out.String()
@@ -604,15 +604,15 @@ func TestAppHistoryMarksAnAppThatDidNotStart(t *testing.T) {
 	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)
 	point := "/var/lib/briard/data/.snapshots/home-assistant-app-update-before-20260920T101500Z"
 	entries := []quadlet.SnapshotEntry{
-		{Member: point, Meta: quadlet.SnapshotMeta{Service: "home-assistant", TakenAt: at, Consistency: quadlet.Quiesced,
+		{Member: point, Meta: quadlet.SnapshotMeta{App: "home-assistant", TakenAt: at, Consistency: quadlet.Quiesced,
 			Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonUnhealthy}}}}},
 		{Member: "/var/lib/briard/data/.snapshots/home-assistant-start-20260920T101600Z",
-			Meta: quadlet.SnapshotMeta{TakenAt: at.Add(time.Minute), Health: services.Unhealthy}},
+			Meta: quadlet.SnapshotMeta{TakenAt: at.Add(time.Minute), Health: apps.Unhealthy}},
 	}
 	body, _ := json.Marshal(entries)
 	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(body)})
 	var out, errb bytes.Buffer
-	if code := runService(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
+	if code := runApp(context.Background(), []string{"history", "-sock", sock, "home-assistant"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d (stderr: %s)", code, errb.String())
 	}
 	if !strings.Contains(out.String(), "  ! home-assistant failed to start cleanly after this change.\n") || !strings.Contains(out.String(), "is not working; its last healthy state is "+point) {

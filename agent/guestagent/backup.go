@@ -209,7 +209,7 @@ type backupRequest struct {
 // Neither set is a node with nothing to back up.
 type BackupReport struct {
 	Snapshot string   `json:"snapshot,omitempty"`
-	Services []string `json:"services,omitempty"`
+	Apps     []string `json:"services,omitempty"`
 	// FilesSnapshot is the household's files' snapshot and FilesAreas the apps whose files it holds;
 	// Files and BytesAdded count both snapshots.
 	FilesSnapshot string   `json:"filesSnapshot,omitempty"`
@@ -347,7 +347,7 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 	// THE TREE. The copies first: a run that died left them (and they may hold the host's
 	// secrets), and they are never a mount. Then a mount a dead run left is in the way of this
 	// one; not being mounted is the ordinary answer.
-	var mounted, services []string
+	var mounted, apps []string
 	defer func() {
 		for _, p := range mounted {
 			if _, err := run("umount", p); err != nil {
@@ -376,7 +376,7 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 			return fail(err)
 		}
 		mounted = append(mounted, p)
-		services = append(services, svc)
+		apps = append(apps, svc)
 		if _, err := run("cp", "-a", quadlet.SnapshotSidecar(member), backupFacts+"/members/"+svc+".json"); err != nil {
 			return fail(err)
 		}
@@ -427,7 +427,7 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 	// member.
 	out, err := restic("backup", "--json", "--quiet", "--host", group, "--tag", backupDataTag, backupData, backupFacts)
 	rep := backupSummary(out)
-	rep.Services = services
+	rep.Apps = apps
 	if err != nil {
 		rep.Error = err.Error()
 		log.Printf("backup: %v", err)
@@ -473,7 +473,7 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 		rep.Error = strings.TrimSpace(rep.Error + "\n" + err.Error())
 		log.Printf("backup: %v", err)
 	}
-	log.Printf("backup: snapshot %s of %s: %d files, %d bytes added", rep.Snapshot, strings.Join(services, ", "), rep.Files, rep.BytesAdded)
+	log.Printf("backup: snapshot %s of %s: %d files, %d bytes added", rep.Snapshot, strings.Join(apps, ", "), rep.Files, rep.BytesAdded)
 	if rep.FilesSnapshot != "" {
 		log.Printf("backup: snapshot %s of the files of %s", rep.FilesSnapshot, strings.Join(rep.FilesAreas, ", "))
 	}
@@ -526,7 +526,7 @@ func Backup(ctx context.Context, x Executor, url string) BackupReport {
 type backupRestoreRequest struct {
 	Repository string `json:"repository"`
 	Snapshot   string `json:"snapshot"`
-	Service    string `json:"service"`
+	App        string `json:"service"`
 }
 
 // backupSnapshotID is what a restic snapshot may be named by: a (prefix of a) hex id, or latest.
@@ -539,7 +539,7 @@ func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreReque
 	if !backupSnapshotID.MatchString(req.Snapshot) {
 		return "", fmt.Errorf("%q is not a snapshot id", req.Snapshot)
 	}
-	if err := safeUnitName(req.Service); err != nil {
+	if err := safeUnitName(req.App); err != nil {
 		return "", err
 	}
 	run := func(name string, args ...string) ([]byte, error) {
@@ -569,24 +569,24 @@ func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreReque
 	if req.Snapshot == "latest" {
 		apps = []string{"--tag", backupDataTag}
 	}
-	raw, err := restic(append([]string{"dump", req.Snapshot, backupFacts + "/members/" + req.Service + ".json"}, apps...)...)
+	raw, err := restic(append([]string{"dump", req.Snapshot, backupFacts + "/members/" + req.App + ".json"}, apps...)...)
 	if err != nil {
-		return "", fmt.Errorf("that night has no %s: %w", req.Service, err)
+		return "", fmt.Errorf("that night has no %s: %w", req.App, err)
 	}
 	var meta quadlet.SnapshotMeta
-	if err := json.Unmarshal(raw, &meta); err != nil || meta.Service != req.Service || meta.Manifest == "" {
-		return "", fmt.Errorf("the backup's sidecar for %s does not describe it (%v)", req.Service, err)
+	if err := json.Unmarshal(raw, &meta); err != nil || meta.App != req.App || meta.Manifest == "" {
+		return "", fmt.Errorf("the backup's sidecar for %s does not describe it (%v)", req.App, err)
 	}
 	meta.Trigger, meta.Pending = quadlet.TriggerFromBackup, false
 	sidecar, err := json.Marshal(meta)
 	if err != nil {
 		return "", err
 	}
-	member := quadlet.SnapshotMember(req.Service, quadlet.TriggerFromBackup, now)
+	member := quadlet.SnapshotMember(req.App, quadlet.TriggerFromBackup, now)
 	if _, err := x.Run(ctx, "btrfs", "subvolume", "show", member); err == nil {
 		return "", fmt.Errorf("%s already exists -- refusing to replace a ring member", member)
 	}
-	group, err := areaGroup(ctx, x, quadlet.DataRoot(req.Service))
+	group, err := areaGroup(ctx, x, quadlet.DataRoot(req.App))
 	if err != nil {
 		return "", err
 	}
@@ -599,7 +599,7 @@ func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreReque
 		}
 		return "", fmt.Errorf("%w (nothing was left in the ring)", err)
 	}
-	if _, err := restic(append([]string{"restore", req.Snapshot + ":" + backupData + "/" + req.Service, "--target", member}, apps...)...); err != nil {
+	if _, err := restic(append([]string{"restore", req.Snapshot + ":" + backupData + "/" + req.App, "--target", member}, apps...)...); err != nil {
 		return undo(err)
 	}
 	if _, err := run("btrfs", "property", "set", "-ts", member, "ro", "true"); err != nil {
@@ -611,14 +611,14 @@ func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreReque
 	if _, err := run("sync", "-f", dataMountRoot); err != nil {
 		return undo(err)
 	}
-	log.Printf("backup: %s of %s from snapshot %s is in the ring as %s", meta.TakenAt.Format(time.RFC3339), req.Service, req.Snapshot, member)
+	log.Printf("backup: %s of %s from snapshot %s is in the ring as %s", meta.TakenAt.Format(time.RFC3339), req.App, req.Snapshot, member)
 	return member, nil
 }
 
 // RestoreBackupMember is one materialisation in line FOR A GUEST WITH NO HOST, as Backup is:
 // the agent-less rigs prove it against a real ring and a real store.
-func RestoreBackupMember(ctx context.Context, x Executor, url, snapshot, service string) (string, error) {
-	return restoreBackupMember(ctx, x, backupRestoreRequest{Repository: url, Snapshot: snapshot, Service: service}, time.Now())
+func RestoreBackupMember(ctx context.Context, x Executor, url, snapshot, app string) (string, error) {
+	return restoreBackupMember(ctx, x, backupRestoreRequest{Repository: url, Snapshot: snapshot, App: app}, time.Now())
 }
 
 // THE LIST, for the Backup page's restore: every backup the repository holds, newest first, each
@@ -720,10 +720,10 @@ func backupApps(archive []byte) []dashboard.BackupApp {
 			break
 		}
 		var meta quadlet.SnapshotMeta
-		if json.Unmarshal(raw, &meta) != nil || meta.Service+".json" != path.Base(h.Name) || meta.Manifest == "" {
+		if json.Unmarshal(raw, &meta) != nil || meta.App+".json" != path.Base(h.Name) || meta.Manifest == "" {
 			continue
 		}
-		app := dashboard.BackupApp{Name: meta.Service, TakenAt: meta.TakenAt}
+		app := dashboard.BackupApp{Name: meta.App, TakenAt: meta.TakenAt}
 		if m, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
 			app.Version = m.Version
 		}

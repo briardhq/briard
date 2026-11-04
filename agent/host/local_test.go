@@ -241,7 +241,7 @@ func TestStatusAnswersFromTheLastTick(t *testing.T) {
 		t.Errorf("degraded = %+v, want one open", got)
 	}
 	for kind, updating := range map[string]bool{api.DirectiveAgentUpdate: true, api.DirectiveUpgradeSystem: true,
-		install.DirectiveUpdateVM: true, api.DirectiveServiceInstall: false} {
+		install.DirectiveUpdateVM: true, api.DirectiveAppInstall: false} {
 		if _, ok := cfg.acts.claim(kind); !ok {
 			t.Fatal("the lane is held")
 		}
@@ -285,8 +285,8 @@ func TestStatusCarriesOfferedUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{ServiceCache: t.TempDir()}
-	if err := cfg.cacheService("home-assistant", raw); err != nil {
+	cfg := Config{AppCache: t.TempDir()}
+	if err := cfg.cacheApp("home-assistant", raw); err != nil {
 		t.Fatal(err)
 	}
 	f, cat := newFakeCatalog(t)

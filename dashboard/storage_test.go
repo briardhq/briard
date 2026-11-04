@@ -34,9 +34,9 @@ func answerUsage(port *fakePort, members string) *usageAnswers {
 			d := port.asked[len(port.asked)-1]
 			port.mu.Unlock()
 			switch d.Kind {
-			case api.DirectiveServiceMembers:
+			case api.DirectiveAppMembers:
 				port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: members}
-			case api.DirectiveServiceUsage:
+			case api.DirectiveAppUsage:
 				u.mu.Lock()
 				raw, _ := json.Marshal(u.usage)
 				o := api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(raw)}
@@ -45,7 +45,7 @@ func answerUsage(port *fakePort, members string) *usageAnswers {
 				}
 				u.mu.Unlock()
 				port.answer <- o
-			case api.DirectiveServiceCacheEmpty:
+			case api.DirectiveAppCacheEmpty:
 				port.answer <- api.DirectiveOutcome{State: api.OutcomeDone}
 			default:
 				port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "not this test's"}
@@ -73,7 +73,7 @@ func TestTheStorageCardLoadsItselfAndStopsAskingOnceMeasured(t *testing.T) {
 	}
 	port.mu.Lock()
 	for _, d := range port.asked {
-		if d.Kind == api.DirectiveServiceUsage {
+		if d.Kind == api.DirectiveAppUsage {
 			t.Error("rendering the page asked what the app stores; the card asks for itself")
 		}
 	}
@@ -172,7 +172,7 @@ func TestTheCacheHasItsRowAndAClear(t *testing.T) {
 	var asked []api.Directive
 	port.mu.Lock()
 	for _, d := range port.asked {
-		if d.Kind == api.DirectiveServiceCacheEmpty {
+		if d.Kind == api.DirectiveAppCacheEmpty {
 			asked = append(asked, d)
 		}
 	}

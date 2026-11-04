@@ -166,7 +166,7 @@ pkgs.testers.runNixOSTest {
     before = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
     host.succeed(f"systemd-run --unit=inst --collect ${pkgs.bash}/bin/sh -c '${agent}/bin/briard-agent app install {svc} > /tmp/inst.out 2>&1'")
     try:
-        host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{before}' | grep -q 'service install {svc}: converged from the volume; waiting for health'", timeout=600)
+        host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{before}' | grep -q 'app install {svc}: converged from the volume; waiting for health'", timeout=600)
     except Exception:
         print(host.succeed("cat /tmp/inst.out || true"))
         raise

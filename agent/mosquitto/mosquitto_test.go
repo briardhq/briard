@@ -104,9 +104,9 @@ func TestPrepareMaterialisesTheConfig(t *testing.T) {
 	}
 }
 
-// TestPrepareTouchesNothingForOtherServices: the registry dispatches on the name, and this
+// TestPrepareTouchesNothingForOtherApps: the registry dispatches on the name, and this
 // package's guard is the second half of that. Home Assistant must not get a mosquitto config.
-func TestPrepareTouchesNothingForOtherServices(t *testing.T) {
+func TestPrepareTouchesNothingForOtherApps(t *testing.T) {
 	m := broker()
 	m.Name = "home-assistant"
 	f := &fake{}
@@ -114,7 +114,7 @@ func TestPrepareTouchesNothingForOtherServices(t *testing.T) {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if len(f.files) != 0 || len(f.runs) != 0 {
-		t.Errorf("a service that is not %s was touched: files=%v runs=%v", Name, f.files, f.runs)
+		t.Errorf("an app that is not %s was touched: files=%v runs=%v", Name, f.files, f.runs)
 	}
 }
 
@@ -148,7 +148,7 @@ func TestVolumesBindTheConfigReadOnly(t *testing.T) {
 	other := broker()
 	other.Name = "home-assistant"
 	if v := Volumes(other, other.Containers[0]); v != nil {
-		t.Errorf("another service was handed mosquitto's config: %v", v)
+		t.Errorf("another app was handed mosquitto's config: %v", v)
 	}
 	sidecar := m.Containers[0]
 	sidecar.Primary = false

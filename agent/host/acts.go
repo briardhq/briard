@@ -79,28 +79,28 @@ var (
 		leaseRelaunch:              true, // internal: the guest takes a new address (lease.go)
 	}
 	offLoopActs = map[string]bool{
-		api.DirectiveServiceInstall:    true,
-		api.DirectiveServicePrewarm:    true,
-		api.DirectiveServiceRestore:    true,
-		api.DirectiveServiceCacheEmpty: true, // stops the app and starts it again, as a restore does
-		api.DirectiveBackupRestore:     true, // a restic restore then an app restore: an act, like the one it ends in
-		api.DirectiveHandover:          true,
-		api.DirectiveSync:              true,
-		api.DirectiveCert:              true,
-		api.DirectiveAgentUpdate:       true,
-		install.DirectiveUpdateVM:      true,
-		api.DirectiveUpgradeSystem:     true,
-		api.DirectiveConfigSet:         true,
-		api.DirectiveBackupFolder:      true, // a read, then config.env written: one at a time, as config-set
-		api.DirectivePair:              true,
-		api.DirectiveUnpair:            true,
-		api.DirectiveRescue:            true,
+		api.DirectiveAppInstall:    true,
+		api.DirectiveAppPrewarm:    true,
+		api.DirectiveAppRestore:    true,
+		api.DirectiveAppCacheEmpty: true, // stops the app and starts it again, as a restore does
+		api.DirectiveBackupRestore: true, // a restic restore then an app restore: an act, like the one it ends in
+		api.DirectiveHandover:      true,
+		api.DirectiveSync:          true,
+		api.DirectiveCert:          true,
+		api.DirectiveAgentUpdate:   true,
+		install.DirectiveUpdateVM:  true,
+		api.DirectiveUpgradeSystem: true,
+		api.DirectiveConfigSet:     true,
+		api.DirectiveBackupFolder:  true, // a read, then config.env written: one at a time, as config-set
+		api.DirectivePair:          true,
+		api.DirectiveUnpair:        true,
+		api.DirectiveRescue:        true,
 	}
 	offLoopPulls = map[string]bool{
-		api.DirectiveDoctor:         true,
-		api.DirectiveServiceMembers: true,
-		api.DirectiveServiceUsage:   true, // answers at once; the walk is the guest's background
-		api.DirectiveBackupList:     true, // restic reads the repository: seconds
+		api.DirectiveDoctor:     true,
+		api.DirectiveAppMembers: true,
+		api.DirectiveAppUsage:   true, // answers at once; the walk is the guest's background
+		api.DirectiveBackupList: true, // restic reads the repository: seconds
 		// `briard backup` waits on the scheduler's run, minutes to an hour: off the loop, and holding
 		// no act's turn -- the run is the scheduler's, in the guest's background, as at 02:00.
 		api.DirectiveBackupNow:   true,
@@ -251,7 +251,7 @@ func (cfg *Config) finish(res actResult, pending *[]api.DirectiveOutcome, logf f
 	} else if res.o.ID != "" {
 		*pending = append(*pending, res.o)
 	}
-	cfg.adoptInstalledServices(res.d, res.o, logf)
+	cfg.adoptInstalledApps(res.d, res.o, logf)
 }
 
 // state reports the kind of the act in flight ("" when none) and whether the agent has begun to

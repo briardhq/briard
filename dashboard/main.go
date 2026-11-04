@@ -122,7 +122,7 @@ func main() {
 	handoffPath := flag.String("handoff", dashboard.HandoffPath, "the one-time code the host handed over")
 	statePath := flag.String("state", "/var/lib/briard/dashboard", "device registry + the handed-over account (on the volume)")
 	tokenPath := flag.String("hass-token", hass.TokenPath, "the control channel's Home Assistant token")
-	adminPortPath := flag.String("admin-port", dashboard.AdminPortDev, "the guest end of the host's admin port (a service install rides it)")
+	adminPortPath := flag.String("admin-port", dashboard.AdminPortDev, "the guest end of the host's admin port (an app install rides it)")
 	layersPath := flag.String("layers", defaultPullPaths.layers, "podman's layer store, for pull progress")
 	tmpPath := flag.String("pull-tmp", defaultPullPaths.tmp, "where the pull units' PrivateTmp roots live, for pull progress")
 	testLaunch := flag.Bool("test-launch", false, "the push protocol's cheap self-test: exec, parse, bind-and-release a loopback port, exit 0")
@@ -296,7 +296,7 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.refuse(w, r)
 			return
 		}
-		name := appService(r.URL.Path)
+		name := appOfPath(r.URL.Path)
 		if !a.knows(name) {
 			http.NotFound(w, r)
 			return
@@ -789,7 +789,7 @@ func (a *app) findHomeAssistant() *homeAssistant {
 		log.Printf("dashboard: routes: %v", err)
 		return nil
 	}
-	for _, s := range t.Services {
+	for _, s := range t.Apps {
 		if s.Name != hass.Name {
 			continue
 		}

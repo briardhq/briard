@@ -148,11 +148,11 @@ func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupSc
 		logf("backup: FAILED (snapshot %q): %s", rep.Snapshot, rep.Error)
 		cfg.ended(started, true, rep.Error)
 	case rep.Snapshot == "":
-		logf("backup: nothing to back up (no service has a snapshot yet)")
+		logf("backup: nothing to back up (no app has a snapshot yet)")
 		cfg.ended(started, false, "nothing to back up: no app has a snapshot yet")
 		return
 	default:
-		what := strings.Join(rep.Services, ", ")
+		what := strings.Join(rep.Apps, ", ")
 		if len(rep.FilesAreas) > 0 {
 			what += " and the files of " + strings.Join(rep.FilesAreas, ", ")
 		}
@@ -776,25 +776,25 @@ func isResticRepository(dir string) bool {
 // backupRestorer is the slice of the guest a restore from the backup costs beyond what a restore
 // of a ring member already does.
 type backupRestorer interface {
-	DataBackupRestore(ctx context.Context, url, snapshot, service string) (string, error)
+	DataBackupRestore(ctx context.Context, url, snapshot, app string) (string, error)
 	SupportsBackupRestore() bool
 }
 
 // applyBackupRestore puts one app back to one night of the backup: the night's copy becomes a
 // ring member (the guest's data.backup.restore), and the member is restored as any member is
-// (applyServiceRestore) -- so the images, the undo point, the stop, the swap, the manifest and the
+// (applyAppRestore) -- so the images, the undo point, the stop, the swap, the manifest and the
 // converge are the one path History already has, and the restore is a row that can be undone.
 //
 // THE MATERIALISATION COSTS NOTHING THE HOUSEHOLD CAN SEE: the app keeps running while the
 // night is read in, and a night that cannot be read leaves the ring as it was. Everything that can
-// refuse, refuses before applyServiceRestore stops anything.
-func (cfg Config) applyBackupRestore(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+// refuse, refuses before applyAppRestore stops anything.
+func (cfg Config) applyBackupRestore(ctx context.Context, g appInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
 	var req api.BackupRestore
-	if err := json.Unmarshal([]byte(d.Payload), &req); err != nil || req.Service == "" {
-		return failed("the payload does not name a service and a night")
+	if err := json.Unmarshal([]byte(d.Payload), &req); err != nil || req.App == "" {
+		return failed("the payload does not name an app and a night")
 	}
 	if req.Snapshot == "" {
 		req.Snapshot = "latest"
@@ -808,13 +808,13 @@ func (cfg Config) applyBackupRestore(ctx context.Context, g serviceInstaller, d 
 	}
 	url := "http://" + net.JoinHostPort(cfg.hostNodeIP(), backupStorePort) + "/"
 	mctx, cancel := cfg.beat.budget(ctx, installBudget)
-	member, err := br.DataBackupRestore(mctx, url, req.Snapshot, req.Service)
+	member, err := br.DataBackupRestore(mctx, url, req.Snapshot, req.App)
 	cancel()
 	if err != nil {
-		return failed(fmt.Sprintf("read %s's copy from the backup (nothing was changed): %v", req.Service, err))
+		return failed(fmt.Sprintf("read %s's copy from the backup (nothing was changed): %v", req.App, err))
 	}
-	logf("backup restore %s: night %s is in the ring as %s; restoring it", req.Service, req.Snapshot, member)
-	return cfg.applyServiceRestore(ctx, g, api.Directive{ID: d.ID, Kind: api.DirectiveServiceRestore, Payload: member}, logf)
+	logf("backup restore %s: night %s is in the ring as %s; restoring it", req.App, req.Snapshot, member)
+	return cfg.applyAppRestore(ctx, g, api.Directive{ID: d.ID, Kind: api.DirectiveAppRestore, Payload: member}, logf)
 }
 
 // backupLister is the slice of the guest the Backup page's list costs.

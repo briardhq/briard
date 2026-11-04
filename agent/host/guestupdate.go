@@ -101,7 +101,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		if errors.Is(err, install.ErrBriardTooOld) {
 			// The one refusal an owner must hear about: it is the support window closing on
 			// this node, and the remedy (update briard, or reinstall) is theirs to take.
-			escalate(ctx, n, logf, "this node", "guest OS update", want.Version, err)
+			escalate(ctx, n, logf, "this machine", "guest OS update", want.Version, err)
 		}
 		logf("directive update-vm refused: %v", err)
 		return failed(err.Error())
@@ -123,7 +123,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 	defer cancel()
 	if err := cfg.stageGuestImage(uctx, f, want, logf); err != nil {
 		logf("directive update-vm: staging failed, node unchanged: %v", err)
-		escalate(ctx, n, logf, "this node", "guest OS image stage", want.Version, err)
+		escalate(ctx, n, logf, "this machine", "guest OS image stage", want.Version, err)
 		return failed(err.Error())
 	}
 	back, err := up.ImageUpgrade(uctx, want)
@@ -133,11 +133,11 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeRolledBack, Detail: err.Error()}
 	case err != nil && back:
 		logf("directive update-vm rolled back: %v", err)
-		escalate(ctx, n, logf, "this node", "guest OS upgrade", want.Version, err)
+		escalate(ctx, n, logf, "this machine", "guest OS upgrade", want.Version, err)
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeRolledBack, Detail: err.Error()}
 	case err != nil:
 		logf("directive update-vm FAILED without a clean rollback: %v", err)
-		escalate(ctx, n, logf, "this node", "guest OS upgrade", want.Version, err)
+		escalate(ctx, n, logf, "this machine", "guest OS upgrade", want.Version, err)
 		return failed(err.Error())
 	}
 	cfg.rememberGuestRelease(raw, logf)

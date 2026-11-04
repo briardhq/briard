@@ -87,7 +87,7 @@ func TestContainerSupervisesItself(t *testing.T) {
 		t.Fatalf("container unit has no [Service] section — quadlet has nothing to pass through:\n%s", c)
 	}
 	if !strings.Contains(c, "Restart=always") {
-		t.Fatalf("container unit does not set Restart=always — a crashed service would stay dead:\n%s", c)
+		t.Fatalf("container unit does not set Restart=always — a crashed app would stay dead:\n%s", c)
 	}
 	// Past systemd's default start-rate limit (5 per 10s), so a crash-loop keeps retrying
 	// instead of latching to `failed` on a transient cause.
@@ -115,7 +115,7 @@ func TestNoAutoUpdate(t *testing.T) {
 //
 // This test was the inverse until 2026-08-29 (it REQUIRED [Install] on .image), which is why it
 // held while the nightly's os-reboot and os-upgrade both rolled back. Warming is a caller's job,
-// guarded by `podman image exists`; see ServiceWarm/warmImage.
+// guarded by `podman image exists`; see AppWarm/warmImage.
 func TestNothingAutoStarts(t *testing.T) {
 	r := mustRender(t, ha())
 	for name, body := range r.Files {
@@ -123,7 +123,7 @@ func TestNothingAutoStarts(t *testing.T) {
 			t.Fatalf("%s carries [Install] — systemd, not a guarded caller, would start it:\n%s", name, body)
 		}
 	}
-	// The pre-warm unit must still EXIST and name its image: it is what ServiceWarm starts when
+	// The pre-warm unit must still EXIST and name its image: it is what AppWarm starts when
 	// the guard says the image is genuinely absent.
 	img := r.Files["briard-home-assistant-ha.image"]
 	if !strings.Contains(img, "[Image]") || !strings.Contains(img, "Image=") {
@@ -216,7 +216,7 @@ func TestUnitOrder(t *testing.T) {
 // must not be handed a directory it will never write.
 //
 // Deliberately NOT the ha() fixture: `home-assistant` is a name the renderer knows, and it always
-// carries the control-channel binds (see TestControlChannelIsKeyedOnTheServiceName). This
+// carries the control-channel binds (see TestControlChannelIsKeyedOnTheAppName). This
 // assertion is about statelessness, so it needs an app the product holds no knowledge about.
 func TestStatelessContainerGetsNoVolume(t *testing.T) {
 	m := ha()
@@ -227,18 +227,18 @@ func TestStatelessContainerGetsNoVolume(t *testing.T) {
 		t.Fatalf("stateless container got a Volume:\n%s", r)
 	}
 	if dirs := Subdirs(m); len(dirs) != 0 {
-		t.Fatalf("Subdirs = %v, want none for a stateless service", dirs)
+		t.Fatalf("Subdirs = %v, want none for a stateless app", dirs)
 	}
 }
 
-// TestControlChannelIsKeyedOnTheServiceName: Home Assistant's primary container gets the two
+// TestControlChannelIsKeyedOnTheAppName: Home Assistant's primary container gets the two
 // binds its control channel needs (agent/hass), and nothing else does.
 //
 // The manifest cannot ask for a host bind — the schema refuses them so a catalog entry cannot
 // reach the host — so these come from the product, keyed on the catalog name. The negative half
 // is the one that matters: an identical manifest under any other name must render an identical
 // unit WITHOUT them, or "app-specific by design" would be a comment rather than a property.
-func TestControlChannelIsKeyedOnTheServiceName(t *testing.T) {
+func TestControlChannelIsKeyedOnTheAppName(t *testing.T) {
 	binds := []string{
 		"Volume=/run/briard/home-assistant:/briard:ro",
 		"Volume=/run/briard/home-assistant/run:/etc/services.d/home-assistant/run:ro",
@@ -254,7 +254,7 @@ func TestControlChannelIsKeyedOnTheServiceName(t *testing.T) {
 	other.Name = "sample-app"
 	got = mustRender(t, other).Files["briard-sample-app-ha.container"]
 	if strings.Contains(got, "/run/briard/home-assistant") {
-		t.Fatalf("a service that is not home-assistant got the control channel:\n%s", got)
+		t.Fatalf("an app that is not home-assistant got the control channel:\n%s", got)
 	}
 
 	// And only the PRIMARY container: the mint runs inside the one container that is Home
@@ -351,7 +351,7 @@ func TestRenderRefusesInvalid(t *testing.T) {
 // The negative half is the same one the control channel gets: the same manifest under
 // another name renders without it.
 //
-// It is here rather than only in agent/services because THIS is where a bind reaches a unit file:
+// It is here rather than only in agent/apps because THIS is where a bind reaches a unit file:
 // a registry that returned the right string and a renderer that dropped it would pass every test
 // in that package and leave the broker reading the config it ships with — persistence off,
 // management API on every interface.
@@ -377,7 +377,7 @@ func TestBrokerRendersItsConfigAndItsData(t *testing.T) {
 	other := m
 	other.Name = "sample-app"
 	if got := mustRender(t, other).Files["briard-sample-app-broker.container"]; strings.Contains(got, "/run/briard/mosquitto") {
-		t.Fatalf("a service that is not mosquitto got the broker's config:\n%s", got)
+		t.Fatalf("an app that is not mosquitto got the broker's config:\n%s", got)
 	}
 }
 
@@ -547,7 +547,7 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 	// ⚠️ THE LEADING `-`: without it a snapshot that fails takes the household's app down
 	// with it, and a ring missing a member is nothing next to an app that will not start.
 	if !strings.HasPrefix(line, "ExecStartPre=-") {
-		t.Errorf("%q can fail the service; systemd needs the `-` prefix", line)
+		t.Errorf("%q can fail the app; systemd needs the `-` prefix", line)
 	}
 	// systemd requires an absolute path for the first word of an Exec line; a bare command name
 	// makes the unit fail to load rather than fail to run.
@@ -555,7 +555,7 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 		t.Errorf("%q does not name an absolute path", line)
 	}
 	if !strings.HasSuffix(line, "--service-starting=home-assistant") {
-		t.Errorf("%q does not name the service whose member it takes", line)
+		t.Errorf("%q does not name the app whose member it takes", line)
 	}
 	// An app's other containers share its ONE subvolume, so a hook on each of them would take
 	// a member of the same bytes at every start.
@@ -579,7 +579,7 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 	// ExecStopPost, never ExecStop: it runs after the container is down and is the only place
 	// systemd exposes $SERVICE_RESULT, which is the whole evidence for the claim.
 	if !strings.HasPrefix(stop, "ExecStopPost=-/") || !strings.HasSuffix(stop, "--service-stopped=home-assistant") {
-		t.Errorf("%q is not a `-`-prefixed absolute call naming this service", stop)
+		t.Errorf("%q is not a `-`-prefixed absolute call naming this app", stop)
 	}
 	if side := r.Files["briard-home-assistant-sidecar.container"]; strings.Contains(side, "ExecStopPost=") {
 		t.Errorf("a container with no data of its own claims its stop flushed something:\n%s", side)
@@ -619,6 +619,6 @@ func TestContainerMemoryLimitFollowsTheDeclaredMinimum(t *testing.T) {
 	}
 	c = mustRender(t, ha()).Files["briard-home-assistant-ha.container"]
 	if strings.Contains(c, "MemoryMax=") || strings.Contains(c, "MemorySwapMax=") {
-		t.Errorf("a service with no declared minimum was capped:\n%s", c)
+		t.Errorf("an app with no declared minimum was capped:\n%s", c)
 	}
 }

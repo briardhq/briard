@@ -103,7 +103,7 @@ pkgs.testers.runNixOSTest {
     # === THE GROW: the same install, with room on the host. ===
     rc, out = host.execute("briard-agent app install ${fixture.serviceName} 2>&1")
     print(f"install: rc={rc}\n{out}")
-    print(host.succeed("journalctl -u briard-agent -o cat | grep -E 'state disk|service install' || true"))
+    print(host.succeed("journalctl -u briard-agent -o cat | grep -E 'state disk|app install' || true"))
     assert rc == 0, f"the install failed after the grow (rc={rc}):\n{out}"
     host.succeed("journalctl -u briard-agent -o cat | grep -q 'state disk: grown from 1.07 GB to'")
     size1 = size()

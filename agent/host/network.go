@@ -352,9 +352,9 @@ func (cfg Config) reportDegraded(ctx context.Context, dg *degraded, logf func(st
 	}
 	st := api.NodeStatus{
 		NodeName: cfg.Node, Role: cfg.Role, AgentVersion: cfg.Version, Tenant: dg.tenant,
-		// nil reader is safe here and only here: serviceStatuses touches it only when this node
+		// nil reader is safe here and only here: appStatuses touches it only when this node
 		// is Primary, and a node with no guest is not.
-		Services: cfg.serviceStatuses(ctx, nil, false),
+		Apps: cfg.appStatuses(ctx, nil, false),
 	}
 	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

@@ -595,7 +595,7 @@ pkgs.testers.runNixOSTest {
     assert refused == "401" and "not yet trusted" in page, f"the VIP served {refused}: {page!r}"
     assert "home-assistant" not in page and "Apps on this machine" not in page, f"the refusal names the inventory: {page!r}"
     health = client.succeed(f"curl -fsS http://{vip}/healthz")
-    assert "no services routed" in health, f"/healthz said: {health!r}"
+    assert "no apps routed" in health, f"/healthz said: {health!r}"
     # The installer's link, redeemed the way the household's first browser would:
     # under the name it carries -- the same name the "installed." line printed -- a 303 home and
     # an HttpOnly session cookie, and the same code refused the second time.

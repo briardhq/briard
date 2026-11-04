@@ -4,7 +4,7 @@
 # WHAT THIS EXISTS TO CATCH, and none of it is visible to a test that only asks "is it up".
 # mosquitto's own image ships with persistence OFF and its management API on every interface, so
 # a broker that starts is not evidence of anything a household needs. The product replaces that
-# config from `agent/services`, and every claim in this file is about the difference:
+# config from `agent/apps`, and every claim in this file is about the difference:
 #
 #   1. the config is IN EFFECT (not merely rendered) -- the API answers on the guest's loopback;
 #   2. the API is NOT on the LAN -- asserted from ANOTHER MACHINE, which is the only place the

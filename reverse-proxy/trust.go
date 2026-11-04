@@ -43,22 +43,22 @@ var (
 // (RFC 5737), so an app that logs it logs something nobody can mistake for a household device.
 const probeClientAddr = "192.0.2.1"
 
-func (t *forwardTrust) allows(service string) bool {
+func (t *forwardTrust) allows(app string) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.trusted[service]
+	return t.trusted[app]
 }
 
-func (t *forwardTrust) set(service string, ok bool) {
+func (t *forwardTrust) set(app string, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.trusted == nil {
 		t.trusted = map[string]bool{}
 	}
-	if t.trusted[service] != ok {
-		log.Printf("reverse-proxy: %s %s X-Forwarded-For from this door", service, map[bool]string{true: "accepts", false: "refuses"}[ok])
+	if t.trusted[app] != ok {
+		log.Printf("reverse-proxy: %s %s X-Forwarded-For from this door", app, map[bool]string{true: "accepts", false: "refuses"}[ok])
 	}
-	t.trusted[service] = ok
+	t.trusted[app] = ok
 }
 
 // recheck asks every routed app again, cancelling a recheck still waiting on an app that
@@ -71,7 +71,7 @@ func (t *forwardTrust) recheck(r *routing) {
 	}
 	t.cancel = cancel
 	t.mu.Unlock()
-	for _, s := range r.table.Services {
+	for _, s := range r.table.Apps {
 		if _, routed := s.Route(routes.ListenName); !routed || s.Health == "" {
 			continue
 		}

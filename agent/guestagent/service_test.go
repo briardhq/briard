@@ -28,15 +28,15 @@ func ran(f *fakeExec, name string, args ...string) bool {
 	return false
 }
 
-func TestServiceRenderWritesAndReloads(t *testing.T) {
+func TestAppRenderWritesAndReloads(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
 	files := map[string]string{
 		"briard-ha.pod":          "[Pod]\nPodName=briard-ha\n",
 		"briard-ha-ha.container": "[Container]\nImage=x\n",
 	}
-	if err := g.ServiceRender(context.Background(), files, nil); err != nil {
-		t.Fatalf("ServiceRender: %v", err)
+	if err := g.AppRender(context.Background(), files, nil); err != nil {
+		t.Fatalf("AppRender: %v", err)
 	}
 	for n, body := range files {
 		if got := f.files[quadletDir+"/"+n]; got != body {
@@ -50,16 +50,16 @@ func TestServiceRenderWritesAndReloads(t *testing.T) {
 	}
 }
 
-// TestServiceRenderClearsStale: swapping which app occupies the slot must not leave the
+// TestAppRenderClearsStale: swapping which app occupies the slot must not leave the
 // previous one's units behind for the promoter to trip over.
-func TestServiceRenderClearsStale(t *testing.T) {
+func TestAppRenderClearsStale(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	err := g.ServiceRender(context.Background(),
+	err := g.AppRender(context.Background(),
 		map[string]string{"briard-new.container": "x"},
 		[]string{"briard-old.container", "briard-old.pod"})
 	if err != nil {
-		t.Fatalf("ServiceRender: %v", err)
+		t.Fatalf("AppRender: %v", err)
 	}
 	for _, stale := range []string{"briard-old.container", "briard-old.pod"} {
 		if !ran(f, "rm", "-f", quadletDir+"/"+stale) {
@@ -68,17 +68,17 @@ func TestServiceRenderClearsStale(t *testing.T) {
 	}
 }
 
-// TestServiceRenderRefusesEscape is defence in depth behind the manifest's own slug check. The
+// TestAppRenderRefusesEscape is defence in depth behind the manifest's own slug check. The
 // guest writes as root into a directory systemd reads, so a host-side regression that produced
 // a "../" must not become an arbitrary file write.
-func TestServiceRenderRefusesEscape(t *testing.T) {
+func TestAppRenderRefusesEscape(t *testing.T) {
 	for _, bad := range []string{"../evil.container", "a/b.container", "", `x\y`, "..", "foo/../../etc/passwd"} {
 		t.Run(bad, func(t *testing.T) {
 			f := &fakeExec{}
 			g := dial(t, f)
-			err := g.ServiceRender(context.Background(), map[string]string{bad: "x"}, nil)
+			err := g.AppRender(context.Background(), map[string]string{bad: "x"}, nil)
 			if err == nil {
-				t.Fatalf("ServiceRender accepted filename %q", bad)
+				t.Fatalf("AppRender accepted filename %q", bad)
 			}
 			if len(f.files) != 0 {
 				t.Fatalf("wrote %v despite refusing", f.files)
@@ -87,17 +87,17 @@ func TestServiceRenderRefusesEscape(t *testing.T) {
 	}
 }
 
-// TestServiceRenderRefusesEmpty: rendering nothing is a caller bug, not a no-op install.
-func TestServiceRenderRefusesEmpty(t *testing.T) {
+// TestAppRenderRefusesEmpty: rendering nothing is a caller bug, not a no-op install.
+func TestAppRenderRefusesEmpty(t *testing.T) {
 	g := dial(t, &fakeExec{})
-	if err := g.ServiceRender(context.Background(), nil, nil); err == nil {
-		t.Fatal("ServiceRender accepted an empty file set")
+	if err := g.AppRender(context.Background(), nil, nil); err == nil {
+		t.Fatal("AppRender accepted an empty file set")
 	}
 }
 
-// TestServiceProvisionCreatesAndRecords: subvolume, flat subdirs, manifest, and the sync that
+// TestAppProvisionCreatesAndRecords: subvolume, flat subdirs, manifest, and the sync that
 // makes the identity replicate before a failover can depend on it.
-func TestServiceProvisionCreatesAndRecords(t *testing.T) {
+func TestAppProvisionCreatesAndRecords(t *testing.T) {
 	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		// No existing subvolume -> `btrfs subvolume show` fails, so provision creates one.
 		if name == "btrfs" && len(args) > 1 && args[1] == "show" {
@@ -106,9 +106,9 @@ func TestServiceProvisionCreatesAndRecords(t *testing.T) {
 		return nil, nil
 	}}
 	g := dial(t, f)
-	err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/data/home-assistant", []string{"data/ha", "data/cache"}, `{"name":"home-assistant"}`)
+	err := g.AppProvision(context.Background(), "home-assistant", "/var/lib/briard/data/home-assistant", []string{"data/ha", "data/cache"}, `{"name":"home-assistant"}`)
 	if err != nil {
-		t.Fatalf("ServiceProvision: %v", err)
+		t.Fatalf("AppProvision: %v", err)
 	}
 	if !ran(f, "btrfs", "subvolume", "create", "-i", appQgroup(tierData, "home-assistant"), "/var/lib/briard/data/home-assistant") {
 		t.Fatalf("no subvolume create; runs=%v", f.runs)
@@ -128,48 +128,48 @@ func TestServiceProvisionCreatesAndRecords(t *testing.T) {
 	}
 }
 
-// TestServiceProvisionKeepsExistingData is the one that protects the user's state: a re-install
+// TestAppProvisionKeepsExistingData is the one that protects the user's state: a re-install
 // onto an existing app must REUSE the subvolume. Re-creating it would silently delete
 // everything the app had written.
-func TestServiceProvisionKeepsExistingData(t *testing.T) {
+func TestAppProvisionKeepsExistingData(t *testing.T) {
 	f := &fakeExec{output: []byte("Name: \t\thome-assistant\n")} // `subvolume show` succeeds
 	g := dial(t, f)
-	if err := g.ServiceProvision(context.Background(), "home-assistant", "/var/lib/briard/data/home-assistant", []string{"data/ha"}, `{}`); err != nil {
-		t.Fatalf("ServiceProvision: %v", err)
+	if err := g.AppProvision(context.Background(), "home-assistant", "/var/lib/briard/data/home-assistant", []string{"data/ha"}, `{}`); err != nil {
+		t.Fatalf("AppProvision: %v", err)
 	}
 	if ran(f, "btrfs", "subvolume", "create", "/var/lib/briard/data/home-assistant") {
-		t.Fatalf("re-created an existing subvolume — the service's data would be gone; runs=%v", f.runs)
+		t.Fatalf("re-created an existing subvolume — the app's data would be gone; runs=%v", f.runs)
 	}
 }
 
-func TestServiceProvisionRefusesIncomplete(t *testing.T) {
+func TestAppProvisionRefusesIncomplete(t *testing.T) {
 	g := dial(t, &fakeExec{})
-	if err := g.ServiceProvision(context.Background(), "x", "", nil, `{}`); err == nil {
+	if err := g.AppProvision(context.Background(), "x", "", nil, `{}`); err == nil {
 		t.Fatal("accepted an empty data dir")
 	}
-	if err := g.ServiceProvision(context.Background(), "x", "/var/lib/briard/data/x", nil, ""); err == nil {
+	if err := g.AppProvision(context.Background(), "x", "/var/lib/briard/data/x", nil, ""); err == nil {
 		t.Fatal("accepted an empty manifest")
 	}
 }
 
-// TestServiceInstalledAbsentIsEmptyNotError: the shipped zero-app node has no manifest, and
+// TestAppInstalledAbsentIsEmptyNotError: the shipped zero-app node has no manifest, and
 // that is a legitimate state. Reading it as an error would make every empty node look broken.
-func TestServiceInstalledAbsentIsEmptyNotError(t *testing.T) {
+func TestAppInstalledAbsentIsEmptyNotError(t *testing.T) {
 	f := &fakeExec{err: errors.New("cat: no such file")}
 	g := dial(t, f)
-	got, err := g.ServiceInstalled(context.Background(), "home-assistant")
+	got, err := g.AppInstalled(context.Background(), "home-assistant")
 	if err != nil {
-		t.Fatalf("ServiceInstalled on an empty node errored: %v", err)
+		t.Fatalf("AppInstalled on an empty node errored: %v", err)
 	}
 	if got != "" {
 		t.Fatalf("got %q, want empty", got)
 	}
 }
 
-func TestServiceInstalledReadsBack(t *testing.T) {
+func TestAppInstalledReadsBack(t *testing.T) {
 	f := &fakeExec{output: []byte(`{"name":"home-assistant"}`)}
 	g := dial(t, f)
-	got, err := g.ServiceInstalled(context.Background(), "home-assistant")
+	got, err := g.AppInstalled(context.Background(), "home-assistant")
 	if err != nil || !strings.Contains(got, "home-assistant") {
 		t.Fatalf("got %q, %v", got, err)
 	}
@@ -252,15 +252,15 @@ func TestFsSyncSkipsAnUnmountedVolume(t *testing.T) {
 //
 // Asserted on the PATHS, because that is where the property lives: two provisions must write two
 // files, and each must be named for its own app.
-func TestServiceProvisionRecordsPerService(t *testing.T) {
+func TestAppProvisionRecordsPerApp(t *testing.T) {
 	f := &fakeExec{output: []byte("Name: \t\tx\n")} // an existing subvolume; this is about the manifest
 	g := dial(t, f)
 	for _, s := range []struct{ name, body string }{
 		{"home-assistant", `{"name":"home-assistant"}`},
 		{"mosquitto", `{"name":"mosquitto"}`},
 	} {
-		if err := g.ServiceProvision(context.Background(), s.name, "/var/lib/briard/data/"+s.name, nil, s.body); err != nil {
-			t.Fatalf("ServiceProvision(%s): %v", s.name, err)
+		if err := g.AppProvision(context.Background(), s.name, "/var/lib/briard/data/"+s.name, nil, s.body); err != nil {
+			t.Fatalf("AppProvision(%s): %v", s.name, err)
 		}
 	}
 	for _, s := range []struct{ name, want string }{
@@ -272,19 +272,19 @@ func TestServiceProvisionRecordsPerService(t *testing.T) {
 			t.Fatalf("no manifest recorded at %s; files=%v", manifestPath(s.name), slices.Sorted(maps.Keys(f.files)))
 		}
 		if !strings.Contains(got, s.want) {
-			t.Errorf("%s recorded %q, want it to name %s -- one service's identity landed on another's file", s.name, got, s.want)
+			t.Errorf("%s recorded %q, want it to name %s -- one app's identity landed on another's file", s.name, got, s.want)
 		}
 	}
 }
 
 // An app name becomes a PATH ELEMENT on both verbs, so both re-check it here rather than
 // trusting the host to have validated its own input.
-func TestServiceVerbsRefuseAnEscapingName(t *testing.T) {
+func TestAppVerbsRefuseAnEscapingName(t *testing.T) {
 	g := dial(t, &fakeExec{})
-	if err := g.ServiceProvision(context.Background(), "../../etc/x", "/var/lib/briard/data/x", nil, `{}`); err == nil {
+	if err := g.AppProvision(context.Background(), "../../etc/x", "/var/lib/briard/data/x", nil, `{}`); err == nil {
 		t.Error("service.provision accepted a name that escapes the manifest directory")
 	}
-	if _, err := g.ServiceInstalled(context.Background(), "../../etc/passwd"); err == nil {
+	if _, err := g.AppInstalled(context.Background(), "../../etc/passwd"); err == nil {
 		t.Error("service.installed accepted a name that escapes the manifest directory")
 	}
 }
@@ -292,12 +292,12 @@ func TestServiceVerbsRefuseAnEscapingName(t *testing.T) {
 // service.list names what the VOLUME carries, with the `.json` the files wear on disk stripped:
 // it is how a node that promoted into somebody else's install can say what it runs at all
 // (measured: a survivor served the fixture while reporting no apps).
-func TestServiceListNamesTheVolumesServices(t *testing.T) {
+func TestAppListNamesTheVolumesApps(t *testing.T) {
 	f := &fakeExec{output: []byte("dummy.json\nhome-assistant.json\nnot-a-manifest\n")}
 	g := dial(t, f)
-	got, err := g.ServiceList(context.Background())
+	got, err := g.AppList(context.Background())
 	if err != nil {
-		t.Fatalf("ServiceList: %v", err)
+		t.Fatalf("AppList: %v", err)
 	}
 	if len(got) != 2 || got[0] != "dummy" || got[1] != "home-assistant" {
 		t.Fatalf("got %v, want [dummy home-assistant]", got)
@@ -307,10 +307,10 @@ func TestServiceListNamesTheVolumesServices(t *testing.T) {
 // An absent manifest directory is the shipped zero-app node, not a failure -- the same rule
 // service.installed follows, and for the same reason: a node that refuses to answer because a
 // directory it never had is missing is worse than one that says "nothing".
-func TestServiceListEmptyOnAZeroServiceNode(t *testing.T) {
+func TestAppListEmptyOnAZeroAppNode(t *testing.T) {
 	g := dial(t, &fakeExec{err: errors.New("ls: no such directory")})
-	got, err := g.ServiceList(context.Background())
+	got, err := g.AppList(context.Background())
 	if err != nil || len(got) != 0 {
-		t.Fatalf("got (%v, %v), want no services and no error", got, err)
+		t.Fatalf("got (%v, %v), want no apps and no error", got, err)
 	}
 }

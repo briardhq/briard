@@ -139,7 +139,7 @@ func answerByKind(port *fakePort, restored string) {
 			switch d.Kind {
 			case api.DirectiveBackupList:
 				port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: theBackups()}
-			case api.DirectiveServiceMembers:
+			case api.DirectiveAppMembers:
 				port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: ring()}
 			case api.DirectiveBackupRestore:
 				if restored == "" {
@@ -540,7 +540,7 @@ func TestARestoreFromTheBackupConfirmsThenRuns(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	var p api.BackupRestore
-	if err := json.Unmarshal([]byte(restore.Payload), &p); err != nil || p.Service != "home-assistant" || p.Snapshot != "bbbb2222" {
+	if err := json.Unmarshal([]byte(restore.Payload), &p); err != nil || p.App != "home-assistant" || p.Snapshot != "bbbb2222" {
 		t.Fatalf("relayed %+v (%v); want home-assistant from bbbb2222", restore, err)
 	}
 	var cardBody string

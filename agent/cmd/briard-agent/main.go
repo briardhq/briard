@@ -198,7 +198,7 @@ func runInternal(args []string) {
 	// (the alpha's answer to a node it cannot carry). Said in the line the old script relays to
 	// its alerter, rather than as a usage dump.
 	if *fetchUpdate != "" {
-		fmt.Fprintln(os.Stdout, "this node's update scripts predate the release it was offered; reinstall briard to keep updating")
+		fmt.Fprintln(os.Stdout, "this machine's update scripts predate the release it was offered; reinstall briard to keep updating")
 		os.Exit(1)
 	}
 

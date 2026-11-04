@@ -191,7 +191,7 @@ func (f *fakeUpgrader) RescueGuest(context.Context) error {
 
 // A rescue directive drives RescueGuest and needs NOTHING else: no payload (the node rescues
 // itself from its own disk, so there is nothing for a caller to name or get wrong) and no
-// ServiceSpec (an OS-disk rebuild is a property of the node, and a fresh install carries the zero
+// AppSpec (an OS-disk rebuild is a property of the node, and a fresh install carries the zero
 // spec -- the same trap that once made the shipped node un-upgradable, DirectiveUpgradeSystem).
 func TestApplyDirectiveRescue(t *testing.T) {
 	up := &fakeUpgrader{}

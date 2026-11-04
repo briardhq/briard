@@ -314,24 +314,24 @@ func TestConfigureNetLeavesLinkLocalAlone(t *testing.T) {
 	}
 }
 
-// ServiceHealth is the in-guest readiness probe (macvtap-safe): the guest GETs the app's
+// AppHealth is the in-guest readiness probe (macvtap-safe): the guest GETs the app's
 // health URL itself and reports 200. Exercises the real raw-net.Dial HTTP/1.0 path end to end
 // (Client -> dispatch -> probeHTTPOK), since it deliberately avoids net/http in the guest binary.
-func TestServiceHealth(t *testing.T) {
+func TestAppHealth(t *testing.T) {
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	defer ok.Close()
 	sick := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
 	defer sick.Close()
 
 	f := &fakeExec{runFn: func(string, []string) ([]byte, error) { return nil, nil }} // health path doesn't shell out
-	if got, err := dial(t, f).ServiceHealth(context.Background(), ok.URL); err != nil || !got {
+	if got, err := dial(t, f).AppHealth(context.Background(), ok.URL); err != nil || !got {
 		t.Errorf("200 payload: got (%v,%v), want (true,nil)", got, err)
 	}
-	if got, err := dial(t, f).ServiceHealth(context.Background(), sick.URL); err != nil || got {
+	if got, err := dial(t, f).AppHealth(context.Background(), sick.URL); err != nil || got {
 		t.Errorf("503 payload: got (%v,%v), want (false,nil)", got, err)
 	}
 	// Unreachable endpoint -> not healthy, still no transport error (the probe swallows dial errors).
-	if got, err := dial(t, f).ServiceHealth(context.Background(), "http://127.0.0.1:1/healthz"); err != nil || got {
+	if got, err := dial(t, f).AppHealth(context.Background(), "http://127.0.0.1:1/healthz"); err != nil || got {
 		t.Errorf("unreachable: got (%v,%v), want (false,nil)", got, err)
 	}
 }
@@ -808,13 +808,13 @@ func TestBringUpRefusesAnInvalidSpec(t *testing.T) {
 	}
 }
 
-func TestServiceStartStopCommands(t *testing.T) {
+func TestAppStartStopCommands(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	if err := g.ServiceStart(context.Background(), "briard-dummy-app.service"); err != nil {
+	if err := g.AppStart(context.Background(), "briard-dummy-app.service"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.ServiceStop(context.Background(), "briard-dummy-app.service"); err != nil {
+	if err := g.AppStop(context.Background(), "briard-dummy-app.service"); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
@@ -826,9 +826,9 @@ func TestServiceStartStopCommands(t *testing.T) {
 	}
 }
 
-// Is-active prints the state word and exits non-zero when inactive; ServiceActive
+// Is-active prints the state word and exits non-zero when inactive; AppActive
 // trusts the word, not the exit code.
-func TestServiceActiveReadsState(t *testing.T) {
+func TestAppActiveReadsState(t *testing.T) {
 	for _, tc := range []struct {
 		out  string
 		err  error
@@ -840,12 +840,12 @@ func TestServiceActiveReadsState(t *testing.T) {
 	} {
 		f := &fakeExec{output: []byte(tc.out), err: tc.err}
 		g := dial(t, f)
-		active, err := g.ServiceActive(context.Background(), "briard-dummy-app.service")
+		active, err := g.AppActive(context.Background(), "briard-dummy-app.service")
 		if err != nil {
-			t.Fatalf("ServiceActive(%q): %v", tc.out, err)
+			t.Fatalf("AppActive(%q): %v", tc.out, err)
 		}
 		if active != tc.want {
-			t.Errorf("ServiceActive(%q) = %v, want %v", tc.out, active, tc.want)
+			t.Errorf("AppActive(%q) = %v, want %v", tc.out, active, tc.want)
 		}
 	}
 }
@@ -1345,22 +1345,22 @@ func TestBringUpGuestOverUnixSocket(t *testing.T) {
 //
 // The ordering is the assertion, not merely that both happened: a render that lands after
 // ReactorStart is the bug with extra steps.
-func TestBringUpRendersServiceUnitsBeforeStartingThePromoter(t *testing.T) {
+func TestBringUpRendersAppUnitsBeforeStartingThePromoter(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
 
 	err := g.BringUp(context.Background(), BringUpSpec{
-		Storage:       demoStorage(false),
-		Promoter:      []string{"briard-app.service"},
-		ServiceUnits:  map[string]string{"briard-app.container": "[Container]\nImage=x\n"},
-		ServiceImages: map[string]string{"briard-app-img.service": "ghcr.io/x/y@sha256:abc"},
+		Storage:   demoStorage(false),
+		Promoter:  []string{"briard-app.service"},
+		AppUnits:  map[string]string{"briard-app.container": "[Container]\nImage=x\n"},
+		AppImages: map[string]string{"briard-app-img.service": "ghcr.io/x/y@sha256:abc"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if got := f.files[quadletDir+"/briard-app.container"]; got == "" {
-		t.Fatalf("the service unit was never written under %s: %v", quadletDir, f.files)
+		t.Fatalf("the app unit was never written under %s: %v", quadletDir, f.files)
 	}
 	idx := func(want ...string) int {
 		for i, r := range f.runs {
@@ -1413,10 +1413,10 @@ func TestBringUpPullsOnlyAnImageThatIsMissing(t *testing.T) {
 	}}
 	g := dial(t, f)
 	err := g.BringUp(context.Background(), BringUpSpec{
-		Storage:       demoStorage(false),
-		Promoter:      []string{"briard-app.service"},
-		ServiceUnits:  map[string]string{"briard-app.container": "[Container]\nImage=x\n"},
-		ServiceImages: map[string]string{"briard-app-img.service": "ghcr.io/x/y@sha256:abc"},
+		Storage:   demoStorage(false),
+		Promoter:  []string{"briard-app.service"},
+		AppUnits:  map[string]string{"briard-app.container": "[Container]\nImage=x\n"},
+		AppImages: map[string]string{"briard-app-img.service": "ghcr.io/x/y@sha256:abc"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1435,7 +1435,7 @@ func TestBringUpPullsOnlyAnImageThatIsMissing(t *testing.T) {
 // ...and a node with no installed app renders nothing, so the shipped zero-app node is
 // untouched by the above. Without this, "renders before the promoter" could be satisfied by
 // rendering unconditionally, which would write an empty unit set on every ordinary bring-up.
-func TestBringUpRendersNothingWithNoInstalledService(t *testing.T) {
+func TestBringUpRendersNothingWithNoInstalledApp(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
 
@@ -1448,7 +1448,7 @@ func TestBringUpRendersNothingWithNoInstalledService(t *testing.T) {
 	}
 	for path := range f.files {
 		if strings.HasPrefix(path, quadletDir+"/") {
-			t.Errorf("a node with no installed service wrote a quadlet unit: %s", path)
+			t.Errorf("a node with no installed app wrote a quadlet unit: %s", path)
 		}
 	}
 }
@@ -1646,14 +1646,14 @@ func TestConfigureNetReassertsTheFlockMAC(t *testing.T) {
 	t.Errorf("an existing service NIC kept whatever MAC it had; runs = %v", f.runs)
 }
 
-// TestTheServiceSpecificVerbsAreAdvertisedAndLandOnTheirOwnService. Each has to be in the
+// TestTheAppSpecificVerbsAreAdvertisedAndLandOnTheirOwnApp. Each has to be in the
 // handshake or a capability-checking host cannot see it however well the switch handles it, and
 // each has to reach the ONE app it is named for.
 //
 // The old shape of this test asserted that an unknown NAME in the request was refused. There is no
 // name in the request any more: the app is in the verb, so the disagreement that
 // branch guarded against cannot be expressed — which is the better version of refusing it.
-func TestTheServiceSpecificVerbsAreAdvertisedAndLandOnTheirOwnService(t *testing.T) {
+func TestTheAppSpecificVerbsAreAdvertisedAndLandOnTheirOwnApp(t *testing.T) {
 	g := dial(t, &fakeExec{})
 	if _, err := g.Handshake(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1722,10 +1722,10 @@ func TestDashboardHandoffIsWrittenPrivatelyThenMovedIn(t *testing.T) {
 // service.pulling records a pull for the dashboard's bar and clears it; storage.free measures
 // the image store through df. The guest keeps a number and measures a filesystem;
 // deciding is the host's.
-func TestServicePullingRecordsAndClearsTheBarsTotal(t *testing.T) {
+func TestAppPullingRecordsAndClearsTheBarsTotal(t *testing.T) {
 	x := &fakeExec{}
-	raw, _ := json.Marshal(servicePullingRequest{Service: "home-assistant", Size: 621628919, InstalledSize: 2486168064})
-	if _, err := dispatch(x)(context.Background(), verbServicePulling, raw); err != nil {
+	raw, _ := json.Marshal(appPullingRequest{App: "home-assistant", Size: 621628919, InstalledSize: 2486168064})
+	if _, err := dispatch(x)(context.Background(), verbAppPulling, raw); err != nil {
 		t.Fatal(err)
 	}
 	got := x.files[dashboard.PullPath("home-assistant")]
@@ -1736,14 +1736,14 @@ func TestServicePullingRecordsAndClearsTheBarsTotal(t *testing.T) {
 		t.Errorf("runs = %v", x.runs)
 	}
 	// A name that is a path is refused before it becomes one.
-	raw, _ = json.Marshal(servicePullingRequest{Service: "../etc", Size: 1, InstalledSize: 1})
-	if _, err := dispatch(x)(context.Background(), verbServicePulling, raw); err == nil {
-		t.Error("a path-shaped service name was accepted")
+	raw, _ = json.Marshal(appPullingRequest{App: "../etc", Size: 1, InstalledSize: 1})
+	if _, err := dispatch(x)(context.Background(), verbAppPulling, raw); err == nil {
+		t.Error("a path-shaped app name was accepted")
 	}
 	// Done clears it -- rm -f, so an absent record is not an error.
 	x = &fakeExec{}
-	raw, _ = json.Marshal(servicePullingRequest{Service: "home-assistant", Done: true})
-	if _, err := dispatch(x)(context.Background(), verbServicePulling, raw); err != nil {
+	raw, _ = json.Marshal(appPullingRequest{App: "home-assistant", Done: true})
+	if _, err := dispatch(x)(context.Background(), verbAppPulling, raw); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(x.runs, [][]string{{"rm", "-f", dashboard.PullPath("home-assistant")}}) {
@@ -1919,7 +1919,7 @@ func TestReactorVerbsOnALoneNode(t *testing.T) {
 	g := dial(t, f)
 	ctx := context.Background()
 	if active, err := g.ReactorActive(ctx); err != nil || !active {
-		t.Errorf("ReactorActive = %t, %v; the overlap guard would refuse every service install", active, err)
+		t.Errorf("ReactorActive = %t, %v; the overlap guard would refuse every app install", active, err)
 	}
 	if err := g.ReactorPause(ctx, "r0"); err != nil {
 		t.Errorf("pause: %v", err)
@@ -2114,7 +2114,7 @@ func TestDashboardCasaIsWrittenThenMovedIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := x.files[urlTmp]; got != "https://home-assistant.alert-fox.briard.casa" {
-		t.Errorf("external URL = %q, want the service's casa name once it resolves", got)
+		t.Errorf("external URL = %q, want the app's casa name once it resolves", got)
 	}
 	if _, err := dispatch(x)(context.Background(), verbDashboardCasa, []byte(`not json`)); err == nil {
 		t.Error("a malformed view was accepted")

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	apps1 "briard.io/agent/apps"
 	"briard.io/agent/quadlet"
-	"briard.io/agent/services"
 	"briard.io/shared/api"
 )
 
@@ -29,19 +29,19 @@ func ring() string {
 	entries := []quadlet.SnapshotEntry{
 		{
 			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, older),
-			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerClock,
+			Meta: quadlet.SnapshotMeta{App: "home-assistant", Trigger: quadlet.TriggerClock,
 				TakenAt: older, Consistency: quadlet.Crash, Manifest: manifestOf("2026.6.0"),
 				Event: &quadlet.Event{At: older.Add(20 * time.Hour), Reasons: []quadlet.Reason{{Kind: quadlet.ReasonQuiet}}}},
 		},
 		{
 			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUpdateBefore, update),
-			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore,
+			Meta: quadlet.SnapshotMeta{App: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore,
 				TakenAt: update, Consistency: quadlet.Quiesced, Manifest: manifestOf("2026.7.1"),
 				Event: &quadlet.Event{At: update, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to 2026.8.0"}}}},
 		},
 		{
 			Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, update.Add(5*time.Minute)),
-			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerStart,
+			Meta: quadlet.SnapshotMeta{App: "home-assistant", Trigger: quadlet.TriggerStart,
 				TakenAt: update.Add(5 * time.Minute), Consistency: quadlet.Quiesced, Manifest: manifestOf("2026.8.0")},
 		},
 	}
@@ -127,7 +127,7 @@ func TestHistoryListsWhatTheHostReports(t *testing.T) {
 	asked := append([]api.Directive(nil), port.asked...)
 	port.mu.Unlock()
 	for _, d := range asked {
-		if d.Kind != api.DirectiveServiceMembers {
+		if d.Kind != api.DirectiveAppMembers {
 			t.Errorf("listing the history asked the host for %q", d.Kind)
 		}
 	}
@@ -170,7 +170,7 @@ func TestHistoryConfirmsBeforeUndoing(t *testing.T) {
 	}
 	port.mu.Lock()
 	for _, d := range port.asked {
-		if d.Kind == api.DirectiveServiceRestore {
+		if d.Kind == api.DirectiveAppRestore {
 			t.Errorf("the first press already asked the host to restore: %+v", d)
 		}
 	}
@@ -189,7 +189,7 @@ func TestHistoryConfirmsBeforeUndoing(t *testing.T) {
 		asked := append([]api.Directive(nil), port.asked...)
 		port.mu.Unlock()
 		for _, d := range asked {
-			if d.Kind == api.DirectiveServiceRestore {
+			if d.Kind == api.DirectiveAppRestore {
 				if d.Payload != member {
 					t.Errorf("payload = %q, want the point verbatim %q", d.Payload, member)
 				}
@@ -219,7 +219,7 @@ func TestHistoryRefusesAPointThatIsGone(t *testing.T) {
 	port.mu.Lock()
 	defer port.mu.Unlock()
 	for _, d := range port.asked {
-		if d.Kind == api.DirectiveServiceRestore {
+		if d.Kind == api.DirectiveAppRestore {
 			t.Errorf("a pruned point was relayed to the host anyway: %+v", d)
 		}
 	}
@@ -274,19 +274,19 @@ func TestHistoryMarksAnAppThatDidNotStart(t *testing.T) {
 	at := time.Date(2026, 9, 21, 3, 0, 0, 0, time.Local)
 	point := quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUpdateBefore, at)
 	start := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, at.Add(time.Minute))
-	members := func(h services.Health) string {
+	members := func(h apps1.Health) string {
 		raw, _ := json.Marshal([]quadlet.SnapshotEntry{
-			{Member: point, Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore, TakenAt: at,
+			{Member: point, Meta: quadlet.SnapshotMeta{App: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore, TakenAt: at,
 				Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to 2026.9.0"},
 					{Kind: quadlet.ReasonUnhealthy}}}}},
-			{Member: start, Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerStart, TakenAt: at.Add(time.Minute), Health: h}},
+			{Member: start, Meta: quadlet.SnapshotMeta{App: "home-assistant", Trigger: quadlet.TriggerStart, TakenAt: at.Add(time.Minute), Health: h}},
 		})
 		return string(raw)
 	}
 	for _, c := range []struct {
-		health services.Health
+		health apps1.Health
 		banner bool
-	}{{services.Unhealthy, true}, {services.Healthy, false}} {
+	}{{apps1.Unhealthy, true}, {apps1.Healthy, false}} {
 		r := newRig(t)
 		cookie := r.trust()
 		port := newFakePort()

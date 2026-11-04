@@ -15,7 +15,7 @@ import (
 // that announces itself to appliances. Built here the way the node builds it -- names through
 // routes.HostName -- so a change to the naming rule fails these tests rather than being restated.
 func table(flock string) routes.Table {
-	return routes.Table{Services: []routes.Service{
+	return routes.Table{Apps: []routes.App{
 		{
 			Name:   "home-assistant",
 			Hosts:  []string{routes.HostName(flock, "home-assistant")},
@@ -35,7 +35,7 @@ func table(flock string) routes.Table {
 // record pointed at the APP's own name, never at the flock's and never at a hostname. The
 // last part is the one that cost a measurement: a node-scoped target sends every device on the
 // LAN to the machine that has just stopped being Primary.
-func TestTheWorldIsTheFlockNameEveryServiceNameAndTheDeclaredRecords(t *testing.T) {
+func TestTheWorldIsTheFlockNameEveryAppNameAndTheDeclaredRecords(t *testing.T) {
 	w := mdnsWorldFor("192.168.1.100", "brave-elf", table("brave-elf"))
 
 	want := []string{
@@ -63,7 +63,7 @@ func TestTheWorldIsTheFlockNameEveryServiceNameAndTheDeclaredRecords(t *testing.
 		t.Errorf("announced %s:%d, want _mqtt._tcp:1883", got.typ, got.port)
 	}
 	if got.host != "briard-brave-elf-mosquitto.local" {
-		t.Errorf("the SRV target is %q -- it must be the service's OWN name, so a device is not "+
+		t.Errorf("the SRV target is %q -- it must be the app's OWN name, so a device is not "+
 			"sent to a node that has stopped being Primary", got.host)
 	}
 	if got.instance != "briard-brave-elf-mosquitto" {
@@ -97,7 +97,7 @@ func TestNoVIPPublishesNothing(t *testing.T) {
 func TestAConvergedToNothingNodeStillAnswersTheFlockName(t *testing.T) {
 	w := mdnsWorldFor("192.168.1.100", "brave-elf", routes.Table{})
 	if w.empty() {
-		t.Fatal("a named node with no services published nothing at all")
+		t.Fatal("a named node with no apps published nothing at all")
 	}
 	if len(w.names) != 2 || w.names[0] != "briard-brave-elf.local" || w.names[1] != "briard.local" {
 		t.Fatalf("published %v, want just the flock's own name and the bare alias", w.names)
@@ -108,7 +108,7 @@ func TestAConvergedToNothingNodeStillAnswersTheFlockName(t *testing.T) {
 // routes.Validate already refuses that combination, and a second rule here would be a second
 // place for it to be wrong.
 func TestAnAnnouncementWithNoHostIsNotPublished(t *testing.T) {
-	tbl := routes.Table{Services: []routes.Service{{
+	tbl := routes.Table{Apps: []routes.App{{
 		Name:     "mosquitto",
 		Announce: []routes.Announcement{{Name: "x", Type: "_mqtt._tcp", Port: 1883}},
 	}}}
@@ -130,14 +130,14 @@ func TestSameNoticesEveryChangeThatMatters(t *testing.T) {
 	}{
 		{"the VIP moved", mdnsWorldFor("192.168.1.101", "brave-elf", table("brave-elf"))},
 		{"the flock was renamed", mdnsWorldFor("192.168.1.100", "brave-yak", table("brave-yak"))},
-		{"a service was installed", mdnsWorldFor("192.168.1.100", "brave-elf", routes.Table{
-			Services: append(table("brave-elf").Services, routes.Service{
+		{"an app was installed", mdnsWorldFor("192.168.1.100", "brave-elf", routes.Table{
+			Apps: append(table("brave-elf").Apps, routes.App{
 				Name: "immich", Hosts: []string{routes.HostName("brave-elf", "immich")},
 			}),
 		})},
 		{"an announcement changed port", func() mdnsWorld {
 			tbl := table("brave-elf")
-			tbl.Services[1].Announce[0].Port = 8883
+			tbl.Apps[1].Announce[0].Port = 8883
 			return mdnsWorldFor("192.168.1.100", "brave-elf", tbl)
 		}()},
 	} {
@@ -261,8 +261,8 @@ func read(t *testing.T, path string) string {
 // publisher must not claim it on the LAN, and must not lose the `.local` name beside it.
 func TestTheCasaNamesAreNotPublishedOnTheLAN(t *testing.T) {
 	tbl := table("brave-elf")
-	for i := range tbl.Services {
-		tbl.Services[i].Hosts = append(tbl.Services[i].Hosts, routes.CasaHostName("brave-elf", tbl.Services[i].Name))
+	for i := range tbl.Apps {
+		tbl.Apps[i].Hosts = append(tbl.Apps[i].Hosts, routes.CasaHostName("brave-elf", tbl.Apps[i].Name))
 	}
 	w := mdnsWorldFor("192.168.1.100", "brave-elf", tbl)
 	for _, n := range w.names {

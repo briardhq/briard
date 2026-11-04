@@ -43,11 +43,11 @@ const Path = "/run/briard/routes.json"
 // renders in that order and a table two nodes disagree about the ORDER of is a diff nobody wants
 // to read.
 type Table struct {
-	Services []Service `json:"services"`
+	Apps []App `json:"services"`
 }
 
-// Service is one runtime-installed app as the node needs to see it.
-type Service struct {
+// App is one runtime-installed app as the node needs to see it.
+type App struct {
 	// Name is the catalog slug, the same one the manifest and the units carry.
 	Name string `json:"name"`
 	// Hosts are the names this app answers to, in the order HostNames composes them: the
@@ -106,7 +106,7 @@ type Service struct {
 	// to know already in order to ask.
 	//
 	// PRODUCT KNOWLEDGE, never the manifest's: which service type a thing is found under is the
-	// kind of per-app fact a curated catalog exists to let us encode (agent/services), and a
+	// kind of per-app fact a curated catalog exists to let us encode (agent/apps), and a
 	// publisher declaring its own type would be claiming a well-known name on a household's LAN.
 	// The catalog names a port; what protocol answers there is ours to say.
 	//
@@ -175,11 +175,11 @@ const ListenName = "name"
 //
 // An empty flock name yields no name at all, deliberately: `briard--home-assistant.local` is worse
 // than silence, and the same rule already governs the flock's own publisher.
-func HostName(flock, service string) string {
-	if flock == "" || service == "" {
+func HostName(flock, app string) string {
+	if flock == "" || app == "" {
 		return ""
 	}
-	return "briard-" + flock + "-" + service + ".local"
+	return "briard-" + flock + "-" + app + ".local"
 }
 
 // BareHostName is the app's CONVENIENCE name: `briard-<service>.local`, the one a household
@@ -195,23 +195,23 @@ func HostName(flock, service string) string {
 //
 // Not a name derived from the flock-scoped one: BareFlockHostName is the same prefix with no
 // app, and the two are kept as literal strings so a reader sees the shape without computing it.
-func BareHostName(service string) string {
-	if service == "" {
+func BareHostName(app string) string {
+	if app == "" {
 		return ""
 	}
-	return "briard-" + service + ".local"
+	return "briard-" + app + ".local"
 }
 
 // HostNames is the ordered Hosts list for an app, and the only place that order is decided:
 // the flock-scoped name first (Hosts[0] is the SRV target and the identity), the bare alias, the
 // casa name. Converge writes it into the table; an empty flock name yields no names at all, so a
 // nameless node routes nothing rather than answering the bare alias for a flock it cannot name.
-func HostNames(flock, service string) []string {
-	h := HostName(flock, service)
+func HostNames(flock, app string) []string {
+	h := HostName(flock, app)
 	if h == "" {
 		return nil
 	}
-	return []string{h, BareHostName(service), CasaHostName(flock, service)}
+	return []string{h, BareHostName(app), CasaHostName(flock, app)}
 }
 
 // CasaHostName is the app's name under the household's casa domain:
@@ -219,11 +219,11 @@ func HostNames(flock, service string) []string {
 // the same door that answers the `.local` name. Composed for every named flock, claimed or not:
 // a name that does not resolve routes nothing, and the alternative -- the table knowing whether
 // the household has an account -- would put a cloud fact where only local facts live.
-func CasaHostName(flock, service string) string {
-	if flock == "" || service == "" {
+func CasaHostName(flock, app string) string {
+	if flock == "" || app == "" {
 		return ""
 	}
-	return service + "." + flock + "." + casa.Zone
+	return app + "." + flock + "." + casa.Zone
 }
 
 // InstanceName is the mDNS SERVICE-INSTANCE label an announcement carries: the same
@@ -234,8 +234,8 @@ func CasaHostName(flock, service string) string {
 // DERIVED FROM HostName ON PURPOSE, rather than assembled a second time: the instance and the SRV
 // target it points at are then the same name by construction, and a future name form
 // changes one function.
-func InstanceName(flock, service string) string {
-	return strings.TrimSuffix(HostName(flock, service), ".local")
+func InstanceName(flock, app string) string {
+	return strings.TrimSuffix(HostName(flock, app), ".local")
 }
 
 // Parse decodes and validates a table. Unknown fields are refused for the same reason
@@ -258,9 +258,9 @@ func Parse(raw []byte) (Table, error) {
 // Validate enforces the two rules that are not style. A host in a URL would let the door be
 // pointed off this node; an unrecognised listener would be a route silently not served.
 func (t Table) Validate() error {
-	for _, s := range t.Services {
+	for _, s := range t.Apps {
 		if s.Name == "" {
-			return fmt.Errorf("routes: a service has no name")
+			return fmt.Errorf("routes: an app has no name")
 		}
 		if s.Health != "" {
 			if err := checkSpec(s.Name, "health", s.Health); err != nil {
@@ -271,14 +271,14 @@ func (t Table) Validate() error {
 			if r.Listen != ListenName {
 				// Deliberately not "ignore what we do not know": a route the door drops is an
 				// app that is unreachable with nothing saying why.
-				return fmt.Errorf("routes: service %q has a route on unknown listener %q", s.Name, r.Listen)
+				return fmt.Errorf("routes: app %q has a route on unknown listener %q", s.Name, r.Listen)
 			}
 			if err := checkSpec(s.Name, "route target", r.To); err != nil {
 				return err
 			}
 		}
 		if (s.Health != "" || len(s.Routes) > 0) && s.Address == "" {
-			return fmt.Errorf("routes: service %q has endpoints but no address to resolve them against", s.Name)
+			return fmt.Errorf("routes: app %q has endpoints but no address to resolve them against", s.Name)
 		}
 		for _, a := range s.Announce {
 			if err := a.check(s); err != nil {
@@ -299,43 +299,43 @@ var serviceType = regexp.MustCompile(`^_[a-z0-9]([a-z0-9-]{0,13}[a-z0-9])?\._(tc
 // tidy. The publisher reads these fields out of jq as tab-separated words, so a tab or a newline
 // in a name would not be a bad label but a shifted line -- a port read as a type. Refusing them
 // here is the same discipline shared/manifest applies to every string that reaches a unit file.
-func (a Announcement) check(s Service) error {
+func (a Announcement) check(s App) error {
 	if a.Name == "" {
-		return fmt.Errorf("routes: service %q announces %q with no instance name", s.Name, a.Type)
+		return fmt.Errorf("routes: app %q announces %q with no instance name", s.Name, a.Type)
 	}
 	if strings.ContainsAny(a.Name, "\t\r\n") {
-		return fmt.Errorf("routes: service %q announces under a name containing whitespace: %q", s.Name, a.Name)
+		return fmt.Errorf("routes: app %q announces under a name containing whitespace: %q", s.Name, a.Name)
 	}
 	if !serviceType.MatchString(a.Type) {
-		return fmt.Errorf("routes: service %q announces an unusable service type %q", s.Name, a.Type)
+		return fmt.Errorf("routes: app %q announces an unusable service type %q", s.Name, a.Type)
 	}
 	if a.Port < 1 || a.Port > 65535 {
-		return fmt.Errorf("routes: service %q announces %s on port %d", s.Name, a.Type, a.Port)
+		return fmt.Errorf("routes: app %q announces %s on port %d", s.Name, a.Type, a.Port)
 	}
 	if len(s.Hosts) == 0 {
 		// The record's SRV target is Hosts[0]; with no name there is nothing to point devices at,
 		// and pointing them at the guest's own hostname would name a node rather than the flock.
-		return fmt.Errorf("routes: service %q announces %s but has no name to point it at", s.Name, a.Type)
+		return fmt.Errorf("routes: app %q announces %s but has no name to point it at", s.Name, a.Type)
 	}
 	return nil
 }
 
 // checkSpec is the host-less-URL rule both Health and Route.To follow.
-func checkSpec(service, what, spec string) error {
+func checkSpec(app, what, spec string) error {
 	u, err := url.Parse(spec)
 	if err != nil {
-		return fmt.Errorf("routes: service %q %s %q: %w", service, what, spec, err)
+		return fmt.Errorf("routes: app %q %s %q: %w", app, what, spec, err)
 	}
 	if u.Scheme != "http" {
-		return fmt.Errorf("routes: service %q %s %q: scheme must be http", service, what, spec)
+		return fmt.Errorf("routes: app %q %s %q: scheme must be http", app, what, spec)
 	}
 	if u.Hostname() != "" {
 		// The whole point of the missing host: with nothing but the app's own Address to
 		// splice, no table can aim the door at another machine.
-		return fmt.Errorf("routes: service %q %s %q names a host; it must be host-less", service, what, spec)
+		return fmt.Errorf("routes: app %q %s %q names a host; it must be host-less", app, what, spec)
 	}
 	if u.Port() == "" {
-		return fmt.Errorf("routes: service %q %s %q has no port", service, what, spec)
+		return fmt.Errorf("routes: app %q %s %q has no port", app, what, spec)
 	}
 	return nil
 }
@@ -353,7 +353,7 @@ func (t Table) Marshal() ([]byte, error) {
 // Resolve turns one of this app's host-less specs into a real URL by splicing in its Address.
 // The one operation every consumer performs, implemented once so the door and the health probe
 // cannot disagree about where an app is.
-func (s Service) Resolve(spec string) (*url.URL, error) {
+func (s App) Resolve(spec string) (*url.URL, error) {
 	u, err := url.Parse(spec)
 	if err != nil {
 		return nil, fmt.Errorf("routes: %s: %w", s.Name, err)
@@ -371,7 +371,7 @@ func (s Service) Resolve(spec string) (*url.URL, error) {
 }
 
 // Route returns this app's route on the given listener.
-func (s Service) Route(listen string) (Route, bool) {
+func (s App) Route(listen string) (Route, bool) {
 	for _, r := range s.Routes {
 		if r.Listen == listen {
 			return r, true
@@ -387,30 +387,30 @@ func (s Service) Route(listen string) (Route, bool) {
 // A match says only that the name is OURS. Whether anything is served under it is the app's
 // Routes, and the difference matters: the door can then say "this is ours and does not answer
 // HTTP" instead of a 404 that reads as "you typed it wrong".
-func (t Table) Lookup(host string) (Service, bool) {
+func (t Table) Lookup(host string) (App, bool) {
 	h := Normalise(host)
 	if h == "" {
-		return Service{}, false
+		return App{}, false
 	}
-	for _, s := range t.Services {
+	for _, s := range t.Apps {
 		for _, n := range s.Hosts {
 			if Normalise(n) == h {
 				return s, true
 			}
 		}
 	}
-	return Service{}, false
+	return App{}, false
 }
 
 // Get finds an app by name — what the per-app health probe resolves through, so that the
 // address it probes is the one the renderer actually wired rather than one the caller assembled.
-func (t Table) Get(name string) (Service, bool) {
-	for _, s := range t.Services {
+func (t Table) Get(name string) (App, bool) {
+	for _, s := range t.Apps {
 		if s.Name == name {
 			return s, true
 		}
 	}
-	return Service{}, false
+	return App{}, false
 }
 
 // Normalise reduces a Host header to the form Hosts are stored in: lowercase, no trailing dot, no

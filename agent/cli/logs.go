@@ -132,7 +132,7 @@ func runLogs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	n := fs.Int("n", 100, "show the last this many lines per surface (0 = all)")
 	since := fs.String("since", "", "only lines after this (any journalctl --since spec); host surface only")
 	grep := fs.String("grep", "", "show only lines containing this substring")
-	console := fs.String("console", "", "read the guest console from this file instead of the machine's configured one")
+	console := fs.String("console", "", "read the VM's console from this file instead of the machine's configured one")
 	follow := fs.Bool("follow", false, "keep streaming new lines until interrupted")
 	only := surfaceFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -159,7 +159,7 @@ func runLogs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 // since asking for everything is not a usage error.
 func surfaceFlags(fs *flag.FlagSet) func() string {
 	host := fs.Bool("host", false, "only the host agent's log")
-	guest := fs.Bool("guest", false, "only the guest's serial console")
+	guest := fs.Bool("guest", false, "only the VM's serial console")
 	return func() string {
 		switch {
 		case *host && !*guest:

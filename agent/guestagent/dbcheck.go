@@ -248,7 +248,7 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 	}
 	at := time.Now().UTC()
 	meta := quadlet.SnapshotMeta{
-		Service: hass.Name, Trigger: quadlet.TriggerHassDBRestoreBefore, TakenAt: at,
+		App: hass.Name, Trigger: quadlet.TriggerHassDBRestoreBefore, TakenAt: at,
 		Consistency: cons, Manifest: rawManifest,
 		Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonDBRestore, What: "Restored corrupted database"}}},
 	}

@@ -182,7 +182,7 @@ type reasonContext struct {
 
 // awakeReason is what `powercfg /requests` shows against the agent, so a user asking why the PC
 // does not sleep is told by name.
-const awakeReason = "Briard is serving your home's services from this PC"
+const awakeReason = "Briard is serving your home's apps from this PC"
 
 // holdAwake keeps the machine out of idle sleep for the rest of the process's life: a
 // system-required power request, released by the process's exit. Idle sleep only -- a closed lid,

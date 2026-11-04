@@ -114,7 +114,7 @@ func newRig(t *testing.T) *rig {
 	t.Cleanup(haSrv.Close)
 	u, _ := url.Parse(haSrv.URL)
 	dir := t.TempDir()
-	tbl := routes.Table{Services: []routes.Service{{
+	tbl := routes.Table{Apps: []routes.App{{
 		Name: "home-assistant", Hosts: routes.HostNames("brave-elf", "home-assistant"),
 		Address: u.Hostname(), Health: "http://:" + u.Port() + "/manifest.json",
 		Routes: []routes.Route{{Listen: routes.ListenName, To: "http://:" + u.Port()}},

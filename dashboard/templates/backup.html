@@ -50,7 +50,7 @@
 {{define "backups-card"}}<div class="card wide" id="backups"{{if .Moving}} hx-get="/f/backups" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>Backups</h2></header><section>
   {{range .Ops}}{{if .Running}}<p>Restoring {{.Title}} from the backup of {{.From}}… <span class="note">since {{.Since}}</span></p>
   {{else if .Failed}}<p class="bad">{{.Title}} was not restored: {{.Detail}}</p>
-  {{else}}<p class="ok">{{.Title}} is back as it was in the backup of {{.From}}. <a href="/apps/{{.Service}}">Its History</a> has the restore, and what it had before.</p>{{end}}{{end}}
+  {{else}}<p class="ok">{{.Title}} is back as it was in the backup of {{.From}}. <a href="/apps/{{.App}}">Its History</a> has the restore, and what it had before.</p>{{end}}{{end}}
   {{with .Error}}<p class="bad">The backups could not be read: {{.}}</p>{{end}}
   {{if not .Moving}}{{if .Rows}}<div class="table-container"><table class="table"><thead><tr><th>When</th><th>Added</th><th>Status</th><th></th></tr></thead><tbody>
   {{range .Rows}}<tr><td>{{.When}}</td><td>{{.Added}}</td><td>{{if .Error}}<span class="bad">did not finish: {{.Error}}</span>{{else if .Earlier}}<span class="badge" data-variant="outline">from an earlier install</span>{{else}}<span class="badge" data-variant="secondary">ok</span>{{end}}</td><td>{{with .ID}}<a class="btn" data-variant="outline" href="/backup/{{.}}">Details</a>{{end}}</td></tr>{{end}}
@@ -103,7 +103,7 @@
     <p class="note">It may take a few minutes: the app is fetched first.</p>{{end}}
   </section>
   <footer>
-    <form method="post" action="/backup/restore"><input type="hidden" name="backup" value="{{.Backup}}"><input type="hidden" name="app" value="{{.Service}}"><input type="hidden" name="when" value="{{.When}}"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn">Restore {{.Title}}</button></form>
+    <form method="post" action="/backup/restore"><input type="hidden" name="backup" value="{{.Backup}}"><input type="hidden" name="app" value="{{.App}}"><input type="hidden" name="when" value="{{.When}}"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn">Restore {{.Title}}</button></form>
     <a class="btn" data-variant="ghost" href="/backup">Cancel</a>
   </footer>
 </div>

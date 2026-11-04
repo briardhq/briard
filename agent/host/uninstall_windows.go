@@ -101,10 +101,10 @@ func stopNode(ctx context.Context, qmpSock string, logf func(string, ...any)) er
 		return fmt.Errorf("the service manager: %w", err)
 	}
 	defer m.Disconnect()
-	if _, err := stopService(m, WardenName, logf); err != nil {
+	if _, err := stopApp(m, WardenName, logf); err != nil {
 		return err
 	}
-	agent, err := stopService(m, ServiceName, logf)
+	agent, err := stopApp(m, ServiceName, logf)
 	if err != nil {
 		return err
 	}
@@ -116,9 +116,9 @@ func stopNode(ctx context.Context, qmpSock string, logf func(string, ...any)) er
 	return platform.PowerOffGuest(ctx, qmpSock, logf)
 }
 
-// stopService stops the named service and waits, bounded, until it has; it reports whether the
+// stopApp stops the named service and waits, bounded, until it has; it reports whether the
 // service is registered at all.
-func stopService(m *mgr.Mgr, name string, logf func(string, ...any)) (bool, error) {
+func stopApp(m *mgr.Mgr, name string, logf func(string, ...any)) (bool, error) {
 	s, err := m.OpenService(name)
 	if err != nil {
 		return false, nil

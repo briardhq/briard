@@ -208,7 +208,7 @@ func Assess(f HostFacts) Report {
 			"8 GB is recommended; a cheap SO-DIMM upgrade pays off if this box hosts more than the basics"})
 	default:
 		cs = append(cs, Check{"memory", Refuse, fmt.Sprintf("%d MB RAM (below the 4 GB floor)", f.MemTotalMB),
-			"add RAM to at least 4 GB (often a cheap SO-DIMM); below this a node can't run the guest reliably"})
+			"add RAM to at least 4 GB (often a cheap SO-DIMM); below this a machine can't run the VM reliably"})
 	}
 
 	// Disk -- the install makes every line above up front (the data volume and the guest's disk
@@ -217,12 +217,12 @@ func Assess(f HostFacts) Report {
 	// over a fact we could not read.
 	use := diskUse(f)
 	comfortable := use + diskHomeAssistantLineMB + HostDiskReserveMB
-	lines := "the guest image"
+	lines := "the VM image"
 	if !f.KeptDataDisk {
 		lines += ", a " + gbOf(diskDataLineMB) + " data volume"
 	}
 	if !f.KeptStateDisk {
-		lines += ", a " + gbOf(StateDiskInitialMB) + " guest disk"
+		lines += ", a " + gbOf(StateDiskInitialMB) + " VM disk"
 	}
 	switch {
 	case f.DiskFreeMB == 0:
@@ -231,10 +231,10 @@ func Assess(f HostFacts) Report {
 		cs = append(cs, Check{"disk", Pass, fmt.Sprintf("%s free", gbOf(f.DiskFreeMB)), ""})
 	case f.DiskFreeMB >= use:
 		cs = append(cs, Check{"disk", Warn, fmt.Sprintf("%s free", gbOf(f.DiskFreeMB)),
-			fmt.Sprintf("the node uses %s (%s); a Home Assistant adds about %s, and this computer should keep about %s free for its own system",
+			fmt.Sprintf("briard uses %s (%s); a Home Assistant adds about %s, and this computer should keep about %s free for its own system",
 				gbOf(use), lines, gbOf(diskHomeAssistantLineMB), gbOf(HostDiskReserveMB))})
 	default:
-		cs = append(cs, Check{"disk", Refuse, fmt.Sprintf("%s free (the node uses %s)", gbOf(f.DiskFreeMB), gbOf(use)),
+		cs = append(cs, Check{"disk", Refuse, fmt.Sprintf("%s free (briard uses %s)", gbOf(f.DiskFreeMB), gbOf(use)),
 			fmt.Sprintf("free at least %s for %s, plus about %s for this computer's own system", gbOf(use), lines, gbOf(HostDiskReserveMB))})
 	}
 
@@ -287,7 +287,7 @@ func Assess(f HostFacts) Report {
 		cs = append(cs, Check{"encryption", Pass, "AES acceleration present -- the data volume will be encrypted at rest", ""})
 	} else {
 		cs = append(cs, Check{"encryption", Warn, "no AES acceleration on this CPU -- the data volume will be created UNENCRYPTED",
-			"nothing to fix here: this is the CPU. The node works normally; it just cannot encrypt at rest without paying for it on every write"})
+			"nothing to fix here: this is the CPU. Briard works normally; it just cannot encrypt at rest without paying for it on every write"})
 	}
 
 	cs = append(cs, vipCheck(f)...)
@@ -347,12 +347,12 @@ func vipCheck(f HostFacts) []Check {
 	case !lan.Contains(vip):
 		return []Check{{"vip", Refuse,
 			fmt.Sprintf("the service address %s is not on this machine's LAN (%s)", vip, lan),
-			fmt.Sprintf("this node would claim an address nobody on your network can reach. Pick a free address inside %s and re-run: `BRIARD_VIP_ADDR=<address>/%s curl -fsSL https://get.briard.io/install.sh | sudo sh`",
+			fmt.Sprintf("briard would claim an address nobody on your network can reach. Pick a free address inside %s and re-run: `BRIARD_VIP_ADDR=<address>/%s curl -fsSL https://get.briard.io/install.sh | sudo sh`",
 				lan, prefixOf(f.HostCIDR))}}
 	case vip.Equal(hostIP):
 		return []Check{{"vip", Refuse,
 			fmt.Sprintf("the service address %s is this machine's own address", vip),
-			"the guest claims the VIP as a second machine on your LAN, so it cannot be the host's address; set BRIARD_VIP_ADDR to a free one"}}
+			"the VM claims the VIP as a second machine on your LAN, so it cannot be the host's address; set BRIARD_VIP_ADDR to a free one"}}
 	case f.VIPAnswered:
 		// The third refusal for this gate, alongside off-LAN and host's-own. It is the only one
 		// that needs the network rather than arithmetic, which is why it is checked last:
@@ -406,7 +406,7 @@ func MacvtapAdvisories(f HostFacts) []Check {
 	// promiscuous mode. Functionally harmless -- a Linux bridge does exactly this on EVERY NIC
 	// unconditionally -- but a hair more host CPU, so flag it (not a refuse).
 	if f.PrimaryNICBus == "usb" {
-		cs = append(cs, Check{"macvtap-nic", Warn, "primary NIC is USB (e.g. RTL8153); macvtap likely runs it promiscuous (no hardware unicast filter for the guest MACs)",
+		cs = append(cs, Check{"macvtap-nic", Warn, "primary NIC is USB (e.g. RTL8153); macvtap likely runs it promiscuous (no hardware unicast filter for the VM's MACs)",
 			"harmless -- a bridge does the same on every NIC -- but an onboard/PCIe NIC avoids the extra host CPU; no action needed if this is your only NIC"})
 	} else {
 		cs = append(cs, Check{"macvtap-nic", Pass, "primary NIC supports macvtap without forcing promiscuous mode", ""})
@@ -414,8 +414,8 @@ func MacvtapAdvisories(f HostFacts) []Check {
 	// MAC port-security is a switch property, not host-detectable -- surface it as an always-on
 	// advisory so a managed-switch LAN isn't surprised (the guest presents its own MAC, exactly
 	// as it does under a bridge).
-	cs = append(cs, Check{"macvtap-l2", Warn, "the guest presents its own MAC on the LAN (same as a bridge)",
-		"if your switch enforces MAC port-security or you're on a hosted/cloud L2, allow the guest MAC on this port"})
+	cs = append(cs, Check{"macvtap-l2", Warn, "the VM presents its own MAC on the LAN (same as a bridge)",
+		"if your switch enforces MAC port-security or you're on a hosted/cloud L2, allow the VM's MAC on this port"})
 	return cs
 }
 
@@ -429,7 +429,7 @@ func Print(w io.Writer, r Report) {
 		}
 	}
 	if r.Admit() {
-		fmt.Fprintln(w, "\nresult: this machine can host a briard node.")
+		fmt.Fprintln(w, "\nresult: this machine can run briard.")
 	} else {
 		fmt.Fprintln(w, "\nresult: REFUSED -- fix the REFUSE items above, then re-run.")
 	}

@@ -126,6 +126,6 @@ Omitted, the entry counts for nothing until it needs more.
 
 The schema deliberately cannot express host binds, privileges, host networking or a command line —
 capability comes by omission, so a catalog entry cannot reach the host. Anything an app needs
-beyond that is **product-side, keyed on the app name** (`agent/services`): Home Assistant's
+beyond that is **product-side, keyed on the app name** (`agent/apps`): Home Assistant's
 control channel, mosquitto's config file. If a new entry cannot be expressed here, that is the
 question to answer, not a field to add.

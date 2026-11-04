@@ -104,7 +104,7 @@ func (cfg Config) finishInstall(ctx context.Context, local <-chan localRequest, 
 			if fill == nil {
 				fill = cfg.startFill(logf)
 			}
-			err = cfg.finishStep(ctx, local, imageFetchBound, "fetching the guest image", cfg.fetchImage, logf)
+			err = cfg.finishStep(ctx, local, imageFetchBound, "fetching the VM image", cfg.fetchImage, logf)
 		}
 		if err == nil {
 			fireAlert(ctx, n, logf, finishDone)

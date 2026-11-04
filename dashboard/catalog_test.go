@@ -287,7 +287,7 @@ func TestAnOfferedUpdateIsShownPressedAndTaken(t *testing.T) {
 	port.mu.Lock()
 	asked := append([]api.Directive(nil), port.asked...)
 	port.mu.Unlock()
-	if len(asked) != 1 || asked[0].Kind != api.DirectiveServiceInstall || asked[0].Payload != "home-assistant" {
+	if len(asked) != 1 || asked[0].Kind != api.DirectiveAppInstall || asked[0].Payload != "home-assistant" {
 		t.Fatalf("the host was asked %+v; want exactly one service-install of home-assistant", asked)
 	}
 

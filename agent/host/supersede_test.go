@@ -20,7 +20,7 @@ type volumeFake struct {
 	removed []string
 }
 
-func (v *volumeFake) ServiceList(context.Context) ([]string, error) {
+func (v *volumeFake) AppList(context.Context) ([]string, error) {
 	var names []string
 	for n := range v.volume {
 		names = append(names, n)
@@ -28,13 +28,13 @@ func (v *volumeFake) ServiceList(context.Context) ([]string, error) {
 	slices.Sort(names)
 	return names, nil
 }
-func (v *volumeFake) ServiceInstalled(_ context.Context, name string) (string, error) {
+func (v *volumeFake) AppInstalled(_ context.Context, name string) (string, error) {
 	if name == v.readErr {
 		return "", errors.New("read failed")
 	}
 	return v.volume[name], nil
 }
-func (v *volumeFake) SupportsServiceList() bool { return true }
+func (v *volumeFake) SupportsAppList() bool { return true }
 func (v *volumeFake) RemoveImage(_ context.Context, ref string) (bool, error) {
 	v.removed = append(v.removed, ref)
 	return false, nil
@@ -70,7 +70,7 @@ func TestDropSupersededRemovesOnlyWhatNothingPins(t *testing.T) {
 }
 
 // An image another app still pins is not superseded, whoever moved off it.
-func TestDropSupersededKeepsAnImageAnotherServicePins(t *testing.T) {
+func TestDropSupersededKeepsAnImageAnotherAppPins(t *testing.T) {
 	was, _ := manifestWith(t, "home-assistant", "2026.6.0", "a")
 	now, _ := manifestWith(t, "home-assistant", "2026.7.1", "b")
 	twin, _ := manifestWith(t, "twin", "1", "a") // a different app on the same digest
@@ -78,7 +78,7 @@ func TestDropSupersededKeepsAnImageAnotherServicePins(t *testing.T) {
 	v := &volumeFake{volume: map[string]string{"home-assistant": now, "twin": twin}}
 	Config{}.dropSuperseded(context.Background(), v, was, t.Logf)
 	if len(v.removed) != 0 {
-		t.Errorf("removed %v, an image another service still runs on", v.removed)
+		t.Errorf("removed %v, an image another app still runs on", v.removed)
 	}
 }
 
@@ -106,7 +106,7 @@ func TestDropSupersededFreshInstallRemovesNothing(t *testing.T) {
 }
 
 // THE REAL CLIENT IS AN INSTALLER, checked at compile time. host.go reaches it through a runtime
-// type assertion (`r.(serviceInstaller)`), so a verb added to the interface with a signature the
+// type assertion (`r.(appInstaller)`), so a verb added to the interface with a signature the
 // client does not have builds cleanly and then fails EVERY install on a real node with "guest client
-// cannot install a service" -- nothing but this line, or a rig, would say so.
-var _ serviceInstaller = (*guestagent.Client)(nil)
+// cannot install an app" -- nothing but this line, or a rig, would say so.
+var _ appInstaller = (*guestagent.Client)(nil)

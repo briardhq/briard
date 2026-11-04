@@ -190,7 +190,7 @@ pkgs.testers.runNixOSTest {
     dummy_unit = container_unit(primary)
     dummy_started = started_at(primary, dummy_unit)
     # THE ROLLBACK POINT, TAKEN QUIESCED -- which is the product's rule, and this rig is what measured
-    # why it is one. Taken LIVE (which is what applyServiceInstall did until the stop was put
+    # why it is one. Taken LIVE (which is what applyAppInstall did until the stop was put
     # in) the snapshot did not
     # contain the message the broker had already accepted: mosquitto holds retained state in memory
     # and writes it on a clean stop or every autosave_interval, so a live snapshot of an app

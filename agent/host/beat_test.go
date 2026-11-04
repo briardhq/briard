@@ -208,13 +208,13 @@ func TestLongDirectivesKeepTheWatchdogFed(t *testing.T) {
 }
 
 // The verb the field report was written about, driven end to end against a real signed catalog.
-func TestServiceInstallKeepsTheWatchdogFed(t *testing.T) {
+func TestAppInstallKeepsTheWatchdogFed(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	b, pinged := pingingBeat()
 	cfg.beat = b
 	f := &fakeInstaller{primary: true, active: true, healthy: true, hold: heldUntilPinged(pinged)}
-	if o := installService(cfg, f); o.State != api.OutcomeDone {
-		t.Fatalf("service install did not complete: %s", o.Detail)
+	if o := installApp(cfg, f); o.State != api.OutcomeDone {
+		t.Fatalf("app install did not complete: %s", o.Detail)
 	}
 }
 

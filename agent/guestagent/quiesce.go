@@ -8,8 +8,8 @@ import (
 	"path"
 	"time"
 
+	apps "briard.io/agent/apps"
 	"briard.io/agent/quadlet"
-	"briard.io/agent/services"
 	"briard.io/shared/manifest"
 )
 
@@ -43,7 +43,7 @@ type quiescedResult struct {
 // The APP is named rather than the port, because the manifest on the volume is the one place
 // that knows how to reach it, and it is the same manifest the member is pinned to.
 func quiescedMember(ctx context.Context, x Executor, run func(string, ...string) error, req snapshotRequest) (quiescedResult, error) {
-	if err := safeUnitName(req.Service); err != nil { // the name becomes a path element
+	if err := safeUnitName(req.App); err != nil { // the name becomes a path element
 		return quiescedResult{}, err
 	}
 	var meta quadlet.SnapshotMeta
@@ -60,7 +60,7 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 		return quiescedResult{}, err
 	}
 	start := time.Now()
-	release, why := quiesceService(ctx, x, req.Service)
+	release, why := quiesceApp(ctx, x, req.App)
 	var acquire, hold time.Duration
 	if release != nil {
 		acquire = time.Since(start)
@@ -73,7 +73,7 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 		defer func() {
 			if release != nil {
 				if _, err := release(ctx); err != nil {
-					log.Printf("ring %s: the quiesce window was not released cleanly (%v)", req.Service, err)
+					log.Printf("ring %s: the quiesce window was not released cleanly (%v)", req.App, err)
 				}
 			}
 		}()
@@ -85,14 +85,14 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 		held, err := release(ctx)
 		release = nil // released here; the defer above has nothing left to do
 		hold = time.Since(locked)
-		log.Printf("ring %s: the quiesce took %s to acquire and held %s (held=%t)", req.Service, acquire, hold, held && err == nil)
+		log.Printf("ring %s: the quiesce took %s to acquire and held %s (held=%t)", req.App, acquire, hold, held && err == nil)
 		switch {
 		case err != nil:
-			why = "the service could not be released cleanly: " + err.Error()
+			why = "the app could not be released cleanly: " + err.Error()
 		case !held:
 			// Home Assistant resumed writing under us. The member is real and is exactly as good
 			// as an ordinary live snapshot, which is what it now says.
-			why = "the service resumed writing before the snapshot finished"
+			why = "the app resumed writing before the snapshot finished"
 		default:
 			meta.Consistency = quadlet.Quiesced
 		}
@@ -125,23 +125,23 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 //
 // It builds exactly what the host would send, including the `crash` the guest then upgrades, so
 // the harness supplies the trigger and nothing else. Nothing in the product invokes it.
-func TakeClockMember(ctx context.Context, x Executor, service string, at time.Time) (string, error) {
+func TakeClockMember(ctx context.Context, x Executor, app string, at time.Time) (string, error) {
 	ensureToolsOnPath()
-	raw, err := x.ReadFile(manifestPath(service))
+	raw, err := x.ReadFile(manifestPath(app))
 	if err != nil {
 		return "", fmt.Errorf("read the running manifest: %w", err)
 	}
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: quadlet.TriggerClock, TakenAt: at,
+		App: app, Trigger: quadlet.TriggerClock, TakenAt: at,
 		Consistency: quadlet.Crash, Manifest: string(raw),
 	})
 	if err != nil {
 		return "", err
 	}
-	member := quadlet.SnapshotMember(service, quadlet.TriggerClock, at)
+	member := quadlet.SnapshotMember(app, quadlet.TriggerClock, at)
 	run := func(name string, args ...string) error { _, err := x.Run(ctx, name, args...); return err }
 	res, err := quiescedMember(ctx, x, run, snapshotRequest{
-		Service: service, DataDir: quadlet.DataRoot(service), Path: member, Sidecar: string(sidecar),
+		App: app, DataDir: quadlet.DataRoot(app), Path: member, Sidecar: string(sidecar),
 	})
 	if err != nil {
 		return "", err
@@ -150,11 +150,11 @@ func TakeClockMember(ctx context.Context, x Executor, service string, at time.Ti
 		res.Acquire.Milliseconds(), res.Hold.Milliseconds(), res.Why), nil
 }
 
-// quiesceService asks the registry for this app's way of holding still, reading the manifest
+// quiesceApp asks the registry for this app's way of holding still, reading the manifest
 // on the volume for how to reach it. A nil release with a reason is the ordinary answer for a
 // app that has none, and for one that could not be asked.
-func quiesceService(ctx context.Context, x Executor, service string) (func(context.Context) (bool, error), string) {
-	raw, err := x.ReadFile(manifestPath(service))
+func quiesceApp(ctx context.Context, x Executor, app string) (func(context.Context) (bool, error), string) {
+	raw, err := x.ReadFile(manifestPath(app))
 	if err != nil {
 		return nil, fmt.Sprintf("the running manifest could not be read: %v", err)
 	}
@@ -169,7 +169,7 @@ func quiesceService(ctx context.Context, x Executor, service string) (func(conte
 			port, container = c.Port, quadlet.ContainerName(m.Name, c.Name)
 		}
 	}
-	release, err := services.Quiesce(ctx, x, m, port, container)
+	release, err := apps.Quiesce(ctx, x, m, port, container)
 	if err != nil {
 		return nil, err.Error()
 	}

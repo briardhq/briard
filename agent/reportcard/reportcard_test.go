@@ -415,7 +415,7 @@ func TestDiskCheckCountsWhatTheNodeUses(t *testing.T) {
 	f := capable()
 	f.DiskFreeMB = 5 * 1024
 	c := find(t, Assess(f), "disk")
-	if !strings.Contains(c.Detail, "uses 6 GB") || !strings.Contains(c.Fix, "free at least 6 GB for the guest image, a 4 GB data volume, a 1 GB guest disk, plus about 2 GB") {
+	if !strings.Contains(c.Detail, "uses 6 GB") || !strings.Contains(c.Fix, "free at least 6 GB for the VM image, a 4 GB data volume, a 1 GB VM disk, plus about 2 GB") {
 		t.Errorf("the refusal does not say what the node uses and what to keep free: %+v", c)
 	}
 	f.DiskFreeMB = 8 * 1024
@@ -439,7 +439,7 @@ func TestDiskCheckCreditsTheVolumesAReinstallKeeps(t *testing.T) {
 	}
 	f.DiskFreeMB = 512
 	c := find(t, Assess(f), "disk")
-	if c.Status != Refuse || strings.Contains(c.Fix, "data volume") || strings.Contains(c.Fix, "guest disk") {
+	if c.Status != Refuse || strings.Contains(c.Fix, "data volume") || strings.Contains(c.Fix, "VM disk") {
 		t.Errorf("below what a reinstall uses = %+v; want a refusal that charges only what is not already there", c)
 	}
 }

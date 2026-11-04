@@ -108,7 +108,7 @@ var commands = []command{
 			"printed it. The app is stopped for it and started again afterwards. The undo is itself a row\n" +
 			"in the history, so it can be undone too. If the point needs an image this machine no longer\n" +
 			"has and cannot fetch, nothing is changed and it says so.",
-		run: runService, probe: []string{"install", "-h"},
+		run: runApp, probe: []string{"install", "-h"},
 	},
 	{
 		name: "handover", group: groupEveryday,
@@ -218,8 +218,8 @@ var commands = []command{
 	{
 		name: "run", group: groupRepair,
 		synopsis: "run the agent itself — systemd does this for you",
-		detail: "The daemon: the host agent. (The in-guest agent is its own binary, briard-guest-agent,\n" +
-			"started by units inside the guest image.) You should not need to type it: the installer\n" +
+		detail: "The daemon: the host agent. (The in-VM agent is its own binary, briard-guest-agent,\n" +
+			"started by units inside the VM image.) You should not need to type it: the installer\n" +
 			"writes the unit that does.",
 		// run: nil — main() intercepts this word before the CLI sees it (the daemon modes cannot
 		// live in this package). It is in the table so it is DOCUMENTED; the test knows.
@@ -353,7 +353,7 @@ func runDirective(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	return 0
 }
 
-// runService is the first verb that is SUGAR over `directive` rather than a separate mechanism —
+// runApp is the first verb that is SUGAR over `directive` rather than a separate mechanism —
 // which is the shape every later verb should copy. `briard app install ha` is exactly
 // `briard directive service-install ha`, so there is one path through the agent and the CLI adds
 // only a name a human would guess. (The verb a user types is `app`; *service* stays the
@@ -362,7 +362,7 @@ func runDirective(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // It blocks until the node reaches a terminal state, because an install is a maintenance
 // operation on a live promoted resource: returning early would leave an operator guessing whether
 // the thing they just did is still happening.
-func runService(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func runApp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) >= 1 && (args[0] == "history" || args[0] == "undo") {
 		return runAppHistory(ctx, args, stdout, stderr)
 	}
@@ -388,7 +388,7 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		verb, to = "updating", " to "+v
 	}
 	fmt.Fprintf(stdout, "%s %s%s (this takes a few minutes; the machine stays up)\n", verb, name, to)
-	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveServiceInstall, Payload: name})
+	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveAppInstall, Payload: name})
 	if err != nil {
 		fmt.Fprintf(stderr, "briard: %v\n", err)
 		return 1
@@ -584,7 +584,7 @@ func runBackup(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprint(stderr, "briard backup restore: want exactly one app name\n")
 		return 2
 	}
-	payload, err := json.Marshal(api.BackupRestore{Service: fs.Arg(0), Snapshot: *at})
+	payload, err := json.Marshal(api.BackupRestore{App: fs.Arg(0), Snapshot: *at})
 	if err != nil {
 		fmt.Fprintf(stderr, "briard: %v\n", err)
 		return 1
@@ -767,7 +767,7 @@ func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	// What the browser is about to show, before the link to it. The installer prints this
 	// verb's output as the last thing an install says, so the sentence that used to be its own shell
 	// scan lives here -- and a household running the verb a month later gets the same answer.
-	if line := installedLine(installedServices(serviceCacheDir)); line != "" {
+	if line := installedLine(installedApps(appCacheDir)); line != "" {
 		fmt.Fprintf(stdout, "%s.\n\n", line)
 	}
 	// One address per line: the household's own name first when it is usable, the `.local`
@@ -831,7 +831,7 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if verb == "undo" {
 		return runAppUndo(ctx, *sock, fs.Arg(0), stdout, stderr)
 	}
-	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveServiceMembers, Payload: fs.Arg(0)})
+	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveAppMembers, Payload: fs.Arg(0)})
 	if err != nil {
 		fmt.Fprintf(stderr, "briard: %v\n", err)
 		return 1
@@ -893,7 +893,7 @@ func runAppUndo(ctx context.Context, sock, member string, stdout, stderr io.Writ
 	}
 	fmt.Fprint(stdout, "  what it has now is kept in its history, so you can go back to it\n")
 	fmt.Fprint(stdout, "  the app stops for it and starts again afterwards\n")
-	o, err := submit(ctx, sock, api.Directive{Kind: api.DirectiveServiceRestore, Payload: member})
+	o, err := submit(ctx, sock, api.Directive{Kind: api.DirectiveAppRestore, Payload: member})
 	if err != nil {
 		fmt.Fprintf(stderr, "briard: %v\n", err)
 		return 1

@@ -100,9 +100,9 @@ func (c Cluster) PeerCanTakeOver() bool {
 	return false
 }
 
-// ServiceSpec describes one app the node runs. Every spec is built from a signed manifest
+// AppSpec describes one app the node runs. Every spec is built from a signed manifest
 // (agent/host.specOf is the only constructor), so each field below is always filled.
-type ServiceSpec struct {
+type AppSpec struct {
 	Name    string // e.g. "home-assistant"
 	DataDir string // path on the DRBD volume
 
@@ -119,7 +119,7 @@ type ServiceSpec struct {
 	// sha256 over the exact bytes (shared/manifest.Identity).
 	//
 	// It rides the spec rather than being re-read at report time because the bytes it hashes are
-	// already in hand wherever a spec is built -- installedServices parses them at bring-up and
+	// already in hand wherever a spec is built -- installedApps parses them at bring-up and
 	// the install path holds them -- and re-reading the cache once per report cycle to recompute
 	// a value that cannot change without an install would be a file read per node per cycle for
 	// nothing.
@@ -146,4 +146,4 @@ type ServiceSpec struct {
 // "podman-<name>.service" inline, which names nothing on a runtime-installed app — so the
 // footprint, and with it the crash-loop counter, read zero for exactly the apps users install.
 // One definition, on the type that carries the fact.
-func (s ServiceSpec) ServingUnit() string { return s.Unit }
+func (s AppSpec) ServingUnit() string { return s.Unit }

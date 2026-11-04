@@ -269,7 +269,7 @@ func TestCatalogWishNoticeIsAnEdge(t *testing.T) {
 			fn := &fakeNotifier{}
 			st := newAlertStore(filepath.Join(t.TempDir(), "alerts.json"), fn, s.logf)
 			ctx := context.Background()
-			none := map[string]model.ServiceSpec{}
+			none := map[string]model.AppSpec{}
 			s.refresh(ctx)
 			s.toggle(api.Directive{Kind: api.DirectiveWish, Payload: "paperless-ngx"})
 			s.notices(ctx, st, none)
@@ -288,7 +288,7 @@ func TestCatalogWishNoticeIsAnEdge(t *testing.T) {
 				t.Errorf("the notice: %+v", a)
 			}
 			if settle == "installed" {
-				none = map[string]model.ServiceSpec{"paperless-ngx": {Name: "paperless-ngx"}}
+				none = map[string]model.AppSpec{"paperless-ngx": {Name: "paperless-ngx"}}
 			} else {
 				s.toggle(api.Directive{Kind: api.DirectiveWish, Payload: "paperless-ngx"})
 			}
@@ -352,8 +352,8 @@ func TestCatalogViewOffersAnUpdate(t *testing.T) {
 	s, _ := newTestCatalog(t, cat)
 	ctx := context.Background()
 	s.refresh(ctx) // an index from before the field: no identity named
-	running := func(id string) map[string]model.ServiceSpec {
-		return map[string]model.ServiceSpec{
+	running := func(id string) map[string]model.AppSpec {
+		return map[string]model.AppSpec{
 			"home-assistant": {Name: "home-assistant", Manifest: id, Version: "2026.9.4"},
 			"paperless-ngx":  {Name: "paperless-ngx", Manifest: "sha256:by-hand", Version: "2.0"},
 		}
@@ -371,7 +371,7 @@ func TestCatalogViewOffersAnUpdate(t *testing.T) {
 
 	cases := []struct {
 		name      string
-		installed map[string]model.ServiceSpec
+		installed map[string]model.AppSpec
 		inst      bool
 		update    bool
 	}{

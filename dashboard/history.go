@@ -57,8 +57,8 @@ type appPageView struct {
 
 // historyView is the history card, with what the newest member says about the app as it runs now.
 type historyView struct {
-	Service string
-	Title   string // the app as a person names it
+	App   string
+	Title string // the app as a person names it
 	// Version is what the app runs now; OnDisk what its image holds on this machine (the
 	// manifest's installed size). Both "" when the ring is empty or says nothing.
 	Version, OnDisk string
@@ -101,20 +101,20 @@ type restoreOpView struct {
 // confirmView is the page between the button and the act. An undo discards everything since the
 // point, which is not a thing to do on one click.
 type confirmView struct {
-	Service, Title, Point, What, Back string
-	Note                              string
-	MovesCode                         bool
-	From, To                          string
+	App, Title, Point, What, Back string
+	Note                          string
+	MovesCode                     bool
+	From, To                      string
 }
 
 // showApp is one app's page: its card as the home shows it, and its history.
-func (a *app) showApp(w http.ResponseWriter, r *http.Request, self device, service string) {
+func (a *app) showApp(w http.ResponseWriter, r *http.Request, self device, app string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	v := appPageView{App: a.view(ctx, r, self).app(service), History: a.history(ctx, service)}
+	v := appPageView{App: a.view(ctx, r, self).app(app), History: a.history(ctx, app)}
 	v.App.Here = true
 	if r.URL.Query().Has("storage") {
-		s := a.storage(ctx, service)
+		s := a.storage(ctx, app)
 		v.Storage = &s
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -124,9 +124,9 @@ func (a *app) showApp(w http.ResponseWriter, r *http.Request, self device, servi
 }
 
 // history is the card's view: the rows, the banner, and the undo in flight if there is one.
-func (a *app) history(ctx context.Context, service string) historyView {
-	v := historyView{Service: service, Title: a.appTitle(service)}
-	rows, running, err := a.rows(ctx, service)
+func (a *app) history(ctx context.Context, app string) historyView {
+	v := historyView{App: app, Title: a.appTitle(app)}
+	rows, running, err := a.rows(ctx, app)
 	if err != nil {
 		v.Error = err.Error()
 	} else {
@@ -144,11 +144,11 @@ func (a *app) history(ctx context.Context, service string) historyView {
 		}
 	}
 	a.mu.Lock()
-	if op, ok := a.restores[service]; ok {
+	if op, ok := a.restores[app]; ok {
 		v.Op = &restoreOpView{Running: !op.Done, Failed: op.Failed, What: op.What, Detail: op.Detail,
 			Since: op.Started.In(zone()).Format("15:04")}
 		if op.Done && !op.Failed {
-			delete(a.restores, service) // the list below already shows the undo as its newest row
+			delete(a.restores, app) // the list below already shows the undo as its newest row
 		}
 	}
 	a.mu.Unlock()
@@ -158,8 +158,8 @@ func (a *app) history(ctx context.Context, service string) historyView {
 
 // rows asks the host for the ring and renders its history for the page, with the manifest the
 // app runs now (nil when the ring is empty or its newest member does not say).
-func (a *app) rows(ctx context.Context, service string) ([]rowView, *manifest.Manifest, error) {
-	o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveServiceMembers, Payload: service})
+func (a *app) rows(ctx context.Context, app string) ([]rowView, *manifest.Manifest, error) {
+	o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveAppMembers, Payload: app})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -233,22 +233,22 @@ func versionOf(raw string) string {
 // and can be undone; the confirmation says so rather than relying on it.)
 func (a *app) requestUndo(w http.ResponseWriter, r *http.Request) {
 	point := r.FormValue("point")
-	service, _, _, ok := quadlet.ParseSnapshotMember(point)
+	app, _, _, ok := quadlet.ParseSnapshotMember(point)
 	if !ok {
 		http.Error(w, "that is not a point this machine took\n", http.StatusBadRequest)
 		return
 	}
 	if r.FormValue("confirm") != "yes" {
-		a.confirmUndo(w, r, service, point)
+		a.confirmUndo(w, r, app, point)
 		return
 	}
 	a.mu.Lock()
-	if op, running := a.restores[service]; running && !op.Done {
+	if op, running := a.restores[app]; running && !op.Done {
 		a.mu.Unlock()
-		http.Redirect(w, r, "/apps/"+service, http.StatusSeeOther)
+		http.Redirect(w, r, "/apps/"+app, http.StatusSeeOther)
 		return
 	}
-	a.restores[service] = &restoreOp{Started: a.now(), What: r.FormValue("what")}
+	a.restores[app] = &restoreOp{Started: a.now(), What: r.FormValue("what")}
 	a.mu.Unlock()
 	// IN THE BACKGROUND, like an install: the host stops the app, puts the subvolume back and
 	// converges, and a browser should not hold a request open across it. The page refreshes and
@@ -256,10 +256,10 @@ func (a *app) requestUndo(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), restoreBudget)
 		defer cancel()
-		o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveServiceRestore, Payload: point})
+		o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveAppRestore, Payload: point})
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		op := a.restores[service]
+		op := a.restores[app]
 		op.Done = true
 		switch {
 		case err != nil:
@@ -269,18 +269,18 @@ func (a *app) requestUndo(w http.ResponseWriter, r *http.Request) {
 		default:
 			op.Detail = o.Detail
 		}
-		log.Printf("dashboard: undo %s to %s: outcome=%+v err=%v", service, point, o, err)
+		log.Printf("dashboard: undo %s to %s: outcome=%+v err=%v", app, point, o, err)
 	}()
-	http.Redirect(w, r, "/apps/"+service, http.StatusSeeOther)
+	http.Redirect(w, r, "/apps/"+app, http.StatusSeeOther)
 }
 
 // confirmUndo renders the step between. It re-reads the history rather than trusting the form,
 // because a point can be pruned between the listing and the click and "the point is gone" must be
 // said here rather than discovered by the restore.
-func (a *app) confirmUndo(w http.ResponseWriter, r *http.Request, service, point string) {
+func (a *app) confirmUndo(w http.ResponseWriter, r *http.Request, app, point string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	rows, running, err := a.rows(ctx, service)
+	rows, running, err := a.rows(ctx, app)
 	if err != nil {
 		http.Error(w, "could not read this app's history: "+err.Error()+"\n", http.StatusBadGateway)
 		return
@@ -296,7 +296,7 @@ func (a *app) confirmUndo(w http.ResponseWriter, r *http.Request, service, point
 		http.Error(w, "that point is no longer on this machine\n", http.StatusNotFound)
 		return
 	}
-	v := confirmView{Service: service, Title: a.appTitle(service), Point: point, What: cmp.Or(chosen.What, chosen.Caption), Back: chosen.Back,
+	v := confirmView{App: app, Title: a.appTitle(app), Point: point, What: cmp.Or(chosen.What, chosen.Caption), Back: chosen.Back,
 		Note: chosen.Note, MovesCode: chosen.MovesCode, To: chosen.Version}
 	if chosen.MovesCode && running != nil {
 		v.From = running.Version
@@ -307,8 +307,8 @@ func (a *app) confirmUndo(w http.ResponseWriter, r *http.Request, service, point
 	}
 }
 
-// appService reads the app name out of /apps/<service>, or "" for a path that names none.
-func appService(path string) string {
+// appOfPath reads the app name out of /apps/<service>, or "" for a path that names none.
+func appOfPath(path string) string {
 	name := strings.TrimPrefix(path, "/apps/")
 	if name == path || name == "" || strings.Contains(name, "/") {
 		return ""

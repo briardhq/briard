@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	apps "briard.io/agent/apps"
 	"briard.io/agent/guest"
 	"briard.io/agent/guestagent"
 	"briard.io/agent/hass"
@@ -20,7 +21,6 @@ import (
 	"briard.io/agent/quadlet"
 	"briard.io/agent/reportcard"
 	"briard.io/agent/selfupdate"
-	"briard.io/agent/services"
 	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
 	"briard.io/shared/dashboard"
@@ -53,26 +53,26 @@ import (
 // instead of mutating a resource mid-bracket. It cannot PREVENT the
 // race — a pause can still land between the check and ours — and is not claimed to.
 
-// serviceInstaller is the slice of the guest client an install drives. *guestagent.Client
+// appInstaller is the slice of the guest client an install drives. *guestagent.Client
 // satisfies it; a fake drives the test. Narrow interface for DI, not a seam.
-type serviceInstaller interface {
+type appInstaller interface {
 	Status(ctx context.Context, resource string) (model.QuorumState, error)
-	ServiceRender(ctx context.Context, files map[string]string, stale []string) error
-	ServiceProvision(ctx context.Context, name, dataDir string, subdirs []string, manifest string) error
-	ServiceInstalled(ctx context.Context, name string) (string, error)
-	// SupportsServiceInstalled gates the whole install: a guest that cannot NAME an app when
-	// recording its identity would overwrite whatever it already runs. See applyServiceInstall.
-	SupportsServiceInstalled() bool
-	// ServiceConverge makes the node match the VOLUME -- render, warm and start every manifest
+	AppRender(ctx context.Context, files map[string]string, stale []string) error
+	AppProvision(ctx context.Context, name, dataDir string, subdirs []string, manifest string) error
+	AppInstalled(ctx context.Context, name string) (string, error)
+	// SupportsAppInstalled gates the whole install: a guest that cannot NAME an app when
+	// recording its identity would overwrite whatever it already runs. See applyAppInstall.
+	SupportsAppInstalled() bool
+	// AppConverge makes the node match the VOLUME -- render, warm and start every manifest
 	// recorded there. It is what an install does instead of rewriting the promoter
-	// chain, and SupportsServiceConverge gates it the same way.
-	// ServiceConverge returns the apps the node could not PREPARE, having started every other
+	// chain, and SupportsAppConverge gates it the same way.
+	// AppConverge returns the apps the node could not PREPARE, having started every other
 	// one. An install must fail when its own app is in that list: the node is still serving
 	// the prior version, and reporting success would leave the volume, the cache and the cloud
 	// naming a version nothing is running. live names the install being run now ("" for none):
 	// its staged manifest is what renders, and every other staged install is held back.
-	ServiceConverge(ctx context.Context, live string) ([]string, error)
-	SupportsServiceConverge() bool
+	AppConverge(ctx context.Context, live string) ([]string, error)
+	SupportsAppConverge() bool
 	// StorageFree measures the guest's image store: the free-space gate reads it
 	// before a pull starts. An older guest that cannot measure gets no gate, not a refusal.
 	StorageFree(ctx context.Context) (free, total int64, err error)
@@ -80,34 +80,34 @@ type serviceInstaller interface {
 	// StorageGrow fills a state disk the host just grew (growStateDisk).
 	StorageGrow(ctx context.Context, size int64) error
 	SupportsStorageGrow() bool
-	// ServicePulling / ServicePulled bracket the pull for the dashboard's bar: the manifest's
+	// AppPulling / AppPulled bracket the pull for the dashboard's bar: the manifest's
 	// sizes on the guest's tmpfs before the first byte, gone once the image is present. An older
 	// guest shows the install with no bar.
-	ServicePulling(ctx context.Context, service string, size, installed int64) error
-	ServicePulled(ctx context.Context, service string) error
-	SupportsServicePulling() bool
+	AppPulling(ctx context.Context, app string, size, installed int64) error
+	AppPulled(ctx context.Context, app string) error
+	SupportsAppPulling() bool
 	// STAGE, THEN COMMIT (agent/guestagent/staging.go): an install is recorded on the volume beside
 	// the accepted manifest, with its rollback point, and becomes the identity only at the commit.
-	// ServicePending reads back every install that never committed, with all its undo needs.
-	ServiceStage(ctx context.Context, name, dataDir string, subdirs []string, manifest, rollback string) error
-	ServiceCommit(ctx context.Context, name string) error
-	ServiceDiscard(ctx context.Context, name string) error
-	ServicePending(ctx context.Context) ([]guestagent.PendingInstall, error)
+	// AppPending reads back every install that never committed, with all its undo needs.
+	AppStage(ctx context.Context, name, dataDir string, subdirs []string, manifest, rollback string) error
+	AppCommit(ctx context.Context, name string) error
+	AppDiscard(ctx context.Context, name string) error
+	AppPending(ctx context.Context) ([]guestagent.PendingInstall, error)
 	// ReactorActive is the interim overlap guard, and the ONLY promoter verb left here: an
 	// install no longer takes the maintenance bracket, it only refuses to start
 	// while somebody else holds it. Pausing and resuming belong to the OS upgrade path
 	// (agent/guest), which still changes what a live promoted resource runs.
 	ReactorActive(ctx context.Context) (bool, error)
-	ServiceStart(ctx context.Context, unit string) error
-	// ServiceWarm ensures an image is present, pulling only if it is missing -- see BringUp for
+	AppStart(ctx context.Context, unit string) error
+	// AppWarm ensures an image is present, pulling only if it is missing -- see BringUp for
 	// why "start the .image unit" is not the same operation.
-	ServiceWarm(ctx context.Context, unit, ref string) error
-	ServiceStop(ctx context.Context, unit string) error
-	ServiceHealth(ctx context.Context, url string) (bool, error)
-	// ServiceHealthOf is the same floor asked BY NAME, so the guest resolves the address from the
+	AppWarm(ctx context.Context, unit, ref string) error
+	AppStop(ctx context.Context, unit string) error
+	AppHealth(ctx context.Context, url string) (bool, error)
+	// AppHealthOf is the same floor asked BY NAME, so the guest resolves the address from the
 	// routing table it converged rather than from a URL the host assembled.
-	ServiceHealthOf(ctx context.Context, service string) (services.Health, error)
-	// The S1 gate.s input, one layer above the liveness floor ServiceHealth answers -- one method
+	AppHealthOf(ctx context.Context, app string) (apps.Health, error)
+	// The S1 gate.s input, one layer above the liveness floor AppHealth answers -- one method
 	// per app that has a signal, named for it (see readinessProbe, which is the same set).
 	// Not on `upgrader`, deliberately: an OS upgrade must not be able to name an app, and its
 	// interface carries nothing that can.
@@ -128,19 +128,19 @@ type serviceInstaller interface {
 	// The QUIESCED take, for the one member taken while the app still RUNS: the
 	// guest asks the app to hold still, snapshots, releases, and answers whether it held --
 	// which is what the class is written from, by the guest, since the host cannot see it.
-	QuiescedSnapshot(ctx context.Context, service, dataDir, dest, sidecar string) (bool, string, error)
+	QuiescedSnapshot(ctx context.Context, app, dataDir, dest, sidecar string) (bool, string, error)
 	SupportsQuiescedSnapshot() bool
 	// The RESTORE's three: list an app's ring, make one member's images resident
 	// before anything is stopped, and put the data back. All capability-gated, because a guest
 	// older than the ring can do none of them and a fallback would be worse than a refusal.
-	Members(ctx context.Context, service string) ([]quadlet.SnapshotEntry, error)
+	Members(ctx context.Context, app string) ([]quadlet.SnapshotEntry, error)
 	SupportsMembers() bool
 	EnsureImage(ctx context.Context, ref string) error
 	SupportsImageEnsure() bool
 	// The volume's apps and RemoveImage: what dropSuperseded needs to delete an image the
 	// app moved off once nothing on the volume pins it.
-	ServiceList(ctx context.Context) ([]string, error)
-	SupportsServiceList() bool
+	AppList(ctx context.Context) ([]string, error)
+	SupportsAppList() bool
 	RemoveImage(ctx context.Context, ref string) (kept bool, err error)
 	SupportsImageRemove() bool
 	// Restore materialises a member over the live subvolume, MINUS the markers a household's own
@@ -157,9 +157,9 @@ type serviceInstaller interface {
 // the app half-installed.
 const installBudget = 15 * time.Minute
 
-// healthGate is how long the app gets to become HEALTHY (services.Health, the one
+// healthGate is how long the app gets to become HEALTHY (apps.Health, the one
 // answer) before the install is judged failed and the chain reverted. HA takes tens of seconds.
-const healthGate = services.HealthGate
+const healthGate = apps.HealthGate
 
 // revertBudget bounds the rollback, on its own DETACHED deadline. The health gate's most likely
 // failure is the install budget expiring, and a revert inheriting that dead context could neither
@@ -186,12 +186,12 @@ const revertBudget = 3 * time.Minute
 //
 // The parallelism is the second reason, not the first: the Primary needs warming too, so every
 // anchor pulls at once instead of the Primary pulling again after the peers have finished.
-func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+func (cfg Config) applyAppPrewarm(ctx context.Context, g appInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
 	if d.Payload == "" {
-		return failed("no service named")
+		return failed("no app named")
 	}
 	parent := ctx
 	ctx, cancel := cfg.beat.budget(parent, installBudget)
@@ -206,7 +206,7 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 		}
 	}
 	if err != nil {
-		logf("service prewarm %s: %v", d.Payload, err)
+		logf("app prewarm %s: %v", d.Payload, err)
 		return failed(err.Error())
 	}
 	// Images only: a prewarm is done by a node that is not serving, which has not allocated this
@@ -217,7 +217,7 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 	}
 	// No `stale` list: a prewarm must not remove another app's units. Cleaning up a renamed
 	// app's orphans is the install's job, on the node that is actually changing what serves.
-	if err := g.ServiceRender(ctx, rendered.Files, nil); err != nil {
+	if err := g.AppRender(ctx, rendered.Files, nil); err != nil {
 		return failed(fmt.Sprintf("render units: %v", err))
 	}
 	for _, u := range rendered.ImageUnits {
@@ -225,11 +225,11 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 		// is already here (prewarmed, or staged into the guest at build time) must not be fetched
 		// again -- and for a locally-staged one there is no registry to fetch it FROM. Same verb,
 		// same reason, as bring-up.
-		if err := g.ServiceWarm(ctx, u, rendered.ImageRefs[u]); err != nil {
+		if err := g.AppWarm(ctx, u, rendered.ImageRefs[u]); err != nil {
 			return failed(fmt.Sprintf("warm image (%s): %v", u, err))
 		}
 	}
-	logf("service prewarm %s: %d units rendered, %d images warmed; nothing promoted", m.Name, len(rendered.Files), len(rendered.ImageUnits))
+	logf("app prewarm %s: %d units rendered, %d images warmed; nothing promoted", m.Name, len(rendered.Files), len(rendered.ImageUnits))
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "prewarmed"}
 }
 
@@ -243,12 +243,12 @@ func (cfg Config) applyServicePrewarm(ctx context.Context, g serviceInstaller, d
 // empty zero-app chain; for an UPGRADE it is the prior manifest AND its data — the app-level
 // twin of the {code+data} OS rollback. So the path snapshots the data before the switch and, on
 // a tripped gate, restores both the subvolume and the prior manifest, not just the promoter chain.
-func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d api.Directive, n notify.Notifier, logf func(string, ...any)) api.DirectiveOutcome {
+func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Directive, n notify.Notifier, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
 	if d.Payload == "" {
-		return failed("no service named")
+		return failed("no app named")
 	}
 	// FIRST, before the fetch, so a refusal costs nothing and leaves the node untouched. A guest
 	// that does not advertise service.installed keeps the apps' identities in ONE file on the
@@ -256,7 +256,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// this app's identity over whatever that node already runs, and a survivor would then
 	// promote against the wrong manifest. Refusing loudly is the answer rather than a compat path
 	// -- the alpha reinstalls; the guest OS rolls and the verb appears.
-	if !g.SupportsServiceInstalled() {
+	if !g.SupportsAppInstalled() {
 		return failed("this VM is too old to name an app's identity on the volume (no service.installed); update the VM before installing")
 	}
 	// Same instrument, same reason, for converge. A guest without service.converge
@@ -264,7 +264,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// write the manifest, report success, and leave the node serving exactly what it served
 	// before. No compat path -- the alpha reinstalls; the guest OS rolls and the verb
 	// appears.
-	if !g.SupportsServiceConverge() {
+	if !g.SupportsAppConverge() {
 		return failed("this VM is too old to converge itself to the volume (no service.converge); update the VM before installing")
 	}
 	// Same instrument again, for the ring. It is the capability rather than a protocol
@@ -281,7 +281,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 
 	m, raw, err := cfg.fetchManifest(ctx, d.Payload)
 	if err != nil {
-		logf("service install %s: %v", d.Payload, err)
+		logf("app install %s: %v", d.Payload, err)
 		return failed(err.Error())
 	}
 	// The manifest says how long its pull may take; an install must not expire
@@ -307,7 +307,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 			return failed(fmt.Sprintf("not enough memory on this machine: %s needs the VM to hold %d MB and this host can give it at most %d MB (keeping %d MB for itself)",
 				m.Name, need, guestMemoryCeilingMB(host), hostMemoryReserveMB))
 		case err != nil:
-			logf("service install %s: cannot size the guest's memory (%v); installing unmeasured", d.Payload, err)
+			logf("app install %s: cannot size the guest's memory (%v); installing unmeasured", d.Payload, err)
 		}
 	}
 	// No address: this render supplies unit names and image digests, and converge re-renders with
@@ -327,7 +327,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	}
 
 	// N APPS, and everything below is per-app by construction: the node-local cache is a
-	// directory, the volume's identity file is one per name, `priorService` asks
+	// directory, the volume's identity file is one per name, `priorApp` asks
 	// about THIS app, `filesToRemove` compares THIS app's renderings, and the chain is
 	// assembled from all of them. What used to stand here was a refusal of a second distinct
 	// app, and it was load-bearing for exactly as long as nothing could NAME an app through
@@ -343,7 +343,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// What is installed NOW — the rollback target. nil on a fresh install (the shipped
 	// zero-app node) or an idempotent re-install of the same manifest: the manifest whose data
 	// the rollback point below is taken under.
-	prior, _, priorRaw, _ := cfg.priorService(ctx, g, m.Name, raw, logf)
+	prior, _, priorRaw, _ := cfg.priorApp(ctx, g, m.Name, raw, logf)
 
 	// Units are node-local (/run), so this node renders its own. A multi-node home has the
 	// directive delivered to EVERY node, and each renders locally — that is what lets a survivor
@@ -353,7 +353,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if prior != nil {
 		stale = filesToRemove(prior.Files, rendered.Files)
 	}
-	if err := g.ServiceRender(ctx, rendered.Files, stale); err != nil {
+	if err := g.AppRender(ctx, rendered.Files, stale); err != nil {
 		return failed(fmt.Sprintf("render units: %v", err))
 	}
 
@@ -370,13 +370,13 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// The pull record for the dashboard's bar: the totals before the first byte,
 	// cleared after the last -- on every exit, because a stale record would draw a bar over an
 	// install that ended. Best-effort: a bar is a courtesy, never a gate on the install.
-	if m.Size > 0 && g.SupportsServicePulling() {
-		if err := g.ServicePulling(ctx, m.Name, m.Size, m.InstalledSize); err != nil {
-			logf("service install %s: pull record: %v (no progress bar)", m.Name, err)
+	if m.Size > 0 && g.SupportsAppPulling() {
+		if err := g.AppPulling(ctx, m.Name, m.Size, m.InstalledSize); err != nil {
+			logf("app install %s: pull record: %v (no progress bar)", m.Name, err)
 		}
 		defer func() {
-			if err := g.ServicePulled(context.WithoutCancel(ctx), m.Name); err != nil {
-				logf("service install %s: clear pull record: %v", m.Name, err)
+			if err := g.AppPulled(context.WithoutCancel(ctx), m.Name); err != nil {
+				logf("app install %s: clear pull record: %v", m.Name, err)
 			}
 		}()
 	}
@@ -385,7 +385,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		// is already here (prewarmed, or staged into the guest at build time) must not be fetched
 		// again -- and for a locally-staged one there is no registry to fetch it FROM. Same verb,
 		// same reason, as bring-up.
-		if err := g.ServiceWarm(ctx, u, rendered.ImageRefs[u]); err != nil {
+		if err := g.AppWarm(ctx, u, rendered.ImageRefs[u]); err != nil {
 			return failed(fmt.Sprintf("warm image (%s): %v", u, err))
 		}
 	}
@@ -395,10 +395,10 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// replication.
 	qs, err := g.Status(ctx, cfg.Resource.Name)
 	if err != nil {
-		return failed(fmt.Sprintf("read node status: %v", err))
+		return failed(fmt.Sprintf("read machine status: %v", err))
 	}
 	if !qs.Serving() {
-		logf("service install %s: units rendered; not serving, so no provisioning here", m.Name)
+		logf("app install %s: units rendered; not serving, so no provisioning here", m.Name)
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "units rendered (not serving)"}
 	}
 
@@ -454,10 +454,10 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if prior != nil {
 		cfg.quiesce(ctx, g, prior.ContainerUnits, logf)
 		stoppedFail = func(detail string) api.DirectiveOutcome {
-			if _, err := g.ServiceConverge(ctx, ""); err != nil {
-				return failed(fmt.Sprintf("%s; AND the service could not be restarted: %v", detail, err))
+			if _, err := g.AppConverge(ctx, ""); err != nil {
+				return failed(fmt.Sprintf("%s; AND the app could not be restarted: %v", detail, err))
 			}
-			return failed(detail + " (the service was restarted)")
+			return failed(detail + " (the app was restarted)")
 		}
 		// THE MEMBER IS PINNED TO THE VERSION IT IS TAKEN UNDER, which is v1 by construction —
 		// it is taken before the switch, so the manifest recorded here is the one still on the
@@ -469,7 +469,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		at := cfg.takenAt()
 		snap = quadlet.SnapshotMember(m.Name, quadlet.TriggerAppUpdateBefore, at)
 		meta := quadlet.SnapshotMeta{
-			Service: m.Name,
+			App:     m.Name,
 			Trigger: quadlet.TriggerAppUpdateBefore,
 			TakenAt: at,
 			// QUIESCED BY THE STOP ABOVE, which is what that stop buys and the reason it
@@ -498,9 +498,9 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	//
 	// AND THE OWNER IS TOLD, like every other upgrade that rolls back: the outcome reaches only
 	// whoever is watching the directive, and an app update is the one a household meets most.
-	kind := "service install"
+	kind := "app install"
 	if prior != nil {
-		kind = "service update"
+		kind = "app update"
 	}
 	revert := func(cause error) api.DirectiveOutcome {
 		o := cfg.revert(ctx, g, d, m.Name, logf, cause)
@@ -508,7 +508,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 		escalate(context.WithoutCancel(ctx), n, logf, m.Name, kind, m.Version, errors.New(o.Detail))
 		return o
 	}
-	if err := g.ServiceStage(ctx, m.Name, dataDir, quadlet.Subdirs(m), string(raw), snap); err != nil {
+	if err := g.AppStage(ctx, m.Name, dataDir, quadlet.Subdirs(m), string(raw), snap); err != nil {
 		return revert(fmt.Errorf("stage the install: %w", err))
 	}
 
@@ -526,7 +526,7 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// member, so stopping it would deactivate drbd-reactor's target, unmount the volume and
 	// demote the node — the exact accident the bracket existed to prevent, re-created by the
 	// obvious way of triggering a re-converge. Same code, same unit, no unit lifecycle touched.
-	skipped, err := g.ServiceConverge(ctx, m.Name)
+	skipped, err := g.AppConverge(ctx, m.Name)
 	if err != nil {
 		return revert(fmt.Errorf("install %s: %w", m.Name, err))
 	}
@@ -537,13 +537,13 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	if slices.Contains(skipped, m.Name) {
 		return revert(fmt.Errorf("install %s: the node could not prepare it and did not start it (see the guest log)", m.Name))
 	}
-	logf("service install %s: converged from the volume; waiting for health", m.Name)
+	logf("app install %s: converged from the volume; waiting for health", m.Name)
 
 	// Gate on the APP's own endpoint (in-guest), not the front door — see awaitHealthy. BY
 	// NAME: the converge above wrote the routing table, so the guest already knows where this
 	// app listens, and the host no longer assembles an address it can only guess stays true.
 	if err := cfg.awaitHealthy(ctx, g, m.Name, logf); err != nil {
-		logf("service install %s failed its health gate (%v); reverting", m.Name, err)
+		logf("app install %s failed its health gate (%v); reverting", m.Name, err)
 		return revert(err)
 	}
 	// THE FLOOR HELD; now ask whether the app still does what it did. The floor's whole
@@ -557,13 +557,13 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// ⚠️ A Hold currently reaches only the log. On the free tier that is nobody (the surface it
 	// needs is not built yet); the rollback window and the user remain the backstop until then.
 	if err := gate.Judge(ctx, readiness); err != nil {
-		logf("service install %s failed the readiness gate (%v); reverting", m.Name, err)
+		logf("app install %s failed the readiness gate (%v); reverting", m.Name, err)
 		return revert(err)
 	}
 	// THE COMMIT: one rename on the volume, and the install is the identity. A commit that fails
 	// leaves it staged, and a staged install is undone -- the same as a gate that failed.
-	if err := g.ServiceCommit(ctx, m.Name); err != nil {
-		logf("service install %s could not be committed (%v); reverting", m.Name, err)
+	if err := g.AppCommit(ctx, m.Name); err != nil {
+		logf("app install %s could not be committed (%v); reverting", m.Name, err)
 		return revert(fmt.Errorf("commit the install: %w", err))
 	}
 	// Record the manifest NODE-LOCALLY as well as on the volume. Both copies are needed and they
@@ -572,10 +572,10 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// when the volume is not yet mounted and the replicated copy is therefore unreadable. Without
 	// it, an agent restart would re-derive the chain from the environment, silently dropping the
 	// installed app back out of it. Same pattern, and the same reason, as AssignmentCache.
-	if err := cfg.cacheService(m.Name, raw); err != nil {
+	if err := cfg.cacheApp(m.Name, raw); err != nil {
 		// Not fatal: the app IS installed and serving. Say so loudly though — the node will
 		// lose it from the chain on the next agent restart.
-		logf("service install %s: WARNING: could not cache the manifest (%v); an agent restart will drop it from the promoter chain", m.Name, err)
+		logf("app install %s: WARNING: could not cache the manifest (%v); an agent restart will drop it from the promoter chain", m.Name, err)
 	}
 	// TELL A HOME ASSISTANT THAT IS ALREADY RUNNING. Everything briard's integration
 	// does, it does at an HA start, and converge restarts only the apps whose bytes changed
@@ -595,11 +595,11 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// household exactly what they had before this existed, which is a Home Assistant that picks
 	// the change up at its next start.
 	if told, err := g.HassNudge(ctx); err != nil {
-		logf("service install %s: could not tell Home Assistant to reconsider (%v); it will pick this up at its next start", m.Name, err)
+		logf("app install %s: could not tell Home Assistant to reconsider (%v); it will pick this up at its next start", m.Name, err)
 	} else if told {
-		logf("service install %s: Home Assistant was told to reconsider what the node offers", m.Name)
+		logf("app install %s: Home Assistant was told to reconsider what the node offers", m.Name)
 	}
-	logf("service install %s: healthy, serving", m.Name)
+	logf("app install %s: healthy, serving", m.Name)
 	// COMMITTED: no gate is left that could revert it, so the image the prior version ran on is
 	// no longer anyone's rollback target. Without this every upgrade leaves one behind for good.
 	cfg.dropSuperseded(ctx, g, priorRaw, logf)
@@ -609,11 +609,11 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 	// address to be guessed, which walks the user to the front door's "nothing is routed here"
 	// page and reads a working install as a broken one.
 	//
-	// The sentence itself is the registry's (agent/services), because it is not the same sentence
+	// The sentence itself is the registry's (agent/apps), because it is not the same sentence
 	// for every app: the manifest's port is what the liveness floor probes, which for a
 	// broker is a management endpoint on the guest's loopback rather than anything a household
 	// opens.
-	reach := services.Reach(m, cfg.FlockName)
+	reach := apps.Reach(m, cfg.FlockName)
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: reach}
 }
 
@@ -630,9 +630,9 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 // Atomic and durable (shared/atomicfile), which it was not: a bare WriteFile over an existing file
 // truncates first, so a crash inside the write left half a manifest, and an unflushed one left no
 // manifest at all for a commit interval after the install returned. Neither is loud.
-// installedServices reads an unparseable file as "this app is not installed" and says so once
+// installedApps reads an unparseable file as "this app is not installed" and says so once
 // to the log, while the volume's manifests still name the apps the node is meant to be
-// running -- bring-up never consults those (only the install path does, via priorService), so the
+// running -- bring-up never consults those (only the install path does, via priorApp), so the
 // node just quietly comes back without it. Same defect as the flock address lost to an unflushed
 // write, node-local instead of replicated.
 //
@@ -640,8 +640,8 @@ func (cfg Config) applyServiceInstall(ctx context.Context, g serviceInstaller, d
 // instead of being re-derived by the host". They were not: the MESH is the other one, and it had no
 // cache at all, so a runtime-paired node's guest reboot rewrote its .res from the stale PEERS env.
 // Two node-scoped facts, two caches, one rule -- see cacheMesh.
-func (cfg Config) cacheService(name string, raw []byte) error {
-	if cfg.ServiceCache == "" {
+func (cfg Config) cacheApp(name string, raw []byte) error {
+	if cfg.AppCache == "" {
 		return nil
 	}
 	return atomicfile.Write(cfg.manifestPath(name), raw, 0o600, 0o700)
@@ -652,10 +652,10 @@ func (cfg Config) cacheService(name string, raw []byte) error {
 // path elements -- so there is no traversal to strip here; the check upstream is the one that
 // matters and this would only duplicate it badly.
 func (cfg Config) manifestPath(name string) string {
-	return filepath.Join(cfg.ServiceCache, name+".json")
+	return filepath.Join(cfg.AppCache, name+".json")
 }
 
-// adoptInstalledServices refreshes the LIVE config from the node-local manifest cache after a
+// adoptInstalledApps refreshes the LIVE config from the node-local manifest cache after a
 // directive that changed what is installed. Run() does this once at startup; without it here, the
 // very process that performed the install kept its old (usually empty) view of cfg.Services until
 // something restarted it.
@@ -669,19 +669,19 @@ func (cfg Config) manifestPath(name string) string {
 // Pointer receiver on purpose: it mutates the observe loop's own cfg, the copy every later cycle
 // reads. A failed re-read leaves the previous view in place -- the cache is the authority on what
 // is installed, and a transient read error is not evidence of an uninstall.
-func (cfg *Config) adoptInstalledServices(d api.Directive, o api.DirectiveOutcome, logf func(string, ...any)) {
-	if d.Kind != api.DirectiveServiceInstall || o.State != api.OutcomeDone {
+func (cfg *Config) adoptInstalledApps(d api.Directive, o api.DirectiveOutcome, logf func(string, ...any)) {
+	if d.Kind != api.DirectiveAppInstall || o.State != api.OutcomeDone {
 		return
 	}
-	specs, rendered, ok := cfg.installedServices(logf)
+	specs, rendered, ok := cfg.installedApps(logf)
 	if !ok {
 		return
 	}
 	// Not cfg.Promoter: the chain is static, and an install that changed it would be
 	// the node-was-told model the static chain replaced.
-	cfg.Services, cfg.ServiceRendered = specs, rendered
+	cfg.Apps, cfg.AppRendered = specs, rendered
 	for _, spec := range specs {
-		logf("installed service %q adopted into the running config (serving unit %s)", spec.Name, spec.ServingUnit())
+		logf("installed app %q adopted into the running config (serving unit %s)", spec.Name, spec.ServingUnit())
 	}
 }
 
@@ -697,7 +697,7 @@ func (cfg *Config) adoptInstalledServices(d api.Directive, o api.DirectiveOutcom
 // The rendered output is returned rather than discarded because the chain alone is not enough
 // . The units it names live under /run/containers/systemd — tmpfs — so a guest reboot
 // erases them while this cache survives, leaving a promoter chain pointing at unit files that do
-// not exist. restoreService puts them back; see there for why re-rendering is the canonical
+// not exist. restoreApp puts them back; see there for why re-rendering is the canonical
 // answer rather than persisting them somewhere durable.
 //
 // ORDER IS BY FILENAME, which is by app name, which makes it deterministic and nothing more.
@@ -710,31 +710,31 @@ func (cfg *Config) adoptInstalledServices(d api.Directive, o api.DirectiveOutcom
 // leave the node bringing up with what remains rather than refusing to start. A node that will not
 // boot is worse than a node that lost an app — and losing ONE app must not cost the others,
 // which is why a bad file is skipped rather than failing the read.
-func (cfg Config) installedServices(logf func(string, ...any)) ([]model.ServiceSpec, quadlet.Rendered, bool) {
-	if cfg.ServiceCache == "" {
+func (cfg Config) installedApps(logf func(string, ...any)) ([]model.AppSpec, quadlet.Rendered, bool) {
+	if cfg.AppCache == "" {
 		return nil, quadlet.Rendered{}, false
 	}
-	entries, err := os.ReadDir(cfg.ServiceCache)
+	entries, err := os.ReadDir(cfg.AppCache)
 	if err != nil {
 		return nil, quadlet.Rendered{}, false // absent = nothing installed, the shipped state
 	}
 	var (
-		specs []model.ServiceSpec
+		specs []model.AppSpec
 		all   = quadlet.Rendered{Files: map[string]string{}}
 	)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		path := filepath.Join(cfg.ServiceCache, e.Name())
+		path := filepath.Join(cfg.AppCache, e.Name())
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			logf("installed-service cache %s is unreadable (%v); bringing up without it", path, err)
+			logf("installed-app cache %s is unreadable (%v); bringing up without it", path, err)
 			continue
 		}
 		spec, rendered, err := specOf(raw)
 		if err != nil {
-			logf("installed-service cache %s is unusable (%v); bringing up without it", path, err)
+			logf("installed-app cache %s is unusable (%v); bringing up without it", path, err)
 			continue
 		}
 		specs = append(specs, spec)
@@ -748,19 +748,19 @@ func (cfg Config) installedServices(logf func(string, ...any)) ([]model.ServiceS
 
 // specOf turns one manifest's bytes into the spec the node reports and the units it runs. ONE
 // implementation, because the two readers must agree about what a manifest means: the node-local
-// cache (installedServices, what this host was told) and the replicated volume
+// cache (installedApps, what this host was told) and the replicated volume
 // (volumeServices, what this node actually promoted into).
-func specOf(raw []byte) (model.ServiceSpec, quadlet.Rendered, error) {
+func specOf(raw []byte) (model.AppSpec, quadlet.Rendered, error) {
 	m, id, err := manifest.Parse(raw)
 	if err != nil {
-		return model.ServiceSpec{}, quadlet.Rendered{}, err
+		return model.AppSpec{}, quadlet.Rendered{}, err
 	}
 	rendered, err := quadlet.Render(m, "")
 	if err != nil {
-		return model.ServiceSpec{}, quadlet.Rendered{}, err
+		return model.AppSpec{}, quadlet.Rendered{}, err
 	}
 	primary := m.Primary()
-	return model.ServiceSpec{
+	return model.AppSpec{
 		Name:    m.Name,
 		DataDir: quadlet.DataRoot(m.Name),
 		Units:   rendered.Units,
@@ -773,15 +773,15 @@ func specOf(raw []byte) (model.ServiceSpec, quadlet.Rendered, error) {
 	}, rendered, nil
 }
 
-// volumeReader is the slice of the guest adoptVolumeServices needs: what the replicated volume
+// volumeReader is the slice of the guest adoptVolumeApps needs: what the replicated volume
 // says this node runs. Narrow interface for DI, not a seam.
 type volumeReader interface {
-	ServiceList(ctx context.Context) ([]string, error)
-	ServiceInstalled(ctx context.Context, name string) (string, error)
-	SupportsServiceList() bool
+	AppList(ctx context.Context) ([]string, error)
+	AppInstalled(ctx context.Context, name string) (string, error)
+	SupportsAppList() bool
 }
 
-// adoptVolumeServices makes this host's view of what it runs match the VOLUME, and caches it.
+// adoptVolumeApps makes this host's view of what it runs match the VOLUME, and caches it.
 //
 // WHY IT EXISTS, measured rather than reasoned (a fleet run): converge-at-promotion
 // renders and starts from the volume, so a survivor that never installed anything
@@ -805,21 +805,21 @@ type volumeReader interface {
 // standing, as does a read error or a manifest that will not parse: this is a REPORT, and a
 // wrong-but-quiet report is worse than a stale one only if it is silently wrong, which the log
 // prevents. The node keeps serving either way -- what runs is the guest's business.
-func (cfg *Config) adoptVolumeServices(ctx context.Context, g volumeReader, logf func(string, ...any)) {
-	if !g.SupportsServiceList() {
+func (cfg *Config) adoptVolumeApps(ctx context.Context, g volumeReader, logf func(string, ...any)) {
+	if !g.SupportsAppList() {
 		return // an older guest; the node-local cache is all this host can honestly report
 	}
-	names, err := g.ServiceList(ctx)
+	names, err := g.AppList(ctx)
 	if err != nil {
-		logf("could not read the volume's services (%v); still reporting what this node installed", err)
+		logf("could not read the volume's apps (%v); still reporting what this node installed", err)
 		return
 	}
 	var (
-		specs []model.ServiceSpec
+		specs []model.AppSpec
 		all   = quadlet.Rendered{Files: map[string]string{}}
 	)
 	for _, name := range names {
-		raw, err := g.ServiceInstalled(ctx, name)
+		raw, err := g.AppInstalled(ctx, name)
 		if err != nil || raw == "" {
 			logf("the volume names %q but its manifest could not be read (%v); reporting without it", name, err)
 			continue
@@ -833,20 +833,20 @@ func (cfg *Config) adoptVolumeServices(ctx context.Context, g volumeReader, logf
 		mergeRendered(&all, rendered)
 		// Durable, so this node's own restart brings up what it is actually running rather than
 		// what it once installed. A cache write that fails is not fatal to the report.
-		if err := cfg.cacheService(name, []byte(raw)); err != nil {
+		if err := cfg.cacheApp(name, []byte(raw)); err != nil {
 			logf("could not cache the volume's manifest for %q (%v); this node's next bring-up will not know about it", name, err)
 		}
 	}
-	if same(cfg.Services, specs) {
+	if same(cfg.Apps, specs) {
 		return
 	}
-	cfg.Services, cfg.ServiceRendered = specs, all
-	logf("adopted %d service(s) from the volume: %s", len(specs), names)
+	cfg.Apps, cfg.AppRendered = specs, all
+	logf("adopted %d app(s) from the volume: %s", len(specs), names)
 }
 
 // same reports whether two app sets name the same apps at the same identities -- the
 // question "did anything change?", not deep equality of the rendered units, which are derived.
-func same(a, b []model.ServiceSpec) bool {
+func same(a, b []model.AppSpec) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -858,7 +858,7 @@ func same(a, b []model.ServiceSpec) bool {
 	return true
 }
 
-// mergeRendered folds one app's rendering into the union restoreService replays. Unit
+// mergeRendered folds one app's rendering into the union restoreApp replays. Unit
 // filenames are app-prefixed by the renderer (briard-<service>-…), so the Files merge cannot
 // collide; the unit lists concatenate in the order their apps were read.
 func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
@@ -888,10 +888,10 @@ func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
 // what the rollback point is pinned to.
 // It also returns the prior manifest's VERSION, which is not derivable from the rendering: it is
 // what a restore reports it moved the app between ("code too (2026.8.0 -> 2026.7.1)").
-func (cfg Config) priorService(ctx context.Context, g serviceInstaller, name string, incoming []byte, logf func(string, ...any)) (*quadlet.Rendered, []string, string, string) {
-	raw, err := g.ServiceInstalled(ctx, name)
+func (cfg Config) priorApp(ctx context.Context, g appInstaller, name string, incoming []byte, logf func(string, ...any)) (*quadlet.Rendered, []string, string, string) {
+	raw, err := g.AppInstalled(ctx, name)
 	if err != nil {
-		logf("service install: could not read the installed manifest (%v); treating as a fresh install", err)
+		logf("app install: could not read the installed manifest (%v); treating as a fresh install", err)
 		return nil, nil, "", ""
 	}
 	if raw == "" || raw == string(incoming) {
@@ -899,12 +899,12 @@ func (cfg Config) priorService(ctx context.Context, g serviceInstaller, name str
 	}
 	pm, _, perr := manifest.Parse([]byte(raw))
 	if perr != nil {
-		logf("service install: installed manifest does not parse (%v); no rollback target", perr)
+		logf("app install: installed manifest does not parse (%v); no rollback target", perr)
 		return nil, nil, "", ""
 	}
 	pr, rerr := quadlet.Render(pm, "")
 	if rerr != nil {
-		logf("service install: installed manifest does not render (%v); no rollback target", rerr)
+		logf("app install: installed manifest does not render (%v); no rollback target", rerr)
 		return nil, nil, "", ""
 	}
 	return &pr, quadlet.Subdirs(pm), raw, pm.Version
@@ -950,10 +950,10 @@ func filesToRemove(have, want map[string]string) []string {
 // `briard-primary-storage` (PartOf) unmounts the SHARED DRBD volume, taking every other app with it. The
 // full trace is on quadlet.Rendered.ContainerUnits. The pod carries no data bind, so a data op
 // never needs to stop it.
-func (cfg Config) quiesce(ctx context.Context, g serviceInstaller, containerUnits []string, logf func(string, ...any)) {
+func (cfg Config) quiesce(ctx context.Context, g appInstaller, containerUnits []string, logf func(string, ...any)) {
 	for i := len(containerUnits) - 1; i >= 0; i-- {
-		if err := g.ServiceStop(ctx, containerUnits[i]); err != nil {
-			logf("service switch: stop %s: %v (continuing)", containerUnits[i], err)
+		if err := g.AppStop(ctx, containerUnits[i]); err != nil {
+			logf("app switch: stop %s: %v (continuing)", containerUnits[i], err)
 		}
 	}
 }
@@ -962,7 +962,7 @@ func (cfg Config) quiesce(ctx context.Context, g serviceInstaller, containerUnit
 // terminal outcome. It runs on a DETACHED, freshly-budgeted context (revertBudget): the most likely
 // trigger is the health gate's deadline expiring, and a revert inheriting that dead deadline could
 // restore nothing.
-func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directive, name string, logf func(string, ...any), cause error) api.DirectiveOutcome {
+func (cfg Config) revert(ctx context.Context, g appInstaller, d api.Directive, name string, logf func(string, ...any), cause error) api.DirectiveOutcome {
 	rctx, rcancel := cfg.beat.budget(context.WithoutCancel(ctx), revertBudget)
 	defer rcancel()
 	if err := cfg.undoInstall(rctx, g, name, logf); err != nil {
@@ -976,8 +976,8 @@ func (cfg Config) revert(ctx context.Context, g serviceInstaller, d api.Directiv
 // undoInstall undoes the install staged for name, reading what to undo from the volume. Nothing
 // staged means the stage never landed: the accepted manifest still stands, and putting the node
 // back is a converge to it (which also restarts what the install stopped).
-func (cfg Config) undoInstall(ctx context.Context, g serviceInstaller, name string, logf func(string, ...any)) error {
-	all, err := g.ServicePending(ctx)
+func (cfg Config) undoInstall(ctx context.Context, g appInstaller, name string, logf func(string, ...any)) error {
+	all, err := g.AppPending(ctx)
 	if err != nil {
 		return fmt.Errorf("read the staged install: %w", err)
 	}
@@ -986,8 +986,8 @@ func (cfg Config) undoInstall(ctx context.Context, g serviceInstaller, name stri
 			return cfg.undo(ctx, g, p, logf)
 		}
 	}
-	if _, err := g.ServiceConverge(ctx, ""); err != nil {
-		return fmt.Errorf("converge back to the prior service: %w", err)
+	if _, err := g.AppConverge(ctx, ""); err != nil {
+		return fmt.Errorf("converge back to the prior app: %w", err)
 	}
 	return nil
 }
@@ -1005,7 +1005,7 @@ func (cfg Config) undoInstall(ctx context.Context, g serviceInstaller, name stri
 // them, and the units are stopped here by name. A failed restore does not converge, so the one
 // app stays stopped and the node keeps serving everything else and keeps its ability to fail
 // over. Silent data corruption is not recoverable; a stopped app is.
-func (cfg Config) undo(ctx context.Context, g serviceInstaller, p guestagent.PendingInstall, logf func(string, ...any)) error {
+func (cfg Config) undo(ctx context.Context, g appInstaller, p guestagent.PendingInstall, logf func(string, ...any)) error {
 	// Stop the staged version's CONTAINERS (not the pod -- that would make podman kill them out
 	// from under their units): releases the data subvolume's bind, which restore needs. A staged
 	// manifest a crash tore cannot name its units; the accepted one names the same app's.
@@ -1025,7 +1025,7 @@ func (cfg Config) undo(ctx context.Context, g serviceInstaller, p guestagent.Pen
 		// the household as they are, refuses instead.
 		var sweep []string
 		if pm, _, err := manifest.Parse([]byte(p.Accepted)); err == nil {
-			sweep = services.RestoreMarkers(pm)
+			sweep = apps.RestoreMarkers(pm)
 		}
 		// THE UNDO RECORDS ITSELF: an event on a point of the failed version's data, pinned to the
 		// STAGED manifest it ran under, so the history shows the update and then its undoing -- and
@@ -1045,17 +1045,17 @@ func (cfg Config) undo(ctx context.Context, g serviceInstaller, p guestagent.Pen
 			}
 		}
 		if err := restore(ctx, quadlet.DataRoot(p.Name), p.Rollback, sweep); err != nil {
-			return fmt.Errorf("restore the data subvolume (the service is left stopped): %w", err)
+			return fmt.Errorf("restore the data subvolume (the app is left stopped): %w", err)
 		}
 	}
-	if err := g.ServiceDiscard(ctx, p.Name); err != nil {
+	if err := g.AppDiscard(ctx, p.Name); err != nil {
 		return fmt.Errorf("discard the staged install: %w", err)
 	}
 	// The converge's skip list is not consulted, and that is not an oversight: the accepted
 	// manifest is one this node already prepared and ran, so a preparation failure here is a new
 	// fault on the undo path, and converge has logged it.
-	if _, err := g.ServiceConverge(ctx, ""); err != nil {
-		return fmt.Errorf("converge back to the prior service: %w", err)
+	if _, err := g.AppConverge(ctx, ""); err != nil {
+		return fmt.Errorf("converge back to the prior app: %w", err)
 	}
 	return nil
 }
@@ -1071,12 +1071,12 @@ func (cfg Config) undo(ctx context.Context, g serviceInstaller, p guestagent.Pen
 // has started; false to ask again next cycle (an act holds the slot, or the read failed). An undo
 // that fails is not retried until the next promotion -- a restore that failed once and is retried
 // every cycle would only fail every cycle -- and leaves the app stopped, which the log names.
-func (cfg Config) undoPending(ctx context.Context, g serviceInstaller, logf func(string, ...any)) bool {
+func (cfg Config) undoPending(ctx context.Context, g appInstaller, logf func(string, ...any)) bool {
 	if cfg.acts.inFlight() {
 		return false
 	}
 	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	all, err := g.ServicePending(pctx)
+	all, err := g.AppPending(pctx)
 	cancel()
 	if err != nil {
 		logf("undo: could not read the staged installs (%v); asking again", err)
@@ -1135,25 +1135,25 @@ func containerUnits(raw string) []string {
 // install and says so. Unknown means the app has told us nothing — our login to it failing, which
 // is not the app — and reverting a working app over our own login would be the gate doing the
 // damage it exists to prevent.
-func (cfg Config) awaitHealthy(ctx context.Context, g serviceInstaller, service string, logf func(string, ...any)) error {
-	if service == "" {
+func (cfg Config) awaitHealthy(ctx context.Context, g appInstaller, app string, logf func(string, ...any)) error {
+	if app == "" {
 		return nil // nothing to probe (a witness never installs)
 	}
 	deadline := time.Now().Add(healthGate)
 	for {
-		h, err := g.ServiceHealthOf(ctx, service)
-		if err == nil && h == services.Healthy {
+		h, err := g.AppHealthOf(ctx, app)
+		if err == nil && h == apps.Healthy {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			if err == nil && h == services.HealthUnknown {
-				logf("service install %s: its health was still unknown after %s; keeping it", service, healthGate)
+			if err == nil && h == apps.HealthUnknown {
+				logf("app install %s: its health was still unknown after %s; keeping it", app, healthGate)
 				return nil
 			}
 			if err != nil {
-				return fmt.Errorf("service did not become healthy within %s (%w)", healthGate, err)
+				return fmt.Errorf("app did not become healthy within %s (%w)", healthGate, err)
 			}
-			return fmt.Errorf("service did not become healthy within %s (it was %s)", healthGate, h)
+			return fmt.Errorf("app did not become healthy within %s (it was %s)", healthGate, h)
 		}
 		select {
 		case <-ctx.Done():
@@ -1205,7 +1205,7 @@ func installBudgetFor(m manifest.Manifest) time.Duration {
 	return installBudget
 }
 
-// applyServiceRestore puts one app back to a ring member: its data, and its CODE with it when
+// applyAppRestore puts one app back to a ring member: its data, and its CODE with it when
 // the member's pinned manifest differs from what is running.
 //
 // ⚠️ THE ORDER INVERTS revert's, AND THAT IS THE WHOLE DESIGN. A revert runs from a BROKEN state
@@ -1220,7 +1220,7 @@ func installBudgetFor(m manifest.Manifest) time.Duration {
 // three months ago pins a digest the registry may no longer serve, and a household whose rollback
 // target cannot be fetched must be told while its app is still running. Everything before the
 // stop leaves the node exactly as it was.
-func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
@@ -1230,7 +1230,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	if !g.SupportsMembers() || !g.SupportsImageEnsure() || !g.SupportsSnapshotMember() {
 		return failed("this VM is too old to restore a ring member; update the VM first")
 	}
-	service, _, _, ok := quadlet.ParseSnapshotMember(d.Payload)
+	app, _, _, ok := quadlet.ParseSnapshotMember(d.Payload)
 	if !ok {
 		return failed(fmt.Sprintf("%q is not a ring member's name", d.Payload))
 	}
@@ -1240,9 +1240,9 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	// THE MEMBER IS READ BACK FROM THE RING, never trusted from the payload. The caller names a
 	// path; what that path IS -- its event, and the manifest it was taken under -- is the guest's
 	// answer, so a stale history page cannot describe a member into something it is not.
-	members, err := g.Members(ctx, service)
+	members, err := g.Members(ctx, app)
 	if err != nil {
-		return failed(fmt.Sprintf("read %s's ring: %v", service, err))
+		return failed(fmt.Sprintf("read %s's ring: %v", app, err))
 	}
 	var target quadlet.SnapshotEntry
 	for _, m := range members {
@@ -1251,7 +1251,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 		}
 	}
 	if target.Member == "" {
-		return failed(fmt.Sprintf("%s has no member %q (it may have been pruned)", service, d.Payload))
+		return failed(fmt.Sprintf("%s has no member %q (it may have been pruned)", app, d.Payload))
 	}
 	pm, _, err := manifest.Parse([]byte(target.Meta.Manifest))
 	if err != nil {
@@ -1262,7 +1262,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 		return failed(fmt.Sprintf("the member's pinned manifest does not render: %v", err))
 	}
 
-	running, _, runningRaw, runningVersion := cfg.priorService(ctx, g, service, nil, logf)
+	running, _, runningRaw, runningVersion := cfg.priorApp(ctx, g, app, nil, logf)
 
 	// (1) THE IMAGES, BEFORE ANYTHING IS TOUCHED. Not through converge's warm, whose failure is
 	// required to take the VIP down -- here a failure must cost nothing at all.
@@ -1281,7 +1281,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 		}
 	}
 
-	dataDir := quadlet.DataRoot(service)
+	dataDir := quadlet.DataRoot(app)
 
 	// (2) THE STOP. Container units only -- the pod would unmount the shared volume under every
 	// other app (quiesce's own comment carries the trace).
@@ -1296,20 +1296,20 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	if running != nil {
 		cfg.quiesce(ctx, g, running.ContainerUnits, logf)
 		stopped = func(detail string) api.DirectiveOutcome {
-			// The volume still names the running app -- ServiceProvision below has not run --
+			// The volume still names the running app -- AppProvision below has not run --
 			// so a converge re-renders from it and starts exactly what the stop above stopped.
-			// The same undo applyServiceInstall uses; no new mechanism.
-			if _, err := g.ServiceConverge(ctx, ""); err != nil {
-				return failed(fmt.Sprintf("%s; AND the service could not be restarted: %v", detail, err))
+			// The same undo applyAppInstall uses; no new mechanism.
+			if _, err := g.AppConverge(ctx, ""); err != nil {
+				return failed(fmt.Sprintf("%s; AND the app could not be restarted: %v", detail, err))
 			}
-			return failed(detail + " (the service was restarted)")
+			return failed(detail + " (the app was restarted)")
 		}
 	}
 
 	// (3) THE UNDO, and it is the only undo a mis-click has. It exists before anything is torn
 	// down: the data below is untouched until it is on disk.
 	at := cfg.takenAt()
-	undo := quadlet.SnapshotMember(service, quadlet.TriggerAppUndoBefore, at)
+	undo := quadlet.SnapshotMember(app, quadlet.TriggerAppUndoBefore, at)
 	// A night from the backup says so: the household chose it from the Backup section, not from
 	// the history, and the row should read like what they did.
 	back := target.Meta.TakenAt.Local().Format("Mon 2 Jan, 15:04")
@@ -1322,23 +1322,23 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	// install left, never re-creating it) and records the night's manifest. The undo point below is
 	// then a point like any other -- of an empty app, or of what that install left -- so even this
 	// restore can be undone, and the swap below has a live copy to replace. Said POSITIVELY, from
-	// a read that answered, never from priorService's nil, which a failed read returns too.
+	// a read that answered, never from priorApp's nil, which a failed read returns too.
 	unchanged, fresh := "nothing was changed", false
 	if running == nil {
-		raw, err := g.ServiceInstalled(ctx, service)
+		raw, err := g.AppInstalled(ctx, app)
 		if err != nil {
-			return failed(fmt.Sprintf("read %s's installed manifest: %v; nothing was changed", service, err))
+			return failed(fmt.Sprintf("read %s's installed manifest: %v; nothing was changed", app, err))
 		}
 		if raw == "" {
-			if err := g.ServiceProvision(ctx, service, dataDir, quadlet.Subdirs(pm), target.Meta.Manifest); err != nil {
-				return failed(fmt.Sprintf("make %s's place on this machine: %v", service, err))
+			if err := g.AppProvision(ctx, app, dataDir, quadlet.Subdirs(pm), target.Meta.Manifest); err != nil {
+				return failed(fmt.Sprintf("make %s's place on this machine: %v", app, err))
 			}
-			logf("service restore %s: not installed here; installed empty at %s to restore into", service, pm.Version)
-			unchanged = service + " is installed here but empty and stopped; restore it again to finish"
+			logf("app restore %s: not installed here; installed empty at %s to restore into", app, pm.Version)
+			unchanged = app + " is installed here but empty and stopped; restore it again to finish"
 			fresh = true
 		}
 	}
-	if err := cfg.takeMember(ctx, g, service, undo, quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
+	if err := cfg.takeMember(ctx, g, app, undo, quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
 		// THE UNDO IS ITSELF AN EVENT, on the point that undoes it -- which is the redo.
 		&quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUndo, What: what}}},
 		at, logf); err != nil {
@@ -1353,20 +1353,20 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 	if !g.SupportsRestoreSweep() {
 		return stopped("this node's guest cannot put a point back safely (it predates the restore sweep); " + unchanged)
 	}
-	if err := g.Restore(ctx, dataDir, target.Member, services.RestoreMarkers(pm)); err != nil {
+	if err := g.Restore(ctx, dataDir, target.Member, apps.RestoreMarkers(pm)); err != nil {
 		// Do NOT converge: that would start the app on data that is neither what it was nor
 		// what was asked for. A stopped app is recoverable; silent corruption is not.
-		return failed(fmt.Sprintf("restore the data (the service is left stopped): %v", err))
+		return failed(fmt.Sprintf("restore the data (the app is left stopped): %v", err))
 	}
 	// (5) THE CODE, when the member was taken under a different one. Same rule the failed-upgrade
 	// revert uses: {manifest + data} move together or the node is describing something it is not.
-	if err := g.ServiceProvision(ctx, service, dataDir, quadlet.Subdirs(pm), target.Meta.Manifest); err != nil {
-		return failed(fmt.Sprintf("record the member's manifest (the service is left stopped): %v", err))
+	if err := g.AppProvision(ctx, app, dataDir, quadlet.Subdirs(pm), target.Meta.Manifest); err != nil {
+		return failed(fmt.Sprintf("record the member's manifest (the app is left stopped): %v", err))
 	}
 	// (6) CONVERGE, which re-renders from the volume and starts what it now names. Its start sample
 	// is not compared with the undo's point: the app did not run between them.
-	if _, err := g.ServiceConverge(ctx, ""); err != nil {
-		return failed(fmt.Sprintf("converge onto the restored member (the service is left stopped): %v", err))
+	if _, err := g.AppConverge(ctx, ""); err != nil {
+		return failed(fmt.Sprintf("converge onto the restored member (the app is left stopped): %v", err))
 	}
 	moved := "data only"
 	if fresh {
@@ -1375,7 +1375,7 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 		moved = fmt.Sprintf("code too (%s -> %s)", runningVersion, pm.Version)
 	}
 	back = target.Meta.TakenAt.Local().Format("Mon 2 Jan 2006, 15:04:05")
-	logf("service restore %s: back to %s, %s", service, back, moved)
+	logf("app restore %s: back to %s, %s", app, back, moved)
 	// The code moved too, so the image it ran on is superseded the same way an upgrade's is; the
 	// undo point names it, and putting it back re-pulls (step 1 above).
 	cfg.dropSuperseded(ctx, g, runningRaw, logf)
@@ -1393,29 +1393,29 @@ func (cfg Config) applyServiceRestore(ctx context.Context, g serviceInstaller, d
 // THE CONSISTENCY IS THE CALLER'S TO STATE, not this function's to guess: it is the call site that
 // knows whether it stopped the app first, and a member taken by the clock against a running
 // one will come through here saying so.
-func (cfg Config) takeMember(ctx context.Context, g memberTaker, service, member string, tr quadlet.Trigger, cons quadlet.Consistency, ev *quadlet.Event, at time.Time, logf func(string, ...any)) error {
-	raw, err := g.ServiceInstalled(ctx, service)
+func (cfg Config) takeMember(ctx context.Context, g memberTaker, app, member string, tr quadlet.Trigger, cons quadlet.Consistency, ev *quadlet.Event, at time.Time, logf func(string, ...any)) error {
+	raw, err := g.AppInstalled(ctx, app)
 	if err != nil {
 		return fmt.Errorf("read the running manifest: %w", err)
 	}
-	return cfg.takeMemberOf(ctx, g, service, raw, member, tr, cons, ev, at)
+	return cfg.takeMemberOf(ctx, g, app, raw, member, tr, cons, ev, at)
 }
 
 // takeMemberOf is takeMember with the manifest the member is pinned to NAMED rather than read: the
 // undo's point is taken of a version the volume never accepted (undo).
-func (cfg Config) takeMemberOf(ctx context.Context, g memberTaker, service, raw, member string, tr quadlet.Trigger, cons quadlet.Consistency, ev *quadlet.Event, at time.Time) error {
+func (cfg Config) takeMemberOf(ctx context.Context, g memberTaker, app, raw, member string, tr quadlet.Trigger, cons quadlet.Consistency, ev *quadlet.Event, at time.Time) error {
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: tr, TakenAt: at, Consistency: cons, Manifest: raw, Event: ev,
+		App: app, Trigger: tr, TakenAt: at, Consistency: cons, Manifest: raw, Event: ev,
 	})
 	if err != nil {
 		return err
 	}
-	return g.Snapshot(ctx, quadlet.DataRoot(service), member, string(sidecar))
+	return g.Snapshot(ctx, quadlet.DataRoot(app), member, string(sidecar))
 }
 
-// applyServiceMembers answers one app's ring as JSON. Read-only: it changes
+// applyAppMembers answers one app's ring as JSON. Read-only: it changes
 // nothing, and the caller — the CLI's `app history`, the dashboard's history page — renders it.
-func (cfg Config) applyServiceMembers(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+func (cfg Config) applyAppMembers(ctx context.Context, g appInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
@@ -1440,15 +1440,15 @@ func (cfg Config) applyServiceMembers(ctx context.Context, g serviceInstaller, d
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: string(body)}
 }
 
-// usageReader is the slice of the guest applyServiceUsage needs. Narrow interface for DI, not a seam.
+// usageReader is the slice of the guest applyAppUsage needs. Narrow interface for DI, not a seam.
 type usageReader interface {
 	Usage(ctx context.Context, app string) (dashboard.AppUsage, error)
 	SupportsUsage() bool
 }
 
-// applyServiceUsage answers what one app's data and history hold, as JSON. Read-only, and quick:
+// applyAppUsage answers what one app's data and history hold, as JSON. Read-only, and quick:
 // the guest answers from its last walk and starts the next one in its background.
-func (cfg Config) applyServiceUsage(ctx context.Context, g usageReader, d api.Directive) api.DirectiveOutcome {
+func (cfg Config) applyAppUsage(ctx context.Context, g usageReader, d api.Directive) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
@@ -1471,17 +1471,17 @@ func (cfg Config) applyServiceUsage(ctx context.Context, g usageReader, d api.Di
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: string(body)}
 }
 
-// cacheEmptier is the slice of the guest applyServiceCacheEmpty needs beyond an install's. Narrow
+// cacheEmptier is the slice of the guest applyAppCacheEmpty needs beyond an install's. Narrow
 // interface for DI, not a seam.
 type cacheEmptier interface {
 	EmptyCache(ctx context.Context, app string) error
 	SupportsEmptyCache() bool
 }
 
-// applyServiceCacheEmpty empties one app's cache and starts it again: the Storage card's Clear.
+// applyAppCacheEmpty empties one app's cache and starts it again: the Storage card's Clear.
 // The app is stopped first -- a running app holds its cache open -- and converge starts what the
 // volume names, as a restore's end does, whether or not the emptying worked.
-func (cfg Config) applyServiceCacheEmpty(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+func (cfg Config) applyAppCacheEmpty(ctx context.Context, g appInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
@@ -1492,7 +1492,7 @@ func (cfg Config) applyServiceCacheEmpty(ctx context.Context, g serviceInstaller
 	if !ok || !e.SupportsEmptyCache() {
 		return failed("this VM cannot empty an app's cache; update the VM first")
 	}
-	raw, err := g.ServiceInstalled(ctx, d.Payload)
+	raw, err := g.AppInstalled(ctx, d.Payload)
 	if err != nil {
 		return failed(fmt.Sprintf("read %s's installed manifest: %v", d.Payload, err))
 	}
@@ -1512,13 +1512,13 @@ func (cfg Config) applyServiceCacheEmpty(ctx context.Context, g serviceInstaller
 	}
 	cfg.quiesce(ctx, g, r.ContainerUnits, logf)
 	emptied := e.EmptyCache(ctx, m.Name)
-	if _, err := g.ServiceConverge(ctx, ""); err != nil {
+	if _, err := g.AppConverge(ctx, ""); err != nil {
 		return failed(fmt.Sprintf("start %s again (its cache emptied: %t): %v", m.Name, emptied == nil, err))
 	}
 	if emptied != nil {
 		return failed(fmt.Sprintf("empty %s's cache: %v; it was started again as it was", m.Name, emptied))
 	}
-	logf("service cache %s: emptied; started again", m.Name)
+	logf("app cache %s: emptied; started again", m.Name)
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: m.Name + "'s cache is empty; it is starting again"}
 }
 
@@ -1541,17 +1541,17 @@ type imageRemover interface {
 // app, already committed, is untouched either way.
 func (cfg Config) dropSuperseded(ctx context.Context, g imageRemover, was string, logf func(string, ...any)) {
 	old := imageRefs(was)
-	if len(old) == 0 || !g.SupportsImageRemove() || !g.SupportsServiceList() {
+	if len(old) == 0 || !g.SupportsImageRemove() || !g.SupportsAppList() {
 		return
 	}
-	names, err := g.ServiceList(ctx)
+	names, err := g.AppList(ctx)
 	if err != nil {
-		logf("superseded images: could not list the volume's services (%v); removing nothing", err)
+		logf("superseded images: could not list the volume's apps (%v); removing nothing", err)
 		return
 	}
 	pinned := map[string]bool{}
 	for _, name := range names {
-		raw, err := g.ServiceInstalled(ctx, name)
+		raw, err := g.AppInstalled(ctx, name)
 		if err != nil || raw == "" {
 			logf("superseded images: could not read %s's manifest (%v); removing nothing", name, err)
 			return
@@ -1617,7 +1617,7 @@ func imageRefs(raw string) []string {
 // running apps untouched; a grow that fails for another reason is logged, and the gate says
 // whether the space is there anyway. ONE implementation for every pull a household asks for -- an
 // install and a History restore that changes version -- so the two cannot disagree about room.
-func (cfg Config) roomForPull(ctx context.Context, g serviceInstaller, m manifest.Manifest, logf func(string, ...any)) string {
+func (cfg Config) roomForPull(ctx context.Context, g appInstaller, m manifest.Manifest, logf func(string, ...any)) string {
 	if m.InstalledSize == 0 || !g.SupportsStorageFree() {
 		return ""
 	}

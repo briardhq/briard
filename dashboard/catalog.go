@@ -172,7 +172,7 @@ func routedNames(routesPath string) []string {
 		return nil
 	}
 	var names []string
-	for _, s := range t.Services {
+	for _, s := range t.Apps {
 		names = append(names, s.Name)
 	}
 	return names

@@ -242,6 +242,6 @@ func (cfg Config) alertGuestRevert(ctx context.Context, n notify.Notifier, logf 
 	}
 	*alerted = rev
 	good := cfg.layout().GoodGuestRelease()
-	cause := fmt.Errorf("the guest refused %s's bundle (a staged copy failed its test launch, or the trial did not pass); the guest runs %s and the node will not read as converged until the next host release", rev, orFirmware(good))
-	escalate(ctx, n, logf, "this node", "guest bundle push", rev, cause)
+	cause := fmt.Errorf("the VM refused %s's bundle (a staged copy failed its test launch, or the trial did not pass); the VM runs %s and the machine will not read as converged until the next host release", rev, orFirmware(good))
+	escalate(ctx, n, logf, "this machine", "guest bundle push", rev, cause)
 }

@@ -27,11 +27,11 @@ import (
 // guest binary does not link agent/cli at all. A `grep` for `"name"` would have been a second
 // implementation of a format whose identity is its content hash.
 
-// serviceCacheDir is where the agent keeps one manifest per installed app. It mirrors
+// appCacheDir is where the agent keeps one manifest per installed app. It mirrors
 // ConfigFromEnv's SERVICE_CACHE default (agent/host/config.go); a test asserts the two agree.
-var serviceCacheDir = filepath.Join(stateDir, "services")
+var appCacheDir = filepath.Join(stateDir, "services")
 
-// installedServices names what this node runs, sorted, reading the cache the agent rebuilds itself
+// installedApps names what this node runs, sorted, reading the cache the agent rebuilds itself
 // from at every start.
 //
 // Best-effort by contract, like everything else in this package that reads node state: a cache that
@@ -41,7 +41,7 @@ var serviceCacheDir = filepath.Join(stateDir, "services")
 // A manifest that will not parse still counts as an app, under a vaguer name. It IS installed;
 // refusing to mention it because we could not read its title would be the one answer that is
 // certainly wrong.
-func installedServices(dir string) []string {
+func installedApps(dir string) []string {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return nil

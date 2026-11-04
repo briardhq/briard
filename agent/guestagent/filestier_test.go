@@ -128,8 +128,8 @@ func TestNoAppIsAtItsCapBeforeTheWarning(t *testing.T) {
 		files       int64 // the one app's files, at most what the target and the hour's member leave
 	}{
 		{"the default volume", 4 << 30, 500 * mb, 1 * gb},
-		{"a terabyte, services large", 1000 * gb, 700 * gb, 150 * gb},
-		{"a terabyte, services small", 1000 * gb, 10 * gb, 900 * gb},
+		{"a terabyte, apps large", 1000 * gb, 700 * gb, 150 * gb},
+		{"a terabyte, apps small", 1000 * gb, 10 * gb, 900 * gb},
 	} {
 		v := newUserVolume("immich")
 		v.volume, v.dataUsed = tc.volume, tc.svc
@@ -348,7 +348,7 @@ func TestAFreshInstallTakesAMemberAndSetsTheCap(t *testing.T) {
 
 // A GROWING APP LOWERS THE CAP, and the limit follows it -- below what the files tier holds,
 // which the kernel accepts and which stops the next write.
-func TestAGrowingServiceLowersTheCap(t *testing.T) {
+func TestAGrowingAppLowersTheCap(t *testing.T) {
 	v := newUserVolume("immich")
 	v.areaBytes = 60 * gb
 	filesTick(context.Background(), v, tickNow)
@@ -356,7 +356,7 @@ func TestAGrowingServiceLowersTheCap(t *testing.T) {
 	rep := filesTick(context.Background(), v, tickNow.Add(10*time.Minute))
 	wantCap, _ := v.allocation()
 	if v.qlimits[tierQgroup(tierFiles)] != strconv.FormatInt(wantCap, 10) || wantCap >= v.areaBytes {
-		t.Errorf("limit %q after the service grew, want %d (under the %d the files tier holds)", v.qlimits[tierQgroup(tierFiles)], wantCap, v.areaBytes)
+		t.Errorf("limit %q after the app grew, want %d (under the %d the files tier holds)", v.qlimits[tierQgroup(tierFiles)], wantCap, v.areaBytes)
 	}
 	if rep.FilesFree >= 0 {
 		t.Errorf("filesFree %d, want it negative: the cap is under what the tier holds", rep.FilesFree)

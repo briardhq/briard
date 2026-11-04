@@ -131,7 +131,7 @@ func TestAQuiescedTakeIsHeldForTheRecorder(t *testing.T) {
 	run := func(name string, args ...string) error { _, err := f.Run(ctx, name, args...); return err }
 	take := func(at time.Time, cons quadlet.Consistency) string {
 		member := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, at)
-		meta := quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerClock, TakenAt: at, Consistency: cons, Manifest: dbRigManifest}
+		meta := quadlet.SnapshotMeta{App: "home-assistant", Trigger: quadlet.TriggerClock, TakenAt: at, Consistency: cons, Manifest: dbRigManifest}
 		b, _ := json.Marshal(meta)
 		if err := takeSnapshot(ctx, f, run, quadlet.DataRoot("home-assistant"), member, string(b)); err != nil {
 			t.Fatal(err)

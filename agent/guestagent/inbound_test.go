@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/agent/apps"
 	"briard.io/agent/hass"
 	"briard.io/agent/quadlet"
-	"briard.io/agent/services"
 	"briard.io/shared/routes"
 )
 
@@ -30,15 +30,15 @@ const haToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde
 
 func ringExec(members ...string) *fakeExec {
 	f := &fakeExec{files: map[string]string{
-		manifestPath("home-assistant"):              `{"name":"home-assistant","version":"2026.7.1"}`,
-		services.InboundTokenPath("home-assistant"): haToken,
-		services.InboundTokenPath("mosquitto"):      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		manifestPath("home-assistant"):          `{"name":"home-assistant","version":"2026.7.1"}`,
+		apps.InboundTokenPath("home-assistant"): haToken,
+		apps.InboundTokenPath("mosquitto"):      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
 	}}
 	// Every member we can name has a plain sidecar, as the take path guarantees; a test that wants
 	// an event on one, or none at all, edits f.files afterwards.
 	for _, n := range members {
 		if svc, tr, at, ok := quadlet.ParseSnapshotMember(n); ok {
-			b, _ := json.Marshal(quadlet.SnapshotMeta{Service: svc, Trigger: tr, TakenAt: at})
+			b, _ := json.Marshal(quadlet.SnapshotMeta{App: svc, Trigger: tr, TakenAt: at})
 			f.files[quadlet.SnapshotSidecar(quadlet.SnapshotsDir+n)] = string(b)
 		}
 	}
@@ -47,7 +47,7 @@ func ringExec(members ...string) *fakeExec {
 	// took -- which is what makes every earlier plain sample replaceable.
 	f.runFn = func(name string, args []string) ([]byte, error) {
 		// The run directory holds the per-app dirs and plenty that is not one.
-		if name == "ls" && len(args) > 1 && args[1] == services.RunDir() {
+		if name == "ls" && len(args) > 1 && args[1] == apps.RunDir() {
 			return []byte("home-assistant\nmosquitto\nagent.sock\nnode-storage.json"), nil
 		}
 		if name == "ls" {
@@ -138,7 +138,7 @@ func TestStartAfterAnUncleanStopSaysSo(t *testing.T) {
 // flushed this data, which stops being true the moment the container runs again.
 func TestACleanStopMakesTheNextMemberQuiesced(t *testing.T) {
 	f := restoreRig("")
-	if err := RecordServiceStop(context.Background(), f, "home-assistant", "success"); err != nil {
+	if err := RecordAppStop(context.Background(), f, "home-assistant", "success"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := TakeStartMember(context.Background(), f, "home-assistant"); err != nil {
@@ -158,11 +158,11 @@ func TestACleanStopMakesTheNextMemberQuiesced(t *testing.T) {
 func TestAKilledStopClaimsNothing(t *testing.T) {
 	f := restoreRig("")
 	f.files[cleanStopPath("home-assistant")] = "success\n" // a claim left by some earlier stop
-	if err := RecordServiceStop(context.Background(), f, "home-assistant", "timeout"); err != nil {
+	if err := RecordAppStop(context.Background(), f, "home-assistant", "timeout"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := f.files[cleanStopPath("home-assistant")]; ok {
-		t.Error("a timed-out stop left a claim that this service's data was flushed")
+		t.Error("a timed-out stop left a claim that this app's data was flushed")
 	}
 }
 
@@ -259,7 +259,7 @@ func TestInboundStartingTakesAMember(t *testing.T) {
 	if took == "" {
 		t.Fatalf("nothing was snapshotted: %v", f.runs)
 	}
-	svc, ok := quadlet.SnapshotMemberService(took)
+	svc, ok := quadlet.SnapshotMemberApp(took)
 	if !ok || svc != "home-assistant" {
 		t.Errorf("member %q is not home-assistant's", took)
 	}
@@ -333,17 +333,17 @@ func TestAnEvaluatedStartIsNeverReplaced(t *testing.T) {
 	}
 }
 
-// TestAStartDoesNotTouchAnotherServicesPendingStart: the ring is per app. A busy Home
+// TestAStartDoesNotTouchAnotherAppsPendingStart: the ring is per app. A busy Home
 // Assistant must not be able to delete the broker's members, or one app's crash loop silently
 // costs every other app its history.
-func TestAStartDoesNotTouchAnotherServicesPendingStart(t *testing.T) {
+func TestAStartDoesNotTouchAnotherAppsPendingStart(t *testing.T) {
 	other := strings.TrimPrefix(quadlet.SnapshotMember("mosquitto", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
 	f := ringExec(other)
 	markPending(f, other)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	tookMember(t, f)
 	if got := deleted(f); len(got) != 0 {
-		t.Errorf("deleted %v; another service's pending start is not ours to replace", got)
+		t.Errorf("deleted %v; another app's pending start is not ours to replace", got)
 	}
 }
 
@@ -376,14 +376,14 @@ func TestInboundIgnoresStrangersInTheSnapshotsDir(t *testing.T) {
 	}
 }
 
-// TestInboundRequestCannotNameItsService is the trust boundary, asserted.
+// TestInboundRequestCannotNameItsApp is the trust boundary, asserted.
 //
 // The socket is shared by every participating container, and everything running as an app can
 // reach it — for Home Assistant, every custom component the household ever installed. So the
 // identity comes from the TOKEN and nothing else in the request may touch it: a caller that could
 // name its own app would act for any other, which with one shared socket is the whole point
 // of failure.
-func TestInboundRequestCannotNameItsService(t *testing.T) {
+func TestInboundRequestCannotNameItsApp(t *testing.T) {
 	f := ringExec()
 	serve(t, f, `{"verb":"service.starting","service":"mosquitto","path":"/etc","token":"`+haToken+`"}`)
 	for _, r := range f.runs {
@@ -399,8 +399,8 @@ func TestInboundRequestCannotNameItsService(t *testing.T) {
 			took = r[len(r)-1]
 		}
 	}
-	if svc, _ := quadlet.SnapshotMemberService(took); svc != "home-assistant" {
-		t.Errorf("member %q was taken for the service the REQUEST named, not the one its token identifies", took)
+	if svc, _ := quadlet.SnapshotMemberApp(took); svc != "home-assistant" {
+		t.Errorf("member %q was taken for the app the REQUEST named, not the one its token identifies", took)
 	}
 }
 
@@ -426,9 +426,9 @@ func TestInboundRefusesACallerItCannotIdentify(t *testing.T) {
 	}
 }
 
-// TestInboundResolvesEachServiceToItsOwnToken: two apps share one socket, and the only thing
+// TestInboundResolvesEachAppToItsOwnToken: two apps share one socket, and the only thing
 // separating them is which secret they hold. A token must act for its own app and no other.
-func TestInboundResolvesEachServiceToItsOwnToken(t *testing.T) {
+func TestInboundResolvesEachAppToItsOwnToken(t *testing.T) {
 	f := ringExec()
 	f.files[manifestPath("mosquitto")] = `{"name":"mosquitto","version":"2.1.2"}`
 	serve(t, f, `{"verb":"service.starting","token":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}`)
@@ -438,7 +438,7 @@ func TestInboundResolvesEachServiceToItsOwnToken(t *testing.T) {
 			took = r[len(r)-1]
 		}
 	}
-	if svc, _ := quadlet.SnapshotMemberService(took); svc != "mosquitto" {
+	if svc, _ := quadlet.SnapshotMemberApp(took); svc != "mosquitto" {
 		t.Errorf("member %q, want the broker's — its token is the only thing that says so", took)
 	}
 }
@@ -486,27 +486,27 @@ func TestInboundAlwaysAnswers(t *testing.T) {
 	}
 }
 
-// TestInboundRejectsAServiceNameThatIsAPath: the app name is read out of a token FILENAME in
+// TestInboundRejectsAAppNameThatIsAPath: the app name is read out of a token FILENAME in
 // a directory on /run, and it then becomes a path element in every path the verb derives. Writing
 // there takes root, so this is defence in depth rather than a live hole -- but the cost of being
 // wrong is a verb pointed at an arbitrary subvolume, and the check is one line.
-func TestInboundRejectsAServiceNameThatIsAPath(t *testing.T) {
+func TestInboundRejectsAAppNameThatIsAPath(t *testing.T) {
 	const evil = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	f := ringExec()
 	f.runFn = func(name string, args []string) ([]byte, error) {
-		if name == "ls" && len(args) > 1 && args[1] == services.RunDir() {
+		if name == "ls" && len(args) > 1 && args[1] == apps.RunDir() {
 			return []byte("../../etc"), nil
 		}
 		return nil, errors.New("ERROR: not a subvolume")
 	}
-	f.files[services.InboundTokenPath("../../etc")] = evil
+	f.files[apps.InboundTokenPath("../../etc")] = evil
 	resp := serve(t, f, `{"verb":"service.starting","token":"`+evil+`"}`)
 	if resp.Error == "" {
-		t.Fatal("a traversing service name was accepted")
+		t.Fatal("a traversing app name was accepted")
 	}
 	for _, r := range f.runs {
 		if r[0] == "btrfs" {
-			t.Errorf("a traversing service name reached the volume: %v", f.runs)
+			t.Errorf("a traversing app name reached the volume: %v", f.runs)
 		}
 	}
 }
@@ -620,11 +620,11 @@ func TestInboundRefusesAShortTokenWithoutReadingAnything(t *testing.T) {
 //
 // ⚠️ MINUTES AGO, NEVER HOURS: quiet time registers once a stretch is quadlet.QuietAfter old, so a
 // fixture hours in the past would put a quiet event into every prune test.
-func ringOf(service string, n int) []string {
+func ringOf(app string, n int) []string {
 	var out []string
 	base := time.Now().Add(-2*time.Minute - time.Duration(n)*time.Second)
 	for i := 0; i < n; i++ {
-		m := quadlet.SnapshotMember(service, quadlet.TriggerStart, base.Add(time.Duration(i)*time.Second))
+		m := quadlet.SnapshotMember(app, quadlet.TriggerStart, base.Add(time.Duration(i)*time.Second))
 		out = append(out, strings.TrimPrefix(m, quadlet.SnapshotsDir))
 	}
 	return out
@@ -699,15 +699,15 @@ func TestRingKeepsWhatAnchorsAnEvent(t *testing.T) {
 	}
 }
 
-// TestRingLeavesAnotherServiceAlone: the prune is per app. One busy app must not evict
+// TestRingLeavesAnotherAppAlone: the prune is per app. One busy app must not evict
 // another's history -- they share a directory and nothing but the name separates them.
-func TestRingLeavesAnotherServiceAlone(t *testing.T) {
+func TestRingLeavesAnotherAppAlone(t *testing.T) {
 	mine := ringOf("home-assistant", 5)
 	theirs := ringOf("mosquitto", 5)
 	f := ringExec(append(mine, theirs...)...)
 	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
 	for _, name := range deleted(f) {
-		if svc, _ := quadlet.SnapshotMemberService(name); svc != "home-assistant" {
+		if svc, _ := quadlet.SnapshotMemberApp(name); svc != "home-assistant" {
 			t.Errorf("pruning %s's ring deleted %s's member %q", "home-assistant", svc, name)
 		}
 	}
@@ -811,7 +811,7 @@ const haManifest = `{"name":"home-assistant","version":"2026.7.1","containers":[
 
 func haMember(f *fakeExec, trigger quadlet.Trigger, at time.Time, automations string) (string, quadlet.SnapshotMeta) {
 	member := quadlet.SnapshotMember("home-assistant", trigger, at)
-	meta := quadlet.SnapshotMeta{Service: "home-assistant", Trigger: trigger, TakenAt: at, Manifest: haManifest}
+	meta := quadlet.SnapshotMeta{App: "home-assistant", Trigger: trigger, TakenAt: at, Manifest: haManifest}
 	b, _ := json.Marshal(meta)
 	f.files[quadlet.SnapshotSidecar(member)] = string(b)
 	f.files[member+"/app/automations.yaml"] = automations
@@ -969,7 +969,7 @@ func TestTheHostsTakesAreRecordedToo(t *testing.T) {
 	g := dial(t, f)
 	at := time.Now()
 	member := quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUpdateBefore, at)
-	sidecar, _ := json.Marshal(quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore, TakenAt: at,
+	sidecar, _ := json.Marshal(quadlet.SnapshotMeta{App: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore, TakenAt: at,
 		Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to 2026.9.0"}}}})
 	if err := g.Snapshot(context.Background(), quadlet.DataRoot("home-assistant"), member, string(sidecar)); err != nil {
 		t.Fatal(err)
@@ -1006,7 +1006,7 @@ func TestAResetAndAChangeShareTheirPoint(t *testing.T) {
 	}
 }
 
-// healthRig serves home-assistant's health endpoint on loopback and routes it, so serviceHealth
+// healthRig serves home-assistant's health endpoint on loopback and routes it, so appHealth
 // runs its real probe. The ring's manifest does not parse, which leaves the default probe: the
 // registry's override is agent/hass's to test. Set *code to what the app answers.
 func healthRig(t *testing.T, f *fakeExec) *int {
@@ -1015,7 +1015,7 @@ func healthRig(t *testing.T, f *fakeExec) *int {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
 	t.Cleanup(srv.Close)
 	u, _ := url.Parse(srv.URL)
-	tbl, _ := routes.Table{Services: []routes.Service{{Name: "home-assistant", Address: u.Hostname(),
+	tbl, _ := routes.Table{Apps: []routes.App{{Name: "home-assistant", Address: u.Hostname(),
 		Health: "http://:" + u.Port() + "/health"}}}.Marshal()
 	f.files[routes.Path] = string(tbl)
 	return &code
@@ -1067,9 +1067,9 @@ func TestAStartWaitsForItsBootsVerdict(t *testing.T) {
 	if !metaOf(t, f, start).Pending {
 		t.Fatal("a start was evaluated a minute into its boot on an unhealthy answer")
 	}
-	evaluatePending(context.Background(), f, "home-assistant", now.Add(services.HealthGate))
+	evaluatePending(context.Background(), f, "home-assistant", now.Add(apps.HealthGate))
 	got := metaOf(t, f, start)
-	if got.Pending || got.Health != services.Unhealthy {
+	if got.Pending || got.Health != apps.Unhealthy {
 		t.Fatalf("after the gate the start reads %+v, want evaluated unhealthy", got)
 	}
 	if ev := eventOn(t, f, base); !ev.Has(quadlet.ReasonUnhealthy) {
@@ -1096,7 +1096,7 @@ func TestAHealthyStartIsEvaluatedAtOnce(t *testing.T) {
 	pendingStart(f, now, "same")
 	healthRig(t, f)
 	evaluatePending(context.Background(), f, "home-assistant", now.Add(time.Second))
-	if got := metaOf(t, f, start); got.Pending || got.Health != services.Healthy {
+	if got := metaOf(t, f, start); got.Pending || got.Health != apps.Healthy {
 		t.Errorf("a healthy start reads %+v", got)
 	}
 	if ev := eventOn(t, f, base); ev != nil {

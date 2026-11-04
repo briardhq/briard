@@ -45,7 +45,7 @@ func runLog(string) string { return `C:\ProgramData\briard\log\briard-update.log
 // merged into a run already going waits for that run's verdict, as `systemctl start` does.
 func (l Layout) startRun(ctx context.Context, unit string, wait bool, started time.Time) ([]byte, error) {
 	if _, err := os.Stat(filepath.Join(l.Base, launcher)); err != nil {
-		return nil, fmt.Errorf("this node has no update launcher (%v); reinstall briard to keep updating", err)
+		return nil, fmt.Errorf("this machine has no update launcher (%v); reinstall briard to keep updating", err)
 	}
 	out, err := exec.CommandContext(ctx, "schtasks", "/run", "/tn", unit).CombinedOutput()
 	if err != nil || !wait {

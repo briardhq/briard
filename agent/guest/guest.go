@@ -25,9 +25,9 @@ import (
 // driving the guest agent's data.member/data.restore verbs directly, pinned to the manifest
 // rather than to a system closure.
 type GuestManager interface {
-	Start(ctx context.Context, spec model.ServiceSpec) error
-	Stop(ctx context.Context, spec model.ServiceSpec) error
-	Health(ctx context.Context, spec model.ServiceSpec) (Health, error)
+	Start(ctx context.Context, spec model.AppSpec) error
+	Stop(ctx context.Context, spec model.AppSpec) error
+	Health(ctx context.Context, spec model.AppSpec) (Health, error)
 	SystemPath(ctx context.Context) (string, error) // current code identity (closure store path)
 }
 
@@ -76,10 +76,10 @@ const (
 // control is the guest-side surface Manager drives — satisfied by *guestagent.Client
 // (asserted below), faked in tests.
 type control interface {
-	ServiceStart(ctx context.Context, unit string) error
-	ServiceStop(ctx context.Context, unit string) error
-	ServiceActive(ctx context.Context, unit string) (bool, error)
-	ServiceHealth(ctx context.Context, url string) (bool, error)
+	AppStart(ctx context.Context, unit string) error
+	AppStop(ctx context.Context, unit string) error
+	AppActive(ctx context.Context, unit string) (bool, error)
+	AppHealth(ctx context.Context, url string) (bool, error)
 	VIP(ctx context.Context, dev string) (string, error)
 	SystemPath(ctx context.Context) (string, error)
 	WriteCert(ctx context.Context, cert, key string) error
@@ -90,7 +90,7 @@ type control interface {
 
 var _ control = (*guestagent.Client)(nil)
 
-// Config carries Manager policy not derivable from a ServiceSpec.
+// Config carries Manager policy not derivable from a AppSpec.
 type Config struct {
 	// HealthURL is the CONFIGURED probe target (the front door's /healthz at the VIP). It is no
 	// longer the last word: when the VIP is acquired by DHCP inside the guest, only the guest
@@ -160,12 +160,12 @@ func NewManager(ctl control, cfg Config) *Manager {
 }
 
 // unitOf is the systemd unit that answers "is this app up?" — now one definition, on the
-// spec itself (model.ServiceSpec.ServingUnit), because the host's resource telemetry had rebuilt
+// spec itself (model.AppSpec.ServingUnit), because the host's resource telemetry had rebuilt
 // the same derivation inline and got the runtime-installed case wrong. Kept as a name because it
 // reads better at the eight call sites below than the method does.
-func unitOf(spec model.ServiceSpec) string { return spec.ServingUnit() }
+func unitOf(spec model.AppSpec) string { return spec.ServingUnit() }
 
-// hasService reports whether this node runs a workload at all. ZERO APPS IS THE SHIPPED
+// hasApp reports whether this node runs a workload at all. ZERO APPS IS THE SHIPPED
 // STATE -- a fresh node serves the front door's own landing page and nothing else --
 // so every app-shaped step in an upgrade has to be a no-op there rather than an error.
 //
@@ -174,20 +174,20 @@ func unitOf(spec model.ServiceSpec) string { return spec.ServingUnit() }
 // which the health gate read as "not ready" forever. The node was simultaneously reporting
 // Healthy: true to the cloud (cfg.snapshot probes the front door and takes its answer, with
 // no such conjunct) and refusing every OS upgrade to itself.
-func hasService(spec model.ServiceSpec) bool { return spec.Name != "" || spec.Unit != "" }
+func hasApp(spec model.AppSpec) bool { return spec.Name != "" || spec.Unit != "" }
 
-func (m *Manager) Start(ctx context.Context, spec model.ServiceSpec) error {
-	if !hasService(spec) {
+func (m *Manager) Start(ctx context.Context, spec model.AppSpec) error {
+	if !hasApp(spec) {
 		return nil // nothing to raise; the front door rides briard-vip, not this call
 	}
-	return m.ctl.ServiceStart(ctx, unitOf(spec))
+	return m.ctl.AppStart(ctx, unitOf(spec))
 }
 
-func (m *Manager) Stop(ctx context.Context, spec model.ServiceSpec) error {
-	if !hasService(spec) {
+func (m *Manager) Stop(ctx context.Context, spec model.AppSpec) error {
+	if !hasApp(spec) {
 		return nil // nothing to quiesce
 	}
-	return m.ctl.ServiceStop(ctx, unitOf(spec))
+	return m.ctl.AppStop(ctx, unitOf(spec))
 }
 
 // Health is the upgrade gate's floor. With an app it means what it always did: the app
@@ -195,11 +195,11 @@ func (m *Manager) Stop(ctx context.Context, spec model.ServiceSpec) error {
 // front door answers /healthz itself in that state -- 200, "no backend configured" -- which is
 // exactly what reverse-proxy was widened to do so that "a node with nothing installed
 // is ready, not sick". Running is vacuously true there: there is no app that could be down.
-func (m *Manager) Health(ctx context.Context, spec model.ServiceSpec) (Health, error) {
-	if !hasService(spec) {
+func (m *Manager) Health(ctx context.Context, spec model.AppSpec) (Health, error) {
+	if !hasApp(spec) {
 		return Health{Running: true, Ready: m.probeReady(ctx)}, nil
 	}
-	running, err := m.ctl.ServiceActive(ctx, unitOf(spec))
+	running, err := m.ctl.AppActive(ctx, unitOf(spec))
 	if err != nil {
 		return Health{}, err
 	}
@@ -283,7 +283,7 @@ func (m *Manager) probeReady(ctx context.Context) bool {
 	if url == "" {
 		return false
 	}
-	if ready, err := m.ctl.ServiceHealth(ctx, url); err == nil {
+	if ready, err := m.ctl.AppHealth(ctx, url); err == nil {
 		return ready
 	}
 	return m.hostProbeReady(ctx, url)
@@ -359,7 +359,7 @@ func (m *Manager) ExitMaintenance(ctx context.Context) error {
 // detaching, the upgrade deadline is observed only in the select below — between polls,
 // never during one — so the channel handed to rollback is always live. The detached
 // poll is itself bounded (healthPollTimeout) so a wedged guest can't stall it.
-func (m *Manager) AwaitReady(ctx context.Context, spec model.ServiceSpec) error {
+func (m *Manager) AwaitReady(ctx context.Context, spec model.AppSpec) error {
 	return m.await(ctx, func(c context.Context) bool {
 		h, err := m.Health(c, spec)
 		return err == nil && h.Ready
@@ -564,9 +564,9 @@ func (g Gate) Judge(ctx context.Context, r Readiness) error {
 // Stub is a no-op GuestManager for core tests and v0 wiring.
 type Stub struct{}
 
-func (Stub) Start(context.Context, model.ServiceSpec) error { return nil }
-func (Stub) Stop(context.Context, model.ServiceSpec) error  { return nil }
-func (Stub) Health(context.Context, model.ServiceSpec) (Health, error) {
+func (Stub) Start(context.Context, model.AppSpec) error { return nil }
+func (Stub) Stop(context.Context, model.AppSpec) error  { return nil }
+func (Stub) Health(context.Context, model.AppSpec) (Health, error) {
 	return Health{Running: true, Ready: true}, nil
 }
 func (Stub) SystemPath(context.Context) (string, error) { return "stub", nil }

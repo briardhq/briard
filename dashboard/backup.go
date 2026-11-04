@@ -403,8 +403,8 @@ type backupAppView struct {
 
 // backupOpView is one restore from a backup, running or just ended.
 type backupOpView struct {
-	Service, Title, From, Since, Detail string
-	Running, Failed                     bool
+	App, Title, From, Since, Detail string
+	Running, Failed                 bool
 }
 
 // backupWhen is how the page says a backup's or an app's moment.
@@ -415,15 +415,15 @@ func backupWhen(t time.Time) string { return t.In(zone()).Format("Mon 2 Jan, 15:
 func (a *app) backupsCard(ctx context.Context) backupsCardView {
 	var v backupsCardView
 	a.mu.Lock()
-	for service, op := range a.restores {
+	for app, op := range a.restores {
 		if !op.Backup {
 			continue
 		}
-		v.Ops = append(v.Ops, backupOpView{Service: service, Title: a.appTitle(service), From: op.What,
+		v.Ops = append(v.Ops, backupOpView{App: app, Title: a.appTitle(app), From: op.What,
 			Since: op.Started.In(zone()).Format("15:04"), Detail: op.Detail, Running: !op.Done, Failed: op.Failed})
 		v.Moving = v.Moving || !op.Done
 		if op.Done && !op.Failed {
-			delete(a.restores, service)
+			delete(a.restores, app)
 		}
 	}
 	a.mu.Unlock()
@@ -523,8 +523,8 @@ func (a *app) showBackup(w http.ResponseWriter, r *http.Request, id string) {
 
 // backupConfirmView is the page between the button and the restore.
 type backupConfirmView struct {
-	Backup, When, Service, Title, Version, Taken string
-	Installed                                    bool
+	Backup, When, App, Title, Version, Taken string
+	Installed                                bool
 	// From is the version the app runs now, when the backup's is another: the restore moves it.
 	From string
 }
@@ -533,8 +533,8 @@ type backupConfirmView struct {
 // steps, as the undo's are, and the confirmation re-reads the list rather than trusting the form:
 // a backup can be pruned between the listing and the click.
 func (a *app) requestBackupRestore(w http.ResponseWriter, r *http.Request) {
-	id, service := r.FormValue("backup"), r.FormValue("app")
-	if id == "" || service == "" {
+	id, app := r.FormValue("backup"), r.FormValue("app")
+	if id == "" || app == "" {
 		http.Error(w, "a backup and an app are needed\n", http.StatusBadRequest)
 		return
 	}
@@ -549,9 +549,9 @@ func (a *app) requestBackupRestore(w http.ResponseWriter, r *http.Request) {
 		var v *backupConfirmView
 		for _, b := range list {
 			for _, ap := range b.Apps {
-				if b.ID == id && ap.Name == service {
-					v = &backupConfirmView{Backup: id, When: backupWhen(b.At), Service: service, Title: a.appTitle(service),
-						Version: ap.Version, Taken: backupWhen(ap.TakenAt), Installed: a.installedApps()[service]}
+				if b.ID == id && ap.Name == app {
+					v = &backupConfirmView{Backup: id, When: backupWhen(b.At), App: app, Title: a.appTitle(app),
+						Version: ap.Version, Taken: backupWhen(ap.TakenAt), Installed: a.installedApps()[app]}
 				}
 			}
 		}
@@ -560,7 +560,7 @@ func (a *app) requestBackupRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if v.Installed {
-			if _, running, err := a.rows(ctx, service); err == nil && running != nil && running.Version != v.Version {
+			if _, running, err := a.rows(ctx, app); err == nil && running != nil && running.Version != v.Version {
 				v.From = running.Version
 			}
 		}
@@ -570,18 +570,18 @@ func (a *app) requestBackupRestore(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	payload, err := json.Marshal(api.BackupRestore{Service: service, Snapshot: id})
+	payload, err := json.Marshal(api.BackupRestore{App: app, Snapshot: id})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	a.mu.Lock()
-	if op, running := a.restores[service]; running && !op.Done {
+	if op, running := a.restores[app]; running && !op.Done {
 		a.mu.Unlock()
 		http.Redirect(w, r, "/backup", http.StatusSeeOther)
 		return
 	}
-	a.restores[service] = &restoreOp{Started: a.now(), What: r.FormValue("when"), Backup: true}
+	a.restores[app] = &restoreOp{Started: a.now(), What: r.FormValue("when"), Backup: true}
 	a.mu.Unlock()
 	// IN THE BACKGROUND, as the undo: the host reads the backup, pulls the app's image if this
 	// machine lacks it, and swaps the data in -- minutes, which no browser should hold a request
@@ -592,7 +592,7 @@ func (a *app) requestBackupRestore(w http.ResponseWriter, r *http.Request) {
 		o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveBackupRestore, Payload: string(payload)})
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		op := a.restores[service]
+		op := a.restores[app]
 		op.Done = true
 		switch {
 		case err != nil:
@@ -602,7 +602,7 @@ func (a *app) requestBackupRestore(w http.ResponseWriter, r *http.Request) {
 		default:
 			op.Detail = o.Detail
 		}
-		log.Printf("dashboard: restore %s from backup %s: outcome=%+v err=%v", service, id, o, err)
+		log.Printf("dashboard: restore %s from backup %s: outcome=%+v err=%v", app, id, o, err)
 	}()
 	http.Redirect(w, r, "/backup", http.StatusSeeOther)
 }
@@ -612,7 +612,7 @@ func (a *app) installedApps() map[string]bool {
 	installed := map[string]bool{}
 	if raw, err := os.ReadFile(a.routesPath); err == nil {
 		if t, err := routes.Parse(raw); err == nil {
-			for _, s := range t.Services {
+			for _, s := range t.Apps {
 				installed[s.Name] = true
 			}
 		}

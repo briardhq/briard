@@ -19,13 +19,13 @@ import (
 	"strings"
 	"time"
 
+	apps "briard.io/agent/apps"
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestagent/deadman"
 	"briard.io/agent/guestfirmware"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/quadlet"
-	"briard.io/agent/services"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
 	"briard.io/shared/model"
@@ -158,17 +158,17 @@ const verbSetTimezone = "sys.timezone"
 // is what makes a family rename affordable, and it is the reason the channel carries no version
 // number to bump (guestfirmware, VerbHello).
 const (
-	verbServiceStart  = "service.start"  // systemctl start <unit>
-	verbServiceStop   = "service.stop"   // systemctl stop <unit> (quiesce before snapshot)
-	verbServiceActive = "service.active" // systemctl is-active <unit> -> bool
-	verbServiceHealth = "service.health" // in-guest GET of the app's health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
-	// verbServiceHealthOf is APP HEALTH asked BY APP NAME: the guest
+	verbAppStart  = "service.start"  // systemctl start <unit>
+	verbAppStop   = "service.stop"   // systemctl stop <unit> (quiesce before snapshot)
+	verbAppActive = "service.active" // systemctl is-active <unit> -> bool
+	verbAppHealth = "service.health" // in-guest GET of the app's health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
+	// verbAppHealthOf is APP HEALTH asked BY APP NAME: the guest
 	// resolves the address from its own routing table and answers healthy, unhealthy or unknown
-	// (serviceHealth). A separate verb rather than a field on service.health, so an older guest
+	// (appHealth). A separate verb rather than a field on service.health, so an older guest
 	// refuses it loudly instead of silently probing an empty URL and reporting the app
 	// unhealthy -- which on the install gate would revert a perfectly good install. Named for
 	// its three-valued answer: the two-valued `service.healthof` it replaced is gone.
-	verbServiceHealthOf = "service.health.state"
+	verbAppHealthOf = "service.health.state"
 	// verbDataMember takes one RING member: refuses a collision instead of replacing, and writes
 	// the sidecar beside it. A NEW NAME rather than a field on the verb it replaced, and that
 	// is the whole lesson of the floor raise gate 3 refused: an old guest does not advertise this,
@@ -222,8 +222,8 @@ const (
 // (agent/quadlet), decides which node gets which verb, and owns the ordering. The guest writes
 // bytes and makes directories.
 const (
-	verbServiceRender    = "service.render"    // write quadlet units to /run + daemon-reload (every node)
-	verbServiceProvision = "service.provision" // create the app subvolume + record the manifest (Primary only)
+	verbAppRender    = "service.render"    // write quadlet units to /run + daemon-reload (every node)
+	verbAppProvision = "service.provision" // create the app subvolume + record the manifest (Primary only)
 	// service.installed READS ONE NAMED APP's manifest off the volume, or "". It REPLACES
 	// the unnamed service.manifest rather than widening it, because a verb whose meaning changes
 	// under an unchanged name is the one thing nothing on this channel can police: the guest
@@ -232,12 +232,12 @@ const (
 	// one path that needs it (Supports), the instrument service.warm set the precedent for
 	// (no api.go change) -- and the same rule covers a new FIELD whose absence would
 	// be silent, which is why data.member is its own verb rather than a flag on its predecessor.
-	verbServiceInstalled = "service.installed" // read one named app's manifest from the volume, or ""
+	verbAppInstalled = "service.installed" // read one named app's manifest from the volume, or ""
 	// service.pulling records (or clears) an app install's pull for the dashboard:
 	// the manifest's sizes and the start time, on the dashboard's tmpfs -- written BEFORE the
 	// warm, because the manifest reaches the volume only after it, and a bar needs its total
 	// while the bytes move. The guest keeps a number; the host decided to pull.
-	verbServicePulling = "service.pulling"
+	verbAppPulling = "service.pulling"
 	// storage.free reports the image store's filesystem (free, total bytes): what the host's
 	// free-space gate reads before a pull starts. The guest measures; the host refuses.
 	verbStorageFree = "storage.free"
@@ -257,8 +257,8 @@ const (
 	// while reporting no apps at all, so the cloud saw a node running nothing and could not
 	// have confirmed any rollout on it. Names only, because the manifest for each is what
 	// service.installed already returns; a verb that returned both would duplicate that one.
-	verbServiceList = "service.list" // list the apps recorded on the volume
-	verbServiceWarm = "service.warm" // ensure an image is present, starting its .image unit ONLY if it is missing
+	verbAppList = "service.list" // list the apps recorded on the volume
+	verbAppWarm = "service.warm" // ensure an image is present, starting its .image unit ONLY if it is missing
 	// verbImageEnsure is the same question asked WITHOUT a unit: is this ref resident, and if not,
 	// fetch it. service.warm starts a rendered `.image` unit, which only exists for a
 	// manifest the node has already rendered -- and a RESTORE has to ask about a manifest it has
@@ -315,7 +315,7 @@ const (
 	// `systemctl restart briard-services` because briard-services is a promoter CHAIN MEMBER:
 	// stopping one deactivates drbd-reactor's target, which unmounts the volume and demotes the
 	// node. Same code, same unit, no unit lifecycle touched.
-	verbServiceConverge = "service.converge"
+	verbAppConverge = "service.converge"
 	// ── APP-SPECIFIC VERBS: `service.<catalog name>.<action>` ────────────────────────────────
 	//
 	// The naming rule, and it is a property rather than a style (owner, 2026-08-30). Every other
@@ -410,8 +410,8 @@ const (
 // orphans. That is the concrete defect the one-app-at-a-time gate stood in for.
 //
 // A node that installed an app BEFORE this split has its manifest at the old single path and
-// nothing reads it: priorService then finds no prior, treats the next install as fresh, and skips
-// the rollback target. That is priorService's own documented fresh-install case, its worst outcome
+// nothing reads it: priorApp then finds no prior, treats the next install as fresh, and skips
+// the rollback target. That is priorApp's own documented fresh-install case, its worst outcome
 // is a rollback to empty rather than to a broken new app, and the first install after the
 // upgrade writes the new location — so this carries no migration step (the alpha is reinstall-only).
 const manifestDir = "/var/lib/briard/.services"
@@ -459,11 +459,11 @@ const dataMountRoot = "/var/lib/briard"
 var guestCapabilities = []string{
 	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
-	verbServiceStart, verbServiceStop, verbServiceActive, verbServiceHealth, verbServiceHealthOf,
+	verbAppStart, verbAppStop, verbAppActive, verbAppHealth, verbAppHealthOf,
 	verbFilesTick, verbFilesTickResult,
 	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbStorageUsage, verbCacheEmpty, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataBackupList, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
-	verbServiceRender, verbServiceProvision, verbServiceInstalled, verbServiceList, verbServiceWarm, verbServiceConverge, verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
-	verbServicePulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
+	verbAppRender, verbAppProvision, verbAppInstalled, verbAppList, verbAppWarm, verbAppConverge, verbAppStage, verbAppCommit, verbAppDiscard, verbAppPending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
+	verbAppPulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
 	verbCertWrite, verbCertRead,
@@ -490,13 +490,13 @@ var guestCapabilities = []string{
 // whole of the ordering.
 var besideActs = map[string]bool{
 	// reads
-	guestfirmware.VerbHello: true, verbStatus: true, verbServiceActive: true,
-	verbServiceHealth: true, verbServiceHealthOf: true, verbServiceInstalled: true,
-	verbServiceList: true, verbDataMembers: true, verbNetVIP: true, verbNetMDNSPublished: true,
+	guestfirmware.VerbHello: true, verbStatus: true, verbAppActive: true,
+	verbAppHealth: true, verbAppHealthOf: true, verbAppInstalled: true,
+	verbAppList: true, verbDataMembers: true, verbNetVIP: true, verbNetMDNSPublished: true,
 	verbNetMDNSOther: true, verbResources: true, verbStorageFree: true, verbCertRead: true,
 	verbReactorActive: true, verbOSSystem: true, verbOSState: true, verbDeadmanEpisode: true,
 	verbHassReadiness: true, verbMosquittoProbe: true, verbHassDBCheck: true,
-	verbHassDBCheckResult: true, verbServicePending: true, verbDataBackup: true,
+	verbHassDBCheckResult: true, verbAppPending: true, verbDataBackup: true,
 	verbDataBackupResult: true, verbDataBackupKey: true, verbDataBackupList: true,
 	// started in the background like the backup, whose shape it shares: the start returns at once,
 	// and what the tick writes (the versions, the files tier's limit) no act touches
@@ -506,7 +506,7 @@ var besideActs = map[string]bool{
 	// pushes
 	verbDashboardHandoff: true, verbDashboardCasa: true, verbDashboardAlerts: true, verbDashboardBackup: true,
 	verbDashboardCatalog: true,
-	verbServicePulling:   true, verbCertWrite: true, verbNetMDNSName: true, verbHassNudge: true,
+	verbAppPulling:       true, verbCertWrite: true, verbNetMDNSName: true, verbHassNudge: true,
 }
 
 // isAct is ServeFrames' lane predicate: anything not declared to run beside acts is one.
@@ -575,10 +575,10 @@ type healthRequest struct {
 	URL string `json:"url"`
 }
 
-// serviceRequest names an app by its catalog slug — the form every verb takes once the guest
+// appRequest names an app by its catalog slug — the form every verb takes once the guest
 // resolves what it needs from its own state rather than from the caller's (service.healthof).
-type serviceRequest struct {
-	Service string `json:"service"`
+type appRequest struct {
+	App string `json:"service"`
 }
 
 // snapshotRequest is a btrfs subvolume op: DataDir is the live rw subvolume, Path is
@@ -597,24 +597,24 @@ type snapshotRequest struct {
 	// guest taking this as an optional extra on data.restore would put the data back and keep the
 	// marker, reporting success while replaying the household's own restore.
 	Sweep []string `json:"sweep,omitempty"`
-	// Service is the catalog name, for the one verb that must reach INTO the app before it
+	// App is the catalog name, for the one verb that must reach INTO the app before it
 	// snapshots (data.member.quiesced): the manifest on the volume is what says how.
-	Service string `json:"service,omitempty"`
+	App string `json:"service,omitempty"`
 }
 
-// serviceRenderRequest carries the quadlet source the host rendered: filename -> content, to be
+// appRenderRequest carries the quadlet source the host rendered: filename -> content, to be
 // written under quadletDir. Stale is the set of filenames to remove first, so swapping which
 // app occupies the slot leaves nothing of the previous one behind.
-type serviceRenderRequest struct {
+type appRenderRequest struct {
 	Files map[string]string `json:"files"`
 	Stale []string          `json:"stale,omitempty"`
 }
 
-// serviceProvisionRequest creates the app's single data subvolume with per-container plain
+// appProvisionRequest creates the app's single data subvolume with per-container plain
 // SUBDIRECTORIES inside it (never nested subvolumes — `btrfs subvolume delete` refuses on a
 // subvolume containing them, which would break data.restore outright), and records Manifest as
 // the app identity on the replicated volume.
-type serviceProvisionRequest struct {
+type appProvisionRequest struct {
 	// Name is which app this is, and therefore which identity file on the volume the
 	// manifest lands in. The host owns the naming because it owns the manifest; deriving it
 	// from DataDir here would make the guest re-implement a layout it is only ever told.
@@ -624,10 +624,10 @@ type serviceProvisionRequest struct {
 	Manifest string   `json:"manifest"`
 }
 
-// serviceInstalledRequest names the app whose recorded manifest to read (service.installed).
+// appInstalledRequest names the app whose recorded manifest to read (service.installed).
 // The NAME is the whole request, and it is what makes the volume able to say which app it
 // means: with an unnamed read, installing a second app saw the first as its own prior.
-type serviceInstalledRequest struct {
+type appInstalledRequest struct {
 	Name string `json:"name"`
 }
 
@@ -643,10 +643,10 @@ func manifestPath(name string) string { return manifestDir + "/" + name + ".json
 // TestSidecarPathMatchesTheRenderer is what keeps them in step.
 func sidecarPath(member string) string { return member + ".json" }
 
-// serviceWarmRequest names one image to ensure is present (service.warm), and the .image unit
+// appWarmRequest names one image to ensure is present (service.warm), and the .image unit
 // that would obtain it. Both halves are needed because the CHECK is on the ref and the ACTION is
 // on the unit -- and the host, which owns the manifest, is the only side that knows the pairing.
-type serviceWarmRequest struct {
+type appWarmRequest struct {
 	Unit string `json:"unit"`
 	Ref  string `json:"ref"`
 }
@@ -840,11 +840,11 @@ type hostnameRequest struct {
 // snapshot count). Both empty on a witness -> only the volume-independent metrics come back, which
 // is exactly why the host asks REGARDLESS of whether anything is installed.
 type resourcesRequest struct {
-	// Services pairs each app's name with the unit whose footprint IS that app's. The
+	// Apps pairs each app's name with the unit whose footprint IS that app's. The
 	// host owns the pairing because it owns the manifest; the guest measures what it is handed
 	// and names nothing itself (logic lives on the host by default).
-	Services []resourceService `json:"services,omitempty"`
-	DataDir  string            `json:"data_dir,omitempty"` // the DRBD data volume mount
+	Apps    []resourceApp `json:"services,omitempty"`
+	DataDir string        `json:"data_dir,omitempty"` // the DRBD data volume mount
 	// Soak adds the reads that only the soak's oracle consumes and that cost real I/O: the two
 	// du walks and the snapshot listing (and the quota tree, which only the oracle reads). A
 	// shipped node never sets it, because this verb runs
@@ -854,8 +854,8 @@ type resourcesRequest struct {
 	Soak bool `json:"soak,omitempty"`
 }
 
-// resourceService is one app to measure: its name, and its serving unit.
-type resourceService struct {
+// resourceApp is one app to measure: its name, and its serving unit.
+type resourceApp struct {
 	Name string `json:"name"`
 	Unit string `json:"unit"`
 }
@@ -1042,13 +1042,13 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return string(out), nil
-		case verbServiceStart:
+		case verbAppStart:
 			req, err := unitReq(payload)
 			if err != nil {
 				return nil, err
 			}
 			return nil, run("systemctl", "start", req.Unit)
-		case verbServiceStop:
+		case verbAppStop:
 			req, err := unitReq(payload)
 			if err != nil {
 				return nil, err
@@ -1058,7 +1058,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// VIP (the promoter is separately paused). Correct by construction --
 			// no dependence on drbd-reactor's exact systemd dependency directives.
 			return nil, run("systemctl", "--job-mode=ignore-dependencies", "stop", req.Unit)
-		case verbServiceActive:
+		case verbAppActive:
 			req, err := unitReq(payload)
 			if err != nil {
 				return nil, err
@@ -1067,7 +1067,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// word regardless -- so trust the word, not the exit code.
 			out, _ := x.Run(ctx, "systemctl", "is-active", req.Unit)
 			return strings.TrimSpace(string(out)) == "active", nil
-		case verbServiceHealth:
+		case verbAppHealth:
 			var req healthRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
@@ -1078,8 +1078,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// net.Dial HTTP/1.0 GET keeps the guest binary free of net/http + the TLS stack the
 			// guest main deliberately keeps out of its own code. 200 == healthy; any error == not.
 			return probeHTTPOK(ctx, req.URL), nil
-		case verbServiceHealthOf:
-			var req serviceRequest
+		case verbAppHealthOf:
+			var req appRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
@@ -1094,7 +1094,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// the install gate -- the first is worth retrying until the deadline, the second is
 			// the thing being measured -- and collapsing them would revert an install because a
 			// table was written a moment late.
-			return serviceHealth(ctx, x, req.Service)
+			return appHealth(ctx, x, req.App)
 		case verbDataMember:
 			req, err := snapshotReq(payload)
 			if err != nil {
@@ -1203,20 +1203,20 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return nil, run("mv", staged, req.DataDir)
-		case verbServiceRender:
-			var req serviceRenderRequest
+		case verbAppRender:
+			var req appRenderRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			return nil, renderService(ctx, x, run, req)
-		case verbServiceProvision:
-			var req serviceProvisionRequest
+			return nil, renderApp(ctx, x, run, req)
+		case verbAppProvision:
+			var req appProvisionRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			return nil, provisionService(ctx, x, run, req)
-		case verbServiceWarm:
-			var req serviceWarmRequest
+			return nil, provisionApp(ctx, x, run, req)
+		case verbAppWarm:
+			var req appWarmRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
@@ -1225,28 +1225,28 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// The exists-or-pull rule and why it is safe are argued there.
 			return nil, warmImage(ctx, x, req.Unit, req.Ref)
 		case verbDataMembers:
-			var req serviceRequest
+			var req appRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			return listMembers(ctx, x, req.Service)
+			return listMembers(ctx, x, req.App)
 		case verbStorageUsage:
-			var req serviceRequest
+			var req appRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			return appUsage(ctx, x, req.Service, time.Now())
+			return appUsage(ctx, x, req.App, time.Now())
 		case verbCacheEmpty:
-			var req serviceRequest
+			var req appRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			if err := safeUnitName(req.Service); err != nil {
+			if err := safeUnitName(req.App); err != nil {
 				return nil, err
 			}
-			return nil, clearCache(ctx, x, run, req.Service)
+			return nil, clearCache(ctx, x, run, req.App)
 		case verbImageRemove:
-			var req serviceWarmRequest
+			var req appWarmRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
@@ -1269,7 +1269,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			}
 			return nil, nil
 		case verbImageEnsure:
-			var req serviceWarmRequest
+			var req appWarmRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
@@ -1487,38 +1487,38 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, fmt.Errorf("%s: %s does not parse: %w", verbMosquittoProbe, mosquitto.Name, err)
 			}
 			return mosquitto.Probe(ctx, x, quadlet.ContainerName(m.Name, m.Primary().Name), req.Token)
-		case verbServiceConverge:
+		case verbAppConverge:
 			// The input is the volume, which is the point -- a caller that could name what to
 			// converge TO would be the node-was-told model this replaces. The one thing a caller
 			// may name is the install it is running RIGHT NOW, whose staged manifest is then the
 			// one rendered for that app (staging.go); every other staged install is held
 			// back. It ANSWERS with the apps it could not prepare, having started every
 			// other one -- see Converge on why the two callers need opposite things from that list.
-			var req serviceConvergeRequest
+			var req appConvergeRequest
 			if len(payload) > 0 {
 				if err := json.Unmarshal(payload, &req); err != nil {
 					return nil, err
 				}
 			}
 			return Converge(ctx, x, req.Live)
-		case verbServiceStage:
-			var req serviceStageRequest
+		case verbAppStage:
+			var req appStageRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			return nil, stageService(ctx, x, run, req)
-		case verbServiceCommit, verbServiceDiscard:
-			var req serviceInstalledRequest
+			return nil, stageApp(ctx, x, run, req)
+		case verbAppCommit, verbAppDiscard:
+			var req appInstalledRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			if verb == verbServiceCommit {
-				return nil, commitService(ctx, x, run, req.Name)
+			if verb == verbAppCommit {
+				return nil, commitApp(ctx, x, run, req.Name)
 			}
-			return nil, discardService(ctx, x, run, req.Name)
-		case verbServicePending:
+			return nil, discardApp(ctx, x, run, req.Name)
+		case verbAppPending:
 			return pendingInstalls(ctx, x)
-		case verbServiceList:
+		case verbAppList:
 			// The same listing converge itself renders from, so what the host learns a node runs
 			// and what the node actually renders cannot drift: one reader, one directory. Names
 			// carry the `.json` suffix on disk; the caller wants app names.
@@ -1531,31 +1531,31 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				out = append(out, strings.TrimSuffix(n, ".json"))
 			}
 			return out, nil
-		case verbServicePulling:
-			var req servicePullingRequest
+		case verbAppPulling:
+			var req appPullingRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			if err := safeUnitName(req.Service); err != nil { // the name becomes a path element
+			if err := safeUnitName(req.App); err != nil { // the name becomes a path element
 				return nil, err
 			}
-			path := dashboard.PullPath(req.Service)
+			path := dashboard.PullPath(req.App)
 			if req.Done {
 				// Absent is the state; a file that was never there is not an error.
 				if _, err := x.Run(ctx, "rm", "-f", path); err != nil {
-					return nil, fmt.Errorf("%s: %w", verbServicePulling, err)
+					return nil, fmt.Errorf("%s: %w", verbAppPulling, err)
 				}
 				return nil, nil
 			}
-			raw, err := json.Marshal(dashboard.Pull{Service: req.Service, Size: req.Size, InstalledSize: req.InstalledSize, Started: time.Now().UTC()})
+			raw, err := json.Marshal(dashboard.Pull{App: req.App, Size: req.Size, InstalledSize: req.InstalledSize, Started: time.Now().UTC()})
 			if err != nil {
 				return nil, err
 			}
 			if _, err := x.Run(ctx, "mkdir", "-p", "-m", "0700", dashboard.Dir); err != nil {
-				return nil, fmt.Errorf("%s: %w", verbServicePulling, err)
+				return nil, fmt.Errorf("%s: %w", verbAppPulling, err)
 			}
 			if err := x.WriteFile(path, raw); err != nil {
-				return nil, fmt.Errorf("%s: %w", verbServicePulling, err)
+				return nil, fmt.Errorf("%s: %w", verbAppPulling, err)
 			}
 			return nil, nil
 		case verbDeadmanEpisode:
@@ -1607,8 +1607,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return nil, growStateDisk(ctx, x, req.Size)
-		case verbServiceInstalled:
-			var req serviceInstalledRequest
+		case verbAppInstalled:
+			var req appInstalledRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
@@ -2262,18 +2262,18 @@ func durationEnv(k string, def time.Duration) time.Duration {
 // trusting that no host-side regression ever produces a "../" .
 func safeUnitName(n string) error {
 	if n == "" || strings.ContainsAny(n, `/\`) || strings.Contains(n, "..") {
-		return fmt.Errorf("service: unsafe unit filename %q", n)
+		return fmt.Errorf("app: unsafe unit filename %q", n)
 	}
 	return nil
 }
 
-// renderService materialises the host's quadlet source under quadletDir and reloads systemd —
+// renderApp materialises the host's quadlet source under quadletDir and reloads systemd —
 // the moment podman's generator turns those files into real units, which is what moves unit
 // generation from build time to run time.
 //
 // Node-local by design: quadletDir is on /run, so this must run on EVERY node, not just the
 // Primary. A survivor can start the pod only because the units were rendered there too.
-func renderService(ctx context.Context, x Executor, run func(string, ...string) error, req serviceRenderRequest) error {
+func renderApp(ctx context.Context, x Executor, run func(string, ...string) error, req appRenderRequest) error {
 	if len(req.Files) == 0 {
 		return fmt.Errorf("service.render: no files to write")
 	}
@@ -2306,20 +2306,20 @@ func renderService(ctx context.Context, x Executor, run func(string, ...string) 
 	return run("systemctl", "daemon-reload")
 }
 
-// provisionService creates the app's single btrfs subvolume with plain per-container
+// provisionApp creates the app's single btrfs subvolume with plain per-container
 // subdirectories, and records the manifest as the app's identity.
 //
 // Primary-only: everything it touches is on the replicated volume, which is mounted nowhere else.
 // Idempotent — a re-install onto an existing app must keep its data, so an existing subvolume
 // is reused rather than re-created (re-creating it would silently delete the user's state).
-func provisionService(ctx context.Context, x Executor, run func(string, ...string) error, req serviceProvisionRequest) error {
+func provisionApp(ctx context.Context, x Executor, run func(string, ...string) error, req appProvisionRequest) error {
 	if req.Name == "" || req.DataDir == "" || req.Manifest == "" {
 		return fmt.Errorf("service.provision: need a name, a data dir and a manifest")
 	}
 	if err := safeUnitName(req.Name); err != nil { // the name becomes a path element
 		return err
 	}
-	if err := ensureServiceData(ctx, x, run, req.DataDir, req.Subdirs); err != nil {
+	if err := ensureAppData(ctx, x, run, req.DataDir, req.Subdirs); err != nil {
 		return err
 	}
 	pin := manifestPath(req.Name)
@@ -2331,7 +2331,7 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 	// upgrade quiesced it before snapshotting, and a restore has just materialised a member over
 	// it. Without this, the first member after any of the three would read as crash-consistent —
 	// true of none of them, and loudest on the one path where a household is already anxious.
-	if err := RecordServiceStop(ctx, x, req.Name, "success"); err != nil {
+	if err := RecordAppStop(ctx, x, req.Name, "success"); err != nil {
 		log.Printf("service.provision %s: could not record the volume as flushed (%v); its next member will read as crash-consistent", req.Name, err)
 	}
 	// Flush to the DRBD backing so the identity actually replicates BEFORE a failover relies on
@@ -2342,13 +2342,13 @@ func provisionService(ctx context.Context, x Executor, run func(string, ...strin
 	return err
 }
 
-// ensureServiceData creates an app's areas and the directories its containers mount in them,
+// ensureAppData creates an app's areas and the directories its containers mount in them,
 // each subdir `<tier>/<dir>` (quadlet.Subdirs), reusing an existing area (re-creating it would
 // silently delete the household's state), and the manifest directory beside them.
 //
 // AN AREA EXISTS ONLY IN A TIER THE APP MOUNTS -- and in the data tier always, where its History
 // and its manifest's record hang. Each is born into its group of the quota tree (qgroup.go).
-func ensureServiceData(ctx context.Context, x Executor, run func(string, ...string) error, dataDir string, subdirs []string) error {
+func ensureAppData(ctx context.Context, x Executor, run func(string, ...string) error, dataDir string, subdirs []string) error {
 	_, app, err := areaOf(dataDir)
 	if err != nil {
 		return err
@@ -2421,8 +2421,8 @@ func clearCache(ctx context.Context, x Executor, run func(string, ...string) err
 // cacheAtStart empties the app's cache as it starts, when its space is short (spaceShort). Only
 // at a start that happens anyway -- no restart is forced for it -- and only for an app of one
 // container: a second may be running, holding the cache open.
-func cacheAtStart(ctx context.Context, x Executor, service string) (string, error) {
-	raw, err := x.ReadFile(manifestPath(service))
+func cacheAtStart(ctx context.Context, x Executor, app string) (string, error) {
+	raw, err := x.ReadFile(manifestPath(app))
 	if err != nil {
 		return "", fmt.Errorf("read the running manifest: %w", err)
 	}
@@ -2437,7 +2437,7 @@ func cacheAtStart(ctx context.Context, x Executor, service string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if g, ok := tree[appQgroup(tierData, service)]; !ok || !spaceShort(g) {
+	if g, ok := tree[appQgroup(tierData, app)]; !ok || !spaceShort(g) {
 		return "", nil
 	}
 	run := func(name string, args ...string) error {
@@ -2446,7 +2446,7 @@ func cacheAtStart(ctx context.Context, x Executor, service string) (string, erro
 		}
 		return nil
 	}
-	if err := clearCache(ctx, x, run, service); err != nil {
+	if err := clearCache(ctx, x, run, app); err != nil {
 		return "", err
 	}
 	return "its space is short: emptied its cache", nil
@@ -2467,11 +2467,11 @@ func gatherResources(ctx context.Context, x Executor, req resourcesRequest) tele
 	// One entry per app, in the order the host sent them -- so the oracle can name WHICH
 	// app leaked or crash-looped. An app whose unit is unnamed is skipped rather than
 	// measured as zero: an unmeasured app and an idle one must not read the same.
-	for _, s := range req.Services {
+	for _, s := range req.Apps {
 		if s.Unit == "" {
 			continue
 		}
-		sr := telemetry.ServiceResources{Name: s.Name}
+		sr := telemetry.AppResources{Name: s.Name}
 		// The app's memory is the UNIT'S CGROUP, not its main process. An app runs as a
 		// container, so the unit's MainPID is podman's supervisor and the workload lives in a child
 		// cgroup: /proc/<MainPID>/status reported ~2.5 MB for a Home Assistant, a number that is
@@ -3016,31 +3016,31 @@ func (g *Client) Cluster(ctx context.Context, resource string) (model.Cluster, e
 	return c, err
 }
 
-// ServiceStart starts the app's systemd unit inside the guest.
-func (g *Client) ServiceStart(ctx context.Context, unit string) error {
-	return g.c.Call(ctx, verbServiceStart, unitRequest{Unit: unit}, nil)
+// AppStart starts the app's systemd unit inside the guest.
+func (g *Client) AppStart(ctx context.Context, unit string) error {
+	return g.c.Call(ctx, verbAppStart, unitRequest{Unit: unit}, nil)
 }
 
-// ServiceRender writes the host-rendered quadlet source into the guest's /run and reloads
+// AppRender writes the host-rendered quadlet source into the guest's /run and reloads
 // systemd, so the generated units exist. Node-local: run this on EVERY node, or a
 // survivor has nothing to start. Stale names the outgoing app's files, removed first.
-func (g *Client) ServiceRender(ctx context.Context, files map[string]string, stale []string) error {
-	return g.c.Call(ctx, verbServiceRender, serviceRenderRequest{Files: files, Stale: stale}, nil)
+func (g *Client) AppRender(ctx context.Context, files map[string]string, stale []string) error {
+	return g.c.Call(ctx, verbAppRender, appRenderRequest{Files: files, Stale: stale}, nil)
 }
 
-// ServiceProvision creates the app's data subvolume + per-container subdirectories and
+// AppProvision creates the app's data subvolume + per-container subdirectories and
 // records the manifest as its identity. PRIMARY ONLY — it all lives on the replicated volume.
 // Idempotent: an existing subvolume is reused, never re-created, so a re-install keeps the data.
-func (g *Client) ServiceProvision(ctx context.Context, name, dataDir string, subdirs []string, manifest string) error {
-	req := serviceProvisionRequest{Name: name, DataDir: dataDir, Subdirs: subdirs, Manifest: manifest}
-	return g.c.Call(ctx, verbServiceProvision, req, nil)
+func (g *Client) AppProvision(ctx context.Context, name, dataDir string, subdirs []string, manifest string) error {
+	req := appProvisionRequest{Name: name, DataDir: dataDir, Subdirs: subdirs, Manifest: manifest}
+	return g.c.Call(ctx, verbAppProvision, req, nil)
 }
 
-// ServiceWarm ensures `ref` is present in the guest's image store, starting `unit` (its .image
+// AppWarm ensures `ref` is present in the guest's image store, starting `unit` (its .image
 // warm unit) ONLY if it is missing. The distinction is the whole point: starting the unit is a
 // registry pull, so an unconditional warm makes every path that calls it require WAN.
-func (g *Client) ServiceWarm(ctx context.Context, unit, ref string) error {
-	return g.c.Call(ctx, verbServiceWarm, serviceWarmRequest{Unit: unit, Ref: ref}, nil)
+func (g *Client) AppWarm(ctx context.Context, unit, ref string) error {
+	return g.c.Call(ctx, verbAppWarm, appWarmRequest{Unit: unit, Ref: ref}, nil)
 }
 
 // HassReadiness samples Home Assistant's per-config-entry setup states from inside the guest --
@@ -3084,9 +3084,9 @@ func (g *Client) DataBackup(ctx context.Context, url, group string, host map[str
 
 // DataBackupRestore puts one app's copy from one night of the backup (a restic snapshot id,
 // or "latest") into the ring as a member, and answers the member's path.
-func (g *Client) DataBackupRestore(ctx context.Context, url, snapshot, service string) (string, error) {
+func (g *Client) DataBackupRestore(ctx context.Context, url, snapshot, app string) (string, error) {
 	var member string
-	err := g.c.Call(ctx, verbDataBackupRestore, backupRestoreRequest{Repository: url, Snapshot: snapshot, Service: service}, &member)
+	err := g.c.Call(ctx, verbDataBackupRestore, backupRestoreRequest{Repository: url, Snapshot: snapshot, App: app}, &member)
 	return member, err
 }
 
@@ -3224,7 +3224,7 @@ func (g *Client) MosquittoProbe(ctx context.Context, token string) (mosquitto.Sa
 	return out, err
 }
 
-// ServiceConverge makes the guest match the volume, in place: every manifest under the replicated
+// AppConverge makes the guest match the volume, in place: every manifest under the replicated
 // `.services/` rendered, warmed and started (converge.go). PRIMARY ONLY in effect --
 // the volume is mounted nowhere else, and a Secondary converges when it promotes, which is the
 // whole design.
@@ -3233,34 +3233,34 @@ func (g *Client) MosquittoProbe(ctx context.Context, token string) (mosquitto.Sa
 // names the install the caller is running now ("" for none): its STAGED manifest is rendered for
 // that app, and every other staged install is held back (staging.go).
 //
-// SupportsServiceConverge gates it: an older guest has no briard-services unit to converge, so a
+// SupportsAppConverge gates it: an older guest has no briard-services unit to converge, so a
 // host must refuse rather than call a verb that guest cannot honour.
-func (g *Client) ServiceConverge(ctx context.Context, live string) ([]string, error) {
+func (g *Client) AppConverge(ctx context.Context, live string) ([]string, error) {
 	var skipped []string
 	// A guest built before converge reported anything answers with no value at all, which decodes
 	// to an empty list -- correctly, since such a guest also has nothing that can be skipped.
-	err := g.c.Call(ctx, verbServiceConverge, serviceConvergeRequest{Live: live}, &skipped)
+	err := g.c.Call(ctx, verbAppConverge, appConvergeRequest{Live: live}, &skipped)
 	return skipped, err
 }
 
-// SupportsServiceConverge reports whether the guest can converge itself to the volume.
-func (g *Client) SupportsServiceConverge() bool { return g.Supports(verbServiceConverge) }
+// SupportsAppConverge reports whether the guest can converge itself to the volume.
+func (g *Client) SupportsAppConverge() bool { return g.Supports(verbAppConverge) }
 
-// ServiceInstalled reads the manifest recorded on the replicated volume for ONE app, or ""
+// AppInstalled reads the manifest recorded on the replicated volume for ONE app, or ""
 // when that app is not installed there. "" is a legitimate answer — the shipped zero-app
 // node, and equally a node running other apps — never an error.
 //
-// SupportsServiceInstalled is the gate the install path checks first: a guest too old to
+// SupportsAppInstalled is the gate the install path checks first: a guest too old to
 // advertise this verb cannot tell one app's identity from another's, so it must be refused
 // rather than driven into overwriting the manifest of whatever it already runs.
 // storageRoot is podman's image store in the guest -- the filesystem a pull fills and the
 // free-space gate measures. Rootful podman's default; the guest image sets no other.
 const storageRoot = "/var/lib/containers/storage"
 
-// servicePullingRequest is service.pulling's argument: record a pull (its sizes), or with Done
+// appPullingRequest is service.pulling's argument: record a pull (its sizes), or with Done
 // clear the record.
-type servicePullingRequest struct {
-	Service       string `json:"service"`
+type appPullingRequest struct {
+	App           string `json:"service"`
 	Size          int64  `json:"size,omitempty"`
 	InstalledSize int64  `json:"installedSize,omitempty"`
 	Done          bool   `json:"done,omitempty"`
@@ -3320,20 +3320,20 @@ func growStateDisk(ctx context.Context, x Executor, size int64) error {
 	return nil
 }
 
-// ServicePulling records an app install's pull for the dashboard -- the manifest's sizes,
+// AppPulling records an app install's pull for the dashboard -- the manifest's sizes,
 // written before the first byte moves.
-func (g *Client) ServicePulling(ctx context.Context, service string, size, installed int64) error {
-	return g.c.Call(ctx, verbServicePulling, servicePullingRequest{Service: service, Size: size, InstalledSize: installed}, nil)
+func (g *Client) AppPulling(ctx context.Context, app string, size, installed int64) error {
+	return g.c.Call(ctx, verbAppPulling, appPullingRequest{App: app, Size: size, InstalledSize: installed}, nil)
 }
 
-// ServicePulled clears that record: the image is present (or the pull is over either way).
-func (g *Client) ServicePulled(ctx context.Context, service string) error {
-	return g.c.Call(ctx, verbServicePulling, servicePullingRequest{Service: service, Done: true}, nil)
+// AppPulled clears that record: the image is present (or the pull is over either way).
+func (g *Client) AppPulled(ctx context.Context, app string) error {
+	return g.c.Call(ctx, verbAppPulling, appPullingRequest{App: app, Done: true}, nil)
 }
 
-// SupportsServicePulling reports whether the guest keeps the pull record; an older guest shows
+// SupportsAppPulling reports whether the guest keeps the pull record; an older guest shows
 // the household an install with no bar, which is not a reason to refuse it.
-func (g *Client) SupportsServicePulling() bool { return g.Supports(verbServicePulling) }
+func (g *Client) SupportsAppPulling() bool { return g.Supports(verbAppPulling) }
 
 // StorageFree reports the image store's filesystem: free and total bytes.
 func (g *Client) StorageFree(ctx context.Context) (free, total int64, err error) {
@@ -3374,31 +3374,31 @@ func (g *Client) StorageGrow(ctx context.Context, size int64) error {
 // SupportsStorageGrow reports whether the guest can fill a grown state disk.
 func (g *Client) SupportsStorageGrow() bool { return g.Supports(verbStorageGrow) }
 
-func (g *Client) ServiceInstalled(ctx context.Context, name string) (string, error) {
+func (g *Client) AppInstalled(ctx context.Context, name string) (string, error) {
 	var s string
-	err := g.c.Call(ctx, verbServiceInstalled, serviceInstalledRequest{Name: name}, &s)
+	err := g.c.Call(ctx, verbAppInstalled, appInstalledRequest{Name: name}, &s)
 	return s, err
 }
 
-// SupportsServiceInstalled reports whether the guest can name an app when reading or recording
+// SupportsAppInstalled reports whether the guest can name an app when reading or recording
 // its identity on the volume — the per-app split of what used to be one file.
-func (g *Client) SupportsServiceInstalled() bool { return g.Supports(verbServiceInstalled) }
+func (g *Client) SupportsAppInstalled() bool { return g.Supports(verbAppInstalled) }
 
-// ServiceList names the apps recorded on the replicated volume. Empty is a legitimate answer
+// AppList names the apps recorded on the replicated volume. Empty is a legitimate answer
 // (the shipped zero-app node), never an error.
 //
 // It is how a node that never installed anything can still say what it runs: converge renders from
 // the volume at promotion, so on a survivor the volume is the only place the truth exists.
-func (g *Client) ServiceList(ctx context.Context) ([]string, error) {
+func (g *Client) AppList(ctx context.Context) ([]string, error) {
 	var names []string
-	err := g.c.Call(ctx, verbServiceList, nil, &names)
+	err := g.c.Call(ctx, verbAppList, nil, &names)
 	return names, err
 }
 
-// SupportsServiceList reports whether the guest can name what the volume carries. A guest without
+// SupportsAppList reports whether the guest can name what the volume carries. A guest without
 // it leaves a converged survivor reporting only what this host installed itself -- which is
 // nothing, on a node that promoted into an app someone else installed.
-func (g *Client) SupportsServiceList() bool { return g.Supports(verbServiceList) }
+func (g *Client) SupportsAppList() bool { return g.Supports(verbAppList) }
 
 // Resources reads the appliance's resource telemetry -- per-app RSS/fds/restarts, load, and
 // the disk sub-series -- for the soak's trend oracle. services pairs each app's name with the
@@ -3406,18 +3406,18 @@ func (g *Client) SupportsServiceList() bool { return g.Supports(verbServiceList)
 // a zero-app node, which still get every node-scoped series. soak adds the soak-only reads
 // (resourcesRequest.Soak). Best-effort on the guest, so a partial read comes back as a struct
 // with the unread fields zero, not an error.
-func (g *Client) Resources(ctx context.Context, services map[string]string, dataDir string, soak bool) (telemetry.NodeResources, error) {
+func (g *Client) Resources(ctx context.Context, apps map[string]string, dataDir string, soak bool) (telemetry.NodeResources, error) {
 	var r telemetry.NodeResources
 	req := resourcesRequest{DataDir: dataDir, Soak: soak}
 	// Sorted, so a run's forensics read in the same order every cycle -- map order would shuffle
 	// the series between samples for no reason.
-	names := make([]string, 0, len(services))
-	for name := range services {
+	names := make([]string, 0, len(apps))
+	for name := range apps {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		req.Services = append(req.Services, resourceService{Name: name, Unit: services[name]})
+		req.Apps = append(req.Apps, resourceApp{Name: name, Unit: apps[name]})
 	}
 	err := g.c.Call(ctx, verbResources, req, &r)
 	return r, err
@@ -3438,31 +3438,31 @@ func (g *Client) ReadCert(ctx context.Context) (string, error) {
 	return pem, err
 }
 
-// ServiceStop stops the app's unit -- the quiesce step before a snapshot.
-func (g *Client) ServiceStop(ctx context.Context, unit string) error {
-	return g.c.Call(ctx, verbServiceStop, unitRequest{Unit: unit}, nil)
+// AppStop stops the app's unit -- the quiesce step before a snapshot.
+func (g *Client) AppStop(ctx context.Context, unit string) error {
+	return g.c.Call(ctx, verbAppStop, unitRequest{Unit: unit}, nil)
 }
 
-// ServiceActive reports whether the app's unit is active (the Running half of the
+// AppActive reports whether the app's unit is active (the Running half of the
 // health-gate; readiness is probed host-side against the app's health endpoint).
-func (g *Client) ServiceActive(ctx context.Context, unit string) (bool, error) {
+func (g *Client) AppActive(ctx context.Context, unit string) (bool, error) {
 	var active bool
-	err := g.c.Call(ctx, verbServiceActive, unitRequest{Unit: unit}, &active)
+	err := g.c.Call(ctx, verbAppActive, unitRequest{Unit: unit}, &active)
 	return active, err
 }
 
-// ServiceHealth asks the guest to GET the app's health URL from inside itself and report 200
+// AppHealth asks the guest to GET the app's health URL from inside itself and report 200
 // (the Ready half of the health-gate). Probing in-guest — not host->VIP over the LAN — keeps the
 // readiness check working under a networking substrate where the host can't reach the guest's VIP
 // (macvtap). Callers that need the legacy host-side behaviour on an OLD guest fall back when this
 // returns an error (an unknown-verb error from a guest built before this verb existed).
-func (g *Client) ServiceHealth(ctx context.Context, url string) (bool, error) {
+func (g *Client) AppHealth(ctx context.Context, url string) (bool, error) {
 	var ok bool
-	err := g.c.Call(ctx, verbServiceHealth, healthRequest{URL: url}, &ok)
+	err := g.c.Call(ctx, verbAppHealth, healthRequest{URL: url}, &ok)
 	return ok, err
 }
 
-// ServiceHealthOf asks the guest for ONE NAMED APP's health, letting the guest resolve
+// AppHealthOf asks the guest for ONE NAMED APP's health, letting the guest resolve
 // the address from its own routing table.
 //
 // It replaces callers that built `http://127.0.0.1:<port>` from the manifest. That URL is correct
@@ -3472,9 +3472,9 @@ func (g *Client) ServiceHealth(ctx context.Context, url string) (bool, error) {
 //
 // An unresolvable app returns an ERROR, never a verdict: "I cannot find it" must not be read as
 // "it is broken" by a gate that reverts installs.
-func (g *Client) ServiceHealthOf(ctx context.Context, service string) (services.Health, error) {
-	var h services.Health
-	err := g.c.Call(ctx, verbServiceHealthOf, serviceRequest{Service: service}, &h)
+func (g *Client) AppHealthOf(ctx context.Context, app string) (apps.Health, error) {
+	var h apps.Health
+	err := g.c.Call(ctx, verbAppHealthOf, appRequest{App: app}, &h)
 	return h, err
 }
 
@@ -3501,13 +3501,13 @@ func (g *Client) SupportsSnapshotMember() bool { return g.Supports(verbDataMembe
 // ⚠️ The sidecar the host renders must say `crash`. The guest upgrades it when the app held
 // and never the other way round, so everything that can go wrong in between leaves the member
 // telling the weaker truth.
-func (g *Client) QuiescedSnapshot(ctx context.Context, service, dataDir, dest, sidecar string) (bool, string, error) {
+func (g *Client) QuiescedSnapshot(ctx context.Context, app, dataDir, dest, sidecar string) (bool, string, error) {
 	var out struct {
 		Held bool   `json:"held"`
 		Why  string `json:"why"`
 	}
 	err := g.c.Call(ctx, verbDataMemberQuiesced,
-		snapshotRequest{DataDir: dataDir, Path: dest, Sidecar: sidecar, Service: service}, &out)
+		snapshotRequest{DataDir: dataDir, Path: dest, Sidecar: sidecar, App: app}, &out)
 	return out.Held, out.Why, err
 }
 
@@ -3619,7 +3619,7 @@ type BringUpSpec struct {
 	// Resource/Diskless/FreshInit trio, which described the same three facts one verb at a time.
 	Storage  nodestorage.Spec
 	Promoter []string // drbd-reactor promoter units in start order; nil on a witness
-	// ServiceUnits re-materialises a runtime-installed app's quadlet files before the
+	// AppUnits re-materialises a runtime-installed app's quadlet files before the
 	// promoter is started. They live on tmpfs inside the guest, so a reboot erases them
 	// while the host's manifest cache survives — and Promoter above then names units that do not
 	// exist. Empty on a node with no runtime-installed app, which is the shipped state.
@@ -3628,8 +3628,8 @@ type BringUpSpec struct {
 	// field exists: ReactorStart is the last thing below, so by the time the caller has its
 	// channel back the promoter is already trying to start the chain. Units must exist before
 	// anything can be asked to start them.
-	ServiceUnits map[string]string
-	// ServiceImages maps each .image warm unit to the image REF it obtains, for every installed
+	AppUnits map[string]string
+	// AppImages maps each .image warm unit to the image REF it obtains, for every installed
 	// app. NOTHING else starts these units -- their [Install] was removed 2026-08-29, so systemd
 	// never touches them -- and the containers' Pull=never would fail the chain at promotion
 	// instead of fetching. Warming here is what makes a reboot land on a running app.
@@ -3642,7 +3642,7 @@ type BringUpSpec struct {
 	// WAN failed bring-up outright. That is the RUNNING half of the doctrine -- installing
 	// needs network, running and failover never do -- broken on the path that runs after every
 	// reboot. The ref is what lets the guest answer "is it already here?" before pulling.
-	ServiceImages map[string]string
+	AppImages map[string]string
 }
 
 // BringUp performs the agent-owned bring-up: render + drop the DRBD
@@ -3671,19 +3671,19 @@ func (g *Client) BringUp(ctx context.Context, spec BringUpSpec) error {
 	// promoter chain naming units that do not exist, which fails later and less legibly. (The
 	// soft-failure rule lives one level up, in reading the cache at all — an unusable cache means
 	// "nothing installed", and this code never runs.)
-	if len(spec.ServiceUnits) > 0 {
-		if err := g.ServiceRender(ctx, spec.ServiceUnits, nil); err != nil {
-			return fmt.Errorf("re-render installed service units: %w", err)
+	if len(spec.AppUnits) > 0 {
+		if err := g.AppRender(ctx, spec.AppUnits, nil); err != nil {
+			return fmt.Errorf("re-render installed app units: %w", err)
 		}
 		// Sorted so the log reads the same on every boot; the images are independent, so the
 		// order is presentation, not semantics.
-		units := make([]string, 0, len(spec.ServiceImages))
-		for u := range spec.ServiceImages {
+		units := make([]string, 0, len(spec.AppImages))
+		for u := range spec.AppImages {
 			units = append(units, u)
 		}
 		sort.Strings(units)
 		for _, u := range units {
-			if err := g.ServiceWarm(ctx, u, spec.ServiceImages[u]); err != nil {
+			if err := g.AppWarm(ctx, u, spec.AppImages[u]); err != nil {
 				return fmt.Errorf("warm image unit %s: %w", u, err)
 			}
 		}
@@ -3795,12 +3795,12 @@ func BringUpGuest(ctx context.Context, sock string, spec BringUpSpec) error {
 
 // EnsureImage makes one image ref resident, pulling only if it is missing.
 //
-// ⚠️ IT IS NOT ServiceWarm, and the difference is who pays for a failure. A pull converge cannot
+// ⚠️ IT IS NOT AppWarm, and the difference is who pays for a failure. A pull converge cannot
 // do takes the VIP down and says so (the running-never-needs-network doctrine, upheld by failing); a pull a RESTORE
 // cannot do cancels the restore and leaves the household exactly where it was. This is the verb
 // for the second kind, which is why it asks by REF and needs nothing rendered.
 func (g *Client) EnsureImage(ctx context.Context, ref string) error {
-	return g.c.Call(ctx, verbImageEnsure, serviceWarmRequest{Ref: ref}, nil)
+	return g.c.Call(ctx, verbImageEnsure, appWarmRequest{Ref: ref}, nil)
 }
 
 // SupportsImageEnsure reports whether this guest can be asked for an image by ref alone.
@@ -3810,7 +3810,7 @@ func (g *Client) SupportsImageEnsure() bool { return g.Supports(verbImageEnsure)
 // says the guest declined because its own OS image carries it (stagedImagesPath).
 func (g *Client) RemoveImage(ctx context.Context, ref string) (kept bool, err error) {
 	var r imageRemoveReply
-	err = g.c.Call(ctx, verbImageRemove, serviceWarmRequest{Ref: ref}, &r)
+	err = g.c.Call(ctx, verbImageRemove, appWarmRequest{Ref: ref}, &r)
 	return r.Kept, err
 }
 
@@ -3828,9 +3828,9 @@ func (g *Client) SupportsImageRemove() bool { return g.Supports(verbImageRemove)
 
 // Members lists one app's ring, oldest first: every member with the sidecar beside it. A
 // member whose sidecar cannot be read is omitted rather than offered.
-func (g *Client) Members(ctx context.Context, service string) ([]quadlet.SnapshotEntry, error) {
+func (g *Client) Members(ctx context.Context, app string) ([]quadlet.SnapshotEntry, error) {
 	var out []quadlet.SnapshotEntry
-	err := g.c.Call(ctx, verbDataMembers, serviceRequest{Service: service}, &out)
+	err := g.c.Call(ctx, verbDataMembers, appRequest{App: app}, &out)
 	return out, err
 }
 
@@ -3841,7 +3841,7 @@ func (g *Client) SupportsMembers() bool { return g.Supports(verbDataMembers) }
 // one is stale.
 func (g *Client) Usage(ctx context.Context, app string) (dashboard.AppUsage, error) {
 	var u dashboard.AppUsage
-	err := g.c.Call(ctx, verbStorageUsage, serviceRequest{Service: app}, &u)
+	err := g.c.Call(ctx, verbStorageUsage, appRequest{App: app}, &u)
 	return u, err
 }
 
@@ -3850,7 +3850,7 @@ func (g *Client) SupportsUsage() bool { return g.Supports(verbStorageUsage) }
 
 // EmptyCache empties one app's cache; the caller has stopped the app.
 func (g *Client) EmptyCache(ctx context.Context, app string) error {
-	return g.c.Call(ctx, verbCacheEmpty, serviceRequest{Service: app}, nil)
+	return g.c.Call(ctx, verbCacheEmpty, appRequest{App: app}, nil)
 }
 
 // SupportsEmptyCache reports whether this guest can empty an app's cache.

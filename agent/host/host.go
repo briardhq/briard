@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	apps "briard.io/agent/apps"
 	"briard.io/agent/cloud"
 	"briard.io/agent/drbd"
 	"briard.io/agent/guest"
@@ -39,7 +40,6 @@ import (
 	"briard.io/agent/quadlet"
 	"briard.io/agent/reportcard"
 	"briard.io/agent/selfupdate"
-	"briard.io/agent/services"
 	"briard.io/shared/api"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/model"
@@ -219,18 +219,18 @@ type Config struct {
 	Role      model.Role    // anchor / diskless ("" reserved for plain machines)
 	Resource  drbd.Resource // the DRBD resource this node serves
 	Promoter  []string      // drbd-reactor units in start order; nil on a witness
-	// ServiceRendered is the UNION of every runtime-installed app's units, re-derived from
+	// AppRendered is the UNION of every runtime-installed app's units, re-derived from
 	// the node-local manifest cache at start-up and handed to bring-up so they exist before the
 	// promoter looks for them. Set alongside Promoter by installedService, for the same reason and
 	// from the same source; zero when no app is installed.
 	//
-	// A union rather than a per-app value because its single consumer (restoreService) wants
+	// A union rather than a per-app value because its single consumer (restoreApp) wants
 	// exactly that: every unit file to write back, every image unit to re-warm, after a guest
 	// reboot emptied /run. Unit filenames are app-prefixed by the renderer, so the merge
 	// cannot collide.
-	ServiceRendered quadlet.Rendered
-	Diskless        bool // this node is a diskless witness
-	FreshInit       bool // seed a fresh cluster (skip initial sync); exactly one node
+	AppRendered quadlet.Rendered
+	Diskless    bool // this node is a diskless witness
+	FreshInit   bool // seed a fresh cluster (skip initial sync); exactly one node
 	// DataEncryption is this node's storage policy: what the guest does when it FORMATS the
 	// data tier. "auto" (the default) encrypts wherever the guest's CPU has AES
 	// and runs in the clear where it does not; "off" is somebody deciding otherwise; "adiantum"
@@ -337,11 +337,11 @@ type Config struct {
 	// singular. Ordering is by name and therefore deterministic, which is all that cut owed:
 	// making the order a DEPENDENCY order is a separate decision, and needs a second real app to be
 	// decided against.
-	Services       []model.ServiceSpec
+	Apps           []model.AppSpec
 	ReactorSnippet string
 
 	// Runtime app install. CatalogURL is the signed catalog root;
-	// ServiceCache is the DIRECTORY where installed manifests are kept NODE-LOCALLY, one file
+	// AppCache is the DIRECTORY where installed manifests are kept NODE-LOCALLY, one file
 	// per app, so the agent can rebuild the promoter chain at bring-up — before promotion,
 	// when the replicated copies on the volume are not yet mountable. "" disables either.
 	//
@@ -349,8 +349,8 @@ type Config struct {
 	// stored VERBATIM: a manifest's content hash IS the app's identity (shared/manifest), so
 	// re-encoding a set into one array file would destroy the identity of every member. One file
 	// of untouched bytes per app keeps the hash true and makes install/uninstall a file op.
-	CatalogURL   string
-	ServiceCache string
+	CatalogURL string
+	AppCache   string
 
 	// BackupDir is the household's backup folder: the restic repository the host serves the
 	// guest (backupstore.go). The installer creates it in the installing person's home and says
@@ -358,7 +358,7 @@ type Config struct {
 	BackupDir string
 
 	// MeshCache is where a runtime pairing's MeshSpec is kept NODE-LOCALLY, for the same reason
-	// ServiceCache exists and to close the same hole one step further out.
+	// AppCache exists and to close the same hole one step further out.
 	//
 	// The mesh arrives as a cloud directive and is applied to the guest, which writes it into the
 	// guest's /etc. But bring-up REWRITES the guest's .res from cfg.Resource on every pass, and
@@ -511,24 +511,24 @@ type statusReader interface {
 	// rides, so this reads strictly more from the same call rather than costing another.
 	Cluster(ctx context.Context, resource string) (model.Cluster, error)
 
-	// ServiceHealth probes the health URL from INSIDE the guest (macvtap-safe: the
+	// AppHealth probes the health URL from INSIDE the guest (macvtap-safe: the
 	// host may not be able to reach the VIP). An error (e.g. an old guest that predates the
 	// verb) falls the caller back to the legacy host-side probeHealth.
-	ServiceHealth(ctx context.Context, url string) (bool, error)
-	// ServiceHealthOf probes ONE named app, the guest resolving its address from the routing
-	// table it converged. It answers a different question from ServiceHealth above: that
+	AppHealth(ctx context.Context, url string) (bool, error)
+	// AppHealthOf probes ONE named app, the guest resolving its address from the routing
+	// table it converged. It answers a different question from AppHealth above: that
 	// one is the NODE's front door, this one is an app's own endpoint, and the observe loop
 	// needs both because a node can be up while an app on it is not.
-	ServiceHealthOf(ctx context.Context, service string) (services.Health, error)
+	AppHealthOf(ctx context.Context, app string) (apps.Health, error)
 	// VIP reads the address the service NIC actually holds, so the loop can probe an address
 	// the host did not choose (a lease acquired by DHCP inside the guest). Resolution is
 	// guest.ResolveHealthURL's — the observe loop and the readiness gate must answer "what do
 	// we probe?" the same way, and one rule in two packages is two rules waiting to disagree.
 	guest.VIPReader
-	// ServiceActive answers "is this unit up?" for ONE app, which is what per-app health
+	// AppActive answers "is this unit up?" for ONE app, which is what per-app health
 	// rides on. It is here rather than derived from Healthy because Healthy is the
 	// front door at the VIP -- which answers 200 on a node running no apps at all.
-	ServiceActive(ctx context.Context, unit string) (bool, error)
+	AppActive(ctx context.Context, unit string) (bool, error)
 	// MDNSPublished reads the name avahi ACTUALLY published, for exactly the reason VIP reads the
 	// address off the interface: the value we asked for is not evidence of the value in force.
 	// avahi conflict-renames on a collision silently, so two flocks in one house can even SWAP
@@ -547,7 +547,7 @@ type statusReader interface {
 type guestReader interface {
 	statusReader
 	// What the VOLUME says this node runs -- the truth on a node that promoted into somebody
-	// else's install, where the node-local cache is empty by construction (adoptVolumeServices).
+	// else's install, where the node-local cache is empty by construction (adoptVolumeApps).
 	volumeReader
 	// Tonight's ring member (nightly.go): the observe loop is the cadence, so it is also
 	// what carries the one call a night that takes one.
@@ -559,7 +559,7 @@ type guestReader interface {
 	// ...and the files tier's five-minute tick (clocksample.go).
 	filesTicker
 	SystemPath(ctx context.Context) (string, error)
-	Resources(ctx context.Context, services map[string]string, dataDir string, soak bool) (telemetry.NodeResources, error)
+	Resources(ctx context.Context, apps map[string]string, dataDir string, soak bool) (telemetry.NodeResources, error)
 }
 
 // Run boots the guest, drives bring-up to quorate primary (a witness just comes
@@ -661,13 +661,13 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// comes from the VOLUME at promotion, not from this cache. What the cache is still for is
 	// everything the HOST needs before (or without) promotion -- which apps to measure and
 	// report, and the units to re-render so a standby is warm.
-	if specs, rendered, ok := cfg.installedServices(logf); ok {
+	if specs, rendered, ok := cfg.installedApps(logf); ok {
 		names := make([]string, 0, len(specs))
 		for _, s := range specs {
 			names = append(names, s.Name)
 		}
-		logf("installed services %v restored from cache", names)
-		cfg.Services, cfg.ServiceRendered = specs, rendered
+		logf("installed apps %v restored from cache", names)
+		cfg.Apps, cfg.AppRendered = specs, rendered
 	}
 	// A mesh joined at RUNTIME is not described by the environment either, and it is the more
 	// dangerous of the two to forget: bring-up REWRITES the guest's .res from cfg.Resource every
@@ -859,7 +859,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	}
 
 	// EVERY node with a guest gets the Manager above, not only one running an app. Gating its
-	// construction on `cfg.hasService()` would leave `up == nil` on a zero-app node, and
+	// construction on `cfg.hasApp()` would leave `up == nil` on a zero-app node, and
 	// applyDirective would then refuse every OS upgrade with "no target/upgrader on this node" —
 	// i.e. the shipped state, and the whole free tier, could not take an OS update. A system
 	// closure is a property of the NODE; what happens to run on top of it cannot decide whether
@@ -905,7 +905,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// aggregator stays nil and observe skips the upload. Built once here so it survives the
 	// reconnect loop (like the alerter).
 	var agg *metricsAggregator
-	if rep != nil && cfg.hasService() {
+	if rep != nil && cfg.hasApp() {
 		agg = newMetricsAggregator(cfg.MetricsWindow, logf)
 	}
 
@@ -1220,8 +1220,8 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		// The guest's /run is tmpfs, so a reboot took these with it while the host's cache kept
 		// the manifest. Re-rendered here, before ReactorStart, or the promoter starts a chain
 		// whose units are gone.
-		ServiceUnits:  cfg.ServiceRendered.Files,
-		ServiceImages: cfg.ServiceRendered.ImageRefs,
+		AppUnits:  cfg.AppRendered.Files,
+		AppImages: cfg.AppRendered.ImageRefs,
 	}
 	// Establish the control channel. On a fresh launch, wait patiently for qemu to bind the
 	// socket rather than exiting on the first "connection refused": exiting crash-loops
@@ -1481,7 +1481,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// How long the host's clock has gone unsynchronised; lives here for the same reason.
 	ca := &clockAlerter{read: reportcard.NTPSynced}
 	// How long each installed app has been down (alert.go); same reason.
-	sa := &serviceAlerter{}
+	sa := &appAlerter{}
 	// When the host disk holding this node's disks runs short (disks.go); same reason.
 	da := &diskAlerter{read: reportcard.DiskFreeMB}
 	// The health of the disks under this node's data (disks.go); same reason.
@@ -1505,7 +1505,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	catalogPushed := "" // the page's catalog view, likewise (catalog.go)
 	cycle := 0
 	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
-	// runs can differ from what this host remembers installing -- see adoptVolumeServices. Starts
+	// runs can differ from what this host remembers installing -- see adoptVolumeApps. Starts
 	// false, so a node that comes up already Primary reads the volume on its first cycle.
 	wasPrimary := false
 	// An install the volume holds STAGED and never committed is undone once this node serves
@@ -1604,29 +1604,29 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			if primary {
 				cfg.beat.Beat()
 				actx, acancel := context.WithTimeout(ctx, 10*time.Second) // a list and one manifest per app
-				cfg.adoptVolumeServices(actx, r, logf)
+				cfg.adoptVolumeApps(actx, r, logf)
 				acancel()
 				undoDue = true
 				sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				st.Services = cfg.serviceStatuses(sctx, r, true)
+				st.Apps = cfg.appStatuses(sctx, r, true)
 				cancel()
 			}
 			wasPrimary = primary
 		}
 		if undoDue && known && cl.Serving() {
 			cfg.beat.Beat()
-			i, ok := r.(serviceInstaller)
+			i, ok := r.(appInstaller)
 			undoDue = ok && !cfg.undoPending(ctx, i, logf)
 		}
 		// THE CLOCK SAMPLE, once an interval per app, on the node that holds the
 		// volume. Cheap on every other cycle: a time comparison and nothing else.
 		cfg.beat.Beat()
 		kctx, kcancel := context.WithTimeout(ctx, clockSampleBudget)
-		cfg.consider(kctx, r, ng, cfg.Services, cl.Serving(), time.Now(), logf)
+		cfg.consider(kctx, r, ng, cfg.Apps, cl.Serving(), time.Now(), logf)
 		kcancel()
 		// THE RECORDER CHECK, once a night on the node that holds the volume: started in the guest's
 		// background and collected over later cycles, so it never holds this loop (clocksample.go).
-		cfg.checkRecorder(ctx, r, dc, cfg.Services, cl.Serving(), time.Now(), n, logf)
+		cfg.checkRecorder(ctx, r, dc, cfg.Apps, cl.Serving(), time.Now(), n, logf)
 		// THE BACKUP, once a night on the node that holds the volume, the same way (backup.go).
 		cfg.backup(ctx, r, bs, cl.Serving(), time.Now(), n, logf)
 		// THE FILES TIER, every five minutes on the node that holds the volume, the same way.
@@ -1718,9 +1718,9 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 				}(uploading, time.Now(), agg.snapshot())
 			}
 		}
-		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s services=%s bundle=%s%s tick=%dms",
+		logf("status node=%s role=%s primary=%t quorate=%t connected=%d healthy=%t probe=%s apps=%s bundle=%s%s tick=%dms",
 			st.NodeName, st.Role, st.Quorum.Primary, st.Quorum.Quorate, st.Quorum.Connected, st.Healthy,
-			orDash(probe), orDash(serviceLog(st.Services)), orDash(st.GuestBundle), resourceLog(res),
+			orDash(probe), orDash(appLog(st.Apps)), orDash(st.GuestBundle), resourceLog(res),
 			time.Since(tickStart).Milliseconds())
 		if cfg.healthy != nil {
 			cfg.healthy.Store(st.Healthy)
@@ -1734,7 +1734,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		ca.observe(ctx, n, cfg.Node, time.Now(), logf) // one 5s-bounded read every clockReadEvery
 		cfg.sleep.observe(ctx, n, cfg.Node, logf)      // two power reads: a sleep since the last tick is an event
 		// Each installed app, from this cycle's report: no read of its own.
-		sa.observe(ctx, n, cfg.Node, st.Services, known, cl.Serving(), time.Now(), logf)
+		sa.observe(ctx, n, cfg.Node, st.Apps, known, cl.Serving(), time.Now(), logf)
 
 		if cfg.StateDisk != "" {
 			da.observe(ctx, n, cfg.Node, cfg.StateDisk, time.Now(), logf) // one statfs every diskReadEvery
@@ -1863,21 +1863,21 @@ func (o origin) String() string {
 // could reach one anyway. It is that the cloud has no business changing a node's local debug
 // state, made structural instead of incidental.
 var localOnlyKinds = map[string]bool{
-	api.DirectiveDebugArm:          true,
-	api.DirectiveDebugDisarm:       true,
-	api.DirectiveDoctor:            true,
-	api.DirectiveBackupRestore:     true,
-	api.DirectiveBackupList:        true, // what the household backed up is the household's to see
-	api.DirectiveServiceUsage:      true, // ...and how much it stores
-	api.DirectiveServiceCacheEmpty: true, // ...and empties an app's cache, restarting it
-	api.DirectiveBackupNow:         true, // ...and backs it up now
-	api.DirectiveBackupFolder:      true, // ...and moves it, as its settings are
-	api.DirectiveCasaClaim:         true, // the household claims its own name; the cloud never does
-	api.DirectiveCasaRecheck:       true, // ...and asks again whether its network resolves it
-	api.DirectiveWish:              true, // ...and wishes for an app from its own page; the cloud only counts it
-	api.DirectiveConfigSet:         true, // ...and changes its own address
-	api.DirectiveStop:              true, // ...and brings its own node down
-	api.DirectiveStatus:            true, // ...and asks how it is, as doctor does
+	api.DirectiveDebugArm:      true,
+	api.DirectiveDebugDisarm:   true,
+	api.DirectiveDoctor:        true,
+	api.DirectiveBackupRestore: true,
+	api.DirectiveBackupList:    true, // what the household backed up is the household's to see
+	api.DirectiveAppUsage:      true, // ...and how much it stores
+	api.DirectiveAppCacheEmpty: true, // ...and empties an app's cache, restarting it
+	api.DirectiveBackupNow:     true, // ...and backs it up now
+	api.DirectiveBackupFolder:  true, // ...and moves it, as its settings are
+	api.DirectiveCasaClaim:     true, // the household claims its own name; the cloud never does
+	api.DirectiveCasaRecheck:   true, // ...and asks again whether its network resolves it
+	api.DirectiveWish:          true, // ...and wishes for an app from its own page; the cloud only counts it
+	api.DirectiveConfigSet:     true, // ...and changes its own address
+	api.DirectiveStop:          true, // ...and brings its own node down
+	api.DirectiveStatus:        true, // ...and asks how it is, as doctor does
 }
 
 // Dispatch routes one directive to the subsystem that can act on it, and is the single place
@@ -1938,12 +1938,12 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	if d.Kind == api.DirectiveBackupFolder {
 		return cfg.applyBackupFolder(ctx, d, r, logf)
 	}
-	if d.Kind == api.DirectiveServiceUsage {
+	if d.Kind == api.DirectiveAppUsage {
 		u, ok := r.(usageReader)
 		if !ok {
 			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "guest client cannot measure an app"}
 		}
-		return cfg.applyServiceUsage(ctx, u, d)
+		return cfg.applyAppUsage(ctx, u, d)
 	}
 	if d.Kind == api.DirectiveBackupList {
 		l, ok := r.(backupLister)
@@ -1952,27 +1952,27 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		}
 		return cfg.applyBackupList(ctx, l, d)
 	}
-	if d.Kind == api.DirectiveServiceInstall || d.Kind == api.DirectiveServicePrewarm ||
-		d.Kind == api.DirectiveServiceRestore || d.Kind == api.DirectiveServiceMembers || d.Kind == api.DirectiveBackupRestore ||
-		d.Kind == api.DirectiveServiceCacheEmpty {
+	if d.Kind == api.DirectiveAppInstall || d.Kind == api.DirectiveAppPrewarm ||
+		d.Kind == api.DirectiveAppRestore || d.Kind == api.DirectiveAppMembers || d.Kind == api.DirectiveBackupRestore ||
+		d.Kind == api.DirectiveAppCacheEmpty {
 		// An app install needs the render/provision/bracket verbs, none of which the narrow upgrader has.
-		i, ok := r.(serviceInstaller)
+		i, ok := r.(appInstaller)
 		if !ok {
-			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "guest client cannot install a service"}
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "guest client cannot install an app"}
 		}
 		switch d.Kind {
-		case api.DirectiveServicePrewarm:
-			return cfg.applyServicePrewarm(ctx, i, d, logf)
-		case api.DirectiveServiceRestore:
-			return cfg.applyServiceRestore(ctx, i, d, logf)
+		case api.DirectiveAppPrewarm:
+			return cfg.applyAppPrewarm(ctx, i, d, logf)
+		case api.DirectiveAppRestore:
+			return cfg.applyAppRestore(ctx, i, d, logf)
 		case api.DirectiveBackupRestore:
 			return cfg.applyBackupRestore(ctx, i, d, logf)
-		case api.DirectiveServiceMembers:
-			return cfg.applyServiceMembers(ctx, i, d, logf)
-		case api.DirectiveServiceCacheEmpty:
-			return cfg.applyServiceCacheEmpty(ctx, i, d, logf)
+		case api.DirectiveAppMembers:
+			return cfg.applyAppMembers(ctx, i, d, logf)
+		case api.DirectiveAppCacheEmpty:
+			return cfg.applyAppCacheEmpty(ctx, i, d, logf)
 		}
-		return cfg.applyServiceInstall(ctx, i, d, n, logf)
+		return cfg.applyAppInstall(ctx, i, d, n, logf)
 	}
 	if d.Kind == install.DirectiveUpdateVM || d.Kind == api.DirectiveUpgradeSystem {
 		// The guest chain: a release resolved on the channel, then the image swap.
@@ -2100,9 +2100,9 @@ func (cfg Config) resources(ctx context.Context, r guestReader) *telemetry.NodeR
 	// nothing, systemd answered with no MainPID, and the whole footprint sat at zero for every
 	// catalog-installed app. Restarts is the crash-loop signal, so an app that crash-looped
 	// read exactly like one that never restarted.
-	units := make(map[string]string, len(cfg.Services))
+	units := make(map[string]string, len(cfg.Apps))
 	var dataDir string
-	for _, spec := range cfg.Services {
+	for _, spec := range cfg.Apps {
 		units[spec.Name] = spec.ServingUnit()
 		dataDir = spec.DataDir // any app's data dir names the same volume; df/btrfs measure it
 	}
@@ -2316,13 +2316,13 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, vip guest.VIPRea
 		// The identity half still reports: what is installed is known without the guest, and a
 		// dead channel must not read as an uninstall. The STATE half is left empty, which is the
 		// honest answer when nothing could be asked.
-		st.Services = cfg.serviceStatuses(rctx, r, false)
+		st.Apps = cfg.appStatuses(rctx, r, false)
 		return st, cl, "", err // zero QuorumState, Healthy=false
 	}
 	st.Quorum = cl.QuorumState
 	// AFTER the cluster read, because the state is only meaningful on the node that holds the
 	// volume -- the apps run on whoever is Primary and nowhere else.
-	st.Services = cfg.serviceStatuses(rctx, r, cl.Serving())
+	st.Apps = cfg.appStatuses(rctx, r, cl.Serving())
 	// A WITNESS is what "healthy == participating" belongs to, and role is how we know one --
 	// not an empty URL. Under DHCP a data node has no configured address either, and the two
 	// answers must stay apart: a witness with nothing to probe is healthy when quorate, a data
@@ -2367,7 +2367,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, vip guest.VIPRea
 		// where the host can't reach the VIP (macvtap). Fall back to the legacy host->VIP GET only
 		// when the verb errors — an old guest built before it existed, which is always tap-based, so
 		// the LAN probe still works there.
-		healthy, herr := r.ServiceHealth(rctx, url)
+		healthy, herr := r.AppHealth(rctx, url)
 		if herr != nil {
 			healthy = probeHealth(rctx, url)
 		}
@@ -2429,16 +2429,16 @@ func (cfg Config) readVIP(ctx context.Context, r guest.VIPReader) vipAnswer {
 	return vipAnswer{cidr: cidr, err: err}
 }
 
-// hasService reports whether this node runs anything at all. The shipped state is FALSE — a node
+// hasApp reports whether this node runs anything at all. The shipped state is FALSE — a node
 // is installed before it is given something to run — so this is the "does it run anything" test the
 // singular `cfg.Service.Name != ""` used to be, with the trap that reading removed: it says
 // nothing about whether the node has a GUEST. A witness is Diskless; a zero-app anchor has a
 // guest, a closure and an OS the cloud may roll, and conflating the two is the bug this name exists to prevent.
-func (cfg Config) hasService() bool { return len(cfg.Services) > 0 }
+func (cfg Config) hasApp() bool { return len(cfg.Apps) > 0 }
 
-// serviceStatuses is what the node reports for the apps it has INSTALLED at runtime: one
+// appStatuses is what the node reports for the apps it has INSTALLED at runtime: one
 // entry per app, name plus manifest identity, in cfg.Services' order (by name, per
-// installedServices).
+// installedApps).
 //
 // A spec with no Manifest is SKIPPED. Every app now has one -- it is the hash of the signed
 // bytes it was installed from -- so this filter only ever drops a half-built spec, and dropping it
@@ -2446,13 +2446,13 @@ func (cfg Config) hasService() bool { return len(cfg.Services) > 0 }
 // honest to put in it.
 //
 // The IDENTITY asks the guest nothing: it is a property of what was installed (or of what the
-// volume said at promotion, see adoptVolumeServices), not of what the guest happens to answer
+// volume said at promotion, see adoptVolumeApps), not of what the guest happens to answer
 // this second, so it comes off the spec -- which also means it stays correct on a node whose
 // guest is briefly unreachable, where a read-through would have blanked the whole set.
 //
 // The STATE has to ask, because it is the opposite kind of fact -- what the units are doing right
 // now. It is read ONLY on a Primary and only from a live channel; everywhere else
-// the field is left empty, which api.ServiceStatus.State defines as "does not apply / not known"
+// the field is left empty, which api.AppStatus.State defines as "does not apply / not known"
 // and explicitly not as "stopped". A Secondary is not supposed to be running anything, and a node
 // whose read failed knows nothing -- reporting either as stopped would make an ordinary standby
 // indistinguishable from a broken primary, which is the same conflation this field exists to
@@ -2460,9 +2460,9 @@ func (cfg Config) hasService() bool { return len(cfg.Services) > 0 }
 //
 // A per-app read error leaves that ONE app empty and lets the others report. Losing the
 // whole set because one verb hiccuped is how a real outage gets hidden behind a transient.
-func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, primary bool) []api.ServiceStatus {
-	var out []api.ServiceStatus
-	for _, s := range cfg.Services {
+func (cfg Config) appStatuses(ctx context.Context, r appStateReader, primary bool) []api.AppStatus {
+	var out []api.AppStatus
+	for _, s := range cfg.Apps {
 		// A spec with no identity must not reach the wire. Every spec is built from signed
 		// manifest bytes (specOf), so this cannot happen — and if it ever did, the empty string
 		// would land in the field the cloud compares against a catalog hash to confirm a rollout.
@@ -2472,9 +2472,9 @@ func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, pri
 		if s.Manifest == "" {
 			continue
 		}
-		st := api.ServiceStatus{Name: s.Name, Manifest: s.Manifest}
+		st := api.AppStatus{Name: s.Name, Manifest: s.Manifest}
 		if primary {
-			if active, err := r.ServiceActive(ctx, s.ServingUnit()); err == nil {
+			if active, err := r.AppActive(ctx, s.ServingUnit()); err == nil {
 				st.State = api.StateStopped
 				if active {
 					st.State = api.StateRunning
@@ -2495,7 +2495,7 @@ func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, pri
 			// APP HEALTH is the guest's one answer (services.Health), spelled with this
 			// field's own values, so it is carried rather than translated.
 			if st.State == api.StateRunning {
-				if h, err := r.ServiceHealthOf(ctx, s.Name); err == nil {
+				if h, err := r.AppHealthOf(ctx, s.Name); err == nil {
 					st.Health = string(h)
 				}
 			}
@@ -2505,17 +2505,17 @@ func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, pri
 	return out
 }
 
-// serviceStateReader is what serviceStatuses needs of the guest: is this unit up, and does the
+// appStateReader is what appStatuses needs of the guest: is this unit up, and does the
 // app behind it answer. Narrow interface for DI, not a seam.
-type serviceStateReader interface {
-	ServiceActive(ctx context.Context, unit string) (bool, error)
-	// ServiceHealthOf probes ONE app by name, the guest resolving its address from the
+type appStateReader interface {
+	AppActive(ctx context.Context, unit string) (bool, error)
+	// AppHealthOf probes ONE app by name, the guest resolving its address from the
 	// routing table — the steady-state twin of the install gate, and the only reason
 	// the two can be trusted to be asking about the same address.
-	ServiceHealthOf(ctx context.Context, service string) (services.Health, error)
+	AppHealthOf(ctx context.Context, app string) (apps.Health, error)
 }
 
-// serviceLog renders the reported apps for the status line -- "name@identity" per app,
+// appLog renders the reported apps for the status line -- "name@identity" per app,
 // which is what a version change looks like from outside, plus "!unhealthy" for one that is
 // RUNNING and not serving.
 //
@@ -2524,7 +2524,7 @@ type serviceStateReader interface {
 // visible: the unit is up, the promoter is deliberately not watching it, and the
 // front door answers for the node. Empty means not asked or not applicable and prints nothing --
 // a standby would otherwise look like a node full of broken apps.
-func serviceLog(svcs []api.ServiceStatus) string {
+func appLog(svcs []api.AppStatus) string {
 	parts := make([]string, 0, len(svcs))
 	for _, s := range svcs {
 		p := s.Name + "@" + s.Manifest

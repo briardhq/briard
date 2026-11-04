@@ -95,7 +95,7 @@ func runDebugShell(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	if o.State != api.OutcomeDone {
 		fmt.Fprintf(stderr, "briard debug shell: %s\n", o.Detail)
-		fmt.Fprintf(stderr, "  (is a guest running? `briard logs` says. A guest launched by an\n"+
+		fmt.Fprintf(stderr, "  (is the VM running? `briard logs` says. A VM launched by an\n"+
 			"   older agent has no debug port and must be relaunched to gain one.)\n")
 		return 1
 	}
@@ -123,7 +123,7 @@ func runDebugShell(ctx context.Context, args []string, stdout, stderr io.Writer)
 		// its own side to the journal.
 		left := func(reason string) {
 			fmt.Fprintf(stderr, "\nbriard debug shell: FAILED TO DISARM: %s\n"+
-				"  the console at %s is still open; relaunching the guest also closes it\n", reason, console)
+				"  the console at %s is still open; relaunching the VM also closes it\n", reason, console)
 		}
 		od, err := submit(dctx, *sock, api.Directive{Kind: api.DirectiveDebugDisarm})
 		if err != nil {
@@ -176,10 +176,10 @@ func runDebugShell(ctx context.Context, args []string, stdout, stderr io.Writer)
 }
 
 const banner = `
-!! You are about to enter the guest OS as root. This is not a supported way to
-!! operate a Briard node, and there is nothing in here you are meant to change.
+!! You are about to enter the VM's OS as root. This is not a supported way to
+!! operate a Briard machine, and there is nothing in here you are meant to change.
 !!
-!! Anything you edit in the guest's own filesystem is TEMPORARY: the OS moves by
+!! Anything you edit in the VM's own filesystem is TEMPORARY: the OS moves by
 !! whole-image swap and ` + "`briard rescue`" + ` rebuilds it, so your change is erased at
 !! the next update, silently and without warning you first. Services, mounts and
 !! network here are managed by the agent, which will fight you for them and win.

@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
+	apps "briard.io/agent/apps"
 	"briard.io/agent/quadlet"
-	"briard.io/agent/services"
 	"briard.io/shared/manifest"
 	"briard.io/shared/routes"
 )
@@ -116,7 +116,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 	if needsPodNetwork(svcs) {
 		pool := podPool(x)
 		if pool == "" {
-			return nil, fmt.Errorf("converge: a service wants a private network and this node has no pod pool")
+			return nil, fmt.Errorf("converge: an app wants a private network and this node has no pod pool")
 		}
 		if err := ensurePodNetwork(ctx, x, pool); err != nil {
 			return nil, err
@@ -145,7 +145,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 		}
 	}
 	// The per-app knowledge the product holds about one catalogued app, materialised on
-	// this node: Home Assistant's control channel, mosquitto's config file (agent/services).
+	// this node: Home Assistant's control channel, mosquitto's config file (agent/apps).
 	// Here because converge is the one path every node takes — the installing Primary, the
 	// survivor promoting into an app it was never told about, and every guest reboot, /run
 	// being tmpfs. After the warm, because it reads the image; before the start, because the
@@ -164,7 +164,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 	// from making that directory at all.
 	var skipped []string
 	for i := range svcs {
-		if err := services.Prepare(ctx, x, svcs[i].m); err != nil {
+		if err := apps.Prepare(ctx, x, svcs[i].m); err != nil {
 			log.Printf("converge: %s cannot be prepared (%v); it is NOT being started, the node is serving what it can", svcs[i].name, err)
 			svcs[i].skip = true
 			skipped = append(skipped, svcs[i].name)
@@ -201,7 +201,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 		// app down because a DIFFERENT one was upgraded — the "one app must not cost the
 		// others" rule, in its quietest form.
 		if s.touched(changed) {
-			stopService(ctx, x, s.r)
+			stopApp(ctx, x, s.r)
 		}
 		for _, u := range s.r.Units {
 			if _, err := x.Run(ctx, "systemctl", "start", u); err != nil {
@@ -220,7 +220,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 		log.Printf("converge: could not record what was started (%v); the next converge will bounce everything", err)
 	}
 	if len(svcs) == 0 {
-		log.Printf("converge: no services installed on the volume; nothing to start")
+		log.Printf("converge: no apps installed on the volume; nothing to start")
 	} else {
 		log.Printf("converge: %d unit(s) started from the volume: %s", len(all.Units), strings.Join(all.Units, " "))
 	}
@@ -229,7 +229,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 
 // started folds the apps converge actually started, for the record the NEXT converge compares
 // against. A skipped app is deliberately absent rather than present-and-stale.
-func started(svcs []convergedService) quadlet.Rendered {
+func started(svcs []convergedApp) quadlet.Rendered {
 	out := quadlet.Rendered{Files: map[string]string{}}
 	for _, s := range svcs {
 		if s.skip {
@@ -240,7 +240,7 @@ func started(svcs []convergedService) quadlet.Rendered {
 	return out
 }
 
-// stopService quiesces one app so a re-render takes effect: its CONTAINER units in reverse,
+// stopApp quiesces one app so a re-render takes effect: its CONTAINER units in reverse,
 // then the pod. Best-effort — a unit that was not running is not a failure worth aborting for.
 //
 // Containers before the pod, never the pod alone: `systemctl stop <pod>` makes podman `pod stop`,
@@ -249,7 +249,7 @@ func started(svcs []convergedService) quadlet.Rendered {
 // the data subvolume's bind and what keeps a failed-unit state out of the journal for an
 // operation nobody asked to fail. By the time the pod is stopped it has no containers left to
 // kill, so its own stop is clean too.
-func stopService(ctx context.Context, x Executor, r quadlet.Rendered) {
+func stopApp(ctx context.Context, x Executor, r quadlet.Rendered) {
 	for i := len(r.ContainerUnits) - 1; i >= 0; i-- {
 		if _, err := x.Run(ctx, "systemctl", "stop", r.ContainerUnits[i]); err != nil {
 			log.Printf("converge: stop %s: %v (continuing)", r.ContainerUnits[i], err)
@@ -335,7 +335,7 @@ func ConvergeStop(ctx context.Context, x Executor) error {
 // A STAGED app is the exception to "render what the volume says" (staging.go): the live one
 // renders from its `.json.next`, including a fresh install that has no accepted manifest yet,
 // and every other one is left out.
-func renderVolume(ctx context.Context, x Executor, live string) ([]convergedService, error) {
+func renderVolume(ctx context.Context, x Executor, live string) ([]convergedApp, error) {
 	names, err := manifestNames(ctx, x)
 	if err != nil {
 		return nil, err
@@ -352,7 +352,7 @@ func renderVolume(ctx context.Context, x Executor, live string) ([]convergedServ
 		names = append(names, live+".json") // a fresh install: staged, nothing accepted yet
 		sort.Strings(names)
 	}
-	var svcs []convergedService
+	var svcs []convergedApp
 	alloc := newAllocator(x)
 	for _, n := range names {
 		path := manifestDir + "/" + n
@@ -379,7 +379,7 @@ func renderVolume(ctx context.Context, x Executor, live string) ([]convergedServ
 		if err != nil {
 			return nil, fmt.Errorf("converge: %s does not render: %w", n, err)
 		}
-		svcs = append(svcs, convergedService{name: m.Name, m: m, r: r})
+		svcs = append(svcs, convergedApp{name: m.Name, m: m, r: r})
 	}
 	return svcs, nil
 }
@@ -424,10 +424,10 @@ func newAllocator(x Executor) *allocator {
 	}
 	t, err := routes.Parse(raw)
 	if err != nil {
-		log.Printf("converge: the previous routing table does not parse (%v); every service is being readdressed", err)
+		log.Printf("converge: the previous routing table does not parse (%v); every app is being readdressed", err)
 		return a
 	}
-	for _, s := range t.Services {
+	for _, s := range t.Apps {
 		if s.Address != "" {
 			a.known[s.Name] = s.Address
 		}
@@ -472,11 +472,11 @@ func (a *allocator) inUse(addr string) bool {
 	return false
 }
 
-// convergedService is one app the volume names, with its rendering. Kept PER APP rather
+// convergedApp is one app the volume names, with its rendering. Kept PER APP rather
 // than merged, because the two decisions converge makes are per app: whether this one's
 // rendering changed (and so must be bounced), and whether this one failed to start (which must
 // not stop the others).
-type convergedService struct {
+type convergedApp struct {
 	name string
 	// m is the manifest as the volume gave it, kept beside the rendering because the units are
 	// not the only thing derived from it: services.Prepare is handed the manifest so that the
@@ -491,7 +491,7 @@ type convergedService struct {
 }
 
 // touched reports whether any of this app's unit source was written differently this pass.
-func (s convergedService) touched(changed map[string]bool) bool {
+func (s convergedApp) touched(changed map[string]bool) bool {
 	for f := range s.r.Files {
 		if changed[f] {
 			return true
@@ -503,7 +503,7 @@ func (s convergedService) touched(changed map[string]bool) bool {
 // merged folds every app's rendering into one set — what gets written to the quadlet
 // directory, warmed, and recorded as the units to stop on demote. Unit filenames are
 // app-prefixed by the renderer (briard-<app>-…), so the Files merge cannot collide.
-func merged(svcs []convergedService) quadlet.Rendered {
+func merged(svcs []convergedApp) quadlet.Rendered {
 	all := quadlet.Rendered{Files: map[string]string{}}
 	for _, s := range svcs {
 		mergeInto(&all, s.r)
@@ -713,7 +713,7 @@ func writeStarted(x Executor, r quadlet.Rendered) error {
 // table takes no address and is reported unhealthy, rather than promoting into a front door
 // serving the landing page over a household's running app — the silent-degradation shape
 // converge-at-promotion was built to end, one layer up.
-func writeRoutes(x Executor, svcs []convergedService) error {
+func writeRoutes(x Executor, svcs []convergedApp) error {
 	t := routesFor(flockName(x), svcs)
 	return putRoutes(x, t)
 }
@@ -742,20 +742,20 @@ func putRoutes(x Executor, t routes.Table) error {
 // where a non-HTTP app is listening anyway, and it is the anchor any future route hangs off —
 // so `briard-<flock>-mosquitto.local` is worth having even while nothing is fronted under it.
 //
-// It gets a ROUTE only if the product says the door may front it (agent/services.Fronted). No
+// It gets a ROUTE only if the product says the door may front it (agent/apps.Fronted). No
 // route is how "do not expose this" is said: the door is then never handed a way to reach the
 // app at all, rather than being handed one and trusted not to use it. mosquitto is the live
 // case — its manifest port is the broker's management API, bound inside the pod on purpose.
 //
 // It gets an ANNOUNCEMENT only if the product says the household's other devices go looking for
-// it (agent/services.Announce), and only alongside a name, because that name is what the record
+// it (agent/apps.Announce), and only alongside a name, because that name is what the record
 // points at. mosquitto is again the live case, from the other side: the one app whose clients
 // are appliances that browse rather than people who type.
-func routesFor(flock string, svcs []convergedService) routes.Table {
-	t := routes.Table{Services: make([]routes.Service, 0, len(svcs))}
+func routesFor(flock string, svcs []convergedApp) routes.Table {
+	t := routes.Table{Apps: make([]routes.App, 0, len(svcs))}
 	for _, s := range svcs {
 		p := s.m.Primary()
-		e := routes.Service{
+		e := routes.App{
 			Name:    s.name,
 			Address: s.r.Address,
 			// Host-less: the address above is spliced in by whoever dials it, which is the one
@@ -771,15 +771,15 @@ func routesFor(flock string, svcs []convergedService) routes.Table {
 			// Only alongside a name, because an announcement's SRV target is that name. The
 			// registry applies the same rule to itself; the ordering here is what makes it true
 			// of the table rather than merely of the caller.
-			e.Announce = services.Announce(s.m, flock)
+			e.Announce = apps.Announce(s.m, flock)
 		}
-		if services.Fronted(s.m) {
+		if apps.Fronted(s.m) {
 			e.Routes = []routes.Route{{
 				Listen: routes.ListenName,
 				To:     fmt.Sprintf("http://:%d", p.Port),
 			}}
 		}
-		t.Services = append(t.Services, e)
+		t.Apps = append(t.Apps, e)
 	}
 	return t
 }
@@ -830,15 +830,15 @@ func renameRoutes(x Executor, flock string) {
 		log.Printf("mdns rename: the routing table does not parse (%v); leaving it for the next converge", err)
 		return
 	}
-	for i := range t.Services {
-		t.Services[i].Hosts = routes.HostNames(flock, t.Services[i].Name)
+	for i := range t.Apps {
+		t.Apps[i].Hosts = routes.HostNames(flock, t.Apps[i].Name)
 	}
 	if err := putRoutes(x, t); err != nil {
 		log.Printf("mdns rename: %v; the routing table still carries the old names", err)
 	}
 }
 
-// serviceHealthURL resolves where to ask one app whether it is serving, from the routing table
+// appHealthURL resolves where to ask one app whether it is serving, from the routing table
 // this node last converged.
 //
 // It reads the SAME table the front door routes on, so "is it healthy" and "where do requests go"
@@ -848,7 +848,7 @@ func renameRoutes(x Executor, flock string) {
 //
 // An app that is not in the table, or that has no health endpoint, yields an error rather than
 // an unhealthy verdict — see the verb for why that distinction is load-bearing.
-func serviceHealthURL(x Executor, name string) (string, error) {
+func appHealthURL(x Executor, name string) (string, error) {
 	raw, err := x.ReadFile(routes.Path)
 	if err != nil {
 		return "", fmt.Errorf("health: no routing table (%w)", err)
@@ -871,28 +871,28 @@ func serviceHealthURL(x Executor, name string) (string, error) {
 	return u.String(), nil
 }
 
-// serviceHealth is APP HEALTH, the one answer to "does this app work": the registry's
+// appHealth is APP HEALTH, the one answer to "does this app work": the registry's
 // override for a curated app that has one (services.HealthOverride), otherwise the manifest's
 // healthPath answering 200. The status report, the app-update gate and the history all ask here.
 //
-// An unresolvable app is an ERROR, never a verdict (serviceHealthURL says why). A manifest
+// An unresolvable app is an ERROR, never a verdict (appHealthURL says why). A manifest
 // that cannot be read on the volume leaves the default probe, which needs none.
-func serviceHealth(ctx context.Context, x Executor, service string) (services.Health, error) {
-	url, err := serviceHealthURL(x, service)
+func appHealth(ctx context.Context, x Executor, app string) (apps.Health, error) {
+	url, err := appHealthURL(x, app)
 	if err != nil {
-		return services.HealthUnknown, err
+		return apps.HealthUnknown, err
 	}
-	if raw, err := x.ReadFile(manifestPath(service)); err == nil {
+	if raw, err := x.ReadFile(manifestPath(app)); err == nil {
 		if m, _, err := manifest.Parse(raw); err == nil {
-			if h, ok := services.HealthOverride(ctx, x, m, m.Primary().Port); ok {
+			if h, ok := apps.HealthOverride(ctx, x, m, m.Primary().Port); ok {
 				return h, nil
 			}
 		}
 	}
 	if probeHTTPOK(ctx, url) {
-		return services.Healthy, nil
+		return apps.Healthy, nil
 	}
-	return services.Unhealthy, nil
+	return apps.Unhealthy, nil
 }
 
 // ensurePodNetwork creates the podman network private pods join, if it is not already there.
@@ -929,7 +929,7 @@ func ensurePodNetwork(ctx context.Context, x Executor, pool string) error {
 }
 
 // needsPodNetwork reports whether any app on this node wants a private pod.
-func needsPodNetwork(svcs []convergedService) bool {
+func needsPodNetwork(svcs []convergedApp) bool {
 	for _, s := range svcs {
 		if !s.m.HostNetwork() {
 			return true

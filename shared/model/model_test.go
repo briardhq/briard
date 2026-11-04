@@ -10,14 +10,14 @@ import "testing"
 func TestServingUnit(t *testing.T) {
 	cases := []struct {
 		name string
-		spec ServiceSpec
+		spec AppSpec
 		want string
 	}{
-		{"a service names its rendered unit",
-			ServiceSpec{Name: "home-assistant", Unit: "briard-home-assistant-app.service"},
+		{"an app names its rendered unit",
+			AppSpec{Name: "home-assistant", Unit: "briard-home-assistant-app.service"},
 			"briard-home-assistant-app.service"},
-		{"a name alone derives nothing", ServiceSpec{Name: "home-assistant"}, ""},
-		{"no service names nothing", ServiceSpec{}, ""},
+		{"a name alone derives nothing", AppSpec{Name: "home-assistant"}, ""},
+		{"no app names nothing", AppSpec{}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

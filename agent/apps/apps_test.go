@@ -1,4 +1,4 @@
-package services
+package apps
 
 import (
 	"context"
@@ -29,20 +29,20 @@ func (n *noopExec) Run(context.Context, string, ...string) ([]byte, error) { n.r
 func (n *noopExec) WriteFile(string, []byte) error                         { return nil }
 func (n *noopExec) ReadFile(string) ([]byte, error)                        { return nil, nil }
 
-// TestAnUnknownServiceGetsNothing — the registry's default, and the property that keeps adding an
+// TestAnUnknownAppGetsNothing — the registry's default, and the property that keeps adding an
 // entry from being able to change what every other app gets. An app the product has never
 // heard of must render, prepare and read exactly as it did before this package existed.
-func TestAnUnknownServiceGetsNothing(t *testing.T) {
+func TestAnUnknownAppGetsNothing(t *testing.T) {
 	m := svc("something-else", 8080)
 	if v := Volumes(m, m.Containers[0]); v != nil {
-		t.Errorf("an unknown service was handed binds: %v", v)
+		t.Errorf("an unknown app was handed binds: %v", v)
 	}
 	x := &noopExec{}
 	if err := Prepare(context.Background(), x, m); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if x.runs != 0 {
-		t.Errorf("an unknown service ran %d command(s) on the node", x.runs)
+		t.Errorf("an unknown app ran %d command(s) on the node", x.runs)
 	}
 	// The app's OWN name on the front door's :80, not the flock name and a port: the
 	// port in this sentence was the shape of a node that could only be reached around its door.
@@ -78,16 +78,16 @@ func TestRestoreMarkersAreHomeAssistantsAlone(t *testing.T) {
 	}
 }
 
-// TestEachKnownServiceGetsItsOwn: the dispatch is keyed on the catalog name, and the two entries
+// TestEachKnownAppGetsItsOwn: the dispatch is keyed on the catalog name, and the two entries
 // must not bleed into each other.
-func TestEachKnownServiceGetsItsOwn(t *testing.T) {
+func TestEachKnownAppGetsItsOwn(t *testing.T) {
 	ha := svc(hass.Name, 8123)
 	mq := svc(mosquitto.Name, mosquitto.HealthPort)
 
 	haVols := Volumes(ha, ha.Containers[0])
 	mqVols := Volumes(mq, mq.Containers[0])
 	if len(haVols) == 0 || len(mqVols) == 0 {
-		t.Fatalf("a known service was handed nothing: hass=%v mosquitto=%v", haVols, mqVols)
+		t.Fatalf("a known app was handed nothing: hass=%v mosquitto=%v", haVols, mqVols)
 	}
 	for _, v := range haVols {
 		if strings.Contains(v, mosquitto.Dir) {
@@ -129,7 +129,7 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 		t.Errorf("the reach line names the pod-internal management port: %q", got)
 	}
 	if !strings.Contains(got, "briard-mosquitto.local") {
-		t.Errorf("the reach line does not name the service: %q", got)
+		t.Errorf("the reach line does not name the app: %q", got)
 	}
 	// No published name means no address to promise — the same rule the HTTP form follows.
 	if bare := Reach(mq, ""); strings.Contains(bare, ".local") {
@@ -149,7 +149,7 @@ func TestOnlyTheBrokerIsNotFronted(t *testing.T) {
 	// The default is the front door: an ordinary app's primary port IS what a household opens.
 	for _, m := range []manifest.Manifest{svc(hass.Name, 8123), svc("something-else", 8080)} {
 		if !Fronted(m) {
-			t.Errorf("%s is not fronted; the default must be that a service is reachable by name", m.Name)
+			t.Errorf("%s is not fronted; the default must be that an app is reachable by name", m.Name)
 		}
 	}
 }
@@ -234,25 +234,25 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 	// app. A bind here would be a third mount buying nothing.
 	for _, v := range primary {
 		if strings.HasPrefix(v, InboundTokenPath("home-assistant")+":") {
-			t.Errorf("the token was given its own bind (%q); it should ride the service directory", v)
+			t.Errorf("the token was given its own bind (%q); it should ride the app directory", v)
 		}
 	}
 	var dir string
 	for _, v := range primary {
-		if strings.HasSuffix(v, ":"+ServiceMount+":ro") {
+		if strings.HasSuffix(v, ":"+AppMount+":ro") {
 			dir = v
 		}
 	}
-	if dir != ServiceDir("home-assistant")+":"+ServiceMount+":ro" {
-		t.Fatalf("service directory bind = %q, want this service's own directory, read-only", dir)
+	if dir != AppDir("home-assistant")+":"+AppMount+":ro" {
+		t.Fatalf("app directory bind = %q, want this app's own directory, read-only", dir)
 	}
 	// And the two agree: the token's path on the node is inside the directory that is mounted, so
 	// the container really does see it where InboundTokenMount says.
-	if !strings.HasPrefix(InboundTokenPath("home-assistant"), ServiceDir("home-assistant")+"/") {
-		t.Errorf("the token at %q is not inside the mounted directory %q", InboundTokenPath("home-assistant"), ServiceDir("home-assistant"))
+	if !strings.HasPrefix(InboundTokenPath("home-assistant"), AppDir("home-assistant")+"/") {
+		t.Errorf("the token at %q is not inside the mounted directory %q", InboundTokenPath("home-assistant"), AppDir("home-assistant"))
 	}
-	if InboundTokenMount != ServiceMount+"/"+InboundTokenName {
-		t.Errorf("InboundTokenMount = %q, want it inside %q", InboundTokenMount, ServiceMount)
+	if InboundTokenMount != AppMount+"/"+InboundTokenName {
+		t.Errorf("InboundTokenMount = %q, want it inside %q", InboundTokenMount, AppMount)
 	}
 	for _, v := range secondary {
 		if strings.Contains(v, InboundMount) {
@@ -391,7 +391,7 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 	}
 }
 
-// TestServiceDirMatchesTheRegistry: agent/hass declares its own directory as a const, because it
+// TestAppDirMatchesTheRegistry: agent/hass declares its own directory as a const, because it
 // cannot import this package (this one imports it). So two definitions have to agree, and the
 // agreement is load-bearing in a way that is easy to miss: the agent resolves an inbound caller
 // by reading the run directory and taking a DIRECTORY NAME as an app name. A directory named
@@ -399,7 +399,7 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 // every call from that container would come back "unknown caller" with nothing pointing at why.
 //
 // The directory is named for the app, as agent/mosquitto's is.
-func TestServiceDirMatchesTheRegistry(t *testing.T) {
+func TestAppDirMatchesTheRegistry(t *testing.T) {
 	for _, c := range []struct{ name, dir string }{
 		{hass.Name, hass.Dir},
 		{mosquitto.Name, mosquitto.Dir},

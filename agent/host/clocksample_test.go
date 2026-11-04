@@ -26,8 +26,8 @@ func clockFixture(t *testing.T) (Config, *fakeStatus, *[]takenMember, *clockSamp
 	took := &[]takenMember{}
 	f := &fakeStatus{took: took, volume: map[string]string{"home-assistant": `{"name":"home-assistant"}`}}
 	cfg := Config{
-		Services: []model.ServiceSpec{{Name: "home-assistant"}},
-		clock:    func() time.Time { return night },
+		Apps:  []model.AppSpec{{Name: "home-assistant"}},
+		clock: func() time.Time { return night },
 	}
 	return cfg, f, took, newClockSampler()
 }
@@ -37,7 +37,7 @@ func clockFixture(t *testing.T) (Config, *fakeStatus, *[]takenMember, *clockSamp
 // cycle and a sampler that took one each time would snapshot a household every few seconds.
 func TestClockSampleTakesOneAnInterval(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
-	cfg.consider(context.Background(), f, n, cfg.Services, true, night, func(string, ...any) {})
+	cfg.consider(context.Background(), f, n, cfg.Apps, true, night, func(string, ...any) {})
 	if len(*took) != 1 {
 		t.Fatalf("took %d members, want one: %v", len(*took), *took)
 	}
@@ -45,11 +45,11 @@ func TestClockSampleTakesOneAnInterval(t *testing.T) {
 	if !ok || svc != "home-assistant" || tr != quadlet.TriggerClock {
 		t.Errorf("member = %q, want home-assistant's clock sample", (*took)[0].member)
 	}
-	cfg.consider(context.Background(), f, n, cfg.Services, true, night.Add(30*time.Minute), func(string, ...any) {})
+	cfg.consider(context.Background(), f, n, cfg.Apps, true, night.Add(30*time.Minute), func(string, ...any) {})
 	if len(*took) != 1 {
 		t.Errorf("a cycle inside the interval took another member: %v", *took)
 	}
-	cfg.consider(context.Background(), f, n, cfg.Services, true, night.Add(clockInterval), func(string, ...any) {})
+	cfg.consider(context.Background(), f, n, cfg.Apps, true, night.Add(clockInterval), func(string, ...any) {})
 	if len(*took) != 2 {
 		t.Errorf("took %d members after an interval, want the next one", len(*took))
 	}
@@ -65,13 +65,13 @@ func TestClockSampleCountsAnyRecentMember(t *testing.T) {
 		Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, start),
 		Meta:   quadlet.SnapshotMeta{Trigger: quadlet.TriggerStart, TakenAt: start},
 	}}}
-	cfg.consider(context.Background(), f, newClockSampler(), cfg.Services, true, night, func(string, ...any) {})
+	cfg.consider(context.Background(), f, newClockSampler(), cfg.Apps, true, night, func(string, ...any) {})
 	if len(*took) != 0 {
 		t.Errorf("a ten-minute-old start member did not count: %v", *took)
 	}
 	old := night.Add(-2 * time.Hour)
 	f.members["home-assistant"][0].Member = quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, old)
-	cfg.consider(context.Background(), f, newClockSampler(), cfg.Services, true, night, func(string, ...any) {})
+	cfg.consider(context.Background(), f, newClockSampler(), cfg.Apps, true, night, func(string, ...any) {})
 	if len(*took) != 1 {
 		t.Errorf("a two-hour-old member stopped the sample being taken: %v", *took)
 	}
@@ -85,7 +85,7 @@ func TestClockSampleFailureWaitsAnInterval(t *testing.T) {
 	var logged int
 	logf := func(string, ...any) { logged++ }
 	for i := 0; i < 5; i++ {
-		cfg.consider(context.Background(), f, n, cfg.Services, true, night.Add(time.Duration(i)*time.Minute), logf)
+		cfg.consider(context.Background(), f, n, cfg.Apps, true, night.Add(time.Duration(i)*time.Minute), logf)
 	}
 	if len(*took) != 1 {
 		t.Errorf("a failing take was retried inside the interval: %d attempts", len(*took))
@@ -100,7 +100,7 @@ func TestClockSampleFailureWaitsAnInterval(t *testing.T) {
 // not ask, because "the ring is per volume" is a property of the product, not of the error.
 func TestClockSampleOnlyOnTheServingNode(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
-	cfg.consider(context.Background(), f, n, cfg.Services, false, night, func(string, ...any) {})
+	cfg.consider(context.Background(), f, n, cfg.Apps, false, night, func(string, ...any) {})
 	if len(*took) != 0 {
 		t.Errorf("a secondary took a member: %v", *took)
 	}
@@ -115,14 +115,14 @@ func metaOf(t *testing.T, raw string) quadlet.SnapshotMeta {
 	return meta
 }
 
-// TestClockSampleIsCrashConsistentWhenTheServiceCannotHoldStill: it is the ONE member taken against a
+// TestClockSampleIsCrashConsistentWhenTheAppCannotHoldStill: it is the ONE member taken against a
 // running app, and the picker and the snapshot-integrity supervisor are entitled to know that before trusting it. A Home
 // Assistant that is down, too old for the view, or whose lock broke all land here.
-func TestClockSampleIsCrashConsistentWhenTheServiceCannotHoldStill(t *testing.T) {
+func TestClockSampleIsCrashConsistentWhenTheAppCannotHoldStill(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
 	f.held = false
 	var logged []string
-	cfg.consider(context.Background(), f, n, cfg.Services, true, night, func(s string, a ...any) {
+	cfg.consider(context.Background(), f, n, cfg.Apps, true, night, func(s string, a ...any) {
 		logged = append(logged, fmt.Sprintf(s, a...))
 	})
 	if len(*took) != 1 {
@@ -130,7 +130,7 @@ func TestClockSampleIsCrashConsistentWhenTheServiceCannotHoldStill(t *testing.T)
 	}
 	meta := metaOf(t, (*took)[0].sidecar)
 	if meta.Consistency != quadlet.Crash {
-		t.Errorf("consistency = %q, want crash -- the service went on writing", meta.Consistency)
+		t.Errorf("consistency = %q, want crash -- the app went on writing", meta.Consistency)
 	}
 	if meta.Trigger != quadlet.TriggerClock {
 		t.Errorf("meta = %+v, want a clock member", meta)
@@ -138,18 +138,18 @@ func TestClockSampleIsCrashConsistentWhenTheServiceCannotHoldStill(t *testing.T)
 	// AND IT SAYS SO. "The clock sample is crash-consistent again" is how a household would
 	// find out that Home Assistant stopped answering, or that an upgrade moved the API this
 	// leans on -- silence would make that invisible until somebody read a sidecar.
-	if !strings.Contains(strings.Join(logged, "\n"), "without holding the service still") {
-		t.Errorf("nothing said the service did not hold still: %v", logged)
+	if !strings.Contains(strings.Join(logged, "\n"), "without holding the app still") {
+		t.Errorf("nothing said the app did not hold still: %v", logged)
 	}
 }
 
-// TestClockSampleIsQuiescedWhenTheServiceHeldStill: the whole point of asking. Home
+// TestClockSampleIsQuiescedWhenTheAppHeldStill: the whole point of asking. Home
 // Assistant offers the mechanism its own backups use, and a member taken across it is
 // application-consistent rather than something HA has to recover from.
-func TestClockSampleIsQuiescedWhenTheServiceHeldStill(t *testing.T) {
+func TestClockSampleIsQuiescedWhenTheAppHeldStill(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
 	f.held = true
-	cfg.consider(context.Background(), f, n, cfg.Services, true, night, func(string, ...any) {})
+	cfg.consider(context.Background(), f, n, cfg.Apps, true, night, func(string, ...any) {})
 	if len(*took) != 1 {
 		t.Fatalf("took %d members, want one: %v", len(*took), *took)
 	}
@@ -158,14 +158,14 @@ func TestClockSampleIsQuiescedWhenTheServiceHeldStill(t *testing.T) {
 	}
 }
 
-// TestTheHostNeverClaimsTheServiceHeldStill is the rule that keeps the class honest across the
+// TestTheHostNeverClaimsTheAppHeldStill is the rule that keeps the class honest across the
 // channel: the host renders `crash` and the GUEST upgrades it, because only the guest
 // watched the app hold. A host that rendered `quiesced` hopefully would make every failure
 // between here and the snapshot into a member that lies.
-func TestTheHostNeverClaimsTheServiceHeldStill(t *testing.T) {
+func TestTheHostNeverClaimsTheAppHeldStill(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
 	f.held = true // the guest upgrades it; what the HOST asked for is what this is about
-	cfg.consider(context.Background(), f, n, cfg.Services, true, night, func(string, ...any) {})
+	cfg.consider(context.Background(), f, n, cfg.Apps, true, night, func(string, ...any) {})
 	if len(*took) != 1 {
 		t.Fatalf("took %d members, want one: %v", len(*took), *took)
 	}
@@ -180,7 +180,7 @@ func TestTheHostNeverClaimsTheServiceHeldStill(t *testing.T) {
 func TestClockSampleFallsBackOnAGuestThatCannotAsk(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
 	f.noQuiesce = true
-	cfg.consider(context.Background(), f, n, cfg.Services, true, night, func(string, ...any) {})
+	cfg.consider(context.Background(), f, n, cfg.Apps, true, night, func(string, ...any) {})
 	if len(*took) != 1 {
 		t.Fatalf("took %d members, want one: %v", len(*took), *took)
 	}
@@ -195,7 +195,7 @@ func TestClockSampleFallsBackOnAGuestThatCannotAsk(t *testing.T) {
 func TestClockSampleRefusesAnOlderGuest(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
 	f.noRing = true
-	cfg.consider(context.Background(), f, n, cfg.Services, true, night, func(string, ...any) {})
+	cfg.consider(context.Background(), f, n, cfg.Apps, true, night, func(string, ...any) {})
 	if len(*took) != 0 {
 		t.Errorf("a guest without the ring's verbs was asked for a member: %v", *took)
 	}
@@ -208,7 +208,7 @@ var athens, _ = time.LoadLocation("Europe/Athens")
 func dbFixture(t *testing.T) (Config, fakeStatus, *fakeDB, *dbChecker, *fakeNotifier) {
 	t.Helper()
 	db := &fakeDB{}
-	cfg := Config{Node: "anchor-1", Services: []model.ServiceSpec{{Name: "home-assistant"}}}
+	cfg := Config{Node: "anchor-1", Apps: []model.AppSpec{{Name: "home-assistant"}}}
 	return cfg, fakeStatus{db: db}, db, &dbChecker{loc: athens}, &fakeNotifier{}
 }
 
@@ -225,7 +225,7 @@ func askRecorder(cfg Config, g fakeStatus, d *dbChecker, n *fakeNotifier, at tim
 		st = newAlertStore(filepath.Join(os.TempDir(), fmt.Sprintf("briard-alerts-%d.json", time.Now().UnixNano())), n, func(string, ...any) {})
 		recorderStores[n] = st
 	}
-	cfg.checkRecorder(context.Background(), g, d, cfg.Services, true, at.UTC(), st, func(string, ...any) {})
+	cfg.checkRecorder(context.Background(), g, d, cfg.Apps, true, at.UTC(), st, func(string, ...any) {})
 }
 
 // TestTheRecorderCheckStartsOnceANightAtHalfPastFive: after the update window and Home
@@ -294,8 +294,8 @@ func TestALostCheckIsGivenUpOn(t *testing.T) {
 // a node without Home Assistant has nothing to check.
 func TestTheRecorderCheckNeedsTheVolumeAndHomeAssistant(t *testing.T) {
 	cfg, g, db, d, n := dbFixture(t)
-	cfg.checkRecorder(context.Background(), g, d, cfg.Services, false, localAt(1, 5, 31), n, func(string, ...any) {})
-	cfg.checkRecorder(context.Background(), g, d, []model.ServiceSpec{{Name: "mosquitto"}}, true, localAt(1, 5, 31), n, func(string, ...any) {})
+	cfg.checkRecorder(context.Background(), g, d, cfg.Apps, false, localAt(1, 5, 31), n, func(string, ...any) {})
+	cfg.checkRecorder(context.Background(), g, d, []model.AppSpec{{Name: "mosquitto"}}, true, localAt(1, 5, 31), n, func(string, ...any) {})
 	if db.starts != 0 {
 		t.Fatalf("started %d times on a node that should not", db.starts)
 	}

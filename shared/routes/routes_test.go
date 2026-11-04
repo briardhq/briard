@@ -6,8 +6,8 @@ import (
 )
 
 // svc is a fronted app in the shape converge writes.
-func svc(name, host string, port string) Service {
-	return Service{
+func svc(name, host string, port string) App {
+	return App{
 		Name: name, Hosts: []string{host}, Address: "127.0.0.1",
 		Health: "http://:" + port + "/healthz",
 		Routes: []Route{{Listen: ListenName, To: "http://:" + port}},
@@ -36,7 +36,7 @@ func TestHostNameIsASingleLabel(t *testing.T) {
 // What a client actually sends in Host, all of which must find the same app: the port when it
 // is not the scheme's default, a trailing dot from a fully-qualified resolver, and any case.
 func TestLookupNormalisesWhatClientsSend(t *testing.T) {
-	tbl := Table{Services: []Service{svc("home-assistant", "briard-brave-elf-home-assistant.local", "8123")}}
+	tbl := Table{Apps: []App{svc("home-assistant", "briard-brave-elf-home-assistant.local", "8123")}}
 	for _, host := range []string{
 		"briard-brave-elf-home-assistant.local",
 		"briard-brave-elf-home-assistant.local:80",
@@ -46,11 +46,11 @@ func TestLookupNormalisesWhatClientsSend(t *testing.T) {
 		"  briard-brave-elf-home-assistant.local  ",
 	} {
 		if s, ok := tbl.Lookup(host); !ok || s.Name != "home-assistant" {
-			t.Errorf("Lookup(%q) = %+v %v, want the service", host, s, ok)
+			t.Errorf("Lookup(%q) = %+v %v, want the app", host, s, ok)
 		}
 	}
 	if _, ok := tbl.Lookup("192.168.1.100"); ok {
-		t.Error("the bare address matched a service; it belongs to the node, not to one of them")
+		t.Error("the bare address matched an app; it belongs to the node, not to one of them")
 	}
 }
 
@@ -73,7 +73,7 @@ func TestNormaliseKeepsIPv6Literals(t *testing.T) {
 // network namespace, so the address is an app fact and the endpoints carry only ports -- which
 // is what makes the private-network flip change one field rather than every URL in the file.
 func TestResolveSplicesTheServiceAddress(t *testing.T) {
-	s := Service{Name: "x", Address: "10.89.0.7", Health: "http://:9883/api/v1/listeners",
+	s := App{Name: "x", Address: "10.89.0.7", Health: "http://:9883/api/v1/listeners",
 		Routes: []Route{{Listen: ListenName, To: "http://:9001"}}}
 	for spec, want := range map[string]string{
 		"http://:9883/api/v1/listeners": "http://10.89.0.7:9883/api/v1/listeners",
@@ -85,13 +85,13 @@ func TestResolveSplicesTheServiceAddress(t *testing.T) {
 		}
 	}
 	// IPv6 addresses must come back bracketed, or the dialer parses the last group as a port.
-	v6 := Service{Name: "x", Address: "fd00::5"}
+	v6 := App{Name: "x", Address: "fd00::5"}
 	if u, err := v6.Resolve("http://:8080"); err != nil || u.String() != "http://[fd00::5]:8080" {
 		t.Errorf("Resolve on a v6 address = %v, %v", u, err)
 	}
 	// No address is an error, never a silent localhost.
-	if _, err := (Service{Name: "x"}).Resolve("http://:1"); err == nil {
-		t.Error("a service with no address resolved; the caller would dial nowhere")
+	if _, err := (App{Name: "x"}).Resolve("http://:1"); err == nil {
+		t.Error("an app with no address resolved; the caller would dial nowhere")
 	}
 }
 
@@ -101,18 +101,18 @@ func TestResolveSplicesTheServiceAddress(t *testing.T) {
 // code that happens to read it.
 func TestValidateRefusesATargetThatNamesAHost(t *testing.T) {
 	for _, tbl := range []Table{
-		{Services: []Service{{Name: "x", Address: "127.0.0.1",
+		{Apps: []App{{Name: "x", Address: "127.0.0.1",
 			Routes: []Route{{Listen: ListenName, To: "http://evil.example:80"}}}}},
-		{Services: []Service{{Name: "x", Address: "127.0.0.1", Health: "http://evil.example:80/z"}}},
+		{Apps: []App{{Name: "x", Address: "127.0.0.1", Health: "http://evil.example:80/z"}}},
 	} {
 		if err := tbl.Validate(); err == nil {
-			t.Errorf("a table naming another host validated: %+v", tbl.Services)
+			t.Errorf("a table naming another host validated: %+v", tbl.Apps)
 		} else if !strings.Contains(err.Error(), "host") {
 			t.Errorf("unhelpful error for an off-node target: %v", err)
 		}
 	}
 	// And a port is required: a spec without one would dial :80 by default, silently.
-	bad := Table{Services: []Service{{Name: "x", Address: "127.0.0.1",
+	bad := Table{Apps: []App{{Name: "x", Address: "127.0.0.1",
 		Routes: []Route{{Listen: ListenName, To: "http://"}}}}}
 	if err := bad.Validate(); err == nil {
 		t.Error("a route with no port validated")
@@ -123,7 +123,7 @@ func TestValidateRefusesATargetThatNamesAHost(t *testing.T) {
 // is unreachable with nothing saying why -- the failure mode that looks like a user error. This is
 // also what makes adding `tls:<port>` a change nobody can half-deploy.
 func TestValidateRefusesAnUnimplementedListener(t *testing.T) {
-	tbl := Table{Services: []Service{{Name: "mosquitto", Address: "127.0.0.1",
+	tbl := Table{Apps: []App{{Name: "mosquitto", Address: "127.0.0.1",
 		Routes: []Route{{Listen: "tls:8883", To: "http://:1883"}}}}}
 	if err := tbl.Validate(); err == nil {
 		t.Fatal("a route on an unimplemented listener validated; it would be silently unserved")
@@ -136,7 +136,7 @@ func TestValidateRefusesAnUnimplementedListener(t *testing.T) {
 // -- and refuse a field this build does not understand rather than route on a table it only partly
 // read.
 func TestMarshalParseRoundTripAndRefusesUnknownFields(t *testing.T) {
-	in := Table{Services: []Service{
+	in := Table{Apps: []App{
 		svc("home-assistant", "briard-brave-elf-home-assistant.local", "8123"),
 		// The broker: named and probed, with NO route. Absence is how "the door may not serve
 		// this" is said -- there is no address here for the door to be trusted not to use.
@@ -151,12 +151,12 @@ func TestMarshalParseRoundTripAndRefusesUnknownFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Services) != 2 {
-		t.Fatalf("round trip lost a service: %+v", out.Services)
+	if len(out.Apps) != 2 {
+		t.Fatalf("round trip lost an app: %+v", out.Apps)
 	}
 	ha, ok := out.Lookup("briard-brave-elf-home-assistant.local")
 	if !ok {
-		t.Fatal("the fronted service did not survive the round trip")
+		t.Fatal("the fronted app did not survive the round trip")
 	}
 	if r, ok := ha.Route(ListenName); !ok || r.To != "http://:8123" {
 		t.Errorf("route = %+v %v, want the host-less target", r, ok)
@@ -203,7 +203,7 @@ func TestInstanceNameIsTheHostNameWithoutTheDomain(t *testing.T) {
 // published against the guest's hostname, which is node-scoped: on a failover every device that
 // had browsed for the broker would keep dialling the machine that just demoted.
 func TestValidateRefusesAnAnnouncementWithNothingToPointAt(t *testing.T) {
-	tbl := Table{Services: []Service{{Name: "mosquitto", Address: "10.12.9.3",
+	tbl := Table{Apps: []App{{Name: "mosquitto", Address: "10.12.9.3",
 		Announce: []Announcement{{Name: "briard-brave-elf-mosquitto", Type: "_mqtt._tcp", Port: 1883}}}}}
 	if err := tbl.Validate(); err == nil {
 		t.Fatal("an announcement with no host validated; it would resolve nowhere")
@@ -229,7 +229,7 @@ func TestValidateRefusesUnusableAnnouncements(t *testing.T) {
 		{"port zero", Announcement{Name: "briard-x", Type: "_mqtt._tcp"}},
 		{"a port out of range", Announcement{Name: "briard-x", Type: "_mqtt._tcp", Port: 70000}},
 	} {
-		tbl := Table{Services: []Service{{Name: "mosquitto", Hosts: []string{"briard-x.local"},
+		tbl := Table{Apps: []App{{Name: "mosquitto", Hosts: []string{"briard-x.local"},
 			Address: "10.12.9.3", Announce: []Announcement{tc.a}}}}
 		if err := tbl.Validate(); err == nil {
 			t.Errorf("an announcement with %s validated: %+v", tc.what, tc.a)
@@ -237,7 +237,7 @@ func TestValidateRefusesUnusableAnnouncements(t *testing.T) {
 	}
 	// The control: the shape converge actually writes has to pass, or the assertions above are
 	// vacuous and the broker is never announced at all.
-	tbl := Table{Services: []Service{{Name: "mosquitto", Hosts: []string{"briard-brave-elf-mosquitto.local"},
+	tbl := Table{Apps: []App{{Name: "mosquitto", Hosts: []string{"briard-brave-elf-mosquitto.local"},
 		Address: "10.12.9.3", Announce: []Announcement{{Name: "briard-brave-elf-mosquitto", Type: "_mqtt._tcp", Port: 1883}}}}}
 	if err := tbl.Validate(); err != nil {
 		t.Errorf("the broker's own announcement was refused: %v", err)
@@ -259,7 +259,7 @@ func TestValidateRefusesUnusableAnnouncements(t *testing.T) {
 
 // The casa name is the app under the flock under the zone, and nothing for a flock
 // with no name -- the same rule HostName follows, so a nameless node routes nothing in either form.
-func TestCasaHostNameIsTheServiceUnderTheFlock(t *testing.T) {
+func TestCasaHostNameIsTheAppUnderTheFlock(t *testing.T) {
 	if got := CasaHostName("brave-elf", "home-assistant"); got != "home-assistant.brave-elf.briard.casa" {
 		t.Fatalf("CasaHostName = %q", got)
 	}
@@ -267,7 +267,7 @@ func TestCasaHostNameIsTheServiceUnderTheFlock(t *testing.T) {
 		t.Fatalf("a nameless flock has a casa name: %q", got)
 	}
 	if got := CasaHostName("brave-elf", ""); got != "" {
-		t.Fatalf("a nameless service has a casa name: %q", got)
+		t.Fatalf("a nameless app has a casa name: %q", got)
 	}
 }
 
@@ -302,10 +302,10 @@ func TestBareNamesRideBesideTheFlockScopedOnes(t *testing.T) {
 		t.Errorf("HostNames with no flock = %v, want none", got)
 	}
 	if got := BareHostName(""); got != "" {
-		t.Errorf("BareHostName with no service = %q, want none", got)
+		t.Errorf("BareHostName with no app = %q, want none", got)
 	}
 	// And the door routes on the alias exactly as it does on the identity.
-	tbl := Table{Services: []Service{{Name: "home-assistant", Hosts: HostNames("brave-elf", "home-assistant"),
+	tbl := Table{Apps: []App{{Name: "home-assistant", Hosts: HostNames("brave-elf", "home-assistant"),
 		Address: "127.0.0.1", Routes: []Route{{Listen: ListenName, To: "http://:8123"}}}}}
 	if s, ok := tbl.Lookup("BRIARD-HOME-ASSISTANT.local:80"); !ok || s.Name != "home-assistant" {
 		t.Errorf("the bare alias is not routed: %v %v", s, ok)

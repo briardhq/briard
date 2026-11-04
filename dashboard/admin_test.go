@@ -76,7 +76,7 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 		t.Errorf("install with no session = %d, want 401", resp.StatusCode)
 	}
 	if resp := r.do("POST", "/install/immich", c, nil); resp.StatusCode != http.StatusNotFound {
-		t.Errorf("install of another service = %d, want 404", resp.StatusCode)
+		t.Errorf("install of another app = %d, want 404", resp.StatusCode)
 	}
 	if resp := r.do("POST", "/install/home-assistant", c, nil); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("press = %d, want 303", resp.StatusCode)
@@ -97,11 +97,11 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 	port.mu.Lock()
 	asked := append([]api.Directive(nil), port.asked...)
 	port.mu.Unlock()
-	if len(asked) != 1 || asked[0].Kind != api.DirectiveServiceInstall || asked[0].Payload != "home-assistant" {
+	if len(asked) != 1 || asked[0].Kind != api.DirectiveAppInstall || asked[0].Payload != "home-assistant" {
 		t.Fatalf("the host was asked %+v; want exactly one service-install of home-assistant", asked)
 	}
 	// The host says no: the reason and the CLI are on the page, and the button is back.
-	port.answer <- api.DirectiveOutcome{ID: asked[0].ID, State: api.OutcomeFailed, Detail: "catalog: no such service"}
+	port.answer <- api.DirectiveOutcome{ID: asked[0].ID, State: api.OutcomeFailed, Detail: "catalog: no such app"}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		body = r.page(c)
@@ -110,7 +110,7 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !strings.Contains(body, "catalog: no such service") || !strings.Contains(body, "sudo briard app install home-assistant") || !strings.Contains(body, "Try again") || strings.Contains(body, `http-equiv="refresh"`) {
+	if !strings.Contains(body, "catalog: no such app") || !strings.Contains(body, "sudo briard app install home-assistant") || !strings.Contains(body, "Try again") || strings.Contains(body, `http-equiv="refresh"`) {
 		t.Errorf("a refused install is not surfaced with its reason, the CLI and a retry, or the page still polls: %s", body)
 	}
 	// Try again, and this time the host does it: the routes table lists HA, the ordinary card
@@ -119,7 +119,7 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 		t.Fatalf("retry = %d", resp.StatusCode)
 	}
 	<-port.waiting
-	tbl := routes.Table{Services: []routes.Service{{
+	tbl := routes.Table{Apps: []routes.App{{
 		Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"},
 		Address: r.haURL.Hostname(), Health: "http://:" + r.haURL.Port() + "/manifest.json",
 		Routes: []routes.Route{{Listen: routes.ListenName, To: "http://:" + r.haURL.Port()}},
@@ -142,7 +142,7 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 	left := len(r.app.installs)
 	r.app.mu.Unlock()
 	if left != 0 {
-		t.Errorf("%d install records kept after the service was routed", left)
+		t.Errorf("%d install records kept after the app was routed", left)
 	}
 	// A host with no admin port (an older host, a rig that is not briard's qemu) is surfaced as
 	// such, with the CLI.
@@ -200,7 +200,7 @@ func TestSerialPortSubmitMatchesTheOutcomeByID(t *testing.T) {
 	// The device is a character special file the test cannot fake; the wire it carries is
 	// what the claim is about, so the port is opened onto the socket instead.
 	p := &serialPort{open: func() (io.ReadWriteCloser, error) { return net.Dial("unix", sock) }}
-	got, err := p.Submit(context.Background(), api.Directive{Kind: api.DirectiveServiceInstall, Payload: "home-assistant"})
+	got, err := p.Submit(context.Background(), api.Directive{Kind: api.DirectiveAppInstall, Payload: "home-assistant"})
 	must(t, err)
 	if got.State != api.OutcomeDone || got.Detail != "did home-assistant" || got.ID == "" {
 		t.Errorf("outcome = %+v; want the matching answer, with the ID Submit minted", got)
@@ -220,12 +220,12 @@ func TestSerialPortSubmitMatchesTheOutcomeByID(t *testing.T) {
 	quiet := &serialPort{open: func() (io.ReadWriteCloser, error) { return net.Dial("unix", silent) }}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	if _, err := quiet.Submit(ctx, api.Directive{Kind: api.DirectiveServiceInstall}); err == nil || ctx.Err() == nil {
+	if _, err := quiet.Submit(ctx, api.Directive{Kind: api.DirectiveAppInstall}); err == nil || ctx.Err() == nil {
 		t.Errorf("Submit against a silent host returned %v before the context ended", err)
 	}
 	// And the real device path when it does not exist: the no-port error, by name.
 	absent := &serialPort{path: filepath.Join(t.TempDir(), "absent")}
-	if _, err := absent.Submit(context.Background(), api.Directive{Kind: api.DirectiveServiceInstall}); err != errNoAdminPort {
+	if _, err := absent.Submit(context.Background(), api.Directive{Kind: api.DirectiveAppInstall}); err != errNoAdminPort {
 		t.Errorf("Submit on an absent port = %v; want errNoAdminPort", err)
 	}
 }

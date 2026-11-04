@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
+	apps1 "briard.io/agent/apps"
 	"briard.io/agent/quadlet"
-	"briard.io/agent/services"
 	"briard.io/shared/api"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
@@ -155,10 +155,10 @@ func galleryRing(broken bool) string {
 	older := time.Date(2026, 10, 20, 3, 0, 0, 0, time.UTC)
 	update := time.Date(2026, 10, 27, 3, 0, 0, 0, time.UTC)
 	reasons := []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to 2026.8.0"}}
-	health := services.Healthy
+	health := apps1.Healthy
 	if broken {
 		reasons = append(reasons, quadlet.Reason{Kind: quadlet.ReasonUnhealthy})
-		health = services.Unhealthy
+		health = apps1.Unhealthy
 	}
 	manifestOf := func(v string) string {
 		return `{"name":"home-assistant","version":"` + v + `","size":622000000,"installedSize":2490000000,"containers":[{"name":"app",` +
@@ -167,13 +167,13 @@ func galleryRing(broken bool) string {
 	}
 	entries := []quadlet.SnapshotEntry{
 		{Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, older),
-			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerClock, TakenAt: older, Consistency: quadlet.Crash, Manifest: manifestOf("2026.7.1"),
+			Meta: quadlet.SnapshotMeta{App: "home-assistant", Trigger: quadlet.TriggerClock, TakenAt: older, Consistency: quadlet.Crash, Manifest: manifestOf("2026.7.1"),
 				Event: &quadlet.Event{At: older.Add(20 * time.Hour), Reasons: []quadlet.Reason{{Kind: quadlet.ReasonQuiet}}}}},
 		{Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerAppUpdateBefore, update),
-			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore, TakenAt: update, Consistency: quadlet.Quiesced, Manifest: manifestOf("2026.7.1"),
+			Meta: quadlet.SnapshotMeta{App: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore, TakenAt: update, Consistency: quadlet.Quiesced, Manifest: manifestOf("2026.7.1"),
 				Event: &quadlet.Event{At: update, Reasons: reasons}}},
 		{Member: quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, update.Add(5*time.Minute)),
-			Meta: quadlet.SnapshotMeta{Service: "home-assistant", Trigger: quadlet.TriggerStart, TakenAt: update.Add(5 * time.Minute), Consistency: quadlet.Quiesced, Manifest: manifestOf("2026.8.0"), Health: health}},
+			Meta: quadlet.SnapshotMeta{App: "home-assistant", Trigger: quadlet.TriggerStart, TakenAt: update.Add(5 * time.Minute), Consistency: quadlet.Quiesced, Manifest: manifestOf("2026.8.0"), Health: health}},
 	}
 	raw, _ := json.Marshal(entries)
 	return string(raw)
@@ -270,7 +270,7 @@ var galleryStates = []galleryState{
 			must(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
 			r.app.pulls = pullPaths{records: t.TempDir(), layers: filepath.Join(root, "overlay-layers", "layers.json"), tmp: filepath.Join(root, "tmp")}
 			started := galleryClock.Add(-time.Minute)
-			rec, _ := json.Marshal(dashboard.Pull{Service: "home-assistant", Size: 650e6, InstalledSize: 2500e6, Started: started})
+			rec, _ := json.Marshal(dashboard.Pull{App: "home-assistant", Size: 650e6, InstalledSize: 2500e6, Started: started})
 			must(t, os.WriteFile(filepath.Join(r.app.pulls.records, "pull-home-assistant.json"), rec, 0o600))
 			layers, _ := json.Marshal([]map[string]any{
 				{"id": "c", "compressed-size": 150e6, "created": started.Add(10 * time.Second).Format(time.RFC3339Nano)},
@@ -307,7 +307,7 @@ var galleryStates = []galleryState{
 		}},
 	{"home-ha-unreachable", "Home Assistant is routed but does not answer HTTP yet.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
-			tbl := routes.Table{Services: []routes.Service{{
+			tbl := routes.Table{Apps: []routes.App{{
 				Name: "home-assistant", Hosts: []string{"briard-brave-elf-home-assistant.local"},
 				Address: "127.0.0.1", Health: "http://:1/manifest.json",
 				Routes: []routes.Route{{Listen: routes.ListenName, To: "http://:1"}},

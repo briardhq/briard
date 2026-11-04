@@ -284,16 +284,16 @@ func ConfigFromEnv() Config {
 		ReparentTier: durEnv("REPARENT_TIER", 0),
 		// Services is NOT read from the environment, and there is nothing here to read it from:
 		// what a node runs is installed at runtime and rebuilt from the node-local manifest cache
-		// at bring-up (Run -> installedServices), or read off the volume when this node promotes
-		// (adoptVolumeServices). The environment described the build-time payload slot, which is
+		// at bring-up (Run -> installedApps), or read off the volume when this node promotes
+		// (adoptVolumeApps). The environment described the build-time payload slot, which is
 		// gone; the empty set is the shipped state and every node starts there.
 		// The catalog is published signed static content (an apt-mirror, not an API),
 		// which is exactly what the release channel already is -- so it lives in the same bucket,
 		// under the same trust root (the release keyring verifies manifests and artifacts alike),
 		// with one publish credential and one thing for a third party to mirror. briard.io itself
 		// is the marketing site; an app catalog is not a web page.
-		CatalogURL:   env("CATALOG_URL", "https://get.briard.io/catalog"),
-		ServiceCache: env("SERVICE_CACHE", filepath.Join(stateDir, "services")),
+		CatalogURL: env("CATALOG_URL", "https://get.briard.io/catalog"),
+		AppCache:   env("SERVICE_CACHE", filepath.Join(stateDir, "services")),
 		// declared, not env: BACKUP_DIR="" is the household turning the backup off.
 		BackupDir:         declared("BACKUP_DIR", defaultBackupDir),
 		MeshCache:         env("MESH_CACHE", filepath.Join(stateDir, "mesh.json")),
@@ -364,7 +364,7 @@ func disklessOr(role model.Role, w, d string) string {
 }
 
 // disklessOrSpecs empties the app set on a diskless node (nothing to upgrade).
-func disklessOrSpecs(role model.Role, s []model.ServiceSpec) []model.ServiceSpec {
+func disklessOrSpecs(role model.Role, s []model.AppSpec) []model.AppSpec {
 	if role == model.RoleDiskless {
 		return nil
 	}

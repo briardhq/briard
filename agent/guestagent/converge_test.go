@@ -31,7 +31,7 @@ const mosquittoManifest = `{"name":"mosquitto","version":"2.1.2","containers":[{
 // image store it asks about. Everything else falls through to fakeExec's defaults.
 type convergeExec struct {
 	fakeExec
-	services    []string // what `ls -1 <manifestDir>` returns; nil = the directory does not exist
+	apps        []string // what `ls -1 <manifestDir>` returns; nil = the directory does not exist
 	quadlet     []string // what `ls -1 <quadletDir>` returns
 	haveImage   bool     // whether `podman image exists <ref>` succeeds
 	failExtract bool     // whether the per-app extraction out of the image fails
@@ -45,14 +45,14 @@ func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]
 	c.fakeExec.runs = append(c.fakeExec.runs, append([]string{name}, args...))
 	switch {
 	case name == "ls" && len(args) == 2 && args[1] == manifestDir:
-		if c.services == nil {
+		if c.apps == nil {
 			return nil, errors.New("exit status 2") // no such directory
 		}
 		// The listing is the apps named PLUS whatever staging put in the directory, so a test
 		// that stages sees its own files the way the real directory would show them.
 		seen := map[string]bool{}
 		var ls []string
-		for _, n := range c.services {
+		for _, n := range c.apps {
 			seen[n] = true
 			ls = append(ls, n)
 		}
@@ -126,7 +126,7 @@ func (c *convergeExec) ran(argv ...string) bool {
 
 func dummyNode(t *testing.T) *convergeExec {
 	t.Helper()
-	x := &convergeExec{services: []string{"dummy.json"}, haveImage: true}
+	x := &convergeExec{apps: []string{"dummy.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{manifestDir + "/dummy.json": dummyManifest}
 	return x
 }
@@ -150,7 +150,7 @@ func TestConvergeRendersFromTheVolume(t *testing.T) {
 	// The pod before its members: the quadlet spike proved starting the pod does not start them.
 	if !x.ran("systemctl", "start", "briard-dummy-pod.service") ||
 		!x.ran("systemctl", "start", "briard-dummy-app.service") {
-		t.Fatalf("converge did not start the service units; ran %v", x.fakeExec.runs)
+		t.Fatalf("converge did not start the app units; ran %v", x.fakeExec.runs)
 	}
 }
 
@@ -160,10 +160,10 @@ func TestConvergeRendersFromTheVolume(t *testing.T) {
 func TestConvergeToNothingIsNotAnError(t *testing.T) {
 	x := &convergeExec{} // services nil => `ls` fails => no such directory
 	if _, err := Converge(context.Background(), x, ""); err != nil {
-		t.Fatalf("a zero-service node must converge successfully to nothing, got: %v", err)
+		t.Fatalf("a zero-app node must converge successfully to nothing, got: %v", err)
 	}
 	if x.ran("systemctl", "daemon-reload") == false && len(x.fakeExec.files) > 1 {
-		t.Fatal("nothing installed, yet converge wrote service units")
+		t.Fatal("nothing installed, yet converge wrote app units")
 	}
 }
 
@@ -173,7 +173,7 @@ func TestConvergeToNothingIsNotAnError(t *testing.T) {
 // Promoting anyway is how a household silently loses an app -- the exact failure (f) exists
 // to end -- so converge fails and the promotion fails with it.
 func TestConvergeRefusesAnUnusableManifest(t *testing.T) {
-	x := &convergeExec{services: []string{"dummy.json"}, haveImage: true}
+	x := &convergeExec{apps: []string{"dummy.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{manifestDir + "/dummy.json": "{not json"}
 	_, err := Converge(context.Background(), x, "")
 	if err == nil {
@@ -228,24 +228,24 @@ func TestConvergeFailsWhenAnAbsentImageCannotBeFetched(t *testing.T) {
 	}
 }
 
-// TestAServiceThatWillNotStartDoesNotFailConverge is the failure rule: converge's
+// TestAAppThatWillNotStartDoesNotFailConverge is the failure rule: converge's
 // OWN failure demotes, an APP's failure alerts and promotes. A code fault is deterministic, so
 // the peer running the identical closure hits it identically and the failover only flaps; and one
 // broken app must not take the other N-1 down with it.
-func TestAServiceThatWillNotStartDoesNotFailConverge(t *testing.T) {
-	x := &convergeExec{services: []string{"dummy.json", "other.json"}, haveImage: true}
+func TestAAppThatWillNotStartDoesNotFailConverge(t *testing.T) {
+	x := &convergeExec{apps: []string{"dummy.json", "other.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{
 		manifestDir + "/dummy.json": dummyManifest,
 		manifestDir + "/other.json": otherManifest,
 	}
 	x.failStart = map[string]bool{"briard-dummy-app.service": true}
 	if _, err := Converge(context.Background(), x, ""); err != nil {
-		t.Fatalf("a crashing service demoted the node: %v", err)
+		t.Fatalf("a crashing app demoted the node: %v", err)
 	}
 	// ...and the OTHER app still ran. This is the "N-1" half, and without it the test would
 	// pass on an implementation that gave up at the first failure.
 	if !x.ran("systemctl", "start", "briard-other-app.service") {
-		t.Fatalf("one broken service stopped the others from starting; ran %v", x.fakeExec.runs)
+		t.Fatalf("one broken app stopped the others from starting; ran %v", x.fakeExec.runs)
 	}
 }
 
@@ -319,12 +319,12 @@ const dummyManifestV2 = `{"name":"dummy","version":"2","network":"host","contain
 	`"image":"localhost/briard-dummy@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +
 	`"mounts":[{"tier":"data","dir":"app","path":"/data"}],"primary":true,"port":8080,"healthPath":"/healthz"}]}`
 
-// TestConvergeBouncesAServiceWhoseRenderingChanged is the upgrade case. systemd does not restart
+// TestConvergeBouncesAAppWhoseRenderingChanged is the upgrade case. systemd does not restart
 // an already-active unit on daemon-reload, so a converge that only ever STARTS would leave the
 // old container serving while every file on disk described the new one — green, and wrong. This
 // is what the install path's quiesce did inside the maintenance bracket, and it moved here with
 // the bracket's deletion.
-func TestConvergeBouncesAServiceWhoseRenderingChanged(t *testing.T) {
+func TestConvergeBouncesAAppWhoseRenderingChanged(t *testing.T) {
 	x := dummyNode(t)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("first Converge: %v", err)
@@ -346,7 +346,7 @@ func TestConvergeBouncesAServiceWhoseRenderingChanged(t *testing.T) {
 	// from under their units, so each lands in `failed` rather than stopping cleanly.
 	want := []string{"briard-dummy-app.service", "briard-dummy-pod.service"}
 	if fmt.Sprint(stopped) != fmt.Sprint(want) {
-		t.Fatalf("an upgraded service was not bounced: stopped %v, want %v", stopped, want)
+		t.Fatalf("an upgraded app was not bounced: stopped %v, want %v", stopped, want)
 	}
 }
 
@@ -392,11 +392,11 @@ func TestConvergeBouncesEvenWhenTheUnitsWereWrittenForIt(t *testing.T) {
 	}
 }
 
-// TestConvergeLeavesAnUnchangedServiceAlone is the half that keeps the one above honest: bouncing
+// TestConvergeLeavesAnUnchangedAppAlone is the half that keeps the one above honest: bouncing
 // unconditionally would also pass it. Converge runs on every promotion AND every install, so a
 // app nobody touched must not be taken down because a DIFFERENT one was upgraded.
-func TestConvergeLeavesAnUnchangedServiceAlone(t *testing.T) {
-	x := &convergeExec{services: []string{"dummy.json", "other.json"}, haveImage: true}
+func TestConvergeLeavesAnUnchangedAppAlone(t *testing.T) {
+	x := &convergeExec{apps: []string{"dummy.json", "other.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{
 		manifestDir + "/dummy.json": dummyManifest,
 		manifestDir + "/other.json": otherManifest,
@@ -421,7 +421,7 @@ func TestConvergeLeavesAnUnchangedServiceAlone(t *testing.T) {
 }
 
 // TestConvergeVerbsAreAdvertised: the host gates the whole install on the handshake
-// (SupportsServiceConverge), so a verb the dispatch switch handles but the capability list omits
+// (SupportsAppConverge), so a verb the dispatch switch handles but the capability list omits
 // is invisible — an install would refuse a guest that could in fact do the work.
 //
 // THE HANDSHAKE IS THE POINT, not scenery: Supports returns true when caps is nil (a guest too old
@@ -432,10 +432,10 @@ func TestConvergeVerbsAreAdvertised(t *testing.T) {
 	if _, err := g.Handshake(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !g.SupportsServiceConverge() {
+	if !g.SupportsAppConverge() {
 		t.Fatal("service.converge is handled but not advertised — every install would refuse this guest")
 	}
-	for _, v := range []string{verbServiceStage, verbServiceCommit, verbServiceDiscard, verbServicePending} {
+	for _, v := range []string{verbAppStage, verbAppCommit, verbAppDiscard, verbAppPending} {
 		if !g.Supports(v) {
 			t.Fatalf("%s is handled but not advertised", v)
 		}
@@ -450,7 +450,7 @@ const hassManifest = `{"name":"home-assistant","version":"2026.7.1","network":"h
 
 func hassNode(t *testing.T) *convergeExec {
 	t.Helper()
-	x := &convergeExec{services: []string{"home-assistant.json"}, haveImage: true}
+	x := &convergeExec{apps: []string{"home-assistant.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{manifestDir + "/home-assistant.json": hassManifest}
 	return x
 }
@@ -487,24 +487,24 @@ func TestConvergePreparesTheControlChannel(t *testing.T) {
 	}
 }
 
-// TestConvergeLeavesOtherServicesAlone: the knowledge is keyed on the catalog name, so an app
+// TestConvergeLeavesOtherAppsAlone: the knowledge is keyed on the catalog name, so an app
 // the product knows nothing about must converge exactly as it did before any of this existed.
-func TestConvergeLeavesOtherServicesAlone(t *testing.T) {
+func TestConvergeLeavesOtherAppsAlone(t *testing.T) {
 	x := dummyNode(t)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
 	for _, r := range x.fakeExec.runs {
 		if len(r) > 1 && r[0] == "podman" && r[1] == "create" {
-			t.Fatalf("a service that is not home-assistant staged an extraction container: %v", r)
+			t.Fatalf("an app that is not home-assistant staged an extraction container: %v", r)
 		}
 	}
 	if _, ok := x.fakeExec.files[hass.TokenPath+".new"]; ok {
-		t.Fatal("a service that is not home-assistant got a Home Assistant token")
+		t.Fatal("an app that is not home-assistant got a Home Assistant token")
 	}
 }
 
-// TestPreparationFailureCostsOneServiceNotTheNode: preparation is the one converge step whose
+// TestPreparationFailureCostsOneAppNotTheNode: preparation is the one converge step whose
 // inputs are the APP's — its image's own layout — so an app whose upstream packaging moved
 // must not take the other N-1 down with it. Converge succeeds, the node promotes, the healthy
 // app runs, and the broken one is named rather than started.
@@ -512,9 +512,9 @@ func TestConvergeLeavesOtherServicesAlone(t *testing.T) {
 // NOT STARTING IT IS ALSO WHAT MAKES IT SAFE: the rendered unit names bind sources Prepare writes,
 // and podman creates a missing source as a root-owned directory — a container that can never start
 // and a path a later Prepare cannot fix. An unstarted unit cannot do that.
-func TestPreparationFailureCostsOneServiceNotTheNode(t *testing.T) {
+func TestPreparationFailureCostsOneAppNotTheNode(t *testing.T) {
 	x := &convergeExec{
-		services:    []string{"dummy.json", "home-assistant.json"},
+		apps:        []string{"dummy.json", "home-assistant.json"},
 		haveImage:   true,
 		failExtract: true,
 	}
@@ -524,14 +524,14 @@ func TestPreparationFailureCostsOneServiceNotTheNode(t *testing.T) {
 	}
 	skipped, err := Converge(context.Background(), x, "")
 	if err != nil {
-		t.Fatalf("one service's preparation failure took the whole converge down: %v", err)
+		t.Fatalf("one app's preparation failure took the whole converge down: %v", err)
 	}
 	if len(skipped) != 1 || skipped[0] != "home-assistant" {
 		t.Fatalf("skipped = %v, want [home-assistant]", skipped)
 	}
 	// The healthy app ran...
 	if !x.ran("systemctl", "start", "briard-dummy-app.service") {
-		t.Fatalf("the healthy service was not started; ran %v", x.fakeExec.runs)
+		t.Fatalf("the healthy app was not started; ran %v", x.fakeExec.runs)
 	}
 	// ...and the broken one was not started at all.
 	for _, u := range []string{"briard-home-assistant-pod.service", "briard-home-assistant-app.service"} {
@@ -543,10 +543,10 @@ func TestPreparationFailureCostsOneServiceNotTheNode(t *testing.T) {
 	// never retries.
 	started := x.fakeExec.files[startedFile]
 	if strings.Contains(started, "briard-home-assistant") {
-		t.Fatalf("a service that was never started was recorded as started:\n%s", started)
+		t.Fatalf("an app that was never started was recorded as started:\n%s", started)
 	}
 	if !strings.Contains(started, "briard-dummy") {
-		t.Fatalf("the service that DID start was not recorded:\n%s", started)
+		t.Fatalf("the app that DID start was not recorded:\n%s", started)
 	}
 }
 
@@ -555,7 +555,7 @@ func TestPreparationFailureCostsOneServiceNotTheNode(t *testing.T) {
 // turn a failed upgrade into an outage, so the skip covers the stop as well as the start — the
 // install path is told through the return value and reverts.
 func TestPreparationFailureLeavesTheOldContainerServing(t *testing.T) {
-	x := &convergeExec{services: []string{"home-assistant.json"}, haveImage: true, failExtract: true}
+	x := &convergeExec{apps: []string{"home-assistant.json"}, haveImage: true, failExtract: true}
 	x.fakeExec.files = map[string]string{manifestDir + "/home-assistant.json": hassManifest}
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
@@ -585,10 +585,10 @@ func TestConvergeWritesTheRoutingTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the table converge wrote does not parse: %v", err)
 	}
-	if len(tbl.Services) != 1 {
-		t.Fatalf("table = %+v, want the one installed service", tbl.Services)
+	if len(tbl.Apps) != 1 {
+		t.Fatalf("table = %+v, want the one installed app", tbl.Apps)
 	}
-	s := tbl.Services[0]
+	s := tbl.Apps[0]
 	// The ADDRESS comes from the renderer, which is the only thing that knows how the pod was
 	// wired -- host networking today, which is why it is the guest's own loopback.
 	if s.Name != "dummy" || s.Address != "127.0.0.1" || s.Health != "http://:8080/healthz" {
@@ -620,12 +620,12 @@ func TestConvergeRoutesWithoutANameWhenTheFlockHasNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tbl.Services) != 1 || len(tbl.Services[0].Hosts) != 0 {
-		t.Fatalf("table = %+v, want the service present and unnamed", tbl.Services)
+	if len(tbl.Apps) != 1 || len(tbl.Apps[0].Hosts) != 0 {
+		t.Fatalf("table = %+v, want the app present and unnamed", tbl.Apps)
 	}
 	// Still fronted, though: the flock having no name is not a statement about exposure.
-	if _, ok := tbl.Services[0].Route(routes.ListenName); !ok {
-		t.Error("an unnamed service lost its route; only the NAME is missing")
+	if _, ok := tbl.Apps[0].Route(routes.ListenName); !ok {
+		t.Error("an unnamed app lost its route; only the NAME is missing")
 	}
 }
 
@@ -643,8 +643,8 @@ func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tbl.Services) != 0 {
-		t.Fatalf("table = %+v, want it emptied with the services", tbl.Services)
+	if len(tbl.Apps) != 0 {
+		t.Fatalf("table = %+v, want it emptied with the apps", tbl.Apps)
 	}
 	// The publisher reads the same table, so an emptied table IS the withdrawal -- there is no
 	// second file that could still be listing a name nothing serves.
@@ -658,7 +658,7 @@ func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 // address. It resolves for an app with NO ROUTE too: not-fronted is a statement about the door,
 // never about whether the node may look. An unresolvable app is an error, never an unhealthy
 // verdict -- see the verb.
-func TestServiceHealthURLResolvesThroughTheTable(t *testing.T) {
+func TestAppHealthURLResolvesThroughTheTable(t *testing.T) {
 	x := &convergeExec{}
 	x.fakeExec.files = map[string]string{
 		routes.Path: `{"services":[` +
@@ -668,20 +668,20 @@ func TestServiceHealthURLResolvesThroughTheTable(t *testing.T) {
 			`"address":"127.0.0.1","health":"http://:9883/api/v1/listeners"},` +
 			`{"name":"nameless","address":"127.0.0.1"}]}`,
 	}
-	got, err := serviceHealthURL(x, "dummy")
+	got, err := appHealthURL(x, "dummy")
 	if err != nil || got != "http://127.0.0.1:8080/healthz" {
-		t.Fatalf("serviceHealthURL(dummy) = %q, %v; want the rendered endpoint", got, err)
+		t.Fatalf("appHealthURL(dummy) = %q, %v; want the rendered endpoint", got, err)
 	}
 	// The broker has no route and is probed anyway, at the address the door is never given.
-	got, err = serviceHealthURL(x, "mosquitto")
+	got, err = appHealthURL(x, "mosquitto")
 	if err != nil || got != "http://127.0.0.1:9883/api/v1/listeners" {
-		t.Fatalf("serviceHealthURL(mosquitto) = %q, %v; a service with no route must still be probed", got, err)
+		t.Fatalf("appHealthURL(mosquitto) = %q, %v; an app with no route must still be probed", got, err)
 	}
-	if _, err := serviceHealthURL(x, "nope"); err == nil {
-		t.Error("a service absent from the table resolved; the gate must retry, not fail it")
+	if _, err := appHealthURL(x, "nope"); err == nil {
+		t.Error("an app absent from the table resolved; the gate must retry, not fail it")
 	}
-	if _, err := serviceHealthURL(x, "nameless"); err == nil {
-		t.Error("a service with no health endpoint resolved; there is nothing to GET")
+	if _, err := appHealthURL(x, "nameless"); err == nil {
+		t.Error("an app with no health endpoint resolved; there is nothing to GET")
 	}
 }
 
@@ -702,17 +702,17 @@ func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tbl.Services) != 1 {
-		t.Fatalf("table = %+v, want the service kept through the rename", tbl.Services)
+	if len(tbl.Apps) != 1 {
+		t.Fatalf("table = %+v, want the app kept through the rename", tbl.Apps)
 	}
-	if got := tbl.Services[0].Hosts; len(got) != 3 || got[0] != "briard-picked-hornet-dummy.local" || got[1] != "briard-dummy.local" || got[2] != "dummy.picked-hornet.briard.casa" {
+	if got := tbl.Apps[0].Hosts; len(got) != 3 || got[0] != "briard-picked-hornet-dummy.local" || got[1] != "briard-dummy.local" || got[2] != "dummy.picked-hornet.briard.casa" {
 		t.Errorf("hosts = %v, want the new flock name in both flock-scoped forms and the alias between", got)
 	}
-	if tbl.Services[0].Address != "127.0.0.1" {
-		t.Errorf("address = %q, want it untouched: a rename changes names and nothing else", tbl.Services[0].Address)
+	if tbl.Apps[0].Address != "127.0.0.1" {
+		t.Errorf("address = %q, want it untouched: a rename changes names and nothing else", tbl.Apps[0].Address)
 	}
 	// The route survives untouched too: a rename changes names and nothing else.
-	if r, ok := tbl.Services[0].Route(routes.ListenName); !ok || r.To != "http://:8080" {
+	if r, ok := tbl.Apps[0].Route(routes.ListenName); !ok || r.To != "http://:8080" {
 		t.Errorf("route = %+v %v, want it untouched by the rename", r, ok)
 	}
 }
@@ -723,7 +723,7 @@ func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
 // loopback on purpose — and the door runs inside that guest. A routing table that fronted it would
 // undo a deliberate bind through a mechanism that never mentions it.
 func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
-	x := &convergeExec{services: []string{"dummy.json", "mosquitto.json"}, haveImage: true}
+	x := &convergeExec{apps: []string{"dummy.json", "mosquitto.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{
 		manifestDir + "/dummy.json":     dummyManifest,
 		manifestDir + "/mosquitto.json": mosquittoManifest,
@@ -741,7 +741,7 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	}
 	mq, ok := tbl.Get("mosquitto")
 	if !ok {
-		t.Fatalf("the broker is not in the table at all: %+v", tbl.Services)
+		t.Fatalf("the broker is not in the table at all: %+v", tbl.Apps)
 	}
 	if _, ok := mq.Route(routes.ListenName); ok {
 		t.Error("the broker has a route; its management API would be republished on the LAN")
@@ -755,7 +755,7 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	if mq.Address == "" || mq.Health == "" {
 		t.Errorf("broker = %+v, want an address to probe even though the door may not use it", mq)
 	}
-	if _, err := serviceHealthURL(x, "mosquitto"); err != nil {
+	if _, err := appHealthURL(x, "mosquitto"); err != nil {
 		t.Errorf("the broker cannot be health-probed (%v); having no route must not decide that", err)
 	}
 	// AND IT ANNOUNCES ITSELF. The one app the household's other devices go
@@ -773,17 +773,17 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	// And an ordinary app is unaffected: the default is the front door.
 	d, _ := tbl.Get("dummy")
 	if _, ok := d.Route(routes.ListenName); !ok {
-		t.Error("an ordinary service came out with no route")
+		t.Error("an ordinary app came out with no route")
 	}
 	if len(d.Announce) != 0 {
-		t.Errorf("an ordinary service announced %+v; only the broker does", d.Announce)
+		t.Errorf("an ordinary app announced %+v; only the broker does", d.Announce)
 	}
 }
 
 // privateNode is a node with a pod pool and one private app on the volume.
 func privateNode(t *testing.T) *convergeExec {
 	t.Helper()
-	x := &convergeExec{services: []string{"mosquitto.json"}, haveImage: true}
+	x := &convergeExec{apps: []string{"mosquitto.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{
 		manifestDir + "/mosquitto.json": mosquittoManifest,
 		podSubnetPath:                   "10.12.7\n",
@@ -796,7 +796,7 @@ func privateNode(t *testing.T) *convergeExec {
 // until it collides: the loser is probed to the next slot, and then uninstalling the WINNER frees
 // the loser's own hash and moves it -- bouncing an app for a reason that has nothing to do with
 // it. This is the property that shape cannot have.
-func TestAnAddressSurvivesOtherServicesComingAndGoing(t *testing.T) {
+func TestAnAddressSurvivesOtherAppsComingAndGoing(t *testing.T) {
 	x := privateNode(t)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
@@ -807,26 +807,26 @@ func TestAnAddressSurvivesOtherServicesComingAndGoing(t *testing.T) {
 	}
 
 	// A second private app arrives, then leaves. The broker must not move for either.
-	x.services = []string{"mosquitto.json", "other.json"}
+	x.apps = []string{"mosquitto.json", "other.json"}
 	x.fakeExec.files[manifestDir+"/other.json"] = strings.Replace(otherManifest, `"network":"host",`, "", 1)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
-		t.Fatalf("Converge with a second service: %v", err)
+		t.Fatalf("Converge with a second app: %v", err)
 	}
 	if got := addressOf(t, x, "mosquitto"); got != first {
-		t.Errorf("the broker moved to %q when another service was installed (was %q)", got, first)
+		t.Errorf("the broker moved to %q when another app was installed (was %q)", got, first)
 	}
 	second := addressOf(t, x, "other")
 	if second == first {
-		t.Fatalf("two services were given the same address %q", first)
+		t.Fatalf("two apps were given the same address %q", first)
 	}
 
-	x.services = []string{"mosquitto.json"}
+	x.apps = []string{"mosquitto.json"}
 	delete(x.fakeExec.files, manifestDir+"/other.json")
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge after the uninstall: %v", err)
 	}
 	if got := addressOf(t, x, "mosquitto"); got != first {
-		t.Errorf("the broker moved to %q when ANOTHER service was uninstalled (was %q)", got, first)
+		t.Errorf("the broker moved to %q when ANOTHER app was uninstalled (was %q)", got, first)
 	}
 }
 
@@ -852,12 +852,12 @@ func TestARebootReallocatesFromNothing(t *testing.T) {
 // A PRIVATE APP ON A NODE WITH NO POOL IS AN ERROR, never a quiet fallback. Handing it the
 // guest's namespace would be host networking under another name -- granting by accident exactly
 // the capability the manifest field exists to make deliberate.
-func TestAPrivateServiceRefusesWithoutAPool(t *testing.T) {
-	x := &convergeExec{services: []string{"mosquitto.json"}, haveImage: true}
+func TestAPrivateAppRefusesWithoutAPool(t *testing.T) {
+	x := &convergeExec{apps: []string{"mosquitto.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{manifestDir + "/mosquitto.json": mosquittoManifest}
 	_, err := Converge(context.Background(), x, "")
 	if err == nil {
-		t.Fatal("a private service rendered on a node with no pod pool")
+		t.Fatal("a private app rendered on a node with no pod pool")
 	}
 	if !strings.Contains(err.Error(), "pod pool") {
 		t.Errorf("unhelpful error: %v", err)
@@ -873,7 +873,7 @@ func addressOf(t *testing.T, x *convergeExec, name string) string {
 	}
 	s, ok := tbl.Get(name)
 	if !ok {
-		t.Fatalf("%s is not in the table: %+v", name, tbl.Services)
+		t.Fatalf("%s is not in the table: %+v", name, tbl.Apps)
 	}
 	return s.Address
 }
@@ -888,7 +888,7 @@ func TestThePodNetworkIsCreatedOnlyWhenSomethingWantsOne(t *testing.T) {
 		t.Fatalf("Converge: %v", err)
 	}
 	if hostOnly.ran("podman", "network", "create", "--subnet", "10.12.7.0/24", "briard") {
-		t.Error("a node with only host-networked services created a pod network")
+		t.Error("a node with only host-networked apps created a pod network")
 	}
 
 	x := privateNode(t)
@@ -951,6 +951,6 @@ func TestConvergeStopsWhatItNoLongerRenders(t *testing.T) {
 	// The dummy may be bounced after, as a changed app always is; what is under test is that
 	// the unrendered app goes, first, containers before its pod.
 	if len(stopped) < 2 || fmt.Sprint(stopped[:2]) != fmt.Sprint(want) {
-		t.Fatalf("stopped %v, want %v -- the forgotten service's container, then its pod, before anything else", stopped, want)
+		t.Fatalf("stopped %v, want %v -- the forgotten app's container, then its pod, before anything else", stopped, want)
 	}
 }

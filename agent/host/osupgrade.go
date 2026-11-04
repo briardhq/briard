@@ -75,7 +75,7 @@ const reapGrace = 10 * time.Second
 // Refusing is not conservatism, it is the only correct answer. Reboot here and a peer takes
 // over while the node is down, so it returns Secondary -- where the apps never run, since
 // drbd-reactor promotes exactly one node. The health-gate asks a Primary-shaped question
-// (ServiceActive && probe), which a Secondary can never satisfy, so every such upgrade would
+// (AppActive && probe), which a Secondary can never satisfy, so every such upgrade would
 // false-roll-back. Demoting deliberately first is the right operation but the wrong owner:
 // that is a handover, it must be scheduled so both anchors do not go at once, and only the
 // cloud sees the whole flock.

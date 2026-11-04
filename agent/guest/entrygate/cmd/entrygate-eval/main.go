@@ -75,7 +75,7 @@ func sample(port string) {
 }
 
 func main() {
-	sampleAt := flag.String("sample", "", "print this node's live config-entry states as JSON, sampled from the service on this port")
+	sampleAt := flag.String("sample", "", "print this node's live config-entry states as JSON, sampled from the app on this port")
 	flag.Parse()
 	if *sampleAt != "" {
 		sample(*sampleAt)

@@ -89,7 +89,7 @@ func TestAStagedFreshInstallIsDiscarded(t *testing.T) {
 
 // A RESTORE THAT FAILS LEAVES THE STAGE IN PLACE: converge keeps holding the app back, so the
 // prior version is never started on data that was not put back, and the next promotion tries again.
-func TestAnUndoWhoseRestoreFailsKeepsTheServiceHeldBack(t *testing.T) {
+func TestAnUndoWhoseRestoreFailsKeepsTheAppHeldBack(t *testing.T) {
 	f, _, _ := crashedUpgrade(t)
 	f.restoreEr = errors.New("btrfs: cannot delete subvolume")
 	Config{}.undoPending(context.Background(), f, func(string, ...any) {})
@@ -107,7 +107,7 @@ func TestAnUndoWhoseRestoreFailsKeepsTheServiceHeldBack(t *testing.T) {
 func TestUndoWaitsWhileAnActRuns(t *testing.T) {
 	f, _, _ := crashedUpgrade(t)
 	cfg := Config{acts: newActLane()}
-	if _, ok := cfg.acts.claim(api.DirectiveServiceInstall); !ok {
+	if _, ok := cfg.acts.claim(api.DirectiveAppInstall); !ok {
 		t.Fatal("could not take the act slot")
 	}
 	if cfg.undoPending(context.Background(), f, func(string, ...any) {}) {
@@ -124,7 +124,7 @@ func TestAFailedCommitIsUndone(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	cfg.readinessSettle = time.Millisecond
 	f := &fakeInstaller{primary: true, active: true, healthy: true, prior: mustPrior(t), commitEr: errors.New("mv: I/O error")}
-	o := installService(cfg, f)
+	o := installApp(cfg, f)
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}

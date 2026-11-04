@@ -298,7 +298,7 @@ pkgs.testers.runNixOSTest {
         )
     # The bare address is still the node's, and it names what it routes.
     node_health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
-    assert "1 service(s) routed" in node_health and "fixture" in node_health, f"node /healthz = {node_health!r}"
+    assert "1 app(s) routed" in node_health and "fixture" in node_health, f"node /healthz = {node_health!r}"
     # A name nobody serves still lands on the NODE's door rather than on some app's 404 --
     # the fall-through is the property, and it is unchanged. What the door then says is not: since
     # the dashboard landed it forwards to the household dashboard, which refuses a browser with no session
@@ -381,7 +381,7 @@ pkgs.testers.runNixOSTest {
 
     # ============================================================================================
     # THE FAILURE HALF — upgrade to a broken manifest, gate trips, roll back to v0 + data.
-    # Everything below drives the guest PRIMITIVES the way agent/host/service.go's applyServiceInstall
+    # Everything below drives the guest PRIMITIVES the way agent/host/service.go's applyAppInstall
     # drives them over the channel (snapshot -> switch -> health-gate -> restore + revert), because
     # the host agent itself cannot run in this harness (the node IS the guest, no host on the wire).
     # ============================================================================================
@@ -392,7 +392,7 @@ pkgs.testers.runNixOSTest {
     assert good_tick > 0, f"no pre-upgrade data to preserve (tick={good_tick}) — rollback proof would be vacuous"
     print(f"pre-upgrade good tick = {good_tick}")
 
-    # --- STOP, THEN snapshot the rollback point — applyServiceInstall's quiesce + data.member,
+    # --- STOP, THEN snapshot the rollback point — applyAppInstall's quiesce + data.member,
     #     in that order since the rollback point started being taken quiesced. A live snapshot is only crash-consistent, and the catalog
     #     cannot promise every app survives one: services-pair.nix measured mosquitto losing
     #     exactly the retained message a rollback would be FOR. The container unit, never the pod
@@ -457,7 +457,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed("systemctl is-active briard-vip.service")
     print("the node stayed Primary with the VIP up — a broken app alerts, it does not demote")
 
-    # --- ROLLBACK to the prior app (applyServiceInstall.revert): stop the broken CONTAINER,
+    # --- ROLLBACK to the prior app (applyAppInstall.revert): stop the broken CONTAINER,
     #     restore the data subvolume from the snapshot (delete + rw-snapshot, the guest's
     #     data.restore), put the PRIOR manifest back on the volume, and converge — which re-renders
     #     v0 and starts it fresh on the restored data.

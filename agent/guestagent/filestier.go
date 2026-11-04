@@ -165,7 +165,7 @@ func filesTick(ctx context.Context, x Executor, now time.Time) FilesTickReport {
 			continue
 		}
 		member := filepath.Join(filesVersionsDir(), filepath.Base(quadlet.SnapshotMember(app, quadlet.TriggerClock, now)))
-		sidecar, _ := json.Marshal(quadlet.SnapshotMeta{Service: app, Trigger: quadlet.TriggerClock, TakenAt: now, Consistency: quadlet.Crash})
+		sidecar, _ := json.Marshal(quadlet.SnapshotMeta{App: app, Trigger: quadlet.TriggerClock, TakenAt: now, Consistency: quadlet.Crash})
 		if err := run("mkdir", "-p", filesVersionsDir()); err != nil {
 			failed("make the versions' directory", err)
 			break

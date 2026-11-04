@@ -214,13 +214,13 @@ func (c *casaRunner) claim(ctx context.Context, d api.Directive, logf func(strin
 	email := strings.TrimSpace(d.Payload)
 	switch {
 	case c.cl == nil:
-		return fail("this node has no casa client")
+		return fail("this machine has no casa client")
 	case email == "":
 		return fail("an email address is needed to claim a name")
 	case c.cfg.FlockName == "":
 		return fail("this machine has no name yet, so there is nothing to claim")
 	case c.dir == "":
-		return fail("this node keeps no state, so it cannot hold a name's key")
+		return fail("this machine keeps no state, so it cannot hold a name's key")
 	}
 	c.mu.Lock()
 	key, err := c.ensureKey()

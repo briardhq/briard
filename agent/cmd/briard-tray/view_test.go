@@ -112,9 +112,9 @@ func TestLaunch(t *testing.T) {
 		{"another account's", reading{err: refused}, false, 0, failWith, "another account"},
 		{"starting, not answering yet", reading{err: absent}, true, time.Minute, waitFor, ""},
 		{"the VM coming up", reading{status: host.LocalStatus{}}, true, 2 * time.Minute, waitFor, ""},
-		{"finishing its install", reading{refusal: "briard is finishing its install: fetching the guest image"}, true, 5 * time.Minute, waitFor, ""},
+		{"finishing its install", reading{refusal: "briard is finishing its install: fetching the VM image"}, true, 5 * time.Minute, waitFor, ""},
 		{"an update swapping it", reading{err: absent, down: true, update: true}, false, time.Minute, waitFor, ""},
-		{"still finishing at the bound", reading{refusal: "briard is finishing its install: fetching the guest image"}, true, launchBound + time.Second, failWith, "finishing its install"},
+		{"still finishing at the bound", reading{refusal: "briard is finishing its install: fetching the VM image"}, true, launchBound + time.Second, failWith, "finishing its install"},
 	} {
 		got, says := launch(tc.r, tc.started, tc.waited)
 		if got != tc.want || !strings.Contains(says, tc.says) || (tc.says == "") != (says == "") {

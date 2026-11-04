@@ -485,7 +485,7 @@ pkgs.testers.runNixOSTest {
         f"/healthz under the app's name was answered by the front door: {under_name!r}"
     )
     node_health = node1.succeed("curl -fsS http://192.168.1.100/healthz")
-    assert "2 service(s) routed" in node_health, f"the node's /healthz = {node_health!r}"
+    assert "2 app(s) routed" in node_health, f"the node's /healthz = {node_health!r}"
     for svc in ("home-assistant", "${mosquitto.name}"):
         assert svc in node_health, f"the node's /healthz does not name what it routes: {node_health!r}"
 

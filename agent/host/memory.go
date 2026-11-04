@@ -70,7 +70,7 @@ const guestSystemMB = 384
 // needs beyond its minimum; this covers what it needs before growth can react.
 func (cfg Config) memoryNeeded(except string, extraMB int) int {
 	n := guestSystemMB + extraMB
-	for _, s := range cfg.Services {
+	for _, s := range cfg.Apps {
 		if s.Name != except {
 			n += s.MinMemoryMB
 		}

@@ -245,9 +245,9 @@ func assertLeftTheWorkloadAlone(t *testing.T, x *recExec) {
 	for _, c := range x.all() {
 		switch {
 		case strings.Contains(c, "podman-"):
-			t.Errorf("the OS path drove a service unit: %q", c)
+			t.Errorf("the OS path drove an app unit: %q", c)
 		case strings.Contains(c, "btrfs subvolume"):
-			t.Errorf("the OS path touched service data: %q", c)
+			t.Errorf("the OS path touched app data: %q", c)
 		}
 	}
 }

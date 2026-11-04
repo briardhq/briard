@@ -296,8 +296,8 @@ type route struct {
 }
 
 func newRouting(t routes.Table) *routing {
-	r := &routing{table: t, byHost: make(map[string]route, len(t.Services))}
-	for _, s := range t.Services {
+	r := &routing{table: t, byHost: make(map[string]route, len(t.Apps))}
+	for _, s := range t.Apps {
 		e := route{name: s.Name}
 		// An app with no route on this listener keeps its name and gets no destination here.
 		// The door is never handed an address it must be trusted not to use: with nothing to
@@ -327,15 +327,15 @@ func (r *routing) lookup(host string) (route, bool) {
 
 // describe is the one-line summary the log line and /healthz both use.
 func (r *routing) describe() string {
-	if len(r.table.Services) == 0 {
-		return "no services routed"
+	if len(r.table.Apps) == 0 {
+		return "no apps routed"
 	}
-	names := make([]string, 0, len(r.table.Services))
-	for _, s := range r.table.Services {
+	names := make([]string, 0, len(r.table.Apps))
+	for _, s := range r.table.Apps {
 		names = append(names, s.Name)
 	}
 	sort.Strings(names)
-	return fmt.Sprintf("%d service(s) routed: %s", len(names), strings.Join(names, " "))
+	return fmt.Sprintf("%d app(s) routed: %s", len(names), strings.Join(names, " "))
 }
 
 // routeReloader serves the current routing table, reloading it from disk when the file changes

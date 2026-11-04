@@ -14,7 +14,7 @@ import (
 	"briard.io/agent/selfupdate"
 )
 
-// runService is false off Windows: systemd runs the agent as an ordinary process.
+// runApp is false off Windows: systemd runs the agent as an ordinary process.
 func runService() bool { return false }
 
 // elevateHint is the refusal when it is not.

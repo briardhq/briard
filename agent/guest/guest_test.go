@@ -20,7 +20,7 @@ type fakeControl struct {
 	switches         []string // closures passed to Switch, in order
 	stagedBoot       []string // closures passed to StageBoot, in order
 	stageBootErr     error
-	startErr         error    // ServiceStart returns this (to trigger a rollback)
+	startErr         error    // AppStart returns this (to trigger a rollback)
 	componentsFor    []string // closures Components was asked about, in order
 	componentsErr    error
 	collected        int // CollectGarbage calls
@@ -30,31 +30,31 @@ type fakeControl struct {
 	paused, resumed  int
 	cluster          model.Cluster // what OSReady reads about this node
 	clusterErr       error
-	activeHook       func(ctx context.Context) // inspect the ctx ServiceActive receives
-	health           bool                      // ServiceHealth in-guest result (used when healthVerb is set)
-	healthVerb       bool                      // when false, ServiceHealth errors so probeReady falls back to the host-side GET (the default keeps HTTP-server-based tests exercising the fallback)
+	activeHook       func(ctx context.Context) // inspect the ctx AppActive receives
+	health           bool                      // AppHealth in-guest result (used when healthVerb is set)
+	healthVerb       bool                      // when false, AppHealth errors so probeReady falls back to the host-side GET (the default keeps HTTP-server-based tests exercising the fallback)
 	vip              string                    // net.vip: the address the named device actually holds (CIDR); "" = it holds none
 	vipErr           error
-	probed           []string // URLs ServiceHealth was asked to probe, in order
+	probed           []string // URLs AppHealth was asked to probe, in order
 }
 
-func (f *fakeControl) ServiceStart(_ context.Context, unit string) error {
+func (f *fakeControl) AppStart(_ context.Context, unit string) error {
 	f.started = append(f.started, unit)
 	f.ops = append(f.ops, "start")
 	return f.startErr
 }
-func (f *fakeControl) ServiceStop(_ context.Context, unit string) error {
+func (f *fakeControl) AppStop(_ context.Context, unit string) error {
 	f.stopped = append(f.stopped, unit)
 	f.ops = append(f.ops, "stop")
 	return nil
 }
-func (f *fakeControl) ServiceActive(ctx context.Context, _ string) (bool, error) {
+func (f *fakeControl) AppActive(ctx context.Context, _ string) (bool, error) {
 	if f.activeHook != nil {
 		f.activeHook(ctx)
 	}
 	return f.active, f.activeErr
 }
-func (f *fakeControl) ServiceHealth(_ context.Context, url string) (bool, error) {
+func (f *fakeControl) AppHealth(_ context.Context, url string) (bool, error) {
 	f.probed = append(f.probed, url)
 	if !f.healthVerb {
 		return false, errors.New(`guestagent: unknown verb "service.health"`) // old guest -> probeReady falls back
@@ -85,7 +85,7 @@ func (f *fakeControl) Cluster(context.Context, string) (model.Cluster, error) {
 	return f.cluster, f.clusterErr
 }
 
-var haSpec = model.ServiceSpec{
+var haSpec = model.AppSpec{
 	Name:    "home-assistant",
 	DataDir: "/data/ha",
 	// The unit a real spec always carries: the quadlet-rendered serving container. specOf builds
@@ -205,7 +205,7 @@ func TestHealthPrefersInGuestProbe(t *testing.T) {
 
 // AwaitReady must poll on a context detached from the upgrade deadline. Otherwise a
 // deadline that fires *inside* a control-channel call closes the channel mid-call, and the
-// rollback that reuses that channel then fails to restore. Assert the ctx ServiceActive
+// rollback that reuses that channel then fails to restore. Assert the ctx AppActive
 // receives does not observe the upgrade ctx's cancellation.
 func TestAwaitReadyPollsOnDetachedContext(t *testing.T) {
 	srv := codeServer(t, http.StatusServiceUnavailable) // running but never ready → keep polling
@@ -310,41 +310,41 @@ func TestAssessVerdicts(t *testing.T) {
 // `podman-.service`, systemd said "inactive", and Ready was false forever: every OS upgrade a
 // fresh install was offered rolled back, while the same node reported Healthy: true to the
 // cloud (cfg.snapshot takes the probe's answer with no such conjunct).
-func TestHealthZeroServiceGatesOnTheFrontDoorAlone(t *testing.T) {
+func TestHealthZeroAppGatesOnTheFrontDoorAlone(t *testing.T) {
 	srv := codeServer(t, http.StatusOK)
 	f := &fakeControl{active: false} // no app unit exists, so it cannot be active
 	m := newManager(f, srv.URL)
 
-	h, err := m.Health(context.Background(), model.ServiceSpec{})
+	h, err := m.Health(context.Background(), model.AppSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !h.Ready {
-		t.Error("a zero-service node whose front door answers 200 must be Ready")
+		t.Error("a zero-app node whose front door answers 200 must be Ready")
 	}
 	if !h.Running {
-		t.Error("Running should be vacuously true with no service -- there is nothing that could be down")
+		t.Error("Running should be vacuously true with no app -- there is nothing that could be down")
 	}
 }
 
 // The converse, so the above is not "always ready": a zero-app node whose FRONT DOOR is
 // down is NOT ready. This is exactly the failure the rollback demo breaks deliberately, so if this
 // went vacuous the broken-generation test would too.
-func TestHealthZeroServiceUnreadyWhenTheFrontDoorIsDown(t *testing.T) {
+func TestHealthZeroAppUnreadyWhenTheFrontDoorIsDown(t *testing.T) {
 	srv := codeServer(t, http.StatusServiceUnavailable)
 	m := newManager(&fakeControl{}, srv.URL)
-	h, err := m.Health(context.Background(), model.ServiceSpec{})
+	h, err := m.Health(context.Background(), model.AppSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if h.Ready {
-		t.Error("front door 503 on a zero-service node must NOT be Ready")
+		t.Error("front door 503 on a zero-app node must NOT be Ready")
 	}
 }
 
 // An app-bearing node keeps the old meaning: the unit must be active AND the probe pass.
 // Without this, the fix could have been "drop the conjunct entirely".
-func TestHealthWithAServiceStillRequiresTheUnitActive(t *testing.T) {
+func TestHealthWithAAppStillRequiresTheUnitActive(t *testing.T) {
 	srv := codeServer(t, http.StatusOK)
 	m := newManager(&fakeControl{active: false}, srv.URL) // probe green, unit down
 	h, err := m.Health(context.Background(), haSpec)
@@ -352,7 +352,7 @@ func TestHealthWithAServiceStillRequiresTheUnitActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	if h.Ready {
-		t.Error("a service node with its unit down must not be Ready however green the probe is")
+		t.Error("an app node with its unit down must not be Ready however green the probe is")
 	}
 }
 
@@ -424,7 +424,7 @@ func TestHealthOnANodeWithNoAddressDoesNotProbe(t *testing.T) {
 	f := &fakeControl{healthVerb: true, health: true, active: true}
 	m := NewManager(f, Config{VIPDev: "eth2"}) // no configured URL, guest reports none
 
-	h, err := m.Health(context.Background(), model.ServiceSpec{Name: "dummy", Unit: "briard-dummy-app.service"})
+	h, err := m.Health(context.Background(), model.AppSpec{Name: "dummy", Unit: "briard-dummy-app.service"})
 	if err != nil {
 		t.Fatalf("Health: %v", err)
 	}

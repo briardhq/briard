@@ -308,17 +308,17 @@ func TestClockAlerterUnknownNeverFires(t *testing.T) {
 	}
 }
 
-// TestServiceAlerter walks the app condition through the readings a node actually takes, via
+// TestAppAlerter walks the app condition through the readings a node actually takes, via
 // the real store so its dedup is the one under test: down only past the grace, a crash-loop's
 // starting readings do not break the run, a blip followed by a long start never opens, an unknown
 // says nothing, only running AND healthy resolves, and a node that hands the volume over resolves
 // what it opened -- each app on its own key.
-func TestServiceAlerter(t *testing.T) {
+func TestAppAlerter(t *testing.T) {
 	ctx := context.Background()
 	t0 := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 	at := func(m int) time.Time { return t0.Add(time.Duration(m) * time.Minute) }
-	ha := func(state, health string) []api.ServiceStatus {
-		return []api.ServiceStatus{{Name: "home-assistant", State: state, Health: health}}
+	ha := func(state, health string) []api.AppStatus {
+		return []api.AppStatus{{Name: "home-assistant", State: state, Health: health}}
 	}
 	var (
 		stopped   = ha(api.StateStopped, "")
@@ -329,13 +329,13 @@ func TestServiceAlerter(t *testing.T) {
 	)
 	type reading struct {
 		min            int
-		svcs           []api.ServiceStatus
+		svcs           []api.AppStatus
 		known, serving bool
 	}
-	on := func(min int, svcs []api.ServiceStatus) reading { return reading{min, svcs, true, true} }
+	on := func(min int, svcs []api.AppStatus) reading { return reading{min, svcs, true, true} }
 	run := func(t *testing.T, rs ...reading) []notify.Alert {
 		fn := &fakeNotifier{}
-		n, a := testStore(t, fn), &serviceAlerter{}
+		n, a := testStore(t, fn), &appAlerter{}
 		for _, r := range rs {
 			a.observe(ctx, n, "n1", r.svcs, r.known, r.serving, at(r.min), t.Logf)
 		}
@@ -374,8 +374,8 @@ func TestServiceAlerter(t *testing.T) {
 		})
 	}
 
-	t.Run("each service on its own key", func(t *testing.T) {
-		two := []api.ServiceStatus{
+	t.Run("each app on its own key", func(t *testing.T) {
+		two := []api.AppStatus{
 			{Name: "home-assistant", State: api.StateStopped},
 			{Name: "mosquitto", State: api.StateRunning, Health: api.StateHealthy},
 		}
@@ -384,10 +384,10 @@ func TestServiceAlerter(t *testing.T) {
 			t.Fatalf("alerts = %+v, want one critical open for home-assistant only", as)
 		}
 		if !strings.Contains(as[0].Body, "has not been running") {
-			t.Errorf("body %q does not say the service is not running", as[0].Body)
+			t.Errorf("body %q does not say the app is not running", as[0].Body)
 		}
 	})
-	t.Run("a running service says it is not answering", func(t *testing.T) {
+	t.Run("a running app says it is not answering", func(t *testing.T) {
 		as := run(t, on(0, unhealthy), on(10, unhealthy))
 		if len(as) != 1 || !strings.Contains(as[0].Body, "without answering") {
 			t.Fatalf("alerts = %+v, want the running-but-not-answering body", as)

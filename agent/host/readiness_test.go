@@ -94,7 +94,7 @@ func judge(t *testing.T, pre, post []hass.Entry) (guest.Verdict, string) {
 	return v, reason
 }
 
-// TestAssessorIsKeyedOnTheServiceName is the registry's whole contract: the product knows how to
+// TestAssessorIsKeyedOnTheAppName is the registry's whole contract: the product knows how to
 // judge the apps it curates beyond liveness, and knows nothing about anything else. The
 // negative half is the one that matters — the shipped default for every other app is the
 // floor alone.
@@ -102,7 +102,7 @@ func judge(t *testing.T, pre, post []hass.Entry) (guest.Verdict, string) {
 // The unknown name here USED to be "mosquitto", which is the nicest possible demonstration of
 // what this test is for: the day the broker landed it stopped being unknown, and the
 // example had to move rather than the contract.
-func TestAssessorIsKeyedOnTheServiceName(t *testing.T) {
+func TestAssessorIsKeyedOnTheAppName(t *testing.T) {
 	cfg := Config{}
 	if a := cfg.assessorFor(hassManifest(), &probe{}, func(string, ...any) {}); a == nil {
 		t.Fatal("home-assistant got no assessor")
@@ -119,7 +119,7 @@ func TestAssessorIsKeyedOnTheServiceName(t *testing.T) {
 	other := hassManifest()
 	other.Name = "sample-app"
 	if a := cfg.assessorFor(other, &probe{}, func(string, ...any) {}); a != nil {
-		t.Fatalf("a service the product knows nothing about got an assessor: %T", a)
+		t.Fatalf("an app the product knows nothing about got an assessor: %T", a)
 	}
 }
 
@@ -301,10 +301,10 @@ func TestProbeCatchesLostState(t *testing.T) {
 	}
 }
 
-// TestProbeCatchesAServiceThatServesNobody — the other invisible failure. The management endpoint
+// TestProbeCatchesAAppThatServesNobody — the other invisible failure. The management endpoint
 // the floor probes is not the port clients use, so a broker that refuses every connection answers
 // the floor and fails here.
-func TestProbeCatchesAServiceThatServesNobody(t *testing.T) {
+func TestProbeCatchesAAppThatServesNobody(t *testing.T) {
 	// Long enough to outlast the poll: this is an app that never comes back, not a slow one.
 	v, reason, err := judgeProbe(t, func(p *probe) { p.notServing = 100 })
 	if err != nil {
@@ -326,21 +326,21 @@ func TestProbeWaitsForASlowStart(t *testing.T) {
 		t.Fatalf("Assess: %v", err)
 	}
 	if v != guest.VerdictPass {
-		t.Errorf("a service that came up on the second look was judged %s (%s)", v, reason)
+		t.Errorf("an app that came up on the second look was judged %s (%s)", v, reason)
 	}
 }
 
-// TestProbeRefusesToBaselineABrokenService is the confounder control, and it is the same rule the
+// TestProbeRefusesToBaselineABrokenApp is the confounder control, and it is the same rule the
 // config-entry gate follows: an app that was ALREADY not serving before the change cannot have
 // been broken by it. No baseline means the install runs on the liveness floor alone.
-func TestProbeRefusesToBaselineABrokenService(t *testing.T) {
+func TestProbeRefusesToBaselineABrokenApp(t *testing.T) {
 	m := hassManifest()
 	m.Name = mosquitto.Name
 	p := &probe{notServing: 1}
 	a := Config{readinessSettle: time.Millisecond}.assessorFor(m, p, func(string, ...any) {})
 	_, err := a.Baseline(context.Background())
 	if err == nil {
-		t.Fatal("a service that was not serving before the change produced a baseline")
+		t.Fatal("an app that was not serving before the change produced a baseline")
 	}
 	// The REASON matters, and asserting it is what keeps this test from passing for the wrong one:
 	// without it, the round-trip check below would refuse this baseline anyway and the
@@ -384,7 +384,7 @@ func TestProbeFailureIsNeverAVerdict(t *testing.T) {
 		t.Fatalf("a broken probe produced a verdict: %s", v)
 	}
 	if v == guest.VerdictRollback {
-		t.Error("a broken probe rolled a household's service back")
+		t.Error("a broken probe rolled a household's app back")
 	}
 }
 

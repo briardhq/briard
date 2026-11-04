@@ -22,12 +22,12 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/agent/apps"
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestagent"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/quadlet"
-	"briard.io/agent/services"
 	"briard.io/shared/api"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
@@ -38,7 +38,7 @@ import (
 // fakeInstaller records the ORDER of everything the install does — the bracket's correctness is
 // an ordering property, so order is what the tests assert.
 type fakeInstaller struct {
-	warmedRefs []string     // refs handed to ServiceWarm, in order
+	warmedRefs []string     // refs handed to AppWarm, in order
 	hold       func() error // blocks inside the budget (see beat_test.go)
 	steps      []string
 	primary    bool
@@ -140,7 +140,7 @@ func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, erro
 	return model.QuorumState{Primary: f.primary, Quorate: true}, nil
 }
 
-func (f *fakeInstaller) ServiceRender(_ context.Context, _ map[string]string, stale []string) error {
+func (f *fakeInstaller) AppRender(_ context.Context, _ map[string]string, stale []string) error {
 	if f.hold != nil {
 		if err := f.hold(); err != nil {
 			return err
@@ -150,23 +150,23 @@ func (f *fakeInstaller) ServiceRender(_ context.Context, _ map[string]string, st
 	f.staleRemoved = append(f.staleRemoved, stale...)
 	return f.renderEr
 }
-func (f *fakeInstaller) ServiceProvision(_ context.Context, name, _ string, _ []string, manifest string) error {
+func (f *fakeInstaller) AppProvision(_ context.Context, name, _ string, _ []string, manifest string) error {
 	f.steps = append(f.steps, "provision:"+name) // the NAME decides which identity file is written
 	f.manifests = append(f.manifests, manifest)  // records what identity the volume ends up holding
 	return f.provEr
 }
 
-// ServiceInstalled answers for the app it is ASKED about, which is the whole property the
+// AppInstalled answers for the app it is ASKED about, which is the whole property the
 // per-app split adds: another app's manifest can no longer stand in for this one's.
-func (f *fakeInstaller) ServiceInstalled(_ context.Context, name string) (string, error) {
+func (f *fakeInstaller) AppInstalled(_ context.Context, name string) (string, error) {
 	f.steps = append(f.steps, "installed?:"+name)
 	if f.installedEr != nil {
 		return "", f.installedEr
 	}
 	return f.prior[name], nil
 }
-func (f *fakeInstaller) SupportsServiceInstalled() bool { return !f.oldGuest }
-func (f *fakeInstaller) ServiceList(context.Context) ([]string, error) {
+func (f *fakeInstaller) SupportsAppInstalled() bool { return !f.oldGuest }
+func (f *fakeInstaller) AppList(context.Context) ([]string, error) {
 	names := make([]string, 0, len(f.prior))
 	for n := range f.prior {
 		names = append(names, n)
@@ -174,14 +174,14 @@ func (f *fakeInstaller) ServiceList(context.Context) ([]string, error) {
 	sort.Strings(names)
 	return names, nil
 }
-func (f *fakeInstaller) SupportsServiceList() bool { return !f.oldGuest }
+func (f *fakeInstaller) SupportsAppList() bool { return !f.oldGuest }
 func (f *fakeInstaller) RemoveImage(_ context.Context, ref string) (bool, error) {
 	f.steps = append(f.steps, "rmi:"+ref)
 	return false, nil
 }
 func (f *fakeInstaller) SupportsImageRemove() bool    { return !f.oldGuest }
 func (f *fakeInstaller) SupportsSnapshotMember() bool { return !f.oldGuest && !f.noMember }
-func (f *fakeInstaller) ServiceStop(_ context.Context, unit string) error {
+func (f *fakeInstaller) AppStop(_ context.Context, unit string) error {
 	f.steps = append(f.steps, "stop:"+unit)
 	return nil
 }
@@ -208,7 +208,7 @@ func (f *fakeInstaller) SupportsRestoreSweep() bool { return !f.oldGuest && !f.n
 // The QUIESCED take. `held` is what the fake app reports, and the sidecar is
 // recorded with the class the GUEST would have written — upgraded only when it held, which is the
 // property the host's side of this must not be able to fake.
-func (f *fakeInstaller) QuiescedSnapshot(_ context.Context, service, _, dest, sidecar string) (bool, string, error) {
+func (f *fakeInstaller) QuiescedSnapshot(_ context.Context, app, _, dest, sidecar string) (bool, string, error) {
 	f.steps = append(f.steps, "quiesced-snapshot:"+dest)
 	if f.quiesceEr != nil {
 		return false, "", f.quiesceEr
@@ -225,7 +225,7 @@ func (f *fakeInstaller) QuiescedSnapshot(_ context.Context, service, _, dest, si
 	if f.held {
 		return true, "", nil
 	}
-	return false, service + " did not hold still", nil
+	return false, app + " did not hold still", nil
 }
 func (f *fakeInstaller) SupportsQuiescedSnapshot() bool { return !f.oldGuest && !f.noQuiesce }
 func (f *fakeInstaller) ReactorActive(context.Context) (bool, error) {
@@ -233,9 +233,9 @@ func (f *fakeInstaller) ReactorActive(context.Context) (bool, error) {
 	return f.active, nil
 }
 
-// ServiceConverge is what an install does instead of rewriting the promoter chain: the volume
+// AppConverge is what an install does instead of rewriting the promoter chain: the volume
 // is written first, and this tells the node to re-read it.
-func (f *fakeInstaller) ServiceConverge(_ context.Context, live string) ([]string, error) {
+func (f *fakeInstaller) AppConverge(_ context.Context, live string) ([]string, error) {
 	if live != "" {
 		f.steps = append(f.steps, "converge:"+live)
 	} else {
@@ -243,8 +243,8 @@ func (f *fakeInstaller) ServiceConverge(_ context.Context, live string) ([]strin
 	}
 	return f.convergeSkips, f.convergeEr
 }
-func (f *fakeInstaller) SupportsServiceConverge() bool { return !f.oldGuest }
-func (f *fakeInstaller) ServiceStage(_ context.Context, name, _ string, _ []string, manifest, rollback string) error {
+func (f *fakeInstaller) SupportsAppConverge() bool { return !f.oldGuest }
+func (f *fakeInstaller) AppStage(_ context.Context, name, _ string, _ []string, manifest, rollback string) error {
 	f.steps = append(f.steps, "stage:"+name)
 	f.manifests = append(f.manifests, manifest)
 	if f.provEr != nil {
@@ -256,7 +256,7 @@ func (f *fakeInstaller) ServiceStage(_ context.Context, name, _ string, _ []stri
 	f.staged[name], f.rollbacks[name] = manifest, rollback
 	return nil
 }
-func (f *fakeInstaller) ServiceCommit(_ context.Context, name string) error {
+func (f *fakeInstaller) AppCommit(_ context.Context, name string) error {
 	f.steps = append(f.steps, "commit:"+name)
 	if f.commitEr != nil {
 		return f.commitEr
@@ -269,7 +269,7 @@ func (f *fakeInstaller) ServiceCommit(_ context.Context, name string) error {
 	delete(f.rollbacks, name)
 	return nil
 }
-func (f *fakeInstaller) ServiceDiscard(_ context.Context, name string) error {
+func (f *fakeInstaller) AppDiscard(_ context.Context, name string) error {
 	f.steps = append(f.steps, "discard:"+name)
 	if f.discardEr != nil {
 		return f.discardEr
@@ -278,7 +278,7 @@ func (f *fakeInstaller) ServiceDiscard(_ context.Context, name string) error {
 	delete(f.rollbacks, name)
 	return nil
 }
-func (f *fakeInstaller) ServicePending(context.Context) ([]guestagent.PendingInstall, error) {
+func (f *fakeInstaller) AppPending(context.Context) ([]guestagent.PendingInstall, error) {
 	f.steps = append(f.steps, "pending?")
 	var out []guestagent.PendingInstall
 	for n, m := range f.staged {
@@ -287,20 +287,20 @@ func (f *fakeInstaller) ServicePending(context.Context) ([]guestagent.PendingIns
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
-func (f *fakeInstaller) ServiceStart(_ context.Context, unit string) error {
+func (f *fakeInstaller) AppStart(_ context.Context, unit string) error {
 	f.steps = append(f.steps, "warm:"+unit)
 	return f.warmEr
 }
 
-// ServiceWarm records the REF alongside the unit, because the whole point of the verb is that the
+// AppWarm records the REF alongside the unit, because the whole point of the verb is that the
 // two are checked and acted on separately -- a fake that dropped the ref could not tell an
 // ensure-present apart from an unconditional start.
-func (f *fakeInstaller) ServiceWarm(_ context.Context, unit, ref string) error {
+func (f *fakeInstaller) AppWarm(_ context.Context, unit, ref string) error {
 	f.steps = append(f.steps, "warm:"+unit)
 	f.warmedRefs = append(f.warmedRefs, ref)
 	return f.warmEr
 }
-func (f *fakeInstaller) ServiceHealth(_ context.Context, url string) (bool, error) {
+func (f *fakeInstaller) AppHealth(_ context.Context, url string) (bool, error) {
 	f.steps = append(f.steps, "health")
 	f.healthURL = url // the gate must probe the APP, not the front door
 	if !f.healthy {
@@ -309,16 +309,16 @@ func (f *fakeInstaller) ServiceHealth(_ context.Context, url string) (bool, erro
 	return true, nil
 }
 
-// ServiceHealthOf is the by-name probe the install gate uses: the guest resolves the
+// AppHealthOf is the by-name probe the install gate uses: the guest resolves the
 // address from its routing table, so what the host is asserted to have asked for is an APP,
 // never a URL it assembled.
-func (f *fakeInstaller) ServiceHealthOf(_ context.Context, service string) (services.Health, error) {
+func (f *fakeInstaller) AppHealthOf(_ context.Context, app string) (apps.Health, error) {
 	f.steps = append(f.steps, "health")
-	f.healthOf = service
+	f.healthOf = app
 	if !f.healthy {
-		return services.HealthUnknown, errors.New("not ready")
+		return apps.HealthUnknown, errors.New("not ready")
 	}
-	return services.Healthy, nil
+	return apps.Healthy, nil
 }
 
 // The service-install path has no opinion about names. "" -- this node publishes none -- is the
@@ -349,7 +349,7 @@ func catalogFor(t *testing.T, m manifest.Manifest) Config {
 		Resource:      drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{{Name: "n1", Address: "127.0.0.1:7789", Disk: drbd.DataDevice}}},
 		Promoter:      promoterUnits(),
 		HealthURL:     "http://192.168.1.100/healthz",
-		ServiceCache:  "", // off: these tests assert orchestration, not persistence
+		AppCache:      "", // off: these tests assert orchestration, not persistence
 		clock:         func() time.Time { return fixedNow },
 	}
 }
@@ -363,8 +363,8 @@ var fixedNow = time.Date(2026, 9, 22, 10, 30, 0, 0, time.UTC)
 // Restating the path as a literal is what the two rollback assertions used to do, and it is
 // exactly what a rename makes vacuous: a literal asserts that somebody typed the same string
 // twice, never that the caller and the renderer agree.
-func wantMember(service string, tr quadlet.Trigger) string {
-	return quadlet.SnapshotMember(service, tr, fixedNow)
+func wantMember(app string, tr quadlet.Trigger) string {
+	return quadlet.SnapshotMember(app, tr, fixedNow)
 }
 
 // pemKey encodes a public key the way the release keyring expects it (PKIX "PUBLIC KEY").
@@ -387,9 +387,9 @@ func testManifest() manifest.Manifest {
 	}
 }
 
-func installService(cfg Config, f *fakeInstaller) api.DirectiveOutcome {
-	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
-	return cfg.applyServiceInstall(context.Background(), f, d, nil, func(string, ...any) {})
+func installApp(cfg Config, f *fakeInstaller) api.DirectiveOutcome {
+	d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "home-assistant"}
+	return cfg.applyAppInstall(context.Background(), f, d, nil, func(string, ...any) {})
 }
 
 // TestInstallOrdersTheSteps is the core contract, and what it asserts is that there is no
@@ -399,7 +399,7 @@ func installService(cfg Config, f *fakeInstaller) api.DirectiveOutcome {
 func TestInstallOrdersTheSteps(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true}
 	cfg := catalogFor(t, testManifest())
-	if o := installService(cfg, f); o.State != api.OutcomeDone {
+	if o := installApp(cfg, f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	// A fresh install: read the (empty) installed manifest, render+warm (which is also the
@@ -417,7 +417,7 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 	// The gate probes the APP's own endpoint (manifest port + healthPath, in-guest), NOT the
 	// VIP front door — the front door doesn't reflect a runtime-installed app.
 	if f.healthOf != "home-assistant" {
-		t.Fatalf("health probe asked about %q, want the installed service by name", f.healthOf)
+		t.Fatalf("health probe asked about %q, want the installed app by name", f.healthOf)
 	}
 	// THE CHAIN IS NOT TOUCHED, and that is the whole shape change. It is static
 	// (data -> vip -> services -> door; the door carries the household's names)
@@ -437,7 +437,7 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 // the install would REVERT a working app because a courtesy call did not connect.
 func TestAFailedNudgeDoesNotFailTheInstall(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true, nudgeEr: errors.New("connection refused")}
-	if o := installService(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
+	if o := installApp(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done — a refused nudge reverted a healthy install", o)
 	}
 }
@@ -453,10 +453,10 @@ func TestTheNudgeIsFiredAfterTheGates(t *testing.T) {
 	// A short budget rather than the 5-minute health gate, the way the revert tests below bound
 	// theirs: what is under test is which steps ran, not how long the gate waits.
 	o := func() api.DirectiveOutcome {
-		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
+		d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		return cfg.applyServiceInstall(ctx, f, d, nil, func(string, ...any) {})
+		return cfg.applyAppInstall(ctx, f, d, nil, func(string, ...any) {})
 	}()
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
@@ -465,7 +465,7 @@ func TestTheNudgeIsFiredAfterTheGates(t *testing.T) {
 		t.Fatalf("an install that failed its health gate still nudged Home Assistant: %v", f.steps)
 	}
 	f = &fakeInstaller{primary: true, active: true, healthy: true, noHass: true}
-	if o := installService(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
+	if o := installApp(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	if !slices.Contains(f.steps, "nudge") {
@@ -484,7 +484,7 @@ func TestTheNudgeIsFiredAfterTheGates(t *testing.T) {
 // was: the volume is what every future promotion, on every node, renders from).
 func TestInstallWarmsBeforeTouchingTheVolume(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true, warmEr: errors.New("no route to host")}
-	o := installService(catalogFor(t, testManifest()), f)
+	o := installApp(catalogFor(t, testManifest()), f)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "warm image") {
 		t.Fatalf("outcome = %+v, want a failure naming the image warm", o)
 	}
@@ -506,7 +506,7 @@ func TestInstallWarmsBeforeTouchingTheVolume(t *testing.T) {
 // concurrency at the moment the bracket's deletion narrowed it.
 func TestInstallRefusesWhenTheBracketIsOpen(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: false, healthy: true}
-	o := installService(catalogFor(t, testManifest()), f)
+	o := installApp(catalogFor(t, testManifest()), f)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "already paused") {
 		t.Fatalf("outcome = %+v, want a failure naming the open bracket", o)
 	}
@@ -528,10 +528,10 @@ func TestInstallRevertsOnAFailedHealthGate(t *testing.T) {
 	// is that the gate gives up and the REVERT still runs — on its own detached deadline, since
 	// the one it inherited is exactly what just expired.
 	o := func() api.DirectiveOutcome {
-		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
+		d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		return cfg.applyServiceInstall(ctx, f, d, nil, func(string, ...any) {})
+		return cfg.applyAppInstall(ctx, f, d, nil, func(string, ...any) {})
 	}()
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
@@ -553,7 +553,7 @@ func TestInstallRevertsOnAFailedHealthGate(t *testing.T) {
 }
 
 // priorManifest is the same app at an earlier version — a real UPGRADE target (same name ⇒
-// same unit names + DataRoot, different bytes so priorService treats it as a rollback point).
+// same unit names + DataRoot, different bytes so priorApp treats it as a rollback point).
 // priorManifest is the volume's recorded state before an upgrade, in the shape the volume now
 // has: keyed by app name. The raw bytes come back too, because the assertions compare against
 // exactly what the rollback must re-record.
@@ -579,10 +579,10 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: false, prior: prior}
 	o := func() api.DirectiveOutcome {
-		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
+		d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		return cfg.applyServiceInstall(ctx, f, d, nil, func(string, ...any) {})
+		return cfg.applyAppInstall(ctx, f, d, nil, func(string, ...any) {})
 	}()
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
@@ -632,17 +632,17 @@ func TestUpgradeDoesNotConvergeIfDataCannotRestore(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: false, prior: mustPrior(t), restoreEr: errors.New("btrfs: cannot delete subvolume")}
 	o := func() api.DirectiveOutcome {
-		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
+		d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		return cfg.applyServiceInstall(ctx, f, d, nil, func(string, ...any) {})
+		return cfg.applyAppInstall(ctx, f, d, nil, func(string, ...any) {})
 	}()
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "restore the data subvolume") {
 		t.Fatalf("outcome = %+v, want a failure naming the data restore", o)
 	}
 	// Only the forward converge ran; the revert deliberately did not converge back.
 	if n := strings.Count(strings.Join(f.steps, ","), "converge"); n != 1 {
-		t.Fatalf("converged %d times, want 1 — the revert must NOT restart the service onto un-restored data: %v", n, f.steps)
+		t.Fatalf("converged %d times, want 1 — the revert must NOT restart the app onto un-restored data: %v", n, f.steps)
 	}
 }
 
@@ -656,16 +656,16 @@ func TestAFailedFreshInstallLeavesNothingOnTheVolume(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: false} // no prior => a fresh install
 	o := func() api.DirectiveOutcome {
-		d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
+		d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		return cfg.applyServiceInstall(ctx, f, d, nil, func(string, ...any) {})
+		return cfg.applyAppInstall(ctx, f, d, nil, func(string, ...any) {})
 	}()
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
 	if _, ok := f.prior["home-assistant"]; ok || len(f.staged) != 0 {
-		t.Fatalf("the failed service is still recorded on the volume: accepted %v, staged %v", f.prior, f.staged)
+		t.Fatalf("the failed app is still recorded on the volume: accepted %v, staged %v", f.prior, f.staged)
 	}
 }
 
@@ -673,7 +673,7 @@ func TestAFailedFreshInstallLeavesNothingOnTheVolume(t *testing.T) {
 // a secondary takes its units and stops. It must NOT touch the promoter — the primary owns that.
 func TestInstallOnSecondaryRendersButDoesNotProvision(t *testing.T) {
 	f := &fakeInstaller{primary: false, active: true, healthy: true}
-	o := installService(catalogFor(t, testManifest()), f)
+	o := installApp(catalogFor(t, testManifest()), f)
 	if o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done (units rendered)", o)
 	}
@@ -694,7 +694,7 @@ func TestInstallRefusesAnUnsignedCatalog(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	cfg.UpdateKeyring = nil
 	f := &fakeInstaller{primary: true, active: true, healthy: true}
-	if o := installService(cfg, f); o.State != api.OutcomeFailed {
+	if o := installApp(cfg, f); o.State != api.OutcomeFailed {
 		t.Fatalf("outcome = %+v, want a refusal with no keyring", o)
 	}
 	if len(f.steps) != 0 {
@@ -704,15 +704,15 @@ func TestInstallRefusesAnUnsignedCatalog(t *testing.T) {
 
 func TestInstallRefusesNoName(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true}
-	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall}
-	if o := catalogFor(t, testManifest()).applyServiceInstall(context.Background(), f, d, nil, func(string, ...any) {}); o.State != api.OutcomeFailed {
+	d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall}
+	if o := catalogFor(t, testManifest()).applyAppInstall(context.Background(), f, d, nil, func(string, ...any) {}); o.State != api.OutcomeFailed {
 		t.Fatalf("outcome = %+v, want failed", o)
 	}
 }
 
 func prewarm(cfg Config, f *fakeInstaller) api.DirectiveOutcome {
-	d := api.Directive{ID: "p1", Kind: api.DirectiveServicePrewarm, Payload: "home-assistant"}
-	return cfg.applyServicePrewarm(context.Background(), f, d, func(string, ...any) {})
+	d := api.Directive{ID: "p1", Kind: api.DirectiveAppPrewarm, Payload: "home-assistant"}
+	return cfg.applyAppPrewarm(context.Background(), f, d, func(string, ...any) {})
 }
 
 // Prewarm is the warm-standby half ALONE. The assertion is the exact step list, because
@@ -767,20 +767,20 @@ func TestPrewarmFailsWhenTheImageCannotBeWarmed(t *testing.T) {
 	}
 }
 
-// cacheService must never damage the manifest it already holds. The bare WriteFile it used to be
+// cacheApp must never damage the manifest it already holds. The bare WriteFile it used to be
 // truncated the target first, so a crash inside the write left half a manifest -- which
-// installedServices reads as "this app is not installed", silently, on a node whose replicated
+// installedApps reads as "this app is not installed", silently, on a node whose replicated
 // manifest still names what it is meant to be running.
 //
 // Blocking the temp path with a directory forces the failure after the caller has committed to
 // the write. The assertion is deliberately two-sided: the old implementation returns nil AND
 // overwrites, so it fails on the first check, not merely on the second.
-func TestCacheServiceFailureKeepsThePriorManifest(t *testing.T) {
+func TestCacheAppFailureKeepsThePriorManifest(t *testing.T) {
 	dir := t.TempDir()
-	cfg := Config{ServiceCache: dir}
+	cfg := Config{AppCache: dir}
 	path := cfg.manifestPath("home-assistant")
 	prior := []byte(`{"name":"home-assistant"}`)
-	if err := cfg.cacheService("home-assistant", prior); err != nil {
+	if err := cfg.cacheApp("home-assistant", prior); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
@@ -789,8 +789,8 @@ func TestCacheServiceFailureKeepsThePriorManifest(t *testing.T) {
 	if err := os.Mkdir(path+".tmp", 0o755); err != nil { // the staging path is now unusable
 		t.Fatal(err)
 	}
-	if err := cfg.cacheService("home-assistant", []byte(`{"name":"home-assistant","v":2}`)); err == nil {
-		t.Fatal("cacheService onto a blocked temp path returned nil, want an error")
+	if err := cfg.cacheApp("home-assistant", []byte(`{"name":"home-assistant","v":2}`)); err == nil {
+		t.Fatal("cacheApp onto a blocked temp path returned nil, want an error")
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
@@ -805,7 +805,7 @@ func TestCacheServiceFailureKeepsThePriorManifest(t *testing.T) {
 // restart. The gap was invisible in the log and total in effect: cfg.resources() is gated on there
 // being an app, so between installing one and restarting, the node reported no appliance
 // telemetry at all -- per-app footprint, volume usage, snapshots, load, journal and store sizes.
-func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
+func TestAdoptInstalledAppRefreshesLiveConfig(t *testing.T) {
 	dir := t.TempDir()
 	raw := []byte(`{"name":"home-assistant","version":"2026.7.1","containers":[` +
 		`{"name":"app","image":"ghcr.io/home-assistant/home-assistant@sha256:` +
@@ -816,22 +816,22 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 	}
 	logf := func(string, ...any) {}
 	done := api.DirectiveOutcome{State: api.OutcomeDone}
-	install := api.Directive{Kind: api.DirectiveServiceInstall}
+	install := api.Directive{Kind: api.DirectiveAppInstall}
 
 	t.Run("adopts on a completed install", func(t *testing.T) {
-		cfg := Config{ServiceCache: dir, Promoter: promoterUnits()}
-		cfg.adoptInstalledServices(install, done, logf)
-		if len(cfg.Services) != 1 {
-			t.Fatalf("Services = %+v, want the one installed service", cfg.Services)
+		cfg := Config{AppCache: dir, Promoter: promoterUnits()}
+		cfg.adoptInstalledApps(install, done, logf)
+		if len(cfg.Apps) != 1 {
+			t.Fatalf("Apps = %+v, want the one installed app", cfg.Apps)
 		}
-		if cfg.Services[0].Name != "home-assistant" {
-			t.Fatalf("Services[0].Name = %q, want the installed service", cfg.Services[0].Name)
+		if cfg.Apps[0].Name != "home-assistant" {
+			t.Fatalf("Apps[0].Name = %q, want the installed app", cfg.Apps[0].Name)
 		}
-		if got := cfg.Services[0].ServingUnit(); got != "briard-home-assistant-app.service" {
+		if got := cfg.Apps[0].ServingUnit(); got != "briard-home-assistant-app.service" {
 			t.Errorf("ServingUnit() = %q, want the rendered container unit", got)
 		}
-		if len(cfg.ServiceRendered.Units) == 0 {
-			t.Errorf("rendered units not adopted: %v", cfg.ServiceRendered.Units)
+		if len(cfg.AppRendered.Units) == 0 {
+			t.Errorf("rendered units not adopted: %v", cfg.AppRendered.Units)
 		}
 		// The chain is NOT adopted — it is static. An install that moved it would be
 		// the node-was-told model converge exists to remove, and it is what let a survivor promote
@@ -853,21 +853,21 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 			{"another kind", api.Directive{Kind: api.DirectiveUpgradeSystem}, done},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				cfg := Config{ServiceCache: dir}
-				cfg.adoptInstalledServices(tc.d, tc.o, logf)
-				if len(cfg.Services) != 0 {
-					t.Errorf("live config changed on %s: %+v", tc.name, cfg.Services)
+				cfg := Config{AppCache: dir}
+				cfg.adoptInstalledApps(tc.d, tc.o, logf)
+				if len(cfg.Apps) != 0 {
+					t.Errorf("live config changed on %s: %+v", tc.name, cfg.Apps)
 				}
 			})
 		}
 	})
 	// A cache that cannot be read is not evidence of an uninstall: keep what we had.
 	t.Run("unreadable cache leaves the previous view", func(t *testing.T) {
-		cfg := Config{ServiceCache: filepath.Join(dir, "absent"),
-			Services: []model.ServiceSpec{{Name: "already-installed"}}}
-		cfg.adoptInstalledServices(install, done, logf)
-		if len(cfg.Services) != 1 || cfg.Services[0].Name != "already-installed" {
-			t.Errorf("Services was cleared by an unreadable cache: %+v", cfg.Services)
+		cfg := Config{AppCache: filepath.Join(dir, "absent"),
+			Apps: []model.AppSpec{{Name: "already-installed"}}}
+		cfg.adoptInstalledApps(install, done, logf)
+		if len(cfg.Apps) != 1 || cfg.Apps[0].Name != "already-installed" {
+			t.Errorf("Apps was cleared by an unreadable cache: %+v", cfg.Apps)
 		}
 	})
 }
@@ -880,7 +880,7 @@ func TestAdoptInstalledServiceRefreshesLiveConfig(t *testing.T) {
 func TestInstallSaysWhereToReachIt(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	cfg.FlockName = "picked-hornet"
-	o := installService(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
+	o := installApp(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
 	if o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
@@ -897,7 +897,7 @@ func TestInstallSaysWhereToReachIt(t *testing.T) {
 // to rule out. Asserted as an absence AND a presence: the port must be named, the URL must not appear.
 func TestInstallWithoutAPublishedNameNamesOnlyThePort(t *testing.T) {
 	cfg := catalogFor(t, testManifest()) // FlockName left zero on purpose
-	o := installService(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
+	o := installApp(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
 	if o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
@@ -912,7 +912,7 @@ func TestInstallWithoutAPublishedNameNamesOnlyThePort(t *testing.T) {
 // manifestJSON is a minimal valid manifest for `name`, used to populate the cache directory
 // directly. Written by hand rather than through the install path on purpose: these tests are about
 // what the node does with a SET, and the install path cannot currently produce one (see the
-// one-at-a-time gate in applyServiceInstall).
+// one-at-a-time gate in applyAppInstall).
 func manifestJSON(name, digest string) []byte {
 	return []byte(`{"name":"` + name + `","version":"1","containers":[` +
 		`{"name":"app","image":"ghcr.io/x/` + name + `@sha256:` + digest + `",` +
@@ -934,7 +934,7 @@ const (
 // restarts" is a real property the chain needs (a promoter rewritten into a different order on
 // every boot is a promoter nobody can reason about), NOT because alphabetical is meaningful --
 // making it a dependency order is later work.
-func TestInstalledServicesAssemblesTheChainFromAll(t *testing.T) {
+func TestInstalledAppsAssemblesTheChainFromAll(t *testing.T) {
 	dir := t.TempDir()
 	// Written b-then-a so a pass cannot come from the write order.
 	for _, s := range []struct{ name, digest string }{{"mosquitto", digestB}, {"home-assistant", digestA}} {
@@ -942,10 +942,10 @@ func TestInstalledServicesAssemblesTheChainFromAll(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cfg := Config{ServiceCache: dir}
-	specs, rendered, ok := cfg.installedServices(func(string, ...any) {})
+	cfg := Config{AppCache: dir}
+	specs, rendered, ok := cfg.installedApps(func(string, ...any) {})
 	if !ok {
-		t.Fatal("installedServices reported nothing installed, want two services")
+		t.Fatal("installedApps reported nothing installed, want two apps")
 	}
 	if len(specs) != 2 {
 		t.Fatalf("specs = %+v, want two", specs)
@@ -963,7 +963,7 @@ func TestInstalledServicesAssemblesTheChainFromAll(t *testing.T) {
 			t.Errorf("%s ServingUnit = %q, want %q", s.Name, s.ServingUnit(), want)
 		}
 	}
-	// And the union carries both renderings, which is what restoreService replays after a guest
+	// And the union carries both renderings, which is what restoreApp replays after a guest
 	// reboot empties /run. One app's files surviving is not enough.
 	for _, name := range []string{"home-assistant", "mosquitto"} {
 		found := false
@@ -982,7 +982,7 @@ func TestInstalledServicesAssemblesTheChainFromAll(t *testing.T) {
 // read on an unparseable file would take a healthy app out of the promoter chain because an
 // unrelated one was corrupt -- and a node that comes back serving nothing is the outcome this
 // path exists to prevent.
-func TestInstalledServicesSkipsOnlyTheBadFile(t *testing.T) {
+func TestInstalledAppsSkipsOnlyTheBadFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "home-assistant.json"), manifestJSON("home-assistant", digestA), 0o600); err != nil {
 		t.Fatal(err)
@@ -990,8 +990,8 @@ func TestInstalledServicesSkipsOnlyTheBadFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "mosquitto.json"), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{ServiceCache: dir}
-	specs, rendered, ok := cfg.installedServices(func(string, ...any) {})
+	cfg := Config{AppCache: dir}
+	specs, rendered, ok := cfg.installedApps(func(string, ...any) {})
 	if !ok || len(specs) != 1 || specs[0].Name != "home-assistant" {
 		t.Fatalf("specs = %+v (ok=%v), want just home-assistant", specs, ok)
 	}
@@ -1013,20 +1013,20 @@ func TestInstalledServicesSkipsOnlyTheBadFile(t *testing.T) {
 // What matters is not that it succeeds but that the FIRST app survives it, which is the
 // failure the refusal was standing in for: the install must ask the volume about ITS OWN app,
 // and must not remove the other's rendered units as a renamed prior's orphans.
-func TestInstallAcceptsASecondServiceAndLeavesTheFirstAlone(t *testing.T) {
+func TestInstallAcceptsASecondAppAndLeavesTheFirstAlone(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "mosquitto.json"), manifestJSON("mosquitto", digestB), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := catalogFor(t, testManifest()) // testManifest is home-assistant
-	cfg.ServiceCache = dir
+	cfg.AppCache = dir
 	// The volume holds mosquitto's manifest; home-assistant's install must not read it as its own
 	// prior, which is what made the second install destructive.
 	f := &fakeInstaller{primary: true, active: true, healthy: true,
 		prior: map[string]string{"mosquitto": string(manifestJSON("mosquitto", digestB))}}
-	o := installService(cfg, f)
+	o := installApp(cfg, f)
 	if o.State != api.OutcomeDone {
-		t.Fatalf("outcome = %+v, want done: a node may now run more than one service", o)
+		t.Fatalf("outcome = %+v, want done: a node may now run more than one app", o)
 	}
 	if !slices.Contains(f.steps, "installed?:home-assistant") {
 		t.Errorf("steps = %v, want the volume read to NAME home-assistant", f.steps)
@@ -1034,27 +1034,27 @@ func TestInstallAcceptsASecondServiceAndLeavesTheFirstAlone(t *testing.T) {
 	// No stale list: mosquitto's units are not home-assistant's prior, so nothing of its is removed.
 	for _, s := range f.staleRemoved {
 		if strings.Contains(s, "mosquitto") {
-			t.Errorf("installing home-assistant removed mosquitto's unit %q -- the first service was collateral", s)
+			t.Errorf("installing home-assistant removed mosquitto's unit %q -- the first app was collateral", s)
 		}
 	}
 	// Both apps end up in the cache, so bring-up knows about both.
-	specs, _, ok := cfg.installedServices(func(string, ...any) {})
+	specs, _, ok := cfg.installedApps(func(string, ...any) {})
 	if !ok || len(specs) != 2 {
-		t.Fatalf("cache holds %+v (ok=%v), want both services", specs, ok)
+		t.Fatalf("cache holds %+v (ok=%v), want both apps", specs, ok)
 	}
 }
 
 // ...and an UPGRADE of an app already installed is still one path with install, which is why
 // the same-name case was always the other half of this assertion.
-func TestInstallOfTheSameServiceIsAnUpgrade(t *testing.T) {
+func TestInstallOfTheSameAppIsAnUpgrade(t *testing.T) {
 	up := t.TempDir()
 	if err := os.WriteFile(filepath.Join(up, "home-assistant.json"), manifestJSON("home-assistant", digestA), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := catalogFor(t, testManifest())
-	cfg.ServiceCache = up
-	if o := installService(cfg, &fakeInstaller{primary: true, active: true, healthy: true}); o.State != api.OutcomeDone {
-		t.Fatalf("outcome = %+v, want done: re-installing the same service is an upgrade", o)
+	cfg.AppCache = up
+	if o := installApp(cfg, &fakeInstaller{primary: true, active: true, healthy: true}); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done: re-installing the same app is an upgrade", o)
 	}
 }
 
@@ -1073,7 +1073,7 @@ func TestInstallOfTheSameServiceIsAnUpgrade(t *testing.T) {
 // for exactly this reason.
 func TestInstallEnsuresTheImageRatherThanPullingIt(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true}
-	if o := installService(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
+	if o := installApp(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	if len(f.warmedRefs) == 0 {
@@ -1081,7 +1081,7 @@ func TestInstallEnsuresTheImageRatherThanPullingIt(t *testing.T) {
 	}
 	for _, ref := range f.warmedRefs {
 		if ref == "" {
-			t.Errorf("ServiceWarm got an empty ref (%v) — the guest cannot check presence without it", f.warmedRefs)
+			t.Errorf("AppWarm got an empty ref (%v) — the guest cannot check presence without it", f.warmedRefs)
 		}
 	}
 	want := testManifest().Primary().Image
@@ -1099,7 +1099,7 @@ func TestInstallEnsuresTheImageRatherThanPullingIt(t *testing.T) {
 // Manifest and hashed that would look entirely reasonable, produce a stable-looking value, and
 // disagree with every identity the catalog ever published. The expectation here is therefore
 // computed from the file, never from the struct.
-func TestInstalledServicesCarriesTheManifestIdentity(t *testing.T) {
+func TestInstalledAppsCarriesTheManifestIdentity(t *testing.T) {
 	dir := t.TempDir()
 	want := map[string]string{}
 	for _, s := range []struct{ name, digest string }{{"home-assistant", digestA}, {"mosquitto", digestB}} {
@@ -1114,8 +1114,8 @@ func TestInstalledServicesCarriesTheManifestIdentity(t *testing.T) {
 		sum := sha256.Sum256(raw)
 		want[s.name] = "sha256:" + hex.EncodeToString(sum[:])
 	}
-	cfg := Config{ServiceCache: dir}
-	specs, _, ok := cfg.installedServices(func(string, ...any) {})
+	cfg := Config{AppCache: dir}
+	specs, _, ok := cfg.installedApps(func(string, ...any) {})
 	if !ok || len(specs) != 2 {
 		t.Fatalf("specs = %+v (ok=%v), want two", specs, ok)
 	}
@@ -1127,7 +1127,7 @@ func TestInstalledServicesCarriesTheManifestIdentity(t *testing.T) {
 	// Two different manifests must not share an identity -- a constant would satisfy every
 	// assertion above and confirm any rollout against any other.
 	if specs[0].Manifest == specs[1].Manifest {
-		t.Errorf("both services report identity %q; a shared identity confirms one rollout with another's evidence", specs[0].Manifest)
+		t.Errorf("both apps report identity %q; a shared identity confirms one rollout with another's evidence", specs[0].Manifest)
 	}
 }
 
@@ -1139,19 +1139,19 @@ func TestInstalledServicesCarriesTheManifestIdentity(t *testing.T) {
 // confirmation loop reads the second as a mismatch it can never resolve. specOf builds every spec
 // from signed manifest bytes so the case is unreachable -- asserted anyway, because it is the
 // guard that keeps it unreachable.
-func TestServiceStatusesReportOnlyServicesItCanName(t *testing.T) {
-	cfg := Config{Services: []model.ServiceSpec{
+func TestAppStatusesReportOnlyAppsItCanName(t *testing.T) {
+	cfg := Config{Apps: []model.AppSpec{
 		{Name: "home-assistant", Manifest: "sha256:aa"},
 		{Name: "nameless"}, // no manifest identity: must never reach the wire
 		{Name: "mosquitto", Manifest: "sha256:bb"},
 	}}
-	got := cfg.serviceStatuses(context.Background(), fakeStatus{}, false)
-	want := []api.ServiceStatus{
+	got := cfg.appStatuses(context.Background(), fakeStatus{}, false)
+	want := []api.AppStatus{
 		{Name: "home-assistant", Manifest: "sha256:aa"},
 		{Name: "mosquitto", Manifest: "sha256:bb"},
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("serviceStatuses() = %+v, want %+v", got, want)
+		t.Errorf("appStatuses() = %+v, want %+v", got, want)
 	}
 }
 
@@ -1161,19 +1161,19 @@ func TestServiceStatusesReportOnlyServicesItCanName(t *testing.T) {
 //
 // The two answers are asserted together because they are only meaningful against each other: a
 // running app and a dead one, on the same node, in the same report.
-func TestServiceStatusesReportPerServiceState(t *testing.T) {
-	cfg := Config{Services: []model.ServiceSpec{
+func TestAppStatusesReportPerAppState(t *testing.T) {
+	cfg := Config{Apps: []model.AppSpec{
 		{Name: "home-assistant", Manifest: "sha256:aa", Unit: "briard-home-assistant-ha.service"},
 		{Name: "mosquitto", Manifest: "sha256:bb", Unit: "briard-mosquitto-mq.service"},
 	}}
 	r := fakeStatus{active: map[string]bool{"briard-home-assistant-ha.service": true}}
-	got := cfg.serviceStatuses(context.Background(), r, true)
-	want := []api.ServiceStatus{
+	got := cfg.appStatuses(context.Background(), r, true)
+	want := []api.AppStatus{
 		{Name: "home-assistant", Manifest: "sha256:aa", State: api.StateRunning},
 		{Name: "mosquitto", Manifest: "sha256:bb", State: api.StateStopped},
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("serviceStatuses() = %+v, want %+v", got, want)
+		t.Errorf("appStatuses() = %+v, want %+v", got, want)
 	}
 }
 
@@ -1181,26 +1181,26 @@ func TestServiceStatusesReportPerServiceState(t *testing.T) {
 // volume, so a standby is SUPPOSED to be running nothing -- reporting `stopped` there would make
 // an ordinary secondary indistinguishable from a primary whose app died, which is exactly the
 // confusion this field exists to end.
-func TestServiceStatusesLeaveStateEmptyOnASecondary(t *testing.T) {
-	cfg := Config{Services: []model.ServiceSpec{
+func TestAppStatusesLeaveStateEmptyOnASecondary(t *testing.T) {
+	cfg := Config{Apps: []model.AppSpec{
 		{Name: "home-assistant", Manifest: "sha256:aa", Unit: "briard-home-assistant-ha.service"},
 	}}
-	got := cfg.serviceStatuses(context.Background(), fakeStatus{}, false)
+	got := cfg.appStatuses(context.Background(), fakeStatus{}, false)
 	if len(got) != 1 || got[0].State != "" {
-		t.Errorf("serviceStatuses() on a secondary = %+v, want the state left empty", got)
+		t.Errorf("appStatuses() on a secondary = %+v, want the state left empty", got)
 	}
 }
 
 // "We could not ask" is not "it is down" either, and a read error must cost only the ONE app
 // it happened to. Losing the whole set to a transient verb error is how a real outage hides.
-func TestServiceStatusesLeaveStateEmptyWhenTheGuestCannotAnswer(t *testing.T) {
-	cfg := Config{Services: []model.ServiceSpec{
+func TestAppStatusesLeaveStateEmptyWhenTheGuestCannotAnswer(t *testing.T) {
+	cfg := Config{Apps: []model.AppSpec{
 		{Name: "home-assistant", Manifest: "sha256:aa", Unit: "briard-home-assistant-ha.service"},
 	}}
 	r := fakeStatus{activeErr: errors.New("channel down")}
-	got := cfg.serviceStatuses(context.Background(), r, true)
+	got := cfg.appStatuses(context.Background(), r, true)
 	if len(got) != 1 {
-		t.Fatalf("a failed state read dropped the service entirely: %+v", got)
+		t.Fatalf("a failed state read dropped the app entirely: %+v", got)
 	}
 	if got[0].State != "" {
 		t.Errorf("State = %q after a failed read, want empty — an unanswerable question is not a `stopped` answer", got[0].State)
@@ -1213,9 +1213,9 @@ func TestServiceStatusesLeaveStateEmptyWhenTheGuestCannotAnswer(t *testing.T) {
 // A witness and the shipped zero-app node report NOTHING here, and they must report it as an
 // absent field rather than an empty list: `services: []` on the wire says "I looked and there are
 // none", which is a claim a node with no app cache is in no position to make.
-func TestServiceStatusesAreAbsentWithNoServices(t *testing.T) {
-	if got := (Config{}).serviceStatuses(context.Background(), fakeStatus{}, true); got != nil {
-		t.Errorf("serviceStatuses() = %+v, want nil so the field is omitted entirely", got)
+func TestAppStatusesAreAbsentWithNoApps(t *testing.T) {
+	if got := (Config{}).appStatuses(context.Background(), fakeStatus{}, true); got != nil {
+		t.Errorf("appStatuses() = %+v, want nil so the field is omitted entirely", got)
 	}
 }
 
@@ -1243,14 +1243,14 @@ func mustPrior(t *testing.T) map[string]string {
 // reading the volume's single unnamed manifest made an install of mosquitto see
 // home-assistant's manifest as its own prior -- so it snapshotted the wrong rollback point, and
 // filesToRemove then deleted home-assistant's rendered units as a renamed prior's orphans.
-func TestPriorServiceReadsOnlyItsOwnService(t *testing.T) {
+func TestPriorAppReadsOnlyItsOwnApp(t *testing.T) {
 	other, _ := priorManifest(t) // home-assistant's manifest, on the volume
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: true, prior: other}
 	// Install a DIFFERENT app; the volume holds only home-assistant's manifest.
-	prior, subdirs, raw, _ := cfg.priorService(context.Background(), f, "mosquitto", []byte(`{}`), func(string, ...any) {})
+	prior, subdirs, raw, _ := cfg.priorApp(context.Background(), f, "mosquitto", []byte(`{}`), func(string, ...any) {})
 	if prior != nil || subdirs != nil || raw != "" {
-		t.Fatalf("prior = %v/%v/%q for mosquitto, want none -- another service's manifest answered for it", prior, subdirs, raw)
+		t.Fatalf("prior = %v/%v/%q for mosquitto, want none -- another app's manifest answered for it", prior, subdirs, raw)
 	}
 	// And the read named the app it was asked about, rather than asking for "the" manifest.
 	if !slices.Contains(f.steps, "installed?:mosquitto") {
@@ -1261,10 +1261,10 @@ func TestPriorServiceReadsOnlyItsOwnService(t *testing.T) {
 // A guest that cannot name an app's identity on the volume must be refused BEFORE anything is
 // written, not driven into recording this app's manifest over whatever it already runs. Alpha
 // is reinstall-only, so "refuse loudly" is the whole answer -- there is no compat path to build.
-func TestInstallRefusesAGuestThatCannotNameAService(t *testing.T) {
+func TestInstallRefusesAGuestThatCannotNameAApp(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: true, oldGuest: true}
-	o := installService(cfg, f)
+	o := installApp(cfg, f)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "service.installed") {
 		t.Fatalf("outcome = %+v, want a failure naming the missing verb", o)
 	}
@@ -1273,7 +1273,7 @@ func TestInstallRefusesAGuestThatCannotNameAService(t *testing.T) {
 	}
 }
 
-// volumeGuest is the slice of the guest adoptVolumeServices reads: what the replicated volume
+// volumeGuest is the slice of the guest adoptVolumeApps reads: what the replicated volume
 // says this node runs, keyed by app name.
 type volumeGuest struct {
 	manifests map[string]string
@@ -1281,7 +1281,7 @@ type volumeGuest struct {
 	tooOld    bool
 }
 
-func (v volumeGuest) ServiceList(context.Context) ([]string, error) {
+func (v volumeGuest) AppList(context.Context) ([]string, error) {
 	names := make([]string, 0, len(v.manifests))
 	for n := range v.manifests {
 		names = append(names, n)
@@ -1290,31 +1290,31 @@ func (v volumeGuest) ServiceList(context.Context) ([]string, error) {
 	return names, v.listErr
 }
 
-func (v volumeGuest) ServiceInstalled(_ context.Context, name string) (string, error) {
+func (v volumeGuest) AppInstalled(_ context.Context, name string) (string, error) {
 	return v.manifests[name], nil
 }
 
-func (v volumeGuest) SupportsServiceList() bool { return !v.tooOld }
+func (v volumeGuest) SupportsAppList() bool { return !v.tooOld }
 
 // THE CONVERGED SURVIVOR (measured on a fleet run). A node that promoted
 // into somebody else's install has an EMPTY node-local cache -- only a completed install on a
 // Primary writes one -- while converge-at-promotion has it running what the volume names. Reading
 // the volume is what lets it say so; without this it served the fixture at the VIP while
 // reporting no apps at all, which is a household degraded to nothing in every view.
-func TestAdoptVolumeServicesOnANodeThatInstalledNothing(t *testing.T) {
+func TestAdoptVolumeAppsOnANodeThatInstalledNothing(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &Config{ServiceCache: dir}
+	cfg := &Config{AppCache: dir}
 	g := volumeGuest{manifests: map[string]string{
 		"home-assistant": string(manifestJSON("home-assistant", digestA)),
 		"mosquitto":      string(manifestJSON("mosquitto", digestB)),
 	}}
-	cfg.adoptVolumeServices(context.Background(), g, func(string, ...any) {})
+	cfg.adoptVolumeApps(context.Background(), g, func(string, ...any) {})
 
-	if len(cfg.Services) != 2 {
-		t.Fatalf("services = %+v, want the two the volume names", cfg.Services)
+	if len(cfg.Apps) != 2 {
+		t.Fatalf("apps = %+v, want the two the volume names", cfg.Apps)
 	}
-	if cfg.Services[0].Name != "home-assistant" || cfg.Services[1].Name != "mosquitto" {
-		t.Errorf("names = %q,%q, want home-assistant,mosquitto", cfg.Services[0].Name, cfg.Services[1].Name)
+	if cfg.Apps[0].Name != "home-assistant" || cfg.Apps[1].Name != "mosquitto" {
+		t.Errorf("names = %q,%q, want home-assistant,mosquitto", cfg.Apps[0].Name, cfg.Apps[1].Name)
 	}
 	// The IDENTITY is what the cloud confirms a rollout against, so it must be the hash of the
 	// volume's own bytes rather than anything re-derived.
@@ -1322,10 +1322,10 @@ func TestAdoptVolumeServicesOnANodeThatInstalledNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Services[0].Manifest != string(want) {
-		t.Errorf("manifest = %q, want the volume's identity %q", cfg.Services[0].Manifest, want)
+	if cfg.Apps[0].Manifest != string(want) {
+		t.Errorf("manifest = %q, want the volume's identity %q", cfg.Apps[0].Manifest, want)
 	}
-	if len(cfg.ServiceRendered.Units) == 0 {
+	if len(cfg.AppRendered.Units) == 0 {
 		t.Error("the rendered units must come with the specs -- a standby replays them after a guest reboot")
 	}
 	// CACHED, so this node's own restart brings up what it is running rather than what it once
@@ -1340,8 +1340,8 @@ func TestAdoptVolumeServicesOnANodeThatInstalledNothing(t *testing.T) {
 // Every failure is SOFT, because this is a report and not a decision: a guest too old to list, or
 // a read that fails, leaves the previous view standing rather than blanking what the node says it
 // runs. A stale answer beats an invented one.
-func TestAdoptVolumeServicesKeepsTheOldViewOnFailure(t *testing.T) {
-	prior := []model.ServiceSpec{{Name: "home-assistant", Manifest: "sha256:prior"}}
+func TestAdoptVolumeAppsKeepsTheOldViewOnFailure(t *testing.T) {
+	prior := []model.AppSpec{{Name: "home-assistant", Manifest: "sha256:prior"}}
 	for _, tc := range []struct {
 		name string
 		g    volumeGuest
@@ -1350,10 +1350,10 @@ func TestAdoptVolumeServicesKeepsTheOldViewOnFailure(t *testing.T) {
 		{"a failed read", volumeGuest{listErr: errors.New("channel down")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &Config{ServiceCache: t.TempDir(), Services: prior}
-			cfg.adoptVolumeServices(context.Background(), tc.g, func(string, ...any) {})
-			if len(cfg.Services) != 1 || cfg.Services[0].Manifest != "sha256:prior" {
-				t.Fatalf("services = %+v, want the prior view untouched", cfg.Services)
+			cfg := &Config{AppCache: t.TempDir(), Apps: prior}
+			cfg.adoptVolumeApps(context.Background(), tc.g, func(string, ...any) {})
+			if len(cfg.Apps) != 1 || cfg.Apps[0].Manifest != "sha256:prior" {
+				t.Fatalf("apps = %+v, want the prior view untouched", cfg.Apps)
 			}
 		})
 	}
@@ -1361,15 +1361,15 @@ func TestAdoptVolumeServicesKeepsTheOldViewOnFailure(t *testing.T) {
 
 // A manifest the volume carries but this build cannot parse costs THAT app and no other: one
 // unusable file must not blank a node's whole report.
-func TestAdoptVolumeServicesSkipsOnlyTheBadManifest(t *testing.T) {
-	cfg := &Config{ServiceCache: t.TempDir()}
+func TestAdoptVolumeAppsSkipsOnlyTheBadManifest(t *testing.T) {
+	cfg := &Config{AppCache: t.TempDir()}
 	g := volumeGuest{manifests: map[string]string{
 		"home-assistant": string(manifestJSON("home-assistant", digestA)),
 		"mosquitto":      `{"name":"mosquitto","containers":[]}`, // no primary container
 	}}
-	cfg.adoptVolumeServices(context.Background(), g, func(string, ...any) {})
-	if len(cfg.Services) != 1 || cfg.Services[0].Name != "home-assistant" {
-		t.Fatalf("services = %+v, want only the one that parses", cfg.Services)
+	cfg.adoptVolumeApps(context.Background(), g, func(string, ...any) {})
+	if len(cfg.Apps) != 1 || cfg.Apps[0].Name != "home-assistant" {
+		t.Fatalf("apps = %+v, want only the one that parses", cfg.Apps)
 	}
 }
 
@@ -1382,8 +1382,8 @@ func upgradeWith(t *testing.T, f *fakeInstaller) api.DirectiveOutcome {
 	cfg.readinessSettle = time.Millisecond
 	f.prior = mustPrior(t)
 	f.primary, f.active, f.healthy = true, true, true
-	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
-	return cfg.applyServiceInstall(context.Background(), f, d, nil, func(string, ...any) {})
+	d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "home-assistant"}
+	return cfg.applyAppInstall(context.Background(), f, d, nil, func(string, ...any) {})
 }
 
 func sample(states ...string) []hass.Entry {
@@ -1438,7 +1438,7 @@ func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
 		t.Fatalf("no baseline was captured on an upgrade: %v", f.steps)
 	}
 	if qi < 0 || ri > qi {
-		t.Fatalf("the baseline must precede the stop — a stopped service samples as wholly regressed: %v", f.steps)
+		t.Fatalf("the baseline must precede the stop — a stopped app samples as wholly regressed: %v", f.steps)
 	}
 	if si < 0 || ri > si {
 		t.Fatalf("the baseline must precede the snapshot: %v", f.steps)
@@ -1451,7 +1451,7 @@ func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
 	}
 }
 
-// TestUpgradeStopsTheServiceBeforeSnapshottingIt is the rollback-point rule, and
+// TestUpgradeStopsTheAppBeforeSnapshottingIt is the rollback-point rule, and
 // `services-pair.nix` measured why it is one: taken live, the point did not contain the retained
 // message mosquitto had already accepted, so the rollback restored an empty broker.
 // A live snapshot is crash-consistent at best, and only Home Assistant is measured to survive that.
@@ -1459,7 +1459,7 @@ func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
 // It asserts the CONTAINER unit by name, never the pod: stopping the pod makes podman kill the
 // containers, their units fail, and the target unmounts the shared volume under every other
 // app (quiesce's own comment carries the trace).
-func TestUpgradeStopsTheServiceBeforeSnapshottingIt(t *testing.T) {
+func TestUpgradeStopsTheAppBeforeSnapshottingIt(t *testing.T) {
 	f := &fakeInstaller{readiness: [][]hass.Entry{sample("loaded"), sample("loaded")}}
 	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
@@ -1471,10 +1471,10 @@ func TestUpgradeStopsTheServiceBeforeSnapshottingIt(t *testing.T) {
 		t.Fatalf("the upgrade never stopped the prior container before snapshotting it: %v", f.steps)
 	}
 	if si < 0 || qi > si {
-		t.Fatalf("the rollback point was taken on a RUNNING service: %v", f.steps)
+		t.Fatalf("the rollback point was taken on a RUNNING app: %v", f.steps)
 	}
 	if strings.Contains(joined, "stop:briard-home-assistant.pod") {
-		t.Fatalf("the pod was stopped — that unmounts the shared volume under every other service: %v", f.steps)
+		t.Fatalf("the pod was stopped — that unmounts the shared volume under every other app: %v", f.steps)
 	}
 }
 
@@ -1504,7 +1504,7 @@ func TestFreshInstallStopsNothing(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	cfg.readinessSettle = time.Millisecond
 	f := &fakeInstaller{primary: true, active: true, healthy: true} // no prior => fresh
-	if o := installService(cfg, f); o.State != api.OutcomeDone {
+	if o := installApp(cfg, f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	for _, s := range f.steps {
@@ -1514,11 +1514,11 @@ func TestFreshInstallStopsNothing(t *testing.T) {
 	}
 }
 
-// TestAFailedRollbackPointRestartsTheService: the rule is that a failed upgrade snapshot
+// TestAFailedRollbackPointRestartsTheApp: the rule is that a failed upgrade snapshot
 // INTERRUPTS the app — not that it abandons it. The stop has already happened by then, so the
 // undo is a re-converge against the volume, which still names the PRIOR manifest because provision
 // has not run. Without this the household loses Home Assistant because a btrfs snapshot failed.
-func TestAFailedRollbackPointRestartsTheService(t *testing.T) {
+func TestAFailedRollbackPointRestartsTheApp(t *testing.T) {
 	f := &fakeInstaller{
 		readiness: [][]hass.Entry{sample("loaded"), sample("loaded")},
 		snapEr:    errors.New("no space left on device"),
@@ -1531,7 +1531,7 @@ func TestAFailedRollbackPointRestartsTheService(t *testing.T) {
 		t.Fatalf("the outcome does not name what failed: %q", o.Detail)
 	}
 	if !strings.Contains(o.Detail, "restarted") {
-		t.Fatalf("the outcome does not tell the household the service came back: %q", o.Detail)
+		t.Fatalf("the outcome does not tell the household the app came back: %q", o.Detail)
 	}
 	joined := strings.Join(f.steps, ",")
 	qi := strings.Index(joined, "stop:")
@@ -1541,7 +1541,7 @@ func TestAFailedRollbackPointRestartsTheService(t *testing.T) {
 		t.Fatalf("the test did not reach the stop and the snapshot: %v", f.steps)
 	}
 	if ci < 0 || ci < si {
-		t.Fatalf("the service was left stopped after the snapshot failed: %v", f.steps)
+		t.Fatalf("the app was left stopped after the snapshot failed: %v", f.steps)
 	}
 	if strings.Contains(joined, "provision") || strings.Contains(joined, "stage:") {
 		t.Fatalf("the volume was mutated after the rollback point could not be taken: %v", f.steps)
@@ -1556,8 +1556,8 @@ func TestFreshInstallHasNoBaseline(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	cfg.readinessSettle = time.Millisecond
 	f := &fakeInstaller{primary: true, active: true, healthy: true} // no prior => fresh
-	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
-	if o := cfg.applyServiceInstall(context.Background(), f, d, nil, func(string, ...any) {}); o.State != api.OutcomeDone {
+	d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "home-assistant"}
+	if o := cfg.applyAppInstall(context.Background(), f, d, nil, func(string, ...any) {}); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	if f.readinessHit != 0 {
@@ -1588,10 +1588,10 @@ func TestUpgradeKeepsWhenReadinessCannotBeSampled(t *testing.T) {
 	}
 }
 
-// TestUpgradeOfAnUnknownServiceIsFloorOnly: the registry's default, at the level that matters.
+// TestUpgradeOfAnUnknownAppIsFloorOnly: the registry's default, at the level that matters.
 // An app the product holds no knowledge about is upgraded exactly as it was before the gate
 // existed — no sample taken, no minute spent settling.
-func TestUpgradeOfAnUnknownServiceIsFloorOnly(t *testing.T) {
+func TestUpgradeOfAnUnknownAppIsFloorOnly(t *testing.T) {
 	m := testManifest()
 	m.Name = "mosquitto"
 	cfg := catalogFor(t, m)
@@ -1604,41 +1604,41 @@ func TestUpgradeOfAnUnknownServiceIsFloorOnly(t *testing.T) {
 		prior:     map[string]string{"mosquitto": string(body)},
 		readiness: [][]hass.Entry{sample("loaded"), sample("setup_error")},
 	}
-	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "mosquitto"}
-	if o := cfg.applyServiceInstall(context.Background(), f, d, nil, func(string, ...any) {}); o.State != api.OutcomeDone {
+	d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "mosquitto"}
+	if o := cfg.applyAppInstall(context.Background(), f, d, nil, func(string, ...any) {}); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	if f.readinessHit != 0 {
-		t.Fatalf("a service with no assessor sampled readiness %d times, want 0", f.readinessHit)
+		t.Fatalf("an app with no assessor sampled readiness %d times, want 0", f.readinessHit)
 	}
 }
 
-// TestInstallFailsWhenItsOwnServiceWasSkipped is the other half of converge's containment. A
+// TestInstallFailsWhenItsOwnAppWasSkipped is the other half of converge's containment. A
 // preparation failure is contained there so a promoting node keeps the apps that work — which
 // means converge SUCCEEDS while declining to start ours. For an install that is the wrong answer:
 // the old container is still serving, so the health gate below would pass on it and the install
 // would report a version nothing is running.
-func TestInstallFailsWhenItsOwnServiceWasSkipped(t *testing.T) {
+func TestInstallFailsWhenItsOwnAppWasSkipped(t *testing.T) {
 	f := &fakeInstaller{convergeSkips: []string{"home-assistant"}}
 	o := upgradeWith(t, f)
 	if o.State != api.OutcomeRolledBack {
-		t.Fatalf("outcome = %+v, want rolled-back — converge did not start our service", o)
+		t.Fatalf("outcome = %+v, want rolled-back — converge did not start our app", o)
 	}
 	if !strings.Contains(o.Detail, "could not prepare") {
 		t.Fatalf("the outcome does not say why: %q", o.Detail)
 	}
 }
 
-// TestInstallIgnoresAnotherServiceBeingSkipped: containment cuts both ways. A DIFFERENT app
+// TestInstallIgnoresAnotherAppBeingSkipped: containment cuts both ways. A DIFFERENT app
 // failing to prepare is not this install's problem, and failing here would make one broken
 // catalog entry block every other install on the node.
-func TestInstallIgnoresAnotherServiceBeingSkipped(t *testing.T) {
+func TestInstallIgnoresAnotherAppBeingSkipped(t *testing.T) {
 	f := &fakeInstaller{
 		convergeSkips: []string{"mosquitto"},
 		readiness:     [][]hass.Entry{sample("loaded"), sample("loaded")},
 	}
 	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
-		t.Fatalf("outcome = %+v, want done — another service's skip is not ours", o)
+		t.Fatalf("outcome = %+v, want done — another app's skip is not ours", o)
 	}
 }
 
@@ -1650,8 +1650,8 @@ func TestInstallIgnoresAnotherServiceBeingSkipped(t *testing.T) {
 // It is only asked of a RUNNING app, and an unresolvable one leaves the field empty rather
 // than calling it unhealthy -- a node mid-converge has no route yet, and a false alarm on a field
 // whose whole value is that someone acts on it is worse than silence.
-func TestServiceStatusesReportPerServiceHealth(t *testing.T) {
-	cfg := Config{Services: []model.ServiceSpec{
+func TestAppStatusesReportPerAppHealth(t *testing.T) {
+	cfg := Config{Apps: []model.AppSpec{
 		{Name: "serving", Manifest: "sha256:aa", Unit: "briard-serving-app.service"},
 		{Name: "wedged", Manifest: "sha256:bb", Unit: "briard-wedged-app.service"},
 		{Name: "unrouted", Manifest: "sha256:cc", Unit: "briard-unrouted-app.service"},
@@ -1668,10 +1668,10 @@ func TestServiceStatusesReportPerServiceHealth(t *testing.T) {
 			"briard-unknown-app.service":  true,
 		},
 		// "unrouted" is deliberately absent: the guest cannot resolve it.
-		svcHealth: map[string]services.Health{"serving": services.Healthy, "wedged": services.Unhealthy, "starting": services.Starting, "unknown": services.HealthUnknown, "stopped": services.Healthy},
+		svcHealth: map[string]apps.Health{"serving": apps.Healthy, "wedged": apps.Unhealthy, "starting": apps.Starting, "unknown": apps.HealthUnknown, "stopped": apps.Healthy},
 	}
-	got := cfg.serviceStatuses(context.Background(), r, true)
-	want := []api.ServiceStatus{
+	got := cfg.appStatuses(context.Background(), r, true)
+	want := []api.AppStatus{
 		{Name: "serving", Manifest: "sha256:aa", State: api.StateRunning, Health: api.StateHealthy},
 		// THE ONE THAT MATTERS: up, and not serving.
 		{Name: "wedged", Manifest: "sha256:bb", State: api.StateRunning, Health: api.StateUnhealthy},
@@ -1683,7 +1683,7 @@ func TestServiceStatusesReportPerServiceHealth(t *testing.T) {
 		{Name: "unknown", Manifest: "sha256:ff", State: api.StateRunning},
 	}
 	if !slices.Equal(got, want) {
-		t.Errorf("serviceStatuses() = %+v, want %+v", got, want)
+		t.Errorf("appStatuses() = %+v, want %+v", got, want)
 	}
 }
 
@@ -1698,15 +1698,15 @@ func (f *fakeInstaller) StorageGrow(_ context.Context, size int64) error {
 	return nil
 }
 func (f *fakeInstaller) SupportsStorageGrow() bool { return !f.oldGuest }
-func (f *fakeInstaller) ServicePulling(_ context.Context, service string, size, installed int64) error {
-	f.steps = append(f.steps, fmt.Sprintf("pulling %s %d/%d", service, size, installed))
+func (f *fakeInstaller) AppPulling(_ context.Context, app string, size, installed int64) error {
+	f.steps = append(f.steps, fmt.Sprintf("pulling %s %d/%d", app, size, installed))
 	return nil
 }
-func (f *fakeInstaller) ServicePulled(_ context.Context, service string) error {
-	f.steps = append(f.steps, "pulled "+service)
+func (f *fakeInstaller) AppPulled(_ context.Context, app string) error {
+	f.steps = append(f.steps, "pulled "+app)
 	return nil
 }
-func (f *fakeInstaller) SupportsServicePulling() bool { return !f.oldGuest }
+func (f *fakeInstaller) SupportsAppPulling() bool { return !f.oldGuest }
 
 // THE FREE-SPACE GATE: a manifest that says what it will hold, a guest that says
 // what it has, and a pull that could only end in a full disk refused BEFORE anything is
@@ -1717,7 +1717,7 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 	m := testManifest()
 	m.Size, m.InstalledSize = 600e6, 2500e6
 	f := &fakeInstaller{primary: true, active: true, healthy: true, free: 2000e6}
-	o := installService(catalogFor(t, m), f)
+	o := installApp(catalogFor(t, m), f)
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "not enough space") || !strings.Contains(o.Detail, "2.50 GB") || !strings.Contains(o.Detail, "2.00 GB") {
 		t.Fatalf("outcome = %+v, want a refusal naming what is needed and what is free", o)
 	}
@@ -1731,13 +1731,13 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 	// pull completes, so 2.5 GB installed + 1 GiB headroom is not enough in 4 GB once the 0.6 GB
 	// being downloaded sits beside it.
 	f = &fakeInstaller{primary: true, active: true, healthy: true, free: 4000e6}
-	if o := installService(catalogFor(t, m), f); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "600 MB more while it downloads") {
+	if o := installApp(catalogFor(t, m), f); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "600 MB more while it downloads") {
 		t.Fatalf("outcome without room for the download = %+v; want a refusal that names it", o)
 	}
 	// 2.5 GB installed + 0.6 GB downloading + 1 GiB headroom fits in 4.5 GB: installs, and the
 	// bar's record brackets the warm.
 	f = &fakeInstaller{primary: true, active: true, healthy: true, free: 4500e6}
-	if o := installService(catalogFor(t, m), f); o.State != api.OutcomeDone {
+	if o := installApp(catalogFor(t, m), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome with room = %+v", o)
 	}
 	joined = strings.Join(f.steps, ",")
@@ -1747,13 +1747,13 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 	}
 	// Cannot measure: installs, unmeasured.
 	f = &fakeInstaller{primary: true, active: true, healthy: true, freeErr: errors.New("df: no such file")}
-	if o := installService(catalogFor(t, m), f); o.State != api.OutcomeDone {
+	if o := installApp(catalogFor(t, m), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome when the store cannot be measured = %+v; want the install to proceed", o)
 	}
 	// No sizes in the entry: no gate, no record.
 	plain := testManifest()
 	f = &fakeInstaller{primary: true, active: true, healthy: true, free: 1}
-	if o := installService(catalogFor(t, plain), f); o.State != api.OutcomeDone {
+	if o := installApp(catalogFor(t, plain), f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome for an unsized entry = %+v; want no gate", o)
 	}
 	if s := strings.Join(f.steps, ","); strings.Contains(s, "storage.free") || strings.Contains(s, "pulling") {
@@ -1795,7 +1795,7 @@ func TestInstallBudgetFollowsThePullBound(t *testing.T) {
 func TestInstallRefusesAGuestThatCannotTakeAMember(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: true, noMember: true}
-	o := installService(cfg, f)
+	o := installApp(cfg, f)
 	if o.State != api.OutcomeFailed {
 		t.Fatalf("outcome = %+v, want failed", o)
 	}
@@ -1811,8 +1811,8 @@ func TestInstallRefusesAGuestThatCannotTakeAMember(t *testing.T) {
 
 // The restore's three. members is the ring the fake offers; ensureErr is an image that
 // cannot be fetched, which is the case the restore must refuse BEFORE it stops anything.
-func (f *fakeInstaller) Members(_ context.Context, service string) ([]quadlet.SnapshotEntry, error) {
-	f.steps = append(f.steps, "members:"+service)
+func (f *fakeInstaller) Members(_ context.Context, app string) ([]quadlet.SnapshotEntry, error) {
+	f.steps = append(f.steps, "members:"+app)
 	return f.members, f.membersEr
 }
 func (f *fakeInstaller) SupportsMembers() bool { return !f.oldGuest }
@@ -1837,7 +1837,7 @@ func ringWith(t *testing.T, pinned manifest.Manifest, ensureEr error) (Config, *
 		prior:    mustPrior(t),
 		ensureEr: ensureEr,
 		members: []quadlet.SnapshotEntry{{Member: member, Meta: quadlet.SnapshotMeta{
-			Service: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore,
+			App: "home-assistant", Trigger: quadlet.TriggerAppUpdateBefore,
 			Manifest: string(raw),
 		}}},
 	}
@@ -1845,8 +1845,8 @@ func ringWith(t *testing.T, pinned manifest.Manifest, ensureEr error) (Config, *
 }
 
 func restore(cfg Config, f *fakeInstaller, member string) api.DirectiveOutcome {
-	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceRestore, Payload: member}
-	return cfg.applyServiceRestore(context.Background(), f, d, func(string, ...any) {})
+	d := api.Directive{ID: "d1", Kind: api.DirectiveAppRestore, Payload: member}
+	return cfg.applyAppRestore(context.Background(), f, d, func(string, ...any) {})
 }
 
 // TestRestoreRefusesBeforeItStopsAnything is the property the whole order exists for.
@@ -1917,10 +1917,10 @@ func TestRestoreUndoIsQuiesced(t *testing.T) {
 	}
 }
 
-// TestRestoreRestartsTheServiceWhenTheUndoFails: the stop is above the undo now, so the undo's own
+// TestRestoreRestartsTheAppWhenTheUndoFails: the stop is above the undo now, so the undo's own
 // failure is the one that can leave a household with a stopped app and nothing restored. It
 // must put the app back and say the data was never touched.
-func TestRestoreRestartsTheServiceWhenTheUndoFails(t *testing.T) {
+func TestRestoreRestartsTheAppWhenTheUndoFails(t *testing.T) {
 	cfg, f, member := ringWith(t, testManifest(), nil)
 	f.snapEr = errors.New("no space left on device")
 	o := restore(cfg, f, member)
@@ -1928,7 +1928,7 @@ func TestRestoreRestartsTheServiceWhenTheUndoFails(t *testing.T) {
 		t.Fatalf("outcome = %+v, want failed", o)
 	}
 	if !strings.Contains(o.Detail, "nothing was changed") || !strings.Contains(o.Detail, "restarted") {
-		t.Errorf("the refusal does not say the data is untouched AND the service is back: %q", o.Detail)
+		t.Errorf("the refusal does not say the data is untouched AND the app is back: %q", o.Detail)
 	}
 	joined := strings.Join(f.steps, ",")
 	if strings.Contains(joined, "restore:") {
@@ -1937,7 +1937,7 @@ func TestRestoreRestartsTheServiceWhenTheUndoFails(t *testing.T) {
 	si := strings.Index(joined, "stop:")
 	ci := strings.Index(joined, "converge")
 	if si < 0 || ci < si {
-		t.Errorf("the service was not converged back after the stop: %v", f.steps)
+		t.Errorf("the app was not converged back after the stop: %v", f.steps)
 	}
 }
 
@@ -2142,7 +2142,7 @@ func TestDataOnlyRestoreAsksForNoRoom(t *testing.T) {
 // The kind names which it was -- an update has a prior version, a fresh install does not -- and an
 // install that committed tells nobody anything.
 func TestARevertedInstallTellsTheOwner(t *testing.T) {
-	d := api.Directive{ID: "d1", Kind: api.DirectiveServiceInstall, Payload: "home-assistant"}
+	d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "home-assistant"}
 	logf := func(string, ...any) {}
 
 	// An update the readiness gate reverts.
@@ -2151,11 +2151,11 @@ func TestARevertedInstallTellsTheOwner(t *testing.T) {
 	cfg.readinessSettle = time.Millisecond
 	f := &fakeInstaller{prior: mustPrior(t), primary: true, active: true, healthy: true,
 		readiness: [][]hass.Entry{sample("loaded", "loaded"), sample("setup_error", "setup_error")}}
-	if o := cfg.applyServiceInstall(context.Background(), f, d, fn, logf); o.State != api.OutcomeRolledBack {
+	if o := cfg.applyAppInstall(context.Background(), f, d, fn, logf); o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
-	if len(fn.alerts) != 1 || fn.alerts[0].Key != "upgrade-rolled-back:service-update" || fn.alerts[0].Kind != notify.Event {
-		t.Fatalf("a reverted update raised %+v, want one service-update event", fn.alerts)
+	if len(fn.alerts) != 1 || fn.alerts[0].Key != "upgrade-rolled-back:app-update" || fn.alerts[0].Kind != notify.Event {
+		t.Fatalf("a reverted update raised %+v, want one app-update event", fn.alerts)
 	}
 
 	// A fresh install the health gate reverts.
@@ -2163,17 +2163,17 @@ func TestARevertedInstallTellsTheOwner(t *testing.T) {
 	f = &fakeInstaller{primary: true, active: true, healthy: false}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	if o := catalogFor(t, testManifest()).applyServiceInstall(ctx, f, d, fn, logf); o.State != api.OutcomeRolledBack {
+	if o := catalogFor(t, testManifest()).applyAppInstall(ctx, f, d, fn, logf); o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
-	if len(fn.alerts) != 1 || fn.alerts[0].Key != "upgrade-rolled-back:service-install" {
+	if len(fn.alerts) != 1 || fn.alerts[0].Key != "upgrade-rolled-back:app-install" {
 		t.Fatalf("a reverted install raised %+v, want one service-install event", fn.alerts)
 	}
 
 	// A committed install.
 	fn = &fakeNotifier{}
 	f = &fakeInstaller{primary: true, active: true, healthy: true}
-	if o := catalogFor(t, testManifest()).applyServiceInstall(context.Background(), f, d, fn, logf); o.State != api.OutcomeDone {
+	if o := catalogFor(t, testManifest()).applyAppInstall(context.Background(), f, d, fn, logf); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
 	if len(fn.alerts) != 0 {
@@ -2183,22 +2183,22 @@ func TestARevertedInstallTellsTheOwner(t *testing.T) {
 
 // The backup restore's slice: a night materialised as a from-backup member, pinned to the fake's
 // manifest, that the ring then offers; nightEr is a night that cannot be read.
-func (f *fakeInstaller) DataBackupRestore(_ context.Context, url, snapshot, service string) (string, error) {
-	f.steps = append(f.steps, "backup-restore:"+snapshot+":"+service)
+func (f *fakeInstaller) DataBackupRestore(_ context.Context, url, snapshot, app string) (string, error) {
+	f.steps = append(f.steps, "backup-restore:"+snapshot+":"+app)
 	if f.nightEr != nil {
 		return "", f.nightEr
 	}
 	raw, _ := json.Marshal(testManifest())
-	member := quadlet.SnapshotMember(service, quadlet.TriggerFromBackup, fixedNow)
+	member := quadlet.SnapshotMember(app, quadlet.TriggerFromBackup, fixedNow)
 	f.members = append(f.members, quadlet.SnapshotEntry{Member: member, Meta: quadlet.SnapshotMeta{
-		Service: service, Trigger: quadlet.TriggerFromBackup, TakenAt: fixedNow.Add(-3 * 24 * time.Hour), Manifest: string(raw),
+		App: app, Trigger: quadlet.TriggerFromBackup, TakenAt: fixedNow.Add(-3 * 24 * time.Hour), Manifest: string(raw),
 	}})
 	return member, nil
 }
 func (f *fakeInstaller) SupportsBackupRestore() bool { return !f.oldGuest }
 
-func backupRestore(cfg Config, f *fakeInstaller, service, snapshot string) api.DirectiveOutcome {
-	raw, _ := json.Marshal(api.BackupRestore{Service: service, Snapshot: snapshot})
+func backupRestore(cfg Config, f *fakeInstaller, app, snapshot string) api.DirectiveOutcome {
+	raw, _ := json.Marshal(api.BackupRestore{App: app, Snapshot: snapshot})
 	d := api.Directive{ID: "d1", Kind: api.DirectiveBackupRestore, Payload: string(raw)}
 	return cfg.applyBackupRestore(context.Background(), f, d, func(string, ...any) {})
 }
@@ -2240,11 +2240,11 @@ func TestBackupRestoreRefusesBeforeItTouchesAnything(t *testing.T) {
 		cfg, f, _ := ringWith(t, testManifest(), nil)
 		cfg.BackupDir, cfg.SystemHostCIDR = t.TempDir(), "10.7.0.129/32"
 		arrange(&cfg, f)
-		service := "home-assistant"
+		app := "home-assistant"
 		if name == "a payload with no app" {
-			service = ""
+			app = ""
 		}
-		o := backupRestore(cfg, f, service, "abc12345")
+		o := backupRestore(cfg, f, app, "abc12345")
 		if o.State != api.OutcomeFailed {
 			t.Errorf("%s: outcome = %+v, want failed", name, o)
 		}
@@ -2337,11 +2337,11 @@ func (g *usageGuest) SupportsUsage() bool { return !g.old }
 // THE STORAGE CARD'S READ: the app page may ask it, the cloud may not, and the guest's answer is
 // relayed whole; a guest too old to measure is told so without being asked.
 func TestTheAppPageMayAskWhatAnAppStores(t *testing.T) {
-	if !guestMayAsk(api.Directive{Kind: api.DirectiveServiceUsage}) || !localOnlyKinds[api.DirectiveServiceUsage] {
+	if !guestMayAsk(api.Directive{Kind: api.DirectiveAppUsage}) || !localOnlyKinds[api.DirectiveAppUsage] {
 		t.Fatal("service-usage is not the page's to ask, or the cloud may ask it")
 	}
 	g := &usageGuest{usage: dashboard.AppUsage{Data: &dashboard.TierUsage{Total: 3e9, Cap: 4e10, Members: 3, Measured: true, Current: 2e9, Uncompressed: 5e9, History: 1e9}, Measuring: true}}
-	o := Config{}.applyServiceUsage(context.Background(), g, api.Directive{ID: "d", Kind: api.DirectiveServiceUsage, Payload: "immich"})
+	o := Config{}.applyAppUsage(context.Background(), g, api.Directive{ID: "d", Kind: api.DirectiveAppUsage, Payload: "immich"})
 	var got dashboard.AppUsage
 	if o.State != api.OutcomeDone || json.Unmarshal([]byte(o.Detail), &got) != nil || g.asked != "immich" {
 		t.Fatalf("outcome %+v, asked %q", o, g.asked)
@@ -2350,7 +2350,7 @@ func TestTheAppPageMayAskWhatAnAppStores(t *testing.T) {
 		t.Errorf("relayed %+v, want %+v", got, g.usage)
 	}
 	old := &usageGuest{old: true}
-	if o := (Config{}).applyServiceUsage(context.Background(), old, api.Directive{ID: "d", Payload: "immich"}); o.State != api.OutcomeFailed || old.asked != "" {
+	if o := (Config{}).applyAppUsage(context.Background(), old, api.Directive{ID: "d", Payload: "immich"}); o.State != api.OutcomeFailed || old.asked != "" {
 		t.Errorf("a guest too old to measure: %+v, asked %q", o, old.asked)
 	}
 }
@@ -2382,8 +2382,8 @@ func TestClearingTheCacheStopsEmptiesAndStartsTheApp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ask := func(g serviceInstaller) api.DirectiveOutcome {
-		return Config{}.applyServiceCacheEmpty(context.Background(), g, api.Directive{Kind: api.DirectiveServiceCacheEmpty, Payload: "home-assistant"}, t.Logf)
+	ask := func(g appInstaller) api.DirectiveOutcome {
+		return Config{}.applyAppCacheEmpty(context.Background(), g, api.Directive{Kind: api.DirectiveAppCacheEmpty, Payload: "home-assistant"}, t.Logf)
 	}
 
 	f := &fakeInstaller{prior: map[string]string{"home-assistant": string(raw)}}
@@ -2402,7 +2402,7 @@ func TestClearingTheCacheStopsEmptiesAndStartsTheApp(t *testing.T) {
 		t.Errorf("a failed emptying: outcome %+v, steps %v; want failed, and the app started again", o, f.steps)
 	}
 
-	for name, g := range map[string]serviceInstaller{
+	for name, g := range map[string]appInstaller{
 		"no cache":      cacheGuest{fakeInstaller: &fakeInstaller{prior: map[string]string{"home-assistant": string(plain)}}},
 		"not installed": cacheGuest{fakeInstaller: &fakeInstaller{}},
 		"old guest":     &fakeInstaller{prior: map[string]string{"home-assistant": string(raw)}},

@@ -157,7 +157,7 @@ func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string
 		// The pull is bounded on the host; this is the ceiling on waiting for its answer.
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 		defer cancel()
-		o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveServiceInstall, Payload: name})
+		o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveAppInstall, Payload: name})
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		st := a.installs[name]

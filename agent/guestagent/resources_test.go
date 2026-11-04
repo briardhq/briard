@@ -131,7 +131,7 @@ func TestResourcesVerbGathers(t *testing.T) {
 		t.Fatalf("Resources: %v", err)
 	}
 	if len(r.Payloads) != 1 || r.Payloads[0].Name != "ha" {
-		t.Fatalf("Payloads = %+v, want one entry NAMED for the service asked about", r.Payloads)
+		t.Fatalf("Payloads = %+v, want one entry NAMED for the app asked about", r.Payloads)
 	}
 	p := r.Payloads[0]
 	if p.RSSKB != 88000 { // 90112000 bytes of anon; the 4 GB of page cache is excluded
@@ -211,7 +211,7 @@ func TestResourcesVerbWithoutSoakRunsNoWalks(t *testing.T) {
 
 // A stopped app (MainPID=0) skips the /proc read rather than reading /proc/0, and the
 // rest of the telemetry still comes back -- best-effort, never fatal.
-func TestResourcesVerbSkipsAStoppedService(t *testing.T) {
+func TestResourcesVerbSkipsAStoppedApp(t *testing.T) {
 	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		cmd := strings.Join(append([]string{name}, args...), " ")
 		switch {
@@ -232,7 +232,7 @@ func TestResourcesVerbSkipsAStoppedService(t *testing.T) {
 		t.Fatalf("Resources: %v", err)
 	}
 	if len(r.Payloads) != 1 || r.Payloads[0].RSSKB != 0 || r.Payloads[0].FDs != 0 {
-		t.Errorf("a stopped service should report zero footprint, got %+v", r.Payloads)
+		t.Errorf("a stopped app should report zero footprint, got %+v", r.Payloads)
 	}
 	if r.Load1 != 0.10 {
 		t.Errorf("Load1 = %v, want 0.10 (other metrics still gathered)", r.Load1)
@@ -278,7 +278,7 @@ func TestSplitJournalCursorDropsJournalctlMarkers(t *testing.T) {
 // a crash-loop loud, and one app flapping inside a total reads as a small climb. So the
 // assertion is that a crash-looping app is attributable BY NAME while its quiet neighbour
 // stays at zero -- a sum could not tell those apart.
-func TestResourcesVerbMeasuresEachServiceSeparately(t *testing.T) {
+func TestResourcesVerbMeasuresEachAppSeparately(t *testing.T) {
 	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		cmd := strings.Join(append([]string{name}, args...), " ")
 		switch {
@@ -301,7 +301,7 @@ func TestResourcesVerbMeasuresEachServiceSeparately(t *testing.T) {
 		t.Fatalf("Resources: %v", err)
 	}
 	if len(r.Payloads) != 2 {
-		t.Fatalf("Payloads = %+v, want one entry per service", r.Payloads)
+		t.Fatalf("Payloads = %+v, want one entry per app", r.Payloads)
 	}
 	// Sorted by name, so a run's forensics read the same order every cycle.
 	if r.Payloads[0].Name != "home-assistant" || r.Payloads[1].Name != "mosquitto" {
@@ -318,13 +318,13 @@ func TestResourcesVerbMeasuresEachServiceSeparately(t *testing.T) {
 // An app whose unit is unnamed is SKIPPED, not measured as zero. An unmeasured app and an
 // idle one must not read the same: a zero row would enter the oracle's series as a real sample and
 // flatten a trend that nobody is actually watching.
-func TestResourcesVerbSkipsAServiceWithNoUnit(t *testing.T) {
+func TestResourcesVerbSkipsAAppWithNoUnit(t *testing.T) {
 	g := dial(t, &fakeExec{})
 	r, err := g.Resources(context.Background(), map[string]string{"ha": ""}, "", false)
 	if err != nil {
 		t.Fatalf("Resources: %v", err)
 	}
 	if len(r.Payloads) != 0 {
-		t.Errorf("Payloads = %+v, want none: an unmeasurable service must not report a zero row", r.Payloads)
+		t.Errorf("Payloads = %+v, want none: an unmeasurable app must not report a zero row", r.Payloads)
 	}
 }

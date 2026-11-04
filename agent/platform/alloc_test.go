@@ -28,7 +28,7 @@ func TestAllocateThickReservesTheSpace(t *testing.T) {
 		t.Errorf("size = %d, want %d", fi.Size(), size)
 	}
 	if perm := fi.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 { // no Unix modes on Windows
-		t.Errorf("mode = %04o, want 0600 -- the household's service data is root's business", perm)
+		t.Errorf("mode = %04o, want 0600 -- the household's app data is root's business", perm)
 	}
 	if blocks := allocatedBytes(t, path); blocks < size {
 		t.Errorf("only %d bytes are actually allocated of %d -- the volume is SPARSE, which is the "+

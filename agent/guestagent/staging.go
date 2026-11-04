@@ -38,17 +38,17 @@ import (
 // Flock-scoped, so on the replicated volume and `sync -f`'d: the node that finishes the undo may
 // be a different node from the one that started the install.
 const (
-	verbServiceStage   = "service.stage"   // ensure the data, record the rollback point, write .json.next
-	verbServiceCommit  = "service.commit"  // .json.next -> .json, then drop .rollback
-	verbServiceDiscard = "service.discard" // drop .json.next, then .rollback
-	verbServicePending = "service.pending" // every staged install, with what undoing it needs
+	verbAppStage   = "service.stage"   // ensure the data, record the rollback point, write .json.next
+	verbAppCommit  = "service.commit"  // .json.next -> .json, then drop .rollback
+	verbAppDiscard = "service.discard" // drop .json.next, then .rollback
+	verbAppPending = "service.pending" // every staged install, with what undoing it needs
 )
 
 func stagedPath(name string) string   { return manifestPath(name) + ".next" }
 func rollbackPath(name string) string { return manifestDir + "/" + name + ".rollback" }
 
-// serviceStageRequest is service.provision's request plus the rollback point (service.stage).
-type serviceStageRequest struct {
+// appStageRequest is service.provision's request plus the rollback point (service.stage).
+type appStageRequest struct {
 	Name     string   `json:"name"`
 	DataDir  string   `json:"data_dir"`
 	Subdirs  []string `json:"subdirs,omitempty"`
@@ -57,8 +57,8 @@ type serviceStageRequest struct {
 	Rollback string `json:"rollback,omitempty"`
 }
 
-// serviceConvergeRequest names the install being run right now, if any (service.converge).
-type serviceConvergeRequest struct {
+// appConvergeRequest names the install being run right now, if any (service.converge).
+type appConvergeRequest struct {
 	Live string `json:"live,omitempty"`
 }
 
@@ -85,7 +85,7 @@ func writeDurably(x Executor, run func(string, ...string) error, path, body stri
 	return run("sync", "-f", manifestDir)
 }
 
-// stageService serves service.stage: the data the new version needs, then the rollback point,
+// stageApp serves service.stage: the data the new version needs, then the rollback point,
 // then the staged manifest -- in that order, so a crash part-way leaves either no `.json.next`
 // (nothing pending; the accepted manifest still stands) or a `.json.next` whose `.rollback` is
 // already durable.
@@ -93,7 +93,7 @@ func writeDurably(x Executor, run func(string, ...string) error, path, body stri
 // A STALE `.rollback` IS REMOVED when this install has none. One left by an earlier install that
 // crashed after its discard would otherwise be read as THIS install's rollback point, and undoing
 // a fresh install would put back some other day's data.
-func stageService(ctx context.Context, x Executor, run func(string, ...string) error, req serviceStageRequest) error {
+func stageApp(ctx context.Context, x Executor, run func(string, ...string) error, req appStageRequest) error {
 	if req.Name == "" || req.DataDir == "" || req.Manifest == "" {
 		return fmt.Errorf("service.stage: need a name, a data dir and a manifest")
 	}
@@ -103,7 +103,7 @@ func stageService(ctx context.Context, x Executor, run func(string, ...string) e
 	if req.Rollback != "" && strings.ContainsAny(req.Rollback, "\n") {
 		return fmt.Errorf("service.stage: rollback point %q is not one line", req.Rollback)
 	}
-	if err := ensureServiceData(ctx, x, run, req.DataDir, req.Subdirs); err != nil {
+	if err := ensureAppData(ctx, x, run, req.DataDir, req.Subdirs); err != nil {
 		return err
 	}
 	if req.Rollback != "" {
@@ -116,17 +116,17 @@ func stageService(ctx context.Context, x Executor, run func(string, ...string) e
 	if err := writeDurably(x, run, stagedPath(req.Name), req.Manifest); err != nil {
 		return err
 	}
-	// Every caller has the app stopped (provisionService says why this matters).
-	if err := RecordServiceStop(ctx, x, req.Name, "success"); err != nil {
+	// Every caller has the app stopped (provisionApp says why this matters).
+	if err := RecordAppStop(ctx, x, req.Name, "success"); err != nil {
 		log.Printf("service.stage %s: could not record the volume as flushed (%v); its next member will read as crash-consistent", req.Name, err)
 	}
 	return nil
 }
 
-// commitService serves service.commit: the rename IS the decision, flushed before the rollback
+// commitApp serves service.commit: the rename IS the decision, flushed before the rollback
 // point is dropped, so a crash between the two leaves an accepted install with a leftover
 // `.rollback` -- which the next stage overwrites or removes -- and never a pending one without it.
-func commitService(ctx context.Context, x Executor, run func(string, ...string) error, name string) error {
+func commitApp(ctx context.Context, x Executor, run func(string, ...string) error, name string) error {
 	if err := safeUnitName(name); err != nil {
 		return err
 	}
@@ -142,10 +142,10 @@ func commitService(ctx context.Context, x Executor, run func(string, ...string) 
 	return run("sync", "-f", manifestDir)
 }
 
-// discardService serves service.discard, the undo's last volume write: the staged manifest first
+// discardApp serves service.discard, the undo's last volume write: the staged manifest first
 // -- its absence is what ends "pending" -- then the rollback point. Idempotent: an undo interrupted
 // after this and run again finds nothing to discard.
-func discardService(ctx context.Context, x Executor, run func(string, ...string) error, name string) error {
+func discardApp(ctx context.Context, x Executor, run func(string, ...string) error, name string) error {
 	if err := safeUnitName(name); err != nil {
 		return err
 	}
@@ -201,27 +201,27 @@ func stagedNames(ctx context.Context, x Executor) ([]string, error) {
 	return names, nil
 }
 
-// ServiceStage records an install on the volume WITHOUT making it the identity: the data it needs,
+// AppStage records an install on the volume WITHOUT making it the identity: the data it needs,
 // the rollback point ("" for none) and the staged manifest (service.stage).
-func (g *Client) ServiceStage(ctx context.Context, name, dataDir string, subdirs []string, manifest, rollback string) error {
-	return g.c.Call(ctx, verbServiceStage, serviceStageRequest{
+func (g *Client) AppStage(ctx context.Context, name, dataDir string, subdirs []string, manifest, rollback string) error {
+	return g.c.Call(ctx, verbAppStage, appStageRequest{
 		Name: name, DataDir: dataDir, Subdirs: subdirs, Manifest: manifest, Rollback: rollback,
 	}, nil)
 }
 
-// ServiceCommit makes a staged install the volume's identity: one rename (service.commit).
-func (g *Client) ServiceCommit(ctx context.Context, name string) error {
-	return g.c.Call(ctx, verbServiceCommit, serviceInstalledRequest{Name: name}, nil)
+// AppCommit makes a staged install the volume's identity: one rename (service.commit).
+func (g *Client) AppCommit(ctx context.Context, name string) error {
+	return g.c.Call(ctx, verbAppCommit, appInstalledRequest{Name: name}, nil)
 }
 
-// ServiceDiscard drops a staged install and its rollback point (service.discard).
-func (g *Client) ServiceDiscard(ctx context.Context, name string) error {
-	return g.c.Call(ctx, verbServiceDiscard, serviceInstalledRequest{Name: name}, nil)
+// AppDiscard drops a staged install and its rollback point (service.discard).
+func (g *Client) AppDiscard(ctx context.Context, name string) error {
+	return g.c.Call(ctx, verbAppDiscard, appInstalledRequest{Name: name}, nil)
 }
 
-// ServicePending lists every staged install on the volume (service.pending).
-func (g *Client) ServicePending(ctx context.Context) ([]PendingInstall, error) {
+// AppPending lists every staged install on the volume (service.pending).
+func (g *Client) AppPending(ctx context.Context) ([]PendingInstall, error) {
 	var out []PendingInstall
-	err := g.c.Call(ctx, verbServicePending, nil, &out)
+	err := g.c.Call(ctx, verbAppPending, nil, &out)
 	return out, err
 }

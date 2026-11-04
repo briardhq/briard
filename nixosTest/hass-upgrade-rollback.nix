@@ -108,7 +108,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed("sync")
     # Bounce HA onto the new config the way CONVERGE does: stop the container, then start the units
     # in the renderer's order (pod first), each its own transaction. That IS
-    # agent/guestagent/converge.go's stopService + start loop, by hand -- the rig drives the path
+    # agent/guestagent/converge.go's stopApp + start loop, by hand -- the rig drives the path
     # the product takes rather than a `systemctl restart` it never issues.
     units = fixture_units(node1)
     node1.succeed(f"systemctl stop {units[-1]}")

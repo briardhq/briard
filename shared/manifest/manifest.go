@@ -267,7 +267,7 @@ func Parse(raw []byte) (Manifest, Identity, error) {
 // INI and the paths become real paths; none of it is style.
 func (m Manifest) Validate() error {
 	if !slug.MatchString(m.Name) {
-		return fmt.Errorf("%w: service name %q is not a slug", ErrInvalid, m.Name)
+		return fmt.Errorf("%w: app name %q is not a slug", ErrInvalid, m.Name)
 	}
 	if err := safeValue("version", m.Version); err != nil {
 		return err
@@ -279,39 +279,39 @@ func (m Manifest) Validate() error {
 		// would be the safe-looking choice and the wrong one: a catalog entry that means to ask for
 		// host networking and misspells it would install, run, and fail to find a single device,
 		// with nothing anywhere saying why. Refusing names the typo at the door.
-		return fmt.Errorf("%w: service %q network %q is not one of %q, %q (or absent, meaning private)",
+		return fmt.Errorf("%w: app %q network %q is not one of %q, %q (or absent, meaning private)",
 			ErrInvalid, m.Name, m.Network, NetworkHost, NetworkPrivate)
 	}
 	seenPort := map[int]bool{}
 	for _, p := range m.Ports {
 		if p < 1 || p > 65535 {
-			return fmt.Errorf("%w: service %q publishes port %d, out of range", ErrInvalid, m.Name, p)
+			return fmt.Errorf("%w: app %q publishes port %d, out of range", ErrInvalid, m.Name, p)
 		}
 		if seenPort[p] {
-			return fmt.Errorf("%w: service %q publishes port %d twice", ErrInvalid, m.Name, p)
+			return fmt.Errorf("%w: app %q publishes port %d twice", ErrInvalid, m.Name, p)
 		}
 		seenPort[p] = true
 	}
 	if len(m.Ports) > 0 && m.HostNetwork() {
 		// Not a style rule: podman refuses port bindings on a host-networked pod, so this manifest
 		// describes an app no node could start. Caught here rather than at the household.
-		return fmt.Errorf("%w: service %q asks for host networking and publishes ports; a host-networked pod already holds the guest's ports", ErrInvalid, m.Name)
+		return fmt.Errorf("%w: app %q asks for host networking and publishes ports; a host-networked pod already holds the guest's ports", ErrInvalid, m.Name)
 	}
 	if len(m.Containers) == 0 {
-		return fmt.Errorf("%w: service %q declares no containers", ErrInvalid, m.Name)
+		return fmt.Errorf("%w: app %q declares no containers", ErrInvalid, m.Name)
 	}
 	if m.MinMemoryMB < 0 {
-		return fmt.Errorf("%w: service %q has a negative minMemoryMB", ErrInvalid, m.Name)
+		return fmt.Errorf("%w: app %q has a negative minMemoryMB", ErrInvalid, m.Name)
 	}
 	if m.Size < 0 || m.InstalledSize < 0 {
-		return fmt.Errorf("%w: service %q has a negative size", ErrInvalid, m.Name)
+		return fmt.Errorf("%w: app %q has a negative size", ErrInvalid, m.Name)
 	}
 	if (m.Size == 0) != (m.InstalledSize == 0) {
 		// Both or neither: a bar with no gate, or a gate with no bar, is an entry half-measured.
-		return fmt.Errorf("%w: service %q declares size and installedSize together or not at all", ErrInvalid, m.Name)
+		return fmt.Errorf("%w: app %q declares size and installedSize together or not at all", ErrInvalid, m.Name)
 	}
 	if m.InstalledSize < m.Size {
-		return fmt.Errorf("%w: service %q is smaller installed (%d) than downloaded (%d); the two are swapped", ErrInvalid, m.Name, m.InstalledSize, m.Size)
+		return fmt.Errorf("%w: app %q is smaller installed (%d) than downloaded (%d); the two are swapped", ErrInvalid, m.Name, m.InstalledSize, m.Size)
 	}
 	seen := make(map[string]bool, len(m.Containers))
 	primaries := 0
@@ -379,7 +379,7 @@ func (m Manifest) Validate() error {
 	if primaries != 1 {
 		// Not a style rule: the front door has one backend and the health gate one verdict, so
 		// zero primaries leaves both undefined and two makes them ambiguous.
-		return fmt.Errorf("%w: service %q must mark exactly one primary container, found %d", ErrInvalid, m.Name, primaries)
+		return fmt.Errorf("%w: app %q must mark exactly one primary container, found %d", ErrInvalid, m.Name, primaries)
 	}
 	return nil
 }

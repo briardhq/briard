@@ -122,24 +122,24 @@ func runDaemon(args []string) {
 // reaches here; Converge logs it and returns nil.)
 func runInternal(args []string) {
 	fs := flag.NewFlagSet("briard-guest-agent", flag.ExitOnError)
-	converge := fs.Bool("converge", false, "render, warm and start every service the replicated volume names, then exit -- briard-services.service's ExecStart")
-	convergeStop := fs.Bool("converge-stop", false, "stop the service units this node converged to -- briard-services.service's ExecStop")
+	converge := fs.Bool("converge", false, "render, warm and start every app the replicated volume names, then exit -- briard-services.service's ExecStart")
+	convergeStop := fs.Bool("converge-stop", false, "stop the app units this node converged to -- briard-services.service's ExecStop")
 	nodeStorage := fs.Bool("node-storage", false, "build every tier /run/briard/node-storage.json names and attach the resource -- briard-node-storage.service's ExecStart")
 	primaryStorage := fs.Bool("primary-storage", false, "format on first use, mount the replicated volume -- briard-primary-storage.service's ExecStart")
 	primaryStorageStop := fs.Bool("primary-storage-stop", false, "unmount the replicated volume -- briard-primary-storage.service's ExecStop")
 	writeUnits := fs.Bool("write-units", false, "render the units this agent owns into /run/systemd/system and reload -- what `run --guest` does at start, for a harness with no host")
 	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test: check what a staged copy can check without the port, then exit 0")
-	serviceStarting := fs.String("service-starting", "", "take this service's ring member; the rendered container unit's ExecStartPre")
-	clock := fs.String("clock", "", "take this service's quiesced clock sample -- an internal flag a harness invokes; the product drives this verb from the host")
+	appStarting := fs.String("service-starting", "", "take this app's ring member; the rendered container unit's ExecStartPre")
+	clock := fs.String("clock", "", "take this app's quiesced clock sample -- an internal flag a harness invokes; the product drives this verb from the host")
 	dbCheck := fs.Bool("dbcheck", false, "run Home Assistant's recorder check in line and print its report as JSON -- an internal flag a harness invokes; the product drives this verb from the host")
 	dbRestore := fs.String("dbrestore", "", "restore Home Assistant's recorder database from this ring member -- an internal flag a harness invokes; the product drives this verb from the host")
 	backup := fs.String("backup", "", "run the backup in line into the REST repository at this URL, under the key the volume holds, and print its report as JSON -- an internal flag a harness invokes; the product drives this verb from the host")
 	backupRestore := fs.String("backup-restore", "", "put one night of the backup at this REST URL into the ring as a member (-service, -snapshot) and print the member's path -- an internal flag a harness invokes; the product drives this verb from the host")
-	restoreService := fs.String("service", "", "with -backup-restore: the service")
+	restoreApp := fs.String("service", "", "with -backup-restore: the app")
 	restoreSnapshot := fs.String("snapshot", "latest", "with -backup-restore: the night, a snapshot id or latest")
 	backupAdopt := fs.String("backup-adopt", "", "add the volume's key to the repository at this REST URL, opened once with -key -- an internal flag a harness invokes; the product drives this verb from the host")
 	adoptKey := fs.String("key", "", "with -backup-adopt: the key that opens the repository")
-	serviceStopped := fs.String("service-stopped", "", "record whether this service's data was flushed by a clean stop; the rendered container unit's ExecStopPost")
+	appStopped := fs.String("service-stopped", "", "record whether this app's data was flushed by a clean stop; the rendered container unit's ExecStopPost")
 	_ = fs.Parse(args)
 
 	if *testLaunch {
@@ -185,7 +185,7 @@ func runInternal(args []string) {
 		return
 	}
 
-	if *serviceStarting != "" {
+	if *appStarting != "" {
 		// THE GENERIC HOOK: every catalogued app gets a member at container start,
 		// which is the only boundary visible from outside the container. Home Assistant adds its
 		// OWN restarts through the inbound channel; everything else has just this.
@@ -199,12 +199,12 @@ func runInternal(args []string) {
 		// well: a household losing its app because a snapshot could not be taken is the wrong
 		// trade, and the belt-and-braces is deliberate because `-` alone hides WHY. The exit code
 		// is 0 either way; the journal carries the reason.
-		detail, err := guestagent.TakeStartMember(ctx, guestfirmware.NewOSExecutor(), *serviceStarting)
+		detail, err := guestagent.TakeStartMember(ctx, guestfirmware.NewOSExecutor(), *appStarting)
 		if err != nil {
-			log.Printf("service-starting %s: %v (starting anyway)", *serviceStarting, err)
+			log.Printf("service-starting %s: %v (starting anyway)", *appStarting, err)
 			return
 		}
-		log.Printf("service-starting %s: %s", *serviceStarting, detail)
+		log.Printf("service-starting %s: %s", *appStarting, detail)
 		return
 	}
 
@@ -254,7 +254,7 @@ func runInternal(args []string) {
 	if *backupRestore != "" {
 		// FOR A GUEST WITH NO HOST, like --backup above: the product's host materialises a night
 		// through the verb and restores the member; a rig proves the materialisation here.
-		member, err := guestagent.RestoreBackupMember(ctx, guestfirmware.NewOSExecutor(), *backupRestore, *restoreSnapshot, *restoreService)
+		member, err := guestagent.RestoreBackupMember(ctx, guestfirmware.NewOSExecutor(), *backupRestore, *restoreSnapshot, *restoreApp)
 		if err != nil {
 			log.Fatalf("backup-restore: %v", err)
 		}
@@ -269,7 +269,7 @@ func runInternal(args []string) {
 		return
 	}
 
-	if *serviceStopped != "" {
+	if *appStopped != "" {
 		// THE CLEAN-STOP MARKER, the other half of the question the member above
 		// answers: whether this app's data was FLUSHED, which a stopped container does not
 		// prove on its own. systemd's own $SERVICE_RESULT is the evidence, and it exists only in
@@ -278,8 +278,8 @@ func runInternal(args []string) {
 		// NEVER FAILS A STOP, exactly as above: a marker that could not be written costs the next
 		// member its claim to be quiesced, which is the safe direction. The rendered line carries
 		// `-` as well.
-		if err := guestagent.RecordServiceStop(ctx, guestfirmware.NewOSExecutor(), *serviceStopped, os.Getenv("SERVICE_RESULT")); err != nil {
-			log.Printf("service-stopped %s: %v (the next member will read as crash-consistent)", *serviceStopped, err)
+		if err := guestagent.RecordAppStop(ctx, guestfirmware.NewOSExecutor(), *appStopped, os.Getenv("SERVICE_RESULT")); err != nil {
+			log.Printf("service-stopped %s: %v (the next member will read as crash-consistent)", *appStopped, err)
 		}
 		return
 	}
@@ -345,7 +345,7 @@ func runGuest(ctx context.Context) error {
 	// trade. Same posture the wrapper takes with `|| true`, one level up.
 	go func() {
 		if err := guestagent.ListenInbound(ctx, x); err != nil {
-			log.Printf("inbound channel: %v; services' own restarts will not be snapshotted", err)
+			log.Printf("inbound channel: %v; apps' own restarts will not be snapshotted", err)
 		}
 	}()
 	// THE START EVALUATOR: a start sample is evaluated once its boot has a verdict,

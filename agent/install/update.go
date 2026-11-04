@@ -54,7 +54,7 @@ var ErrBelowFloor = errors.New("install: pinned release is below the stable floo
 // another update. Loud, and naming the remedy, because the alpha's answer to an unupgradable
 // node is exactly that (it is reinstall-only) and a node that cannot say so is a node
 // whose owner discovers it from the symptom instead.
-var ErrTooOldToUpgrade = errors.New("install: this node is too old to upgrade to that release")
+var ErrTooOldToUpgrade = errors.New("install: this machine is too old to upgrade to that release")
 
 // MinUpgradeFrom is THE FLOOR THIS TREE DECLARES: the oldest installed release the release built
 // from this tree can be installed OVER. Empty means no floor -- any installed release may
@@ -146,7 +146,7 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 		// it is tolerable: `promote` refuses a build whose date field equals stable's, so
 		// `stable` cannot cross a floor twice in one hour.
 		if haveDate < floorDate {
-			return Decision{}, fmt.Errorf("%w: installed %s is older than %s's min_upgrade_from %s — this node cannot be upgraded to it and must be reinstalled",
+			return Decision{}, fmt.Errorf("%w: installed %s is older than %s's min_upgrade_from %s — this machine cannot be upgraded to it and must be reinstalled",
 				ErrTooOldToUpgrade, have.Version, want.Version, want.MinUpgradeFrom)
 		}
 	}

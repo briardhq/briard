@@ -258,9 +258,9 @@ func (r installRoots) layDownImage(src string, say func(string, ...any)) error {
 	image := r.imagePath()
 	if !exists(filepath.Join(src, "nixos.qcow2")) {
 		if exists(image) {
-			say("keeping the guest image installed here")
+			say("keeping the VM image installed here")
 		} else {
-			say("no guest image in this install: briard's first start fetches it")
+			say("no VM image in this install: briard's first start fetches it")
 		}
 		return nil
 	}

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"briard.io/agent/services"
+	apps "briard.io/agent/apps"
 )
 
 // THE HISTORY: what a household sees of the ring. Members are SAMPLES, taken at every
@@ -290,7 +290,7 @@ func History(members []SnapshotEntry, loc *time.Location) []HistoryRow {
 		}
 		rows[i].What = title(rows[i], next, loc)
 		if rows[i].Point.Meta.Event.Has(ReasonUnhealthy) {
-			rows[i].Caption = rows[i].Point.Meta.Service + " failed to start cleanly after this change."
+			rows[i].Caption = rows[i].Point.Meta.App + " failed to start cleanly after this change."
 		}
 	}
 	return rows
@@ -323,7 +323,7 @@ func Unhealthy(members []SnapshotEntry) (SnapshotEntry, bool) {
 		if all[i].Meta.Pending {
 			continue
 		}
-		if all[i].Meta.Health != services.Unhealthy {
+		if all[i].Meta.Health != apps.Unhealthy {
 			return SnapshotEntry{}, false
 		}
 		break

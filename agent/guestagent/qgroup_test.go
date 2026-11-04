@@ -29,10 +29,10 @@ func withoutQgroups(runs [][]string) [][]string {
 // pinned, and the shape of every id is checked against the layout qgroup.go draws.
 func TestQgroupIDsAreTheLayout(t *testing.T) {
 	if got, want := appQgroup(tierData, "home-assistant"), "1/1150203105091"; got != want {
-		t.Errorf("home-assistant's service group = %s, want %s: the id changed, and every installed volume still holds the old one", got, want)
+		t.Errorf("home-assistant's app group = %s, want %s: the id changed, and every installed volume still holds the old one", got, want)
 	}
 	if got, want := tierQgroup(tierData), "2/"+strconv.FormatUint(1<<40, 10); got != want {
-		t.Errorf("the service aggregate = %s, want %s", got, want)
+		t.Errorf("the data aggregate = %s, want %s", got, want)
 	}
 	if got, want := tierQgroup(tierFiles), "2/"+strconv.FormatUint(2<<40, 10); got != want {
 		t.Errorf("the files aggregate = %s, want %s", got, want)
@@ -108,7 +108,7 @@ func TestAnInstallBearsItsAreasIntoTheTree(t *testing.T) {
 	}
 	svc := "/var/lib/briard/data/home-assistant"
 	subdirs := []string{"cache/thumbs", "data/config", "files/media", "unversioned/backups"}
-	if err := ensureServiceData(context.Background(), f, run, svc, subdirs); err != nil {
+	if err := ensureAppData(context.Background(), f, run, svc, subdirs); err != nil {
 		t.Fatal(err)
 	}
 	data, files := appQgroup(tierData, "home-assistant"), appQgroup(tierFiles, "home-assistant")
@@ -131,7 +131,7 @@ func TestAnInstallBearsItsAreasIntoTheTree(t *testing.T) {
 	}
 
 	before := len(f.runs)
-	if err := ensureServiceData(context.Background(), f, run, svc, subdirs); err != nil {
+	if err := ensureAppData(context.Background(), f, run, svc, subdirs); err != nil {
 		t.Fatalf("a re-install failed: %v", err)
 	}
 	for _, r := range f.runs[before:] {
@@ -140,7 +140,7 @@ func TestAnInstallBearsItsAreasIntoTheTree(t *testing.T) {
 		}
 	}
 
-	if err := ensureServiceData(context.Background(), f, run, "/var/lib/briard/data/mosquitto", []string{"data/data"}); err != nil {
+	if err := ensureAppData(context.Background(), f, run, "/var/lib/briard/data/mosquitto", []string{"data/data"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, tier := range []string{"files", "cache", "unversioned"} {
@@ -148,7 +148,7 @@ func TestAnInstallBearsItsAreasIntoTheTree(t *testing.T) {
 			t.Errorf("an app that mounts only its data got a %s area", tier)
 		}
 	}
-	if err := ensureServiceData(context.Background(), f, run, svc, []string{"backups/x"}); err == nil {
+	if err := ensureAppData(context.Background(), f, run, svc, []string{"backups/x"}); err == nil {
 		t.Error("a subdir naming no tier was made")
 	}
 }
@@ -201,7 +201,7 @@ func TestNoSubvolumeIsBornOutsideTheTree(t *testing.T) {
 		_, err := x.Run(context.Background(), name, args...)
 		return err
 	}
-	if err := ensureServiceData(context.Background(), x, run, "/var/lib/briard/data/home-assistant", nil); err == nil {
+	if err := ensureAppData(context.Background(), x, run, "/var/lib/briard/data/home-assistant", nil); err == nil {
 		t.Fatal("an install whose group could not be made was accepted")
 	}
 	for _, r := range x.runs {

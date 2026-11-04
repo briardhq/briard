@@ -36,8 +36,8 @@ import (
 	"strings"
 	"time"
 
+	apps "briard.io/agent/apps"
 	"briard.io/agent/guestfirmware"
-	"briard.io/agent/services"
 	"briard.io/shared/manifest"
 )
 
@@ -167,7 +167,7 @@ const prefix = "briard-"
 // rollback, and took os-reboot + os-upgrade down with it.
 //
 // The warm itself is unaffected, because it never came from here. Install, prewarm, bring-up and
-// converge each ensure their images through ServiceWarm/warmImage, which asks `podman image
+// converge each ensure their images through AppWarm/warmImage, which asks `podman image
 // exists` before starting anything. [Install] was the one path that skipped that guard, and it
 // could not even do the job it claimed: these units live on tmpfs under /run/containers/systemd,
 // so at boot — the moment it was meant to fire — they do not exist yet. It only ever fired when
@@ -199,7 +199,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	// Restart=always -- so a crashed Home Assistant stayed down until something else started it
 	// (measured by hass-health-probe's custom-crash case). With `continue` the pod outlives its
 	// containers, the exit is an ordinary failure, and Restart= does its job. Stopping a pod on
-	// purpose is converge's (stopService, and the stop of what it no longer renders).
+	// purpose is converge's (stopApp, and the stop of what it no longer renders).
 	pod := []string{"[Pod]", "PodName=" + base, "ExitPolicy=continue"}
 	switch {
 	case m.HostNetwork():
@@ -248,11 +248,11 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 			lines = append(lines, "Volume="+Area(mt.Tier, m.Name)+"/"+mt.Dir+":"+mt.Path)
 		}
 		// The binds one CATALOGUED APP needs beyond its own data — Home Assistant's control
-		// channel, mosquitto's config (agent/services). They cannot come from the manifest — the
+		// channel, mosquitto's config (agent/apps). They cannot come from the manifest — the
 		// schema refuses host binds on purpose, so that a catalog entry cannot ask for the host —
 		// so they come from the product, keyed on the app's name. Render stays a pure
 		// function of the manifest: the same manifest still renders the same units on every node.
-		for _, v := range services.Volumes(m, c) {
+		for _, v := range apps.Volumes(m, c) {
 			lines = append(lines, "Volume="+v)
 		}
 		for _, k := range sortedKeys(c.Env) {
@@ -429,10 +429,10 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 
 // Area is the app's area in a storage tier: its one btrfs subvolume in the tier's directory
 // of the replicated volume, holding the directories its containers mount.
-func Area(tier, service string) string { return "/var/lib/briard/" + tier + "/" + service }
+func Area(tier, app string) string { return "/var/lib/briard/" + tier + "/" + app }
 
 // DataRoot is the app's data area -- what it keeps to run, rolled back with it.
-func DataRoot(service string) string { return Area(manifest.TierData, service) }
+func DataRoot(app string) string { return Area(manifest.TierData, app) }
 
 // SnapshotsDir is where every member of an app's ring (its History) lives: read-only siblings
 // of the data areas under the data tier's .snapshots dir (created by briard-primary-storage at
@@ -494,10 +494,10 @@ func (t Trigger) Before() bool {
 		t == TriggerHassDBRestoreBefore || t == TriggerFromBackup
 }
 
-// SnapshotMemberService reads the app out of a member's name, and reports whether the name is
+// SnapshotMemberApp reads the app out of a member's name, and reports whether the name is
 // one of ours at all. The sweep over `.snapshots` has to tell our members from anything else a
 // human or a future feature left there, and the name is the only thing it can ask.
-func SnapshotMemberService(name string) (string, bool) {
+func SnapshotMemberApp(name string) (string, bool) {
 	svc, _, _, ok := ParseSnapshotMember(name)
 	return svc, ok
 }
@@ -513,7 +513,7 @@ func SnapshotMemberTime(name string) (time.Time, bool) {
 // ParseSnapshotMember splits `<service>-<trigger>-<stamp>`. The app may itself contain dashes
 // ("home-assistant"), so it is parsed from the RIGHT: the stamp is fixed width and the trigger
 // comes from a closed set, which leaves whatever precedes them as the name.
-func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.Time, ok bool) {
+func ParseSnapshotMember(name string) (app string, trigger Trigger, at time.Time, ok bool) {
 	name = strings.TrimPrefix(name, SnapshotsDir)
 	for _, t := range []Trigger{TriggerStart, TriggerClock, TriggerAppUpdateBefore, TriggerAppUndoBefore, TriggerHassRestoreBefore, TriggerHassDBRestoreBefore, TriggerFromBackup} {
 		suffix := "-" + string(t) + "-"
@@ -548,8 +548,8 @@ func ParseSnapshotMember(name string) (service string, trigger Trigger, at time.
 // before every `-clock-` one whatever their times. Readers order by SnapshotMemberTime.
 // (Trigger-before-stamp is kept because it is what makes the directory readable to a human
 // scanning it, which is the other job the name has.)
-func SnapshotMember(service string, trigger Trigger, at time.Time) string {
-	return SnapshotsDir + service + "-" + string(trigger) + "-" + at.UTC().Format(snapshotStamp)
+func SnapshotMember(app string, trigger Trigger, at time.Time) string {
+	return SnapshotsDir + app + "-" + string(trigger) + "-" + at.UTC().Format(snapshotStamp)
 }
 
 // SnapshotSidecar is where a member's metadata sits: beside the subvolume, never inside it.
@@ -627,7 +627,7 @@ func (c Consistency) Note() string {
 // so a btrfs snapshot of the data does not capture the code identity that wrote it. Carrying it
 // here is what makes a member self-contained.
 type SnapshotMeta struct {
-	Service     string      `json:"service"`
+	App         string      `json:"service"`
 	Trigger     Trigger     `json:"trigger"`
 	TakenAt     time.Time   `json:"taken_at"`
 	Consistency Consistency `json:"consistency"` // what the bytes are; empty means an older member, unrecorded
@@ -643,7 +643,7 @@ type SnapshotMeta struct {
 	// its boot's verdict, and every other sample carries its predecessor's forward, so the
 	// healthy → unhealthy transition survives the pruning of the start that measured it. Empty
 	// means unknown.
-	Health services.Health `json:"health,omitempty"`
+	Health apps.Health `json:"health,omitempty"`
 	// Resets are the renames a start's BOOT made (services.Corrupt's form), found at its verdict
 	// and landed on the sample before it -- with those of the pending starts it replaced.
 	// No member holds them before the next sample does, so a comparison with this
@@ -703,7 +703,7 @@ func (r Rendered) String() string {
 // renderer decides it, so everything that needs to name a running container asks here rather than
 // rebuilding the string — the host's service spec does, and so does the guest when it has to
 // exec into one.
-func ContainerName(service, container string) string { return prefix + service + "-" + container }
+func ContainerName(app, container string) string { return prefix + app + "-" + container }
 
 // PodNetwork is the podman network every private app's pod joins. One network for the node
 // rather than one per app: the pool is a /24 and the addresses inside it are what separate

@@ -80,7 +80,7 @@ func TestUpdateAlerterFiresOnTheFirstReading(t *testing.T) {
 func TestUpdateAlerterCarriesTheRunsLastLine(t *testing.T) {
 	fn := &fakeNotifier{}
 	a, lay, now := newTestUpdateAlerter(t, fn)
-	line := "install: this node is too old to upgrade to that release: installed v3.20260910.64a7834 is older than v3.20260921.5d18301's min_upgrade_from v3.20260920.ec4d22a — this node cannot be upgraded to it and must be reinstalled"
+	line := "install: this machine is too old to upgrade to that release: installed v3.20260910.64a7834 is older than v3.20260921.5d18301's min_upgrade_from v3.20260920.ec4d22a — this machine cannot be upgraded to it and must be reinstalled"
 	result(t, lay, "failed "+line, *now)
 	a.observe(context.Background())
 	if len(fn.alerts) != 1 || !strings.Contains(fn.alerts[0].Body, "The update run said: "+line) {

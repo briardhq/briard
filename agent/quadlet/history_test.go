@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"briard.io/agent/services"
+	"briard.io/agent/apps"
 )
 
 // The history's fixtures. `now` is the moment the prune is asked about, and every
@@ -19,7 +19,7 @@ func sample(trigger Trigger, ago time.Duration) SnapshotEntry {
 	at := retentionNow.Add(-ago)
 	return SnapshotEntry{
 		Member: SnapshotMember("home-assistant", trigger, at),
-		Meta:   SnapshotMeta{Service: "home-assistant", Trigger: trigger, TakenAt: at},
+		Meta:   SnapshotMeta{App: "home-assistant", Trigger: trigger, TakenAt: at},
 	}
 }
 
@@ -326,13 +326,13 @@ func TestHistoryCaptionsUnhealthy(t *testing.T) {
 func TestUnhealthyOffersTheLastHealthyState(t *testing.T) {
 	point := anchor(TriggerClock, 3*time.Hour, ReasonUnhealthy, time.Hour, "")
 	start := sample(TriggerStart, 2*time.Hour)
-	start.Meta.Health = services.Unhealthy
+	start.Meta.Health = apps.Unhealthy
 	pending := sample(TriggerStart, time.Minute)
 	pending.Meta.Pending = true
 	if got, ok := Unhealthy([]SnapshotEntry{point, start, pending}); !ok || got.Member != point.Member {
 		t.Errorf("Unhealthy = (%s, %t), want the unhealthy row's point", got.Member, ok)
 	}
-	start.Meta.Health = services.Healthy
+	start.Meta.Health = apps.Healthy
 	if _, ok := Unhealthy([]SnapshotEntry{point, start}); ok {
 		t.Error("a healthy app still offers the banner")
 	}
@@ -391,7 +391,7 @@ func TestAMemberFromTheBackupIsABeforeSampleAndTheNewest(t *testing.T) {
 	}
 	old := sample(TriggerClock, 30*24*time.Hour) // a stale sample a prune would take
 	fromBackup := SnapshotEntry{Member: SnapshotMember("home-assistant", TriggerFromBackup, at),
-		Meta: SnapshotMeta{Service: "home-assistant", Trigger: TriggerFromBackup, TakenAt: at.Add(-3 * 24 * time.Hour)}}
+		Meta: SnapshotMeta{App: "home-assistant", Trigger: TriggerFromBackup, TakenAt: at.Add(-3 * 24 * time.Hour)}}
 	for _, m := range RetentionPrune([]SnapshotEntry{old, fromBackup}, at) {
 		if m == fromBackup.Member {
 			t.Fatal("the member from the backup was pruned before the restore could use it")

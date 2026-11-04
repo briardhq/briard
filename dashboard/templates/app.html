@@ -81,11 +81,11 @@
      Clear, then how far each may grow. It asks again while the guest is still measuring, and stops
      once it has the numbers. */}}
 {{define "storage-card"}}
-  <div class="card" id="storage"{{if .Measuring}} hx-get="/f/storage?app={{.Service}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>Storage</h2></header><section>
+  <div class="card" id="storage"{{if .Measuring}} hx-get="/f/storage?app={{.App}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>Storage</h2></header><section>
     {{with .Error}}<p class="note">Could not read it: {{.}}</p>{{else}}<div class="item-group">
     {{range $i, $t := .Tiers}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{.Name}}</h3><p>{{.Now}}</p></section></div>
     <div class="item"><section><h3>{{.Past}}</h3><p>{{.PastWords}}</p></section></div>{{end}}
-    {{with .Cache}}<hr><div class="item"><section><h3>Cache</h3><p>{{.}}</p><p class="note">What the app can make again. Clearing it restarts the app, which rebuilds what it needs; that can take a while.</p></section><aside><form method="post" action="/cache/clear" hx-post="/cache/clear" hx-target="#storage" hx-swap="outerHTML"><input type="hidden" name="app" value="{{$.Service}}"><button type="submit" class="btn" data-variant="outline" data-size="sm">Clear</button></form></aside></div>{{end}}
+    {{with .Cache}}<hr><div class="item"><section><h3>Cache</h3><p>{{.}}</p><p class="note">What the app can make again. Clearing it restarts the app, which rebuilds what it needs; that can take a while.</p></section><aside><form method="post" action="/cache/clear" hx-post="/cache/clear" hx-target="#storage" hx-swap="outerHTML"><input type="hidden" name="app" value="{{$.App}}"><button type="submit" class="btn" data-variant="outline" data-size="sm">Clear</button></form></aside></div>{{end}}
     </div>{{with .Cleared}}<p class="note">{{.}}</p>{{end}}{{with .Room}}<p class="note">{{.}}</p>{{end}}{{end}}
   </section></div>
 {{end}}

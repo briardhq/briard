@@ -11,11 +11,11 @@ import (
 // ⚠️ THE PIN, same discipline as the unit names and alertMarker above: the CLI reads the service
 // cache the AGENT writes, so the two must name the same directory. A test may import agent/host
 // where the shipped code may not.
-func TestServiceCacheDirMatchesTheAgents(t *testing.T) {
+func TestAppCacheDirMatchesTheAgents(t *testing.T) {
 	os.Unsetenv("SERVICE_CACHE")
 	t.Setenv("BRIARD_CONFIG", filepath.Join(t.TempDir(), "no-such-config.env"))
-	if got := host.ConfigFromEnv().ServiceCache; got != serviceCacheDir {
-		t.Errorf("the CLI reads %q while the agent writes %q", serviceCacheDir, got)
+	if got := host.ConfigFromEnv().AppCache; got != appCacheDir {
+		t.Errorf("the CLI reads %q while the agent writes %q", appCacheDir, got)
 	}
 }
 
@@ -23,7 +23,7 @@ func TestServiceCacheDirMatchesTheAgents(t *testing.T) {
 // parser rather than from a second reader of the format. install.sh used to `grep -o` for
 // `"name":"..."` and take the first match, which is a different implementation of a format whose
 // identity is its content hash.
-func TestInstalledServicesReadsTheManifests(t *testing.T) {
+func TestInstalledAppsReadsTheManifests(t *testing.T) {
 	dir := t.TempDir()
 	write := func(file, body string) {
 		t.Helper()
@@ -39,18 +39,18 @@ func TestInstalledServicesReadsTheManifests(t *testing.T) {
 	write("broken.json", `{not json at all`)
 	write("notes.txt", `ignored: not a manifest`)
 
-	got := installedServices(dir)
+	got := installedApps(dir)
 	want := []string{"broken", "home-assistant", "mosquitto"}
 	if len(got) != len(want) {
-		t.Fatalf("installedServices = %v, want %v", got, want)
+		t.Fatalf("installedApps = %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("installedServices = %v, want %v (sorted)", got, want)
+			t.Errorf("installedApps = %v, want %v (sorted)", got, want)
 		}
 	}
 	// An absent cache is the shipped state of a fresh node, not an error.
-	if got := installedServices(filepath.Join(t.TempDir(), "nothing-here")); got != nil {
+	if got := installedApps(filepath.Join(t.TempDir(), "nothing-here")); got != nil {
 		t.Errorf("an absent cache read as %v, want nothing", got)
 	}
 }

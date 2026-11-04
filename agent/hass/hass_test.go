@@ -151,7 +151,7 @@ func TestPrepareIsOnlyForHomeAssistant(t *testing.T) {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if len(f.runs) != 0 || len(f.files) != 0 {
-		t.Fatalf("a service that is not %s was touched: runs=%v files=%v", Name, f.runs, f.files)
+		t.Fatalf("an app that is not %s was touched: runs=%v files=%v", Name, f.runs, f.files)
 	}
 	if v := Volumes(m, m.Containers[0]); v != nil {
 		t.Fatalf("Volumes for %q = %v, want none", m.Name, v)
@@ -215,7 +215,7 @@ func TestPrepareFailsLoudly(t *testing.T) {
 // TestVolumesAreTheImageSpecificBinds: the half of Home Assistant's binds that is Home Assistant
 // knowledge -- the s6 wrapper over a path only this image has, and the node's alert copy for the
 // integration's Repairs mirror. The app directory at /briard is the PRODUCT's general shape
-// and agent/services writes it, so it must not appear here. Every source is outside /config, so
+// and agent/apps writes it, so it must not appear here. Every source is outside /config, so
 // HA's restore wipe — which clears the config directory wholesale — never sees them.
 func TestVolumesAreTheImageSpecificBinds(t *testing.T) {
 	got := Volumes(ha(), ha().Containers[0])
@@ -225,7 +225,7 @@ func TestVolumesAreTheImageSpecificBinds(t *testing.T) {
 	}
 	for _, v := range got {
 		if strings.HasSuffix(v, ":"+mountPoint+":ro") {
-			t.Errorf("the service directory mount is still written here: %q -- it belongs to agent/services", v)
+			t.Errorf("the service directory mount is still written here: %q -- it belongs to agent/apps", v)
 		}
 	}
 	if len(got) != len(want) {
@@ -502,7 +502,7 @@ func TestWrapperIsAWellFormedScript(t *testing.T) {
 	// edits. Asserted by position rather than by presence.
 	ni := strings.Index(wrapperSource, mountPoint+"/notify.py")
 	if ni < 0 {
-		t.Fatal("the wrapper does not tell the agent the service is starting")
+		t.Fatal("the wrapper does not tell the agent the app is starting")
 	}
 	for _, later := range []string{mountPoint + "/ensure-token.py", mountPoint + "/plant.py"} {
 		if i := strings.Index(wrapperSource, later); i < ni {
@@ -514,7 +514,7 @@ func TestWrapperIsAWellFormedScript(t *testing.T) {
 	// since it alone depends on something outside the container answering.
 	for _, line := range strings.Split(wrapperSource, "\n") {
 		if strings.HasPrefix(line, "python3 ") && !strings.HasSuffix(strings.TrimSpace(line), "|| true") {
-			t.Errorf("a wrapper step can fail the service: %q", line)
+			t.Errorf("a wrapper step can fail the app: %q", line)
 		}
 	}
 }

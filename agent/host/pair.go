@@ -203,7 +203,7 @@ func (cfg Config) applyUnpair(ctx context.Context, g guestMesher, sr statusReade
 		return failed("unpair: read the cluster: " + err.Error())
 	}
 	if !cl.Serving() || !cl.Diskful || !cl.UpToDate {
-		return failed(fmt.Sprintf("unpair: refused -- the remaining member must be serving and UpToDate, and this node is primary=%t quorate=%t diskful=%t uptodate=%t", cl.Primary, cl.Quorate, cl.Diskful, cl.UpToDate))
+		return failed(fmt.Sprintf("unpair: refused -- the remaining member must be serving and UpToDate, and this machine is primary=%t quorate=%t diskful=%t uptodate=%t", cl.Primary, cl.Quorate, cl.Diskful, cl.UpToDate))
 	}
 	pctx, cancel := cfg.beat.budget(ctx, 10*time.Minute)
 	defer cancel()
@@ -222,7 +222,7 @@ func (cfg Config) applyUnpair(ctx context.Context, g guestMesher, sr statusReade
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone}
 	}
 	if target.Peers[self].Disk == "" {
-		return failed("unpair: a diskless node has no volume to keep alone")
+		return failed("unpair: a diskless machine has no volume to keep alone")
 	}
 	logf("unpair: the flock has ended; %s keeps the volume alone -- recording it and rebooting the guest to drop DRBD", cfg.Node)
 	if err := cfg.cacheMesh(spec, logf); err != nil {
@@ -307,7 +307,7 @@ func meshTarget(spec api.MeshSpec, node string) (drbd.Resource, int, error) {
 //
 // AFTER the apply, never before: the cache's meaning is "what this node IS in", so a pairing that
 // failed halfway must not leave a mesh the next bring-up would converge to. Same rule and the same
-// reason as cacheService writing only past the health gate.
+// reason as cacheApp writing only past the health gate.
 //
 // A WRITE FAILURE FAILS THE PAIRING. This was a warning first, on the reasoning
 // that the guest had already applied the mesh so reporting failure would be a lie. That reads the

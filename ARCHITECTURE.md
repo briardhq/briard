@@ -426,7 +426,7 @@ agent/            the host daemon: orchestration, and the provider seams
   agent/guestagent  the guest side of that boundary: executes and reports, decides nothing
   agent/platform  launching and stopping the guest: QEMU, its units and routes, per OS behind a build tag
   agent/nic, agent/subnet  the guest's place on your LAN, derived from the host's
-  agent/services, agent/hass, agent/mosquitto  what a catalogued app needs beyond its manifest
+  agent/apps, agent/hass, agent/mosquitto  what a catalogued app needs beyond its manifest
   agent/install, agent/selfupdate  fetching and verifying a release; the agent's own frozen pivot
   agent/reportcard  the install-time verdict on whether this machine can be a node
 shared/           wire types (api), domain types (model), the manifest schema, the casa contract, the notify seam

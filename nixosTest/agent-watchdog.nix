@@ -270,7 +270,7 @@ pkgs.testers.runNixOSTest {
     # WHY THE CATALOG IS BLACKHOLED RATHER THAN MERELY SLOW. What this step needs is the product's
     # own verb, on the real dispatch path, spending real time -- deterministically, with no second
     # moving part to go wrong. A DROPped port gives exactly that: fetchManifest is the FIRST thing
-    # applyServiceInstall does, its client carries a 30 s timeout (shared/manifest/fetch.go), and a
+    # applyAppInstall does, its client carries a 30 s timeout (shared/manifest/fetch.go), and a
     # SYN into a DROP rule draws no RST -- so the window is 30 s, fixed by the code under test
     # rather than by a fixture's sleep. -I, not -A: NixOS's firewall accepts loopback early in its
     # own chain, so an appended rule would never see the packet. It stands for something real, too

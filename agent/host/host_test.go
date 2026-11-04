@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/agent/apps"
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestagent"
 	"briard.io/agent/guestfirmware"
@@ -25,7 +26,6 @@ import (
 	"briard.io/agent/overlay"
 	"briard.io/agent/platform"
 	"briard.io/agent/quadlet"
-	"briard.io/agent/services"
 	"briard.io/shared/api"
 	"briard.io/shared/model"
 	"briard.io/shared/telemetry"
@@ -79,9 +79,9 @@ type fakeStatus struct {
 	sysErr    error
 	res       telemetry.NodeResources // Resources return (appliance telemetry)
 	resErr    error
-	health    bool                       // ServiceHealth return (the in-guest probe result)
-	hlthErr   error                      // when set, ServiceHealth errors -> snapshot falls back to the host-side probe
-	svcHealth map[string]services.Health // ServiceHealthOf: app name -> answers; absent = unresolvable
+	health    bool                   // AppHealth return (the in-guest probe result)
+	hlthErr   error                  // when set, AppHealth errors -> snapshot falls back to the host-side probe
+	svcHealth map[string]apps.Health // AppHealthOf: app name -> answers; absent = unresolvable
 	// vip is what net.vip answers: the address the service NIC ACTUALLY holds, in CIDR form,
 	// "" for a device that holds none. probed records the URL snapshot resolved from it, so a
 	// test can assert WHAT was probed and not merely that something was.
@@ -90,7 +90,7 @@ type fakeStatus struct {
 	probed *string
 	// active is what service.active answers per unit, and activeErr makes it fail -- the two
 	// halves per-app state needs, since "the unit is down" and "we could not ask" must not
-	// report the same thing (api.ServiceStatus.State).
+	// report the same thing (api.AppStatus.State).
 	active    map[string]bool
 	activeErr error
 	// mdns is what net.mdnspublished answers: the name avahi ACTUALLY established, which a
@@ -106,9 +106,9 @@ type fakeStatus struct {
 	clusterAsked, vipAsked, resAsked *int
 	// volume is what the replicated volume says this node runs (name -> manifest bytes), which on a
 	// node that promoted into somebody else.s install is the only place that truth exists.
-	volume        map[string]string
-	volumeErr     error
-	noServiceList bool // a guest too old to list: the host must fall back, not fail
+	volume    map[string]string
+	volumeErr error
+	noAppList bool // a guest too old to list: the host must fall back, not fail
 	// The ring: what this app's history already holds, what the loop asked to take,
 	// and the two refusals -- a guest too old for the ring at all, and a take that fails.
 	members    map[string][]quadlet.SnapshotEntry
@@ -130,8 +130,8 @@ type takenMember struct{ member, sidecar, asked string }
 
 // The ring's slice of the guest. The observe loop carries the nightly member, so the
 // reader it is handed has to be able to take one.
-func (f fakeStatus) Members(_ context.Context, service string) ([]quadlet.SnapshotEntry, error) {
-	return f.members[service], f.membersErr
+func (f fakeStatus) Members(_ context.Context, app string) ([]quadlet.SnapshotEntry, error) {
+	return f.members[app], f.membersErr
 }
 func (f fakeStatus) SupportsMembers() bool { return !f.noRing }
 
@@ -140,7 +140,7 @@ func (f fakeStatus) SupportsSnapshotMember() bool { return !f.noRing }
 // The QUIESCED take: `held` is what the fake app reports, and the recorded sidecar
 // carries the class the GUEST would have written — upgraded only when it held, which is the thing
 // the host's side must not be able to claim on its own.
-func (f fakeStatus) QuiescedSnapshot(_ context.Context, service, _, dest, sidecar string) (bool, string, error) {
+func (f fakeStatus) QuiescedSnapshot(_ context.Context, app, _, dest, sidecar string) (bool, string, error) {
 	asked := sidecar
 	if f.quiesceErr != nil {
 		return false, "", f.quiesceErr
@@ -159,7 +159,7 @@ func (f fakeStatus) QuiescedSnapshot(_ context.Context, service, _, dest, sideca
 	if f.held {
 		return true, "", nil
 	}
-	return false, service + " did not hold still", nil
+	return false, app + " did not hold still", nil
 }
 func (f fakeStatus) SupportsQuiescedSnapshot() bool { return !f.noRing && !f.noQuiesce }
 func (f fakeStatus) Snapshot(_ context.Context, _, dest, sidecar string) error {
@@ -193,24 +193,24 @@ func (f fakeStatus) MDNSOther(context.Context) (string, error) {
 	return f.other, nil
 }
 
-func (f fakeStatus) ServiceActive(_ context.Context, unit string) (bool, error) {
+func (f fakeStatus) AppActive(_ context.Context, unit string) (bool, error) {
 	return f.active[unit], f.activeErr
 }
 
-func (f fakeStatus) ServiceHealth(_ context.Context, url string) (bool, error) {
+func (f fakeStatus) AppHealth(_ context.Context, url string) (bool, error) {
 	if f.probed != nil {
 		*f.probed = url
 	}
 	return f.health, f.hlthErr
 }
 
-// ServiceHealthOf is the PER-APP probe, keyed on the app name rather than on a
+// AppHealthOf is the PER-APP probe, keyed on the app name rather than on a
 // URL: `svcHealth` maps a name to what the guest would answer, and an absent entry stands for the
 // app the guest cannot resolve -- which must leave the field empty, not report it unhealthy.
-func (f fakeStatus) ServiceHealthOf(_ context.Context, service string) (services.Health, error) {
-	h, known := f.svcHealth[service]
+func (f fakeStatus) AppHealthOf(_ context.Context, app string) (apps.Health, error) {
+	h, known := f.svcHealth[app]
 	if !known {
-		return services.HealthUnknown, errors.New("not in the routing table")
+		return apps.HealthUnknown, errors.New("not in the routing table")
 	}
 	return h, nil
 }
@@ -235,7 +235,7 @@ func (f fakeStatus) Resources(context.Context, map[string]string, string, bool) 
 
 // What the VOLUME carries: `volume` maps an app name to its manifest bytes, so a test can put
 // this node in the state a converged survivor is in -- running what somebody else installed.
-func (f fakeStatus) ServiceList(context.Context) ([]string, error) {
+func (f fakeStatus) AppList(context.Context) ([]string, error) {
 	names := make([]string, 0, len(f.volume))
 	for n := range f.volume {
 		names = append(names, n)
@@ -244,11 +244,11 @@ func (f fakeStatus) ServiceList(context.Context) ([]string, error) {
 	return names, f.volumeErr
 }
 
-func (f fakeStatus) ServiceInstalled(_ context.Context, name string) (string, error) {
+func (f fakeStatus) AppInstalled(_ context.Context, name string) (string, error) {
 	return f.volume[name], nil
 }
 
-func (f fakeStatus) SupportsServiceList() bool { return !f.noServiceList }
+func (f fakeStatus) SupportsAppList() bool { return !f.noAppList }
 
 // TestMain points every ConfigFromEnv test at a path that does not exist, so a test run on a
 // machine that HAS an install (the one place /opt/briard/config.env is real) reads the same
@@ -382,13 +382,13 @@ func TestConfigFromEnv_GuestGetsAMonitor(t *testing.T) {
 // fills it from what it was actually installed with -- the node-local cache, or the volume once it
 // promotes. Setting the old variables must therefore do NOTHING, which is what this asserts: a
 // re-introduced env path would give a node an app nobody installed.
-func TestConfigFromEnv_NoServiceComesFromTheEnvironment(t *testing.T) {
+func TestConfigFromEnv_NoAppComesFromTheEnvironment(t *testing.T) {
 	for _, k := range []string{"SERVICE_NAME", "SERVICE_IMAGE", "SERVICE_DATADIR"} {
 		t.Setenv(k, "briard-dummy:v0")
 	}
 	t.Setenv("ROLE", string(model.RoleAnchor))
-	if services := ConfigFromEnv().Services; len(services) != 0 {
-		t.Fatalf("Services = %+v, want none: a service is installed at runtime, never configured", services)
+	if apps := ConfigFromEnv().Apps; len(apps) != 0 {
+		t.Fatalf("Apps = %+v, want none: an app is installed at runtime, never configured", apps)
 	}
 }
 
@@ -410,8 +410,8 @@ func TestConfigFromEnv_NoServiceComesFromTheEnvironment(t *testing.T) {
 func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 	t.Setenv("ROLE", string(model.RoleAnchor))
 	cfg := ConfigFromEnv()
-	if len(cfg.Services) != 0 {
-		t.Errorf("Services = %+v with nothing installed, want the empty set", cfg.Services)
+	if len(cfg.Apps) != 0 {
+		t.Errorf("Apps = %+v with nothing installed, want the empty set", cfg.Apps)
 	}
 	want := []string{
 		"briard-primary-storage.service",
@@ -698,8 +698,8 @@ func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
 	if !st.Healthy {
 		t.Error("a quorate witness should read healthy: it has nothing to probe")
 	}
-	if len(st.Services) != 0 {
-		t.Errorf("Services = %+v, want none: a witness runs nothing", st.Services)
+	if len(st.Apps) != 0 {
+		t.Errorf("Apps = %+v, want none: a witness runs nothing", st.Apps)
 	}
 	if st.System != "/nix/store/sys" {
 		t.Errorf("System = %q, want the running system reported through the seam", st.System)
@@ -1196,7 +1196,7 @@ func TestCurrentSystem(t *testing.T) {
 	os.WriteFile(rec, []byte(`{"chain":"vm","version":"vm.20260906.abc1234","system":"/nix/store/x","artifacts":[{"name":"nixos.qcow2.zst"}]}`), 0o644)
 	shipped := Config{GuestReleaseCache: rec}
 	if got := shipped.currentSystem(context.Background(), fakeStatus{}); got != "vm.20260906.abc1234" {
-		t.Errorf("zero-service anchor: currentSystem = %q, want the recorded release", got)
+		t.Errorf("zero-app anchor: currentSystem = %q, want the recorded release", got)
 	}
 	witness := Config{Diskless: true, GuestReleaseCache: rec}
 	if got := witness.currentSystem(context.Background(), fakeStatus{}); got != "" {
@@ -1460,8 +1460,8 @@ func (g edgeGuest) Cluster(ctx context.Context, res string) (model.Cluster, erro
 	}
 	return g.fakeStatus.Cluster(ctx, res)
 }
-func (g edgeGuest) SupportsServiceList() bool { return true }
-func (g edgeGuest) ServiceList(context.Context) ([]string, error) {
+func (g edgeGuest) SupportsAppList() bool { return true }
+func (g edgeGuest) AppList(context.Context) ([]string, error) {
 	atomic.AddInt32(g.lists, 1)
 	return nil, nil
 }

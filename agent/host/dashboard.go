@@ -46,7 +46,7 @@ func (cfg Config) applyDashboard(ctx context.Context, g handoffWriter, d api.Dir
 	hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := g.DashboardHandoff(hctx, h); err != nil {
-		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: fmt.Sprintf("hand the code to the guest: %v", err)}
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: fmt.Sprintf("hand the code to the VM: %v", err)}
 	}
 	// The address to open, one per line: the household's own name first when it is usable --
 	// registered, found to resolve on this network, with its certificate on the volume -- and

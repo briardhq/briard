@@ -28,7 +28,7 @@ func TestPullProgressAddsFinishedLayersAndTheOneInFlight(t *testing.T) {
 	r.app.pulls = pullPaths{records: pullDir, layers: filepath.Join(root, "overlay-layers", "layers.json"), tmp: filepath.Join(root, "tmp")}
 	// The record the host writes: the pull started a minute ago, 600 MB to download.
 	started := time.Now().Add(-time.Minute).UTC()
-	rec, _ := json.Marshal(dashboard.Pull{Service: "home-assistant", Size: 600e6, InstalledSize: 2500e6, Started: started})
+	rec, _ := json.Marshal(dashboard.Pull{App: "home-assistant", Size: 600e6, InstalledSize: 2500e6, Started: started})
 	must(t, os.WriteFile(filepath.Join(pullDir, "pull-home-assistant.json"), rec, 0o600))
 	// podman's store: two layers from an OLD pull (before the start), two finished by this one.
 	layers := []map[string]any{

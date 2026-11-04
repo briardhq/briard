@@ -58,33 +58,33 @@ func (h *haStub) start(t *testing.T) int {
 
 // quiesceRig is a guest whose Home Assistant answers at `port`, with the control token on tmpfs
 // where connect() reads it.
-func quiesceRig(t *testing.T, service string, port int) *fakeExec {
+func quiesceRig(t *testing.T, app string, port int) *fakeExec {
 	t.Helper()
 	f := ringExec()
 	f.files[hass.TokenPath] = "tok\n"
-	f.files[manifestPath(service)] = `{"name":"` + service + `","version":"2026.7.1","containers":[{"name":"app",` +
+	f.files[manifestPath(app)] = `{"name":"` + app + `","version":"2026.7.1","containers":[{"name":"app",` +
 		`"image":"ghcr.io/x/ha@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",` +
 		`"mounts":[{"tier":"data","dir":"app","path":"/config"}],"primary":true,"port":` + strconv.Itoa(port) + `,"healthPath":"/"}]}`
 	return f
 }
 
-func clockSidecar(service string) string {
+func clockSidecar(app string) string {
 	raw, _ := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: quadlet.TriggerClock,
-		TakenAt: time.Now(), Consistency: quadlet.Crash, Manifest: `{"name":"` + service + `"}`,
+		App: app, Trigger: quadlet.TriggerClock,
+		TakenAt: time.Now(), Consistency: quadlet.Crash, Manifest: `{"name":"` + app + `"}`,
 	})
 	return string(raw)
 }
 
-func take(t *testing.T, f *fakeExec, service string) (quiescedResult, error) {
+func take(t *testing.T, f *fakeExec, app string) (quiescedResult, error) {
 	t.Helper()
 	run := func(name string, args ...string) error {
 		_, err := f.Run(context.Background(), name, args...)
 		return err
 	}
-	member := quadlet.SnapshotMember(service, quadlet.TriggerClock, time.Now())
+	member := quadlet.SnapshotMember(app, quadlet.TriggerClock, time.Now())
 	return quiescedMember(context.Background(), f, run, snapshotRequest{
-		Service: service, DataDir: quadlet.DataRoot(service), Path: member, Sidecar: clockSidecar(service),
+		App: app, DataDir: quadlet.DataRoot(app), Path: member, Sidecar: clockSidecar(app),
 	})
 }
 
@@ -106,7 +106,7 @@ func sidecarOf(t *testing.T, f *fakeExec) quadlet.SnapshotMeta {
 
 // THE CLOCK SAMPLE, QUIESCED: hold, snapshot, release — and the class is written from what
 // the RELEASE said, because Home Assistant is the only party that knows whether its lock survived.
-func TestQuiescedMemberUpgradesTheClassWhenTheServiceHeld(t *testing.T) {
+func TestQuiescedMemberUpgradesTheClassWhenTheAppHeld(t *testing.T) {
 	h := &haStub{held: true}
 	f := quiesceRig(t, hass.Name, h.start(t))
 	res, err := take(t, f, hass.Name)
@@ -155,7 +155,7 @@ func TestQuiescedMemberKeepsCrashWhenTheLockDidNotHold(t *testing.T) {
 		t.Fatalf("quiescedMember: %v", err)
 	}
 	if res.Held {
-		t.Error("the member claimed the service held still when it did not")
+		t.Error("the member claimed the app held still when it did not")
 	}
 	if got := sidecarOf(t, f).Consistency; got != quadlet.Crash {
 		t.Errorf("consistency = %q, want crash", got)
@@ -172,19 +172,19 @@ func TestQuiescedMemberTakesOneEvenWhenNothingCanHoldStill(t *testing.T) {
 	for name, f := range map[string]*fakeExec{
 		"home assistant refuses": quiesceRig(t, hass.Name, (&haStub{code: http.StatusNotFound}).start(t)),
 		"home assistant is down": quiesceRig(t, hass.Name, 1),
-		"a service with no way":  quiesceRig(t, "fixture", (&haStub{held: true}).start(t)),
+		"an app with no way":     quiesceRig(t, "fixture", (&haStub{held: true}).start(t)),
 	} {
-		service := hass.Name
+		app := hass.Name
 		if strings.Contains(name, "no way") {
-			service = "fixture"
+			app = "fixture"
 		}
-		res, err := take(t, f, service)
+		res, err := take(t, f, app)
 		if err != nil {
 			t.Errorf("%s: quiescedMember: %v", name, err)
 			continue
 		}
 		if res.Held {
-			t.Errorf("%s: claimed the service held still", name)
+			t.Errorf("%s: claimed the app held still", name)
 		}
 		if got := sidecarOf(t, f).Consistency; got != quadlet.Crash {
 			t.Errorf("%s: consistency = %q, want crash", name, got)

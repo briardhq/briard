@@ -16,7 +16,7 @@
 // It is deliberately a switch and not a plugin system. Two entries is not a framework, the set
 // is small by design, and a table keyed on strings that anyone can extend is the shape that
 // turns a curated catalog into an expression language.
-package services
+package apps
 
 import (
 	"context"
@@ -72,11 +72,11 @@ type Executor interface {
 // by reading /run/briard rather than keeping a table.
 const (
 	defaultRunDir = "/run/briard"
-	// ServiceMount is where an app's own directory appears inside its container.
-	ServiceMount = "/briard"
+	// AppMount is where an app's own directory appears inside its container.
+	AppMount = "/briard"
 	// InboundTokenName is that directory's token, so InboundTokenMount is simply inside it.
 	InboundTokenName  = "inbound.token"
-	InboundTokenMount = ServiceMount + "/" + InboundTokenName
+	InboundTokenMount = AppMount + "/" + InboundTokenName
 	// InboundMount is the agent's socket inside the container.
 	//
 	// ⚠️ A SIBLING OF /briard, NEVER A CHILD OF IT, and the difference is whether the container
@@ -100,15 +100,15 @@ func RunDir() string {
 	return defaultRunDir
 }
 
-// ServiceDir is one app's own directory on the node — what ServiceMount shows it.
-func ServiceDir(service string) string { return RunDir() + "/" + service }
+// AppDir is one app's own directory on the node — what AppMount shows it.
+func AppDir(app string) string { return RunDir() + "/" + app }
 
 // InboundSocket is the one listener, owned by the long-running guest agent. Beside the app
 // directories rather than inside any of them: it is the agent's, shared by every caller.
 func InboundSocket() string { return RunDir() + "/agent.sock" }
 
 // InboundTokenPath is where one app's token lives on the node.
-func InboundTokenPath(service string) string { return ServiceDir(service) + "/" + InboundTokenName }
+func InboundTokenPath(app string) string { return AppDir(app) + "/" + InboundTokenName }
 
 // WantsInbound reports whether an app's container gets the inbound channel.
 //
@@ -140,8 +140,8 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	// Assistant's control token, its planted integration, its s6 wrapper, and the inbound token
 	// for any app that has one. An app needing none of that gets no directory and no
 	// mount.
-	if NeedsServiceDir(m, c) {
-		out = append(out, ServiceDir(m.Name)+":"+ServiceMount+":ro")
+	if NeedsAppDir(m, c) {
+		out = append(out, AppDir(m.Name)+":"+AppMount+":ro")
 	}
 	if WantsInbound(m, c) {
 		// ⚠️ THE SOCKET BIND IS READ-WRITE, and it has to be: connect(2) needs write permission
@@ -188,9 +188,9 @@ func Quiesce(ctx context.Context, x Executor, m manifest.Manifest, port int, con
 		if err := mosquitto.Flush(ctx, x, container); err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("services: %s flushed its persistence database; it has no way to hold still", m.Name)
+		return nil, fmt.Errorf("apps: %s flushed its persistence database; it has no way to hold still", m.Name)
 	}
-	return nil, fmt.Errorf("services: %s has no way to hold still", m.Name)
+	return nil, fmt.Errorf("apps: %s has no way to hold still", m.Name)
 }
 
 // Health is APP HEALTH: whether the app works. It is one notion, asked by the status
@@ -381,7 +381,7 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	// started after this -- so there is no return channel and nothing to refresh.
 	if WantsInboundAny(m) {
 		if err := mintInboundToken(ctx, x, m.Name); err != nil {
-			return fmt.Errorf("services: mint %s's inbound token: %w", m.Name, err)
+			return fmt.Errorf("apps: mint %s's inbound token: %w", m.Name, err)
 		}
 	}
 	switch m.Name {
@@ -547,29 +547,29 @@ func WantsInboundAny(m manifest.Manifest) bool {
 // 32 bytes of crypto/rand: this is a bearer credential for a channel that acts on a household's
 // data, so it is sized like one rather than like an identifier. The directory is created here
 // because Prepare is the earliest thing on every path that needs it -- and because that same
-// directory is what the container sees at ServiceMount, so the token reaches it with no mount of
+// directory is what the container sees at AppMount, so the token reaches it with no mount of
 // its own.
-func mintInboundToken(ctx context.Context, x Executor, service string) error {
-	if _, err := x.Run(ctx, "mkdir", "-p", ServiceDir(service)); err != nil {
+func mintInboundToken(ctx context.Context, x Executor, app string) error {
+	if _, err := x.Run(ctx, "mkdir", "-p", AppDir(app)); err != nil {
 		return err
 	}
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return err
 	}
-	if err := x.WriteFile(InboundTokenPath(service), []byte(hex.EncodeToString(buf))); err != nil {
+	if err := x.WriteFile(InboundTokenPath(app), []byte(hex.EncodeToString(buf))); err != nil {
 		return err
 	}
 	// The token is a credential, and /run is world-readable by default. The bind mount is what
 	// carries it into one container; the mode is what keeps it from every other reader on the
 	// node.
-	_, err := x.Run(ctx, "chmod", "0600", InboundTokenPath(service))
+	_, err := x.Run(ctx, "chmod", "0600", InboundTokenPath(app))
 	return err
 }
 
-// NeedsServiceDir reports whether a container gets its app's own directory at ServiceMount.
+// NeedsAppDir reports whether a container gets its app's own directory at AppMount.
 // True for anything the product hands something to: Home Assistant's control channel, or the
 // inbound token. An app needing neither gets no directory and no mount.
-func NeedsServiceDir(m manifest.Manifest, c manifest.Container) bool {
+func NeedsAppDir(m manifest.Manifest, c manifest.Container) bool {
 	return (m.Name == hass.Name && c.Primary) || WantsInbound(m, c)
 }

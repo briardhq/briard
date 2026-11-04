@@ -84,7 +84,7 @@ const Name = "home-assistant"
 // resolves an inbound caller by reading the run directory and taking a DIRECTORY NAME as the
 // app, so a directory named after the Go package would resolve to an app that does not
 // exist. agent/mosquitto already followed the convention; this was the one exception.
-// TestServiceDirMatchesTheRegistry asserts the two agree.
+// TestAppDirMatchesTheRegistry asserts the two agree.
 const Dir = "/run/briard/home-assistant"
 
 // TokenPath is the refresh token, 0600 on tmpfs. It is the guest-side half of the
@@ -253,7 +253,7 @@ type Executor interface {
 //
 // ⚠️ THE DIRECTORY MOUNT IS NOT HERE ANY MORE: one directory per app, read-only at
 // /briard, is the product's general shape rather than this app's arrangement, so
-// agent/services writes it for every app that has one. What stays is the half that IS Home
+// agent/apps writes it for every app that has one. What stays is the half that IS Home
 // Assistant knowledge — our s6 wrapper shadow-mounted over the image's own `run`, at a path only
 // this image has. Both sources still live outside /config, so HA's restore wipe never sees them.
 func Volumes(m manifest.Manifest, c manifest.Container) []string {
@@ -313,7 +313,7 @@ const RestoreMarker = ".HA_RESTORE"
 // app and lets the others promote, which is the only safe use of the error and is
 // argued at its call site. Never starting the unit is what keeps podman from creating the
 // bad source in the first place.
-// mqttPort is the broker's port, passed in by the registry (agent/services) because it belongs
+// mqttPort is the broker's port, passed in by the registry (agent/apps) because it belongs
 // to the OTHER app. Zero means "this build knows of no broker", and the integration is then
 // materialised with nothing to dial -- it still loads, and its own socket check is what stops it.
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest, mqttPort int) error {

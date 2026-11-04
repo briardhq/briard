@@ -22,7 +22,7 @@ const (
 // such thing as a valid signature, so every manifest is refused — never fail-open to "no key
 // configured means allow anything" (the stance selfupdate.ErrNoKeys and install.ErrNoKeyring
 // already take, kept identical here on purpose).
-var ErrNoVerifier = errors.New("manifest: no release keyring — every service manifest refused")
+var ErrNoVerifier = errors.New("manifest: no release keyring — every app manifest refused")
 
 // Verifier checks a detached signature over exact bytes. *selfupdate.Keyring satisfies it, and
 // that is the point: the catalog reuses the release trust root rather than introducing a

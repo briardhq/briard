@@ -861,7 +861,7 @@ func TestTheSchedulerSaysHowAKickedRunEnded(t *testing.T) {
 		failed bool
 		want   string
 	}{
-		{&guestagent.BackupReport{Snapshot: "40796b608ceb", Services: []string{"home-assistant"}, Files: 39, BytesAdded: 427712}, false, "backed up home-assistant: 39 files, 418 kB added (snapshot 40796b60)"},
+		{&guestagent.BackupReport{Snapshot: "40796b608ceb", Apps: []string{"home-assistant"}, Files: 39, BytesAdded: 427712}, false, "backed up home-assistant: 39 files, 418 kB added (snapshot 40796b60)"},
 		{&guestagent.BackupReport{}, false, "nothing to back up"},
 		{failedRun, true, "unable to save snapshot"},
 	} {

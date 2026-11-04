@@ -82,7 +82,7 @@ pkgs.testers.runNixOSTest {
     # The node reports itself READY, not sick. A fresh install used to sit unhealthy forever
     # because the health probe pointed at an app port nobody was listening on.
     health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
-    assert "no services routed" in health, f"/healthz on an empty node said: {health!r}"
+    assert "no apps routed" in health, f"/healthz on an empty node said: {health!r}"
 
     # And a human who opens the VIP gets an ANSWER, not a connection refused -- but an answer that
     # tells them nothing until they are trusted. The bare address is a name the front door does not

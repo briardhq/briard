@@ -19,7 +19,7 @@ type httpStatus struct {
 
 func (e httpStatus) Error() string { return fmt.Sprintf("%s: HTTP %d", e.what, e.code) }
 
-// A Verdict is Home Assistant's answer to Health. agent/services maps it onto services.Health,
+// A Verdict is Home Assistant's answer to Health. agent/apps maps it onto apps.Health,
 // which is the one notion; this is only how Home Assistant says it.
 type Verdict int
 

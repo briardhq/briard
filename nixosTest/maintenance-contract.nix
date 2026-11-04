@@ -159,7 +159,7 @@ pkgs.testers.runNixOSTest {
     # `--job-mode=ignore-dependencies` is NOT decoration, and this test proved it the hard way:
     # written as a bare `systemctl stop` the job cascaded to drbd-services@r0.target, took the
     # promote unit with it, and the node was Secondary by the next check. That flag is the
-    # `service.stop` verb's one real decision (agent/guestagent/guestagent.go, verbServiceStop:
+    # `service.stop` verb's one real decision (agent/guestagent/guestagent.go, verbAppStop:
     # "a planned service quiesce can't cascade to the promoter target / data mount / VIP"), so a
     # mirror that drops it is not testing the product's quiesce at all. `service.start` needs no
     # counterpart — it is a plain start.

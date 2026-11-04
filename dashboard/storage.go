@@ -27,7 +27,7 @@ import (
 // storageView is the card: one tier per row pair, the app's data then the household's files,
 // and how far each may grow.
 type storageView struct {
-	Service   string // the app's slug, for the card's poll
+	App       string // the app's slug, for the card's poll
 	Measuring bool   // the guest is still walking: the card asks again
 	Error     string
 	Tiers     []storageTierView
@@ -43,11 +43,11 @@ type storageTierView struct {
 }
 
 // storage asks the host what the app keeps, and says it.
-func (a *app) storage(ctx context.Context, service string) storageView {
-	v := storageView{Service: service}
+func (a *app) storage(ctx context.Context, app string) storageView {
+	v := storageView{App: app}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveServiceUsage, Payload: service})
+	o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveAppUsage, Payload: app})
 	if err == nil && o.State != api.OutcomeDone {
 		err = fmt.Errorf("%s", o.Detail)
 	}
@@ -110,7 +110,7 @@ func (a *app) requestClearCache(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveServiceCacheEmpty, Payload: name})
+	o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveAppCacheEmpty, Payload: name})
 	cleared := "Cleared. The app is starting again and rebuilds what it needs, which can take a while."
 	switch {
 	case err != nil:

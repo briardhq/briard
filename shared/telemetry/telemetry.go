@@ -33,7 +33,7 @@ type NodeResources struct {
 	// Widening here is cheap in a way NodeStatus is not: telemetry is the internal host->lab
 	// channel, never the closed cloud allowlist. Only volume_used_kb and load1 cross to the cloud,
 	// through dashboardMetrics' explicit two-entry allowlist.
-	Payloads []ServiceResources `json:"payloads,omitempty"`
+	Payloads []AppResources `json:"payloads,omitempty"`
 
 	Load1         float64 `json:"load1,omitempty"`           // 1-min load average = cpu-at-rest
 	VolumeUsedKB  int64   `json:"volume_used_kb,omitempty"`  // used space on the DRBD data volume
@@ -59,7 +59,7 @@ type NodeResources struct {
 	MemPSISome60   float64 `json:"mem_psi_some60,omitempty"`
 	MemPSIFull60   float64 `json:"mem_psi_full60,omitempty"`
 
-	// ServiceResources.Restarts + KernelErrors are guest-internal soak signals
+	// AppResources.Restarts + KernelErrors are guest-internal soak signals
 	// (no-silent-restarts / no-bad-kernel-log) that ride the host↔guest channel because the L2
 	// guest is reachable only over it -- not machinectl/journalctl, which hit the L1 container and
 	// its shared host kernel. The guest reports mechanism (each app unit's NRestarts; recent
@@ -88,10 +88,10 @@ type NodeResources struct {
 	Qgroups   []string `json:"qgroups,omitempty"`
 }
 
-// ServiceResources is one app's footprint inside the appliance. Name is the app's own
+// AppResources is one app's footprint inside the appliance. Name is the app's own
 // name, so the oracle can say WHICH app leaked or crash-looped rather than that something on
 // the node did -- the reason these went plural rather than being summed.
-type ServiceResources struct {
+type AppResources struct {
 	Name     string `json:"name"`
 	RSSKB    int64  `json:"rss_kb,omitempty"`   // the app unit's cgroup resident set
 	FDs      int    `json:"fds,omitempty"`      // its open fds (leaks earlier than RSS)

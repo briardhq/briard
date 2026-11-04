@@ -26,9 +26,9 @@ type usageVolume struct {
 const usageApp = "immich"
 
 var (
-	usageService = quadlet.DataRoot(usageApp)
-	usageUser    = filesArea(usageApp)
-	usageNow     = time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	usageData  = quadlet.DataRoot(usageApp)
+	usageFiles = filesArea(usageApp)
+	usageNow   = time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 )
 
 func compsizeTotal(disk, uncompressed, referenced string) string {
@@ -45,10 +45,10 @@ func newUsageVolume() *usageVolume {
 		svc: {tierQgroup(tierData)}, user: {tierQgroup(tierFiles)}}
 	v.qused = map[string]int64{svc: 3 * gb, user: 50 * gb}
 	v.qlimits = map[string]string{svc: "40000000000", user: "300000000000"}
-	v.roots = map[string]string{usageService: "257", usageUser: "300"}
+	v.roots = map[string]string{usageData: "257", usageFiles: "300"}
 	v.compsize = map[string]string{
-		usageService: compsizeTotal("2000000000", "5000000000", "5000000000"),
-		usageUser:    compsizeTotal("45000000000", "46000000000", "46000000000"),
+		usageData:  compsizeTotal("2000000000", "5000000000", "5000000000"),
+		usageFiles: compsizeTotal("45000000000", "46000000000", "46000000000"),
 	}
 	at := usageNow.Add(-time.Hour)
 	v.runFn = func(name string, args []string) ([]byte, error) {
@@ -138,7 +138,7 @@ func TestTheFirstAskHasTheTotalsAndTheNextTheSplit(t *testing.T) {
 		t.Fatalf("first ask: %+v", u)
 	}
 	if s := *u.Data; s.Total != 3*gb || s.Cap != 40*gb || s.Members != 3 || s.Measured {
-		t.Errorf("service before the walk: %+v", s)
+		t.Errorf("app before the walk: %+v", s)
 	}
 	if s := *u.Files; s.Total != 50*gb || s.Cap != 300*gb || s.Members != 1 || s.Measured {
 		t.Errorf("user before the walk: %+v", s)
@@ -150,7 +150,7 @@ func TestTheFirstAskHasTheTotalsAndTheNextTheSplit(t *testing.T) {
 	}
 	want := dashboard.TierUsage{Total: 3 * gb, Cap: 40 * gb, Members: 3, Measured: true, Current: 2 * gb, Uncompressed: 5 * gb, History: 1 * gb}
 	if *u.Data != want {
-		t.Errorf("service: %+v, want %+v", *u.Data, want)
+		t.Errorf("app: %+v, want %+v", *u.Data, want)
 	}
 	want = dashboard.TierUsage{Total: 50 * gb, Cap: 300 * gb, Members: 1, Measured: true, Current: 45 * gb, Uncompressed: 46 * gb, History: 5 * gb}
 	if *u.Files != want {
@@ -183,10 +183,10 @@ func TestTheWalkIsCachedUntilItIsStaleOrTheAreaIsSwapped(t *testing.T) {
 		t.Errorf("%d walks after the window, want four", v.walked())
 	}
 
-	v.set(func() { v.roots[usageService] = "412" })
+	v.set(func() { v.roots[usageData] = "412" })
 	u = v.ask(t, usageNow.Add(12*time.Minute))
 	if !u.Measuring || u.Data.Measured || !u.Files.Measured {
-		t.Errorf("after the swap: service %+v, user %+v", *u.Data, *u.Files)
+		t.Errorf("after the swap: app %+v, user %+v", *u.Data, *u.Files)
 	}
 	waitUsage()
 	if v.walked() != 5 {
@@ -200,8 +200,8 @@ func TestTheWalkIsCachedUntilItIsStaleOrTheAreaIsSwapped(t *testing.T) {
 func TestEmptyFailedAndAbsentAreas(t *testing.T) {
 	v := newUsageVolume()
 	v.set(func() {
-		v.compsize[usageService] = "No files.\n"
-		delete(v.compsize, usageUser)
+		v.compsize[usageData] = "No files.\n"
+		delete(v.compsize, usageFiles)
 	})
 	v.ask(t, usageNow)
 	waitUsage()
@@ -219,7 +219,7 @@ func TestEmptyFailedAndAbsentAreas(t *testing.T) {
 
 	v.set(func() {
 		delete(v.qgroups, appQgroup(tierFiles, usageApp))
-		delete(v.roots, usageUser)
+		delete(v.roots, usageFiles)
 	})
 	if u := v.ask(t, usageNow.Add(2*time.Minute)); u.Files != nil {
 		t.Errorf("an app with no files group: %+v", *u.Files)

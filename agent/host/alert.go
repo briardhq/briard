@@ -205,7 +205,7 @@ func (c *clockAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 	}
 }
 
-// serviceAlerter tells the owner when an installed app has stopped working on the node that
+// appAlerter tells the owner when an installed app has stopped working on the node that
 // runs it, and again when it works. Nothing else does: an app is not a promoter-chain member,
 // so a crashed one demotes nothing, and the front door answers for the node, so the node reads
 // healthy while the app behind it is down.
@@ -224,15 +224,15 @@ func (c *clockAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 //
 // A NODE THAT NO LONGER HOLDS THE VOLUME RESOLVES what it opened: the apps run on whichever
 // node does, and that node asserts its own.
-type serviceAlerter struct {
+type appAlerter struct {
 	down map[string]time.Time // per app: start of the current run of "down"
 }
 
-const serviceDownFor = 10 * time.Minute
+const appDownFor = 10 * time.Minute
 
 // observe takes the cycle's report. known is false when the cluster read failed, which says
 // nothing about who holds the volume; serving is whether this node does.
-func (a *serviceAlerter) observe(ctx context.Context, n notify.Notifier, node string, svcs []api.ServiceStatus, known, serving bool, now time.Time, logf func(string, ...any)) {
+func (a *appAlerter) observe(ctx context.Context, n notify.Notifier, node string, svcs []api.AppStatus, known, serving bool, now time.Time, logf func(string, ...any)) {
 	if a.down == nil {
 		a.down = map[string]time.Time{}
 	}
@@ -260,7 +260,7 @@ func (a *serviceAlerter) observe(ctx context.Context, n notify.Notifier, node st
 			if !ok {
 				a.down[s.Name], since = now, now
 			}
-			if now.Sub(since) < serviceDownFor {
+			if now.Sub(since) < appDownFor {
 				continue
 			}
 			// No "Briard keeps restarting it": a crashed unit is, but one converge declined to
@@ -275,7 +275,7 @@ func (a *serviceAlerter) observe(ctx context.Context, n notify.Notifier, node st
 				Severity: notify.Critical,
 				Title:    "Briard: " + s.Name + " is not working",
 				Body: fmt.Sprintf("%s %s on machine %s for over %d minutes. The rest of the machine is unaffected.",
-					s.Name, what, node, int(serviceDownFor/time.Minute)),
+					s.Name, what, node, int(appDownFor/time.Minute)),
 			})
 		}
 	}

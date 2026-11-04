@@ -18,7 +18,7 @@ func platformChecks(f HostFacts) []Check {
 	// on and restarts once for it and the bridge together -- and is said, not refused.
 	switch {
 	case f.Hypervisor:
-		cs = append(cs, Check{"hypervisor", Pass, "the Windows hypervisor is running (WHPX can accelerate the guest)", ""})
+		cs = append(cs, Check{"hypervisor", Pass, "the Windows hypervisor is running (WHPX can accelerate the VM)", ""})
 	case f.HypervisorPending:
 		cs = append(cs, Check{"hypervisor", Warn, "Windows Hypervisor Platform is on, and starts at the next restart",
 			"the install ends by asking for that restart; if this machine has restarted since the feature was turned on, virtualization (VT-x / AMD-V) is off in its firmware settings"})

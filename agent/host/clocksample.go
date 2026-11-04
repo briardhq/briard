@@ -51,12 +51,12 @@ const clockSampleBudget = 2 * time.Minute
 type memberTaker interface {
 	// QuiescedSnapshot takes a member of a RUNNING app, asking it to hold still across the
 	// snapshot, and answers whether it did. The guest writes that sidecar itself.
-	QuiescedSnapshot(ctx context.Context, service, dataDir, dest, sidecar string) (bool, string, error)
+	QuiescedSnapshot(ctx context.Context, app, dataDir, dest, sidecar string) (bool, string, error)
 	SupportsQuiescedSnapshot() bool
-	ServiceInstalled(ctx context.Context, name string) (string, error)
+	AppInstalled(ctx context.Context, name string) (string, error)
 	Snapshot(ctx context.Context, dataDir, dest, sidecar string) error
 	SupportsSnapshotMember() bool
-	Members(ctx context.Context, service string) ([]quadlet.SnapshotEntry, error)
+	Members(ctx context.Context, app string) ([]quadlet.SnapshotEntry, error)
 	SupportsMembers() bool
 }
 
@@ -78,11 +78,11 @@ func newClockSampler() *clockSampler { return &clockSampler{newest: map[string]t
 // hears of (every start), and the agent restarts with an empty map. So an app whose record is
 // an interval old is checked against the RING, which is the durable answer, and the map is what
 // keeps that check to about once per app per interval.
-func (cfg Config) consider(ctx context.Context, g memberTaker, c *clockSampler, services []model.ServiceSpec, serving bool, now time.Time, logf func(string, ...any)) {
+func (cfg Config) consider(ctx context.Context, g memberTaker, c *clockSampler, apps []model.AppSpec, serving bool, now time.Time, logf func(string, ...any)) {
 	if !serving || !g.SupportsSnapshotMember() {
 		return
 	}
-	for _, s := range services {
+	for _, s := range apps {
 		if now.Sub(c.newest[s.Name]) < clockInterval {
 			continue
 		}
@@ -115,22 +115,22 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, c *clockSampler, 
 //
 // A guest too old to ask gets the plain take, which is what this did before the quiesce existed:
 // a member that says crash-consistent, which is exactly what it is.
-func (cfg Config) takeRunning(ctx context.Context, g memberTaker, service, member string, tr quadlet.Trigger, at time.Time, logf func(string, ...any)) error {
+func (cfg Config) takeRunning(ctx context.Context, g memberTaker, app, member string, tr quadlet.Trigger, at time.Time, logf func(string, ...any)) error {
 	if !g.SupportsQuiescedSnapshot() {
-		return cfg.takeMember(ctx, g, service, member, tr, quadlet.Crash, nil, at, logf)
+		return cfg.takeMember(ctx, g, app, member, tr, quadlet.Crash, nil, at, logf)
 	}
-	raw, err := g.ServiceInstalled(ctx, service)
+	raw, err := g.AppInstalled(ctx, app)
 	if err != nil {
 		return fmt.Errorf("read the running manifest: %w", err)
 	}
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
-		Service: service, Trigger: tr, TakenAt: at,
+		App: app, Trigger: tr, TakenAt: at,
 		Consistency: quadlet.Crash, Manifest: raw,
 	})
 	if err != nil {
 		return err
 	}
-	held, why, err := g.QuiescedSnapshot(ctx, service, quadlet.DataRoot(service), member, string(sidecar))
+	held, why, err := g.QuiescedSnapshot(ctx, app, quadlet.DataRoot(app), member, string(sidecar))
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func (cfg Config) takeRunning(ctx context.Context, g memberTaker, service, membe
 		// snapshot, which is what its class now says. The reason is worth a line because "the
 		// clock sample is crash-consistent again" is how a household would find out that Home
 		// Assistant stopped answering, or that an upgrade moved the API this leans on.
-		logf("%s %s: taken without holding the service still (%s)", service, tr, why)
+		logf("%s %s: taken without holding the app still (%s)", app, tr, why)
 	}
 	return nil
 }
@@ -150,11 +150,11 @@ func (cfg Config) takeRunning(ctx context.Context, g memberTaker, service, membe
 // A guest that cannot list says NO, and the take that follows is refused by its own capability
 // gate if it cannot happen either. Both directions are safe: the worst case is a second member of
 // bytes that have not changed, which copy-on-write makes nearly free and the next take replaces.
-func (cfg Config) newestMember(ctx context.Context, g memberTaker, service string) (time.Time, bool) {
+func (cfg Config) newestMember(ctx context.Context, g memberTaker, app string) (time.Time, bool) {
 	if !g.SupportsMembers() {
 		return time.Time{}, false
 	}
-	members, err := g.Members(ctx, service)
+	members, err := g.Members(ctx, app)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -217,8 +217,8 @@ func householdLocation() *time.Location {
 
 // checkRecorder collects a check that is running, or starts tonight's if it is due: this node
 // serves, it runs Home Assistant, and the local time is inside tonight's window.
-func (cfg Config) checkRecorder(ctx context.Context, g recorderChecker, d *dbChecker, services []model.ServiceSpec, serving bool, now time.Time, n notify.Notifier, logf func(string, ...any)) {
-	if !serving || !slices.ContainsFunc(services, func(s model.ServiceSpec) bool { return s.Name == hass.Name }) {
+func (cfg Config) checkRecorder(ctx context.Context, g recorderChecker, d *dbChecker, apps []model.AppSpec, serving bool, now time.Time, n notify.Notifier, logf func(string, ...any)) {
+	if !serving || !slices.ContainsFunc(apps, func(s model.AppSpec) bool { return s.Name == hass.Name }) {
 		return
 	}
 	if !d.waiting.IsZero() {

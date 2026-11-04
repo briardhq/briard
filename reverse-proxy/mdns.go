@@ -95,12 +95,12 @@ func mdnsWorldFor(addr, flock string, t routes.Table) mdnsWorld {
 		add(own)
 		add(routes.BareFlockHostName)
 	}
-	for _, s := range t.Services {
+	for _, s := range t.Apps {
 		for _, h := range s.Hosts {
 			add(h)
 		}
 	}
-	for _, s := range t.Services {
+	for _, s := range t.Apps {
 		if len(s.Hosts) == 0 {
 			// An announcement needs an SRV target and the only candidate is the app's own
 			// name. routes.Validate already refuses this combination; skipping rather than

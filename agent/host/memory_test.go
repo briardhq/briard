@@ -152,10 +152,10 @@ func TestMemoryGrowerNeedsAnUnbrokenWindow(t *testing.T) {
 	}
 }
 
-func withServices(mb int, mins ...int) Config {
+func withApps(mb int, mins ...int) Config {
 	cfg := Config{MemoryMB: mb}
 	for i, m := range mins {
-		cfg.Services = append(cfg.Services, model.ServiceSpec{Name: fmt.Sprintf("s%d", i), MinMemoryMB: m})
+		cfg.Apps = append(cfg.Apps, model.AppSpec{Name: fmt.Sprintf("s%d", i), MinMemoryMB: m})
 	}
 	return cfg
 }
@@ -167,15 +167,15 @@ func TestBootMemoryMB(t *testing.T) {
 		cfg  Config
 		want int
 	}{
-		{withServices(1024), 1024},           // nothing installed: the configured size
-		{withServices(1024, 512), 1024},      // Home Assistant fits: 384 + 512 < 1024
-		{withServices(1024, 512, 32), 1024},  // ...and so does a broker beside it
-		{withServices(1024, 512, 400), 1296}, // minimums past the configured size win
-		{withServices(2048, 512, 400), 2048}, // a configured size above them stands
-		{withServices(1024, 0, 0), 1024},     // apps that declare nothing count for nothing
+		{withApps(1024), 1024},           // nothing installed: the configured size
+		{withApps(1024, 512), 1024},      // Home Assistant fits: 384 + 512 < 1024
+		{withApps(1024, 512, 32), 1024},  // ...and so does a broker beside it
+		{withApps(1024, 512, 400), 1296}, // minimums past the configured size win
+		{withApps(2048, 512, 400), 2048}, // a configured size above them stands
+		{withApps(1024, 0, 0), 1024},     // apps that declare nothing count for nothing
 	} {
 		if got := c.cfg.bootMemoryMB(); got != c.want {
-			t.Errorf("bootMemoryMB(%+v) = %d, want %d", c.cfg.Services, got, c.want)
+			t.Errorf("bootMemoryMB(%+v) = %d, want %d", c.cfg.Apps, got, c.want)
 		}
 		if got := c.cfg.guestSpec().MemoryMB; got != c.want {
 			t.Errorf("guestSpec boots at %d, want %d", got, c.want)
@@ -185,8 +185,8 @@ func TestBootMemoryMB(t *testing.T) {
 
 // An install counts the app it installs once: an upgrade replaces its own old minimum rather
 // than adding to it.
-func TestMemoryNeededCountsTheInstalledServiceOnce(t *testing.T) {
-	cfg := withServices(1024, 512, 32) // s0, s1
+func TestMemoryNeededCountsTheInstalledAppOnce(t *testing.T) {
+	cfg := withApps(1024, 512, 32) // s0, s1
 	if got := cfg.memoryNeeded("s0", 700); got != 384+32+700 {
 		t.Errorf("upgrading s0 to a 700 MB minimum needs %d, want %d", got, 384+32+700)
 	}

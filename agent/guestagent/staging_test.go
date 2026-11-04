@@ -27,7 +27,7 @@ func (c *convergeExec) index(argv ...string) int {
 func TestStageWritesTheRollbackPointBeforeTheStagedManifest(t *testing.T) {
 	x := dummyNode(t)
 	g := dial(t, x)
-	if err := g.ServiceStage(context.Background(), "dummy", "/var/lib/briard/data/dummy", nil, dummyManifestStaged, "/snap/m1"); err != nil {
+	if err := g.AppStage(context.Background(), "dummy", "/var/lib/briard/data/dummy", nil, dummyManifestStaged, "/snap/m1"); err != nil {
 		t.Fatal(err)
 	}
 	f := x.fakeExec.files
@@ -56,7 +56,7 @@ func TestStageWithoutARollbackPointRemovesAStaleOne(t *testing.T) {
 	x := dummyNode(t)
 	x.fakeExec.files[rollbackPath("dummy")] = "/snap/old\n"
 	g := dial(t, x)
-	if err := g.ServiceStage(context.Background(), "dummy", "/var/lib/briard/data/dummy", nil, dummyManifestStaged, ""); err != nil {
+	if err := g.AppStage(context.Background(), "dummy", "/var/lib/briard/data/dummy", nil, dummyManifestStaged, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := x.fakeExec.files[rollbackPath("dummy")]; ok {
@@ -70,7 +70,7 @@ func TestCommitRenamesTheStagedManifestOverTheAccepted(t *testing.T) {
 	x.fakeExec.files[stagedPath("dummy")] = dummyManifestStaged
 	x.fakeExec.files[rollbackPath("dummy")] = "/snap/m1\n"
 	g := dial(t, x)
-	if err := g.ServiceCommit(context.Background(), "dummy"); err != nil {
+	if err := g.AppCommit(context.Background(), "dummy"); err != nil {
 		t.Fatal(err)
 	}
 	f := x.fakeExec.files
@@ -97,7 +97,7 @@ func TestDiscardDropsTheStageAndKeepsTheAccepted(t *testing.T) {
 	x.fakeExec.files[stagedPath("dummy")] = dummyManifestStaged
 	x.fakeExec.files[rollbackPath("dummy")] = "/snap/m1\n"
 	g := dial(t, x)
-	if err := g.ServiceDiscard(context.Background(), "dummy"); err != nil {
+	if err := g.AppDiscard(context.Background(), "dummy"); err != nil {
 		t.Fatal(err)
 	}
 	f := x.fakeExec.files
@@ -120,7 +120,7 @@ func TestPendingReportsEachStagedInstall(t *testing.T) {
 	x.fakeExec.files[rollbackPath("dummy")] = "/snap/m1\n"
 	x.fakeExec.files[stagedPath("other")] = otherManifest
 	g := dial(t, x)
-	got, err := g.ServicePending(context.Background())
+	got, err := g.AppPending(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,17 +140,17 @@ func TestPendingReportsEachStagedInstall(t *testing.T) {
 // CONVERGE HOLDS A PENDING INSTALL BACK unless it is the live one. A node promoting onto a staged
 // upgrade starts NEITHER version: the staged one was never accepted, and the accepted one may be
 // about to run on data the staged one already migrated.
-func TestConvergeHoldsBackAStagedServiceThatIsNotLive(t *testing.T) {
+func TestConvergeHoldsBackAStagedAppThatIsNotLive(t *testing.T) {
 	x := dummyNode(t)
 	x.fakeExec.files[stagedPath("dummy")] = dummyManifestStaged
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatal(err)
 	}
 	if x.ran("systemctl", "start", "briard-dummy-app.service") {
-		t.Fatal("converge started a service whose install was never accepted")
+		t.Fatal("converge started an app whose install was never accepted")
 	}
 	if _, ok := x.fakeExec.files[quadletDir+"/briard-dummy-app.container"]; ok {
-		t.Fatal("converge rendered a held-back service")
+		t.Fatal("converge rendered a held-back app")
 	}
 }
 
@@ -183,7 +183,7 @@ func TestConvergeFreshStagedInstall(t *testing.T) {
 			t.Fatalf("live=%q: fresh staged install started = %v", live, started)
 		}
 		if !x.ran("systemctl", "start", "briard-dummy-app.service") {
-			t.Fatalf("live=%q: the accepted service beside it was not started", live)
+			t.Fatalf("live=%q: the accepted app beside it was not started", live)
 		}
 	}
 }

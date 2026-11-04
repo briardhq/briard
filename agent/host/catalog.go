@@ -216,7 +216,7 @@ func (s *catalogState) toggle(d api.Directive) api.DirectiveOutcome {
 // look, so an update that commits or an undo that moves the app back changes the offer at the
 // next push with nothing to clear. An index that names no identity (one published before the
 // field) offers nothing.
-func (s *catalogState) view(installed map[string]model.ServiceSpec) dashboard.Catalog {
+func (s *catalogState) view(installed map[string]model.AppSpec) dashboard.Catalog {
 	if s == nil {
 		return dashboard.Catalog{}
 	}
@@ -238,7 +238,7 @@ func (s *catalogState) view(installed map[string]model.ServiceSpec) dashboard.Ca
 // notices asserts, for every wished app, whether its wish has been met: open while the app
 // has gained a manifest and is not installed, resolved once it is installed or the wish is taken
 // back. Asserted at every look, like every other alerter here; the store makes it an edge.
-func (s *catalogState) notices(ctx context.Context, n notify.Notifier, installed map[string]model.ServiceSpec) {
+func (s *catalogState) notices(ctx context.Context, n notify.Notifier, installed map[string]model.AppSpec) {
 	if s == nil {
 		return
 	}
@@ -384,9 +384,9 @@ func (cfg Config) wishVoter() string {
 
 // installedByName is what this node runs, by app name, from the node-local cache: the
 // installed side of every catalog question (notices, view).
-func (cfg Config) installedByName(logf func(string, ...any)) map[string]model.ServiceSpec {
-	out := map[string]model.ServiceSpec{}
-	if specs, _, ok := cfg.installedServices(logf); ok {
+func (cfg Config) installedByName(logf func(string, ...any)) map[string]model.AppSpec {
+	out := map[string]model.AppSpec{}
+	if specs, _, ok := cfg.installedApps(logf); ok {
 		for _, s := range specs {
 			out[s.Name] = s
 		}

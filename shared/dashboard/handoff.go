@@ -116,11 +116,11 @@ const (
 // manifest's Size and InstalledSize and when the pull started, written through `service.pulling`
 // before the first byte moves and removed once the image is present. The manifest itself lands on
 // the volume only AFTER the pull, so this is the one place a total exists while a bar is wanted.
-func PullPath(service string) string { return Dir + "/pull-" + service + ".json" }
+func PullPath(app string) string { return Dir + "/pull-" + app + ".json" }
 
 // Pull is that file's content.
 type Pull struct {
-	Service       string    `json:"service"`
+	App           string    `json:"service"`
 	Size          int64     `json:"size"`
 	InstalledSize int64     `json:"installedSize"`
 	Started       time.Time `json:"started"`
@@ -308,7 +308,7 @@ type BackupApp struct {
 }
 
 // AppUsage is one app's share of the volume, as its page's Storage card shows it: the guest
-// measures it (storage.usage), the host relays it (api.DirectiveServiceUsage). A tier is nil when
+// measures it (storage.usage), the host relays it (api.DirectiveAppUsage). A tier is nil when
 // the app has no group in it.
 type AppUsage struct {
 	// Data counts the app's unversioned area with its data area: what it keeps.

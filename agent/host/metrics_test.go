@@ -13,7 +13,7 @@ func TestDashboardMetricsAllowlist(t *testing.T) {
 	r := &telemetry.NodeResources{
 		VolumeUsedKB: 5000, Load1: 0.75,
 		AgentRSSKB: 123, AgentFDs: 9,
-		Payloads:  []telemetry.ServiceResources{{Name: "ha", RSSKB: 456, FDs: 7, Restarts: 2}},
+		Payloads:  []telemetry.AppResources{{Name: "ha", RSSKB: 456, FDs: 7, Restarts: 2}},
 		LogSizeKB: 999, PodmanStoreKB: 888, SnapshotCount: 3,
 		KernelErrors: []string{"oops"},
 	}

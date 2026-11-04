@@ -14,9 +14,9 @@ import (
 // footprint measured in-process. The agent fields are always present (this process really
 // has an RSS); the appliance fields come from the guest read.
 func TestResourcesComposesAgentAndAppliance(t *testing.T) {
-	cfg := Config{Services: []model.ServiceSpec{{Name: "ha", DataDir: "/d"}}}
+	cfg := Config{Apps: []model.AppSpec{{Name: "ha", DataDir: "/d"}}}
 	r := fakeStatus{res: telemetry.NodeResources{
-		Payloads:      []telemetry.ServiceResources{{Name: "ha", RSSKB: 88000}},
+		Payloads:      []telemetry.AppResources{{Name: "ha", RSSKB: 88000}},
 		SnapshotCount: 3, VolumeUsedKB: 4200,
 	}}
 
@@ -38,7 +38,7 @@ func TestResourcesComposesAgentAndAppliance(t *testing.T) {
 // A guest read error degrades to agent-only telemetry rather than blanking the report or
 // breaking the observe loop -- the appliance fields stay zero, the agent footprint is kept.
 func TestResourcesGuestErrorDegradesToAgentOnly(t *testing.T) {
-	cfg := Config{Services: []model.ServiceSpec{{Name: "ha", DataDir: "/d"}}}
+	cfg := Config{Apps: []model.AppSpec{{Name: "ha", DataDir: "/d"}}}
 	r := fakeStatus{resErr: errors.New("control channel hiccup")}
 
 	got := cfg.resources(context.Background(), r)
@@ -66,22 +66,22 @@ func TestResourcesGuestErrorDegradesToAgentOnly(t *testing.T) {
 // Rewritten to assert the read HAPPENS and carries the node-scoped series, with no per-app
 // entries because there are no apps. Confirmed to fail against the old gate before it passed
 // against the new one.
-func TestResourcesZeroServiceNodeStillReadsTheAppliance(t *testing.T) {
+func TestResourcesZeroAppNodeStillReadsTheAppliance(t *testing.T) {
 	cfg := Config{} // the empty set: nothing installed, the shipped state
 	r := &recordingReader{fakeStatus: fakeStatus{res: telemetry.NodeResources{Load1: 0.4, LogSizeKB: 900, KernelErrors: []string{"oops"}}}}
 
 	got := cfg.resources(context.Background(), r)
 	if !r.called {
-		t.Fatal("a zero-service node skipped the appliance read -- load, journal size and the guest kernel log go dark with it")
+		t.Fatal("a zero-app node skipped the appliance read -- load, journal size and the guest kernel log go dark with it")
 	}
 	if got.Load1 != 0.4 || got.LogSizeKB != 900 || len(got.KernelErrors) != 1 {
 		t.Errorf("node-scoped series not carried through: %+v", got)
 	}
 	if len(got.Payloads) != 0 {
-		t.Errorf("nothing is installed, so there is no per-service footprint to report: %+v", got.Payloads)
+		t.Errorf("nothing is installed, so there is no per-app footprint to report: %+v", got.Payloads)
 	}
-	if len(r.gotServices) != 0 {
-		t.Errorf("asked the guest about %v, want no services named", r.gotServices)
+	if len(r.gotApps) != 0 {
+		t.Errorf("asked the guest about %v, want no apps named", r.gotApps)
 	}
 	if got.AgentRSSKB <= 0 {
 		t.Errorf("the agent footprint should still be measured, got %d", got.AgentRSSKB)
@@ -92,15 +92,15 @@ func TestResourcesZeroServiceNodeStillReadsTheAppliance(t *testing.T) {
 // of the pairing, so the assertion has to be on the argument, not on the returned numbers.
 type recordingReader struct {
 	fakeStatus
-	called      bool
-	gotServices map[string]string
-	gotDataDir  string
-	gotSoak     bool
+	called     bool
+	gotApps    map[string]string
+	gotDataDir string
+	gotSoak    bool
 }
 
-func (r *recordingReader) Resources(_ context.Context, services map[string]string, dataDir string, soak bool) (telemetry.NodeResources, error) {
+func (r *recordingReader) Resources(_ context.Context, apps map[string]string, dataDir string, soak bool) (telemetry.NodeResources, error) {
 	r.called = true
-	r.gotServices, r.gotDataDir, r.gotSoak = services, dataDir, soak
+	r.gotApps, r.gotDataDir, r.gotSoak = apps, dataDir, soak
 	return r.res, r.resErr
 }
 
@@ -123,15 +123,15 @@ func TestResourcesAsksForSoakReadsOnlyUnderASoak(t *testing.T) {
 // renderer, so rebuilding "podman-<name>.service" here named nothing and every metric -- including
 // the crash-loop counter -- read zero for exactly the apps users install.
 func TestResourcesProbesTheServingUnit(t *testing.T) {
-	cfg := Config{Services: []model.ServiceSpec{{
+	cfg := Config{Apps: []model.AppSpec{{
 		Name:    "home-assistant",
 		DataDir: "/var/lib/briard/services/home-assistant",
 		Unit:    "briard-home-assistant-app.service",
 	}}}
 	r := &recordingReader{}
 	cfg.resources(context.Background(), r)
-	if r.gotServices["home-assistant"] != "briard-home-assistant-app.service" {
-		t.Errorf("probed units = %v, want the quadlet-rendered serving unit", r.gotServices)
+	if r.gotApps["home-assistant"] != "briard-home-assistant-app.service" {
+		t.Errorf("probed units = %v, want the quadlet-rendered serving unit", r.gotApps)
 	}
 	if r.gotDataDir != "/var/lib/briard/services/home-assistant" {
 		t.Errorf("probed data dir = %q", r.gotDataDir)
@@ -142,8 +142,8 @@ func TestResourcesProbesTheServingUnit(t *testing.T) {
 // the one that loses the signal: NRestarts exists to make a crash-loop loud, and one app
 // flapping inside a total reads as a small climb. So the probe names every app and the oracle
 // gets one series per name.
-func TestResourcesMeasuresEveryService(t *testing.T) {
-	cfg := Config{Services: []model.ServiceSpec{
+func TestResourcesMeasuresEveryApp(t *testing.T) {
+	cfg := Config{Apps: []model.AppSpec{
 		{Name: "home-assistant", DataDir: "/var/lib/briard/home-assistant", Unit: "briard-home-assistant-app.service"},
 		{Name: "mosquitto", DataDir: "/var/lib/briard/mosquitto", Unit: "briard-mosquitto-broker.service"},
 	}}
@@ -153,15 +153,15 @@ func TestResourcesMeasuresEveryService(t *testing.T) {
 		"home-assistant": "briard-home-assistant-app.service",
 		"mosquitto":      "briard-mosquitto-broker.service",
 	}
-	if len(r.gotServices) != 2 {
-		t.Fatalf("probed %v, want both services -- one of N going unmeasured is the whole failure", r.gotServices)
+	if len(r.gotApps) != 2 {
+		t.Fatalf("probed %v, want both apps -- one of N going unmeasured is the whole failure", r.gotApps)
 	}
 	for name, unit := range want {
-		if r.gotServices[name] != unit {
-			t.Errorf("%s probed as %q, want %q", name, r.gotServices[name], unit)
+		if r.gotApps[name] != unit {
+			t.Errorf("%s probed as %q, want %q", name, r.gotApps[name], unit)
 		}
 	}
 	if !slices.Contains([]string{"/var/lib/briard/home-assistant", "/var/lib/briard/mosquitto"}, r.gotDataDir) {
-		t.Errorf("data dir = %q, want one of the services' -- df/btrfs measure the shared volume", r.gotDataDir)
+		t.Errorf("data dir = %q, want one of the apps' -- df/btrfs measure the shared volume", r.gotDataDir)
 	}
 }

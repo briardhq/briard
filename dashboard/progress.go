@@ -54,8 +54,8 @@ type layer struct {
 
 // pullProgress reads the record the host left for the app and, when there is one, measures
 // the pull against it. nil when nothing is recorded -- an older host, or nothing pulling.
-func (a *app) pullProgress(service string) *progressView {
-	raw, err := os.ReadFile(filepath.Join(a.pulls.records, filepath.Base(dashboard.PullPath(service))))
+func (a *app) pullProgress(app string) *progressView {
+	raw, err := os.ReadFile(filepath.Join(a.pulls.records, filepath.Base(dashboard.PullPath(app))))
 	if err != nil {
 		return nil
 	}
@@ -63,7 +63,7 @@ func (a *app) pullProgress(service string) *progressView {
 	if err := json.Unmarshal(raw, &p); err != nil || p.Size <= 0 {
 		return nil
 	}
-	done := a.pulls.finishedSince(p.Started) + a.pulls.inFlight(service)
+	done := a.pulls.finishedSince(p.Started) + a.pulls.inFlight(app)
 	if done > p.Size {
 		done = p.Size
 	}
@@ -96,8 +96,8 @@ func (pp pullPaths) finishedSince(t time.Time) int64 {
 // inFlight is the bytes under the app's pull units' private tmp: systemd names each
 // PrivateTmp root systemd-private-<boot>-<unit>-<random>, and the units are
 // briard-<service>-<container>-image.service.
-func (pp pullPaths) inFlight(service string) int64 {
-	dirs, _ := filepath.Glob(filepath.Join(pp.tmp, "systemd-private-*-briard-"+service+"-*-image.service-*"))
+func (pp pullPaths) inFlight(app string) int64 {
+	dirs, _ := filepath.Glob(filepath.Join(pp.tmp, "systemd-private-*-briard-"+app+"-*-image.service-*"))
 	var n int64
 	for _, d := range dirs {
 		_ = filepath.WalkDir(d, func(_ string, e os.DirEntry, err error) error {

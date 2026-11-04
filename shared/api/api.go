@@ -75,7 +75,7 @@ type NodeStatus struct {
 	// binary that reverted, a firmware without the push verbs) would read as converged the moment
 	// the host committed. It is a release id, nothing about the household.
 	GuestBundle string `json:"guest_bundle,omitempty"`
-	// Services is what this node has INSTALLED at runtime, one entry per app, ordered by
+	// Apps is what this node has INSTALLED at runtime, one entry per app, ordered by
 	// name. It is the whole answer to "what is this node running", and widening the closed
 	// allowlist by a repeated field is a deliberate act, so here is the argument.
 	//
@@ -84,7 +84,7 @@ type NodeStatus struct {
 	// app's identity is its MANIFEST, and its upgrade is a service-install directive carrying
 	// a new one (the change that deleted the slot deleted the field with it). With nothing else
 	// on the wire, a node was held to ONE runtime app by an explicit refusal in
-	// applyServiceInstall, because a node running two and describing one would have the cloud
+	// applyAppInstall, because a node running two and describing one would have the cloud
 	// confirm a rollout against whichever came first and a crash-loop in the other go entirely
 	// unseen. This field is what let that refusal come out.
 	//
@@ -102,8 +102,8 @@ type NodeStatus struct {
 	//
 	// Empty on a witness and on the shipped zero-app node, which is the state `install.sh`
 	// leaves behind. A node that has PROMOTED reports what the volume says it runs, not merely
-	// what it was itself told to install (adoptVolumeServices).
-	Services []ServiceStatus `json:"services,omitempty"`
+	// what it was itself told to install (adoptVolumeApps).
+	Apps []AppStatus `json:"services,omitempty"`
 	// AgentVersion is the release id of the host-agent binary now running. It makes a
 	// host-agent self-update observable through the seam the same way Services does for what the
 	// node runs: the cloud confirms a canary committed the offered version (its trial went
@@ -146,10 +146,10 @@ type NodeStatus struct {
 	// per-report current-state. Expanding that set is a deliberate, visible act.
 }
 
-// ServiceStatus is one runtime-installed app as the node reports it: what it is, which
+// AppStatus is one runtime-installed app as the node reports it: what it is, which
 // version of what it is, and whether it is actually running. See NodeStatus.Services for why the
 // first two are what they are, and State below for why the third had to join them.
-type ServiceStatus struct {
+type AppStatus struct {
 	// Name is the catalog slug the app was installed under ("home-assistant"). Stable
 	// across upgrades, which is exactly why it cannot be the identity on its own.
 	Name string `json:"name"`
@@ -217,14 +217,14 @@ type ServiceStatus struct {
 	Health string `json:"health,omitempty"`
 }
 
-// The values ServiceStatus.State takes. A closed set, spelled here rather than at each end, so
+// The values AppStatus.State takes. A closed set, spelled here rather than at each end, so
 // the node and the cloud cannot disagree about what a node meant.
 const (
 	StateRunning = "running"
 	StateStopped = "stopped"
 )
 
-// The values ServiceStatus.Health takes. Separate from State's set, because they answer different
+// The values AppStatus.Health takes. Separate from State's set, because they answer different
 // questions about the same app and a single field could not say "running but not serving" --
 // which is the only interesting combination of the two.
 const (
@@ -345,7 +345,7 @@ const (
 	//                        Host-agent binary, verifies it against its release keyring, and — only on
 	//                        a valid signature — stages+arms it for the Type=notify trial. A
 	//                        bad/absent signature is refused, current kept.
-	DirectiveServiceInstall = "service-install" // Payload = a CATALOG NAME (a slug, e.g.
+	DirectiveAppInstall = "service-install" // Payload = a CATALOG NAME (a slug, e.g.
 	//                        "home-assistant"). The node fetches that name's signed manifest from the
 	//                        catalog, verifies it against the release keyring, renders quadlet
 	//                        units, provisions the app subvolume (Primary only), and rewrites the
@@ -356,7 +356,7 @@ const (
 	//                        then be trusting the sender rather than the signature. Sent by the cloud,
 	//                        or injected locally by `briard app install` over the admin socket
 	//                        — both land in the same dispatch.
-	DirectiveServicePrewarm = "service-prewarm" // Payload = a CATALOG NAME, as service-install. Renders
+	DirectiveAppPrewarm = "service-prewarm" // Payload = a CATALOG NAME, as service-install. Renders
 	//                        The quadlet units and pulls the images WITHOUT touching the promoter chain,
 	//                        the volume, or what is currently serving -- the warm-standby half, made a
 	//                        named operation.
@@ -383,7 +383,7 @@ const (
 	//                        digest already present is a no-op. It never changes what the node serves,
 	//                        which is what lets the cloud fan it out to every anchor before committing
 	//                        anything.
-	DirectiveServiceMembers = "service-members" // Payload = an APP NAME. Outcome.Detail is a
+	DirectiveAppMembers = "service-members" // Payload = an APP NAME. Outcome.Detail is a
 	//                        JSON array of quadlet.SnapshotEntry: one app's ring, oldest
 	//                        first, as the picker shows it. Read-only — it changes
 	//                        nothing and is safe to re-send.
@@ -393,14 +393,14 @@ const (
 	//                        directive channel for one query, and two ways to ask a node something
 	//                        is how they drift. Both readers want structure: the CLI prints a
 	//                        table, the dashboard renders a list.
-	DirectiveServiceUsage = "service-usage" // Payload = an APP NAME. Outcome.Detail is a JSON
+	DirectiveAppUsage = "service-usage" // Payload = an APP NAME. Outcome.Detail is a JSON
 	//                        dashboard.AppUsage: what the app's data and history hold on the
 	//                        volume, per tier, for its page's Storage card. Read-only; the split
 	//                        between current data and history comes from a walk the guest runs in
 	//                        its background when the last one is stale, so the first answer may
 	//                        say it is still measuring. Local-only: what a household stores is the
 	//                        household's to see.
-	DirectiveServiceRestore = "service-restore" // Payload = a RING MEMBER's subvolume path
+	DirectiveAppRestore = "service-restore" // Payload = a RING MEMBER's subvolume path
 	//                        exactly as the listing the picker read returned it. The
 	//                        node puts that app back to the member: its data, and — when the
 	//                        member's pinned manifest differs from the running one — its CODE with
@@ -417,7 +417,7 @@ const (
 	//                        be fetched is told while its app is still running. An INSTALL is
 	//                        allowed to stop things, because the household asked for a change; a
 	//                        restore that cannot finish must cost nothing.
-	DirectiveServiceCacheEmpty = "service-cache-empty" // Payload = an APP NAME. The node stops
+	DirectiveAppCacheEmpty = "service-cache-empty" // Payload = an APP NAME. The node stops
 	//                        the app, empties its cache area and starts it again: the Storage
 	//                        card's Clear. Refused for an app that keeps no cache. Local-only: a
 	//                        household's app restarting is the household's to ask for.
@@ -574,7 +574,7 @@ const (
 // BackupRestore is a DirectiveBackupRestore's payload: the app, and the night -- a restic
 // snapshot id as the dashboard's Backup section lists them, or "latest".
 type BackupRestore struct {
-	Service  string `json:"service"`
+	App      string `json:"service"`
 	Snapshot string `json:"snapshot"`
 }
 

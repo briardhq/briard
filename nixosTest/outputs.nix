@@ -444,7 +444,7 @@ in
       services-pair = servicesPair; # two apps: upgrade one, the other keeps serving
     };
     # EACH APP'S CONTRACT: the tests of Briard's own code for one catalogued app (agent/hass,
-    # agent/mosquitto, its agent/services entry), on the entry the catalog ships. The tier runs them
+    # agent/mosquitto, its agent/apps entry), on the entry the catalog ships. The tier runs them
     # every night, because a change to Briard can break them; an update to the app runs `@app-<name>`
     # against the new entry. A test sits here and in its subject's group alike.
     app-home-assistant = {

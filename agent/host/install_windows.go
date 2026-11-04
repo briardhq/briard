@@ -140,7 +140,7 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	}
 	// THE ONE INBOUND HOLE: the guest dials the host's backup store. Scoped to this program and
 	// port rather than to a network profile, so the household's network category stays theirs.
-	say("allowing the guest to reach the backup store (TCP %s, %s only)", backupStorePort, agentExe)
+	say("allowing the VM to reach the backup store (TCP %s, %s only)", backupStorePort, agentExe)
 	_ = run(ctx, "netsh", "advfirewall", "firewall", "delete", "rule", "name=Briard backup store")
 	if err := run(ctx, "netsh", "advfirewall", "firewall", "add", "rule", "name=Briard backup store", "dir=in",
 		"action=allow", "program="+exe, "protocol=TCP", "localport="+backupStorePort, "profile=any"); err != nil {
