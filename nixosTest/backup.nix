@@ -86,7 +86,7 @@ pkgs.testers.runNixOSTest {
         if not ok:
             return rep
         assert rep.get("snapshot") and not rep.get("error"), f"the backup did not complete: {rep}"
-        assert rep.get("services") == ["${fixture.name}"], f"backed up {rep.get('services')}"
+        assert rep.get("apps") == ["${fixture.name}"], f"backed up {rep.get('apps')}"
         return rep
 
     def plain(cmd, repo="'${folder}'"):
@@ -113,7 +113,7 @@ pkgs.testers.runNixOSTest {
     for want in [
         "/run/briard/backup/data/${fixture.name}/${fixture.dataDir}/payload.txt",
         "/run/briard/backup/briard/members/${fixture.name}.json",
-        "/run/briard/backup/briard/volume/.services/${fixture.name}.json",
+        "/run/briard/backup/briard/volume/.apps/${fixture.name}.json",
     ]:
         assert want in files, f"{want} is not in the snapshot: {files}"
     assert not any("ha.tar" in f or "unversioned" in f for f in files), "an app's unversioned area was backed up"
@@ -166,18 +166,18 @@ pkgs.testers.runNixOSTest {
     # The FIRST night, by id (it is the one the retention would prune next, so a stale id must
     # still name it while it is there), into the ring: a read-only subvolume with that night's
     # payload and the sidecar that names the manifest, beside the members the ring took itself.
-    member = node1.succeed(f"briard-guest-agent --backup-restore=${url} -service ${fixture.name} -snapshot {first['snapshot']}").strip()
+    member = node1.succeed(f"briard-guest-agent --backup-restore=${url} -app ${fixture.name} -snapshot {first['snapshot']}").strip()
     assert member.startswith("/var/lib/briard/data/.snapshots/${fixture.name}-from-backup-"), f"member {member}"
     got = node1.succeed(f"cat {member}/${fixture.dataDir}/payload.txt").strip()
     assert got == "first", f"the member holds {got!r}, want the first night's"
     node1.succeed(f"btrfs subvolume show {member} | grep -q 'readonly'")
     node1.fail(f"touch {member}/x")
     side = json.loads(node1.succeed(f"cat {member}.json"))
-    assert side["trigger"] == "from-backup" and side["service"] == "${fixture.name}" and side["manifest"], f"sidecar {side}"
+    assert side["trigger"] == "from-backup" and side["app"] == "${fixture.name}" and side["manifest"], f"sidecar {side}"
     assert not side.get("pending"), "a member from the backup is pending nothing"
     # The night that is not there is a refusal, and the ring is as it was.
     before = node1.succeed("ls /var/lib/briard/data/.snapshots").split()
-    node1.fail(f"briard-guest-agent --backup-restore=${url} -service nothing-installed -snapshot {first['snapshot']}")
+    node1.fail(f"briard-guest-agent --backup-restore=${url} -app nothing-installed -snapshot {first['snapshot']}")
     assert node1.succeed("ls /var/lib/briard/data/.snapshots").split() == before, "a refused night changed the ring"
     node1.fail("test -e /run/briard/backup.password")
 
@@ -231,7 +231,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed(f"cmp {area}/photo.jpg /tmp/readme-files/run/briard/backup/files/{app}/photo.jpg")
     # "latest" is the newest DATA snapshot, though the files' is newer: the restore gets the app's
     # data as that snapshot holds it.
-    member = node1.succeed(f"briard-guest-agent --backup-restore=${url} -service {app} -snapshot latest").strip()
+    member = node1.succeed(f"briard-guest-agent --backup-restore=${url} -app {app} -snapshot latest").strip()
     got = node1.succeed(f"cat {member}/${fixture.dataDir}/payload.txt").strip()
     want = plain(f"dump {asnap['id']} /run/briard/backup/data/{app}/${fixture.dataDir}/payload.txt", repo="'${folder2}'").strip()
     assert got == want, f"a latest restore holds {got!r}, the newest app night {want!r}"

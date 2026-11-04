@@ -8,10 +8,10 @@
 # user installs an app.
 { buildGoModule }:
 buildGoModule {
-  pname = "briard-dummy-service";
+  pname = "briard-dummy-app";
   version = "0.0.0";
   src = ../../.;
   vendorHash = import ../../vendor-hash.nix;
-  subPackages = [ "nixosTest/dummy-service" ];
+  subPackages = [ "nixosTest/dummy-app" ];
   meta.description = "Briard dummy stateful service (failover/upgrade fixture)";
 }

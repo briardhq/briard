@@ -35,7 +35,7 @@ import (
 //
 //	data/<app>/                the newest member of the app's ring, bind-mounted read-only
 //	briard/members/<app>.json  that member's sidecar: the manifest its data was written under
-//	briard/volume/                 the volume's flock-scoped facts -- .vip-address, .services/, tls/
+//	briard/volume/                 the volume's flock-scoped facts -- .vip-address, .apps/, tls/
 //	briard/host/<name>             the host's own facts, handed over in the request
 //
 // and then the household's files', tagged files:
@@ -209,7 +209,7 @@ type backupRequest struct {
 // Neither set is a node with nothing to back up.
 type BackupReport struct {
 	Snapshot string   `json:"snapshot,omitempty"`
-	Apps     []string `json:"services,omitempty"`
+	Apps     []string `json:"apps,omitempty"`
 	// FilesSnapshot is the household's files' snapshot and FilesAreas the apps whose files it holds;
 	// Files and BytesAdded count both snapshots.
 	FilesSnapshot string   `json:"filesSnapshot,omitempty"`
@@ -526,7 +526,7 @@ func Backup(ctx context.Context, x Executor, url string) BackupReport {
 type backupRestoreRequest struct {
 	Repository string `json:"repository"`
 	Snapshot   string `json:"snapshot"`
-	App        string `json:"service"`
+	App        string `json:"app"`
 }
 
 // backupSnapshotID is what a restic snapshot may be named by: a (prefix of a) hex id, or latest.

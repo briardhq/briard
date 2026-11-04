@@ -171,7 +171,7 @@ func TestAKilledStopClaimsNothing(t *testing.T) {
 // ordinary HA restart crash-consistent, which is wrong and is also the most common member there is.
 func TestAnInnerRestartDoesNotReadTheMarker(t *testing.T) {
 	f := restoreRig("")
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	if _, meta := tookMember(t, f); meta.Consistency != quadlet.Quiesced {
 		t.Errorf("consistency = %q, want quiesced: the app stopped itself and the container never went down", meta.Consistency)
 	}
@@ -183,7 +183,7 @@ func TestAnInnerRestartDoesNotReadTheMarker(t *testing.T) {
 // happened, on the point that undoes it.
 func TestInboundRecordsTheBackupRestore(t *testing.T) {
 	f := restoreRig(`{"path": "/config/backups/e1a2b3c4.tar"}`)
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	member, meta := tookMember(t, f)
 	if _, tr, _, _ := quadlet.ParseSnapshotMember(member); tr != quadlet.TriggerHassRestoreBefore {
 		t.Errorf("trigger = %q, want hass-restore-before", tr)
@@ -196,7 +196,7 @@ func TestInboundRecordsTheBackupRestore(t *testing.T) {
 	// The restore's point is not a pending start, so the start does not replace it.
 	delete(f.files, quadlet.DataRoot("home-assistant")+"/app/"+hass.RestoreMarker)
 	f.runs = nil
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	if slices.Contains(deleted(f), strings.TrimPrefix(member, quadlet.SnapshotsDir)) {
 		t.Fatalf("the start after the restore deleted the restore's point: %v", f.runs)
 	}
@@ -246,7 +246,7 @@ func serve(t *testing.T, f *fakeExec, body string) inboundResponse {
 // ordering guarantee.
 func TestInboundStartingTakesAMember(t *testing.T) {
 	f := ringExec()
-	resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	resp := serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	if resp.Error != "" {
 		t.Fatalf("error = %q, want a member taken", resp.Error)
 	}
@@ -305,7 +305,7 @@ func TestAStartReplacesTheStartStillPending(t *testing.T) {
 	pending := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
 	f := ringExec(base, pending)
 	markPending(f, pending)
-	resp := serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	resp := serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	if resp.Error != "" {
 		t.Fatalf("error = %q, want a member taken", resp.Error)
 	}
@@ -326,7 +326,7 @@ func TestAStartReplacesTheStartStillPending(t *testing.T) {
 func TestAnEvaluatedStartIsNeverReplaced(t *testing.T) {
 	recent := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
 	f := ringExec(recent)
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	tookMember(t, f)
 	if got := deleted(f); len(got) != 0 {
 		t.Errorf("deleted %v; an evaluated start is kept", got)
@@ -340,7 +340,7 @@ func TestAStartDoesNotTouchAnotherAppsPendingStart(t *testing.T) {
 	other := strings.TrimPrefix(quadlet.SnapshotMember("mosquitto", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
 	f := ringExec(other)
 	markPending(f, other)
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	tookMember(t, f)
 	if got := deleted(f); len(got) != 0 {
 		t.Errorf("deleted %v; another app's pending start is not ours to replace", got)
@@ -353,7 +353,7 @@ func TestAnUnreadablePendingStartIsKept(t *testing.T) {
 	pending := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
 	f := ringExec(pending)
 	f.files[quadlet.SnapshotSidecar(quadlet.SnapshotsDir+pending)] = `{"pending": tru`
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	if got := deleted(f); len(got) != 0 {
 		t.Errorf("deleted %v on an unreadable sidecar", got)
 	}
@@ -364,7 +364,7 @@ func TestAnUnreadablePendingStartIsKept(t *testing.T) {
 // able to stop one being taken — a stray directory called `backup` should cost nothing.
 func TestInboundIgnoresStrangersInTheSnapshotsDir(t *testing.T) {
 	f := ringExec("a-human-copy", "home-assistant-preupgrade", "notes.txt")
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	var took bool
 	for _, r := range f.runs {
 		if len(r) > 2 && r[1] == "subvolume" && r[2] == "snapshot" {
@@ -385,7 +385,7 @@ func TestInboundIgnoresStrangersInTheSnapshotsDir(t *testing.T) {
 // of failure.
 func TestInboundRequestCannotNameItsApp(t *testing.T) {
 	f := ringExec()
-	serve(t, f, `{"verb":"service.starting","service":"mosquitto","path":"/etc","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","app":"mosquitto","path":"/etc","token":"`+haToken+`"}`)
 	for _, r := range f.runs {
 		for _, a := range r {
 			if a == "/etc" || strings.Contains(a, "briard/mosquitto") {
@@ -414,7 +414,7 @@ func TestInboundRefusesACallerItCannotIdentify(t *testing.T) {
 		"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210", // right shape, never minted
 	} {
 		f := ringExec()
-		resp := serve(t, f, `{"verb":"service.starting","token":"`+tok+`"}`)
+		resp := serve(t, f, `{"verb":"app.starting","token":"`+tok+`"}`)
 		if resp.Error == "" {
 			t.Errorf("token %q was accepted", tok)
 		}
@@ -431,7 +431,7 @@ func TestInboundRefusesACallerItCannotIdentify(t *testing.T) {
 func TestInboundResolvesEachAppToItsOwnToken(t *testing.T) {
 	f := ringExec()
 	f.files[manifestPath("mosquitto")] = `{"name":"mosquitto","version":"2.1.2"}`
-	serve(t, f, `{"verb":"service.starting","token":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}`)
+	serve(t, f, `{"verb":"app.starting","token":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}`)
 	var took string
 	for _, r := range f.runs {
 		if len(r) > 5 && r[2] == "snapshot" {
@@ -468,8 +468,8 @@ func TestInboundRefusesAnUnknownVerb(t *testing.T) {
 // household's Home Assistant on its own start.
 func TestInboundAlwaysAnswers(t *testing.T) {
 	for _, body := range []string{
-		`{"verb":"service.starting","token":"` + haToken + `"}`,
-		`{"verb":"service.starting","token":"nope"}`,
+		`{"verb":"app.starting","token":"` + haToken + `"}`,
+		`{"verb":"app.starting","token":"nope"}`,
 		`{"verb":"nonsense"}`,
 		`not json at all`,
 		``,
@@ -500,7 +500,7 @@ func TestInboundRejectsAAppNameThatIsAPath(t *testing.T) {
 		return nil, errors.New("ERROR: not a subvolume")
 	}
 	f.files[apps.InboundTokenPath("../../etc")] = evil
-	resp := serve(t, f, `{"verb":"service.starting","token":"`+evil+`"}`)
+	resp := serve(t, f, `{"verb":"app.starting","token":"`+evil+`"}`)
 	if resp.Error == "" {
 		t.Fatal("a traversing app name was accepted")
 	}
@@ -541,7 +541,7 @@ func TestListenInboundOverARealSocket(t *testing.T) {
 			t.Fatalf("dial: %v", err)
 		}
 		defer c.Close()
-		if _, err := c.Write([]byte(`{"verb":"service.starting","token":"` + haToken + `"}` + "\n")); err != nil {
+		if _, err := c.Write([]byte(`{"verb":"app.starting","token":"` + haToken + `"}` + "\n")); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 		line, err := bufio.NewReader(c).ReadString('\n')
@@ -606,7 +606,7 @@ func TestListenInboundClearsAStaleSocket(t *testing.T) {
 func TestInboundRefusesAShortTokenWithoutReadingAnything(t *testing.T) {
 	for _, tok := range []string{"", "xyz"} {
 		f := ringExec()
-		resp := serve(t, f, `{"verb":"service.starting","token":"`+tok+`"}`)
+		resp := serve(t, f, `{"verb":"app.starting","token":"`+tok+`"}`)
 		if resp.Error == "" {
 			t.Errorf("token %q was accepted", tok)
 		}
@@ -659,7 +659,7 @@ func TestRingReplacesSamplesThatAnchorNothing(t *testing.T) {
 	existing := ringOf("home-assistant", 6)
 	f := ringExec(existing...)
 	withEvent(f, existing[0], quadlet.ReasonQuiet, time.Minute) // the stretch has its quiet point
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 
 	gone := deleted(f)
 	if len(gone) != len(existing)-2 {
@@ -688,7 +688,7 @@ func TestRingKeepsWhatAnchorsAnEvent(t *testing.T) {
 	f := ringExec(ring...)
 	withEvent(f, ring[0], quadlet.ReasonAppUpdate, 90*time.Hour)
 	withEvent(f, ring[2], quadlet.ReasonChanged, 2*time.Hour)
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	for _, name := range deleted(f) {
 		if name == ring[0] || name == ring[2] || name == ring[3] || name == ring[5] {
 			t.Fatalf("a restore point or the quiet stretch's start was pruned: %v", deleted(f))
@@ -705,7 +705,7 @@ func TestRingLeavesAnotherAppAlone(t *testing.T) {
 	mine := ringOf("home-assistant", 5)
 	theirs := ringOf("mosquitto", 5)
 	f := ringExec(append(mine, theirs...)...)
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	for _, name := range deleted(f) {
 		if svc, _ := quadlet.SnapshotMemberApp(name); svc != "home-assistant" {
 			t.Errorf("pruning %s's ring deleted %s's member %q", "home-assistant", svc, name)
@@ -720,7 +720,7 @@ func TestRingPrunesAnEventThatHasAgedOut(t *testing.T) {
 	f := ringExec(ring...)
 	withEvent(f, ring[0], quadlet.ReasonChanged, 9*24*time.Hour)
 	withEvent(f, ring[1], quadlet.ReasonChanged, 6*time.Hour)
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	got := deleted(f)
 	if len(got) != 1 || got[0] != ring[0] {
 		t.Fatalf("deleted %v, want just the nine-day-old event's point %q", got, ring[0])
@@ -761,7 +761,7 @@ func TestListMembersSkipsWhatItCannotIdentify(t *testing.T) {
 		strings.TrimPrefix(bare, quadlet.SnapshotsDir),
 		strings.TrimPrefix(garbled, quadlet.SnapshotsDir),
 	)
-	f.files[quadlet.SnapshotSidecar(good)] = `{"service":"home-assistant","trigger":"start","event":{"reasons":[{"kind":"quiet"}]}}`
+	f.files[quadlet.SnapshotSidecar(good)] = `{"app":"home-assistant","trigger":"start","event":{"reasons":[{"kind":"quiet"}]}}`
 	f.files[quadlet.SnapshotSidecar(garbled)] = `not json`
 	delete(f.files, quadlet.SnapshotSidecar(bare)) // `bare` gets no sidecar at all.
 
@@ -1043,7 +1043,7 @@ func metaOf(t *testing.T, f *fakeExec, member string) quadlet.SnapshotMeta {
 // so it does not evaluate: nothing lands on the point before, and the sample says it is pending.
 func TestTheStartHookLeavesItsSamplePending(t *testing.T) {
 	f := ringExec(ringOf("home-assistant", 1)...)
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	if _, meta := tookMember(t, f); !meta.Pending {
 		t.Errorf("the start sample is not pending: %+v", meta)
 	}
@@ -1234,7 +1234,7 @@ func TestReplacingKeepsTheWeakerConsistency(t *testing.T) {
 	markPending(f, pending)
 	sidecar := quadlet.SnapshotSidecar(quadlet.SnapshotsDir + pending)
 	f.files[sidecar] = strings.Replace(f.files[sidecar], `"consistency":""`, `"consistency":"crash"`, 1)
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	took, _ := tookMember(t, f)
 	if got := metaOf(t, f, took).Consistency; got != quadlet.Crash {
 		t.Errorf("the member that replaced a crash-consistent start says %q", got)
@@ -1264,7 +1264,7 @@ func TestEveryStartSignalsTheDoor(t *testing.T) {
 		t.Errorf("a container start did not signal the door: %v", f.runs)
 	}
 	f = ringExec()
-	serve(t, f, `{"verb":"service.starting","token":"`+haToken+`"}`)
+	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	if !signalled(f) {
 		t.Errorf("a restart inside the container did not signal the door: %v", f.runs)
 	}

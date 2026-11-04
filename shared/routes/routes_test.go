@@ -173,7 +173,7 @@ func TestMarshalParseRoundTripAndRefusesUnknownFields(t *testing.T) {
 	if mq.Health == "" {
 		t.Error("the broker has no health endpoint; not-fronted must not mean not-probed")
 	}
-	if _, err := Parse([]byte(`{"services":[{"name":"x","privileged":true}]}`)); err == nil {
+	if _, err := Parse([]byte(`{"apps":[{"name":"x","privileged":true}]}`)); err == nil {
 		t.Error("a table carrying an unknown field parsed; a partly-understood table must be refused")
 	}
 }

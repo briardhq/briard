@@ -139,7 +139,7 @@ pkgs.testers.runNixOSTest {
     new_primary = next(m for m in survivors if role(m) == "Primary")
     new_primary.succeed(f"grep -rq {USER} {dataroot}/${fixture.dataDir}/.storage")
 
-    # HA started INSIDE this promotion (briard-services is a chain member), and it reads its network
+    # HA started INSIDE this promotion (briard-apps is a chain member), and it reads its network
     # once, at boot: the interface it advertises and answers mDNS on, and the address it builds its
     # own URL from, are where the kernel sends 224.0.0.251. The chain claims the VIP -- and
     # briard-vip routes multicast out of the VIP's NIC -- BEFORE the apps start, so the HA that

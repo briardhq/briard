@@ -75,7 +75,7 @@ const (
 	// VerbAppStarting says "my app is about to start, and I am holding it until you
 	// answer". The WAIT is the point: the caller blocks before handing over to the real
 	// entrypoint, so whatever the agent does happens while the app is genuinely stopped.
-	VerbAppStarting InboundVerb = "service.starting"
+	VerbAppStarting InboundVerb = "app.starting"
 )
 
 // inboundRequest is one call.
@@ -218,7 +218,7 @@ func startingMember(ctx context.Context, x Executor, app string, containerStart 
 // restore, the recorder's restore), the inbound listener (a container's start) and the start
 // evaluator's ticker all settle, prune or swap the same members, and the serve loop runs verbs
 // beside each other and beside those two goroutines. Taken at the three funnels -- recordMember,
-// evaluatePending, the restore swap -- never inside them. The `--service-starting` ExecStartPre
+// evaluatePending, the restore swap -- never inside them. The `--app-starting` ExecStartPre
 // subprocess stays outside it: best-effort by design, it cannot share a lock with this process.
 var ringMu sync.Mutex
 
@@ -965,9 +965,9 @@ func TakeStartMember(ctx context.Context, x Executor, app string) (string, error
 	ensureToolsOnPath()
 	defer signalDoor(ctx, x)
 	if done, err := cacheAtStart(ctx, x, app); err != nil {
-		log.Printf("service-starting %s: the cache: %v", app, err)
+		log.Printf("app-starting %s: the cache: %v", app, err)
 	} else if done != "" {
-		log.Printf("service-starting %s: %s", app, done)
+		log.Printf("app-starting %s: %s", app, done)
 	}
 	return startingMember(ctx, x, app, true)
 }

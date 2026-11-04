@@ -113,14 +113,14 @@ const (
 )
 
 // PullPath is where the host records an app install's pull for the dashboard: the
-// manifest's Size and InstalledSize and when the pull started, written through `service.pulling`
+// manifest's Size and InstalledSize and when the pull started, written through `app.pulling`
 // before the first byte moves and removed once the image is present. The manifest itself lands on
 // the volume only AFTER the pull, so this is the one place a total exists while a bar is wanted.
 func PullPath(app string) string { return Dir + "/pull-" + app + ".json" }
 
 // Pull is that file's content.
 type Pull struct {
-	App           string    `json:"service"`
+	App           string    `json:"app"`
 	Size          int64     `json:"size"`
 	InstalledSize int64     `json:"installedSize"`
 	Started       time.Time `json:"started"`

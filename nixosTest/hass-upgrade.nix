@@ -21,7 +21,7 @@
 # drbd-reactor live throughout, which is also the product's shape: an app install
 # never pauses the promoter; the maintenance bracket belongs to the
 # OS-upgrade path (covered by the maintenance-contract test), and the health-gated
-# auto-rollback is host-side orchestration (agent/host/service.go, unit-tested there).
+# auto-rollback is host-side orchestration (agent/host/app.go, unit-tested there).
 # What is NEW and untested until now — a real recorder schema migration surviving the
 # upgrade with its data intact — is exactly what this proves. The forced-failure →
 # rollback half is hass-upgrade-rollback.
@@ -132,7 +132,7 @@ pkgs.testers.runNixOSTest {
     # install path started stopping the app first, this no longer mirrors the product — it is the
     # EVIDENCE the product's comments cite: btrfs snapshots atomically, HA replays its WAL on
     # open, so a crash-consistent point is still recoverable FOR HOME ASSISTANT. That is a
-    # measured fact about one app, never a catalog-wide guarantee (services-pair.nix measured
+    # measured fact about one app, never a catalog-wide guarantee (apps-pair.nix measured
     # mosquitto failing it), and it is what makes HA's own post-crash members trustworthy. Do not
     # "fix" this to stop first: doing so deletes the measurement.
     node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}") # the {code,data} rollback point

@@ -358,7 +358,7 @@ let
         path = [
           pkgs.drbd # drbdadm/drbdsetup, for the drbd.* verbs
           pkgs.drbd-reactor # drbd-reactorctl, for reactor.evict — the planned handover
-          pkgs.systemd # systemctl, for service.* / reactor.* / os.*
+          pkgs.systemd # systemctl, for app.* / reactor.* / os.*
           pkgs.coreutils # readlink, for os.system
           pkgs.btrfs-progs # btrfs for data.member/restore, mkfs.btrfs for the one-time format
           # compsize, for storage.usage: an app's current data on disk, each extent once -- what du
@@ -378,7 +378,7 @@ let
           '')
           # The MODULE's podman, not `pkgs.podman` — naming the latter ships a second,
           # differently-wrapped copy of the runtime (configuration.nix explains).
-          config.virtualisation.podman.package # podman, for the renderer + service.* verbs
+          config.virtualisation.podman.package # podman, for the renderer + app.* verbs
         ];
         # Restart=always (not on-failure): the guest agent serves ONE host connection
         # then Serve() returns nil on the clean EOF when the host disconnects (wire.go)

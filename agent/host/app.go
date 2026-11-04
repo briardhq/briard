@@ -251,21 +251,21 @@ func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Dir
 		return failed("no app named")
 	}
 	// FIRST, before the fetch, so a refusal costs nothing and leaves the node untouched. A guest
-	// that does not advertise service.installed keeps the apps' identities in ONE file on the
+	// that does not advertise app.installed keeps the apps' identities in ONE file on the
 	// volume, so it cannot say which app a manifest belongs to — installing here would record
 	// this app's identity over whatever that node already runs, and a survivor would then
 	// promote against the wrong manifest. Refusing loudly is the answer rather than a compat path
 	// -- the alpha reinstalls; the guest OS rolls and the verb appears.
 	if !g.SupportsAppInstalled() {
-		return failed("this VM is too old to name an app's identity on the volume (no service.installed); update the VM before installing")
+		return failed("this VM is too old to name an app's identity on the volume (no app.installed); update the VM before installing")
 	}
-	// Same instrument, same reason, for converge. A guest without service.converge
-	// has no briard-services unit either, so nothing there ever reads the volume — this would
+	// Same instrument, same reason, for converge. A guest without app.converge
+	// has no briard-apps unit either, so nothing there ever reads the volume — this would
 	// write the manifest, report success, and leave the node serving exactly what it served
 	// before. No compat path -- the alpha reinstalls; the guest OS rolls and the verb
 	// appears.
 	if !g.SupportsAppConverge() {
-		return failed("this VM is too old to converge itself to the volume (no service.converge); update the VM before installing")
+		return failed("this VM is too old to converge itself to the volume (no app.converge); update the VM before installing")
 	}
 	// Same instrument again, for the ring. It is the capability rather than a protocol
 	// floor DELIBERATELY: a floor makes every host refuse every not-yet-rolled guest fleet-wide
@@ -335,7 +335,7 @@ func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Dir
 	// against whichever came first and a crash-loop in the other go unseen.
 	//
 	// It is gone because all three of those are now plural: `NodeStatus.Services` carries one
-	// manifest identity per app, the volume's `.services/<name>.json` says which app a
+	// manifest identity per app, the volume's `.apps/<name>.json` says which app a
 	// manifest belongs to, and `telemetry.NodeResources.Payloads` measures each app's own
 	// footprint and restart count. `Healthy` and `System` deliberately stayed node-scoped — a
 	// closure is a property of the node, and the front door is what "is this node serving" means.
@@ -429,7 +429,7 @@ func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Dir
 	// Its data is what a broken upgrade can poison, and the read-only snapshot on the replicated
 	// volume is what a failed gate restores.
 	//
-	// IT USED TO BE TAKEN LIVE, and `services-pair.nix` measured what that costs: mosquitto holds
+	// IT USED TO BE TAKEN LIVE, and `apps-pair.nix` measured what that costs: mosquitto holds
 	// retained state in memory and writes it on a clean stop, so a snapshot of a running broker
 	// did not contain the message it had already accepted — the upgrade carried that message
 	// across and the rollback then restored a broker with nothing in it.
@@ -522,7 +522,7 @@ func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Dir
 	// app no longer stops the promoter for every OTHER app on the node, and a failure
 	// here can no longer demote it.
 	//
-	// A VERB, not a `systemctl restart briard-services`: briard-services is itself a chain
+	// A VERB, not a `systemctl restart briard-apps`: briard-apps is itself a chain
 	// member, so stopping it would deactivate drbd-reactor's target, unmount the volume and
 	// demote the node — the exact accident the bracket existed to prevent, re-created by the
 	// obvious way of triggering a re-converge. Same code, same unit, no unit lifecycle touched.
@@ -690,7 +690,7 @@ func (cfg *Config) adoptInstalledApps(d api.Directive, o api.DirectiveOutcome, l
 // rather than reverting to whatever the environment describes.
 //
 // NO CHAIN COMES BACK, because an app is not a chain member: the promoter chain is the same
-// three units everywhere and `briard-services` starts the apps from the volume once the mount
+// three units everywhere and `briard-apps` starts the apps from the volume once the mount
 // exists. It used to return one, assembled from the apps' units, and nothing had
 // read it since that landed.
 //
@@ -801,7 +801,7 @@ type volumeReader interface {
 // back empty. The cache becomes a projection of the volume rather than a record of what this host
 // did -- which is what converge already made true of the units themselves.
 //
-// Every failure is soft. A guest too old to list (no service.list) leaves the previous view
+// Every failure is soft. A guest too old to list (no app.list) leaves the previous view
 // standing, as does a read error or a manifest that will not parse: this is a REPORT, and a
 // wrong-but-quiet report is worse than a stale one only if it is silently wrong, which the log
 // prevents. The node keeps serving either way -- what runs is the guest's business.
@@ -1318,7 +1318,7 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 		what = "Restored the backup from " + back
 	}
 	// NOTHING INSTALLED -- a new machine putting a household's app back from its backup -- is given
-	// its place first: service.provision makes the data subvolume (reusing one an earlier failed
+	// its place first: app.provision makes the data subvolume (reusing one an earlier failed
 	// install left, never re-creating it) and records the night's manifest. The undo point below is
 	// then a point like any other -- of an empty app, or of what that install left -- so even this
 	// restore can be undone, and the swap below has a live copy to replace. Said POSITIVELY, from

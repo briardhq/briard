@@ -14,7 +14,7 @@
 //	briard-guest-agent run --inbound-listen  the inbound channel alone; `run --guest`
 //	                                    does this itself, so only an agent-less rig invokes it
 //	briard-guest-agent --converge       render, warm and start every app the volume names
-//	briard-guest-agent --converge-stop  stop those units (briard-services' ExecStop)
+//	briard-guest-agent --converge-stop  stop those units (briard-apps' ExecStop)
 //	briard-guest-agent --node-storage   build this node's tiers and attach the DRBD resource,
 //	                                    from the spec the host wrote (briard-node-storage)
 //	briard-guest-agent --primary-storage      format on first use + mount the replicated volume
@@ -114,7 +114,7 @@ func runDaemon(args []string) {
 }
 
 // runInternal is the flag-shaped surface a unit file invokes: converge-at-promotion, in the
-// guest. briard-services.service runs these as a promoter CHAIN MEMBER between the
+// guest. briard-apps.service runs these as a promoter CHAIN MEMBER between the
 // data mount and the VIP, so the exit code is load-bearing: a non-zero ExecStart fails the whole
 // promotion, the node never claims the VIP, and a primary with no address is already reported
 // unhealthy. Converge failing is a node that cannot serve, and it must say so rather than
@@ -122,24 +122,24 @@ func runDaemon(args []string) {
 // reaches here; Converge logs it and returns nil.)
 func runInternal(args []string) {
 	fs := flag.NewFlagSet("briard-guest-agent", flag.ExitOnError)
-	converge := fs.Bool("converge", false, "render, warm and start every app the replicated volume names, then exit -- briard-services.service's ExecStart")
-	convergeStop := fs.Bool("converge-stop", false, "stop the app units this node converged to -- briard-services.service's ExecStop")
+	converge := fs.Bool("converge", false, "render, warm and start every app the replicated volume names, then exit -- briard-apps.service's ExecStart")
+	convergeStop := fs.Bool("converge-stop", false, "stop the app units this node converged to -- briard-apps.service's ExecStop")
 	nodeStorage := fs.Bool("node-storage", false, "build every tier /run/briard/node-storage.json names and attach the resource -- briard-node-storage.service's ExecStart")
 	primaryStorage := fs.Bool("primary-storage", false, "format on first use, mount the replicated volume -- briard-primary-storage.service's ExecStart")
 	primaryStorageStop := fs.Bool("primary-storage-stop", false, "unmount the replicated volume -- briard-primary-storage.service's ExecStop")
 	writeUnits := fs.Bool("write-units", false, "render the units this agent owns into /run/systemd/system and reload -- what `run --guest` does at start, for a harness with no host")
 	testLaunch := fs.Bool("test-launch", false, "the push protocol's cheap self-test: check what a staged copy can check without the port, then exit 0")
-	appStarting := fs.String("service-starting", "", "take this app's ring member; the rendered container unit's ExecStartPre")
+	appStarting := fs.String("app-starting", "", "take this app's ring member; the rendered container unit's ExecStartPre")
 	clock := fs.String("clock", "", "take this app's quiesced clock sample -- an internal flag a harness invokes; the product drives this verb from the host")
 	dbCheck := fs.Bool("dbcheck", false, "run Home Assistant's recorder check in line and print its report as JSON -- an internal flag a harness invokes; the product drives this verb from the host")
 	dbRestore := fs.String("dbrestore", "", "restore Home Assistant's recorder database from this ring member -- an internal flag a harness invokes; the product drives this verb from the host")
 	backup := fs.String("backup", "", "run the backup in line into the REST repository at this URL, under the key the volume holds, and print its report as JSON -- an internal flag a harness invokes; the product drives this verb from the host")
 	backupRestore := fs.String("backup-restore", "", "put one night of the backup at this REST URL into the ring as a member (-service, -snapshot) and print the member's path -- an internal flag a harness invokes; the product drives this verb from the host")
-	restoreApp := fs.String("service", "", "with -backup-restore: the app")
+	restoreApp := fs.String("app", "", "with -backup-restore: the app")
 	restoreSnapshot := fs.String("snapshot", "latest", "with -backup-restore: the night, a snapshot id or latest")
 	backupAdopt := fs.String("backup-adopt", "", "add the volume's key to the repository at this REST URL, opened once with -key -- an internal flag a harness invokes; the product drives this verb from the host")
 	adoptKey := fs.String("key", "", "with -backup-adopt: the key that opens the repository")
-	appStopped := fs.String("service-stopped", "", "record whether this app's data was flushed by a clean stop; the rendered container unit's ExecStopPost")
+	appStopped := fs.String("app-stopped", "", "record whether this app's data was flushed by a clean stop; the rendered container unit's ExecStopPost")
 	_ = fs.Parse(args)
 
 	if *testLaunch {
@@ -201,10 +201,10 @@ func runInternal(args []string) {
 		// is 0 either way; the journal carries the reason.
 		detail, err := guestagent.TakeStartMember(ctx, guestfirmware.NewOSExecutor(), *appStarting)
 		if err != nil {
-			log.Printf("service-starting %s: %v (starting anyway)", *appStarting, err)
+			log.Printf("app-starting %s: %v (starting anyway)", *appStarting, err)
 			return
 		}
-		log.Printf("service-starting %s: %s", *appStarting, detail)
+		log.Printf("app-starting %s: %s", *appStarting, detail)
 		return
 	}
 
@@ -279,7 +279,7 @@ func runInternal(args []string) {
 		// member its claim to be quiesced, which is the safe direction. The rendered line carries
 		// `-` as well.
 		if err := guestagent.RecordAppStop(ctx, guestfirmware.NewOSExecutor(), *appStopped, os.Getenv("SERVICE_RESULT")); err != nil {
-			log.Printf("service-stopped %s: %v (the next member will read as crash-consistent)", *appStopped, err)
+			log.Printf("app-stopped %s: %v (the next member will read as crash-consistent)", *appStopped, err)
 		}
 		return
 	}
@@ -297,7 +297,7 @@ func runInternal(args []string) {
 
 	if *converge || *convergeStop {
 		// Converge's skip list is DROPPED here on purpose: this is drbd-reactor's call, and a
-		// app it could not prepare must not fail the unit -- briard-services is a chain
+		// app it could not prepare must not fail the unit -- briard-apps is a chain
 		// member, so exiting non-zero would take the promotion down over one app's
 		// packaging. Converge has already logged which one and declined to start it. The install
 		// path reads the list through the verb, where failing IS the right answer.

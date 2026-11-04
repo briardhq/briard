@@ -12,7 +12,7 @@ import (
 // cache the AGENT writes, so the two must name the same directory. A test may import agent/host
 // where the shipped code may not.
 func TestAppCacheDirMatchesTheAgents(t *testing.T) {
-	os.Unsetenv("SERVICE_CACHE")
+	os.Unsetenv("APP_CACHE")
 	t.Setenv("BRIARD_CONFIG", filepath.Join(t.TempDir(), "no-such-config.env"))
 	if got := host.ConfigFromEnv().AppCache; got != appCacheDir {
 		t.Errorf("the CLI reads %q while the agent writes %q", appCacheDir, got)

@@ -13,7 +13,7 @@
 #      can reach would pass (1) and (2) perfectly;
 #   4. a retained message SURVIVES a restart of the container, and lands in the file on the
 #      REPLICATED subvolume -- which is what makes the broker an app with data at all, and
-#      what the failover half of the services-pair rig then carries across a node;
+#      what the failover half of the apps-pair rig then carries across a node;
 #   5. the broker is FINDABLE -- it answers a `_mqtt._tcp` browse from that same off-box client,
 #      under the flock's name and on the port MQTT actually listens on, and the browse result is
 #      then connected to. An image that advertises nothing is invisible to every appliance in the
@@ -105,7 +105,7 @@ pkgs.testers.runNixOSTest {
     import json as _mj
     primary.succeed("test -f /run/briard/mosquitto/mosquitto.conf")
     table = _mj.loads(primary.succeed("cat /run/briard/routes.json"))
-    broker = next(s for s in table["services"] if s["name"] == "mosquitto")
+    broker = next(s for s in table["apps"] if s["name"] == "mosquitto")
     pod = broker["address"]
     assert pod.startswith("10.12."), f"the broker is not on the pod pool: {broker}"
     mgmt = f"http://{pod}:9883/api/v1/listeners"
@@ -184,7 +184,7 @@ pkgs.testers.runNixOSTest {
     # table (routed_host) and the announcement the product itself wrote beside it. So this asserts
     # what the node decided, and a wrong decision fails rather than being restated.
     host = routed_host(primary, "mosquitto")
-    ann = next(s for s in _mj.loads(primary.succeed("cat /run/briard/routes.json"))["services"]
+    ann = next(s for s in _mj.loads(primary.succeed("cat /run/briard/routes.json"))["apps"]
                if s["name"] == "mosquitto")["announce"][0]
     assert ann["port"] == 1883, f"the node announces port {ann['port']}, not MQTT's"
 

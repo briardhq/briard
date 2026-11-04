@@ -18,7 +18,7 @@ let
   h = import ./lib.nix { inherit pkgs guestModule; };
   # 16 MB declared -> MemoryMax 64 MB, MemorySwapMax 16 MB: small enough that the leak meets the
   # app's limit long before it could meet the guest's.
-  fixture = import ./fixture-service.nix { inherit pkgs; minMemoryMB = 16; };
+  fixture = import ./fixture-app.nix { inherit pkgs; minMemoryMB = 16; };
   node = h.mkNode {
     inherit fixture;
     replicated = false;
@@ -27,7 +27,7 @@ let
   unit = "briard-dummy-app.service";
 in
 pkgs.testers.runNixOSTest {
-  name = "service-memory-limit";
+  name = "app-memory-limit";
   nodes.node1 = {
     imports = [ node ];
     # THE PRODUCT'S VALUE, which the test framework overrides. nixpkgs' test instrumentation sets

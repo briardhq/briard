@@ -9,7 +9,7 @@
 #
 # WHY NO REGISTRY, which is the part that was assumed impossible and turned out not to be. The
 # manifest schema accepts only digest-pinned refs (a tag is mutable, so it is UNSAYABLE here), and
-# service-install.nix gets its digest by pushing to a real registry inside the test and inspecting
+# app-install.nix gets its digest by pushing to a real registry inside the test and inspecting
 # it — which read as "a registry node per test". Measured on 2026-08-27 (podman 5.8.2, skopeo
 # 1.22.2) instead of assumed:
 #
@@ -22,7 +22,7 @@
 # in shared/manifest already described this shape — "from upstream, from our mirror, or from a
 # tarball without changing what this app means".
 #
-# service-install.nix KEEPS its registry, deliberately: proving a real digest-pinned TLS pull is
+# app-install.nix KEEPS its registry, deliberately: proving a real digest-pinned TLS pull is
 # that test's whole subject. This is for every other test, whose subject is something else and
 # which only needs an app to exist.
 {
@@ -102,7 +102,7 @@ let
       name = "briard-${name}";
       inherit tag;
       config = {
-        Cmd = [ "${pkgs.dummy-service}/bin/dummy-service" ];
+        Cmd = [ "${pkgs.dummy-app}/bin/dummy-app" ];
         Labels = labels;
       };
     };
@@ -122,7 +122,7 @@ let
   };
   # An explicit permissive policy rather than `--insecure-policy`: the flag's NAME reads like a TLS
   # bypass, and this call has no TLS in it at all — it inspects a local file. Spelling it out keeps
-  # the security-shaped flag out of the tree, the same call service-install.nix made for skopeo.
+  # the security-shaped flag out of the tree, the same call app-install.nix made for skopeo.
   policy = pkgs.writeText "policy.json" (builtins.toJSON {
     default = [ { type = "insecureAcceptAnything"; } ];
   });
@@ -249,7 +249,7 @@ pkgs.runCommand "briard-fixture-${name}"
     # serviceName is the manifest slug a caller passes to `service install`; `name` is the same
     # string, exposed under both spellings because callers read as one or the other. `variants`
     # carries each extra version's IMAGE, which a guest disk has to stage before the node can be
-    # rolled onto it (nothing pulls: `service.warm` starts an .image unit only when the image is
+    # rolled onto it (nothing pulls: `app.warm` starts an .image unit only when the image is
     # missing).
     passthru = {
       inherit

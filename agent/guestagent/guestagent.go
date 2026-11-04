@@ -146,7 +146,7 @@ const verbSetTimezone = "sys.timezone"
 // whole volume). os.system reads the code identity (the closure store path, node-
 // independent -- NOT a generation number); the image the host boots is the whole-VM code half.
 //
-// The five service.* verbs below were spelled `payload.*` until the build-time payload slot was
+// The five app.* verbs below were spelled `payload.*` until the build-time payload slot was
 // deleted and they were left naming a mechanism no node has. They act on whichever
 // unit the host names, which is always a runtime-installed app's.
 //
@@ -158,17 +158,17 @@ const verbSetTimezone = "sys.timezone"
 // is what makes a family rename affordable, and it is the reason the channel carries no version
 // number to bump (guestfirmware, VerbHello).
 const (
-	verbAppStart  = "service.start"  // systemctl start <unit>
-	verbAppStop   = "service.stop"   // systemctl stop <unit> (quiesce before snapshot)
-	verbAppActive = "service.active" // systemctl is-active <unit> -> bool
-	verbAppHealth = "service.health" // in-guest GET of the app's health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
+	verbAppStart  = "app.start"  // systemctl start <unit>
+	verbAppStop   = "app.stop"   // systemctl stop <unit> (quiesce before snapshot)
+	verbAppActive = "app.active" // systemctl is-active <unit> -> bool
+	verbAppHealth = "app.health" // in-guest GET of the app's health URL -> bool (the probe done from inside the guest, so it survives a substrate — e.g. macvtap — where the host can't reach the VIP)
 	// verbAppHealthOf is APP HEALTH asked BY APP NAME: the guest
 	// resolves the address from its own routing table and answers healthy, unhealthy or unknown
-	// (appHealth). A separate verb rather than a field on service.health, so an older guest
+	// (appHealth). A separate verb rather than a field on app.health, so an older guest
 	// refuses it loudly instead of silently probing an empty URL and reporting the app
 	// unhealthy -- which on the install gate would revert a perfectly good install. Named for
 	// its three-valued answer: the two-valued `service.healthof` it replaced is gone.
-	verbAppHealthOf = "service.health.state"
+	verbAppHealthOf = "app.health.state"
 	// verbDataMember takes one RING member: refuses a collision instead of replacing, and writes
 	// the sidecar beside it. A NEW NAME rather than a field on the verb it replaced, and that
 	// is the whole lesson of the floor raise gate 3 refused: an old guest does not advertise this,
@@ -211,10 +211,10 @@ const (
 // Runtime app install. Two verbs, not one, because the halves live in DIFFERENT
 // DURABILITY DOMAINS and folding them together would hide that:
 //
-//   - service.render writes quadlet source to /run (node-local, tmpfs) and reloads systemd so the
+//   - app.render writes quadlet source to /run (node-local, tmpfs) and reloads systemd so the
 //     generated units exist. EVERY node runs this, secondaries included — a survivor can only
 //     start the pod because it was rendered there too.
-//   - service.provision creates the app subvolume + its per-container subdirectories and
+//   - app.provision creates the app subvolume + its per-container subdirectories and
 //     records the manifest, all on the REPLICATED VOLUME, which only the Primary has mounted. A
 //     secondary cannot run this at all.
 //
@@ -222,22 +222,22 @@ const (
 // (agent/quadlet), decides which node gets which verb, and owns the ordering. The guest writes
 // bytes and makes directories.
 const (
-	verbAppRender    = "service.render"    // write quadlet units to /run + daemon-reload (every node)
-	verbAppProvision = "service.provision" // create the app subvolume + record the manifest (Primary only)
-	// service.installed READS ONE NAMED APP's manifest off the volume, or "". It REPLACES
+	verbAppRender    = "app.render"    // write quadlet units to /run + daemon-reload (every node)
+	verbAppProvision = "app.provision" // create the app subvolume + record the manifest (Primary only)
+	// app.installed READS ONE NAMED APP's manifest off the volume, or "". It REPLACES
 	// the unnamed service.manifest rather than widening it, because a verb whose meaning changes
 	// under an unchanged name is the one thing nothing on this channel can police: the guest
 	// advertises names, and a name that still resolves reports success from a guest doing the old
 	// thing. So the rule is that meaning moves with the name. A NEW verb is refused by exactly the
-	// one path that needs it (Supports), the instrument service.warm set the precedent for
+	// one path that needs it (Supports), the instrument app.warm set the precedent for
 	// (no api.go change) -- and the same rule covers a new FIELD whose absence would
 	// be silent, which is why data.member is its own verb rather than a flag on its predecessor.
-	verbAppInstalled = "service.installed" // read one named app's manifest from the volume, or ""
-	// service.pulling records (or clears) an app install's pull for the dashboard:
+	verbAppInstalled = "app.installed" // read one named app's manifest from the volume, or ""
+	// app.pulling records (or clears) an app install's pull for the dashboard:
 	// the manifest's sizes and the start time, on the dashboard's tmpfs -- written BEFORE the
 	// warm, because the manifest reaches the volume only after it, and a bar needs its total
 	// while the bytes move. The guest keeps a number; the host decided to pull.
-	verbAppPulling = "service.pulling"
+	verbAppPulling = "app.pulling"
 	// storage.free reports the image store's filesystem (free, total bytes): what the host's
 	// free-space gate reads before a pull starts. The guest measures; the host refuses.
 	verbStorageFree = "storage.free"
@@ -249,18 +249,18 @@ const (
 	// to (a thick file extended, then QEMU's block_resize): it waits for the kernel to see the new
 	// size, then resize2fs, online. The host decided and paid; the guest only fills the space.
 	verbStorageGrow = "storage.grow"
-	// service.list NAMES the apps the volume carries. It is what makes a converged node able
+	// app.list NAMES the apps the volume carries. It is what makes a converged node able
 	// to say what it runs: converge-at-promotion renders from the volume, so a survivor that never
 	// installed anything runs apps the HOST was never told about -- and the host reports from
 	// its node-local cache, which only an install on a Primary writes. Measured on a fleet run
 	// 2026-08-28: the survivor served the upgraded fixture at the VIP (its tick counter moved)
 	// while reporting no apps at all, so the cloud saw a node running nothing and could not
 	// have confirmed any rollout on it. Names only, because the manifest for each is what
-	// service.installed already returns; a verb that returned both would duplicate that one.
-	verbAppList = "service.list" // list the apps recorded on the volume
-	verbAppWarm = "service.warm" // ensure an image is present, starting its .image unit ONLY if it is missing
+	// app.installed already returns; a verb that returned both would duplicate that one.
+	verbAppList = "app.list" // list the apps recorded on the volume
+	verbAppWarm = "app.warm" // ensure an image is present, starting its .image unit ONLY if it is missing
 	// verbImageEnsure is the same question asked WITHOUT a unit: is this ref resident, and if not,
-	// fetch it. service.warm starts a rendered `.image` unit, which only exists for a
+	// fetch it. app.warm starts a rendered `.image` unit, which only exists for a
 	// manifest the node has already rendered -- and a RESTORE has to ask about a manifest it has
 	// not rendered and may never render, because the answer decides whether it proceeds at all.
 	//
@@ -309,21 +309,21 @@ const (
 	// data.backup.list answers every backup the repository holds, newest first, with the apps in
 	// each (backup.go) -- the Backup page's restore. A read, with no lock on the repository.
 	verbDataBackupList = "data.backup.list"
-	// service.converge re-runs converge-at-promotion IN PLACE, on a node that is already Primary
+	// app.converge re-runs converge-at-promotion IN PLACE, on a node that is already Primary
 	// -- render every manifest on the volume, warm, start (converge.go). It is what an
 	// install calls once it has written the new manifest, and it exists as a VERB rather than a
-	// `systemctl restart briard-services` because briard-services is a promoter CHAIN MEMBER:
+	// `systemctl restart briard-apps` because briard-apps is a promoter CHAIN MEMBER:
 	// stopping one deactivates drbd-reactor's target, which unmounts the volume and demotes the
 	// node. Same code, same unit, no unit lifecycle touched.
-	verbAppConverge = "service.converge"
-	// ── APP-SPECIFIC VERBS: `service.<catalog name>.<action>` ────────────────────────────────
+	verbAppConverge = "app.converge"
+	// ── APP-SPECIFIC VERBS: `app.<catalog name>.<action>` ────────────────────────────────
 	//
 	// The naming rule, and it is a property rather than a style (owner, 2026-08-30). Every other
-	// verb here works on ANY app: service.health probes whatever URL it is handed,
-	// service.converge renders whatever the volume says. These two do not — each knows one
+	// verb here works on ANY app: app.health probes whatever URL it is handed,
+	// app.converge renders whatever the volume says. These two do not — each knows one
 	// app's API, returns that app's own shape, and refuses every other name. A verb set is
 	// a CAPABILITY LIST, so it has to say what it grants: `service.readiness` promised a generic
-	// power the guest never had, while `service.home-assistant.readiness` grants exactly the one
+	// power the guest never had, while `app.home-assistant.readiness` grants exactly the one
 	// it does. It also puts the app in the name rather than in a request field, so there is no
 	// name to steer from the wire and no unknown-name branch to write.
 	//
@@ -338,46 +338,46 @@ const (
 	// than its agent. A guest that does not know one of these is a mismatched pair — a fault worth
 	// seeing as one, not a configuration to tolerate.
 
-	// service.home-assistant.readiness samples Home Assistant's per-config-entry setup states.
+	// app.home-assistant.readiness samples Home Assistant's per-config-entry setup states.
 	// It is the differential S1 gate's input, one layer above the liveness floor
-	// `service.health` answers: the floor says the app replies, this says which of the things
+	// `app.health` answers: the floor says the app replies, this says which of the things
 	// it was doing it is still doing.
-	verbHassReadiness = "service.home-assistant.readiness"
+	verbHassReadiness = "app.home-assistant.readiness"
 
-	// service.mosquitto.probe stores a token in the broker's own retained state and reports what
+	// app.mosquitto.probe stores a token in the broker's own retained state and reports what
 	// is stored — the S1 signal for an app that publishes no readiness of its own.
 	//
 	// A SEPARATE VERB rather than a mosquitto arm of the one above, because it does a different
 	// KIND of thing: readiness samples, this one writes. Folding a write into a verb whose name
 	// promises a read is the other way a capability list stops describing what the host can make
 	// the guest do.
-	verbMosquittoProbe = "service.mosquitto.probe"
+	verbMosquittoProbe = "app.mosquitto.probe"
 
-	// service.home-assistant.nudge tells a RUNNING Home Assistant that something outside it
+	// app.home-assistant.nudge tells a RUNNING Home Assistant that something outside it
 	// changed and it should reconsider -- the one signal that travels INTO Home
 	// Assistant, where the two verbs above pull facts out of it.
 	//
 	// It grants exactly one thing and it is worth saying what: the power to put briard's own
 	// no-payload event on Home Assistant's bus. It cannot name an event, carry data, or reach any
 	// other app -- all three would have to be on the wire for that, and none of them is.
-	verbHassNudge = "service.home-assistant.nudge"
+	verbHassNudge = "app.home-assistant.nudge"
 
 	// The nightly recorder check (agent/hass/dbcheck.go), three verbs because it is a read and a
 	// write that run differently (dbcheck.go). The host schedules them and tells the household;
 	// the work is here because only the guest mounts the volume. The manifest, and so the image
 	// and the data path, come off the volume.
 	//
-	// service.home-assistant.dbcheck STARTS the check in the background and answers whether it
+	// app.home-assistant.dbcheck STARTS the check in the background and answers whether it
 	// did: `quick_check` on the newest quiesced member, and on damage a search for a held copy
 	// that checks clean. Read-only on the data. No request body.
-	verbHassDBCheck = "service.home-assistant.dbcheck"
-	// service.home-assistant.dbcheck.result answers whether a check is running, and hands over a
+	verbHassDBCheck = "app.home-assistant.dbcheck"
+	// app.home-assistant.dbcheck.result answers whether a check is running, and hands over a
 	// finished one's report once.
-	verbHassDBCheckResult = "service.home-assistant.dbcheck.result"
-	// service.home-assistant.dbrestore puts the recorder database back from the member a report
+	verbHassDBCheckResult = "app.home-assistant.dbcheck.result"
+	// app.home-assistant.dbrestore puts the recorder database back from the member a report
 	// named: the gate again, stop, undo point, copy, start -- in line, like every operation that
 	// stops an app.
-	verbHassDBRestore = "service.home-assistant.dbrestore"
+	verbHassDBRestore = "app.home-assistant.dbrestore"
 	// dashboard.handoff writes the one-time code + OS account the host minted for the household
 	// dashboard, 0600 on tmpfs (shared/dashboard) -- the whole of its bootstrap auth.
 	verbDashboardHandoff = "dashboard.handoff"
@@ -414,7 +414,7 @@ const (
 // the rollback target. That is priorApp's own documented fresh-install case, its worst outcome
 // is a rollback to empty rather than to a broken new app, and the first install after the
 // upgrade writes the new location — so this carries no migration step (the alpha is reinstall-only).
-const manifestDir = "/var/lib/briard/.services"
+const manifestDir = "/var/lib/briard/.apps"
 
 // quadletDir is where podman's generator reads unit source from. Mirrors agent/quadlet.Dir; the
 // guest is told the filenames but not the directory, so this path is the guest's own.
@@ -432,7 +432,7 @@ const (
 // so it doesn't treat a deliberate app stop as a failure (demote/re-promote). Pause
 // stops the drbd-reactor daemon (stop-services-on-exit defaults false -> DRBD Primary +
 // apps stay up); Resume restarts it (re-adopts, no restart/demote). The app is
-// then cycled surgically (service.stop is ignore-dependencies, so the VIP/data/target
+// then cycled surgically (app.stop is ignore-dependencies, so the VIP/data/target
 // stay up), so no target re-raise is needed.
 const (
 	verbReactorPause  = "reactor.pause"  // systemctl stop drbd-reactor.service
@@ -570,7 +570,7 @@ type unitRequest struct {
 }
 
 // healthRequest carries the app health URL the guest GETs from inside itself
-// (service.health). The host owns the URL (its HealthURL config); the guest just probes it.
+// (app.health). The host owns the URL (its HealthURL config); the guest just probes it.
 type healthRequest struct {
 	URL string `json:"url"`
 }
@@ -578,7 +578,7 @@ type healthRequest struct {
 // appRequest names an app by its catalog slug — the form every verb takes once the guest
 // resolves what it needs from its own state rather than from the caller's (service.healthof).
 type appRequest struct {
-	App string `json:"service"`
+	App string `json:"app"`
 }
 
 // snapshotRequest is a btrfs subvolume op: DataDir is the live rw subvolume, Path is
@@ -599,7 +599,7 @@ type snapshotRequest struct {
 	Sweep []string `json:"sweep,omitempty"`
 	// App is the catalog name, for the one verb that must reach INTO the app before it
 	// snapshots (data.member.quiesced): the manifest on the volume is what says how.
-	App string `json:"service,omitempty"`
+	App string `json:"app,omitempty"`
 }
 
 // appRenderRequest carries the quadlet source the host rendered: filename -> content, to be
@@ -624,7 +624,7 @@ type appProvisionRequest struct {
 	Manifest string   `json:"manifest"`
 }
 
-// appInstalledRequest names the app whose recorded manifest to read (service.installed).
+// appInstalledRequest names the app whose recorded manifest to read (app.installed).
 // The NAME is the whole request, and it is what makes the volume able to say which app it
 // means: with an unnamed read, installing a second app saw the first as its own prior.
 type appInstalledRequest struct {
@@ -643,7 +643,7 @@ func manifestPath(name string) string { return manifestDir + "/" + name + ".json
 // TestSidecarPathMatchesTheRenderer is what keeps them in step.
 func sidecarPath(member string) string { return member + ".json" }
 
-// appWarmRequest names one image to ensure is present (service.warm), and the .image unit
+// appWarmRequest names one image to ensure is present (app.warm), and the .image unit
 // that would obtain it. Both halves are needed because the CHECK is on the ref and the ACTION is
 // on the unit -- and the host, which owns the manifest, is the only side that knows the pairing.
 type appWarmRequest struct {
@@ -652,7 +652,7 @@ type appWarmRequest struct {
 }
 
 // hassReadinessRequest carries the port Home Assistant serves on
-// (service.home-assistant.readiness). The PORT comes from the host because the host holds the
+// (app.home-assistant.readiness). The PORT comes from the host because the host holds the
 // manifest, which is where an app's port is declared once -- the same field the liveness floor
 // builds its URL from. The guest supplies the rest, because the rest is knowledge about that one
 // app.
@@ -663,7 +663,7 @@ type hassReadinessRequest struct {
 	Port int `json:"port"`
 }
 
-// mosquittoProbeRequest carries the token to store, if any (service.mosquitto.probe). An empty
+// mosquittoProbeRequest carries the token to store, if any (app.mosquitto.probe). An empty
 // token makes it a pure read. No port either: the port a CLIENT of the broker uses is not the
 // manifest's, which names the endpoint the liveness floor probes -- so it is product knowledge,
 // and it stays with the rest of that app's knowledge rather than travelling on the wire.
@@ -843,7 +843,7 @@ type resourcesRequest struct {
 	// Apps pairs each app's name with the unit whose footprint IS that app's. The
 	// host owns the pairing because it owns the manifest; the guest measures what it is handed
 	// and names nothing itself (logic lives on the host by default).
-	Apps    []resourceApp `json:"services,omitempty"`
+	Apps    []resourceApp `json:"apps,omitempty"`
 	DataDir string        `json:"data_dir,omitempty"` // the DRBD data volume mount
 	// Soak adds the reads that only the soak's oracle consumes and that cost real I/O: the two
 	// du walks and the snapshot listing (and the quota tree, which only the oracle reads). A
@@ -1027,7 +1027,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if err := x.WriteFile(tlsCertPath, []byte(req.Cert)); err != nil {
 				return nil, err
 			}
-			// Flush so the cert replicates before a failover relies on it, the way service.provision does.
+			// Flush so the cert replicates before a failover relies on it, the way app.provision does.
 			_, err := x.Run(ctx, "sync", "-f", tlsCertPath)
 			return nil, err
 		case verbCertRead:
@@ -1343,7 +1343,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			return nil, hassDBRestore(ctx, x, run, req.Member)
 		case verbHassNudge:
 			// NO REQUEST BODY, and the PORT comes off the VOLUME rather than the wire -- the
-			// opposite choice from service.home-assistant.readiness, for the same reason the probe
+			// opposite choice from app.home-assistant.readiness, for the same reason the probe
 			// below reads its manifest: the app this verb talks to is NOT the one its caller
 			// is installing, so the host is not holding its manifest at the moment it calls. The
 			// volume's copy is the document the renderer named the container from, so the port
@@ -2275,7 +2275,7 @@ func safeUnitName(n string) error {
 // Primary. A survivor can start the pod only because the units were rendered there too.
 func renderApp(ctx context.Context, x Executor, run func(string, ...string) error, req appRenderRequest) error {
 	if len(req.Files) == 0 {
-		return fmt.Errorf("service.render: no files to write")
+		return fmt.Errorf("app.render: no files to write")
 	}
 	for _, n := range req.Stale {
 		if err := safeUnitName(n); err != nil {
@@ -2314,7 +2314,7 @@ func renderApp(ctx context.Context, x Executor, run func(string, ...string) erro
 // is reused rather than re-created (re-creating it would silently delete the user's state).
 func provisionApp(ctx context.Context, x Executor, run func(string, ...string) error, req appProvisionRequest) error {
 	if req.Name == "" || req.DataDir == "" || req.Manifest == "" {
-		return fmt.Errorf("service.provision: need a name, a data dir and a manifest")
+		return fmt.Errorf("app.provision: need a name, a data dir and a manifest")
 	}
 	if err := safeUnitName(req.Name); err != nil { // the name becomes a path element
 		return err
@@ -2332,12 +2332,12 @@ func provisionApp(ctx context.Context, x Executor, run func(string, ...string) e
 	// it. Without this, the first member after any of the three would read as crash-consistent —
 	// true of none of them, and loudest on the one path where a household is already anxious.
 	if err := RecordAppStop(ctx, x, req.Name, "success"); err != nil {
-		log.Printf("service.provision %s: could not record the volume as flushed (%v); its next member will read as crash-consistent", req.Name, err)
+		log.Printf("app.provision %s: could not record the volume as flushed (%v); its next member will read as crash-consistent", req.Name, err)
 	}
 	// Flush to the DRBD backing so the identity actually replicates BEFORE a failover relies on
 	// it — protocol C acks a device write only once the peer holds it. Without this, a crash
 	// inside the btrfs writeback window loses the manifest and a survivor promotes with no idea
-	// what it is meant to be running. Same reasoning as service.provision's sync.
+	// what it is meant to be running. Same reasoning as app.provision's sync.
 	_, err := x.Run(ctx, "sync", "-f", pin)
 	return err
 }
@@ -3225,7 +3225,7 @@ func (g *Client) MosquittoProbe(ctx context.Context, token string) (mosquitto.Sa
 }
 
 // AppConverge makes the guest match the volume, in place: every manifest under the replicated
-// `.services/` rendered, warmed and started (converge.go). PRIMARY ONLY in effect --
+// `.apps/` rendered, warmed and started (converge.go). PRIMARY ONLY in effect --
 // the volume is mounted nowhere else, and a Secondary converges when it promotes, which is the
 // whole design.
 //
@@ -3233,7 +3233,7 @@ func (g *Client) MosquittoProbe(ctx context.Context, token string) (mosquitto.Sa
 // names the install the caller is running now ("" for none): its STAGED manifest is rendered for
 // that app, and every other staged install is held back (staging.go).
 //
-// SupportsAppConverge gates it: an older guest has no briard-services unit to converge, so a
+// SupportsAppConverge gates it: an older guest has no briard-apps unit to converge, so a
 // host must refuse rather than call a verb that guest cannot honour.
 func (g *Client) AppConverge(ctx context.Context, live string) ([]string, error) {
 	var skipped []string
@@ -3257,10 +3257,10 @@ func (g *Client) SupportsAppConverge() bool { return g.Supports(verbAppConverge)
 // free-space gate measures. Rootful podman's default; the guest image sets no other.
 const storageRoot = "/var/lib/containers/storage"
 
-// appPullingRequest is service.pulling's argument: record a pull (its sizes), or with Done
+// appPullingRequest is app.pulling's argument: record a pull (its sizes), or with Done
 // clear the record.
 type appPullingRequest struct {
-	App           string `json:"service"`
+	App           string `json:"app"`
 	Size          int64  `json:"size,omitempty"`
 	InstalledSize int64  `json:"installedSize,omitempty"`
 	Done          bool   `json:"done,omitempty"`

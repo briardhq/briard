@@ -27,7 +27,7 @@ import (
 //
 // THE SHAPE, and the chicken-and-egg it has to solve. The promoter chain is what drbd-reactor
 // promotes WITH, but the volume is only readable AFTER promotion. So the chain is STATIC —
-// `briard-primary-storage -> briard-services -> briard-vip` on every data node — and `briard-services` is
+// `briard-primary-storage -> briard-apps -> briard-vip` on every data node — and `briard-apps` is
 // the unit that, once the mount exists, reads the manifests, renders, warms and starts them.
 // A constant chain is what made converge-at-promotion possible for the deleted payload slot;
 // generalising it is what makes it possible for N runtime-installed apps.
@@ -47,14 +47,14 @@ import (
 // Recording them beats re-deriving them at stop time: ExecStop runs while the volume is still
 // mounted TODAY (drbd-reactor unwinds the chain in reverse, so briard-primary-storage goes last), but a stop
 // that depends on reading the volume would fail exactly when the volume is what went wrong.
-const unitsFile = "/run/briard/services.units"
+const unitsFile = "/run/briard/apps.units"
 
 // startedFile records what converge last STARTED, one `<unit source> <sha256>` line per file.
 //
 // WHY NOT COMPARE THE FILES ON DISK, which is what this replaced and what looked obviously right:
 // the unit sources are in /run and converge writes them, so "differs from disk" reads like
 // "differs from what is running". It is not, because converge is not the only writer -- an
-// INSTALL renders the new units through service.render before asking the node to converge. By the
+// INSTALL renders the new units through app.render before asking the node to converge. By the
 // time converge looked, disk already held the new bytes, every file compared equal, nothing was
 // bounced, and `systemctl start` on an already-active unit is a no-op. The upgrade therefore left
 // the OLD container serving while the volume, the node-local cache and the report all named the
@@ -65,7 +65,7 @@ const unitsFile = "/run/briard/services.units"
 // So converge remembers what IT started, rather than inferring it from bytes anyone may have
 // written. /run is tmpfs, so a guest reboot loses the record and everything counts as changed --
 // which is correct: nothing is running either.
-const startedFile = "/run/briard/services.started"
+const startedFile = "/run/briard/apps.started"
 
 // unitPrefix namespaces everything the renderer writes into quadletDir. Converge owns the files
 // carrying it and no others: a file a user put there is theirs, and must survive.
@@ -97,7 +97,7 @@ const unitPrefix = "briard-"
 //
 // It RETURNS the apps it could not prepare, having started every other one. That list is not
 // bookkeeping: preparation is per-app work that can fail for one app and not the rest
-// (agent/hass), and the two callers need opposite things from it. `briard-services` is a promoter
+// (agent/hass), and the two callers need opposite things from it. `briard-apps` is a promoter
 // chain member, so it must promote anyway and let the household keep the apps that work; an
 // INSTALL must fail, because the app it was told to install is the one that did not start.
 // Same code, one report, each caller deciding for itself.
@@ -295,12 +295,12 @@ func stopUnrendered(ctx context.Context, x Executor, all quadlet.Rendered) {
 }
 
 // ConvergeStop stops the app units this node started, newest-dependency first. Run as
-// briard-services' ExecStop, i.e. by drbd-reactor unwinding the chain on demote — the app
+// briard-apps' ExecStop, i.e. by drbd-reactor unwinding the chain on demote — the app
 // units are not chain members, so nothing else would stop them and the containers would be left
 // running on a volume about to be unmounted.
 //
 // Best-effort by design: a unit that is already gone, or that will not stop, must not fail the
-// demote. A failed ExecStop would leave briard-services active, which blocks the unmount behind
+// demote. A failed ExecStop would leave briard-apps active, which blocks the unmount behind
 // it — strictly worse than a container that outlives its data.
 func ConvergeStop(ctx context.Context, x Executor) error {
 	raw, err := x.ReadFile(unitsFile)
@@ -603,7 +603,7 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 // running and failover never need network.
 //
 // MISSING => pull, and wait for it. Absence is not something to fail on: the image SHOULD already
-// be here (install warms it, prewarm puts it on every standby, and service-install.nix asserts
+// be here (install warms it, prewarm puts it on every standby, and app-install.nix asserts
 // exactly that), so reaching this line means the design was not upheld and a short wait beats
 // refusing to run. Under converge that is not even an unlikely case any more -- a node that was
 // down when the install ran, or joined afterwards, promotes into an app it was never told
@@ -622,7 +622,7 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 // identity survives either outcome. One rule, two answers: refuse when you cannot verify what you
 // would get, fetch when the digest pins it.
 //
-// Shared by the service.warm verb and by converge, which is the point: a converging survivor and
+// Shared by the app.warm verb and by converge, which is the point: a converging survivor and
 // an installing Primary must not disagree about what "the image is here" means.
 func warmImage(ctx context.Context, x Executor, unit, ref string) error {
 	if unit == "" || ref == "" {

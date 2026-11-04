@@ -11,12 +11,12 @@
 # household an update to the same app. An entry missing there builds with the fake hash and fails
 # printing the real one, which is what goes in the file.
 #
-# The fixture still names the archive's digest rather than the registry's (fixture-service.nix
+# The fixture still names the archive's digest rather than the registry's (fixture-app.nix
 # says why), so a test proves the entry's fields, not its exact bytes.
 {
   pkgs,
   entry,
-  # Further versions of the same app, as fixture-service.nix takes them.
+  # Further versions of the same app, as fixture-app.nix takes them.
   variants ? { },
 }:
 let
@@ -30,7 +30,7 @@ in
 assert lib.assertMsg (lib.length m.containers == 1)
   "catalog-fixture: ${m.name} has ${toString (lib.length m.containers)} containers; a fixture is one";
 assert lib.assertMsg (lib.length ref == 2) "catalog-fixture: ${c.image} is not pinned by digest";
-import ./fixture-service.nix {
+import ./fixture-app.nix {
   inherit pkgs variants;
   inherit (m) name version;
   container = c.name;

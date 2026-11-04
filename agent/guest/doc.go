@@ -4,6 +4,6 @@
 // readiness probe. The guest is the VM that carries the apps.
 //
 // It holds no snapshot or restore of its own: the app
-// {manifest + data} rollback belongs to agent/host/service.go, which drives the
+// {manifest + data} rollback belongs to agent/host/app.go, which drives the
 // guest agent's data.member/data.restore verbs and pins the manifest.
 package guest

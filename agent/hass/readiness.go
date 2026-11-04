@@ -13,7 +13,7 @@ import (
 
 // Entry is one Home Assistant config entry's identity and setup state — the triple the S1
 // readiness gate reasons over (agent/guest/entrygate). It is also the WIRE shape of the
-// service.home-assistant.readiness verb, which is why it carries HA's own JSON names: the guest decodes HA's
+// app.home-assistant.readiness verb, which is why it carries HA's own JSON names: the guest decodes HA's
 // answer straight into it and the host decodes the verb's answer into the same type, so there is
 // one spelling of this triple in the tree rather than one per hop.
 //
@@ -37,7 +37,7 @@ var client = &http.Client{Timeout: 10 * time.Second}
 //
 // IN THE GUEST BECAUSE BOTH HALVES ARE THERE: the token is on this node's tmpfs, and Home
 // Assistant listens on the guest's loopback. Asking the guest is also what the liveness floor
-// already does (`service.health`), and for the same reason — on the macvtap substrate the host
+// already does (`app.health`), and for the same reason — on the macvtap substrate the host
 // cannot reach the guest's addresses at all.
 //
 // THIS IS NOT A DECISION, and the split matters (logic lives on the host by default). What lives here

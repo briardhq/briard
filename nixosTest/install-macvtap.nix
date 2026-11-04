@@ -1638,7 +1638,7 @@ pkgs.testers.runNixOSTest {
         client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     except Exception:
         print("=== the re-dressed guest: pivot, doors and chain ===")
-        print(guest_console("briard-bin|briard-guest-agent|briard-reverse-proxy|briard-dashboard|briard-vip|briard-services|drbd-reactor|drbd-promote|promotion-hold|masked|Failed|failed"))
+        print(guest_console("briard-bin|briard-guest-agent|briard-reverse-proxy|briard-dashboard|briard-vip|briard-apps|drbd-reactor|drbd-promote|promotion-hold|masked|Failed|failed"))
         print(host.succeed("journalctl -u briard-agent | grep -E 'guest bundle|status node=|CONVERGED' | tail -20"))
         raise
     print("a restarted guest came up as firmware and was dressed again")
@@ -1734,7 +1734,7 @@ pkgs.testers.runNixOSTest {
         print("=== what the guest did around the refused trial ===")
         print(host.succeed(
             "tr -d '\\r' < /var/log/briard-guest-console.log 2>/dev/null | "
-            "grep -aE 'briard-promotion-hold|promotion hold|masked|Condition|drbd-promote|drbd-services|demote|briard-reverse-proxy|briard-dashboard|briard-vip|briard-services|trial|briard-bin' "
+            "grep -aE 'briard-promotion-hold|promotion hold|masked|Condition|drbd-promote|drbd-services|demote|briard-reverse-proxy|briard-dashboard|briard-vip|briard-apps|trial|briard-bin' "
             "| tail -120 || true"
         ))
         raise
@@ -1745,7 +1745,7 @@ pkgs.testers.runNixOSTest {
         client.wait_until_succeeds(f"curl -fsS http://{moved}/healthz", timeout=300)
     except Exception:
         print("=== the guest's pivot, units and chain after the refused trial ===")
-        print(guest_console("briard-bin|trial|briard-guest-agent|briard-reverse-proxy|briard-dashboard|briard-vip|briard-services|drbd-reactor|drbd-promote|Failed|failed|start-limit"))
+        print(guest_console("briard-bin|trial|briard-guest-agent|briard-reverse-proxy|briard-dashboard|briard-vip|briard-apps|drbd-reactor|drbd-promote|Failed|failed|start-limit"))
         print("=== the host's account ===")
         print(host.succeed("journalctl -u briard-agent | grep -E 'guest bundle|status node=|CONVERGED|promotion' | tail -25"))
         raise

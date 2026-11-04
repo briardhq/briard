@@ -44,7 +44,7 @@ const (
 // ⚠️ THERE IS NO PROTOCOL VERSION NUMBER, and adding one back is a decision, not a tidy-up.
 // Negotiation is by VERB NAME: the guest advertises the set it serves, and
 // Client.Supports refuses exactly the one path a guest cannot serve while every other path keeps
-// working -- the instrument service.warm set and data.member follows. A number can
+// working -- the instrument app.warm set and data.member follows. A number can
 // only ever refuse the WHOLE channel, and the channel is what fixes a node: applying a vm release
 // runs through the guest's os.* verbs (agent/host/guestupdate.go), so a host that refuses the
 // handshake can never reach the image that would satisfy it. That deadlock is reachable from the

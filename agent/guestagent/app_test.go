@@ -282,14 +282,14 @@ func TestAppProvisionRecordsPerApp(t *testing.T) {
 func TestAppVerbsRefuseAnEscapingName(t *testing.T) {
 	g := dial(t, &fakeExec{})
 	if err := g.AppProvision(context.Background(), "../../etc/x", "/var/lib/briard/data/x", nil, `{}`); err == nil {
-		t.Error("service.provision accepted a name that escapes the manifest directory")
+		t.Error("app.provision accepted a name that escapes the manifest directory")
 	}
 	if _, err := g.AppInstalled(context.Background(), "../../etc/passwd"); err == nil {
-		t.Error("service.installed accepted a name that escapes the manifest directory")
+		t.Error("app.installed accepted a name that escapes the manifest directory")
 	}
 }
 
-// service.list names what the VOLUME carries, with the `.json` the files wear on disk stripped:
+// app.list names what the VOLUME carries, with the `.json` the files wear on disk stripped:
 // it is how a node that promoted into somebody else's install can say what it runs at all
 // (measured: a survivor served the fixture while reporting no apps).
 func TestAppListNamesTheVolumesApps(t *testing.T) {
@@ -305,7 +305,7 @@ func TestAppListNamesTheVolumesApps(t *testing.T) {
 }
 
 // An absent manifest directory is the shipped zero-app node, not a failure -- the same rule
-// service.installed follows, and for the same reason: a node that refuses to answer because a
+// app.installed follows, and for the same reason: a node that refuses to answer because a
 // directory it never had is missing is worse than one that says "nothing".
 func TestAppListEmptyOnAZeroAppNode(t *testing.T) {
 	g := dial(t, &fakeExec{err: errors.New("ls: no such directory")})

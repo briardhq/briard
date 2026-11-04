@@ -747,7 +747,7 @@ func TestBringUpDataNode(t *testing.T) {
 	g := dial(t, f)
 	spec := BringUpSpec{
 		Storage:  demoStorage(true),
-		Promoter: []string{"briard-primary-storage.service", "briard-vip.service", "briard-services.service"},
+		Promoter: []string{"briard-primary-storage.service", "briard-vip.service", "briard-apps.service"},
 	}
 	if err := g.BringUp(context.Background(), spec); err != nil {
 		t.Fatal(err)
@@ -1392,7 +1392,7 @@ func TestBringUpRendersAppUnitsBeforeStartingThePromoter(t *testing.T) {
 	if !(reload < warm && warm < reactor) {
 		t.Errorf("wrong order: daemon-reload=%d, warm=%d, reactor=%d — units and images must both precede the promoter", reload, warm, reactor)
 	}
-	// A present image must NOT be pulled. This is the whole of service.warm: bring-up runs after
+	// A present image must NOT be pulled. This is the whole of app.warm: bring-up runs after
 	// every guest reboot, and the doctrine is that running never needs network.
 	if got := idx("systemctl", "start", "briard-app-img.service"); got >= 0 {
 		t.Errorf("bring-up started the .image unit for an image already present (step %d) — that is a registry pull on the reboot path: %v", got, f.runs)
@@ -1719,7 +1719,7 @@ func TestDashboardHandoffIsWrittenPrivatelyThenMovedIn(t *testing.T) {
 	}
 }
 
-// service.pulling records a pull for the dashboard's bar and clears it; storage.free measures
+// app.pulling records a pull for the dashboard's bar and clears it; storage.free measures
 // the image store through df. The guest keeps a number and measures a filesystem;
 // deciding is the host's.
 func TestAppPullingRecordsAndClearsTheBarsTotal(t *testing.T) {
@@ -1859,7 +1859,7 @@ func loneStorage() nodestorage.Spec {
 func TestBringUpLoneNode(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
-	spec := BringUpSpec{Storage: loneStorage(), Promoter: []string{"briard-primary-storage.service", "briard-services.service"}}
+	spec := BringUpSpec{Storage: loneStorage(), Promoter: []string{"briard-primary-storage.service", "briard-apps.service"}}
 	if err := g.BringUp(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -2003,7 +2003,7 @@ func TestHandshakeCarriesNoVersionNumber(t *testing.T) {
 
 // TestImageEnsureIsResidentOrPulls, and ⚠️ it must not start a unit.
 //
-// service.warm starts a rendered `.image` unit, which only exists for a manifest the node has
+// app.warm starts a rendered `.image` unit, which only exists for a manifest the node has
 // already rendered. A RESTORE asks about a member's PINNED identity -- possibly months old, quite
 // possibly never rendered here -- so the question has to be answerable by ref alone.
 func TestImageEnsureIsResidentOrPulls(t *testing.T) {

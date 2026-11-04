@@ -1,7 +1,7 @@
 # A SPIKE, not a suite member: how long does a COLD converge hold the promotion when the pull it
 # has to make is very slow?
 #
-# WHY THIS EXISTS. Converging at promotion put a fetch on the promotion path. `briard-services` is a chain
+# WHY THIS EXISTS. Converging at promotion put a fetch on the promotion path. `briard-apps` is a chain
 # member, its failure fails the promotion, and `warmImage` (agent/guestagent/converge.go) answers a
 # missing image with `systemctl start <unit>-image.service` -- a blocking `podman image pull`.
 # The comment there argues the case and is right about the design: a node that was down when the
@@ -12,7 +12,7 @@
 # about the chain is a rule about a fast failure.
 #
 # THE THEORY THIS MEASURES (and it is only a theory until the run prints otherwise): nothing bounds
-# it. `briard-services` is `Type=oneshot`, and systemd disables `TimeoutStartSec=` by default for
+# it. `briard-apps` is `Type=oneshot`, and systemd disables `TimeoutStartSec=` by default for
 # oneshot; quadlet's generated `.image` unit is a oneshot too, and neither we nor quadlet set a
 # timeout on either. If that holds, a slow pull holds the resource Primary with no VIP and no
 # apps, indefinitely, and the demote-and-hand-over the eight rules prove (chain-member-contract)
@@ -48,7 +48,7 @@ let
   windowSecs = 420;
 
   # Minted at build time, trusted by the node: containers/image refuses plain HTTP for every
-  # address, so a throttled registry still has to be a real TLS one (service-install.nix measured
+  # address, so a throttled registry still has to be a real TLS one (app-install.nix measured
   # this; the same CA shape is reused rather than re-derived).
   certs = pkgs.runCommand "cold-pull-certs" { nativeBuildInputs = [ pkgs.openssl ]; } ''
     mkdir -p $out
@@ -68,7 +68,7 @@ let
   fixtureImage = pkgs.dockerTools.buildImage {
     name = "briard-fixture";
     tag = "v0";
-    config.Cmd = [ "${pkgs.dummy-service}/bin/dummy-service" ];
+    config.Cmd = [ "${pkgs.dummy-app}/bin/dummy-app" ];
   };
   fixtureMount = "/var/lib/briard/dummy";
 
@@ -89,7 +89,7 @@ pkgs.testers.runNixOSTest {
         security.pki.certificateFiles = [ "${certs}/ca.crt" ];
         environment.systemPackages = [ quadletRender pkgs.btrfs-progs config.briard.agentPackage ];
       };
-    # Sorts after node1, as service-install.nix's does: the framework numbers nodes
+    # Sorts after node1, as app-install.nix's does: the framework numbers nodes
     # alphabetically and lib.nix pins DRBD peers by node id, so an earlier name shifts addresses.
     zregistry =
       { ... }:
@@ -162,8 +162,8 @@ pkgs.testers.runNixOSTest {
     # own arithmetic about unit naming rather than watching the unit converge actually starts.
     image_unit = node1.succeed("cat /tmp/rendered/images").split()[0]
     print(f"the pre-warm unit converge will start: {image_unit}")
-    node1.succeed("mkdir -p /var/lib/briard/.services")
-    node1.succeed("cp /tmp/manifest.json /var/lib/briard/.services/fixture.json")
+    node1.succeed("mkdir -p /var/lib/briard/.apps")
+    node1.succeed("cp /tmp/manifest.json /var/lib/briard/.apps/fixture.json")
     node1.succeed("sync")
     # THE PREMISE, asserted rather than assumed: this node cannot serve without a pull.
     node1.fail(f"podman image exists {ref}")
@@ -185,18 +185,18 @@ pkgs.testers.runNixOSTest {
     # === 5. THE MEASUREMENT ===
     # --no-block, because the whole question is whether this ever returns. A blocking restart would
     # hang the test driver instead of measuring the hang.
-    node1.succeed("systemctl reset-failed briard-services.service || true")
+    node1.succeed("systemctl reset-failed briard-apps.service || true")
     t0 = time.monotonic()
-    node1.succeed("systemctl --no-block restart briard-services.service")
+    node1.succeed("systemctl --no-block restart briard-apps.service")
 
     def probe():
         def show(unit, prop):
             return node1.succeed(f"systemctl show -p {prop} --value {unit} 2>/dev/null || true").strip()
         return {
             "t": round(time.monotonic() - t0, 1),
-            "services": show("briard-services.service", "ActiveState") + "/" + show("briard-services.service", "SubState"),
-            "result": show("briard-services.service", "Result"),
-            "restarts": show("briard-services.service", "NRestarts"),
+            "services": show("briard-apps.service", "ActiveState") + "/" + show("briard-apps.service", "SubState"),
+            "result": show("briard-apps.service", "Result"),
+            "restarts": show("briard-apps.service", "NRestarts"),
             "image_unit": node1.execute(f"systemctl show -p ActiveState --value {image_unit}")[1].strip(),
             "role": node1.execute("drbdadm role r0")[1].strip(),
             "mounted": "yes" if node1.execute("mountpoint -q /var/lib/briard")[0] == 0 else "no",
@@ -237,7 +237,7 @@ pkgs.testers.runNixOSTest {
     print(f"BYTES PULLED: {tx_total} KB -- the transfer was {'PROGRESSING' if tx_total > 64 else 'NOT PROGRESSING'}")
     if settled is None:
         print("VERDICT: the converge start job NEVER completed inside the window.")
-        print(f"  briard-services: {final['services']} after {final['t']}s, restarts={final['restarts']}")
+        print(f"  briard-apps: {final['services']} after {final['t']}s, restarts={final['restarts']}")
         print(f"  the node held the promotion throughout: role={final['role']} mounted={final['mounted']} vip={final['vip']}")
         print("  nothing bounded the pull: no timeout fired, the member never failed, so the")
         print("  demote-and-hand-over of chain-member-contract rules 5/7/8 was never reached.")
@@ -247,7 +247,7 @@ pkgs.testers.runNixOSTest {
     print("=" * 78)
 
     # The journal is the artifact a reader checks the timeline against.
-    print(node1.succeed("journalctl -u briard-services.service --no-pager | tail -40"))
+    print(node1.succeed("journalctl -u briard-apps.service --no-pager | tail -40"))
     print(node1.succeed(f"journalctl -u {image_unit} --no-pager | tail -20 || true"))
     print(node1.succeed("systemctl list-units --failed --no-pager || true"))
 

@@ -1,7 +1,7 @@
 # TWO apps on one node, which is the claim converge-at-promotion made and nothing measured.
 #
 # The coordination went plural — one promoter, N apps rendered from the volume by
-# briard-services at promotion — but with one app in the catalog every test of it was a test
+# briard-apps at promotion — but with one app in the catalog every test of it was a test
 # of N=1, and the properties that only exist at N=2 were reasoning rather than measurement:
 #
 #   1. BOTH apps converge from the volume and run together, on a node that installed them and
@@ -43,11 +43,11 @@ let
     {
       imports = [ baseNode ];
       # An MQTT client on every node: the broker's data is read from whichever node is NOT the one
-      # under test at that moment, and after the kill that set changes. service-probe is the REAL
+      # under test at that moment, and after the kill that set changes. app-probe is the REAL
       # S1 probe as a command, so the rig drives the shipping code rather than a lookalike.
       environment.systemPackages = [
         pkgs.mosquitto
-        (pkgs.callPackage ./service-probe-pkg.nix { })
+        (pkgs.callPackage ./app-probe-pkg.nix { })
       ];
     };
   # The broker's rollback point, in the product's own layout: a read-only sibling of the app's
@@ -57,7 +57,7 @@ let
   snap = "/var/lib/briard/data/.snapshots/${mosquitto.name}-preupgrade";
 in
 pkgs.testers.runNixOSTest {
-  name = "services-pair";
+  name = "apps-pair";
 
   # crash() is QemuMachine-only and the primary is selected dynamically.
   skipTypeCheck = true;
@@ -97,7 +97,7 @@ pkgs.testers.runNixOSTest {
         against a place nothing else looks."""
         import json
         tbl = json.loads(m.succeed("cat /run/briard/routes.json"))
-        for s in tbl["services"]:
+        for s in tbl["apps"]:
             if s["name"] == "${mosquitto.name}":
                 assert s["address"].startswith("10.12."), f"the broker is not on the pod pool: {s}"
                 return f"http://{s['address']}:9883{path}"
@@ -109,9 +109,9 @@ pkgs.testers.runNixOSTest {
         observable: a document naming a version proves nothing about what is running."""
         return m.succeed(f"curl -fsS {broker_mgmt(m, '/api/v1/version')}").strip()
 
-    def container_unit(m, service=None):
-        units = [u for u in fixture_units(m, service) if not u.endswith("-pod.service")]
-        assert len(units) == 1, f"expected one container unit for {service}, got {units}"
+    def container_unit(m, app=None):
+        units = [u for u in fixture_units(m, app) if not u.endswith("-pod.service")]
+        assert len(units) == 1, f"expected one container unit for {app}, got {units}"
         return units[0]
 
     def started_at(m, unit):
@@ -126,9 +126,9 @@ pkgs.testers.runNixOSTest {
 
     # ---- (1) BOTH APPS, ONE NODE --------------------------------------------------------------
     install_fixture(primary)
-    broker_root = install_fixture(primary, service="${mosquitto.name}")
-    for service in [None, "${mosquitto.name}"]:
-        for unit in fixture_units(primary, service):
+    broker_root = install_fixture(primary, app="${mosquitto.name}")
+    for app in [None, "${mosquitto.name}"]:
+        for unit in fixture_units(primary, app):
             primary.wait_for_unit(unit, timeout=300)
     primary.wait_until_succeeds(f"curl -fsS -o /dev/null http://{VIP}:${toString fixture.port}${fixture.healthPath}", timeout=180)
     primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(primary)}", timeout=180)
@@ -153,7 +153,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed("briard-guest-agent --converge")
     import json as _rj
     table = _rj.loads(primary.succeed("cat /run/briard/routes.json"))
-    routed = {s["name"]: s for s in table["services"]}
+    routed = {s["name"]: s for s in table["apps"]}
     assert set(routed) == {"${fixture.name}", "${mosquitto.name}"}, f"routing table = {table}"
     assert routed["${fixture.name}"]["hosts"] != routed["${mosquitto.name}"]["hosts"], \
         f"the two apps share a name: {table}"
@@ -210,7 +210,7 @@ pkgs.testers.runNixOSTest {
         primary.succeed(f"systemctl start {u}")
     primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(primary, '/api/v1/version')}", timeout=180)
 
-    install_fixture(primary, variant="to", service="${mosquitto.name}")
+    install_fixture(primary, variant="to", app="${mosquitto.name}")
     primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(primary, '/api/v1/version')}", timeout=180)
     assert broker_version(primary) == "2.1.2", "the broker did not move to the upgraded version"
 
@@ -232,7 +232,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed(f"systemctl stop {container_unit(primary, '${mosquitto.name}')}")
     primary.succeed("btrfs subvolume delete ${subvol}")
     primary.succeed("btrfs subvolume snapshot ${snap} ${subvol}")
-    install_fixture(primary, service="${mosquitto.name}")
+    install_fixture(primary, app="${mosquitto.name}")
     primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(primary, '/api/v1/version')}", timeout=180)
     assert broker_version(primary) == "2.1.1", "the rollback did not put the previous version back"
     got = client.succeed(f"mosquitto_sub -h {VIP} -t briard/pair -C 1 -W 15").strip()
@@ -262,8 +262,8 @@ pkgs.testers.runNixOSTest {
 
     survivors[0].wait_until_succeeds(f"curl -fsS -o /dev/null http://{VIP}:${toString fixture.port}${fixture.healthPath}", timeout=400)
     new_primary = next(m for m in survivors if role(m) == "Primary")
-    for service in [None, "${mosquitto.name}"]:
-        for unit in fixture_units(new_primary, service):
+    for app in [None, "${mosquitto.name}"]:
+        for unit in fixture_units(new_primary, app):
             new_primary.wait_for_unit(unit, timeout=300)
 
     # The broker came back on the version the volume names -- the rolled-back one, not the one the
@@ -285,14 +285,14 @@ pkgs.testers.runNixOSTest {
     broker_ctr = "briard-${mosquitto.name}-${mosquitto.container}"
 
     def probe(m, token=""):
-        return m.succeed(f"service-probe {broker_ctr} {token}").strip()
+        return m.succeed(f"app-probe {broker_ctr} {token}").strip()
 
     # (i) A REAL UPGRADE PRESERVES IT. The token is written through the product's own code path --
     # published retained and persisted with SIGUSR1 -- so what crosses the upgrade is what the
     # gate would have written, not a message a test left lying around.
     out = probe(new_primary, "briard-rig-token")
     assert out == "serving=true token=briard-rig-token", f"the probe did not store its token: {out}"
-    install_fixture(new_primary, variant="to", service="${mosquitto.name}")
+    install_fixture(new_primary, variant="to", app="${mosquitto.name}")
     new_primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(new_primary, '/api/v1/version')}", timeout=180)
     assert broker_version(new_primary) == "2.1.2", "the broker did not move to the upgraded version"
     out = probe(new_primary)

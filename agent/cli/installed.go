@@ -28,8 +28,8 @@ import (
 // implementation of a format whose identity is its content hash.
 
 // appCacheDir is where the agent keeps one manifest per installed app. It mirrors
-// ConfigFromEnv's SERVICE_CACHE default (agent/host/config.go); a test asserts the two agree.
-var appCacheDir = filepath.Join(stateDir, "services")
+// ConfigFromEnv's APP_CACHE default (agent/host/config.go); a test asserts the two agree.
+var appCacheDir = filepath.Join(stateDir, "apps")
 
 // installedApps names what this node runs, sorted, reading the cache the agent rebuilds itself
 // from at every start.

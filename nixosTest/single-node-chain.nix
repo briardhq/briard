@@ -78,7 +78,7 @@ pkgs.testers.runNixOSTest {
     assert node1.succeed("findmnt -no SOURCE /var/lib/briard").strip() == "/dev/mapper/briardservice-data"
     node1.fail("systemctl is-active drbd-reactor.service")
     node1.fail("systemctl is-active drbd-promote@r0.service")
-    node1.succeed("systemctl is-active briard-primary-storage.service briard-services.service briard-vip.service")
+    node1.succeed("systemctl is-active briard-primary-storage.service briard-apps.service briard-vip.service")
     install_fixture(node1)
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
     for unit in fixture_units(node1):

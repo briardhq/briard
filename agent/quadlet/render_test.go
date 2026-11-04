@@ -303,7 +303,7 @@ func TestMountsAreDirectoriesOfTheTiersAreas(t *testing.T) {
 		!strings.Contains(worker, "Volume=/var/lib/briard/files/home-assistant/media:/media\n") {
 		t.Fatalf("the worker's mounts are missing:\n%s", worker)
 	}
-	if !strings.Contains(ha, "--service-starting=") || strings.Contains(worker, "--service-starting=") {
+	if !strings.Contains(ha, "--app-starting=") || strings.Contains(worker, "--app-starting=") {
 		t.Fatalf("the start hook belongs to the container that mounts the data, and only to it")
 	}
 	if DataRoot("home-assistant") != "/var/lib/briard/data/home-assistant" {
@@ -554,7 +554,7 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 	if !strings.Contains(line, "=-/") {
 		t.Errorf("%q does not name an absolute path", line)
 	}
-	if !strings.HasSuffix(line, "--service-starting=home-assistant") {
+	if !strings.HasSuffix(line, "--app-starting=home-assistant") {
 		t.Errorf("%q does not name the app whose member it takes", line)
 	}
 	// An app's other containers share its ONE subvolume, so a hook on each of them would take
@@ -578,7 +578,7 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 	}
 	// ExecStopPost, never ExecStop: it runs after the container is down and is the only place
 	// systemd exposes $SERVICE_RESULT, which is the whole evidence for the claim.
-	if !strings.HasPrefix(stop, "ExecStopPost=-/") || !strings.HasSuffix(stop, "--service-stopped=home-assistant") {
+	if !strings.HasPrefix(stop, "ExecStopPost=-/") || !strings.HasSuffix(stop, "--app-stopped=home-assistant") {
 		t.Errorf("%q is not a `-`-prefixed absolute call naming this app", stop)
 	}
 	if side := r.Files["briard-home-assistant-sidecar.container"]; strings.Contains(side, "ExecStopPost=") {

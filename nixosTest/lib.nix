@@ -11,12 +11,12 @@ let
   inherit (pkgs.lib) concatMapStringsSep mkIf;
   inherit (pkgs) lib;
 
-  # The REAL renderer, as a helper binary. Shared with service-install.nix so a fixture installed
+  # The REAL renderer, as a helper binary. Shared with app-install.nix so a fixture installed
   # by the harness is rendered by the same code the agent runs.
   quadletRender = pkgs.callPackage ./quadlet-render-pkg.nix { };
 
   # The promoter's ordered unit: the same units everywhere, on every node, whatever is installed.
-  # `briard-services` is what converges this node to the manifests on the volume
+  # `briard-apps` is what converges this node to the manifests on the volume
   # once the mount exists, which is why the apps themselves are not members. The front door and
   # the two mDNS publishers ARE members: on a node with no `.casa` domain those names
   # are the ONLY way to reach an app and the door is the only thing that answers them, so a node
@@ -28,7 +28,7 @@ let
       units = [
         "briard-primary-storage.service"
         "briard-vip.service"
-        "briard-services.service"
+        "briard-apps.service"
         "briard-reverse-proxy.service"
         "briard-dashboard.service"
       ];
@@ -86,7 +86,7 @@ let
   #
   # It used to do far more — run the renderer, copy the units into the quadlet directory and write
   # the promoter chain from the renderer's output. Converge-at-promotion takes all of that away from the
-  # harness and gives it to the PRODUCT: `briard-services` renders from the volume at promotion,
+  # harness and gives it to the PRODUCT: `briard-apps` renders from the volume at promotion,
   # from a static chain the harness no longer writes. So what is left here is exactly the part a
   # test legitimately stands in for — the bytes a host agent would have fetched from the catalog
   # and warmed onto the node before anything promoted.
@@ -98,11 +98,11 @@ let
   #
   # What still cannot run in a hermetic harness is the host agent's ORCHESTRATION — the node IS
   # the guest, with no host on the other end — so `install_fixture` below performs the Primary-only
-  # half by hand (fetch, verify and health-gate are unit-tested in agent/host/service_test.go).
+  # half by hand (fetch, verify and health-gate are unit-tested in agent/host/app_test.go).
   # Everything under it is now the real thing: the real renderer, in the product's own binary,
   # reading the product's own volume layout.
   #
-  # NO REGISTRY, and that is measured rather than assumed — see fixture-service.nix for the three
+  # NO REGISTRY, and that is measured rather than assumed — see fixture-app.nix for the three
   # facts. The image arrives already loaded: each fixture ships the podman store its archive was
   # loaded into, and mkNode attaches it as a read-only additional image store (what used to be a
   # `podman load` here, on every node at every boot, at ~8 GB of host writes for the HA image).
@@ -179,7 +179,7 @@ let
   #
   # install_fixture stands in for the ONE half of the install path a hermetic harness cannot run:
   # the host agent's Primary-only orchestration. It writes the manifest to the REPLICATED volume
-  # (what `service.provision` records as the app's identity), creates its storage, and then
+  # (what `app.provision` records as the app's identity), creates its storage, and then
   # hands over to the PRODUCT — `briard-guest-agent --converge` is the same code drbd-reactor runs at
   # every promotion, not a harness re-implementation of it.
   #
@@ -194,16 +194,16 @@ let
   # Both the data root and the directories, in full, come from the RENDERER's sidecars, so a
   # test never restates the layout the product decides.
   fixtureHelpers = ''
-    def fixture_dir(service=None):
-        """Where a staged fixture lives. `service` names one when the node carries several;
+    def fixture_dir(app=None):
+        """Where a staged fixture lives. `app` names one when the node carries several;
         the default is the symlink to the first, which is what a single-app node
         has always read."""
-        return "/run/briard/fixture" if service is None else f"/run/briard/fixtures/{service}"
+        return "/run/briard/fixture" if app is None else f"/run/briard/fixtures/{app}"
 
-    def install_fixture(m, variant=None, service=None):
+    def install_fixture(m, variant=None, app=None):
         """Install the fixture -- or, with `variant`, a DIFFERENT VERSION of it under the same
         name, which is what an upgrade is. Both go through the product's own converge."""
-        d = fixture_dir(service)
+        d = fixture_dir(app)
         dataroot = m.succeed(f"cat {d}/dataroot").strip()
         m.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || (mkdir -p $(dirname {dataroot}) && btrfs subvolume create {dataroot})")
         for sub in m.succeed(f"cat {d}/subdirs").split():
@@ -215,20 +215,20 @@ let
         name = dataroot.rstrip("/").split("/")[-1]
         src = f"{d}/manifest.json" if variant is None \
             else f"{d}/variants/{variant}/manifest.json"
-        m.succeed("mkdir -p /var/lib/briard/.services")
-        m.succeed(f"cp {src} /var/lib/briard/.services/{name}.json")
+        m.succeed("mkdir -p /var/lib/briard/.apps")
+        m.succeed(f"cp {src} /var/lib/briard/.apps/{name}.json")
         m.succeed("sync")
-        # The product's own converge, by the same entry point briard-services.service uses. On a
+        # The product's own converge, by the same entry point briard-apps.service uses. On a
         # version change it is also what BOUNCES the container: converge restarts what it has not
         # started with exactly these bytes.
         m.succeed("briard-guest-agent --converge")
         return dataroot
 
-    def fixture_units(m, service=None):
+    def fixture_units(m, app=None):
         """The app's units the RENDERER produced -- never a list restated here. They are NOT
-        promoter chain members: briard-services starts them, which is what keeps a
+        promoter chain members: briard-apps starts them, which is what keeps a
         crashed container from demoting the node."""
-        units = m.succeed(f"cat {fixture_dir(service)}/units").split()
+        units = m.succeed(f"cat {fixture_dir(app)}/units").split()
         assert units, f"the renderer produced no app units: {units}"
         return units
 
@@ -241,16 +241,16 @@ let
         m.succeed("mkdir -p /run/briard")
         m.succeed(f"printf 'FLOCK_NAME={name}\\n' >/run/briard/mdns.env")
 
-    def routed_host(m, service):
-        """The name the front door routes `service` on, read from the table the PRODUCT wrote --
+    def routed_host(m, app):
+        """The name the front door routes `app` on, read from the table the PRODUCT wrote --
         never a name restated here, which would assert our own arithmetic rather than the node's."""
         import json
         table = json.loads(m.succeed("cat /run/briard/routes.json"))
-        for s in table["services"]:
-            if s["name"] == service:
-                assert s.get("hosts"), f"{service} is routed but unnamed: {s}"
+        for s in table["apps"]:
+            if s["name"] == app:
+                assert s.get("hosts"), f"{app} is routed but unnamed: {s}"
                 return s["hosts"][0]
-        raise AssertionError(f"{service} is not in the node's routing table: {table}")
+        raise AssertionError(f"{app} is not in the node's routing table: {table}")
   '';
 
   # A test node: the unit image + a backing disk (unless diskless) + its private
@@ -274,7 +274,7 @@ let
       # The block device the data tier is built on. The framework's empty disk by default; a rig
       # that injects media faults names a device-mapper target it stacked on top of it.
       tierDevice ? "/dev/vdb",
-      # A catalogued fixture (nixosTest/fixture-service.nix) prewarmed onto the node at boot; the
+      # A catalogued fixture (nixosTest/fixture-app.nix) prewarmed onto the node at boot; the
       # test then installs it onto the volume with install_fixture once something has promoted.
       # This is the ONLY way a test node gets a workload (converge-at-promotion deleted the build-time app
       # slot), and it is the way a shipped node gets one, which is the point: a test that put a
@@ -460,7 +460,7 @@ let
       ];
       # test-only: probing the VIP, and -- with a fixture -- standing in for the install path's
       # Primary-only half, which in the product runs btrfs from the guest agent unit's own PATH
-      # and converge from briard-services'. install_fixture runs both from a test shell, so both
+      # and converge from briard-apps'. install_fixture runs both from a test shell, so both
       # have to be reachable there.
       # lvm2/cryptsetup are the SEAM's tooling in a test shell: the product reaches them
       # through the image's tool profile, which is briard-node-storage's whole PATH, and a
@@ -514,7 +514,7 @@ let
         # in it is the unit's, from the spec above.
         "d /run/briard/drbd.d 0755 root root -"
       ]
-      # The snippet is STATIC: the chain names briard-services, and what the node runs
+      # The snippet is STATIC: the chain names briard-apps, and what the node runs
       # comes from the VOLUME at promotion, so no test's workload choice can change it.
       ++ lib.optionals promoter [
         "d /run/briard/drbd-reactor.d 0755 root root -"
@@ -522,7 +522,7 @@ let
       ];
       systemd.services.briard-test-fixture-install =
         mkIf (allFixtures != [ ]) (fixturesInstall allFixtures config);
-      # EACH FIXTURE'S PREBUILT PODMAN STORE (fixture-service.nix), attached as a read-only disk
+      # EACH FIXTURE'S PREBUILT PODMAN STORE (fixture-app.nix), attached as a read-only disk
       # and mounted as an additional image store: the images are resident from the first boot
       # with no load on the node. mkAfter keeps these behind the framework's own drives, so the
       # data tier stays /dev/vdb; the mount names its disk by serial for the same reason.

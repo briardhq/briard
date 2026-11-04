@@ -295,7 +295,7 @@ func TestConvergeStopStopsWhatItStarted(t *testing.T) {
 }
 
 // TestConvergeStopOnANodeThatNeverConverged is the demote path on a node that never promoted, or
-// that already stopped. It must be a silent success: a failed ExecStop leaves briard-services
+// that already stopped. It must be a silent success: a failed ExecStop leaves briard-apps
 // active, which blocks the unmount queued behind it.
 func TestConvergeStopOnANodeThatNeverConverged(t *testing.T) {
 	x := &convergeExec{}
@@ -351,7 +351,7 @@ func TestConvergeBouncesAAppWhoseRenderingChanged(t *testing.T) {
 }
 
 // THE INSTALL PATH IS ANOTHER WRITER, and forgetting that made every upgrade a no-op. An install
-// renders the new units through service.render BEFORE asking the node to converge, so by the time
+// renders the new units through app.render BEFORE asking the node to converge, so by the time
 // converge looked, the files on disk already held the new bytes: nothing compared as changed,
 // nothing was bounced, `systemctl start` on an already-active unit did nothing, and the OLD
 // container kept serving while the volume and the report named the new version. The install's
@@ -433,7 +433,7 @@ func TestConvergeVerbsAreAdvertised(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !g.SupportsAppConverge() {
-		t.Fatal("service.converge is handled but not advertised — every install would refuse this guest")
+		t.Fatal("app.converge is handled but not advertised — every install would refuse this guest")
 	}
 	for _, v := range []string{verbAppStage, verbAppCommit, verbAppDiscard, verbAppPending} {
 		if !g.Supports(v) {
@@ -634,7 +634,7 @@ func TestConvergeRoutesWithoutANameWhenTheFlockHasNone(t *testing.T) {
 func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 	x := &convergeExec{} // nothing installed
 	x.fakeExec.files = map[string]string{
-		routes.Path: `{"services":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],"address":"127.0.0.1","routes":[{"listen":"name","to":"http://:8080"}]}]}`,
+		routes.Path: `{"apps":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],"address":"127.0.0.1","routes":[{"listen":"name","to":"http://:8080"}]}]}`,
 	}
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
@@ -661,7 +661,7 @@ func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 func TestAppHealthURLResolvesThroughTheTable(t *testing.T) {
 	x := &convergeExec{}
 	x.fakeExec.files = map[string]string{
-		routes.Path: `{"services":[` +
+		routes.Path: `{"apps":[` +
 			`{"name":"dummy","address":"127.0.0.1","health":"http://:8080/healthz",` +
 			`"routes":[{"listen":"name","to":"http://:8080"}]},` +
 			`{"name":"mosquitto","hosts":["briard-brave-elf-mosquitto.local"],` +
@@ -693,7 +693,7 @@ func TestAppHealthURLResolvesThroughTheTable(t *testing.T) {
 func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
 	x := &convergeExec{} // services nil: `ls` fails, exactly like an unmounted volume
 	x.fakeExec.files = map[string]string{
-		routes.Path: `{"services":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],` +
+		routes.Path: `{"apps":[{"name":"dummy","hosts":["briard-brave-elf-dummy.local"],` +
 			`"address":"127.0.0.1","health":"http://:8080/healthz",` +
 			`"routes":[{"listen":"name","to":"http://:8080"}]}]}`,
 	}

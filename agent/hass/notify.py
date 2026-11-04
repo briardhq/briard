@@ -30,7 +30,7 @@ import sys
 
 # The token rides this app's own read-only /briard directory, like every other thing briard
 # hands it. The SOCKET cannot: it must be writable to connect to, and a read-write bind inside a
-# read-only one cannot be created by the runtime at all -- so it is a sibling. agent/services
+# read-only one cannot be created by the runtime at all -- so it is a sibling. agent/apps
 # carries the full trace.
 SOCKET = "/briard-agent.sock"
 TOKEN = "/briard/inbound.token"
@@ -61,7 +61,7 @@ def main():
         return
     try:
         with s:
-            s.sendall(json.dumps({"verb": "service.starting", "token": token}).encode() + b"\n")
+            s.sendall(json.dumps({"verb": "app.starting", "token": token}).encode() + b"\n")
             # One line, then done. The agent closes after answering, so an empty read is the
             # other end going away rather than a message we should keep waiting for.
             buf = b""

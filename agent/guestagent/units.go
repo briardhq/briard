@@ -139,7 +139,7 @@ StartLimitBurst=5
 const (
 	holdUnit           = "briard-promotion-hold.service"
 	primaryStorageUnit = "briard-primary-storage.service"
-	appsUnit           = "briard-services.service"
+	appsUnit           = "briard-apps.service"
 	vipUnit            = "briard-vip.service"
 	vipRenewUnit       = "briard-vip-renew.service"
 	vipRenewTimer      = "briard-vip-renew.timer"
@@ -301,7 +301,7 @@ ExecStop=` + agent + ` --primary-storage-stop
 `
 
 	// 3. APPS -- CONVERGE-AT-PROMOTION. Once the volume is mounted and the VIP is held, read
-	// every manifest under its `.services/`, render, warm and start them. This node makes itself
+	// every manifest under its `.apps/`, render, warm and start them. This node makes itself
 	// match the VOLUME, so what a node was told -- or whether it was even up when the install ran
 	// -- stops deciding what the household gets after a failover. AFTER the VIP (shared/chain):
 	// an app reads the network it starts on, and the household LAN is part of that network.
@@ -402,7 +402,7 @@ ExecStart=` + tool("briard-vip-renew") + `
 	// state of a free node, since a cert needs a domain.
 	//
 	// NO -routes: the table has a compiled-in default (shared/routes.Path) this unit deliberately
-	// does not restate. Ordered AFTER briard-services, which is what makes the table exist before
+	// does not restate. Ordered AFTER briard-apps, which is what makes the table exist before
 	// the door reads it.
 	//
 	// THROUGH THE PIVOT: the picker runs the copy the host pushed, and nothing

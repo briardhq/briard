@@ -103,7 +103,7 @@ type Rendered struct {
 	// radius had obscured: a code fault is DETERMINISTIC, so the peer running the identical
 	// closure hits it identically and the failover only flaps; and one broken app must not
 	// take the other N-1 down with it. The mechanism is non-membership — these units are started
-	// by briard-services, not by the promoter, so `Requires=` never sees them and there is no
+	// by briard-apps, not by the promoter, so `Requires=` never sees them and there is no
 	// propagation left to fire. Recovery is the unit's own Restart= (see Render); the household
 	// hears about it through per-app health, which reports but never gates.
 	ContainerUnits []string
@@ -311,7 +311,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// would each take a member of the same bytes at every start. The same start is when the
 		// app's cache is emptied, if space is short (guestagent.TakeStartMember).
 		if c.UsesTier(manifest.TierData) {
-			lines = append(lines, "ExecStartPre=-"+agentBin()+" --service-starting="+m.Name)
+			lines = append(lines, "ExecStartPre=-"+agentBin()+" --app-starting="+m.Name)
 			// AND THE OTHER HALF OF THE SAME QUESTION: a stop that ended cleanly leaves a
 			// marker saying this app's data was flushed, and the next start reads it to say
 			// what its member's bytes ARE. A node that dies writes nothing, so the member taken
@@ -321,7 +321,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 			// every stop systemd performs, and it is the only place $SERVICE_RESULT exists. The
 			// leading `-` for the same reason the start hook has one — a household must never lose
 			// an app because a marker could not be written.
-			lines = append(lines, "ExecStopPost=-"+agentBin()+" --service-stopped="+m.Name)
+			lines = append(lines, "ExecStopPost=-"+agentBin()+" --app-stopped="+m.Name)
 		}
 		out.Files[unit+".container"] = join(lines...)
 		out.Units = append(out.Units, unit+".service")
@@ -572,7 +572,7 @@ func AppSidecar(member string) string { return member + ".app.json" }
 // cut would have left, and restoring one is a bet on the app's own recovery path. That bet is
 // measured-good for Home Assistant (WAL replay, nixosTest/hass-upgrade.nix) and measured-BAD for
 // mosquitto, which lost exactly the retained message somebody would roll back FOR
-// (nixosTest/services-pair.nix). Per-app, in other words — which is why a member carries the
+// (nixosTest/apps-pair.nix). Per-app, in other words — which is why a member carries the
 // answer rather than leaving every reader to infer one.
 //
 // IT IS THE TAKER'S OWN KNOWLEDGE and needs no crash detection: whoever takes a member knows
@@ -623,11 +623,11 @@ func (c Consistency) Note() string {
 // MANIFEST, NOT A DIGEST. The restore path re-provisions from the manifest text and re-renders
 // units from it, an app with several containers has several digests, and env, mounts, ports
 // and subdirs are identity too; the digests are inside it. It cannot be read off the member
-// either: the volume keeps manifests in `.services/<name>.json`, a SIBLING of the data subvolume,
+// either: the volume keeps manifests in `.apps/<name>.json`, a SIBLING of the data subvolume,
 // so a btrfs snapshot of the data does not capture the code identity that wrote it. Carrying it
 // here is what makes a member self-contained.
 type SnapshotMeta struct {
-	App         string      `json:"service"`
+	App         string      `json:"app"`
 	Trigger     Trigger     `json:"trigger"`
 	TakenAt     time.Time   `json:"taken_at"`
 	Consistency Consistency `json:"consistency"` // what the bytes are; empty means an older member, unrecorded

@@ -88,7 +88,7 @@ type fakeStatus struct {
 	vip    string
 	vipErr error
 	probed *string
-	// active is what service.active answers per unit, and activeErr makes it fail -- the two
+	// active is what app.active answers per unit, and activeErr makes it fail -- the two
 	// halves per-app state needs, since "the unit is down" and "we could not ask" must not
 	// report the same thing (api.AppStatus.State).
 	active    map[string]bool
@@ -399,7 +399,7 @@ func TestConfigFromEnv_NoAppComesFromTheEnvironment(t *testing.T) {
 //
 // The old assertion here was the opposite, and its reason was real: naming a unit the guest does
 // not define fails the whole ordered chain and takes the VIP down on every fresh install, which is
-// precisely the state `curl | sh` lands in. briard-services is why it can now be unconditional —
+// precisely the state `curl | sh` lands in. briard-apps is why it can now be unconditional —
 // the guest image defines it always, exactly as it defines briard-primary-storage and briard-vip.
 //
 // Nothing is conditional any more (the last conditional member is gone): the chain is the same
@@ -416,7 +416,7 @@ func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 	want := []string{
 		"briard-primary-storage.service",
 		"briard-vip.service",
-		"briard-services.service",
+		"briard-apps.service",
 		"briard-reverse-proxy.service",
 		"briard-dashboard.service",
 	}
@@ -971,7 +971,7 @@ func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T)
 	}
 }
 
-// When the guest predates service.health (the verb errors), snapshot falls back to the legacy
+// When the guest predates app.health (the verb errors), snapshot falls back to the legacy
 // host-side probe of the VIP -- so an old, tap-based guest keeps a correct health signal.
 func TestSnapshot_HealthFallsBackToHostProbe(t *testing.T) {
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -983,7 +983,7 @@ func TestSnapshot_HealthFallsBackToHostProbe(t *testing.T) {
 	}))
 	defer sick.Close()
 
-	verbErr := errors.New("guestagent: unknown verb \"service.health\"")
+	verbErr := errors.New("guestagent: unknown verb \"app.health\"")
 
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: ok.URL}
 	st, _, _, _ := snap(cfg, fakeStatus{qs: model.QuorumState{Quorate: true}, hlthErr: verbErr}, "")

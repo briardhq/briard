@@ -316,7 +316,7 @@ func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 	}
 
 	// A half-written table keeps the last good one: the household's app stays reachable.
-	write([]byte("{\"services\": [{\"nam"), t0.Add(4*time.Second))
+	write([]byte("{\"apps\": [{\"nam"), t0.Add(4*time.Second))
 	if code, body := getHost(t, srv.URL, "/", "briard-brave-elf-fixture.local"); code != http.StatusOK || body != "payload-ok" {
 		t.Errorf("on a half-written table = %d %q, want the last good route kept", code, body)
 	}

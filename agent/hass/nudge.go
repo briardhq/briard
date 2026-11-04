@@ -43,7 +43,7 @@ const EventReconsider = "briard_reconsider"
 // IN THE GUEST for the same reason as Readiness: the token is on this node's tmpfs and Home
 // Assistant listens on the guest's loopback, which the host cannot reach at all under macvtap.
 // Still dumb hands — WHEN a running Home Assistant is worth telling is the host's decision
-// (agent/host/service.go), and nothing about it is encoded here.
+// (agent/host/app.go), and nothing about it is encoded here.
 func Nudge(ctx context.Context, x Executor, port int) error {
 	base, access, err := connect(ctx, x, port)
 	if err != nil {

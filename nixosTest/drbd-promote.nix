@@ -35,7 +35,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("multi-user.target")
         # The fixture's image is warmed onto every node before anything promotes, the way
         # install and prewarm warm it in the product. Nothing is rendered or chained here --
-        # briard-services does that at promotion, from the volume.
+        # briard-apps does that at promotion, from the volume.
         m.wait_for_unit("briard-test-fixture-install.service")
         m.succeed("modprobe drbd")
         # The product's own storage bring-up: build the tier, write the `.res`,
@@ -73,7 +73,7 @@ pkgs.testers.runNixOSTest {
     # as long as it takes its chain to fail and hand the resource on -- which is what happened on
     # the 2026-09-16 nightly: node1 was Primary when this line looked, a failed chain member took
     # it down, node2 took over, and every assertion below ran against the node that was no longer
-    # serving. What it printed ("briard-services inactive") was a symptom on the wrong machine and
+    # serving. What it printed ("briard-apps inactive") was a symptom on the wrong machine and
     # said nothing about the cause.
     #
     # The promoter's TARGET is the honest signal: it is active only where the whole ordered chain
@@ -96,10 +96,10 @@ pkgs.testers.runNixOSTest {
     secondary.succeed("drbdadm role r0 | grep -qx Secondary")
 
     # BEFORE the install, the promoter has already run a full promotion with ZERO apps --
-    # briard-services converged to nothing and the VIP came up anyway. That is the shipped state
+    # briard-apps converged to nothing and the VIP came up anyway. That is the shipped state
     # of every node a stranger installs, and it must not be a failure.
     primary.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
-    primary.succeed("systemctl is-active briard-services.service")
+    primary.succeed("systemctl is-active briard-apps.service")
 
     dataroot = install_fixture(primary)
 

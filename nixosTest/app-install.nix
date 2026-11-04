@@ -20,7 +20,7 @@
 # WHAT IS NOT COVERED, named so a green run is not read as more than it is:
 #   - the host agent's ORCHESTRATION (fetch/verify/warm/health-gate/revert) cannot run in this
 #     harness: it drives the guest over virtio-serial, and here the node IS the guest with no host
-#     on the other end. That sequence is unit-tested in agent/host/service_test.go, which is where
+#     on the other end. That sequence is unit-tested in agent/host/app_test.go, which is where
 #     its bugs have actually surfaced. What the test does by hand is the Primary-only half an
 #     install performs on the volume, and then it hands over to converge.
 #
@@ -30,7 +30,7 @@
 # is poisoned), proves the node STAYS PROMOTED through it (an app failure alerts, it does not
 # demote — converge-at-promotion's failure rule), and then ROLLS BACK to the prior app with its data
 # intact — the app-level twin of the {code+data} OS rollback. The host agent's orchestration of
-# that sequence is unit-tested in agent/host/service_test.go (it drives the guest over
+# that sequence is unit-tested in agent/host/app_test.go (it drives the guest over
 # virtio-serial, absent here); this proves the REAL mechanisms it relies on — a real broken
 # container, a real btrfs snapshot/restore, a real converge re-render, and a real recovery.
 { pkgs, guestModule, quadletRender, broken ? false }:
@@ -58,13 +58,13 @@ let
     chmod 0644 $out/server.key
   '';
 
-  # The app itself: the existing dummy-service, which serves /healthz and ticks a counter
+  # The app itself: the existing dummy-app, which serves /healthz and ticks a counter
   # into its data dir. Reused rather than invented — it is already the fixture every other test
   # trusts, and its tick is what proves the mounted subvolume is really the app's.
   fixtureImage = pkgs.dockerTools.buildImage {
     name = "briard-fixture";
     tag = "v0";
-    config.Cmd = [ "${pkgs.dummy-service}/bin/dummy-service" ];
+    config.Cmd = [ "${pkgs.dummy-app}/bin/dummy-app" ];
   };
   # The fixture's data path is a CONST in its source, not configurable — so the container's mount
   # point is dictated by the fixture, while the host-side directory is the renderer's to choose.
@@ -89,7 +89,7 @@ let
       # a prebuilt disk — which is exactly why this test is hermetic rather than nested.
       security.pki.certificateFiles = [ "${certs}/ca.crt" ];
       # test-only: in the product these run from unit PATHs, not a shell -- btrfs from the guest
-      # agent unit's, converge from briard-services'. This test drives the install path by hand,
+      # agent unit's, converge from briard-apps'. This test drives the install path by hand,
       # so it needs all three where a test command can reach them.
       environment.systemPackages = [ quadletRender pkgs.btrfs-progs config.briard.agentPackage ];
     };
@@ -100,7 +100,7 @@ let
   };
 in
 pkgs.testers.runNixOSTest {
-  name = "service-install${pkgs.lib.optionalString broken "-broken"}";
+  name = "app-install${pkgs.lib.optionalString broken "-broken"}";
   skipTypeCheck = true;
 
   nodes = {
@@ -209,7 +209,7 @@ pkgs.testers.runNixOSTest {
 
     # THE CHAIN IS STATIC, and no longer derived from the rendering at all. The chain
     # is what drbd-reactor promotes WITH, but the volume it must converge to is only readable
-    # AFTER promotion — so the start-list cannot name the apps, and briard-services is what
+    # AFTER promotion — so the start-list cannot name the apps, and briard-apps is what
     # renders and starts them once the mount exists.
     #
     # TAKEN FROM lib.nix rather than restated. This used to be a hand-written list
@@ -232,10 +232,10 @@ pkgs.testers.runNixOSTest {
     print(f"primary={primary.name}")
 
     # IT PROMOTED WITH ZERO APPS FIRST, which is the shipped state of every node a stranger
-    # installs: briard-services converged to nothing, the VIP came up, and the front
+    # installs: briard-apps converged to nothing, the VIP came up, and the front
     # door answers. Asserted before the install so the install's effect is a change and not a
     # coincidence.
-    primary.wait_until_succeeds("test $(systemctl is-active briard-services.service) = active", timeout=120)
+    primary.wait_until_succeeds("test $(systemctl is-active briard-apps.service) = active", timeout=120)
     primary.fail("systemctl cat briard-fixture-app.service")
 
     # === 5b. the install's Primary-only half, by hand ===
@@ -248,8 +248,8 @@ pkgs.testers.runNixOSTest {
     primary.succeed(f"mkdir -p {dataroot}/app")
     # The MANIFEST is the app's identity, and putting it on the volume is what an install
     # actually does. Everything after this point is the product's own code.
-    primary.succeed("mkdir -p /var/lib/briard/.services")
-    primary.succeed("cp /tmp/manifest.json /var/lib/briard/.services/fixture.json && sync")
+    primary.succeed("mkdir -p /var/lib/briard/.apps")
+    primary.succeed("cp /tmp/manifest.json /var/lib/briard/.apps/fixture.json && sync")
     primary.succeed("briard-guest-agent --converge")
 
     # CONVERGE rendered the units and quadlet generated them — at RUNTIME, from the volume, with
@@ -263,7 +263,7 @@ pkgs.testers.runNixOSTest {
     print(primary.succeed("podman ps --format '{{.Names}} {{.Pod}} {{.Status}}'"))
 
     # The app answers on its OWN endpoint (host-networked :8080) — the same thing the health
-    # gate probes (agent/host/service.go awaitHealthy, which now asks the guest to resolve it
+    # gate probes (agent/host/app.go awaitHealthy, which now asks the guest to resolve it
     # rather than assembling this URL itself), and a REAL 200 from the app, not the front
     # door's own answer.
     primary.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=120)
@@ -276,17 +276,17 @@ pkgs.testers.runNixOSTest {
     # asserts first: the table carries the app, with no host to reach it by.
     import json
     table = json.loads(primary.succeed("cat /run/briard/routes.json"))
-    assert [s["name"] for s in table["services"]] == ["fixture"], f"routing table = {table}"
-    assert not table["services"][0].get("hosts"), f"an unnamed node composed a name: {table}"
-    assert table["services"][0]["address"] == "127.0.0.1", f"routing table = {table}"
-    assert table["services"][0]["routes"] == [{"listen": "name", "to": "http://:8080"}], f"routing table = {table}"
+    assert [s["name"] for s in table["apps"]] == ["fixture"], f"routing table = {table}"
+    assert not table["apps"][0].get("hosts"), f"an unnamed node composed a name: {table}"
+    assert table["apps"][0]["address"] == "127.0.0.1", f"routing table = {table}"
+    assert table["apps"][0]["routes"] == [{"listen": "name", "to": "http://:8080"}], f"routing table = {table}"
 
     # Name the flock the way the agent does, re-converge, and the SAME app acquires a name.
     # This is the sequence a real node runs in the other order; doing it this way is what proves
     # the name is composed from the flock name rather than baked at install.
     primary.succeed("mkdir -p /run/briard && printf 'FLOCK_NAME=brave-elf\\n' >/run/briard/mdns.env")
     primary.succeed("briard-guest-agent --converge")
-    hosts = json.loads(primary.succeed("cat /run/briard/routes.json"))["services"][0]["hosts"]
+    hosts = json.loads(primary.succeed("cat /run/briard/routes.json"))["apps"][0]["hosts"]
     host = hosts[0]
     assert host == "briard-brave-elf-fixture.local", f"the node composed {host}"
     assert "briard-fixture.local" in hosts, f"the bare alias is not in the table: {hosts}"
@@ -340,7 +340,7 @@ pkgs.testers.runNixOSTest {
     #     ⚠️ THIS TEST'S CONCLUSION REVERSED WITH CONVERGE-AT-PROMOTION. It used to assert the premise and
     #     stop there — "after a reboot the app is gone and stays gone until something
     #     re-renders, which is why the HOST must, from its node-local cache at bring-up". Converge
-    #     makes that cure unnecessary and the claim false: briard-services is a promoter chain
+    #     makes that cure unnecessary and the claim false: briard-apps is a promoter chain
     #     member, so the node re-renders from the VOLUME the moment it promotes, with no host in
     #     the loop at all. That is the same mechanism that fixes the survivor case, seen from the
     #     reboot side.
@@ -381,7 +381,7 @@ pkgs.testers.runNixOSTest {
 
     # ============================================================================================
     # THE FAILURE HALF — upgrade to a broken manifest, gate trips, roll back to v0 + data.
-    # Everything below drives the guest PRIMITIVES the way agent/host/service.go's applyAppInstall
+    # Everything below drives the guest PRIMITIVES the way agent/host/app.go's applyAppInstall
     # drives them over the channel (snapshot -> switch -> health-gate -> restore + revert), because
     # the host agent itself cannot run in this harness (the node IS the guest, no host on the wire).
     # ============================================================================================
@@ -394,7 +394,7 @@ pkgs.testers.runNixOSTest {
 
     # --- STOP, THEN snapshot the rollback point — applyAppInstall's quiesce + data.member,
     #     in that order since the rollback point started being taken quiesced. A live snapshot is only crash-consistent, and the catalog
-    #     cannot promise every app survives one: services-pair.nix measured mosquitto losing
+    #     cannot promise every app survives one: apps-pair.nix measured mosquitto losing
     #     exactly the retained message a rollback would be FOR. The container unit, never the pod
     #     — the pod would take the volume down under every other app.
     #
@@ -430,7 +430,7 @@ pkgs.testers.runNixOSTest {
     #     changed — systemd does not restart an already-active unit on daemon-reload, so without
     #     that the old container would keep serving while every file on disk described the new one.
     primary.succeed(f"cat > /tmp/broken.json <<'EOF'\n{broken_manifest}\nEOF")
-    primary.succeed("cp /tmp/broken.json /var/lib/briard/.services/fixture.json && sync")
+    primary.succeed("cp /tmp/broken.json /var/lib/briard/.apps/fixture.json && sync")
     primary.succeed("briard-guest-agent --converge")
     primary.succeed("mountpoint -q /var/lib/briard")  # nothing in the switch unmounted the volume
 
@@ -473,7 +473,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed("mountpoint -q /var/lib/briard")  # the shared mount survives a CLEAN container stop
     primary.succeed(f"btrfs subvolume delete {dataroot}")
     primary.succeed(f"btrfs subvolume snapshot {snap} {dataroot}")
-    primary.succeed("cp /tmp/manifest.json /var/lib/briard/.services/fixture.json && sync")
+    primary.succeed("cp /tmp/manifest.json /var/lib/briard/.apps/fixture.json && sync")
     primary.succeed("briard-guest-agent --converge")
 
     # --- RECOVERY. The good (v0) app serves again and the poison is GONE — the tick is back at

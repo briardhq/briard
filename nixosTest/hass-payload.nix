@@ -128,7 +128,7 @@ pkgs.testers.runNixOSTest {
       imports = [ node ];
       # hass-nudge is the REAL push half of the control channel as a command (agent/hass's Nudge),
       # so claim (d) drives the shipping code against the real Home Assistant rather than a curl
-      # that resembles it -- the same split service-probe makes in services-pair.nix.
+      # that resembles it -- the same split app-probe makes in apps-pair.nix.
       environment.systemPackages = [ (pkgs.callPackage ./hass-nudge-pkg.nix { }) ];
       # HA needs real memory + disk headroom: the 2.4 GB image is read from its
       # prebuilt store (an erofs disk, not RAM), and HA's Python stack wants ~1 GB live.
@@ -177,7 +177,7 @@ pkgs.testers.runNixOSTest {
     dataroot = install_fixture(node1)
     assert dataroot == "/var/lib/briard/data/home-assistant", f"the renderer chose {dataroot}"
     # The broker, for the zeroconf claim at the bottom. Installed through the same converge as HA.
-    install_fixture(node1, service="${mosquitto.name}")
+    install_fixture(node1, app="${mosquitto.name}")
 
     # The DRBD device is mounted; HA's /config subvolume lives on it. (Assert the
     # real mount, not the subvolume path — a fresh btrfs subvolume isn't reliably
@@ -258,12 +258,12 @@ pkgs.testers.runNixOSTest {
     assert ro == "ro=true", f"the member is writable ({ro}); a rollback point must not be"
 
     # EVERY MEMBER HAS A SIDECAR, and it carries the manifest the app was running -- which is
-    # not recoverable from the member itself, since the volume keeps manifests in .services/, a
+    # not recoverable from the member itself, since the volume keeps manifests in .apps/, a
     # sibling of the data subvolume the snapshot copies.
     import json as _sj
 
     sidecar = _sj.loads(node1.succeed(f"cat /var/lib/briard/data/.snapshots/{member}.json"))
-    assert sidecar["service"] == "home-assistant", sidecar
+    assert sidecar["app"] == "home-assistant", sidecar
     assert sidecar["trigger"] == "start", sidecar
 
     # THE START IS EVALUATED AFTER ITS BOOT. The pre-start hook writes the sample
@@ -284,7 +284,7 @@ pkgs.testers.runNixOSTest {
     # Byte-identical to what the volume names, DERIVED rather than restated: a version literal
     # here would assert that someone typed the same string twice, not that the member carries the
     # identity it was taken under.
-    on_volume = node1.succeed("cat /var/lib/briard/.services/home-assistant.json").strip()
+    on_volume = node1.succeed("cat /var/lib/briard/.apps/home-assistant.json").strip()
     assert sidecar["manifest"].strip() == on_volume, (
         f"the sidecar's manifest is not the one on the volume:\n{sidecar['manifest']!r}\n{on_volume!r}"
     )
@@ -388,7 +388,7 @@ pkgs.testers.runNixOSTest {
     # ONE MEMBER PER BOUNDARY. A container start is the unit pre-start's to take (it
     # reads the clean-stop marker), so `run` does not notify on the container's first run; it
     # notifies on every later one. Counted in the unit's journal, where both land: the pre-start
-    # logs `service-starting …: took`, and notify.py prints `briard: <outcome>` on EVERY call. The
+    # logs `app-starting …: took`, and notify.py prints `briard: <outcome>` on EVERY call. The
     # notifier's line is the first thing after the journal's own prefix (`]: briard: `); the
     # integration logs `[briard_ha] briard: …` too, and a bare `briard: ` would count those.
     # ⚠️ COUNT THE CALL, NOT THE SUCCESS: measured with the skip removed, the first-run notify
@@ -396,7 +396,7 @@ pkgs.testers.runNixOSTest {
     # stays at zero and a count of it passes either way. The pre-start's line is what makes the
     # zero mean something -- it proves the query sees this unit's output.
     unit_log = "journalctl --no-pager -u briard-home-assistant-app.service"
-    pre_took = node1.succeed(f"{unit_log} | grep -c 'service-starting home-assistant: took' || true").strip()
+    pre_took = node1.succeed(f"{unit_log} | grep -c 'app-starting home-assistant: took' || true").strip()
     assert pre_took != "0", "the unit pre-start took no member; the zero below would be vacuous"
     run_took = node1.succeed(f"{unit_log} | grep -c '\\]: briard: ' || true").strip()
     assert run_took == "0", f"`run` notified {run_took} time(s) on the container's first run"
@@ -523,7 +523,7 @@ pkgs.testers.runNixOSTest {
     import json as _zj
     host_mq = routed_host(node1, "${mosquitto.name}")
     want = next(
-        s for s in _zj.loads(node1.succeed("cat /run/briard/routes.json"))["services"]
+        s for s in _zj.loads(node1.succeed("cat /run/briard/routes.json"))["apps"]
         if s["name"] == "${mosquitto.name}"
     )["announce"][0]
     seen = node1.succeed(
@@ -860,7 +860,7 @@ pkgs.testers.runNixOSTest {
     # flock-scoped name, so that is the origin the code is bound to.
     host = "briard-home-assistant.local"
     assert host in next(
-        s for s in _zj.loads(node1.succeed("cat /run/briard/routes.json"))["services"]
+        s for s in _zj.loads(node1.succeed("cat /run/briard/routes.json"))["apps"]
         if s["name"] == "home-assistant"
     )["hosts"], "the bare alias is not routed"
     origin = f"http://{host}"

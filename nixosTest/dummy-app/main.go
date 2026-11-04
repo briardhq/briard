@@ -1,4 +1,4 @@
-// Command dummy-service is Briard's stateful test fixture (V0).
+// Command dummy-app is Briard's stateful test fixture (V0).
 //
 // It stands in for Home Assistant on the failover/upgrade path with HA's shape
 // minus its quirks: it persists state to a fixed data dir (the DRBD volume in

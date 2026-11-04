@@ -27,7 +27,7 @@ let
   witnessNode = h.mkNode { inherit resource; diskless = true; promoter = false; };
 in
 pkgs.testers.runNixOSTest {
-  name = "zero-service";
+  name = "zero-app";
   skipTypeCheck = true;
 
   nodes = {
@@ -71,11 +71,11 @@ pkgs.testers.runNixOSTest {
     survivor = next(m for m in disk_nodes if m != primary)
     print(f"primary={primary.name} survivor={survivor.name}")
 
-    # CONVERGE RAN AND CONVERGED TO NOTHING. briard-services is a chain member on
+    # CONVERGE RAN AND CONVERGED TO NOTHING. briard-apps is a chain member on
     # every data node now, so a failure there would take the VIP down on the one node shape every
     # stranger installs — precisely the failure this test exists to guard, arriving via a new unit.
     # Succeeding against an empty volume is the shipped state, not a degraded one.
-    primary.succeed("systemctl is-active briard-services.service")
+    primary.succeed("systemctl is-active briard-apps.service")
     left = primary.succeed("ls -A /run/containers/systemd 2>/dev/null || true").strip()
     assert left == "", f"converge wrote app units on a node with nothing installed: {left!r}"
 
@@ -98,7 +98,7 @@ pkgs.testers.runNixOSTest {
     page = primary.succeed("cat /tmp/vip.html")
     assert refused == "401" and "not yet trusted" in page, f"the VIP served {refused}: {page!r}"
     # An empty node has nothing to leak, so this cannot pass by there being nothing to name. The
-    # inventory assertion that matters lives in service-install.nix, where an app IS installed.
+    # inventory assertion that matters lives in app-install.nix, where an app IS installed.
     assert "Nothing is installed" not in page, f"the refusal still renders the node's page: {page!r}"
 
     # The routing table exists and is EMPTY, which is not the same as absent: converge
@@ -106,14 +106,14 @@ pkgs.testers.runNixOSTest {
     # rather than something nobody has got around to writing. An absent file here would mean the
     # door was reading whatever the last install left behind.
     import json
-    assert json.loads(primary.succeed("cat /run/briard/routes.json")) == {"services": []}, \
+    assert json.loads(primary.succeed("cat /run/briard/routes.json")) == {"apps": []}, \
         f"the routing table on an empty node: {primary.succeed('cat /run/briard/routes.json')!r}"
     primary.fail("test -e /run/briard/routes.hosts")  # one file: the publisher reads the table itself
 
     # The data volume is mounted and genuinely empty of app data — the substrate is up,
     # waiting for something to run. (.snapshots is the ladder's own directory, not an app.)
     primary.succeed("mountpoint -q /var/lib/briard")
-    primary.fail("ls -d /var/lib/briard/.services/*.json >/dev/null 2>&1")
+    primary.fail("ls -d /var/lib/briard/.apps/*.json >/dev/null 2>&1")
 
     # Failover still works with nothing installed: the whole point is that the node is
     # replicating and able to take over BEFORE it has a workload, so that installing one

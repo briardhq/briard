@@ -170,9 +170,9 @@ func bounded(ctx context.Context) func(time.Duration, func(context.Context) erro
 
 // promoterUnits is the ordered promoter chain. It mirrors nixosTest/lib.nix's promoterSnippet
 // and the host agent's promoterUnits, both of which are the same constant: the apps a node
-// runs are read off the volume by briard-services AFTER promotion, so no member varies with
+// runs are read off the volume by briard-apps AFTER promotion, so no member varies with
 // them. The front door is not a member -- it rides briard-vip (wantedBy + partOf), so it tracks
 // the primary regardless.
 func promoterUnits() []string {
-	return []string{"briard-primary-storage.service", "briard-vip.service", "briard-services.service"}
+	return []string{"briard-primary-storage.service", "briard-vip.service", "briard-apps.service"}
 }

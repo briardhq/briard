@@ -114,7 +114,7 @@ pkgs.testers.runNixOSTest {
     # Everything else still serves: the mount, the chain, the front door, the fixture -- and
     # nothing held or rebooted, because a damaged file is not a failed member.
     node1.succeed("mountpoint -q /var/lib/briard")
-    node1.succeed("systemctl is-active briard-chain.target briard-primary-storage.service briard-services.service")
+    node1.succeed("systemctl is-active briard-chain.target briard-primary-storage.service briard-apps.service")
     node1.succeed("curl -fsS http://192.168.1.100/healthz")
     node1.succeed("curl -fsS http://192.168.1.100:8080/healthz")
     for unit in fixture_units(node1):

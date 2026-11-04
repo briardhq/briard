@@ -127,7 +127,7 @@
           ];
         });
         drbd-reactor = final.callPackage ./guest-image/pkgs/drbd-reactor { };
-        dummy-service = final.callPackage ./nixosTest/dummy-service/package.nix { };
+        dummy-app = final.callPackage ./nixosTest/dummy-app/package.nix { };
         reverse-proxy = final.callPackage ./reverse-proxy/package.nix { }; # front door at the VIP
         dashboard = final.callPackage ./dashboard/package.nix { }; # the household dashboard behind the door
         # The upgrade-pair fixture: {from = 2025.11.0 (schema 51); to =
@@ -139,7 +139,7 @@
 
       packages = forAllSystems (pkgs: {
         drbd-reactor = pkgs.callPackage ./guest-image/pkgs/drbd-reactor { };
-        dummy-service = pkgs.callPackage ./nixosTest/dummy-service/package.nix { };
+        dummy-app = pkgs.callPackage ./nixosTest/dummy-app/package.nix { };
         # The upgrade-pair, surfaced flat + by name so the FOD sha256 can be
         # filled with `nix build .#home-assistant-image-2025_11` (see the pair's
         # refresh procedure) and each end can be built directly.

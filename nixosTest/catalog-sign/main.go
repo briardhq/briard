@@ -1,4 +1,4 @@
-// Command catalog-sign is a TEST/LAB HELPER (nixosTest/fixture-service.nix), not a product binary.
+// Command catalog-sign is a TEST/LAB HELPER (nixosTest/fixture-app.nix), not a product binary.
 //
 // It builds the smallest possible SIGNED CATALOG: the manifest bytes, a detached Ed25519
 // signature over exactly those bytes, and the PEM keyring that verifies it. That is the whole

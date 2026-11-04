@@ -1,4 +1,4 @@
-// Command quadlet-render is a TEST HELPER (nixosTest/service-install.nix), not a product binary.
+// Command quadlet-render is a TEST HELPER (nixosTest/app-install.nix), not a product binary.
 //
 // It exists so the integration test drives the REAL renderer rather than a hand-written copy of
 // its output — the mistake the quadlet spike deliberately accepted ("here they stand in for that
@@ -7,7 +7,7 @@
 //
 // It stands in for the host agent's orchestration, which cannot run here: the install path drives
 // the guest over the virtio-serial channel, and in the hermetic harness the node IS the guest with
-// no host on the other end. That orchestration is unit-tested (agent/host/service_test.go); what
+// no host on the other end. That orchestration is unit-tested (agent/host/app_test.go); what
 // this test adds is that the renderer's output is valid quadlet a real promoter can drive.
 //
 //	quadlet-render <manifest.json> <outdir>
@@ -67,14 +67,14 @@ func main() {
 		}
 	}
 	// The app's units, in start order. NOT a promoter chain: since converge-at-promotion the chain is
-	// static (data -> vip -> services) and these are not members of it -- briard-services starts
+	// static (data -> vip -> services) and these are not members of it -- briard-apps starts
 	// them, which is what keeps a crashed container from demoting the node.
 	write("units", r.Units)
 	write("images", r.ImageUnits)
 	write("identity", []string{string(id)})
 	write("dataroot", []string{quadlet.DataRoot(m.Name)})
 	// The directories the install path's provision step creates, each in the app's area in its
-	// tier, as full paths: a harness that has to stand in for `service.provision` makes each
+	// tier, as full paths: a harness that has to stand in for `app.provision` makes each
 	// path's parent a subvolume and the path a directory in it, and deriving the layout a second
 	// time in a test is how the two drift.
 	var subdirs []string

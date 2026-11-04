@@ -325,7 +325,7 @@ func TestPruneQEMUTreesKeepsCommittedAndStaged(t *testing.T) {
 		}
 	}
 	os.WriteFile(filepath.Join(l.Base, "qemu-notadir"), nil, 0o644)
-	os.MkdirAll(filepath.Join(l.Base, "services"), 0o755)
+	os.MkdirAll(filepath.Join(l.Base, "apps"), 0o755)
 	if err := os.Symlink("qemu-cur", l.QEMUPath()); err != nil { // as a swap leaves it
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestPruneQEMUTreesKeepsCommittedAndStaged(t *testing.T) {
 	if len(removed) != 2 || removed[0] != "qemu-old" || removed[1] != "qemu-orphan" {
 		t.Errorf("removed %v, want [qemu-old qemu-orphan]", removed)
 	}
-	for _, keep := range []string{l.QEMUTree("cur"), l.QEMUTree("next"), filepath.Join(l.Base, "qemu-notadir"), filepath.Join(l.Base, "services")} {
+	for _, keep := range []string{l.QEMUTree("cur"), l.QEMUTree("next"), filepath.Join(l.Base, "qemu-notadir"), filepath.Join(l.Base, "apps")} {
 		if _, err := os.Stat(keep); err != nil {
 			t.Errorf("%s was pruned", keep)
 		}

@@ -31,7 +31,7 @@ const Target = "briard-chain.target"
 //
 // IT IS STATIC, and that is what makes converge-at-promotion possible. The chain is
 // what drbd-reactor promotes WITH, but the volume is only readable AFTER promotion -- so the
-// start-list cannot name the apps themselves. briard-services is the unit that, once the
+// start-list cannot name the apps themselves. briard-apps is the unit that, once the
 // mount exists, reads the manifests, renders and starts them. The runtime-installed apps are
 // therefore NOT members, which is also what makes "an app error alerts but never demotes"
 // mechanically true: drbd-reactor never sees them, so a crashed container cannot deactivate the
@@ -39,7 +39,7 @@ const Target = "briard-chain.target"
 //
 // Nothing here is conditional on an app existing. The old conditional membership existed
 // because naming a unit the guest does not define fails the WHOLE ordered chain, and a
-// zero-app node has no app unit to name -- but briard-services is rendered
+// zero-app node has no app unit to name -- but briard-apps is rendered
 // unconditionally, exactly as briard-primary-storage and briard-vip are, so there is nothing
 // left to make conditional. It takes no arguments, and that is the end state converge-at-promotion was
 // after: the chain is the same units on every anchor in the fleet.
@@ -61,7 +61,7 @@ func Members() []string {
 	return []string{
 		"briard-primary-storage.service",
 		"briard-vip.service",
-		"briard-services.service",
+		"briard-apps.service",
 		"briard-reverse-proxy.service",
 		"briard-dashboard.service",
 	}

@@ -57,7 +57,7 @@ func (f *fakeControl) AppActive(ctx context.Context, _ string) (bool, error) {
 func (f *fakeControl) AppHealth(_ context.Context, url string) (bool, error) {
 	f.probed = append(f.probed, url)
 	if !f.healthVerb {
-		return false, errors.New(`guestagent: unknown verb "service.health"`) // old guest -> probeReady falls back
+		return false, errors.New(`guestagent: unknown verb "app.health"`) // old guest -> probeReady falls back
 	}
 	return f.health, nil
 }

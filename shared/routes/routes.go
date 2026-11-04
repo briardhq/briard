@@ -43,7 +43,7 @@ const Path = "/run/briard/routes.json"
 // renders in that order and a table two nodes disagree about the ORDER of is a diff nobody wants
 // to read.
 type Table struct {
-	Apps []App `json:"services"`
+	Apps []App `json:"apps"`
 }
 
 // App is one runtime-installed app as the node needs to see it.

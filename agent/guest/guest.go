@@ -21,7 +21,7 @@ import (
 //
 // NO SNAPSHOT/RESTORE HERE ANY MORE. They were the {data} half of an OS
 // upgrade that no longer touches apps, and the service-install sequence
-// (agent/host/service.go) has owned moving manifest and data back together since the service-warm re-cut —
+// (agent/host/app.go) has owned moving manifest and data back together since the service-warm re-cut —
 // driving the guest agent's data.member/data.restore verbs directly, pinned to the manifest
 // rather than to a system closure.
 type GuestManager interface {
@@ -269,7 +269,7 @@ func (m *Manager) healthURL(ctx context.Context) string {
 }
 
 // ProbeReady reports whether the health endpoint answers 200. It prefers the in-guest
-// probe (the service.health verb over the control channel) so the readiness gate survives a networking
+// probe (the app.health verb over the control channel) so the readiness gate survives a networking
 // substrate where the host can't reach the VIP (macvtap); it falls back to a direct host-side GET
 // only when that verb errors — an old guest built before it existed, which is always tap-based, so
 // the LAN GET still works there. Any error/non-200 is "not ready" — the health-gate treats a
@@ -290,7 +290,7 @@ func (m *Manager) probeReady(ctx context.Context) bool {
 }
 
 // HostProbeReady is the legacy host-side GET of the VIP, kept as the fallback for a guest that
-// predates the service.health verb.
+// predates the app.health verb.
 func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -309,7 +309,7 @@ func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 // `<service>-<id>` members under .snapshots — a SERIES, which is exactly what the ring is —
 // each pinned to the OS closure, because what they served was the whole-VM {code+data} rollback.
 // That sequence moved to the host (it owns the OS disk) and stopped touching apps at all; the
-// app half moved to agent/host/service.go and pins the MANIFEST. Nothing called these
+// app half moved to agent/host/app.go and pins the MANIFEST. Nothing called these
 // afterwards but their own tests.
 //
 // Deleted rather than reused, deliberately: the ring's identity is the manifest and its primitive

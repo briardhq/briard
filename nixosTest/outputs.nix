@@ -27,7 +27,7 @@
 , guestVersion ? agentVersion, guestInputs ? "" }:
 let
   # THE GUEST AS SHIPPED, and now the only one the framework tests boot. There used
-  # to be two: this one, which zero-service alone used, and a `dummy-guest` that baked the fixture
+  # to be two: this one, which zero-app alone used, and a `dummy-guest` that baked the fixture
   # into a build-time payload slot for everything else. The slot is deleted, so a test that needs a
   # workload INSTALLS one -- the same way a shipped node gets one -- and the guest under test is
   # the guest that ships.
@@ -35,7 +35,7 @@ let
   # The dummy fixture as a CATALOGUED app: a digest-pinned manifest plus the tarball it names.
   # This is how a test gets a workload onto a node (converge-at-promotion deleted the build-time slot that
   # was the alternative) — the same fixture, delivered the way a shipped node actually gets one.
-  fixture = import ./fixture-service.nix { inherit pkgs; };
+  fixture = import ./fixture-app.nix { inherit pkgs; };
   # HOME ASSISTANT AS A CATALOGUED APP: a signed manifest naming a digest-pinned image,
   # installed onto the volume after promotion -- exactly what a user's app is. Read from its
   # catalog entry (its mounts, :8123, /manifest.json as the readiness path because HA has no /healthz
@@ -45,7 +45,7 @@ let
   # with 2025.12.0 (schema 53) as a variant. Installing the variant IS the upgrade -- same name,
   # new manifest, converge bounces the container onto it -- which is the shape a household's HA
   # update has, where the old test drove an image re-pin no user could produce.
-  hassPairFixture = import ./fixture-service.nix {
+  hassPairFixture = import ./fixture-app.nix {
     inherit pkgs;
     name = "home-assistant";
     # As the catalog entry mounts them: its config in its data, its own backups apart.
@@ -85,7 +85,7 @@ let
   # upgrade. Both ends serve the same management API under Briard's config (measured before the
   # pair was pinned -- guest-image/pkgs/mosquitto-image), so an upgrade that failed here would be
   # reporting on the pipeline rather than on a broker that changed its API mid-pair.
-  mosquittoPairFixture = import ./fixture-service.nix {
+  mosquittoPairFixture = import ./fixture-app.nix {
     inherit pkgs;
     name = "mosquitto";
     container = "broker";
@@ -121,7 +121,7 @@ let
   };
   # Two apps on one node: both converge, upgrading one leaves the other alone, the rollback
   # point restores only what moved, and a failover carries both.
-  servicesPair = import ./services-pair.nix {
+  appsPair = import ./apps-pair.nix {
     inherit pkgs guestModule fixture;
     mosquitto = mosquittoPairFixture;
   };
@@ -204,7 +204,7 @@ let
   # and an upgrade that commits drops the image it moved off. The fixture DECLARES sizes no 1 GiB
   # disk fits; v0's image is STAGED (baked: kept when superseded), v1's ships in the image as a
   # plain file the rig loads at runtime (removable) -- nothing pulls, the sizes are what the host reads.
-  growFixture = import ./fixture-service.nix {
+  growFixture = import ./fixture-app.nix {
     inherit pkgs; size = 500000000; installedSize = 2000000000;
     variants.v1 = { version = "1.0.0"; };
   };
@@ -221,7 +221,7 @@ let
   # An install killed inside its health gate is undone at the next start, from the volume alone.
   # The broken variant poisons the app's data and never answers, so the undo has data to put
   # back; both images are staged, so nothing pulls.
-  undoFixture = import ./fixture-service.nix {
+  undoFixture = import ./fixture-app.nix {
     inherit pkgs;
     # A MOUNT IN EVERY TIER, so the rig's quota tree, the undo, the Storage card and its Clear meet
     # each area the real agent makes.
@@ -320,20 +320,20 @@ let
   # Every other test here now boots the same guest, so what this one still owns is the assertion
   # that a node with no apps is a WORKING node: volume mounted, chain complete, VIP up, front
   # door answering for itself.
-  zeroService = import ./zero-service.nix { inherit pkgs guestModule; };
+  zeroApp = import ./zero-app.nix { inherit pkgs guestModule; };
 
-  # Put an app ONTO the shipped (zero-service) node at runtime — a real digest-pinned
+  # Put an app ONTO the shipped (zero-app) node at runtime — a real digest-pinned
   # TLS pull from a registry the test runs, our real renderer's quadlet output, and the promoter
   # chain it emits driving the pod up behind the front door.
   quadletRenderPkg = pkgs.callPackage ./quadlet-render-pkg.nix { };
-  serviceInstall = import ./service-install.nix {
+  appInstall = import ./app-install.nix {
     inherit pkgs;
     inherit guestModule;
     quadletRender = quadletRenderPkg;
   };
   # The failure half — upgrade to a broken manifest, gate trips, {code+data} rollback to the
   # prior app. Reuses the whole hermetic scaffolding above (registry, CA, renderer, DRBD).
-  serviceInstallBroken = import ./service-install.nix {
+  appInstallBroken = import ./app-install.nix {
     inherit pkgs;
     inherit guestModule;
     quadletRender = quadletRenderPkg;
@@ -402,7 +402,7 @@ in
       drbd-witness = import ./drbd-witness.nix { inherit pkgs fixture guestModule; };
       drbd-witness-loss = import ./drbd-witness-loss.nix { inherit pkgs fixture guestModule; };
       single-node-chain = import ./single-node-chain.nix { inherit pkgs fixture guestModule; }; # a lone node runs no DRBD
-      service-memory-limit = import ./service-memory-limit.nix { inherit pkgs guestModule; }; # a leak is OOM-killed inside its own app
+      app-memory-limit = import ./app-memory-limit.nix { inherit pkgs guestModule; }; # a leak is OOM-killed inside its own app
       backup = import ./backup.nix { inherit pkgs fixture guestModule; }; # a ring member, through the real store, into a folder a person owns
       # The exit assertion of the lone node running no DRBD, a guard since the lone node stopped running DRBD: one bad
       # sector under a data file costs ONE file, and the node keeps serving. (The media-error spike
@@ -439,9 +439,9 @@ in
     # THE CATALOGUED APPS THEMSELVES. Everything else here tests a mechanism with an
     # app standing in it; these test the apps, and the properties that only exist once
     # there is more than one of them.
-    services = {
+    apps = {
       mosquitto = mosquittoTest; # the broker: its config in effect, its data on the volume
-      services-pair = servicesPair; # two apps: upgrade one, the other keeps serving
+      apps-pair = appsPair; # two apps: upgrade one, the other keeps serving
     };
     # EACH APP'S CONTRACT: the tests of Briard's own code for one catalogued app (agent/hass,
     # agent/mosquitto, its agent/apps entry), on the entry the catalog ships. The tier runs them
@@ -494,9 +494,9 @@ in
     # The free-local install path. qemu-bundle proves the relocatable qemu bundle runs
     # with /nix/store masked (the stock-host condition). Hermetic — one VM, rides the tier.
     install = {
-      zero-service = zeroService; # what a fresh install actually gives you — no app
-      service-install = serviceInstall; # and putting something on it at runtime
-      service-install-broken = serviceInstallBroken; # broken upgrade -> gate trips -> {code+data} rollback
+      zero-app = zeroApp; # what a fresh install actually gives you — no app
+      app-install = appInstall; # and putting something on it at runtime
+      app-install-broken = appInstallBroken; # broken upgrade -> gate trips -> {code+data} rollback
       qemu-bundle = qemuBundle.test;
       report-card = reportCard;
       install-macvtap = installMacvtap; # DEFAULT substrate: curl|sh -> green, off-box VIP reach, cattle/pet reinstall

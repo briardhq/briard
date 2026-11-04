@@ -1,5 +1,5 @@
 # The quadlet-render TEST HELPER, built from the real agent/quadlet + shared/manifest
-# packages so service-install.nix drives the actual renderer rather than a hand-written copy of
+# packages so app-install.nix drives the actual renderer rather than a hand-written copy of
 # its output. Same Go module as the agent, so it shares the module-wide vendorHash
 # (one definition, vendor-hash.nix).
 { buildGoModule }:

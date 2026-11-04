@@ -85,7 +85,7 @@ pkgs.testers.runNixOSTest {
     import re
 
     svc = "${fixture.serviceName}"
-    poison = 999_999_999  # the dummy's BRIARD_BROKEN tick (nixosTest/dummy-service)
+    poison = 999_999_999  # the dummy's BRIARD_BROKEN tick (nixosTest/dummy-app)
 
     host.wait_for_unit("multi-user.target")
     host.succeed(
@@ -118,10 +118,10 @@ pkgs.testers.runNixOSTest {
         return host.succeed("tr -d '\\r' < /tmp/g.out")
 
     def volume():
-        """The volume's .services listing and the app's tick, read in one shell."""
+        """The volume's .apps listing and the app's tick, read in one shell."""
         # The console echoes the typed line, so each marker is split by a "" there and whole only in
         # the output: a regex can then match nothing but the answer.
-        out = guest(f"echo L\"\"S=$(ls -1 /var/lib/briard/.services | tr \"\\n\" \" \"); echo T\"\"ICKS=$(cat /var/lib/briard/data/{svc}/app/state.json 2>/dev/null | tr -dc 0-9)")
+        out = guest(f"echo L\"\"S=$(ls -1 /var/lib/briard/.apps | tr \"\\n\" \" \"); echo T\"\"ICKS=$(cat /var/lib/briard/data/{svc}/app/state.json 2>/dev/null | tr -dc 0-9)")
         ls = re.search(r"LS=(.*)", out)
         ticks = re.search(r"TICKS=(\d*)", out)
         assert ls and ticks, f"no answer from the guest:\n{out}"
@@ -191,7 +191,7 @@ pkgs.testers.runNixOSTest {
     files, ticks = volume()
     print(f"after the undo: volume {files}, tick {ticks}")
     assert files == [f"{svc}.json"], f"the undo left {files} on the volume"
-    accepted = guest(f"echo BAD=$(grep -c 0.0.0-bad /var/lib/briard/.services/{svc}.json) VER=$(grep -c 0.0.0 /var/lib/briard/.services/{svc}.json)")
+    accepted = guest(f"echo BAD=$(grep -c 0.0.0-bad /var/lib/briard/.apps/{svc}.json) VER=$(grep -c 0.0.0 /var/lib/briard/.apps/{svc}.json)")
     assert re.search(r"BAD=0 VER=1", accepted), f"the accepted manifest is not the good version:\n{accepted}"
     assert ticks != poison and ticks >= good, f"the data was not put back (tick={ticks}, good was {good})"
     out = guest("curl -fsS -o /dev/null -w CODE=%{http_code} http://127.0.0.1:8080/healthz; echo", wait=15)

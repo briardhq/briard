@@ -100,7 +100,7 @@ func main() {
 	}
 	tbl := &routeReloader{path: *routesPath}
 	// Not fatal either, and for a stronger reason than the cert's: this unit starts after
-	// briard-services on the promoter chain, so a missing table means a node that converged to
+	// briard-apps on the promoter chain, so a missing table means a node that converged to
 	// nothing — the shipped state — and refusing to start would replace "no app routed" with
 	// "no front door at all", which is the same node with nothing to tell the household.
 	if _, err := tbl.load(); err != nil {

@@ -1,7 +1,7 @@
-// Command service-probe is a TEST HELPER (nixosTest/services-pair.nix), not a product binary.
+// Command app-probe is a TEST HELPER (nixosTest/apps-pair.nix), not a product binary.
 //
 // It runs the REAL guest-side probe — agent/mosquitto's, the one the S1 gate's assessor drives
-// over the service.mosquitto.probe verb — against a container on this node, and prints what it
+// over the app.mosquitto.probe verb — against a container on this node, and prints what it
 // found. The
 // point is that a rig asserting "the token survived the upgrade" is asserting it about the code
 // that ships, rather than about a shell pipeline that happens to resemble it.
@@ -11,7 +11,7 @@
 // here is the same one hass-upgrade-rollback.nix makes: drive the real signal, assert on the real
 // signal, leave the decision to the tests that can run it.
 //
-//	service-probe <container> [token]     # token given => write it first
+//	app-probe <container> [token]     # token given => write it first
 //
 // Prints `serving=<bool> token=<value>`.
 package main
@@ -39,7 +39,7 @@ func (runner) ReadFile(path string) ([]byte, error)     { return os.ReadFile(pat
 func main() {
 	args := os.Args[1:]
 	if len(args) < 1 || len(args) > 2 {
-		fmt.Fprintln(os.Stderr, "usage: service-probe <container> [token]")
+		fmt.Fprintln(os.Stderr, "usage: app-probe <container> [token]")
 		os.Exit(2)
 	}
 	token := ""
@@ -48,7 +48,7 @@ func main() {
 	}
 	s, err := mosquitto.Probe(context.Background(), runner{}, args[0], token)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "service-probe: %v\n", err)
+		fmt.Fprintf(os.Stderr, "app-probe: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("serving=%t token=%s\n", s.Serving, s.Token)

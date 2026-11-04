@@ -55,7 +55,7 @@ type fakeInstaller struct {
 	staged       map[string]string
 	rollbacks    map[string]string
 	commitEr     error
-	oldGuest     bool     // does not advertise service.installed -- an install must refuse it outright
+	oldGuest     bool     // does not advertise app.installed -- an install must refuse it outright
 	noMember     bool     // advertises everything BUT data.member: a guest older than the ring
 	noSweep      bool     // advertises data.restore but not data.replace: cannot sweep a member
 	noQuiesce    bool     // advertises the ring but not the quiesced take: the nightly falls back
@@ -424,7 +424,7 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 	// and the installed app is not a member of it, which is what makes an app crash unable
 	// to demote the node.
 	if !slices.Equal(cfg.Promoter, []string{
-		"briard-primary-storage.service", "briard-vip.service", "briard-services.service",
+		"briard-primary-storage.service", "briard-vip.service", "briard-apps.service",
 		"briard-reverse-proxy.service", "briard-dashboard.service",
 	}) {
 		t.Fatalf("install changed the promoter chain to %v — it must be static", cfg.Promoter)
@@ -1007,7 +1007,7 @@ func TestInstalledAppsSkipsOnlyTheBadFile(t *testing.T) {
 // could name WHICH app it meant, so a node running two and describing one would have had the
 // cloud confirm a rollout against whichever came first and a crash-loop in the other go unseen.
 // All three of those now name an app -- NodeStatus.Services (per-app manifest identity),
-// the volume's .services/<name>.json, and telemetry's per-app Payloads -- so the refusal is
+// the volume's .apps/<name>.json, and telemetry's per-app Payloads -- so the refusal is
 // gone.
 //
 // What matters is not that it succeeds but that the FIRST app survives it, which is the
@@ -1265,7 +1265,7 @@ func TestInstallRefusesAGuestThatCannotNameAApp(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: true, oldGuest: true}
 	o := installApp(cfg, f)
-	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "service.installed") {
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "app.installed") {
 		t.Fatalf("outcome = %+v, want a failure naming the missing verb", o)
 	}
 	if len(f.steps) != 0 {
@@ -1452,7 +1452,7 @@ func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
 }
 
 // TestUpgradeStopsTheAppBeforeSnapshottingIt is the rollback-point rule, and
-// `services-pair.nix` measured why it is one: taken live, the point did not contain the retained
+// `apps-pair.nix` measured why it is one: taken live, the point did not contain the retained
 // message mosquitto had already accepted, so the rollback restored an empty broker.
 // A live snapshot is crash-consistent at best, and only Home Assistant is measured to survive that.
 //
