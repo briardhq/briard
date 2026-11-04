@@ -925,26 +925,27 @@ func TestStableNoOpSaysAlreadyAtWhenTheInstalledReleaseIsTheTarget(t *testing.T)
 // the value decides whether every installed node below it is told to reinstall, which is the
 // loudest thing this product says to an owner.
 //
-// WHY THIS VALUE. The host attaches the guest image read-only, and an image built before the guest
-// mounted its own root read-only cannot boot that way: its root is mounted read-write, which a
-// read-only drive refuses. A node whose agent updated ahead of its image would come apart at the
-// guest's next launch. A floor turns that into one refusal that names the remedy, with the node
-// still serving its old release. Comparison is on the DATE, so every release from 20261004 on
-// can upgrade among themselves; everything older must reinstall.
+// WHY THIS VALUE. The data volume is formatted with simple quotas and every subvolume is born into
+// the quota tree, which an existing volume cannot be converted to; its areas sit tier first
+// (data/, files/, cache/, unversioned/), the installed manifests in .apps/, on the VG briardvol;
+// and the guest's verbs are app.*. No earlier release's volume or guest can be carried across
+// that, so a floor turns the attempt into one refusal that names the remedy, with the node still
+// serving its old release. Comparison is on the DATE: every release from 26110216 on can upgrade
+// among themselves; everything older must reinstall.
 func TestTheTreeDeclaresTheFloorItMeansTo(t *testing.T) {
-	const want = "v3.20261004.5ee3525"
+	const want = "v3.26110216.07bf1e6"
 	if MinUpgradeFrom != want {
 		t.Fatalf("MinUpgradeFrom = %q, want %q -- if this was deliberate, change the test and say why in the commit", MinUpgradeFrom, want)
 	}
-	// And it does what it says: a node on the stable that predates the read-only image is refused,
-	// one from that day on is not.
-	me := man(ChainBriard, PlatformHost, "v3.20261005.aaaaaaa")
+	// And it does what it says: a node on the stable that predates the quota format is refused,
+	// one from that hour on is not.
+	me := man(ChainBriard, PlatformHost, "v3.26110418.aaaaaaa")
 	me.MinUpgradeFrom = MinUpgradeFrom
-	old := man(ChainBriard, PlatformHost, "v3.20260930.00acca9")
+	old := man(ChainBriard, PlatformHost, "v3.26103111.c3e1b51")
 	if _, err := Decide(TargetStable, me, &old, nil); !errors.Is(err, ErrTooOldToUpgrade) {
-		t.Errorf("the stable before the read-only image is not refused: %v", err)
+		t.Errorf("the stable before the quota format is not refused: %v", err)
 	}
-	ok := man(ChainBriard, PlatformHost, "v3.20261004.5ee3525")
+	ok := man(ChainBriard, PlatformHost, "v3.26110216.07bf1e6")
 	if _, err := Decide(TargetStable, me, &ok, nil); err != nil {
 		t.Errorf("a release at the floor's own date was refused: %v", err)
 	}
