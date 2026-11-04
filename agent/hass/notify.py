@@ -1,4 +1,4 @@
-"""Tell the guest agent this service is starting, and wait for it to say go.
+"""Tell the guest agent this app is starting, and wait for it to say go.
 
 THE WAIT IS THE WHOLE POINT. briard's s6 `run` wrapper is the one moment Home
 Assistant is stopped and its files are closed at every boundary that matters -- container
@@ -13,14 +13,14 @@ for this side (remember whether we have run before in this container, read the r
 carry a crash-loop bound) lives there instead, where it is testable and where a container cannot
 tamper with it.
 
-IT NEVER FAILS THE SERVICE. Every path here exits 0, and the wrapper calls it with `|| true`
+IT NEVER FAILS THE APP. Every path here exits 0, and the wrapper calls it with `|| true`
 besides. A household losing Home Assistant because a snapshot socket did not answer would be a
 far worse trade than a ring missing one member -- the same trade the token mint and the
 integration planter next door already make.
 
 IT CANNOT SAY WHO IT IS, and that is not an omission. It presents a TOKEN the node minted for
-this service and mounted read-only here; the agent maps that back to a name. A field naming a
-service would be a field a hostile custom component could set, and a token it can only have if
+this app and mounted read-only here; the agent maps that back to a name. A field naming an
+app would be a field a hostile custom component could set, and a token it can only have if
 it was given one.
 """
 
@@ -28,14 +28,14 @@ import json
 import socket
 import sys
 
-# The token rides this service own read-only /briard directory, like every other thing briard
+# The token rides this app's own read-only /briard directory, like every other thing briard
 # hands it. The SOCKET cannot: it must be writable to connect to, and a read-write bind inside a
 # read-only one cannot be created by the runtime at all -- so it is a sibling. agent/services
 # carries the full trace.
 SOCKET = "/briard-agent.sock"
 TOKEN = "/briard/inbound.token"
 
-# Generous but finite. The agent's work is one btrfs snapshot of this service's subvolume, which
+# Generous but finite. The agent's work is one btrfs snapshot of this app's subvolume, which
 # is milliseconds; anything approaching this means something is wrong on the other side, and
 # waiting longer would hold a household's Home Assistant down for no benefit.
 TIMEOUT = 30
@@ -46,7 +46,7 @@ def main():
         with open(TOKEN) as f:
             token = f.read().strip()
     except OSError as e:
-        # No token is the ordinary case on a service that was never given the channel, and on any
+        # No token is the ordinary case on an app that was never given the channel, and on any
         # node whose agent predates it. Neither is worth more than a line.
         print(f"briard: no inbound token ({e}); starting without a snapshot", file=sys.stderr)
         return
@@ -55,7 +55,7 @@ def main():
         s.settimeout(TIMEOUT)
         s.connect(SOCKET)
     except OSError as e:
-        # No socket is the ordinary case on a service that was never given one, and on any node
+        # No socket is the ordinary case on an app that was never given one, and on any node
         # whose agent is older than this wrapper. Neither is worth a word in the log.
         print(f"briard: no inbound channel ({e}); starting without a snapshot", file=sys.stderr)
         return

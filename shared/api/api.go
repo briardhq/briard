@@ -75,15 +75,15 @@ type NodeStatus struct {
 	// binary that reverted, a firmware without the push verbs) would read as converged the moment
 	// the host committed. It is a release id, nothing about the household.
 	GuestBundle string `json:"guest_bundle,omitempty"`
-	// Services is what this node has INSTALLED at runtime, one entry per service, ordered by
+	// Services is what this node has INSTALLED at runtime, one entry per app, ordered by
 	// name. It is the whole answer to "what is this node running", and widening the closed
 	// allowlist by a repeated field is a deliberate act, so here is the argument.
 	//
-	// WHY A FIELD AT ALL: the cloud must be able to confirm a service rollout. It used to read an
+	// WHY A FIELD AT ALL: the cloud must be able to confirm an app rollout. It used to read an
 	// `Image` OCI ref, which was the BAKED SLOT's notion of identity -- a runtime-installed
-	// service's identity is its MANIFEST, and its upgrade is a service-install directive carrying
+	// app's identity is its MANIFEST, and its upgrade is a service-install directive carrying
 	// a new one (the change that deleted the slot deleted the field with it). With nothing else
-	// on the wire, a node was held to ONE runtime service by an explicit refusal in
+	// on the wire, a node was held to ONE runtime app by an explicit refusal in
 	// applyServiceInstall, because a node running two and describing one would have the cloud
 	// confirm a rollout against whichever came first and a crash-loop in the other go entirely
 	// unseen. This field is what let that refusal come out.
@@ -95,12 +95,12 @@ type NodeStatus struct {
 	// catalog can state in advance and the node can be held to afterwards.
 	//
 	// WHAT IT DELIBERATELY DOES NOT CARRY: the manifest's Version string (a human label the
-	// cloud can look up from the identity it already has), per-service health (a service's own
+	// cloud can look up from the identity it already has), per-app health (an app's own
 	// endpoint is not probed from here -- see Healthy, and the routing table for the fix), and the image
-	// refs (derivable from the manifest, and one OCI ref per service is exactly the shape this
+	// refs (derivable from the manifest, and one OCI ref per app is exactly the shape this
 	// replaced).
 	//
-	// Empty on a witness and on the shipped zero-service node, which is the state `install.sh`
+	// Empty on a witness and on the shipped zero-app node, which is the state `install.sh`
 	// leaves behind. A node that has PROMOTED reports what the volume says it runs, not merely
 	// what it was itself told to install (adoptVolumeServices).
 	Services []ServiceStatus `json:"services,omitempty"`
@@ -146,31 +146,31 @@ type NodeStatus struct {
 	// per-report current-state. Expanding that set is a deliberate, visible act.
 }
 
-// ServiceStatus is one runtime-installed service as the node reports it: what it is, which
+// ServiceStatus is one runtime-installed app as the node reports it: what it is, which
 // version of what it is, and whether it is actually running. See NodeStatus.Services for why the
 // first two are what they are, and State below for why the third had to join them.
 type ServiceStatus struct {
-	// Name is the catalog slug the service was installed under ("home-assistant"). Stable
+	// Name is the catalog slug the app was installed under ("home-assistant"). Stable
 	// across upgrades, which is exactly why it cannot be the identity on its own.
 	Name string `json:"name"`
 	// Manifest is the sha256 of the signed manifest bytes this node is running for that name,
-	// spelled "sha256:<64 hex>" (shared/manifest.Identity). The cloud confirms a service rollout
+	// spelled "sha256:<64 hex>" (shared/manifest.Identity). The cloud confirms an app rollout
 	// by comparing it against the identity the catalog published -- ground truth read back from
 	// the node, never echoed from the directive it was sent.
 	Manifest string `json:"manifest"`
-	// State is what this node observes the service's own serving unit doing: StateRunning,
+	// State is what this node observes the app's own serving unit doing: StateRunning,
 	// StateStopped, or EMPTY when the question does not apply or could not be answered.
 	//
 	// Widening the closed allowlist is a deliberate act, so here is the argument, and it is a
-	// MEASURED one. NodeStatus.Services deliberately carried no health, on the grounds that a
-	// service's own endpoint is not probed from here and Healthy covers the node. A fleet run on
-	// 2026-08-27 showed what that costs: a survivor promoted, ran no service at all, and reported
+	// MEASURED one. NodeStatus.Services deliberately carried no health, on the grounds that an
+	// app's own endpoint is not probed from here and Healthy covers the node. A fleet run on
+	// 2026-08-27 showed what that costs: a survivor promoted, ran no app at all, and reported
 	// `healthy=true` -- because Healthy is the FRONT DOOR at the VIP, and the front door answers
-	// its own /healthz on a zero-service node. A home degraded to zero services and every signal
+	// its own /healthz on a zero-app node. A home degraded to zero apps and every signal
 	// said fine. Healthy is not wrong about its own subject; it is pointed at a different one.
 	//
 	// Converge-at-promotion makes this load-bearing rather than merely nice. It takes the
-	// service units OUT of the promoter chain, so that a crashed container alerts instead of
+	// app units OUT of the promoter chain, so that a crashed container alerts instead of
 	// demoting the node -- which also means drbd-reactor no longer notices one at all. This field
 	// is then the ONLY thing that does.
 	//
@@ -179,23 +179,23 @@ type ServiceStatus struct {
 	// the silence it fixes.
 	//
 	// WHAT IT DELIBERATELY IS NOT: a health probe. It answers "is the unit up", not "is the
-	// application well" -- a service that is running but broken stays invisible here, because the
+	// application well" -- an app that is running but broken stays invisible here, because the
 	// front door does not route to it. That is the routing table's, and this does not pretend to it.
 	//
 	// EMPTY IS A REAL ANSWER and must not be read as "stopped": a Secondary is not supposed to be
-	// running anything (the services run on whoever holds the volume), and a node whose control
+	// running anything (the apps run on whoever holds the volume), and a node whose control
 	// channel hiccuped this cycle knows nothing. Reporting either as stopped would make an
 	// ordinary standby indistinguishable from a broken primary.
 	State string `json:"state,omitempty"`
-	// Health is the service's SERVICE HEALTH: whether the app works, as the guest answers
-	// it — the service's own health endpoint, resolved through the node's routing table, or a
+	// Health is APP HEALTH: whether the app works, as the guest answers
+	// it — the app's own health endpoint, resolved through the node's routing table, or a
 	// curated app's own check — reported as StateHealthy, StateUnhealthy or StateStarting. Empty
 	// means the question does not apply or could not be asked — a Secondary (which runs nothing),
-	// a service that is not running (State already says so), a cycle whose control channel
+	// an app that is not running (State already says so), a cycle whose control channel
 	// hiccuped, or an app that told us nothing (our login to it failing).
 	//
 	// STARTING means still booting and nothing
-	// else, and without it a restarting service reads as unhealthy for the minute it takes — a
+	// else, and without it a restarting app reads as unhealthy for the minute it takes — a
 	// false alarm on a field whose value is that someone acts on it. It carries nothing about the
 	// household beyond what healthy/unhealthy already did.
 	//
@@ -204,14 +204,14 @@ type ServiceStatus struct {
 	// and reported healthy. It cannot close the next one: a container that is up while the
 	// application inside it is broken reads as `running`, and the node-level Healthy is the front
 	// door, which answers for the NODE. So "the unit is up" was the only thing anyone could see,
-	// and a service that starts and then fails to serve was invisible to every signal we have.
+	// and an app that starts and then fails to serve was invisible to every signal we have.
 	//
-	// It became askable at all with the routing table: before it, the address of a
-	// service was something each caller assembled for itself, and a health field would have been
+	// It became askable at all with the routing table: before it, the address of an
+	// app was something each caller assembled for itself, and a health field would have been
 	// a claim about a URL rather than about the thing the household reaches.
 	//
 	// IT REPORTS AND NEVER GATES, exactly like State and for the same reason: converge-at-promotion takes
-	// service failures out of the promoter's reach on purpose, because a code fault is
+	// app failures out of the promoter's reach on purpose, because a code fault is
 	// deterministic and failing over to a peer running the identical closure only flaps. This is
 	// what makes such a failure VISIBLE without making it actionable by the wrong machinery.
 	Health string `json:"health,omitempty"`
@@ -225,7 +225,7 @@ const (
 )
 
 // The values ServiceStatus.Health takes. Separate from State's set, because they answer different
-// questions about the same service and a single field could not say "running but not serving" --
+// questions about the same app and a single field could not say "running but not serving" --
 // which is the only interesting combination of the two.
 const (
 	StateHealthy   = "healthy"
@@ -320,10 +320,10 @@ const (
 )
 
 // Directive kinds the agent understands. The down-channel carries cheap, safe directives plus the
-// two that change what a node runs: a whole-OS upgrade, and a service install.
+// two that change what a node runs: a whole-OS upgrade, and an app install.
 //
 // There is no payload `upgrade` kind. It named an OCI image ref and re-pinned the build-time
-// payload slot, which is deleted; a runtime-installed service is identified by its
+// payload slot, which is deleted; a runtime-installed app is identified by its
 // MANIFEST, so moving one to a new version is a service-install directive carrying the catalog
 // name whose published manifest changed.
 const (
@@ -348,7 +348,7 @@ const (
 	DirectiveServiceInstall = "service-install" // Payload = a CATALOG NAME (a slug, e.g.
 	//                        "home-assistant"). The node fetches that name's signed manifest from the
 	//                        catalog, verifies it against the release keyring, renders quadlet
-	//                        units, provisions the service subvolume (Primary only), and rewrites the
+	//                        units, provisions the app subvolume (Primary only), and rewrites the
 	//                        promoter chain inside the maintenance bracket — health-gated, with
 	//                        the chain reverted on failure. Deliberately a NAME and not the
 	//                        manifest itself: shipping the document down this channel would make the
@@ -383,8 +383,8 @@ const (
 	//                        digest already present is a no-op. It never changes what the node serves,
 	//                        which is what lets the cloud fan it out to every anchor before committing
 	//                        anything.
-	DirectiveServiceMembers = "service-members" // Payload = a SERVICE NAME. Outcome.Detail is a
-	//                        JSON array of quadlet.SnapshotEntry: one service's ring, oldest
+	DirectiveServiceMembers = "service-members" // Payload = an APP NAME. Outcome.Detail is a
+	//                        JSON array of quadlet.SnapshotEntry: one app's ring, oldest
 	//                        first, as the picker shows it. Read-only — it changes
 	//                        nothing and is safe to re-send.
 	//
@@ -393,7 +393,7 @@ const (
 	//                        directive channel for one query, and two ways to ask a node something
 	//                        is how they drift. Both readers want structure: the CLI prints a
 	//                        table, the dashboard renders a list.
-	DirectiveServiceUsage = "service-usage" // Payload = a SERVICE NAME. Outcome.Detail is a JSON
+	DirectiveServiceUsage = "service-usage" // Payload = an APP NAME. Outcome.Detail is a JSON
 	//                        dashboard.AppUsage: what the app's data and history hold on the
 	//                        volume, per tier, for its page's Storage card. Read-only; the split
 	//                        between current data and history comes from a walk the guest runs in
@@ -402,7 +402,7 @@ const (
 	//                        household's to see.
 	DirectiveServiceRestore = "service-restore" // Payload = a RING MEMBER's subvolume path
 	//                        exactly as the listing the picker read returned it. The
-	//                        node puts that service back to the member: its data, and — when the
+	//                        node puts that app back to the member: its data, and — when the
 	//                        member's pinned manifest differs from the running one — its CODE with
 	//                        it, which is the designed {code identity + data} rollback reached
 	//                        deliberately rather than through a failed upgrade.
@@ -414,22 +414,22 @@ const (
 	//
 	//                        ⚠️ IT REFUSES BEFORE IT STOPS ANYTHING. The member's images are
 	//                        pre-flighted first, so a household whose rollback target can no longer
-	//                        be fetched is told while its service is still running. An INSTALL is
+	//                        be fetched is told while its app is still running. An INSTALL is
 	//                        allowed to stop things, because the household asked for a change; a
 	//                        restore that cannot finish must cost nothing.
-	DirectiveServiceCacheEmpty = "service-cache-empty" // Payload = a SERVICE NAME. The node stops
+	DirectiveServiceCacheEmpty = "service-cache-empty" // Payload = an APP NAME. The node stops
 	//                        the app, empties its cache area and starts it again: the Storage
 	//                        card's Clear. Refused for an app that keeps no cache. Local-only: a
 	//                        household's app restarting is the household's to ask for.
 	DirectiveRescue = "rescue" // Payload = "" — restart this node's guest on its verified,
 	//                        read-only image: stop the VM and bring it up again, its scratch emptied
 	//                        at boot and every binary pushed afresh. The REPLICATED DATA DISK and
-	//                        the state disk are not touched, so identity, replica and service pin all survive —
+	//                        the state disk are not touched, so identity, replica and app pin all survive —
 	//                        the same node returns with a factory code half.
 	//
 	//                        THE ONE DIRECTIVE THAT IS NEVER A REFLEX. Every other recovery
 	//                        rung fires on its own; this waits for a human — or, later, a cloud that
-	//                        has read the logs and decided. It stops the household's service, and
+	//                        has read the logs and decided. It stops the household's app, and
 	//                        its result is uncertain when the cause is unknown.
 	DirectiveDashboard = "dashboard" // Payload = a JSON {name, username, language} describing the OS account the
 	//                                  CLI ran under (all optional). The node mints a one-time code, hands
@@ -531,9 +531,9 @@ const (
 	//                        filesystem answers. Idempotent -- disarming a console that was never
 	//                        armed is the same monitor call -- which is what lets a caller run it
 	//                        from an unconditional cleanup path.
-	DirectiveBackupRestore = "backup-restore" // Payload = a JSON BackupRestore. Put one service back to
+	DirectiveBackupRestore = "backup-restore" // Payload = a JSON BackupRestore. Put one app back to
 	//                        one night of the household's backup: the night's copy is materialised
-	//                        in the service's ring as a member, and that member is restored exactly
+	//                        in the app's ring as a member, and that member is restored exactly
 	//                        as service-restore restores one -- images first, the undo point, stop,
 	//                        swap, the member's manifest, converge -- so a night from the backup
 	//                        and a point from the ring are one path, and the restore is itself a
@@ -571,7 +571,7 @@ const (
 	//                        Local-only: the answer is for the person at the machine, like doctor's.
 )
 
-// BackupRestore is a DirectiveBackupRestore's payload: the service, and the night -- a restic
+// BackupRestore is a DirectiveBackupRestore's payload: the app, and the night -- a restic
 // snapshot id as the dashboard's Backup section lists them, or "latest".
 type BackupRestore struct {
 	Service  string `json:"service"`

@@ -58,7 +58,7 @@ type doctorFacts struct {
 	// Refused/RefusedFix are the copier's refusal of the address the router handed the guest
 	// (ipvtap.go); "" when there is none.
 	Refused, RefusedFix string
-	Diskless            bool // a witness: no volume, no address, no service
+	Diskless            bool // a witness: no volume, no address, no app
 	Peers               int  // other members of the flock; 0 is a lone node
 	DataDisk            string
 	DiskFound           bool

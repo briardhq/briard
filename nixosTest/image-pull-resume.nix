@@ -377,7 +377,7 @@ pkgs.testers.runNixOSTest {
 
     # === ACT 5: WHERE DO THE BYTES LIVE, AND WHEN ARE THEY SWEPT? ===
     # The guest has ONE filesystem for all of this (16 GiB root; the replicated volume holds only
-    # service DATA), so a pull's scratch space competes with the OS closure, the image store and
+    # app DATA), so a pull's scratch space competes with the OS closure, the image store and
     # the second system generation an OS upgrade stages. The host's ENOSPC handling and the guest disk
     # sizing note in disk-image.nix are the same question from the other side.
     def usage():

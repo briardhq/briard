@@ -177,7 +177,7 @@ func hassDBRestore(ctx context.Context, x Executor, run func(string, ...string) 
 // registers no change of its own.
 //
 // ONLY THE UNITS THAT WERE RUNNING are stopped and started. Container units, never the pod: a pod
-// stop unmounts the shared volume under every other service (quadlet.Rendered.ContainerUnits).
+// stop unmounts the shared volume under every other app (quadlet.Rendered.ContainerUnits).
 func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string) error, m manifest.Manifest, rawManifest string, from hass.Member, dir string) error {
 	rendered, err := quadlet.Render(m, "")
 	if err != nil {

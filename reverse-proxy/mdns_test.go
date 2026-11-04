@@ -11,7 +11,7 @@ import (
 	"briard.io/shared/routes"
 )
 
-// table is the shape converge writes: a flock with a name, one service the door fronts and one
+// table is the shape converge writes: a flock with a name, one app the door fronts and one
 // that announces itself to appliances. Built here the way the node builds it -- names through
 // routes.HostName -- so a change to the naming rule fails these tests rather than being restated.
 func table(flock string) routes.Table {
@@ -31,8 +31,8 @@ func table(flock string) routes.Table {
 	}}
 }
 
-// What a household gets: the flock's own name, one per service, all at the VIP -- and the SRV
-// record pointed at the SERVICE's own name, never at the flock's and never at a hostname. The
+// What a household gets: the flock's own name, one per app, all at the VIP -- and the SRV
+// record pointed at the APP's own name, never at the flock's and never at a hostname. The
 // last part is the one that cost a measurement: a node-scoped target sends every device on the
 // LAN to the machine that has just stopped being Primary.
 func TestTheWorldIsTheFlockNameEveryServiceNameAndTheDeclaredRecords(t *testing.T) {
@@ -72,7 +72,7 @@ func TestTheWorldIsTheFlockNameEveryServiceNameAndTheDeclaredRecords(t *testing.
 }
 
 // A node with no minted flock name publishes NOTHING rather than a guess: `briard-.local` is worse
-// than silence, and the rule is routes.FlockHostName's. The services have no names either, because
+// than silence, and the rule is routes.FlockHostName's. The apps have no names either, because
 // the agent materialises those from the same empty flock.
 func TestAnUnnamedFlockPublishesNothing(t *testing.T) {
 	w := mdnsWorldFor("192.168.1.100", "", table(""))
@@ -257,7 +257,7 @@ func read(t *testing.T, path string) string {
 	return string(b)
 }
 
-// The table also carries each service's casa name, which public DNS answers for: the
+// The table also carries each app's casa name, which public DNS answers for: the
 // publisher must not claim it on the LAN, and must not lose the `.local` name beside it.
 func TestTheCasaNamesAreNotPublishedOnTheLAN(t *testing.T) {
 	tbl := table("brave-elf")

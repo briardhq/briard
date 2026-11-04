@@ -1,4 +1,4 @@
-# The broker as a catalogued service: it installs the shipped way, runs on Briard's config rather
+# The broker as a catalogued app: it installs the shipped way, runs on Briard's config rather
 # than its image's, and keeps what it was told to keep.
 #
 # WHAT THIS EXISTS TO CATCH, and none of it is visible to a test that only asks "is it up".
@@ -12,14 +12,14 @@
 #   3. MQTT itself IS on the LAN -- from that same off-box client, because a broker only nobody
 #      can reach would pass (1) and (2) perfectly;
 #   4. a retained message SURVIVES a restart of the container, and lands in the file on the
-#      REPLICATED subvolume -- which is what makes the broker a service with data at all, and
+#      REPLICATED subvolume -- which is what makes the broker an app with data at all, and
 #      what the failover half of the services-pair rig then carries across a node;
 #   5. the broker is FINDABLE -- it answers a `_mqtt._tcp` browse from that same off-box client,
 #      under the flock's name and on the port MQTT actually listens on, and the browse result is
 #      then connected to. An image that advertises nothing is invisible to every appliance in the
 #      house, which is a broker nobody without our documentation can use.
 #
-# Two nodes for one broker: node2 is the off-box client. It holds no service and never promotes
+# Two nodes for one broker: node2 is the off-box client. It holds no app and never promotes
 # -- it is the outside from which (2), (3) and (5) are observed.
 { pkgs, guestModule, fixture }:
 
@@ -155,7 +155,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed(f"test -s {dataroot}/${fixture.dataDir}/mosquitto.db")
 
     # THE CRASH, which is the household's actual failure mode and a claim converge-at-promotion rests on:
-    # service units are NOT promoter chain members, so nothing outside the unit brings a dead
+    # app units are NOT promoter chain members, so nothing outside the unit brings a dead
     # container back -- its own `Restart=always` is the whole recovery. A SIGKILL is the honest
     # test of that, and the retained message is already on disk from the clean stop above, so what
     # comes back is answering from the replicated volume rather than from memory.
@@ -165,13 +165,13 @@ pkgs.testers.runNixOSTest {
     got = other.succeed(f"mosquitto_sub -h {VIP} -t briard/test -C 1 -W 10").strip()
     assert got == "before-restart", f"the broker did not recover its state after a crash: {got!r}"
 
-    # The node did NOT demote for it: a crashed service alerts, it never fails the household over.
+    # The node did NOT demote for it: a crashed app alerts, it never fails the household over.
     # The primary is still primary and the front door still answers.
     assert role(primary) == "Primary", "a crashed container demoted the node"
     primary.succeed(f"curl -fsS -o /dev/null http://{VIP}/healthz")
 
     # (5) AND THE HOUSEHOLD'S OTHER DEVICES CAN FIND IT. The broker is the one
-    # catalogued service whose clients are appliances rather than people: Tasmota- and
+    # catalogued app whose clients are appliances rather than people: Tasmota- and
     # ESPHome-class firmware browses `_mqtt._tcp` and never types a name. mosquitto's own image
     # advertises nothing (measured -- there is no mDNS code in it at all), so the record comes from
     # the FRONT DOOR, off the very table it routes on -- one map, so a record that points
@@ -189,7 +189,7 @@ pkgs.testers.runNixOSTest {
     assert ann["port"] == 1883, f"the node announces port {ann['port']}, not MQTT's"
 
     # (5a) THE SRV TARGET RESOLVES ON THE LAN. Also the first assertion anywhere to resolve a
-    # per-service name over mDNS at all: every earlier one reached those names with
+    # per-app name over mDNS at all: every earlier one reached those names with
     # `curl -H 'Host: …'`, which never touches a resolver, so a name that resolved nowhere would
     # have passed all of them.
     other.wait_until_succeeds(f"avahi-resolve -n {host} | grep -q {VIP}", timeout=120)

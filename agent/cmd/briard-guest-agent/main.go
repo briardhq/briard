@@ -13,7 +13,7 @@
 //	briard-guest-agent run --deadman    the host-agent watchdog, its own unit
 //	briard-guest-agent run --inbound-listen  the inbound channel alone; `run --guest`
 //	                                    does this itself, so only an agent-less rig invokes it
-//	briard-guest-agent --converge       render, warm and start every service the volume names
+//	briard-guest-agent --converge       render, warm and start every app the volume names
 //	briard-guest-agent --converge-stop  stop those units (briard-services' ExecStop)
 //	briard-guest-agent --node-storage   build this node's tiers and attach the DRBD resource,
 //	                                    from the spec the host wrote (briard-node-storage)
@@ -118,7 +118,7 @@ func runDaemon(args []string) {
 // data mount and the VIP, so the exit code is load-bearing: a non-zero ExecStart fails the whole
 // promotion, the node never claims the VIP, and a primary with no address is already reported
 // unhealthy. Converge failing is a node that cannot serve, and it must say so rather than
-// promote into a broken state. (A SERVICE that fails to start is a different thing and never
+// promote into a broken state. (AN APP that fails to start is a different thing and never
 // reaches here; Converge logs it and returns nil.)
 func runInternal(args []string) {
 	fs := flag.NewFlagSet("briard-guest-agent", flag.ExitOnError)
@@ -186,7 +186,7 @@ func runInternal(args []string) {
 	}
 
 	if *serviceStarting != "" {
-		// THE GENERIC HOOK: every catalogued service gets a member at container start,
+		// THE GENERIC HOOK: every catalogued app gets a member at container start,
 		// which is the only boundary visible from outside the container. Home Assistant adds its
 		// OWN restarts through the inbound channel; everything else has just this.
 		//
@@ -196,7 +196,7 @@ func runInternal(args []string) {
 		// point that can take a member is covered rather than every caller remembering.
 		//
 		// ⚠️ NEVER FAILS THE START, which is why the rendered line carries systemd's `-` prefix as
-		// well: a household losing its service because a snapshot could not be taken is the wrong
+		// well: a household losing its app because a snapshot could not be taken is the wrong
 		// trade, and the belt-and-braces is deliberate because `-` alone hides WHY. The exit code
 		// is 0 either way; the journal carries the reason.
 		detail, err := guestagent.TakeStartMember(ctx, guestfirmware.NewOSExecutor(), *serviceStarting)
@@ -271,7 +271,7 @@ func runInternal(args []string) {
 
 	if *serviceStopped != "" {
 		// THE CLEAN-STOP MARKER, the other half of the question the member above
-		// answers: whether this service's data was FLUSHED, which a stopped container does not
+		// answers: whether this app's data was FLUSHED, which a stopped container does not
 		// prove on its own. systemd's own $SERVICE_RESULT is the evidence, and it exists only in
 		// an ExecStopPost — which is why the rendered unit puts this there.
 		//
@@ -297,8 +297,8 @@ func runInternal(args []string) {
 
 	if *converge || *convergeStop {
 		// Converge's skip list is DROPPED here on purpose: this is drbd-reactor's call, and a
-		// service it could not prepare must not fail the unit -- briard-services is a chain
-		// member, so exiting non-zero would take the promotion down over one service's
+		// app it could not prepare must not fail the unit -- briard-services is a chain
+		// member, so exiting non-zero would take the promotion down over one app's
 		// packaging. Converge has already logged which one and declined to start it. The install
 		// path reads the list through the verb, where failing IS the right answer.
 		run, what := func(ctx context.Context, x guestagent.Executor) error {
@@ -335,12 +335,12 @@ func runGuest(ctx context.Context) error {
 		return err
 	}
 	// THE INBOUND CHANNEL: one socket, bound unconditionally, whether this node runs
-	// zero services or five. It needs no service list because a caller identifies itself with a
+	// zero apps or five. It needs no app list because a caller identifies itself with a
 	// token converge minted, so there is nothing to learn and nothing to re-learn when a
-	// promotion brings a service this process was never told about.
+	// promotion brings an app this process was never told about.
 	//
 	// ITS OWN GOROUTINE, and a failure to bind is logged rather than returned. The agent's job is
-	// serving the host; a service's own snapshot notifications are worth strictly less than that,
+	// serving the host; an app's own snapshot notifications are worth strictly less than that,
 	// and a node that would not serve its household because a socket path was busy is the wrong
 	// trade. Same posture the wrapper takes with `|| true`, one level up.
 	go func() {

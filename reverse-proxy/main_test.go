@@ -38,7 +38,7 @@ func get(t *testing.T, base, path string) (int, string) {
 
 // The shipped state of a fresh node: nothing installed. The VIP must still ANSWER — Briard's
 // own page at the root — and /healthz must say the node is ready rather than sick.
-// A node reporting unhealthy forever because no service was ever installed is the zombie
+// A node reporting unhealthy forever because no app was ever installed is the zombie
 // state this replaces.
 
 // getHost is the same GET with a chosen Host header — which is the whole input to routing, so
@@ -59,8 +59,8 @@ func getHost(t *testing.T, base, path, host string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
-// fronted is a table entry for a service the door may serve: httptest hands back a full URL, and
-// the table wants the host and the port apart — one address per service, ports on the endpoints —
+// fronted is a table entry for an app the door may serve: httptest hands back a full URL, and
+// the table wants the host and the port apart — one address per app, ports on the endpoints —
 // exactly as converge writes it.
 func fronted(name, host, server string) routes.Service {
 	s := named(name, host, server)
@@ -69,7 +69,7 @@ func fronted(name, host, server string) routes.Service {
 	return s
 }
 
-// named is the same entry with NO route: a service the household can name and the node can probe,
+// named is the same entry with NO route: an app the household can name and the node can probe,
 // which the door is given no way to reach. mosquitto's shape.
 func named(name, host, server string) routes.Service {
 	u, _ := url.Parse(server)
@@ -116,7 +116,7 @@ func fixed(t routes.Table) func() *routing {
 // The shipped state of a fresh node: nothing installed. The VIP must still ANSWER -- every name
 // the node does not route goes to the dashboard, which is where the household gets in -- and
 // /healthz must say the node is ready rather than sick. A node reporting unhealthy forever
-// because no service was ever installed is the zombie state this replaces.
+// because no app was ever installed is the zombie state this replaces.
 func TestZeroServiceFrontDoor(t *testing.T) {
 	dash := newDashboard(t)
 	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{}), dash.url()))
@@ -148,8 +148,8 @@ func TestZeroServiceFrontDoor(t *testing.T) {
 }
 
 // THE ASSERTION hass-payload.nix LOST, at unit scale: a request whose Host names a
-// runtime-installed service reaches that service through the front door. Before the
-// routing table the door had ONE backend baked at guest-build time, so no runtime-installed service
+// runtime-installed app reaches that app through the front door. Before the
+// routing table the door had ONE backend baked at guest-build time, so no runtime-installed app
 // was ever reachable on :80/:443; this is the property that replaces it, and it is keyed on the
 // name rather than on there being exactly one thing to forward to.
 func TestRoutesByHostToTheNamedService(t *testing.T) {
@@ -168,7 +168,7 @@ func TestRoutesByHostToTheNamedService(t *testing.T) {
 	}})))
 	defer srv.Close()
 
-	// Each name reaches ITS OWN service. Two services behind one address is the whole reason the
+	// Each name reaches ITS OWN app. Two apps behind one address is the whole reason the
 	// door needed a table rather than a backend.
 	for host, want := range map[string]string{
 		"briard-brave-elf-home-assistant.local": "home-assistant-ok",
@@ -184,17 +184,17 @@ func TestRoutesByHostToTheNamedService(t *testing.T) {
 			t.Errorf("Host %q = %d %q, want 200 %q", host, code, body, want)
 		}
 	}
-	// A name we do not serve is not a service's 404: it is the dashboard's, and this door has none
+	// A name we do not serve is not an app's 404: it is the dashboard's, and this door has none
 	// behind it, so it says so.
 	if code, _ := getHost(t, srv.URL, "/", "192.168.1.100"); code != http.StatusServiceUnavailable {
 		t.Errorf("the bare address = %d, want 503 from a door with no dashboard", code)
 	}
 }
 
-// /healthz IS THE NODE'S, ALWAYS, and this is the reversal that N services forces. One backend
-// could forward the question to itself; N cannot, and a service that is down must not make the
+// /healthz IS THE NODE'S, ALWAYS, and this is the reversal that N apps forces. One backend
+// could forward the question to itself; N cannot, and an app that is down must not make the
 // node it runs on read as broken — the OS health gate and the rollback reflex read this, and
-// converge-at-promotion puts service failures deliberately outside the promoter's reach.
+// converge-at-promotion puts app failures deliberately outside the promoter's reach.
 func TestHealthIsTheNodesOwnAnswerNotAServices(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "wedged", http.StatusServiceUnavailable)
@@ -212,13 +212,13 @@ func TestHealthIsTheNodesOwnAnswerNotAServices(t *testing.T) {
 	if !strings.Contains(body, "1 service(s) routed") || !strings.Contains(body, "home-assistant") {
 		t.Errorf("/healthz = %q, want it to name what it routes", body)
 	}
-	// The service's own 503 is still visible where it belongs — through its own name.
+	// The app's own 503 is still visible where it belongs — through its own name.
 	if code, _ := getHost(t, srv.URL, "/healthz", "briard-brave-elf-home-assistant.local"); code != http.StatusServiceUnavailable {
 		t.Errorf("the service's own /healthz = %d, want its 503 forwarded", code)
 	}
 }
 
-// A service routed by name whose backend the door must NOT expose. mosquitto is the live case, and
+// An app routed by name whose backend the door must NOT expose. mosquitto is the live case, and
 // it is a security property, not a nicety: its manifest port is the broker's management API, which
 // mosquitto.conf binds to 127.0.0.1 on purpose — and the door runs inside that same guest, so
 // forwarding to it by name would republish a loopback-only endpoint on the LAN. The name is still
@@ -232,7 +232,7 @@ func TestRoutedButNotFronted(t *testing.T) {
 	defer mgmt.Close()
 	srv := httptest.NewServer(door(fixed(routes.Table{Services: []routes.Service{
 		// A REACHABLE address, deliberately: the node can and does probe it (it is what the health
-		// floor GETs), so a test whose service had no address at all would prove only that the
+		// floor GETs), so a test whose app had no address at all would prove only that the
 		// door cannot reach what does not exist.
 		named("mosquitto", "briard-brave-elf-mosquitto.local", mgmt.URL),
 	}})))
@@ -247,9 +247,9 @@ func TestRoutedButNotFronted(t *testing.T) {
 	}
 }
 
-// A node whose flock has no minted name has no per-service names either (routes.HostName), so it
+// A node whose flock has no minted name has no per-app names either (routes.HostName), so it
 // routes nothing: every request is the dashboard's, which is where "installed but unnamed" is
-// said. The door must not reach the service under any name.
+// said. The door must not reach the app under any name.
 func TestInstalledButUnnamed(t *testing.T) {
 	var reached bool
 	ha := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { reached = true }))
@@ -270,7 +270,7 @@ func TestInstalledButUnnamed(t *testing.T) {
 
 // The table is rewritten UNDER a running door — that is what an install is — so it must be picked
 // up without a restart, and a write caught half-done must cost nothing. Same discipline as the
-// cert, and for a bigger stake: a bad parse that emptied the table would take every service in the
+// cert, and for a bigger stake: a bad parse that emptied the table would take every app in the
 // household off its name at once.
 func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -315,7 +315,7 @@ func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 		t.Fatalf("after the install = %d %q, want it routed to the service", code, body)
 	}
 
-	// A half-written table keeps the last good one: the household's service stays reachable.
+	// A half-written table keeps the last good one: the household's app stays reachable.
 	write([]byte("{\"services\": [{\"nam"), t0.Add(4*time.Second))
 	if code, body := getHost(t, srv.URL, "/", "briard-brave-elf-fixture.local"); code != http.StatusOK || body != "payload-ok" {
 		t.Errorf("on a half-written table = %d %q, want the last good route kept", code, body)
@@ -333,9 +333,9 @@ func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 }
 
 // What the proxy passes through matters as much as that it does. Home Assistant answers 400
-// to an X-Forwarded-For header from a proxy it has not been told to trust, so adding one to a
-// service that has not said it accepts it (forwardTrust; nothing has, here) silently breaks
-// the flagship service behind the front door. And the client's Host has to survive: a service
+// to an X-Forwarded-For header from a proxy it has not been told to trust, so adding one to an
+// app that has not said it accepts it (forwardTrust; nothing has, here) silently breaks
+// the flagship app behind the front door. And the client's Host has to survive: an app
 // builds its absolute URLs from it, and it is now also the thing that CHOSE this backend.
 func TestProxyPassesTheClientHostAndNoForwardedHeaders(t *testing.T) {
 	var gotHost string
@@ -440,8 +440,8 @@ func TestCertHotReloadAndProxy(t *testing.T) {
 	if got := servedSerial(t, addr); got != 1 {
 		t.Fatalf("initial served serial = %d, want 1", got)
 	}
-	// Through the front door over TLS, under the service's own name: the route and the cert are
-	// independent, and a request has to pass both to reach the service.
+	// Through the front door over TLS, under the app's own name: the route and the cert are
+	// independent, and a request has to pass both to reach the app.
 	req, _ := http.NewRequest("GET", "https://"+addr+"/", nil)
 	req.Host = "briard-brave-elf-fixture.local"
 	resp, err := (&http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}).Do(req)

@@ -3,7 +3,7 @@
 These are the **exact bytes** served at `https://get.briard.io/catalog/<name>.json`, beside a
 detached Ed25519 signature over those bytes made with the release key. A node fetches both,
 verifies the signature *before* parsing, and keeps the raw bytes on its replicated volume: the
-service's identity is `sha256` of exactly this file (`shared/manifest`).
+app's identity is `sha256` of exactly this file (`shared/manifest`).
 
 Until now these documents existed only in the bucket. They are here so that a change to what the
 fleet installs is reviewable, diffable and testable before it is live — `catalog_test.go` parses
@@ -13,12 +13,12 @@ household's node.
 ## ⚠️ The bytes are the identity
 
 **Any** change to a file here — a reordered field, an added trailing newline, a reformat — mints a
-new service identity. Nodes read that as a new version of the service and will take the whole
+new app identity. Nodes read that as a new version of the app and will take the whole
 upgrade path for it: snapshot, switch, health-gate, and a rollback if it fails. There is no such
 thing as a cosmetic edit in this directory.
 
 That is also why these files have **no trailing newline**: it is what the currently-published
-bytes have, and matching them is what keeps `home-assistant.json` here the same service as the one
+bytes have, and matching them is what keeps `home-assistant.json` here the same app as the one
 already installed in every household.
 
 ## The index: what a household can see
@@ -37,7 +37,7 @@ One entry per line, so a diff reads per app. Each carries:
 | `name` | the catalog slug — the key; the manifest for an installable app is `<name>.json` beside this file |
 | `available` | `true` when that manifest is published beside this file; omitted otherwise |
 | `version` | for an available entry: its manifest's `version`, for people; omitted otherwise |
-| `identity` | for an available entry: `sha256:` of its manifest's exact bytes — the service a node installs now, and what a node running another identity offers as an update; omitted otherwise |
+| `identity` | for an available entry: `sha256:` of its manifest's exact bytes — the app a node installs now, and what a node running another identity offers as an update; omitted otherwise |
 | `title` | the app's name for a person |
 | `functionality` | two to five brand-less words on what it does, shown beside the title ("document management system") |
 | `description` | a few lines on what it does for a household; no promise, no version |
@@ -117,7 +117,7 @@ The guest starts small and grows while it runs, so an entry does not declare its
 what it needs from its **first second**, before growth can react: its settled footprint with room
 for its own startup. A node boots its guest with at least the system's share plus every installed
 entry's `minMemoryMB`, and grows the running guest to that before installing one more (refusing
-only when the host cannot give that much at all). Anything a service needs beyond its minimum is
+only when the host cannot give that much at all). Anything an app needs beyond its minimum is
 found at runtime, by growth. Measure a new entry from its anonymous memory settled after startup
 (the cgroup's `anon` in `memory.stat`) — not from `docker stats`, which counts page cache too.
 Omitted, the entry counts for nothing until it needs more.
@@ -125,7 +125,7 @@ Omitted, the entry counts for nothing until it needs more.
 ## What is not in a manifest
 
 The schema deliberately cannot express host binds, privileges, host networking or a command line —
-capability comes by omission, so a catalog entry cannot reach the host. Anything a service needs
-beyond that is **product-side, keyed on the service name** (`agent/services`): Home Assistant's
+capability comes by omission, so a catalog entry cannot reach the host. Anything an app needs
+beyond that is **product-side, keyed on the app name** (`agent/services`): Home Assistant's
 control channel, mosquitto's config file. If a new entry cannot be expressed here, that is the
 question to answer, not a field to add.

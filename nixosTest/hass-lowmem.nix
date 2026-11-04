@@ -1,7 +1,7 @@
 # HOW DOES HOME ASSISTANT BEHAVE IN A 1 GB GUEST WITH ZRAM? -- a measurement, run by hand.
 #
 # The guest's memory is fixed at boot and the default (2 GB) was picked when Home Assistant was
-# the only service. Whether a smaller guest is viable, and what its memory looks like when it is
+# the only app. Whether a smaller guest is viable, and what its memory looks like when it is
 # not, is a question for evidence: this boots the shipped guest module at 1 GB, installs the real
 # Home Assistant image onto the volume the way the product does, lets it serve, and prints a
 # timeline of the numbers the resources verb reports (the same kernel files, read the same way):
@@ -106,7 +106,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     node1.wait_until_succeeds("systemctl is-active briard-primary-storage.service", timeout=120)
     s("volume-up")
-    # The system's own share, before any service: as it stands, then with the clean page cache
+    # The system's own share, before any app: as it stands, then with the clean page cache
     # dropped -- the difference is cache the kernel would give back anyway; what stays is the cost.
     print("BREAKDOWN volume-up\n" + node1.succeed("${breakdown}"))
     node1.succeed("sync && echo 3 > /proc/sys/vm/drop_caches")

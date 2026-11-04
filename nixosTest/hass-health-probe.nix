@@ -1,7 +1,7 @@
 # WHICH SIGNAL SAYS HOME ASSISTANT IS BROKEN? -- a discovery probe, run by hand.
 #
 # The history marks an event red when the app is unhealthy after it, and the design names the
-# per-service probe (`/manifest.json`) as the signal while doubting it: Home Assistant's recovery
+# per-app probe (`/manifest.json`) as the signal while doubting it: Home Assistant's recovery
 # mode keeps its frontend serving. This rig does not decide; it breaks Home Assistant one way at a
 # time and records what every candidate signal says, so the signal is chosen from evidence:
 #

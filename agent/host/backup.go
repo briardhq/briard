@@ -223,7 +223,7 @@ func backupFailing(node string, nights int, why string) notify.Alert {
 		Kind:     notify.Open,
 		Severity: notify.Warning,
 		Title:    "Briard: the nightly backup is not working",
-		Body: fmt.Sprintf("The last %d nights' backups on node %s did not happen: %s. Your apps and their data are fine; "+
+		Body: fmt.Sprintf("The last %d nights' backups on machine %s did not happen: %s. Your apps and their data are fine; "+
 			"the backup copy is what is getting old.", nights, node, why),
 	}
 }
@@ -234,7 +234,7 @@ func backupWorking(node, why string) notify.Alert {
 		Key:   "backup",
 		Kind:  notify.Resolved,
 		Title: "Briard: the nightly backup is working again",
-		Body:  fmt.Sprintf("%s (node %s)", why, node),
+		Body:  fmt.Sprintf("%s (machine %s)", why, node),
 	}
 }
 
@@ -609,7 +609,7 @@ func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: fmt.Sprintf(format, a...)}, true
 	}
 	if cfg.backupLive == nil || cfg.stateDir() == "" {
-		return failed("this node keeps no backup settings")
+		return failed("this machine keeps no backup settings")
 	}
 	if s.Key == settingBackupKeySaved {
 		if s.Value != "yes" {
@@ -619,7 +619,7 @@ func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any
 			DataBackupKey(ctx context.Context, saved bool) (guestagent.BackupKey, error)
 		})
 		if !ok {
-			return failed("no guest on this node to record it on")
+			return failed("no VM on this machine to record it on")
 		}
 		kctx, cancel := context.WithTimeout(ctx, backupCallTimeout)
 		defer cancel()
@@ -632,7 +632,7 @@ func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any
 	if s.Key == settingBackupAdopt {
 		g, ok := r.(backupAdopter)
 		if !ok || !g.SupportsBackupAdopt() {
-			return failed("this guest cannot adopt a backup; update the guest OS first")
+			return failed("this VM cannot adopt a backup; update the VM first")
 		}
 		folder := cfg.backupFolder()
 		if folder == "" || cfg.hostNodeIP() == "" {
@@ -780,12 +780,12 @@ type backupRestorer interface {
 	SupportsBackupRestore() bool
 }
 
-// applyBackupRestore puts one service back to one night of the backup: the night's copy becomes a
+// applyBackupRestore puts one app back to one night of the backup: the night's copy becomes a
 // ring member (the guest's data.backup.restore), and the member is restored as any member is
 // (applyServiceRestore) -- so the images, the undo point, the stop, the swap, the manifest and the
 // converge are the one path History already has, and the restore is a row that can be undone.
 //
-// THE MATERIALISATION COSTS NOTHING THE HOUSEHOLD CAN SEE: the service keeps running while the
+// THE MATERIALISATION COSTS NOTHING THE HOUSEHOLD CAN SEE: the app keeps running while the
 // night is read in, and a night that cannot be read leaves the ring as it was. Everything that can
 // refuse, refuses before applyServiceRestore stops anything.
 func (cfg Config) applyBackupRestore(ctx context.Context, g serviceInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
@@ -801,10 +801,10 @@ func (cfg Config) applyBackupRestore(ctx context.Context, g serviceInstaller, d 
 	}
 	br, ok := g.(backupRestorer)
 	if !ok || !br.SupportsBackupRestore() {
-		return failed("this guest is too old to restore from the backup; update the guest OS first")
+		return failed("this VM is too old to restore from the backup; update the VM first")
 	}
 	if cfg.backupFolder() == "" || cfg.hostNodeIP() == "" {
-		return failed("the backup is turned off on this node, so there is no repository to restore from")
+		return failed("the backup is turned off on this machine, so there is no repository to restore from")
 	}
 	url := "http://" + net.JoinHostPort(cfg.hostNodeIP(), backupStorePort) + "/"
 	mctx, cancel := cfg.beat.budget(ctx, installBudget)
@@ -832,10 +832,10 @@ func (cfg Config) applyBackupList(ctx context.Context, g backupLister, d api.Dir
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
 	if !g.SupportsBackupList() {
-		return failed("this guest is too old to list the backup; update the guest OS first")
+		return failed("this VM is too old to list the backup; update the VM first")
 	}
 	if cfg.backupFolder() == "" || cfg.hostNodeIP() == "" {
-		return failed("the backup is turned off on this node, so there is no repository to list")
+		return failed("the backup is turned off on this machine, so there is no repository to list")
 	}
 	// A FOLDER WITH NO REPOSITORY YET holds no backup: the first run makes it, so a new install's
 	// folder is empty until then, and restic would answer that with "repository does not exist".
@@ -890,7 +890,7 @@ func (cfg Config) applyBackupFolder(ctx context.Context, d api.Directive, r any,
 		return failed("the payload does not name a folder")
 	}
 	if cfg.backupLive == nil || cfg.stateDir() == "" {
-		return failed("this node keeps no backup settings")
+		return failed("this machine keeps no backup settings")
 	}
 	rawNow, now := cfg.backupDir(), cfg.backupFolder()
 	if req.Folder == now {
@@ -906,10 +906,10 @@ func (cfg Config) applyBackupFolder(ctx context.Context, d api.Directive, r any,
 	if !check.Empty {
 		l, ok := r.(backupLister)
 		if !ok || !l.SupportsBackupList() {
-			return failed("this guest is too old to read a backup folder; update the guest OS first")
+			return failed("this VM is too old to read a backup folder; update the VM first")
 		}
 		if cfg.hostNodeIP() == "" || cfg.backupCandidate == nil {
-			return failed("this node serves no backup folder to read")
+			return failed("this machine serves no backup folder to read")
 		}
 		dir := req.Folder
 		if !cfg.backupCandidate.CompareAndSwap(nil, &dir) {
@@ -1031,7 +1031,7 @@ func (cfg Config) applyBackupNow(ctx context.Context, d api.Directive) api.Direc
 		return failed("this agent has no backup scheduler")
 	}
 	if cfg.backupFolder() == "" {
-		return failed("the nightly backup is turned off on this node; turn it on from the Briard page first")
+		return failed("the nightly backup is turned off on this machine; turn it on from the Briard page first")
 	}
 	asked := time.Now()
 	cfg.backupKick.Store(true)

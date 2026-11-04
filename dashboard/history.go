@@ -4,7 +4,7 @@ package main
 //
 // It is the dashboard's half of the ring, and it relays exactly like the install button does —
 // `service-members` to list, `service-restore` to act, both already on the host's guest-may-ask
-// allowlist because their blast radius is one service's data and code on this node. The CLI's
+// allowlist because their blast radius is one app's data and code on this node. The CLI's
 // `briard app history` / `app undo` are the same two directives typed, and neither front end
 // decides anything the other does not: the rows are quadlet.History's.
 //
@@ -31,7 +31,7 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// restoreBudget bounds the wait for the host's answer. A restore stops the service, puts a
+// restoreBudget bounds the wait for the host's answer. A restore stops the app, puts a
 // subvolume back and converges: seconds, unless an image has to be fetched first.
 const restoreBudget = 20 * time.Minute
 
@@ -199,7 +199,7 @@ func (a *app) rows(ctx context.Context, service string) ([]rowView, *manifest.Ma
 // runningManifest is what the app is on now, read off the NEWEST member.
 //
 // It is a derivation rather than a question asked, and it holds because of how members are taken:
-// every start takes one and the newest is never pruned, and an update always restarts the service
+// every start takes one and the newest is never pruned, and an update always restarts the app
 // — so the newest member is pinned to the identity running now. An empty ring has no answer and
 // marks nothing, which is the right failure: an unmarked row says less, never something false.
 func runningManifest(members []quadlet.SnapshotEntry) *manifest.Manifest {
@@ -250,7 +250,7 @@ func (a *app) requestUndo(w http.ResponseWriter, r *http.Request) {
 	}
 	a.restores[service] = &restoreOp{Started: a.now(), What: r.FormValue("what")}
 	a.mu.Unlock()
-	// IN THE BACKGROUND, like an install: the host stops the service, puts the subvolume back and
+	// IN THE BACKGROUND, like an install: the host stops the app, puts the subvolume back and
 	// converges, and a browser should not hold a request open across it. The page refreshes and
 	// says where it got to.
 	go func() {

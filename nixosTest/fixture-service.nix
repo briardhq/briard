@@ -1,8 +1,8 @@
-# The dummy fixture as a CATALOGUED SERVICE — a digest-pinned manifest plus the image tarball it
+# The dummy fixture as a CATALOGUED APP — a digest-pinned manifest plus the image tarball it
 # names — so a test can install it the way a user installs one, with no registry.
 #
-# WHY THIS EXISTS. The fixture has always reached a test by being BAKED into the guest's service
-# slot, which was a mechanism no user had: a shipped node installs services at
+# WHY THIS EXISTS. The fixture has always reached a test by being BAKED into the guest's app
+# slot, which was a mechanism no user had: a shipped node installs apps at
 # runtime from a manifest. Every test riding the baked slot therefore proves a path
 # nobody ships. This module is the other half of retiring it — the same fixture,
 # delivered the shipped way.
@@ -20,20 +20,20 @@
 # (3) is what makes this a derivation rather than a runtime step: the manifest is written here,
 # already pinned, and the tarball is loaded into the podman store the node mounts (imageStore below). `Container.Image`
 # in shared/manifest already described this shape — "from upstream, from our mirror, or from a
-# tarball without changing what this service means".
+# tarball without changing what this app means".
 #
 # service-install.nix KEEPS its registry, deliberately: proving a real digest-pinned TLS pull is
 # that test's whole subject. This is for every other test, whose subject is something else and
-# which only needs a service to exist.
+# which only needs an app to exist.
 {
   pkgs,
   # The manifest slug: the unit prefix, the subvolume name, the handle a user would type.
   name ? "dummy",
-  # The single container's slug within the service, and its unit's.
+  # The single container's slug within the app, and its unit's.
   container ? "app",
   # The container's mounts, as the manifest says them. The fixture's data path is a CONST in its own
   # source, so its mount point is dictated by the fixture while the host-side directory is the
-  # renderer's to choose -- the normal asymmetry for a catalogued service.
+  # renderer's to choose -- the normal asymmetry for a catalogued app.
   mounts ? [
     {
       tier = "data";
@@ -54,7 +54,7 @@
   # PUBLISHED PORTS, meaningful only on a private pod: a host-networked one already holds the
   # guest's ports, and the manifest schema refuses the combination.
   ports ? [ ],
-  # THE DECLARED MINIMUM MEMORY (manifest minMemoryMB), and with it the service's container memory
+  # THE DECLARED MINIMUM MEMORY (manifest minMemoryMB), and with it the app's container memory
   # limit. Zero, the default, declares none -- the shape of every fixture before it existed.
   minMemoryMB ? 0,
   # THE DECLARED SIZES (manifest size / installedSize, bytes): what the download stages and what
@@ -64,7 +64,7 @@
   size ? 0,
   installedSize ? 0,
   # THE IMAGE, when the caller has one. Default: the dummy is built here. The HA tests pass the
-  # pinned upstream image instead, which is what lets a REAL service be catalogued rather than only
+  # pinned upstream image instead, which is what lets a REAL app be catalogued rather than only
   # the fixture (the baked slot was how HA reached a guest before).
   #
   # `imageFile` is a docker-archive derivation and `imageName` is the repo the manifest names.
@@ -78,12 +78,12 @@
   # pin the registry digest instead.
   imageFile ? null,
   imageName ? null,
-  # FURTHER VERSIONS OF THE SAME SERVICE, one per attribute, for a harness whose subject is a
+  # FURTHER VERSIONS OF THE SAME APP, one per attribute, for a harness whose subject is a
   # version CHANGE rather than an install: `{ v1 = { version = "1.0.0"; }; bad = { version =
   # "0.0.0-bad"; env = { BRIARD_BROKEN = "1"; }; }; }`. Each is emitted under
   # `$out/variants/<label>/`, complete with its own signed catalog, and every one of them is
-  # published under the SAME service name — an upgrade is one name moving versions, so a variant
-  # that renamed itself would be a different service and prove nothing.
+  # published under the SAME app name — an upgrade is one name moving versions, so a variant
+  # that renamed itself would be a different app and prove nothing.
   #
   # ONE KEYRING ACROSS ALL OF THEM (catalog-sign signs every catalog with one key): the node is
   # given its trust root once, out of band, before any of these exist.
@@ -91,7 +91,7 @@
   # A variant's image carries a `briard.version` label, so the CODE differs too and not just the
   # document naming it — a rotation whose two versions share a digest would render the identical
   # units and could pass while doing nothing. `env` rides the MANIFEST rather than the image,
-  # which is where a catalogued service says what its container gets.
+  # which is where a catalogued app says what its container gets.
   variants ? { },
 }:
 let

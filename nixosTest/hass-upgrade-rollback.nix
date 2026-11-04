@@ -37,7 +37,7 @@ let
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
   canary = ./fixtures/briard_canary;
-  # The RENDERER's layout, never restated here: the SUBVOLUME is the service's (what a rollback
+  # The RENDERER's layout, never restated here: the SUBVOLUME is the app's (what a rollback
   # point snapshots), and HA writes into its container's subdirectory inside it, bind-mounted as
   # /config (the build-time slot used to choose both).
   subvol = "/var/lib/briard/data/${fixture.name}";
@@ -149,7 +149,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed("mkdir -p /var/lib/briard/data/.snapshots")
     node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}")
 
-    # THE UPGRADE: the `to` manifest under the same service name, applied by the product's own
+    # THE UPGRADE: the `to` manifest under the same app name, applied by the product's own
     # converge, which bounces the container onto the new digest.
     install_fixture(node1, variant="to")
 
@@ -171,11 +171,11 @@ pkgs.testers.runNixOSTest {
     print("gate: " + verdict.strip())
     assert "VERDICT=rollback" in verdict, f"health-gate did not trip on the regression: {verdict!r}"
     # And the floor it sits above was HAPPY throughout -- which is the entire reason this layer
-    # exists. A gate that only fired when the service was also down would be the floor again.
+    # exists. A gate that only fired when the app was also down would be the floor again.
     node1.succeed("curl -fsS -o /dev/null ${haVip}${fixture.healthPath}")
 
     # ---- Rollback-with-history-intact: the {code+data} snapshot is a valid rollback point ----
-    # The live swap-and-reserve (stop service → restore subvolume → re-pin `from` → re-serve)
+    # The live swap-and-reserve (stop app → restore subvolume → re-pin `from` → re-serve)
     # is Manager orchestration under the maintenance bracket, and can't run in THIS rig: the
     # bracket (drbd-reactor pause-defused) lives in the guest agent's reactor.pause verb,
     # which is virtio-serial-only — so a bare `systemctl stop <service>` here makes the running

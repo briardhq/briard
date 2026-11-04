@@ -1,10 +1,10 @@
-# Zero services is the SHIPPED state. This boots the guest exactly as the downloadable
+# Zero apps is the SHIPPED state. This boots the guest exactly as the downloadable
 # artifact is built (guest-image/configuration.nix, no workload) and asserts that a node
 # with nothing installed is a working node: the volume mounts, the promoter chain completes,
 # the VIP comes up, and the front door answers there.
 #
 # It is the counterpart to every other test in this directory, which INSTALL the dummy fixture as
-# a catalogued service after promoting. Nothing bakes a workload into a guest any more
+# a catalogued app after promoting. Nothing bakes a workload into a guest any more
 # (the build-time slot is gone), so this shape is no longer one test's careful arrangement — it is what every node
 # boots as, and what the others then add something to.
 #
@@ -50,7 +50,7 @@ pkgs.testers.runNixOSTest {
     witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
 
-    # No service is installed, so no service unit exists at all — not merely stopped. The units
+    # No app is installed, so no app unit exists at all — not merely stopped. The units
     # are RENDERED (into /run) by an install, so a shipped node has nothing to render from and
     # the directory quadlet reads is empty. That is what makes the shipped closure free of a
     # workload rather than carrying a dormant one.
@@ -77,10 +77,10 @@ pkgs.testers.runNixOSTest {
     # Succeeding against an empty volume is the shipped state, not a degraded one.
     primary.succeed("systemctl is-active briard-services.service")
     left = primary.succeed("ls -A /run/containers/systemd 2>/dev/null || true").strip()
-    assert left == "", f"converge wrote service units on a node with nothing installed: {left!r}"
+    assert left == "", f"converge wrote app units on a node with nothing installed: {left!r}"
 
     # The node reports itself READY, not sick. A fresh install used to sit unhealthy forever
-    # because the health probe pointed at a service port nobody was listening on.
+    # because the health probe pointed at an app port nobody was listening on.
     health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
     assert "no services routed" in health, f"/healthz on an empty node said: {health!r}"
 
@@ -98,7 +98,7 @@ pkgs.testers.runNixOSTest {
     page = primary.succeed("cat /tmp/vip.html")
     assert refused == "401" and "not yet trusted" in page, f"the VIP served {refused}: {page!r}"
     # An empty node has nothing to leak, so this cannot pass by there being nothing to name. The
-    # inventory assertion that matters lives in service-install.nix, where a service IS installed.
+    # inventory assertion that matters lives in service-install.nix, where an app IS installed.
     assert "Nothing is installed" not in page, f"the refusal still renders the node's page: {page!r}"
 
     # The routing table exists and is EMPTY, which is not the same as absent: converge
@@ -110,8 +110,8 @@ pkgs.testers.runNixOSTest {
         f"the routing table on an empty node: {primary.succeed('cat /run/briard/routes.json')!r}"
     primary.fail("test -e /run/briard/routes.hosts")  # one file: the publisher reads the table itself
 
-    # The data volume is mounted and genuinely empty of service data — the substrate is up,
-    # waiting for something to run. (.snapshots is the ladder's own directory, not a service.)
+    # The data volume is mounted and genuinely empty of app data — the substrate is up,
+    # waiting for something to run. (.snapshots is the ladder's own directory, not an app.)
     primary.succeed("mountpoint -q /var/lib/briard")
     primary.fail("ls -d /var/lib/briard/.services/*.json >/dev/null 2>&1")
 

@@ -172,7 +172,7 @@ func ConfigFromEnv() Config {
 		DataDisk:   os.Getenv("DATA_DISK"),
 		StateDisk:  os.Getenv("STATE_DISK"),
 		// The data volume's size, and the only thing about these disks the agent defaults: it is a
-		// number rather than a path, so no rig depends on its absence. Sized for a real service's
+		// number rather than a path, so no rig depends on its absence. Sized for a real app's
 		// data -- Home Assistant's `.storage` plus the recorder SQLite outgrows a gigabyte in
 		// months, and growing a DRBD-backed volume afterwards is not a one-liner.
 		DataSize:    env("DATA_SIZE", "4G"),
@@ -249,11 +249,11 @@ func ConfigFromEnv() Config {
 		// A diskless node has no service/VIP to probe (nor a service NIC to reach it), so
 		// its health follows quorum ("" -> healthy == quorate); data nodes probe the VIP.
 		//
-		// The probe target is the FRONT DOOR (:80), not a service's own port. That is what makes
-		// it stable across zero and one service: the proxy answers for itself when nothing is
-		// installed and forwards the question to the service when something is. Probing a
-		// service port directly is what left a freshly installed node reporting unhealthy
-		// forever with no reflex able to tell that apart from a broken service.
+		// The probe target is the FRONT DOOR (:80), not an app's own port. That is what makes
+		// it stable across zero and one app: the proxy answers for itself when nothing is
+		// installed and forwards the question to the app when something is. Probing an
+		// app port directly is what left a freshly installed node reporting unhealthy
+		// forever with no reflex able to tell that apart from a broken app.
 		//
 		// NO DEFAULT, deliberately. It used to be the lab's own
 		// `http://192.168.1.100/healthz` -- a guess about someone else's network that agreed
@@ -291,7 +291,7 @@ func ConfigFromEnv() Config {
 		// which is exactly what the release channel already is -- so it lives in the same bucket,
 		// under the same trust root (the release keyring verifies manifests and artifacts alike),
 		// with one publish credential and one thing for a third party to mirror. briard.io itself
-		// is the marketing site; a service catalog is not a web page.
+		// is the marketing site; an app catalog is not a web page.
 		CatalogURL:   env("CATALOG_URL", "https://get.briard.io/catalog"),
 		ServiceCache: env("SERVICE_CACHE", filepath.Join(stateDir, "services")),
 		// declared, not env: BACKUP_DIR="" is the household turning the backup off.
@@ -301,7 +301,7 @@ func ConfigFromEnv() Config {
 		GuestReleaseCache: env("GUEST_RELEASE_CACHE", filepath.Join(stateDir, "guest-release.json")),
 		ReactorSnippet:    os.Getenv("REACTOR_SNIPPET"),
 		// UPDATE_KEYRING points at a PEM file of trusted Ed25519 release public keys. It gates
-		// the signed CATALOG (service install), not self-update any more: the
+		// the signed CATALOG (app install), not self-update any more: the
 		// agent's own update is fetched and verified by the frozen unit below it, under the same
 		// keyring file, and the agent only starts that unit. Base/RunDir default in
 		// newSelfUpdater. Version is baked at build time (buildVersion), overridable by env for
@@ -363,7 +363,7 @@ func disklessOr(role model.Role, w, d string) string {
 	return d
 }
 
-// disklessOrSpecs empties the service set on a diskless node (nothing to upgrade).
+// disklessOrSpecs empties the app set on a diskless node (nothing to upgrade).
 func disklessOrSpecs(role model.Role, s []model.ServiceSpec) []model.ServiceSpec {
 	if role == model.RoleDiskless {
 		return nil

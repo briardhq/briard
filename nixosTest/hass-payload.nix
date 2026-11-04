@@ -1,9 +1,9 @@
-# Home Assistant INSTALLED AS A SERVICE, data on the DRBD volume.
+# Home Assistant INSTALLED AS AN APP, data on the DRBD volume.
 #
 # The same path drbd-promote proves for the dummy, with the real HA image (digest-pinned in a
 # signed manifest): bring r0 up, let drbd-reactor promote and start the ordered chain, install HA
 # onto the volume it now holds, and assert HA actually boots and serves — and that its recorder
-# SQLite + `.storage` landed on the DRBD btrfs subvolume. Single node: this validates the service
+# SQLite + `.storage` landed on the DRBD btrfs subvolume. Single node: this validates the app
 # wiring, not failover (that is hass-failover), and HA is heavy enough that one instance is the
 # right cost.
 #
@@ -12,9 +12,9 @@
 # guest published. The broker is installed alongside for exactly that, and for nothing else.
 #
 # HA reachable THROUGH the front door under its own name is asserted again, at the bottom of this
-# file (the routing table landed it). It was lost when the build-time service slot went
+# file (the routing table landed it). It was lost when the build-time app slot went
 # -- the door's `-backend` came from that slot, so with the slot gone no node routed
-# to a service at all -- and it comes back keyed on the SERVICE's name rather than on there being
+# to an app at all -- and it comes back keyed on the APP's name rather than on there being
 # exactly one thing to forward to, which is what the table changed.
 { pkgs, guestModule, fixture, mosquitto }:
 
@@ -154,7 +154,7 @@ pkgs.testers.runNixOSTest {
     # Single node: no peer to connect to — just make it UpToDate so it's promotable.
 
     # Give the node a flock name before anything converges, the way the agent does at bring-up:
-    # the per-service names are composed from it, so a node with none routes nothing.
+    # the per-app names are composed from it, so a node with none routes nothing.
     name_the_flock(node1)
 
     # Hand off to the promoter: it has quorum alone, promotes, and runs the ordered chain. Nothing
@@ -236,7 +236,7 @@ pkgs.testers.runNixOSTest {
     # runs inside the container is the product's `run` wrapper calling the product's notify.py.
     #
     # THE MEMBER IS THE PROOF, not the socket. A socket that exists proves a bind; a member with a
-    # readable sidecar proves the request crossed the container boundary, resolved to a service by
+    # readable sidecar proves the request crossed the container boundary, resolved to an app by
     # its token, and reached btrfs on the replicated volume.
     node1.succeed("test -S /run/briard/agent.sock")
     node1.succeed("test -f /run/briard/home-assistant/inbound.token")
@@ -257,7 +257,7 @@ pkgs.testers.runNixOSTest {
     ro = node1.succeed(f"btrfs property get -ts /var/lib/briard/data/.snapshots/{member} ro").strip()
     assert ro == "ro=true", f"the member is writable ({ro}); a rollback point must not be"
 
-    # EVERY MEMBER HAS A SIDECAR, and it carries the manifest the service was running -- which is
+    # EVERY MEMBER HAS A SIDECAR, and it carries the manifest the app was running -- which is
     # not recoverable from the member itself, since the volume keeps manifests in .services/, a
     # sibling of the data subvolume the snapshot copies.
     import json as _sj
@@ -268,7 +268,7 @@ pkgs.testers.runNixOSTest {
 
     # THE START IS EVALUATED AFTER ITS BOOT. The pre-start hook writes the sample
     # pending; only the long-running agent's evaluator (here the harness's --inbound-listen) clears
-    # it, and it does so with the boot's service health, which for Home Assistant is /api/config
+    # it, and it does so with the boot's app health, which for Home Assistant is /api/config
     # through our token. A pending sample left behind, or one without that verdict, means the
     # evaluator never ran or never reached the app.
     # The HEALTH match is what makes this fail when the evaluator does not run: only it writes one,
@@ -465,8 +465,8 @@ pkgs.testers.runNixOSTest {
     #
     # THE ASSERTION THIS FILE OWED BACK. The door once forwarded to a backend
     # baked at guest-build time; deleting that slot left, for two epochs, no node routing
-    # to a runtime-installed service at all -- an installed HA answered only on :8123 while the
-    # VIP's :80 served Briard's own page. It comes back keyed on the service's NAME, from the table
+    # to a runtime-installed app at all -- an installed HA answered only on :8123 while the
+    # VIP's :80 served Briard's own page. It comes back keyed on the app's NAME, from the table
     # the guest's converge wrote.
     host = routed_host(node1, "home-assistant")
     assert host == "briard-brave-elf-home-assistant.local", f"the node composed {host}"
@@ -476,13 +476,13 @@ pkgs.testers.runNixOSTest {
         f"curl -fsS -o /dev/null -H 'Host: {host}' http://192.168.1.100${fixture.healthPath}", timeout=120
     )
     # And /healthz under that name is NOT the node's answer: under a name we route, EVERY path
-    # belongs to the service (HA has no /healthz of its own, so what comes back is HA's 404 --
+    # belongs to the app (HA has no /healthz of its own, so what comes back is HA's 404 --
     # which is precisely the proof, because the node's own /healthz is a 200 saying "front door
     # up"). The node's answer is still there at the bare address, where the OS health gate reads
-    # it, and that is why a wedged service cannot change it.
+    # it, and that is why a wedged app cannot change it.
     under_name = node1.succeed(f"curl -sS -H 'Host: {host}' http://192.168.1.100/healthz || true")
     assert "front door up" not in under_name, (
-        f"/healthz under the service's name was answered by the front door: {under_name!r}"
+        f"/healthz under the app's name was answered by the front door: {under_name!r}"
     )
     node_health = node1.succeed("curl -fsS http://192.168.1.100/healthz")
     assert "2 service(s) routed" in node_health, f"the node's /healthz = {node_health!r}"
@@ -780,7 +780,7 @@ pkgs.testers.runNixOSTest {
     # ── (d) A RUNNING HOME ASSISTANT IS RE-WIRED WITHOUT A RESTART ──────────
     #
     # Everything above happens at an HA start, and that is the gap this closes. converge restarts
-    # only the services whose rendered bytes changed, so installing the broker beside
+    # only the apps whose rendered bytes changed, so installing the broker beside
     # a Home Assistant that is ALREADY RUNNING leaves it running, unwired, and with nothing in the
     # product that will ever restart it -- the household is told the broker is installed and Home
     # Assistant goes on disagreeing until somebody happens to restart it.

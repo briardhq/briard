@@ -3,7 +3,7 @@
 # never processed a real HA upgrade").
 #
 # HA boots on the `from` image (2025.11.0, recorder schema 51), the recorder writes
-# history, then the service is upgraded to `to` (2025.12.0, schema 53) and HA runs the
+# history, then the app is upgraded to `to` (2025.12.0, schema 53) and HA runs the
 # real migration on first boot (migrators 52+53). We assert the *outcome*, not just
 # liveness: the recorder schema advances 51→53 (the migration signal — HA must detect
 # the older schema and record the bump), the pre-upgrade `states` history survives, HA
@@ -17,8 +17,8 @@
 # as a diagnostic.
 #
 # Harness scope (in-place, under the running promoter): this drives the core
-# service-upgrade PRIMITIVES — snapshot → pin+retag → restart → health-gate — with
-# drbd-reactor live throughout, which is also the product's shape: a service install
+# app-upgrade PRIMITIVES — snapshot → pin+retag → restart → health-gate — with
+# drbd-reactor live throughout, which is also the product's shape: an app install
 # never pauses the promoter; the maintenance bracket belongs to the
 # OS-upgrade path (covered by the maintenance-contract test), and the health-gated
 # auto-rollback is host-side orchestration (agent/host/service.go, unit-tested there).
@@ -35,9 +35,9 @@ let
     inherit fixture;
     resource = h.mkResource [ { name = "node1"; id = 0; } ];
   };
-  # Where the RENDERER puts HA's data, never restated: the service's subvolume plus its
+  # Where the RENDERER puts HA's data, never restated: the app's subvolume plus its
   # container's subdirectory, bind-mounted to /config inside.
-  # The SUBVOLUME is the service's (what a rollback point snapshots); haDir is the container's
+  # The SUBVOLUME is the app's (what a rollback point snapshots); haDir is the container's
   # subdirectory inside it (what HA writes to, bind-mounted as /config).
   subvol = "/var/lib/briard/data/${fixture.name}";
   haDir = "${subvol}/${fixture.dataDir}";
@@ -118,26 +118,26 @@ pkgs.testers.runNixOSTest {
     print(f"baseline: schema={pre_schema} states={pre_states} statistics_meta_cols=[{pre_cols}]")
 
     # ---- Snapshot the rollback point, then pin `to` + cycle onto it IN PLACE ----
-    # We do NOT touch drbd-reactor here, and neither does the product: a service upgrade
+    # We do NOT touch drbd-reactor here, and neither does the product: an app upgrade
     # never pauses the promoter — the maintenance bracket belongs to the
     # OS-upgrade path (proven non-destructive by the maintenance contract). This test's
-    # job is the migration. A service restart is not a DRBD event, so the running promoter
+    # job is the migration. An app restart is not a DRBD event, so the running promoter
     # doesn't react; the volume stays mounted throughout.
     node1.succeed("findmnt /var/lib/briard")            # still mounted (promoter untouched)
-    node1.succeed("btrfs subvolume show ${subvol}")  # the service's data dir is a real subvolume
+    node1.succeed("btrfs subvolume show ${subvol}")  # the app's data dir is a real subvolume
     node1.succeed("mkdir -p /var/lib/briard/data/.snapshots")
     # -r read-only, the exact form the guest agent's data.member verb runs.
     #
     # ⚠️ TAKEN LIVE ON PURPOSE, AND THIS IS THE ONLY PLACE THAT STILL IS. Since the
-    # install path started stopping the service first, this no longer mirrors the product — it is the
+    # install path started stopping the app first, this no longer mirrors the product — it is the
     # EVIDENCE the product's comments cite: btrfs snapshots atomically, HA replays its WAL on
     # open, so a crash-consistent point is still recoverable FOR HOME ASSISTANT. That is a
-    # measured fact about one service, never a catalog-wide guarantee (services-pair.nix measured
+    # measured fact about one app, never a catalog-wide guarantee (services-pair.nix measured
     # mosquitto failing it), and it is what makes HA's own post-crash members trustworthy. Do not
     # "fix" this to stop first: doing so deletes the measurement.
     node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}") # the {code,data} rollback point
 
-    # THE UPGRADE: install the `to` manifest under the SAME service name. That is what a version
+    # THE UPGRADE: install the `to` manifest under the SAME app name. That is what a version
     # change is now -- the volume's manifest moves, and converge re-renders and
     # BOUNCES the container onto the new digest (starting an already-running unit
     # would have left HA-from serving while every file said otherwise). The bounce cleanly stops

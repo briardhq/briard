@@ -38,7 +38,7 @@ import (
 type Draw struct {
 	System string // the flock subnet -- LAN-scoped, shared by every node in the flock
 	Priv   string // the private host<->guest link -- node-private, never on the LAN
-	// Pod is the pool the guest's PRIVATE SERVICE NETWORKS are allocated from --
+	// Pod is the pool the guest's PRIVATE APP NETWORKS are allocated from --
 	// node-private and guest-internal, never configured on the host at all. That last part is the
 	// point rather than an omission: the host holding no address and no route in this range is
 	// what makes a pod unreachable from outside the guest BY CONSTRUCTION, with nothing to
@@ -179,7 +179,7 @@ func privCandidate(rnd io.Reader) (netip.Prefix, error) {
 	return slash24(10, 11, o[0]), nil
 }
 
-// podCandidate proposes the guest's private-service pool: 10.12.R.0/24, one octet random.
+// podCandidate proposes the guest's private-app pool: 10.12.R.0/24, one octet random.
 //
 // Node-scoped like the link and for the same reason: these networks live inside ONE guest's
 // namespace, so two nodes may draw the same 10.12.R without ever meeting. 256 candidates is
@@ -187,7 +187,7 @@ func privCandidate(rnd io.Reader) (netip.Prefix, error) {
 //
 // It still has to be DRAWN rather than fixed, because the guest is not isolated from the
 // household: eth2 sits on the household LAN, which can itself be 10.x, and a pool that collided
-// with it would leave a service unable to reach the devices it exists to talk to.
+// with it would leave an app unable to reach the devices it exists to talk to.
 //
 // 10.12 rather than spare room inside 10.11 — the cost was measured, not guessed: excluding
 // another /16 costs 256 of 59,900 free /24s in the flock pool, 0.43%. Borrowing from 10.11 would

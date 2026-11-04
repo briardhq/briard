@@ -59,7 +59,7 @@ func newFakePort() *fakePort {
 // "SET UP HOME ASSISTANT": the button relays exactly one service-install directive
 // to the host and nothing else; while the host works the page says so and polls itself; a second
 // click while it runs asks nothing more; a refusal from the host is shown with its reason and the
-// CLI; success is forgotten the moment the routes table lists the service, and the ordinary card
+// CLI; success is forgotten the moment the routes table lists the app, and the ordinary card
 // takes over.
 func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 	r := newRig(t)

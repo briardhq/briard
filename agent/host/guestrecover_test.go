@@ -429,7 +429,7 @@ func TestTheDoorIsAnsweredWhileTheLadderRuns(t *testing.T) {
 	local := make(chan localRequest)
 	until := make(chan struct{})
 	r := &guestRecovery{}
-	r.say("the guest is not answering; Briard waits until %s for it before restarting it", "10:00")
+	r.say("the VM is not answering; Briard waits until %s for it before restarting it", "10:00")
 	done := make(chan error, 1)
 	go func() {
 		done <- cfg.holdDoor(ctx, local, func() string { return r.status() + ". " + tryNow }, until, t.Logf)
@@ -449,7 +449,7 @@ func TestTheDoorIsAnsweredWhileTheLadderRuns(t *testing.T) {
 	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "waits until 10:00") || !strings.Contains(o.Detail, "briard stop") {
 		t.Errorf("status during the wait = %+v; want refused with the ladder's sentence and the way out", o)
 	}
-	r.say("the guest is not answering; Briard is restarting it")
+	r.say("the VM is not answering; Briard is restarting it")
 	if o := ask(api.DirectiveDoctor); !strings.Contains(o.Detail, "is restarting it") {
 		t.Errorf("the refusal must read the ladder's CURRENT sentence; got %q", o.Detail)
 	}

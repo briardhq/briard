@@ -6,14 +6,14 @@
 # the accepted manifest, with the rollback point that undoes its data (agent/guestagent/staging.go)
 # -- so an installer that dies in that window leaves nothing that only its memory knew. This rig
 # kills one there, with SIGKILL, on the worst shape there is: an upgrade to a version that has
-# already POISONED the service's data and never becomes healthy. The agent that systemd starts in
+# already POISONED the app's data and never becomes healthy. The agent that systemd starts in
 # its place must find the staged install, put the data back from the recorded point, discard the
 # stage and converge to the version the volume accepted -- the same undo a failed gate runs.
 #
 # FAILABLE BOTH WAYS. Before the kill the rig asserts the stage and the rollback point are on the
 # volume and the data is poisoned, so a pass cannot come from an install that never got that far;
 # after it, the poison must be gone, the stage gone, the accepted manifest the old version and the
-# service healthy again.
+# app healthy again.
 #
 # AND THE QUOTA TREE, on the same volume, because this is the rig where the real agent both
 # installs an app and restores its data by swap. Every subvolume the product made must be born
@@ -118,14 +118,14 @@ pkgs.testers.runNixOSTest {
         return host.succeed("tr -d '\\r' < /tmp/g.out")
 
     def volume():
-        """The volume's .services listing and the service's tick, read in one shell."""
+        """The volume's .services listing and the app's tick, read in one shell."""
         # The console echoes the typed line, so each marker is split by a "" there and whole only in
         # the output: a regex can then match nothing but the answer.
         out = guest(f"echo L\"\"S=$(ls -1 /var/lib/briard/.services | tr \"\\n\" \" \"); echo T\"\"ICKS=$(cat /var/lib/briard/data/{svc}/app/state.json 2>/dev/null | tr -dc 0-9)")
         ls = re.search(r"LS=(.*)", out)
         ticks = re.search(r"TICKS=(\d*)", out)
         assert ls and ticks, f"no answer from the guest:\n{out}"
-        # Only what staging writes: the directory also holds other per-service markers (`.clean`).
+        # Only what staging writes: the directory also holds other per-app markers (`.clean`).
         staging = [f for f in ls.group(1).split() if f.endswith((".json", ".json.next", ".rollback"))]
         return staging, int(ticks.group(1) or 0)
 

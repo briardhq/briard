@@ -5,7 +5,7 @@
 # member, its failure fails the promotion, and `warmImage` (agent/guestagent/converge.go) answers a
 # missing image with `systemctl start <unit>-image.service` -- a blocking `podman image pull`.
 # The comment there argues the case and is right about the design: a node that was down when the
-# install ran promotes into a service it was never told about, and fetching what it can name beats
+# install ran promotes into an app it was never told about, and fetching what it can name beats
 # a cluster-wide negotiation nothing arbitrates. What it does NOT say is how long that fetch may
 # take before something gives up, and neither does any test: `chain-member-contract` drives its
 # member failures with SIGKILL and `systemctl restart`, which fail INSTANTLY. Every rule we have
@@ -15,7 +15,7 @@
 # it. `briard-services` is `Type=oneshot`, and systemd disables `TimeoutStartSec=` by default for
 # oneshot; quadlet's generated `.image` unit is a oneshot too, and neither we nor quadlet set a
 # timeout on either. If that holds, a slow pull holds the resource Primary with no VIP and no
-# services, indefinitely, and the demote-and-hand-over the eight rules prove (chain-member-contract)
+# apps, indefinitely, and the demote-and-hand-over the eight rules prove (chain-member-contract)
 # never fires -- because the member never fails, it just never finishes.
 #
 # WHY IT IS NOT IN THE NIGHTLY. It is a stopwatch, not an assertion: its whole output is a
@@ -133,7 +133,7 @@ pkgs.testers.runNixOSTest {
     ref = f"${registryHost}/briard-fixture@{digest}"
     print(f"published {ref}")
 
-    # === 2. a normal, zero-service promotion ===
+    # === 2. a normal, zero-app promotion ===
     # The node has to be Primary with the volume mounted before anything can be written to it --
     # the same constraint the product's install path lives under, and the reason converge exists.
     node1.succeed("modprobe drbd")
@@ -141,9 +141,9 @@ pkgs.testers.runNixOSTest {
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
-    print("promoted with zero services -- the shipped state, before anything is installed")
+    print("promoted with zero apps -- the shipped state, before anything is installed")
 
-    # === 3. install a service this node has no image for ===
+    # === 3. install an app this node has no image for ===
     # The manifest goes on the VOLUME, which is what converge reads. The data subvolume and its
     # subdirectories come from the RENDERER's own sidecars rather than being restated here, so the
     # only thing missing when converge runs is the image itself.

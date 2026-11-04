@@ -57,7 +57,7 @@ func (cfg Config) applyConfigSet(ctx context.Context, d api.Directive, r guest.V
 	// service to a different address than the one the household uses; changing it everywhere at
 	// once waits for the flock's own settings.
 	if len(cfg.Resource.Peers) > 1 {
-		return failed("this node has peers, and the service address belongs to all of them: it cannot be changed on one node")
+		return failed("this machine has peers, and the service address belongs to all of them: it cannot be changed on one machine")
 	}
 	hostCIDR := ""
 	if cfg.net != nil {
@@ -90,10 +90,10 @@ func (cfg Config) applyConfigSet(ctx context.Context, d api.Directive, r guest.V
 	cfg.lease.clear()
 	logf("config: vip %s -> %s, recorded in %s; restarting the guest to apply it", vipWord(was), vipWord(want), path)
 	if err := rb.RebootGuest(cctx); err != nil {
-		return failed("vip recorded as %s, but the guest restart failed (the next restart applies it): %v", vipWord(want), err)
+		return failed("vip recorded as %s, but the VM restart failed (the next restart applies it): %v", vipWord(want), err)
 	}
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone,
-		Detail: fmt.Sprintf("vip is now %s (was %s); the guest restarted with it", vipWord(want), vipWord(was))}
+		Detail: fmt.Sprintf("vip is now %s (was %s); the VM restarted with it", vipWord(want), vipWord(was))}
 }
 
 // vipSetting turns what the household typed into VIP_ADDR's value: "" for dhcp, else an address in

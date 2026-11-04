@@ -24,7 +24,7 @@ import (
 // already exists.
 //
 // THICK, and this is the one volume whose failure mode is unacceptable: DRBD replicates it and the
-// guest writes service data into it, so a sparse file the host cannot actually back becomes ENOSPC
+// guest writes app data into it, so a sparse file the host cannot actually back becomes ENOSPC
 // *underneath a replicated filesystem*, mid-write, on the node holding the primary role. Reserving
 // up front makes "is there room for this node's data?" a question answered once, by a call that
 // either succeeds or refuses, rather than months later by a write that fails.

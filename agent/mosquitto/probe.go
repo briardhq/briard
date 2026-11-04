@@ -10,7 +10,7 @@ import (
 
 // The S1 readiness signal for a broker, and why it is a WRITE where Home Assistant's is a read.
 //
-// The liveness floor asks whether the service answers; S1 asks whether it still does the thing it
+// The liveness floor asks whether the app answers; S1 asks whether it still does the thing it
 // was doing. For Home Assistant that is legible without touching anything — it publishes which
 // integrations are loaded, so the gate samples and compares. A broker publishes no such thing.
 // Its work is accepting clients and keeping what they told it to keep, and NEITHER is observable
@@ -33,7 +33,7 @@ import (
 // its state. If it does not answer, the broker is not serving. The verdicts differ in reason and
 // the household deserves the right one.
 //
-// IT BORROWS THE SERVICE'S OWN TOOLS, exactly as agent/hass borrows Home Assistant's Python: the
+// IT BORROWS THE APP'S OWN TOOLS, exactly as agent/hass borrows Home Assistant's Python: the
 // image ships mosquitto_pub and mosquitto_sub, so nothing here implements MQTT and the guest gains
 // no dependency. Dumb hands: this is HOW to ask a broker, never what the answer means — the
 // verdict is the host's (agent/host/readiness.go).
@@ -158,7 +158,7 @@ func subscribe(ctx context.Context, x Executor, container, topic string) (string
 }
 
 // safeName refuses anything that is not a plain container name. It becomes an argument to podman,
-// and the schema's whole discipline is that a catalogued service cannot reach past its own box —
+// and the schema's whole discipline is that a catalogued app cannot reach past its own box —
 // so a name that arrived from anywhere gets checked before it is executed with.
 func safeName(name string) error {
 	if name == "" {

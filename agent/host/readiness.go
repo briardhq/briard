@@ -14,31 +14,31 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// The per-service readiness registry: which catalogued services the product knows how to judge
+// The per-app readiness registry: which catalogued apps the product knows how to judge
 // beyond "it answers", and how.
 //
-// WHY A REGISTRY AND NOT A MANIFEST FIELD. A service upgrade that gates on liveness
+// WHY A REGISTRY AND NOT A MANIFEST FIELD. An app upgrade that gates on liveness
 // alone lets Home Assistant come back, answer /manifest.json with a 200, and serve a house whose
 // integrations are half dead. Judging that needs to know what a config entry is, which states are
 // terminal, and which are HA's own retry noise — knowledge no generic schema can carry without
 // becoming an expression language, and no manifest field should carry anyway, because a manifest
 // is a document a publisher writes. A curated catalog is precisely the licence to encode this in
-// the product: a small set of services we support, so we can know how each is operated.
+// the product: a small set of apps we support, so we can know how each is operated.
 //
 // The default is the current behaviour. An unknown name gets no assessor, and no assessor is the
-// liveness floor alone — exactly what every service got before this existed, and what mosquitto
+// liveness floor alone — exactly what every app got before this existed, and what mosquitto
 // and every future entry get on the day they land.
 //
 // The DECISION is here; how to obtain the sample is in the guest (agent/hass), because the token
-// and the service's loopback are both there. That is the same line the rest of the product draws:
+// and the app's loopback are both there. That is the same line the rest of the product draws:
 // identity and decisions on the host, hands in the guest.
 
 // readinessProbe is the slice of the guest the registry's assessors drive — a narrow interface for
 // DI, not a seam. Deliberately its own rather than a widening of `upgrader`: an OS upgrade must not
-// be able to name a service, and `upgrader` carries nothing that can.
+// be able to name an app, and `upgrader` carries nothing that can.
 //
-// ONE METHOD PER SERVICE THAT HAS A SIGNAL, named for it, because that is what they are: each
-// speaks one service's API and returns that service's own shape. The generic thing is the
+// ONE METHOD PER APP THAT HAS A SIGNAL, named for it, because that is what they are: each
+// speaks one app's API and returns that app's own shape. The generic thing is the
 // ASSESSOR seam above (guest.ReadinessAssessor), which knows none of this.
 //
 // NO CAPABILITY CHECKS, deliberately. The agent and the guest closure are
@@ -46,7 +46,7 @@ import (
 // does not know one of these verbs is a mismatched pair — a fault to see, not a configuration to
 // tolerate. What remains is the different rule it was once confused with: a sample that FAILS at
 // runtime leaves the install on the liveness floor, because S1 must never revert a household's
-// service on the strength of its own telemetry breaking.
+// app on the strength of its own telemetry breaking.
 type readinessProbe interface {
 	HassReadiness(ctx context.Context, port int) ([]hass.Entry, error)
 	MosquittoProbe(ctx context.Context, token string) (mosquitto.Sample, error)
@@ -55,13 +55,13 @@ type readinessProbe interface {
 // settleWindow is how long the post-change sample waits before it is judged.
 //
 // It exists because the signal is a settling state machine, not a level. Home Assistant retries a
-// failed integration with backoff, so an entry sampled the instant the service answers is
+// failed integration with backoff, so an entry sampled the instant the app answers is
 // routinely in setup_retry for reasons that have nothing to do with the upgrade — and the gate
 // reads "was loaded, not loaded now" as a Hold. Waiting is what turns that into a real
 // observation: what is still not loaded after the retries have had their run.
 //
 // A minute is the cost of the gate on every Home Assistant upgrade, and it is paid AFTER the
-// service is already serving — the household is not waiting on it, only the directive's outcome
+// app is already serving — the household is not waiting on it, only the directive's outcome
 // is. It sits well inside installBudget, which the health gate has already spent most of.
 const settleWindow = 60 * time.Second
 
@@ -70,11 +70,11 @@ const settleWindow = 60 * time.Second
 // this bounds is precisely the one the gate exists to catch, so it must not become a hang.
 const sampleBudget = 30 * time.Second
 
-// assessorFor returns the differential readiness assessor for a catalogued service, or nil for
+// assessorFor returns the differential readiness assessor for a catalogued app, or nil for
 // the liveness floor alone.
 //
 // nil for THREE distinct reasons, all of which mean the same thing to the caller and are worth
-// keeping distinct in the log: the product knows nothing about this service; the guest is too old
+// keeping distinct in the log: the product knows nothing about this app; the guest is too old
 // to sample one; or the change is a fresh install, which the caller decides (see below). The
 // first is the shipped default, the second degrades rather than refuses — an install must not
 // fail because the gate above its floor is unavailable.
@@ -150,9 +150,9 @@ func entries(in []hass.Entry) []entrygate.Entry {
 	return out
 }
 
-// verdict maps the service-specific gate's decision onto the generic one. The two vocabularies
+// verdict maps the app-specific gate's decision onto the generic one. The two vocabularies
 // happen to spell their values identically today; mapping them explicitly is what keeps that a
-// coincidence rather than a dependency, so a second service's gate can name its own.
+// coincidence rather than a dependency, so a second app's gate can name its own.
 func verdict(v entrygate.Verdict) guest.Verdict {
 	switch v {
 	case entrygate.Rollback:
@@ -166,21 +166,21 @@ func verdict(v entrygate.Verdict) guest.Verdict {
 
 // probeSettle bounds how long a broker gets to start accepting clients before the gate judges it.
 //
-// It is a POLL, not a wait: the sample is retried until the service answers or this expires, so a
+// It is a POLL, not a wait: the sample is retried until the app answers or this expires, so a
 // healthy upgrade pays only what it needs. Home Assistant's minute is a settle window because its
 // signal is a state machine that retries with backoff; a broker either accepts a connection or it
-// does not, and by the time this runs the liveness floor has already seen the service answer.
+// does not, and by the time this runs the liveness floor has already seen the app answer.
 const probeSettle = 30 * time.Second
 
 // probeRetry is how often the poll asks again. Short enough that a broker that comes up in two
 // seconds is judged in two seconds.
 const probeRetry = 2 * time.Second
 
-// probeAssessor is the S1 gate for a service whose work is invisible to a sample: it leaves a
-// token in the service's own durable state before the change and looks for it after.
+// probeAssessor is the S1 gate for an app whose work is invisible to a sample: it leaves a
+// token in the app's own durable state before the change and looks for it after.
 //
 // The two findings it can produce are kept apart on purpose, because they are different failures
-// with the same symptom at the floor — a service that answers:
+// with the same symptom at the floor — an app that answers:
 //
 //   - NOT SERVING: nothing can connect. The management endpoint the floor probes is not the port
 //     clients use, so a broker that refuses every client answers the floor perfectly.
@@ -189,7 +189,7 @@ const probeRetry = 2 * time.Second
 //     sensor that publishes daily, the discovery topics HA rebuilds its entities from.
 //
 // BOTH ARE ROLLBACK, and this is the item's one real judgement call. The alternative, Hold, keeps
-// a service the household cannot use (or has silently lost data from) while it waits for someone
+// an app the household cannot use (or has silently lost data from) while it waits for someone
 // to notice — and the pre-upgrade snapshot is exactly the state that would fix it. The
 // false-positive path that would make Rollback dangerous is closed at the source rather than
 // hedged here: the baseline is only accepted once the token has round-tripped AND the broker has
@@ -204,7 +204,7 @@ type probeAssessor struct {
 	token string
 }
 
-// Baseline stores a fresh token in the service and confirms the service is serving.
+// Baseline stores a fresh token in the app and confirms the app is serving.
 //
 // A FRESH TOKEN EVERY TIME, and that is not decoration: the topic is retained, so a value left by
 // a previous upgrade would still be there — and a broker that lost everything since would hand it
@@ -212,7 +212,7 @@ type probeAssessor struct {
 // upgrade's round trip.
 //
 // An error here degrades the install to the liveness floor, which is the right answer for both
-// ways it can fail: a service that is not serving clients BEFORE the change is a confounder, not
+// ways it can fail: an app that is not serving clients BEFORE the change is a confounder, not
 // a regression, and a probe that could not run is the gate's own telemetry breaking.
 func (a *probeAssessor) Baseline(ctx context.Context) (guest.Baseline, error) {
 	ctx, cancel := context.WithTimeout(ctx, sampleBudget)
@@ -229,7 +229,7 @@ func (a *probeAssessor) Baseline(ctx context.Context) (guest.Baseline, error) {
 		return nil, fmt.Errorf("readiness: %s was not serving clients before the change; nothing to compare against", a.name)
 	}
 	if s.Token != token {
-		// The write did not round-trip. Not a verdict about the service: it is this gate failing
+		// The write did not round-trip. Not a verdict about the app: it is this gate failing
 		// to establish a baseline, and it must not be dressed up as a regression later.
 		return nil, fmt.Errorf("readiness: %s did not store the probe token", a.name)
 	}
@@ -237,7 +237,7 @@ func (a *probeAssessor) Baseline(ctx context.Context) (guest.Baseline, error) {
 	return token, nil
 }
 
-// Assess polls until the service is serving again, then asks whether it still holds the token.
+// Assess polls until the app is serving again, then asks whether it still holds the token.
 func (a *probeAssessor) Assess(ctx context.Context, base guest.Baseline) (guest.Verdict, string, error) {
 	want, ok := base.(string)
 	if !ok || want == "" {
@@ -250,7 +250,7 @@ func (a *probeAssessor) Assess(ctx context.Context, base guest.Baseline) (guest.
 		s, err := a.p.MosquittoProbe(sampleCtx, "")
 		cancel()
 		if err != nil {
-			// The probe itself broke. Never a verdict — S1 does not revert a household's service
+			// The probe itself broke. Never a verdict — S1 does not revert a household's app
 			// because the gate could not ask.
 			return "", "", err
 		}

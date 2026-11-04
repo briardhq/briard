@@ -32,7 +32,7 @@ func clockFixture(t *testing.T) (Config, *fakeStatus, *[]takenMember, *clockSamp
 	return cfg, f, took, newClockSampler()
 }
 
-// TestClockSampleTakesOneAnInterval is the history's floor: a service nobody restarts is
+// TestClockSampleTakesOneAnInterval is the history's floor: an app nobody restarts is
 // still compared with an hour ago -- and only once an hour, because the observe loop asks on every
 // cycle and a sampler that took one each time would snapshot a household every few seconds.
 func TestClockSampleTakesOneAnInterval(t *testing.T) {
@@ -116,7 +116,7 @@ func metaOf(t *testing.T, raw string) quadlet.SnapshotMeta {
 }
 
 // TestClockSampleIsCrashConsistentWhenTheServiceCannotHoldStill: it is the ONE member taken against a
-// running service, and the picker and the snapshot-integrity supervisor are entitled to know that before trusting it. A Home
+// running app, and the picker and the snapshot-integrity supervisor are entitled to know that before trusting it. A Home
 // Assistant that is down, too old for the view, or whose lock broke all land here.
 func TestClockSampleIsCrashConsistentWhenTheServiceCannotHoldStill(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
@@ -160,7 +160,7 @@ func TestClockSampleIsQuiescedWhenTheServiceHeldStill(t *testing.T) {
 
 // TestTheHostNeverClaimsTheServiceHeldStill is the rule that keeps the class honest across the
 // channel: the host renders `crash` and the GUEST upgrades it, because only the guest
-// watched the service hold. A host that rendered `quiesced` hopefully would make every failure
+// watched the app hold. A host that rendered `quiesced` hopefully would make every failure
 // between here and the snapshot into a member that lies.
 func TestTheHostNeverClaimsTheServiceHeldStill(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)

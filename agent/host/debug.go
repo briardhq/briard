@@ -36,7 +36,7 @@ func (cfg Config) applyDebugConsole(ctx context.Context, d api.Directive, logf f
 	if cfg.QMPSock == "" {
 		// A node with no monitor configured has no guest to open. Failed rather than done:
 		// the caller asked for a console and is not getting one.
-		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "no QMP monitor on this node"}
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "no QMP monitor on this machine"}
 	}
 	console := platform.DebugConsolePath(cfg.QMPSock)
 	cctx, cancel := context.WithTimeout(ctx, debugConsoleTimeout)

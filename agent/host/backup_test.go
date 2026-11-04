@@ -511,7 +511,7 @@ func TestAdoptingABackup(t *testing.T) {
 		t.Fatalf("no repository, yet asked the guest (%q): %+v", g.adopted, o)
 	}
 	g.noAdopt = true
-	if o := setBackup(cfg, g, settingBackupAdopt, "k"); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "update the guest") {
+	if o := setBackup(cfg, g, settingBackupAdopt, "k"); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "update the VM") {
 		t.Fatalf("an old guest: %+v", o)
 	}
 	g.noAdopt = false
@@ -786,7 +786,7 @@ func TestTheBackupListIsTheGuestsReadOfTheRepository(t *testing.T) {
 		t.Errorf("a failed read: %+v", o)
 	}
 	l.err, l.old, l.url = nil, true, ""
-	if o := cfg.applyBackupList(context.Background(), l, api.Directive{ID: "d"}); o.State != api.OutcomeFailed || l.url != "" || !strings.Contains(o.Detail, "update the guest") {
+	if o := cfg.applyBackupList(context.Background(), l, api.Directive{ID: "d"}); o.State != api.OutcomeFailed || l.url != "" || !strings.Contains(o.Detail, "update the VM") {
 		t.Errorf("an old guest: %+v, asked %q", o, l.url)
 	}
 	l.old = false

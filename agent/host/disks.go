@@ -15,7 +15,7 @@ import (
 
 // stateDiskInitial is the state disk's size when the agent makes it: THICK, paid for up front, and
 // only as big as an empty node needs -- the journal (capped at 128 MB), the boot's scratch (the
-// dressed binaries, ~30 MB) and the deadman's backoff, with room to spare. Everything a service
+// dressed binaries, ~30 MB) and the deadman's backoff, with room to spare. Everything an app
 // brings is charged when it arrives: an install grows the disk first (growStateDisk), so the host
 // pays at the operation that needs the space and never underneath a running guest.
 const stateDiskInitial = reportcard.StateDiskInitialMB << 20 // the report card's line, so its floor and this agree
@@ -35,7 +35,7 @@ const stateDiskStep = 1 << 30
 const hostDiskReserve = reportcard.HostDiskReserveMB << 20 // the report card's line, likewise
 
 // errHostDiskFull is a grow the host cannot pay for: the operation that needed it is refused, and
-// the running service is untouched.
+// the running app is untouched.
 var errHostDiskFull = errors.New("not enough free space on this computer")
 
 // stateDiskGrowth decides a grow: the size the state disk FILE must reach for the guest to have
@@ -256,7 +256,7 @@ func (a *diskAlerter) observe(ctx context.Context, n notify.Notifier, node, disk
 			Kind:     notify.Open,
 			Severity: notify.Warning,
 			Title:    "Briard: this computer is running out of disk space",
-			Body: fmt.Sprintf("node %s's computer has %s free on the disk holding its data (%s). Briard keeps about %s free "+
+			Body: fmt.Sprintf("machine %s has %s free on the disk holding its data (%s). Briard keeps about %s free "+
 				"for the computer's own system, so installing or updating apps, and the next Briard update, will be "+
 				"refused until there is more room. Your apps keep running. Free some space on that disk.",
 				node, gb(int64(free)<<20), path, fmt.Sprintf("%d GB", reportcard.HostDiskReserveMB/1024)),
@@ -267,7 +267,7 @@ func (a *diskAlerter) observe(ctx context.Context, n notify.Notifier, node, disk
 			Kind:  notify.Resolved,
 			Title: "Briard: disk space is back",
 
-			Body: fmt.Sprintf("node %s's computer has %s free again; installs and updates can go ahead.", node, gb(int64(free)<<20)),
+			Body: fmt.Sprintf("machine %s has %s free again; installs and updates can go ahead.", node, gb(int64(free)<<20)),
 		})
 	}
 }
@@ -341,7 +341,7 @@ func (a *smartAlerter) judge(ctx context.Context, n notify.Notifier, node string
 				Kind:     notify.Open,
 				Severity: notify.Critical,
 				Title:    "Briard: a disk is failing",
-				Body: fmt.Sprintf("disk %s on node %s reports it is failing (%s). Your data lives on it: replace it soon.",
+				Body: fmt.Sprintf("disk %s on machine %s reports it is failing (%s). Your data lives on it: replace it soon.",
 					s.Device, node, s.Why),
 			})
 		case s.Errors > base:
@@ -350,7 +350,7 @@ func (a *smartAlerter) judge(ctx context.Context, n notify.Notifier, node string
 				Kind:     notify.Open,
 				Severity: notify.Warning,
 				Title:    "Briard: a disk is recording errors",
-				Body: fmt.Sprintf("disk %s on node %s has recorded %d bad sectors or media errors, up from %d. A disk whose "+
+				Body: fmt.Sprintf("disk %s on machine %s has recorded %d bad sectors or media errors, up from %d. A disk whose "+
 					"count keeps growing is wearing out: plan to replace it.", s.Device, node, s.Errors, base),
 			})
 		case s.Errors == 0:
@@ -358,7 +358,7 @@ func (a *smartAlerter) judge(ctx context.Context, n notify.Notifier, node string
 				Key:   key,
 				Kind:  notify.Resolved,
 				Title: "Briard: the disk reports no warnings",
-				Body:  fmt.Sprintf("disk %s on node %s reports no warnings in its health report.", s.Device, node),
+				Body:  fmt.Sprintf("disk %s on machine %s reports no warnings in its health report.", s.Device, node),
 			})
 		}
 	}

@@ -160,7 +160,7 @@ func withServices(mb int, mins ...int) Config {
 	return cfg
 }
 
-// The boot size is the configured size, or more when the installed services' minimums (plus the
+// The boot size is the configured size, or more when the installed apps' minimums (plus the
 // system's share) say so -- and the next launch boots there, never at a size grown since.
 func TestBootMemoryMB(t *testing.T) {
 	for _, c := range []struct {
@@ -172,7 +172,7 @@ func TestBootMemoryMB(t *testing.T) {
 		{withServices(1024, 512, 32), 1024},  // ...and so does a broker beside it
 		{withServices(1024, 512, 400), 1296}, // minimums past the configured size win
 		{withServices(2048, 512, 400), 2048}, // a configured size above them stands
-		{withServices(1024, 0, 0), 1024},     // services that declare nothing count for nothing
+		{withServices(1024, 0, 0), 1024},     // apps that declare nothing count for nothing
 	} {
 		if got := c.cfg.bootMemoryMB(); got != c.want {
 			t.Errorf("bootMemoryMB(%+v) = %d, want %d", c.cfg.Services, got, c.want)
@@ -183,7 +183,7 @@ func TestBootMemoryMB(t *testing.T) {
 	}
 }
 
-// An install counts the service it installs once: an upgrade replaces its own old minimum rather
+// An install counts the app it installs once: an upgrade replaces its own old minimum rather
 // than adding to it.
 func TestMemoryNeededCountsTheInstalledServiceOnce(t *testing.T) {
 	cfg := withServices(1024, 512, 32) // s0, s1
@@ -227,7 +227,7 @@ func TestMemoryAlertAssertsTheSize(t *testing.T) {
 		return string(al.Kind) + " " + al.Title
 	}
 	for _, size := range []int{1536, 2048} {
-		if got := say(size, false); got != "resolved Briard: the guest's memory is back to normal" {
+		if got := say(size, false); got != "resolved Briard: the VM's memory is back to normal" {
 			t.Errorf("%d MB of a 1024 MB boot: %q; ordinary growth is the resolved state", size, got)
 		}
 	}
@@ -241,7 +241,7 @@ func TestMemoryAlertAssertsTheSize(t *testing.T) {
 		t.Errorf("the ceiling: %q, want the out-of-memory alert (a change of title: pushed)", got)
 	}
 	// A relaunch hands the memory back; the first growth after it is back under the threshold.
-	if got := say(1536, false); got != "resolved Briard: the guest's memory is back to normal" {
+	if got := say(1536, false); got != "resolved Briard: the VM's memory is back to normal" {
 		t.Errorf("growth after a relaunch: %q, want resolved", got)
 	}
 	// A small host reaches its ceiling before 2.5x: that is the alert, and it names the ceiling.

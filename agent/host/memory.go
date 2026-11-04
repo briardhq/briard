@@ -59,14 +59,14 @@ func growGuestMemory(ctx context.Context, hostMB int, size func(context.Context)
 	return cur + platform.MemoryStepMB, nil
 }
 
-// guestSystemMB is the guest's own share, before any service: the OS, the agent, the kernel's
-// reservations. Measured, not guessed: a guest with no service boots with ~380 MB of its 964 MB
+// guestSystemMB is the guest's own share, before any app: the OS, the agent, the kernel's
+// reservations. Measured, not guessed: a guest with no app boots with ~380 MB of its 964 MB
 // MemTotal not available.
 const guestSystemMB = 384
 
-// memoryNeeded is what the guest must hold for its services from their first second -- the
-// system's share plus every installed service's declared minimum, with `except` left out and
-// extraMB added (an install replacing or adding one service). Growth covers whatever a service
+// memoryNeeded is what the guest must hold for its apps from their first second -- the
+// system's share plus every installed app's declared minimum, with `except` left out and
+// extraMB added (an install replacing or adding one app). Growth covers whatever an app
 // needs beyond its minimum; this covers what it needs before growth can react.
 func (cfg Config) memoryNeeded(except string, extraMB int) int {
 	n := guestSystemMB + extraMB
@@ -79,7 +79,7 @@ func (cfg Config) memoryNeeded(except string, extraMB int) int {
 }
 
 // bootMemoryMB is the size every launch boots at: the configured size, or more when the installed
-// services' minimums say so.
+// apps' minimums say so.
 func (cfg Config) bootMemoryMB() int { return max(cfg.MemoryMB, cfg.memoryNeeded("", 0)) }
 
 // growGuestMemoryTo grows the running guest one step at a time until it holds at least needMB.
@@ -110,7 +110,7 @@ func growGuestMemoryTo(ctx context.Context, needMB, hostMB int, size func(contex
 //
 //   - LEVEL: MemAvailable below max(memLowFloorMB, memLowShare of MemTotal) for memLowFor. It
 //     already reflects zram -- parking cold memory RAISES it by the compression saving -- so it
-//     falls only once zram stops keeping up: slow growth, a new service settling in.
+//     falls only once zram stops keeping up: slow growth, a new app settling in.
 //   - PRESSURE: memory PSI "some" (avg60) above memPressurePct for memPressureFor. The case the
 //     level cannot see: a working set that does not fit, swapping in and out of zram while
 //     MemAvailable looks fine.
@@ -171,7 +171,7 @@ func (m *memoryGrower) decide(now time.Time, r *telemetry.NodeResources) bool {
 
 // memoryAlertFactor is how far past its boot size the guest grows before the household hears
 // about it. Growth itself is routine and silent -- a DIMM per window is the mechanism working --
-// but two and a half times the boot size is not a service settling in: it is a leak, or a service
+// but two and a half times the boot size is not an app settling in: it is a leak, or an app
 // that outgrew what it declares.
 const memoryAlertFactor = 2.5
 
@@ -187,19 +187,19 @@ func memoryAlert(node string, sizeMB, bootMB, ceilingMB int, atCeiling bool) not
 	}
 	if atCeiling {
 		return notify.Alert{Key: "memory", Kind: notify.Open, Severity: notify.Critical, Title: "Briard: out of memory to give",
-			Body: fmt.Sprintf("node %s's guest has grown to %d MB, the most this host can give it (%d MB of RAM are kept for the host itself), "+
-				"and it still needs more. Its services will start failing or being restarted for lack of memory. "+
-				"Restarting the guest returns what it grew; if this comes back, one of its services needs more memory than this machine has.",
+			Body: fmt.Sprintf("the VM on machine %s has grown to %d MB, the most this host can give it (%d MB of RAM are kept for the host itself), "+
+				"and it still needs more. Its apps will start failing or being restarted for lack of memory. "+
+				"Restarting the VM returns what it grew; if this comes back, one of its apps needs more memory than this machine has.",
 				node, sizeMB, hostMemoryReserveMB)}
 	}
 	return notify.Alert{Key: "memory", Kind: notify.Open, Severity: notify.Warning, Title: "Briard: memory growing unusually",
-		Body: fmt.Sprintf("node %s's guest has grown to %d MB, %.1f times the %d MB it started with. "+
-			"A service is probably leaking, or needs more than it declares. The guest can keep growing to %d MB; "+
+		Body: fmt.Sprintf("the VM on machine %s has grown to %d MB, %.1f times the %d MB it started with. "+
+			"An app is probably leaking, or needs more than it declares. The VM can keep growing to %d MB; "+
 			"restarting it returns the memory.", node, sizeMB, float64(sizeMB)/float64(bootMB), bootMB, ceilingMB)}
 }
 
 // memoryReturned resolves the memory alert: the guest is back at a size that is not unusual.
 func memoryReturned(node string) notify.Alert {
-	return notify.Alert{Key: "memory", Kind: notify.Resolved, Title: "Briard: the guest's memory is back to normal",
-		Body: fmt.Sprintf("node %s's guest is back at an ordinary size.", node)}
+	return notify.Alert{Key: "memory", Kind: notify.Resolved, Title: "Briard: the VM's memory is back to normal",
+		Body: fmt.Sprintf("the VM on machine %s is back at an ordinary size.", node)}
 }

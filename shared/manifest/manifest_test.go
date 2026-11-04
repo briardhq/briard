@@ -52,7 +52,7 @@ func TestParseGood(t *testing.T) {
 // TestIdentityIsTheBytes: identity is the hash of the EXACT bytes given, not of a re-marshalling.
 // Two documents that differ only in whitespace are different signed artifacts and must not
 // collide, or a re-encode anywhere in the chain silently mints a new identity for the same
-// service (or, worse, the same identity for two different ones).
+// app (or, worse, the same identity for two different ones).
 func TestIdentityIsTheBytes(t *testing.T) {
 	compact := raw(t, good())
 	spaced := append(append([]byte(nil), compact...), '\n')
@@ -287,7 +287,7 @@ func TestAManifestWithoutTheFieldParsesAsPrivate(t *testing.T) {
 
 // TestMountsInEveryTier: each tier is sayable, a mount may sit inside another (Home Assistant's
 // backups inside its config), and two containers may share one directory. UsesTier answers for
-// the service and for each container.
+// the app and for each container.
 func TestMountsInEveryTier(t *testing.T) {
 	m := good()
 	m.Containers[0].Mounts = []Mount{

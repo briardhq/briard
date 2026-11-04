@@ -30,7 +30,7 @@ func (n *noopExec) WriteFile(string, []byte) error                         { ret
 func (n *noopExec) ReadFile(string) ([]byte, error)                        { return nil, nil }
 
 // TestAnUnknownServiceGetsNothing — the registry's default, and the property that keeps adding an
-// entry from being able to change what every other service gets. A service the product has never
+// entry from being able to change what every other app gets. An app the product has never
 // heard of must render, prepare and read exactly as it did before this package existed.
 func TestAnUnknownServiceGetsNothing(t *testing.T) {
 	m := svc("something-else", 8080)
@@ -44,7 +44,7 @@ func TestAnUnknownServiceGetsNothing(t *testing.T) {
 	if x.runs != 0 {
 		t.Errorf("an unknown service ran %d command(s) on the node", x.runs)
 	}
-	// The service's OWN name on the front door's :80, not the flock name and a port: the
+	// The app's OWN name on the front door's :80, not the flock name and a port: the
 	// port in this sentence was the shape of a node that could only be reached around its door.
 	if got := Reach(m, "home"); got != "reach it at http://briard-something-else.local/" {
 		t.Errorf("Reach = %q", got)
@@ -52,7 +52,7 @@ func TestAnUnknownServiceGetsNothing(t *testing.T) {
 }
 
 // TestRestoreMarkersAreHomeAssistantsAlone: the registry's default is nothing, and a
-// marker list that leaked to another service would have the restore path unlinking a file inside
+// marker list that leaked to another app would have the restore path unlinking a file inside
 // somebody else's data on the strength of a name Home Assistant chose.
 //
 // RELATIVE TO THE DATA ROOT, with the config directory in the path: the guest resolves them against a
@@ -102,8 +102,8 @@ func TestEachKnownServiceGetsItsOwn(t *testing.T) {
 }
 
 // TestReachNamesMQTTForTheBroker, because the manifest's port is the broker's MANAGEMENT endpoint
-// and it is bound to the guest's loopback. Printing it would hand the household a dead link for a
-// service that is working perfectly — which is the failure the reach line exists to prevent.
+// and it is bound to the guest's loopback. Printing it would hand the household a dead link for an
+// app that is working perfectly — which is the failure the reach line exists to prevent.
 func TestReachNamesMQTTForTheBroker(t *testing.T) {
 	// The port comes from the MANIFEST now, not from a constant in this package: what a household
 	// reaches is what the catalog publishes, so a change there moves this sentence with it.
@@ -146,7 +146,7 @@ func TestOnlyTheBrokerIsNotFronted(t *testing.T) {
 	if Fronted(svc(mosquitto.Name, mosquitto.HealthPort)) {
 		t.Error("the broker is fronted; its loopback-bound management API would reach the LAN")
 	}
-	// The default is the front door: an ordinary service's primary port IS what a household opens.
+	// The default is the front door: an ordinary app's primary port IS what a household opens.
 	for _, m := range []manifest.Manifest{svc(hass.Name, 8123), svc("something-else", 8080)} {
 		if !Fronted(m) {
 			t.Errorf("%s is not fronted; the default must be that a service is reachable by name", m.Name)
@@ -181,7 +181,7 @@ func TestOnlyTheBrokerAnnouncesItself(t *testing.T) {
 	if got[0].Name != "briard-brave-elf-mosquitto" {
 		t.Errorf("the instance label %q is not the flock-scoped name", got[0].Name)
 	}
-	// The default is silence: an ordinary HTTP service is reached by the name the door serves it
+	// The default is silence: an ordinary HTTP app is reached by the name the door serves it
 	// under, and browsing types it into a category it may not belong in.
 	for _, m := range []manifest.Manifest{svc(hass.Name, 8123), svc("something-else", 8080)} {
 		if a := Announce(m, "brave-elf"); len(a) != 0 {
@@ -189,7 +189,7 @@ func TestOnlyTheBrokerAnnouncesItself(t *testing.T) {
 		}
 	}
 	// No flock name means no name to point an SRV record at, so nothing is announced -- the same
-	// rule that leaves the service's own A record unpublished.
+	// rule that leaves the app's own A record unpublished.
 	if a := Announce(mq, ""); len(a) != 0 {
 		t.Errorf("a node with no published name announced %+v", a)
 	}
@@ -200,8 +200,8 @@ func TestOnlyTheBrokerAnnouncesItself(t *testing.T) {
 // inside the container rather than merely read-only -- a failure that looks like "the agent is
 // not listening" and is not.
 //
-// And it is OPT-IN: every container that gets this socket widens what a compromised service can
-// reach, so a service with no in-container restart boundary gets nothing.
+// And it is OPT-IN: every container that gets this socket widens what a compromised app can
+// reach, so an app with no in-container restart boundary gets nothing.
 func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 	ha := manifest.Manifest{Name: "home-assistant", Containers: []manifest.Container{
 		{Name: "app", Primary: true}, {Name: "sidecar"},
@@ -229,9 +229,9 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 	if !strings.HasPrefix(bind, InboundSocket()+":") {
 		t.Errorf("bind = %q, want the one shared socket", bind)
 	}
-	// THE TOKEN HAS NO BIND OF ITS OWN, and that is the point of the per-service directory: it is
+	// THE TOKEN HAS NO BIND OF ITS OWN, and that is the point of the per-app directory: it is
 	// simply one of the things in it, arriving read-only with everything else briard hands this
-	// service. A bind here would be a third mount buying nothing.
+	// app. A bind here would be a third mount buying nothing.
 	for _, v := range primary {
 		if strings.HasPrefix(v, InboundTokenPath("home-assistant")+":") {
 			t.Errorf("the token was given its own bind (%q); it should ride the service directory", v)
@@ -285,8 +285,8 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 func TestPrepareMintsAFreshInboundToken(t *testing.T) {
 	ha := manifest.Manifest{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/config"}}}}}
 	f := &tokenExec{files: map[string]string{}}
-	// Prepare's own per-service work fails on this stub fixture, and that is deliberately not
-	// what is asserted: the mint runs AHEAD of the switch on the service name, so a service whose
+	// Prepare's own per-app work fails on this stub fixture, and that is deliberately not
+	// what is asserted: the mint runs AHEAD of the switch on the app name, so an app whose
 	// own preparation fails still leaves nothing half-identified behind. Its container never
 	// starts either -- converge skips it -- so the unused token simply rotates next time.
 	_ = Prepare(context.Background(), f, ha)
@@ -301,7 +301,7 @@ func TestPrepareMintsAFreshInboundToken(t *testing.T) {
 	if f.files[InboundTokenPath("home-assistant")] == first {
 		t.Error("the token did not rotate on the second converge")
 	}
-	// A service that gets no channel gets no token: the credential exists only where it is used.
+	// An app that gets no channel gets no token: the credential exists only where it is used.
 	mq := manifest.Manifest{Name: "mosquitto", Containers: []manifest.Container{{Name: "broker", Primary: true}}}
 	_ = Prepare(context.Background(), f, mq)
 	if _, ok := f.files[InboundTokenPath("mosquitto")]; ok {
@@ -310,7 +310,7 @@ func TestPrepareMintsAFreshInboundToken(t *testing.T) {
 }
 
 // tokenExec records writes and commands; hass.Prepare's own steps fail harmlessly on it, which is
-// fine because this test is about what happens BEFORE the switch on the service name.
+// fine because this test is about what happens BEFORE the switch on the app name.
 type tokenExec struct {
 	files map[string]string
 	runs  [][]string
@@ -394,11 +394,11 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 // TestServiceDirMatchesTheRegistry: agent/hass declares its own directory as a const, because it
 // cannot import this package (this one imports it). So two definitions have to agree, and the
 // agreement is load-bearing in a way that is easy to miss: the agent resolves an inbound caller
-// by reading the run directory and taking a DIRECTORY NAME as a service name. A directory named
-// for the Go package rather than the service would resolve to a service that does not exist, and
+// by reading the run directory and taking a DIRECTORY NAME as an app name. A directory named
+// for the Go package rather than the app would resolve to an app that does not exist, and
 // every call from that container would come back "unknown caller" with nothing pointing at why.
 //
-// The directory is named for the service, as agent/mosquitto's is.
+// The directory is named for the app, as agent/mosquitto's is.
 func TestServiceDirMatchesTheRegistry(t *testing.T) {
 	for _, c := range []struct{ name, dir string }{
 		{hass.Name, hass.Dir},

@@ -234,12 +234,12 @@ func TestAwaitReadyPollsOnDetachedContext(t *testing.T) {
 // THE OS-UPGRADE SEQUENCE TESTS MOVED OUT, with the sequence itself: it is
 // agent/host's now, because an OS upgrade rolls back to a snapshot of the OS disk and only the
 // host can take or restore one. Their replacements are TestSwitchUpgrade* in
-// agent/host/osupgrade_test.go, and they assert the shape gave the path -- no service
+// agent/host/osupgrade_test.go, and they assert the shape gave the path -- no app
 // stop/start, no data snapshot/restore, one activation on a failing run.
 //
 // What stays here is what the guest still owns and this file can still fail on: the health
-// floor (including the zero-service case), the S1 gate's verdicts, the primitives, and the
-// SERVICE upgrade -- which is unchanged, because {image + data} rolling back together is the
+// floor (including the zero-app case), the S1 gate's verdicts, the primitives, and the
+// APP upgrade -- which is unchanged, because {image + data} rolling back together is the
 // whole point of that one.
 
 // fakeAssessor drives the differential S1 gate: a canned verdict + a record of when it
@@ -305,14 +305,14 @@ func TestAssessVerdicts(t *testing.T) {
 	}
 }
 
-// A ZERO-SERVICE node -- the shipped state -- must health-gate on the front
+// A ZERO-APP node -- the shipped state -- must health-gate on the front
 // door alone. Before the fix, unitOf on an empty spec named the nonexistent
 // `podman-.service`, systemd said "inactive", and Ready was false forever: every OS upgrade a
 // fresh install was offered rolled back, while the same node reported Healthy: true to the
 // cloud (cfg.snapshot takes the probe's answer with no such conjunct).
 func TestHealthZeroServiceGatesOnTheFrontDoorAlone(t *testing.T) {
 	srv := codeServer(t, http.StatusOK)
-	f := &fakeControl{active: false} // no service unit exists, so it cannot be active
+	f := &fakeControl{active: false} // no app unit exists, so it cannot be active
 	m := newManager(f, srv.URL)
 
 	h, err := m.Health(context.Background(), model.ServiceSpec{})
@@ -327,7 +327,7 @@ func TestHealthZeroServiceGatesOnTheFrontDoorAlone(t *testing.T) {
 	}
 }
 
-// The converse, so the above is not "always ready": a zero-service node whose FRONT DOOR is
+// The converse, so the above is not "always ready": a zero-app node whose FRONT DOOR is
 // down is NOT ready. This is exactly the failure the rollback demo breaks deliberately, so if this
 // went vacuous the broken-generation test would too.
 func TestHealthZeroServiceUnreadyWhenTheFrontDoorIsDown(t *testing.T) {
@@ -342,7 +342,7 @@ func TestHealthZeroServiceUnreadyWhenTheFrontDoorIsDown(t *testing.T) {
 	}
 }
 
-// A service-bearing node keeps the old meaning: the unit must be active AND the probe pass.
+// An app-bearing node keeps the old meaning: the unit must be active AND the probe pass.
 // Without this, the fix could have been "drop the conjunct entirely".
 func TestHealthWithAServiceStillRequiresTheUnitActive(t *testing.T) {
 	srv := codeServer(t, http.StatusOK)
@@ -356,9 +356,9 @@ func TestHealthWithAServiceStillRequiresTheUnitActive(t *testing.T) {
 	}
 }
 
-// The end-to-end half -- a zero-service node must COMMIT an OS upgrade rather than roll it
+// The end-to-end half -- a zero-app node must COMMIT an OS upgrade rather than roll it
 // back -- moved to agent/host with the sequence, and got stronger on the way. The
-// OS path no longer takes a spec at all, so "no service" is not a case it can get wrong; what
+// OS path no longer takes a spec at all, so "no app" is not a case it can get wrong; what
 // the host test asserts instead is the harder version of the same thing, on a node whose units
 // all report INACTIVE: it commits, and it never asks about a unit at all ( deletion 5).
 // The Health-level halves above stay here, where the conjunct they guard lives.

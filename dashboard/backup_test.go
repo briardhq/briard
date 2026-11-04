@@ -274,10 +274,10 @@ func TestBackUpNowFollowsTheRunToItsEnd(t *testing.T) {
 		t.Errorf("the failure is not said:\n%s", s)
 	}
 
-	port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "the nightly backup is turned off on this node"}
+	port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "the nightly backup is turned off on this machine"}
 	r.form("/backup/now", c, nil)
 	body := r.get(t, "/backup", c)
-	if !strings.Contains(body, "turned off on this node") || strings.Contains(card(body, "schedule"), "hx-get") {
+	if !strings.Contains(body, "turned off on this machine") || strings.Contains(card(body, "schedule"), "hx-get") {
 		t.Errorf("a refused Back up now:\n%s", card(body, "schedule"))
 	}
 }

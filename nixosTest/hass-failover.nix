@@ -2,7 +2,7 @@
 #
 # drbd-failover proves the mechanism (3-node majority, kill-primary → VIP + data
 # move) for the deterministic dummy; this proves the *differentiated claim* on the
-# real service: real HA state survives a takeover. The dummy's tick counter stands
+# real app: real HA state survives a takeover. The dummy's tick counter stands
 # in for "committed data crossed the DRBD link"; HA's equivalent is its **sacred
 # `.storage`** — so we create the owner user through HA's own (no-auth)
 # onboarding API, which writes `.storage/auth*`, and after the kill assert that
@@ -142,7 +142,7 @@ pkgs.testers.runNixOSTest {
     # HA started INSIDE this promotion (briard-services is a chain member), and it reads its network
     # once, at boot: the interface it advertises and answers mDNS on, and the address it builds its
     # own URL from, are where the kernel sends 224.0.0.251. The chain claims the VIP -- and
-    # briard-vip routes multicast out of the VIP's NIC -- BEFORE the services start, so the HA that
+    # briard-vip routes multicast out of the VIP's NIC -- BEFORE the apps start, so the HA that
     # booted here saw the household LAN. Started the other way round it raced the claim, and on
     # losing it advertised qemu's user-net address until its next restart.
     import json as _zj

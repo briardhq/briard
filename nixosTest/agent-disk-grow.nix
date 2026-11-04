@@ -1,8 +1,8 @@
 # The host agent GROWS its guest's state disk when an install needs the space -- and refuses the
 # install, touching nothing, when the host cannot pay for it.
 #
-# The state disk starts THICK and small (1 GiB): the host pays for what a service brings when the
-# service arrives, never underneath a running guest. The fixture here declares sizes no fresh disk
+# The state disk starts THICK and small (1 GiB): the host pays for what an app brings when the
+# app arrives, never underneath a running guest. The fixture here declares sizes no fresh disk
 # holds (2 GB installed, 0.5 GB downloading), so installing it must run the whole grow: the file
 # extended thick, QEMU's block_resize, the guest's resize2fs online -- and only then the pull.
 #
@@ -141,7 +141,7 @@ pkgs.testers.runNixOSTest {
         return m.group(1) == "0"
 
     def install(label):
-        # THE LOOP KEEPS TICKING WHILE AN INSTALL RUNS. A service install leaves the observe loop
+        # THE LOOP KEEPS TICKING WHILE AN INSTALL RUNS. An app install leaves the observe loop
         # (agent/host/acts.go), so the status line -- every STATUS_EVERY=2s here -- keeps coming
         # between the moment the directive is submitted and the moment the install says it is
         # serving; an install that held the loop logged nothing in between (the 2026-09-01 shape:

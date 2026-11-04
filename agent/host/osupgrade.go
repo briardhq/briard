@@ -32,21 +32,21 @@ import (
 // manifest names -> health-gate -> commit (drop .prev) or restore (rename it back). No
 // generation, no boot selector, no in-guest step: the guest is an appliance.
 //
-// WHAT IT NEVER TOUCHES: the workload. No service stop, no service start, no data snapshot, no
+// WHAT IT NEVER TOUCHES: the workload. No app stop, no app start, no data snapshot, no
 // data restore. The new OS runs the same containers on the same data; systemd stops and starts
 // them in order by going down and coming up, without being asked. If the update fails, THE OS
-// rolls back -- the service has no reason to, and the replicated volume is never in scope. The
-// one thing that still reads service state is the health-gate, which is correct and is the
-// line: reading a service to decide whether to revert the OS is not touching it.
+// rolls back -- the app has no reason to, and the replicated volume is never in scope. The
+// one thing that still reads app state is the health-gate, which is correct and is the
+// line: reading an app to decide whether to revert the OS is not touching it.
 //
 // WHAT THE ROLLBACK POINT COVERS: the previous image, and deliberately no btrfs data snapshot.
-// An OS upgrade cannot change service code -- a service's identity is the manifest on the
-// replicated volume, re-pointed only by a service install -- so there is no data migration to
+// An OS upgrade cannot change app code -- an app's identity is the manifest on the
+// replicated volume, re-pointed only by an app install -- so there is no data migration to
 // undo, and reverting the subvolume would delete real user data written during the gate
 // window. What an OS upgrade *can* disturb is the OS itself, which is exactly the image.
 
 // shutdownGrace bounds each clean-stop attempt. A guest that has not powered off in this long
-// is not going to: a converged guest -- DRBD Primary, volume mounted, services serving, VIP up --
+// is not going to: a converged guest -- DRBD Primary, volume mounted, apps serving, VIP up --
 // was MEASURED powering itself off in 1.5 s, so 30 s is twenty times the observed cost and still
 // well inside a stop worth waiting for.
 //
@@ -73,7 +73,7 @@ const reapGrace = 10 * time.Second
 // leaves everything exactly as it found it.
 //
 // Refusing is not conservatism, it is the only correct answer. Reboot here and a peer takes
-// over while the node is down, so it returns Secondary -- where the services never run, since
+// over while the node is down, so it returns Secondary -- where the apps never run, since
 // drbd-reactor promotes exactly one node. The health-gate asks a Primary-shaped question
 // (ServiceActive && probe), which a Secondary can never satisfy, so every such upgrade would
 // false-roll-back. Demoting deliberately first is the right operation but the wrong owner:
@@ -353,8 +353,8 @@ type systemStater interface {
 // systemRunning is the OS gate's GENERIC check: did every unit the new image starts actually
 // start? systemd's own `running` (no failed unit) is a question any guest can answer without
 // knowing what it runs, and its failures -- a missing kernel module, a unit the new image broke --
-// are things reverting the image repairs. The OS gate asks nothing service-specific: a release's
-// fitness for a household's services is established before it ships, not judged per house.
+// are things reverting the image repairs. The OS gate asks nothing app-specific: a release's
+// fitness for a household's apps is established before it ships, not judged per house.
 //
 // READ ONCE, after the node-local gate has passed -- never polled until it turns `running`. Our own
 // recovery clears failed state (the promotion hold's `reset-failed` on the chain members, the firmware

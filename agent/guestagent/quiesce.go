@@ -13,7 +13,7 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// quiescedResult is what the host learns from a quiesced take: whether the service actually held
+// quiescedResult is what the host learns from a quiesced take: whether the app actually held
 // still, and — when it did not — why, so the journal says which of the several honest failures
 // this was.
 type quiescedResult struct {
@@ -26,7 +26,7 @@ type quiescedResult struct {
 	Hold    time.Duration `json:"hold,omitempty"`
 }
 
-// quiescedMember takes one member of a RUNNING service, asking it to hold still across the
+// quiescedMember takes one member of a RUNNING app, asking it to hold still across the
 // snapshot. It is the clock sample's verb.
 //
 // THE ORDER IS HOLD, SNAPSHOT, RELEASE, LABEL — and the label is last because only the release
@@ -34,13 +34,13 @@ type quiescedResult struct {
 // own lock if the events it is buffering pile up), so the sidecar is written from what the release
 // answered rather than from what the hold hoped for.
 //
-// ⚠️ IT NEVER REFUSES TO TAKE A MEMBER. Every way this can fail — a service with no way to hold
+// ⚠️ IT NEVER REFUSES TO TAKE A MEMBER. Every way this can fail — an app with no way to hold
 // still, a Home Assistant that is down or too old to have the view, a lock that timed out, a
 // release that says the lock broke — ends with the member taken and the class saying
 // crash-consistent. A sample that did not happen is a hole in the ring; a sample that happened
 // and said what it is worth is the product working.
 //
-// The SERVICE is named rather than the port, because the manifest on the volume is the one place
+// The APP is named rather than the port, because the manifest on the volume is the one place
 // that knows how to reach it, and it is the same manifest the member is pinned to.
 func quiescedMember(ctx context.Context, x Executor, run func(string, ...string) error, req snapshotRequest) (quiescedResult, error) {
 	if err := safeUnitName(req.Service); err != nil { // the name becomes a path element
@@ -150,9 +150,9 @@ func TakeClockMember(ctx context.Context, x Executor, service string, at time.Ti
 		res.Acquire.Milliseconds(), res.Hold.Milliseconds(), res.Why), nil
 }
 
-// quiesceService asks the registry for this service's way of holding still, reading the manifest
+// quiesceService asks the registry for this app's way of holding still, reading the manifest
 // on the volume for how to reach it. A nil release with a reason is the ordinary answer for a
-// service that has none, and for one that could not be asked.
+// app that has none, and for one that could not be asked.
 func quiesceService(ctx context.Context, x Executor, service string) (func(context.Context) (bool, error), string) {
 	raw, err := x.ReadFile(manifestPath(service))
 	if err != nil {

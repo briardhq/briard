@@ -59,7 +59,7 @@ pkgs.testers.runNixOSTest {
     for m in machines:
         m.succeed("systemctl start drbd-reactor.service")
 
-    # The front door answers before anything is installed -- the shipped state -- and the service
+    # The front door answers before anything is installed -- the shipped state -- and the app
     # then goes onto the volume from whichever node promoted. Every later handover renders it
     # again from there, which is what an eviction is really moving.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")

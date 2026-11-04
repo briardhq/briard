@@ -46,7 +46,7 @@ func ringExec(members ...string) *fakeExec {
 	// THE LISTING FOLLOWS THE TAKES AND DELETES, so a prune after a take sees the member it just
 	// took -- which is what makes every earlier plain sample replaceable.
 	f.runFn = func(name string, args []string) ([]byte, error) {
-		// The run directory holds the per-service dirs and plenty that is not one.
+		// The run directory holds the per-app dirs and plenty that is not one.
 		if name == "ls" && len(args) > 1 && args[1] == services.RunDir() {
 			return []byte("home-assistant\nmosquitto\nagent.sock\nnode-storage.json"), nil
 		}
@@ -76,7 +76,7 @@ func ringExec(members ...string) *fakeExec {
 
 // restoreRig is a ring whose Home Assistant manifest names the container that holds the data, so
 // the registry can say where the restore marker would be. `marker` is that file's
-// content, or "" for a service with no restore in flight. Its `rm` really removes, because the
+// content, or "" for an app with no restore in flight. Its `rm` really removes, because the
 // pending fact is consumed by one and a fake that kept it would hide a second restore half.
 func restoreRig(marker string, members ...string) *fakeExec {
 	f := ringExec(members...)
@@ -119,9 +119,9 @@ func tookMember(t *testing.T, f *fakeExec) (string, quadlet.SnapshotMeta) {
 
 // A CONTAINER START WHOSE DATA WAS NEVER FLUSHED. This is the case quadlet.Consistency
 // exists for and the one a stopped container cannot answer: after a promotion nothing is running
-// either, but the old primary never shut the service down.
+// either, but the old primary never shut the app down.
 func TestStartAfterAnUncleanStopSaysSo(t *testing.T) {
-	f := restoreRig("") // no clean-stop marker: whatever held this service last did not stop, it died
+	f := restoreRig("") // no clean-stop marker: whatever held this app last did not stop, it died
 	if _, err := TakeStartMember(context.Background(), f, "home-assistant"); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func serve(t *testing.T, f *fakeExec, body string) inboundResponse {
 	return resp
 }
 
-// TestInboundStartingTakesAMember is the channel's whole purpose: a service about to start says
+// TestInboundStartingTakesAMember is the channel's whole purpose: an app about to start says
 // so, and the member exists before it is answered — which is what makes the caller's wait the
 // ordering guarantee.
 func TestInboundStartingTakesAMember(t *testing.T) {
@@ -263,7 +263,7 @@ func TestInboundStartingTakesAMember(t *testing.T) {
 	if !ok || svc != "home-assistant" {
 		t.Errorf("member %q is not home-assistant's", took)
 	}
-	// The sidecar carries the manifest the service is running, read from the volume by the guest
+	// The sidecar carries the manifest the app is running, read from the volume by the guest
 	// itself — the host is not in the start path on a promotion or a crash restart.
 	var meta quadlet.SnapshotMeta
 	if err := json.Unmarshal([]byte(f.files[quadlet.SnapshotSidecar(took)]), &meta); err != nil {
@@ -299,7 +299,7 @@ func markPending(f *fakeExec, name string) {
 // taken, and the pending one goes, sidecar and all, so a loop holds ONE pending member.
 //
 // It is also the abuse bound. The caller is a container, so this is what stops anything running
-// as the service from filling the replicated volume on purpose (the full-volume failure by a new road).
+// as the app from filling the replicated volume on purpose (the full-volume failure by a new road).
 func TestAStartReplacesTheStartStillPending(t *testing.T) {
 	base := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-time.Hour)), quadlet.SnapshotsDir)
 	pending := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
@@ -333,9 +333,9 @@ func TestAnEvaluatedStartIsNeverReplaced(t *testing.T) {
 	}
 }
 
-// TestAStartDoesNotTouchAnotherServicesPendingStart: the ring is per service. A busy Home
-// Assistant must not be able to delete the broker's members, or one service's crash loop silently
-// costs every other service its history.
+// TestAStartDoesNotTouchAnotherServicesPendingStart: the ring is per app. A busy Home
+// Assistant must not be able to delete the broker's members, or one app's crash loop silently
+// costs every other app its history.
 func TestAStartDoesNotTouchAnotherServicesPendingStart(t *testing.T) {
 	other := strings.TrimPrefix(quadlet.SnapshotMember("mosquitto", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
 	f := ringExec(other)
@@ -378,10 +378,10 @@ func TestInboundIgnoresStrangersInTheSnapshotsDir(t *testing.T) {
 
 // TestInboundRequestCannotNameItsService is the trust boundary, asserted.
 //
-// The socket is shared by every participating container, and everything running as a service can
+// The socket is shared by every participating container, and everything running as an app can
 // reach it — for Home Assistant, every custom component the household ever installed. So the
 // identity comes from the TOKEN and nothing else in the request may touch it: a caller that could
-// name its own service would act for any other, which with one shared socket is the whole point
+// name its own app would act for any other, which with one shared socket is the whole point
 // of failure.
 func TestInboundRequestCannotNameItsService(t *testing.T) {
 	f := ringExec()
@@ -426,8 +426,8 @@ func TestInboundRefusesACallerItCannotIdentify(t *testing.T) {
 	}
 }
 
-// TestInboundResolvesEachServiceToItsOwnToken: two services share one socket, and the only thing
-// separating them is which secret they hold. A token must act for its own service and no other.
+// TestInboundResolvesEachServiceToItsOwnToken: two apps share one socket, and the only thing
+// separating them is which secret they hold. A token must act for its own app and no other.
 func TestInboundResolvesEachServiceToItsOwnToken(t *testing.T) {
 	f := ringExec()
 	f.files[manifestPath("mosquitto")] = `{"name":"mosquitto","version":"2.1.2"}`
@@ -463,7 +463,7 @@ func TestInboundRefusesAnUnknownVerb(t *testing.T) {
 	}
 }
 
-// TestInboundAlwaysAnswers: the caller is holding its service stopped until this replies, so
+// TestInboundAlwaysAnswers: the caller is holding its app stopped until this replies, so
 // every path has to write a response — a handler that returned without answering would hang a
 // household's Home Assistant on its own start.
 func TestInboundAlwaysAnswers(t *testing.T) {
@@ -486,7 +486,7 @@ func TestInboundAlwaysAnswers(t *testing.T) {
 	}
 }
 
-// TestInboundRejectsAServiceNameThatIsAPath: the service name is read out of a token FILENAME in
+// TestInboundRejectsAServiceNameThatIsAPath: the app name is read out of a token FILENAME in
 // a directory on /run, and it then becomes a path element in every path the verb derives. Writing
 // there takes root, so this is defence in depth rather than a live hole -- but the cost of being
 // wrong is a verb pointed at an arbitrary subvolume, and the check is one line.
@@ -554,7 +554,7 @@ func TestListenInboundOverARealSocket(t *testing.T) {
 		t.Fatalf("first request errored: %s", first)
 	}
 	// THE SECOND CALLER IS THE POINT. A listener that served one connection and stopped would
-	// leave the next service start with nothing to talk to, silently.
+	// leave the next app start with nothing to talk to, silently.
 	if second := ask(); second == "" {
 		t.Fatal("a second caller got nothing")
 	}
@@ -616,7 +616,7 @@ func TestInboundRefusesAShortTokenWithoutReadingAnything(t *testing.T) {
 	}
 }
 
-// ringOf builds `n` plain, evaluated members for a service, oldest first, one second apart.
+// ringOf builds `n` plain, evaluated members for an app, oldest first, one second apart.
 //
 // ⚠️ MINUTES AGO, NEVER HOURS: quiet time registers once a stretch is quadlet.QuietAfter old, so a
 // fixture hours in the past would put a quiet event into every prune test.
@@ -650,7 +650,7 @@ func deleted(f *fakeExec) []string {
 	return out
 }
 
-// TestRingReplacesSamplesThatAnchorNothing: an unbounded ring grows on every service start,
+// TestRingReplacesSamplesThatAnchorNothing: an unbounded ring grows on every app start,
 // costs its space on every diskful peer, and arrives as the full-volume failure by a new road. What
 // bounds it is that a sample anchoring no event is replaced by the next one -- once the
 // next one is evaluated. A start is pending until its boot has a verdict, so the newest evaluated
@@ -699,7 +699,7 @@ func TestRingKeepsWhatAnchorsAnEvent(t *testing.T) {
 	}
 }
 
-// TestRingLeavesAnotherServiceAlone: the prune is per service. One busy service must not evict
+// TestRingLeavesAnotherServiceAlone: the prune is per app. One busy app must not evict
 // another's history -- they share a directory and nothing but the name separates them.
 func TestRingLeavesAnotherServiceAlone(t *testing.T) {
 	mine := ringOf("home-assistant", 5)
@@ -782,7 +782,7 @@ func TestListMembersSkipsWhatItCannotIdentify(t *testing.T) {
 
 // TestListMembersIsOldestFirstAcrossTriggers: the picker shows a timeline, so the order is the
 // answer -- and it must be by TIME, which member NAMES do not give (the trigger sits between the
-// service and the stamp; see ringMembers).
+// app and the stamp; see ringMembers).
 func TestListMembersIsOldestFirstAcrossTriggers(t *testing.T) {
 	newClock := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-time.Hour))
 	oldStart := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-48*time.Hour))
@@ -1244,8 +1244,8 @@ func TestReplacingKeepsTheWeakerConsistency(t *testing.T) {
 	}
 }
 
-// Every start tells the front door to ask again whether the service accepts X-Forwarded-For --
-// both boundaries, since a service reads its proxy trust at start and Home Assistant's own restarts
+// Every start tells the front door to ask again whether the app accepts X-Forwarded-For --
+// both boundaries, since an app reads its proxy trust at start and Home Assistant's own restarts
 // are starts the container never sees.
 func TestEveryStartSignalsTheDoor(t *testing.T) {
 	signalled := func(f *fakeExec) bool {

@@ -109,7 +109,7 @@ func TestFetchFailsClosedWithoutAKeyring(t *testing.T) {
 
 // TestFetchRefusesNameMismatch: a manifest served at one name that calls itself another would
 // install under a handle nobody asked for — and, since the name is the subvolume, would aim it
-// at a different service's data.
+// at a different app's data.
 func TestFetchRefusesNameMismatch(t *testing.T) {
 	m := good()
 	m.Name = "something-else"

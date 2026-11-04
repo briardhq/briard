@@ -226,19 +226,19 @@ pkgs.testers.runNixOSTest {
     # with no reader does, and what the tray and `briard stop` used to get.
     rc, out = host.execute("timeout 20 ${agent}/bin/briard-agent directive status 2>&1")
     print(f"status during the ladder's wait (rc {rc}): {out.strip()}")
-    assert "the guest is not answering" in out and "briard stop" in out, (
+    assert "the VM is not answering" in out and "briard stop" in out, (
         f"the door must answer during the ladder with its sentence and the way out; got rc {rc}: {out!r}"
     )
 
     # The window closes, the forced stop takes the frozen qemu, and a DIFFERENT one comes up.
     host.wait_until_succeeds(
-        "${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep -q 'the guest has stopped answering'",
+        "${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep -q 'the VM has stopped answering'",
         timeout=300,
     )
     # THE CAUSE, FROM THE LOG. The alert's body carries the console's last lines -- here the
     # guest's own boot output, since a frozen VM printed nothing on its way out; on a panicked
     # kernel it is the panic line itself. The point is that the words are the guest's, not ours.
-    alert = host.succeed("${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep 'the guest has stopped answering'")
+    alert = host.succeed("${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep 'the VM has stopped answering'")
     print(f"the alert: {alert.strip()[:400]}")
     assert "last words" in alert and "console:" in alert, f"the alert does not carry the guest's last words: {alert!r}"
     assert "briard stop" in alert, f"the alert does not name the way out: {alert!r}"
@@ -262,7 +262,7 @@ pkgs.testers.runNixOSTest {
     assert relaunched != frozen, f"same QEMU pid {relaunched} -- the mute guest was never restarted"
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
     host.wait_until_succeeds(
-        "${agent}/bin/briard-agent alerts | sed -n '/history/,$p' | grep -q 'the guest is answering again'",
+        "${agent}/bin/briard-agent alerts | sed -n '/history/,$p' | grep -q 'the VM is answering again'",
         timeout=120,
     )
     # ...by the same agent, start to finish.

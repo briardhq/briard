@@ -17,7 +17,7 @@
 # (the cattle) + reinstall reaches green AGAIN with the guest DATA intact (the pet
 # /var/lib/briard data volume's btrfs filesystem UUID, read off the backing file, survives).
 # The failable control is sharp -- a wiped/reformatted volume would mint a new UUID; the
-# cattle/pet block below records how a runtime service install wins back the stronger
+# cattle/pet block below records how a runtime app install wins back the stronger
 # tick-counter comparison.
 #
 # It carries the mode-independent half (install-bridge.nix, cut down to the bridge deltas). It had
@@ -587,8 +587,8 @@ pkgs.testers.runNixOSTest {
     # What a stranger actually gets. The bare address is a name the front door does not route,
     # so it forwards to the household dashboard -- which REFUSES a browser with no
     # session and names nothing: 401, one instruction, no inventory. Reaching the VIP is not
-    # authentication. The install ships NO service, and /healthz is where the
-    # door says so -- the assertion that would catch a service sneaking back into the shipped
+    # authentication. The install ships NO app, and /healthz is where the
+    # door says so -- the assertion that would catch an app sneaking back into the shipped
     # disk.
     refused = client.succeed(f"curl -sS -o /tmp/vip.html -w '%{{http_code}}' http://{vip}/").strip()
     page = client.succeed("cat /tmp/vip.html")
@@ -1011,8 +1011,8 @@ pkgs.testers.runNixOSTest {
     # fresh one, so a reformat across the reinstall changes it and an honest reattach cannot.
     # The handle was once the fixture's monotonic tick counter, which was strictly stronger (it
     # proved committed *content* crossed, not just that the volume was the same one) -- but the
-    # shipped node runs no service, so there is nothing
-    # writing data to compare. A runtime service install gets the stronger proof back by installing a service at
+    # shipped node runs no app, so there is nothing
+    # writing data to compare. A runtime app install gets the stronger proof back by installing an app at
     # runtime and resuming the tick comparison on top of this one.
     def fsid(m):
         # THE VOLUME'S IDENTITY, READ OFF THE BACKING FILE. It used to be btrfs's filesystem UUID
@@ -1419,7 +1419,7 @@ pkgs.testers.runNixOSTest {
     # the no-priming half of the design, and restarting is how this rig reaches it.
     host.succeed("systemctl restart briard-agent.service")
     host.wait_until_succeeds(
-        "/opt/briard/agent/briard-agent alerts | sed -n '/open now/,/history/p' | grep -qF 'this node has stopped updating'",
+        "/opt/briard/agent/briard-agent alerts | sed -n '/open now/,/history/p' | grep -qF 'this machine has stopped updating'",
         timeout=120,
     )
     # The run's own last line rides along, because that is where the remedy lives: here "could not
@@ -1443,7 +1443,7 @@ pkgs.testers.runNixOSTest {
         f"curl -fsS -H 'Host: {m.group(1)}' -H 'Cookie: {session}' http://{moved}/ "
         "| grep -q 'Needs attention' && "
         f"curl -fsS -H 'Host: {m.group(1)}' -H 'Cookie: {session}' http://{moved}/ "
-        "| grep -qF 'this node has stopped updating'",
+        "| grep -qF 'this machine has stopped updating'",
         timeout=60,
     )
     print("the open alert crossed the guest channel and is on the home page")

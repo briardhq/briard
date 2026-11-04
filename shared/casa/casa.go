@@ -29,7 +29,7 @@ import (
 const Zone = "briard.casa"
 
 // Names returns the two DNS names a flock's certificate covers and its A records answer for:
-// the apex (`<flock>.briard.casa`, the dashboard) and the wildcard (every service under it).
+// the apex (`<flock>.briard.casa`, the dashboard) and the wildcard (every app under it).
 // A wildcard does not match its own apex, so both are needed and both are always written
 // together -- a name is one unit, never two records that can disagree.
 func Names(flock string) []string {

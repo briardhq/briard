@@ -41,8 +41,8 @@ func (p *probe) HassReadiness(_ context.Context, port int) ([]hass.Entry, error)
 	return nil, nil
 }
 
-// The probe half of the seam. `stored` is what the service is holding: a write puts the
-// token there, a read hands it back — so a test makes the service LOSE its state by clearing it
+// The probe half of the seam. `stored` is what the app is holding: a write puts the
+// token there, a read hands it back — so a test makes the app LOSE its state by clearing it
 // between the two calls, which is what a broken upgrade does.
 func (p *probe) MosquittoProbe(_ context.Context, token string) (mosquitto.Sample, error) {
 	p.probes++
@@ -95,8 +95,8 @@ func judge(t *testing.T, pre, post []hass.Entry) (guest.Verdict, string) {
 }
 
 // TestAssessorIsKeyedOnTheServiceName is the registry's whole contract: the product knows how to
-// judge the services it curates beyond liveness, and knows nothing about anything else. The
-// negative half is the one that matters — the shipped default for every other service is the
+// judge the apps it curates beyond liveness, and knows nothing about anything else. The
+// negative half is the one that matters — the shipped default for every other app is the
 // floor alone.
 //
 // The unknown name here USED to be "mosquitto", which is the nicest possible demonstration of
@@ -177,7 +177,7 @@ func TestGateRollsBackOnACluster(t *testing.T) {
 
 // TestGateHoldsOnASingleRegression: the ambiguous middle. One integration going terminal might
 // be a genuinely removed or changed one, so the gate surfaces it and leaves the upgrade standing
-// rather than reverting a household's service on one entry.
+// rather than reverting a household's app on one entry.
 func TestGateHoldsOnASingleRegression(t *testing.T) {
 	v, reason := judge(t,
 		entriesOf("loaded", "loaded"),
@@ -229,7 +229,7 @@ func TestGateRefusesToJudgeUnsettled(t *testing.T) {
 	}
 }
 
-// TestGateKeepsWhenTheSampleFails: S1 never reverts a household's service because its own
+// TestGateKeepsWhenTheSampleFails: S1 never reverts a household's app because its own
 // telemetry broke. A sample that errors is not evidence of a regression.
 func TestGateKeepsWhenTheSampleFails(t *testing.T) {
 	p := &probe{samples: [][]hass.Entry{entriesOf("loaded")}}
@@ -253,7 +253,7 @@ func TestGateWithNoAssessorIsTheFloor(t *testing.T) {
 }
 
 // judgeProbe runs one whole probe cycle the way an upgrade does: baseline while the old version
-// serves, then assess after the new one is up. `breakIt` is what the upgrade did to the service in
+// serves, then assess after the new one is up. `breakIt` is what the upgrade did to the app in
 // between.
 func judgeProbe(t *testing.T, breakIt func(*probe)) (guest.Verdict, string, error) {
 	t.Helper()
@@ -285,7 +285,7 @@ func TestProbeSurvivesAGoodUpgrade(t *testing.T) {
 	}
 }
 
-// TestProbeCatchesLostState is the failure the liveness floor cannot see: the service answers its
+// TestProbeCatchesLostState is the failure the liveness floor cannot see: the app answers its
 // health endpoint perfectly and has come back with an empty store. For a broker that is every
 // retained message the household had.
 func TestProbeCatchesLostState(t *testing.T) {
@@ -305,7 +305,7 @@ func TestProbeCatchesLostState(t *testing.T) {
 // the floor probes is not the port clients use, so a broker that refuses every connection answers
 // the floor and fails here.
 func TestProbeCatchesAServiceThatServesNobody(t *testing.T) {
-	// Long enough to outlast the poll: this is a service that never comes back, not a slow one.
+	// Long enough to outlast the poll: this is an app that never comes back, not a slow one.
 	v, reason, err := judgeProbe(t, func(p *probe) { p.notServing = 100 })
 	if err != nil {
 		t.Fatalf("Assess: %v", err)
@@ -318,7 +318,7 @@ func TestProbeCatchesAServiceThatServesNobody(t *testing.T) {
 	}
 }
 
-// TestProbeWaitsForASlowStart: a service that is not serving on the first look but is on the
+// TestProbeWaitsForASlowStart: an app that is not serving on the first look but is on the
 // second must PASS. Judging the first sample would turn every slow start into a rollback.
 func TestProbeWaitsForASlowStart(t *testing.T) {
 	v, reason, err := judgeProbe(t, func(p *probe) { p.notServing = 1 })
@@ -331,7 +331,7 @@ func TestProbeWaitsForASlowStart(t *testing.T) {
 }
 
 // TestProbeRefusesToBaselineABrokenService is the confounder control, and it is the same rule the
-// config-entry gate follows: a service that was ALREADY not serving before the change cannot have
+// config-entry gate follows: an app that was ALREADY not serving before the change cannot have
 // been broken by it. No baseline means the install runs on the liveness floor alone.
 func TestProbeRefusesToBaselineABrokenService(t *testing.T) {
 	m := hassManifest()
@@ -367,7 +367,7 @@ func TestProbeRefusesABaselineThatDidNotStick(t *testing.T) {
 	}
 }
 
-// TestProbeFailureIsNeverAVerdict: S1 must not revert a household's service because its own
+// TestProbeFailureIsNeverAVerdict: S1 must not revert a household's app because its own
 // telemetry broke. A probe that errors returns an error, never Rollback.
 func TestProbeFailureIsNeverAVerdict(t *testing.T) {
 	m := hassManifest()

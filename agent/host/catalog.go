@@ -325,7 +325,7 @@ func (cfg Config) pushCatalogView(ctx context.Context, r any, n notify.Notifier,
 // applyWish is the directive's door (dispatch): a node without a catalog has nothing to wish from.
 func (cfg Config) applyWish(d api.Directive) api.DirectiveOutcome {
 	if cfg.catalog == nil {
-		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this node reads no catalog"}
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this machine reads no catalog"}
 	}
 	return cfg.catalog.toggle(d)
 }
@@ -382,7 +382,7 @@ func (cfg Config) wishVoter() string {
 	return hex.EncodeToString(h[:16])
 }
 
-// installedByName is what this node runs, by service name, from the node-local cache: the
+// installedByName is what this node runs, by app name, from the node-local cache: the
 // installed side of every catalog question (notices, view).
 func (cfg Config) installedByName(logf func(string, ...any)) map[string]model.ServiceSpec {
 	out := map[string]model.ServiceSpec{}

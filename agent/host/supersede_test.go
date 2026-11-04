@@ -16,7 +16,7 @@ import (
 // was asked to remove.
 type volumeFake struct {
 	volume  map[string]string
-	readErr string // the service whose manifest cannot be read
+	readErr string // the app whose manifest cannot be read
 	removed []string
 }
 
@@ -57,7 +57,7 @@ func manifestWith(t *testing.T, name, version, digestChar string) (string, strin
 }
 
 // An upgrade that committed drops the image the old version ran on -- and only that one: the new
-// version's image and every other service's stay.
+// version's image and every other app's stay.
 func TestDropSupersededRemovesOnlyWhatNothingPins(t *testing.T) {
 	was, oldRef := manifestWith(t, "home-assistant", "2026.6.0", "a")
 	now, _ := manifestWith(t, "home-assistant", "2026.7.1", "b")
@@ -69,11 +69,11 @@ func TestDropSupersededRemovesOnlyWhatNothingPins(t *testing.T) {
 	}
 }
 
-// An image another service still pins is not superseded, whoever moved off it.
+// An image another app still pins is not superseded, whoever moved off it.
 func TestDropSupersededKeepsAnImageAnotherServicePins(t *testing.T) {
 	was, _ := manifestWith(t, "home-assistant", "2026.6.0", "a")
 	now, _ := manifestWith(t, "home-assistant", "2026.7.1", "b")
-	twin, _ := manifestWith(t, "twin", "1", "a") // a different service on the same digest
+	twin, _ := manifestWith(t, "twin", "1", "a") // a different app on the same digest
 	twin = strings.Replace(twin, "ghcr.io/x/twin@", "ghcr.io/x/home-assistant@", 1)
 	v := &volumeFake{volume: map[string]string{"home-assistant": now, "twin": twin}}
 	Config{}.dropSuperseded(context.Background(), v, was, t.Logf)
@@ -83,7 +83,7 @@ func TestDropSupersededKeepsAnImageAnotherServicePins(t *testing.T) {
 }
 
 // THE GATE: a manifest on the volume that cannot be read means "could not tell", and that must
-// never take the branch that deletes -- the service it belongs to may run on the very image.
+// never take the branch that deletes -- the app it belongs to may run on the very image.
 func TestDropSupersededRemovesNothingWhenAVolumeReadFails(t *testing.T) {
 	was, _ := manifestWith(t, "home-assistant", "2026.6.0", "a")
 	now, _ := manifestWith(t, "home-assistant", "2026.7.1", "b")

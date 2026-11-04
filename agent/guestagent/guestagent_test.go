@@ -314,7 +314,7 @@ func TestConfigureNetLeavesLinkLocalAlone(t *testing.T) {
 	}
 }
 
-// ServiceHealth is the in-guest readiness probe (macvtap-safe): the guest GETs the service's
+// ServiceHealth is the in-guest readiness probe (macvtap-safe): the guest GETs the app's
 // health URL itself and reports 200. Exercises the real raw-net.Dial HTTP/1.0 path end to end
 // (Client -> dispatch -> probeHTTPOK), since it deliberately avoids net/http in the guest binary.
 func TestServiceHealth(t *testing.T) {
@@ -881,7 +881,7 @@ func TestDataSnapshotCommand(t *testing.T) {
 
 // TestDataSnapshotRefusesAnExistingMember is the delete-before-take, retired.
 //
-// It was right while the name was FIXED: one `<service>-preupgrade` per service meant the second
+// It was right while the name was FIXED: one `<service>-preupgrade` per app meant the second
 // upgrade found the first one's read-only snapshot sitting there, and `btrfs subvolume snapshot`
 // given an existing directory writes INSIDE it -- failing with "Read-only file system" and taking
 // the whole upgrade with it (measured on a soak run, 2026-08-28). Members are a series now, so
@@ -1258,7 +1258,7 @@ func TestReactorPauseResumeCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No maintenance marker: briard-converge is a switch-free gate, so there is nothing
-	// autonomous to hold off during a managed op. Pause stops the daemon (services + Primary stay
+	// autonomous to hold off during a managed op. Pause stops the daemon (apps + Primary stay
 	// up); resume restarts it (re-adopts, no demote).
 	//
 	// TWO COMMANDS, NOT FOUR, AND THE ABSENCE IS THE ASSERTION. Pause used to `rm` drbd-reactor's
@@ -1338,7 +1338,7 @@ func TestBringUpGuestOverUnixSocket(t *testing.T) {
 	}
 }
 
-// Bring-up must put a runtime-installed service's units back BEFORE it starts the
+// Bring-up must put a runtime-installed app's units back BEFORE it starts the
 // promoter. The units live on the guest's tmpfs, so a reboot erases them while the host's
 // manifest cache survives — and drbd-reactor, started at the end of BringUp, would otherwise
 // promote into a chain naming units that do not exist.
@@ -1432,7 +1432,7 @@ func TestBringUpPullsOnlyAnImageThatIsMissing(t *testing.T) {
 	}
 }
 
-// ...and a node with no installed service renders nothing, so the shipped zero-service node is
+// ...and a node with no installed app renders nothing, so the shipped zero-app node is
 // untouched by the above. Without this, "renders before the promoter" could be satisfied by
 // rendering unconditionally, which would write an empty unit set on every ordinary bring-up.
 func TestBringUpRendersNothingWithNoInstalledService(t *testing.T) {
@@ -1648,10 +1648,10 @@ func TestConfigureNetReassertsTheFlockMAC(t *testing.T) {
 
 // TestTheServiceSpecificVerbsAreAdvertisedAndLandOnTheirOwnService. Each has to be in the
 // handshake or a capability-checking host cannot see it however well the switch handles it, and
-// each has to reach the ONE service it is named for.
+// each has to reach the ONE app it is named for.
 //
 // The old shape of this test asserted that an unknown NAME in the request was refused. There is no
-// name in the request any more: the service is in the verb, so the disagreement that
+// name in the request any more: the app is in the verb, so the disagreement that
 // branch guarded against cannot be expressed — which is the better version of refusing it.
 func TestTheServiceSpecificVerbsAreAdvertisedAndLandOnTheirOwnService(t *testing.T) {
 	g := dial(t, &fakeExec{})
@@ -1663,7 +1663,7 @@ func TestTheServiceSpecificVerbsAreAdvertisedAndLandOnTheirOwnService(t *testing
 			t.Fatalf("guest does not advertise %s, so no host will ever call it", verb)
 		}
 	}
-	// Each reaches its own service's code, and fails there for that service's own honest reason:
+	// Each reaches its own app's code, and fails there for that app's own honest reason:
 	// this fake guest has no control token, and no manifest on its volume.
 	_, err := g.HassReadiness(context.Background(), 8123)
 	if err == nil {
@@ -1821,7 +1821,7 @@ func TestStorageGrowRefusesADiskThatNeverGrew(t *testing.T) {
 }
 
 // image.remove deletes what is there and treats what is not as already gone: the host asks after
-// a service moved off an image, and an image something else already removed is the same outcome.
+// an app moved off an image, and an image something else already removed is the same outcome.
 func TestImageRemoveDeletesWhatIsThereOnly(t *testing.T) {
 	const ref = "ghcr.io/home-assistant/home-assistant@sha256:aa"
 	present := &fakeExec{runFn: func(name string, args []string) ([]byte, error) { return nil, nil }}

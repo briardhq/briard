@@ -1,31 +1,31 @@
-// Package manifest is the Briard service manifest: the signed, published description of a
-// catalogued service, and the thing `briard app install` acts on.
+// Package manifest is the Briard app manifest: the signed, published description of a
+// catalogued app, and the thing `briard app install` acts on.
 //
 // THREE PROPERTIES, none of them incidental:
 //
 //  1. It is runtime-NEUTRAL. The layering is manifest (published, signed) -> a renderer on the
-//     node (podman/quadlet-specific, swappable) -> systemd units. The manifest names WHAT a
-//     service is, never how one podman version spells it — the same reasoning that named
+//     node (podman/quadlet-specific, swappable) -> systemd units. The manifest names WHAT an
+//     app is, never how one podman version spells it — the same reasoning that named
 //     `reverse-proxy` for the role rather than the mechanism.
 //
 //  2. It is a SECURITY BOUNDARY. Upstream compose can ask for `privileged`, arbitrary host binds,
 //     the docker socket. This schema cannot express any of them, and the node is designed to
 //     execute what it is given without judgement — so capability comes by omission, and what we do
 //     not model is not merely refused but UNSAYABLE. The discipline this demands: model only what
-//     catalogued services need, expand deliberately, or it becomes a compose reimplementation.
+//     catalogued apps need, expand deliberately, or it becomes a compose reimplementation.
 //
 //     Host networking is the one capability that IS sayable, and modelling it is what made this
 //     property true rather than aspirational: it was named here as unsayable while the renderer
-//     granted it to every service unconditionally, so the doctrine described a schema the code did
+//     granted it to every app unconditionally, so the doctrine described a schema the code did
 //     not implement. `Network` now carries it, silence means private (omission yields the LESS
 //     capable shape, which is the property working as stated), and asking for host is a deliberate
 //     act recorded in the identity hash.
 //
 //     ⚠️ THE TEST FOR THE NEXT FIELD, because the risk here is not one bad field
-//     but a plausible fourth, fifth and sixth: a field earns its place only if a CATALOGUED service
+//     but a plausible fourth, fifth and sixth: a field earns its place only if a CATALOGUED app
 //     cannot be operated correctly without it, AND the alternative is worse than the field. Host
 //     networking passes both — Home Assistant cannot find devices without it, and the alternative
-//     was granting it to everyone forever. "Some service might want it", "compose has it", and
+//     was granting it to everyone forever. "Some app might want it", "compose has it", and
 //     "it would be more flexible" are not arguments; the answer to those is a curated catalog.
 //
 //     Validate() is the second half of that boundary. A renderer writes INI, so every string
@@ -34,7 +34,7 @@
 //     schema closed by omission. Names are checked as slugs for the same reason — they become
 //     path elements and unit names, where "../" is arbitrary file write as root.
 //
-//  3. Its CONTENT HASH IS THE SERVICE IDENTITY, replacing the single OCI digest that
+//  3. Its CONTENT HASH IS THE APP IDENTITY, replacing the single OCI digest that
 //     .payload-image held. That transitively pins the whole container set, preserves the
 //     content-addressed / node-independent property, and drops into the existing
 //     upgrade path unchanged: a new manifest is a new identity -> announce -> snapshot ->
@@ -67,7 +67,7 @@ func ValidName(name string) bool { return slug.MatchString(name) }
 var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // digestRef matches a fully digest-pinned OCI reference (repo@sha256:<64 hex>). A tag is NOT
-// accepted: a tag is mutable, so a tagged manifest would make the service identity a promise
+// accepted: a tag is mutable, so a tagged manifest would make the app identity a promise
 // someone else can silently change — which is the one thing the content-hash identity exists to
 // prevent.
 //
@@ -80,15 +80,15 @@ var digestRef = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*(:[0-9]{1,5})?(/[
 // ErrInvalid wraps every schema violation, so a caller can refuse a whole manifest on one check.
 var ErrInvalid = errors.New("manifest: invalid")
 
-// Manifest describes one installable service. A service is one or more containers sharing a
+// Manifest describes one installable app. An app is one or more containers sharing a
 // network namespace (a pod), and what they keep lives in the STORAGE TIERS: one area per tier the
-// service mounts, each a subvolume of its own, with the directories its containers mount as plain
+// app mounts, each a subvolume of its own, with the directories its containers mount as plain
 // subdirectories inside it. Plain, and a requirement rather than a preference: `data.restore`
 // runs `btrfs subvolume delete`, which REFUSES on a subvolume that contains nested subvolumes, so
 // a mounted directory cannot itself be a subvolume.
 type Manifest struct {
-	// Name is the service slug — its unit prefix, its subvolume name, and the handle a user
-	// types. Stable across versions; changing it is a different service, not an upgrade.
+	// Name is the app slug — its unit prefix, its subvolume name, and the handle a user
+	// types. Stable across versions; changing it is a different app, not an upgrade.
 	Name string `json:"name"`
 	// Version is the upstream version this entry pins, for humans and status output only.
 	// Identity is the content hash, never this string.
@@ -96,7 +96,7 @@ type Manifest struct {
 	// Containers is the pod, in the order they should be declared. Exactly one must be marked
 	// Primary (see Container.Primary).
 	Containers []Container `json:"containers"`
-	// Size is what a node DOWNLOADS to install this service: the compressed layers of every
+	// Size is what a node DOWNLOADS to install this app: the compressed layers of every
 	// container's image, summed -- the number a progress bar is a fraction of.
 	// InstalledSize is what the image store HOLDS once pulled: the same layers uncompressed --
 	// the number a free-space check is against, because compressed bytes understate disk by
@@ -107,11 +107,11 @@ type Manifest struct {
 	// (no bar, no gate).
 	Size          int64 `json:"size,omitempty"`
 	InstalledSize int64 `json:"installedSize,omitempty"`
-	// MinMemoryMB is the memory the service needs to run, in MB: its settled footprint with room
+	// MinMemoryMB is the memory the app needs to run, in MB: its settled footprint with room
 	// for its own startup, not its worst case. The node boots its guest with at least the system's
-	// share plus every installed service's minimum, and grows the guest to it before installing
+	// share plus every installed app's minimum, and grows the guest to it before installing
 	// one more -- anything above it is found at runtime, by growth. Zero means the entry does not
-	// say (the service counts for nothing until it needs more).
+	// say (the app counts for nothing until it needs more).
 	MinMemoryMB int `json:"minMemoryMB,omitempty"`
 	// Network is the pod's networking mode: "host" or "private". SILENCE MEANS PRIVATE, which is
 	// property 2 in the small: omission yields the LESS capable shape, so a manifest that says
@@ -119,7 +119,7 @@ type Manifest struct {
 	// deliberately routes or publishes to it.
 	//
 	// IT IS A NEUTRAL WORD, NEVER A QUADLET DIRECTIVE — "host", not "Network=host". Property 1 is
-	// the reason: this document names WHAT a service is, never how one podman version spells it, so
+	// the reason: this document names WHAT an app is, never how one podman version spells it, so
 	// that the renderer stays swappable. A raw directive would weld a permanently-identified signed
 	// artifact to podman's config syntax, and because the content hash is the identity you could
 	// not quietly fix the spelling later — you would re-mint every entry in the catalog. `Mounts`
@@ -133,13 +133,13 @@ type Manifest struct {
 	//
 	// ⚠️ THE FIELD IS WHY THIS SCHEMA'S SECOND PROPERTY IS TRUE AGAIN. The package doc has always
 	// named host networking as a capability the schema makes UNSAYABLE, while the renderer granted
-	// it to every service unconditionally. Modelling it is what makes the doctrine describe the
+	// it to every app unconditionally. Modelling it is what makes the doctrine describe the
 	// code: the manifest's silence now MEANS something, and saying "host" is a deliberate,
 	// reviewable act recorded in the identity hash.
 	Network string `json:"network,omitempty"`
-	// Ports are the container ports this service PUBLISHES to the household, each reachable at the
+	// Ports are the container ports this app PUBLISHES to the household, each reachable at the
 	// node's service address on the same number. A list rather than a host:container map: for every
-	// service we can foresee the two are the same number, and a map would spend a second field on
+	// app we can foresee the two are the same number, and a map would spend a second field on
 	// expressing the identity function.
 	//
 	// THE CATALOG PICKS THEM, which makes this a node-level allocation decided in a published
@@ -147,24 +147,24 @@ type Manifest struct {
 	// same argument that refused a runtime port-collision pre-flight. Two entries
 	// wanting one port is a review failure, not a runtime one.
 	//
-	// It is how a service that CANNOT be fronted reaches anyone. A reverse proxy can serve HTTP and
+	// It is how an app that CANNOT be fronted reaches anyone. A reverse proxy can serve HTTP and
 	// nothing else, so mosquitto's MQTT on 1883 has no route and never will; publishing is the
 	// whole of its reachability, and the front door is not involved.
 	//
 	// ⚠️ MEANINGLESS UNDER HOST NETWORKING, and refused there rather than ignored: a host-networked
 	// pod already holds the guest's ports, so there is nothing to publish, and podman rejects the
-	// combination outright. A manifest that asked for both would describe a service no node could
+	// combination outright. A manifest that asked for both would describe an app no node could
 	// run, which is exactly what Validate exists to catch before a household does.
 	Ports []int `json:"ports,omitempty"`
 }
 
-// Container is one member of the service's pod.
+// Container is one member of the app's pod.
 type Container struct {
-	// Name is the container's slug within the service, and its unit's.
+	// Name is the container's slug within the app, and its unit's.
 	Name string `json:"name"`
 	// Image is a digest-pinned OCI reference. Digest-pinned means trust is source-independent,
 	// which is what lets the image come from upstream, from our mirror, or from a tarball
-	// without changing what "this service" means.
+	// without changing what "this app" means.
 	Image string `json:"image"`
 	// Mounts are the only places the container may write that outlive it. None means the
 	// container is stateless — the honest encoding of "this one keeps nothing", rather than
@@ -174,7 +174,7 @@ type Container struct {
 	// Env is the container's environment. Values are opaque; only newlines are forbidden.
 	Env map[string]string `json:"env,omitempty"`
 	// Primary marks the container the front door forwards to and the health gate probes.
-	// Exactly one container carries it, because "is the service serving?" must have one answer.
+	// Exactly one container carries it, because "is the app serving?" must have one answer.
 	Primary bool `json:"primary,omitempty"`
 	// Port is the primary container's listening port, and HealthPath its readiness path. Both
 	// are meaningful only on the primary; the reverse proxy's -backend/-backend-health are
@@ -183,7 +183,7 @@ type Container struct {
 	HealthPath string `json:"healthPath,omitempty"`
 }
 
-// Mount is one directory of the service's area in a tier, at Path inside the container. Two
+// Mount is one directory of the app's area in a tier, at Path inside the container. Two
 // containers naming the same tier and Dir share the directory.
 //
 // A MOUNT IS A RENAME AND A RMDIR BOUNDARY: the container cannot move a file across it, nor
@@ -192,7 +192,7 @@ type Container struct {
 type Mount struct {
 	// Tier is what the node does with the directory: one of the Tier* values.
 	Tier string `json:"tier"`
-	// Dir is the directory's name in the service's area. In the files tier it is what the
+	// Dir is the directory's name in the app's area. In the files tier it is what the
 	// household sees.
 	Dir string `json:"dir"`
 	// Path is where it appears inside the container: absolute and clean.
@@ -219,7 +219,7 @@ const (
 // Tiers lists the storage tiers.
 var Tiers = []string{TierData, TierFiles, TierCache, TierUnversioned}
 
-// UsesTier reports whether any container of the service mounts the tier.
+// UsesTier reports whether any container of the app mounts the tier.
 func (m Manifest) UsesTier(tier string) bool {
 	return slices.ContainsFunc(m.Containers, func(c Container) bool { return c.UsesTier(tier) })
 }
@@ -229,7 +229,7 @@ func (c Container) UsesTier(tier string) bool {
 	return slices.ContainsFunc(c.Mounts, func(mt Mount) bool { return mt.Tier == tier })
 }
 
-// Identity is the manifest's content hash — the service identity (property 3 above). It is
+// Identity is the manifest's content hash — the app identity (property 3 above). It is
 // computed over the EXACT signed bytes, never a re-marshalling of the parsed struct, because
 // re-encoding can reorder or reformat and would silently mint a different identity for the same
 // signed document.
@@ -294,7 +294,7 @@ func (m Manifest) Validate() error {
 	}
 	if len(m.Ports) > 0 && m.HostNetwork() {
 		// Not a style rule: podman refuses port bindings on a host-networked pod, so this manifest
-		// describes a service no node could start. Caught here rather than at the household.
+		// describes an app no node could start. Caught here rather than at the household.
 		return fmt.Errorf("%w: service %q asks for host networking and publishes ports; a host-networked pod already holds the guest's ports", ErrInvalid, m.Name)
 	}
 	if len(m.Containers) == 0 {
@@ -406,6 +406,6 @@ const (
 	NetworkPrivate = "private"
 )
 
-// HostNetwork reports whether this service's pod shares the guest's network namespace. The one
+// HostNetwork reports whether this app's pod shares the guest's network namespace. The one
 // question the renderer asks, so that "" and "private" cannot be handled differently by accident.
 func (m Manifest) HostNetwork() bool { return m.Network == NetworkHost }

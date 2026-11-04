@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// STAGE, THEN COMMIT: a service install is not the volume's identity until its health gate says so.
+// STAGE, THEN COMMIT: an app install is not the volume's identity until its health gate says so.
 //
 // An install has to put the new manifest on the volume BEFORE its gate decides, because converge
 // renders from the volume. Written straight over `<name>.json`, that left a window of minutes in
@@ -29,10 +29,10 @@ import (
 // install ended -- a gate that failed, or a crash nobody saw -- because it reads only these files
 // (agent/host's rollBack): stop, put the data back, discard the stage, converge to the accepted.
 //
-// Converge holds every staged service back except the one an install names as live: a node that
+// Converge holds every staged app back except the one an install names as live: a node that
 // promotes onto a pending install does NOT start it -- neither the staged version, which nothing
 // accepted, nor the accepted one, whose data the staged version may already have migrated. The
-// service stays down until the host's undo has put the data back, which is the only order in
+// app stays down until the host's undo has put the data back, which is the only order in
 // which starting it is safe.
 //
 // Flock-scoped, so on the replicated volume and `sync -f`'d: the node that finishes the undo may
@@ -73,7 +73,7 @@ type PendingInstall struct {
 
 // writeDurably writes a volume file whole or not at all (tmp + rename), then flushes the
 // filesystem so the rename itself survives a power cut. A torn `.rollback` would name a member that
-// does not exist, and the undo would then leave the service stopped.
+// does not exist, and the undo would then leave the app stopped.
 func writeDurably(x Executor, run func(string, ...string) error, path, body string) error {
 	tmp := path + ".tmp"
 	if err := x.WriteFile(tmp, []byte(body)); err != nil {
@@ -116,7 +116,7 @@ func stageService(ctx context.Context, x Executor, run func(string, ...string) e
 	if err := writeDurably(x, run, stagedPath(req.Name), req.Manifest); err != nil {
 		return err
 	}
-	// Every caller has the service stopped (provisionService says why this matters).
+	// Every caller has the app stopped (provisionService says why this matters).
 	if err := RecordServiceStop(ctx, x, req.Name, "success"); err != nil {
 		log.Printf("service.stage %s: could not record the volume as flushed (%v); its next member will read as crash-consistent", req.Name, err)
 	}
@@ -186,7 +186,7 @@ func pendingInstalls(ctx context.Context, x Executor) ([]PendingInstall, error) 
 	return out, nil
 }
 
-// stagedNames lists the services with a `.json.next` on the volume.
+// stagedNames lists the apps with a `.json.next` on the volume.
 func stagedNames(ctx context.Context, x Executor) ([]string, error) {
 	out, err := x.Run(ctx, "ls", "-1", manifestDir)
 	if err != nil {

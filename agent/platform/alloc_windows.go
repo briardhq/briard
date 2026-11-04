@@ -13,7 +13,7 @@ import (
 // that length, and a write past it zero-fills the gap first, synchronously, inside the write --
 // qemu's write. That is the first bring-up's mkfs, which scatters its backup superblocks over the
 // whole state disk, and on the data volume a stall as long as the gap whenever the filesystem
-// allocates further out, under a running service. Moving the length up front instead
+// allocates further out, under a running app. Moving the length up front instead
 // (SetFileValidData) needs SE_MANAGE_VOLUME_NAME and exposes whatever was previously on the disk,
 // which is why it needs the privilege; a briard host is somebody's desktop, and that is not a
 // trade worth making.

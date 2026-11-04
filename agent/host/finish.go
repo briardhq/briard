@@ -75,7 +75,7 @@ const finishAlertKey = "install-finish"
 // agent stopped between the two, left it open, and no later start runs the finish that would close
 // it. The store drops a resolve for a key that is not open.
 var finishDone = notify.Alert{Key: finishAlertKey, Kind: notify.Resolved,
-	Title: "Briard: the install is finished", Body: "the guest image is in place, and Briard is starting."}
+	Title: "Briard: the install is finished", Body: "the VM image is in place, and Briard is starting."}
 
 // finishInstall is the first start's half of the install: a stat on a node whose image is there.
 // It returns once the image is laid down, with the disks' fill started (joinFill waits for it), or

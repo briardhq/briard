@@ -1,7 +1,7 @@
 // The guest's admin port -- the household dashboard's way to ask the host for
 // something.
 //
-// The dashboard lives in the guest and a service install is a host directive, so
+// The dashboard lives in the guest and an app install is a host directive, so
 // "Set up Home Assistant" needs a way for a process in the guest to reach the supervisor. It is
 // NOT the network: the host and the guest already share a virtio-serial bus, and qemu serves a
 // second port on it as a unix socket on the host, exactly like the control channel with the roles
@@ -12,8 +12,8 @@
 //
 // The guest runs no logic on it -- a person on a trusted device pressed a button, and the host
 // decides through the one dispatch every directive takes. What the port DOES restrict is what the
-// guest may ask for: only directives whose effect stays inside the guest (a service install or
-// prewarm). A guest that has been taken over can then at most install a catalogued service into
+// guest may ask for: only directives whose effect stays inside the guest (an app install or
+// prewarm). A guest that has been taken over can then at most install a catalogued app into
 // itself, which it could run anyway; it cannot roll the host's OS, hand the flock over, or touch
 // anything the guest does not already own.
 package host
@@ -36,13 +36,13 @@ import (
 // service-usage joins service-members for the app page's Storage card: a read of what one app
 // keeps on this node, whose walk the guest runs in its own background.
 //
-// service-restore joins them: its effect is one service's data and code on this node,
+// service-restore joins them: its effect is one app's data and code on this node,
 // the same blast radius an install already has, and the picker that asks for it is the dashboard
 // behind the same door.
 //
 // backup-restore and backup-list join them for the Backup page's restore: the restore is one
-// service's data and code put back from the household's own repository -- a service-restore, or
-// on a node without the service an install -- and the list only reads what that repository
+// app's data and code put back from the household's own repository -- a service-restore, or
+// on a node without the app an install -- and the list only reads what that repository
 // holds. Neither reaches past the guest's own data: the repository is the folder the host already
 // serves the guest, opened with the key on the guest's own volume.
 //

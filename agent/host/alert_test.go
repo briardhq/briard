@@ -158,7 +158,7 @@ func TestRedundancyAlerterSaysWhichCopyWentAway(t *testing.T) {
 			name:      "the witness went, both copies are intact",
 			lost:      seen(true, 1, anchorUp, witnessGone),
 			wantTitle: "Briard: reduced redundancy",
-			wantBody:  "Another node still holds a full copy",
+			wantBody:  "Another machine still holds a full copy",
 		},
 		{
 			name:      "the peer anchor went, the house is on one disk",
@@ -308,11 +308,11 @@ func TestClockAlerterUnknownNeverFires(t *testing.T) {
 	}
 }
 
-// TestServiceAlerter walks the service condition through the readings a node actually takes, via
+// TestServiceAlerter walks the app condition through the readings a node actually takes, via
 // the real store so its dedup is the one under test: down only past the grace, a crash-loop's
 // starting readings do not break the run, a blip followed by a long start never opens, an unknown
 // says nothing, only running AND healthy resolves, and a node that hands the volume over resolves
-// what it opened -- each service on its own key.
+// what it opened -- each app on its own key.
 func TestServiceAlerter(t *testing.T) {
 	ctx := context.Background()
 	t0 := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)

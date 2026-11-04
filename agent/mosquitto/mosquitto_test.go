@@ -119,7 +119,7 @@ func TestPrepareTouchesNothingForOtherServices(t *testing.T) {
 }
 
 // TestPrepareReportsAFailure: a write that fails must come back as an error, because converge
-// reads that error as "do not start this service" — the answer that keeps podman from creating
+// reads that error as "do not start this app" — the answer that keeps podman from creating
 // the missing bind source as a root-owned directory.
 func TestPrepareReportsAFailure(t *testing.T) {
 	f := &fake{fail: func(name string, _ []string) error {
@@ -137,7 +137,7 @@ func TestPrepareReportsAFailure(t *testing.T) {
 	}
 }
 
-// TestVolumesBindTheConfigReadOnly over the image's baked one, and only for this service.
+// TestVolumesBindTheConfigReadOnly over the image's baked one, and only for this app.
 func TestVolumesBindTheConfigReadOnly(t *testing.T) {
 	m := broker()
 	got := Volumes(m, m.Containers[0])

@@ -112,7 +112,7 @@ const (
 	AdminPortDev = "/dev/virtio-ports/" + AdminPort
 )
 
-// PullPath is where the host records a service install's pull for the dashboard: the
+// PullPath is where the host records an app install's pull for the dashboard: the
 // manifest's Size and InstalledSize and when the pull started, written through `service.pulling`
 // before the first byte moves and removed once the image is present. The manifest itself lands on
 // the volume only AFTER the pull, so this is the one place a total exists while a bar is wanted.

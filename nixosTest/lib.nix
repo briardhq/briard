@@ -17,9 +17,9 @@ let
 
   # The promoter's ordered unit: the same units everywhere, on every node, whatever is installed.
   # `briard-services` is what converges this node to the manifests on the volume
-  # once the mount exists, which is why the services themselves are not members. The front door and
+  # once the mount exists, which is why the apps themselves are not members. The front door and
   # the two mDNS publishers ARE members: on a node with no `.casa` domain those names
-  # are the ONLY way to reach a service and the door is the only thing that answers them, so a node
+  # are the ONLY way to reach an app and the door is the only thing that answers them, so a node
   # that cannot publish or cannot serve should hand the resource on rather than look healthy while
   # reaching nobody. This mirrors what the host agent writes in production (host.promoterUnits),
   # which also takes no arguments any more, and the two lists are kept in step BY HAND.
@@ -106,12 +106,12 @@ let
   # facts. The image arrives already loaded: each fixture ships the podman store its archive was
   # loaded into, and mkNode attaches it as a read-only additional image store (what used to be a
   # `podman load` here, on every node at every boot, at ~8 GB of host writes for the HA image).
-  # ONE UNIT, N FIXTURES. A node may carry more than one catalogued service, because the
+  # ONE UNIT, N FIXTURES. A node may carry more than one catalogued app, because the
   # coordination is plural and a harness that can stage only one can only ever prove the singular
-  # case — which is exactly how "N services" stayed a fixture-shaped claim.
+  # case — which is exactly how "N apps" stayed a fixture-shaped claim.
   #
-  # Each fixture is staged under /run/briard/fixtures/<service name>, and /run/briard/fixture is a
-  # symlink to the FIRST one: that is the path every single-service test and every helper default
+  # Each fixture is staged under /run/briard/fixtures/<app name>, and /run/briard/fixture is a
+  # symlink to the FIRST one: that is the path every single-app test and every helper default
   # already reads, so adding the plural form changed no existing test.
   fixturesInstall = fixtures: config: {
     description = "Prewarm ${lib.concatMapStringsSep " + " (f: f.name) fixtures} onto this node (test harness)";
@@ -134,7 +134,7 @@ let
       mkdir -p /run/briard/fixtures
       # THE POD POOL, which on a real node arrives over net.configure from a HOST that drew it
       # (agent/subnet). These rigs have no host -- the node IS the guest -- so the fact is seeded
-      # here, exactly as the VIP's device and address are. Without it a private service cannot be
+      # here, exactly as the VIP's device and address are. Without it a private app cannot be
       # rendered at all, and converge says so rather than quietly using the guest's namespace.
       #
       # A fixed octet rather than a draw: the draw exists to miss a HOUSEHOLD's addressing, and a
@@ -179,7 +179,7 @@ let
   #
   # install_fixture stands in for the ONE half of the install path a hermetic harness cannot run:
   # the host agent's Primary-only orchestration. It writes the manifest to the REPLICATED volume
-  # (what `service.provision` records as the service's identity), creates its storage, and then
+  # (what `service.provision` records as the app's identity), creates its storage, and then
   # hands over to the PRODUCT — `briard-guest-agent --converge` is the same code drbd-reactor runs at
   # every promotion, not a harness re-implementation of it.
   #
@@ -187,7 +187,7 @@ let
   # volume and only a Primary has it mounted. That is not a harness quirk; it is the exact
   # constraint the product's install path lives under, and the reason converge exists.
   #
-  # ONE subvolume per tier the service mounts, plain SUBDIRECTORIES in it, never nested: `btrfs
+  # ONE subvolume per tier the app mounts, plain SUBDIRECTORIES in it, never nested: `btrfs
   # subvolume delete` refuses on a subvolume containing them, so data.restore would break.
   # Podman does NOT create a missing bind-mount source (measured — the container dies with
   # `statfs …/app: no such file or directory`), so the provision step is required, not defensive.
@@ -196,7 +196,7 @@ let
   fixtureHelpers = ''
     def fixture_dir(service=None):
         """Where a staged fixture lives. `service` names one when the node carries several;
-        the default is the symlink to the first, which is what a single-service node
+        the default is the symlink to the first, which is what a single-app node
         has always read."""
         return "/run/briard/fixture" if service is None else f"/run/briard/fixtures/{service}"
 
@@ -210,7 +210,7 @@ let
             area = sub.rsplit("/", 1)[0]
             m.succeed(f"btrfs subvolume show {area} >/dev/null 2>&1 || (mkdir -p $(dirname {area}) && btrfs subvolume create {area})")
             m.succeed(f"mkdir -p {sub}")
-        # The service's name IS the last element of its data root -- taken from the renderer
+        # The app's name IS the last element of its data root -- taken from the renderer
         # rather than restated, like everything else here.
         name = dataroot.rstrip("/").split("/")[-1]
         src = f"{d}/manifest.json" if variant is None \
@@ -225,17 +225,17 @@ let
         return dataroot
 
     def fixture_units(m, service=None):
-        """The service units the RENDERER produced -- never a list restated here. They are NOT
+        """The app's units the RENDERER produced -- never a list restated here. They are NOT
         promoter chain members: briard-services starts them, which is what keeps a
         crashed container from demoting the node."""
         units = m.succeed(f"cat {fixture_dir(service)}/units").split()
-        assert units, f"the renderer produced no service units: {units}"
+        assert units, f"the renderer produced no app units: {units}"
         return units
 
     def name_the_flock(m, name="brave-elf"):
         """Give the node a flock name the way the AGENT does -- net.mdnsname writes exactly this
-        file, and converge composes the per-service names from it. Without it a node has
-        no name to route on: the service is installed and reachable on its port, but nothing
+        file, and converge composes the per-app names from it. Without it a node has
+        no name to route on: the app is installed and reachable on its port, but nothing
         answers for it at the front door, which is the honest state of a node whose flock has
         never been named."""
         m.succeed("mkdir -p /run/briard")
@@ -276,14 +276,14 @@ let
       tierDevice ? "/dev/vdb",
       # A catalogued fixture (nixosTest/fixture-service.nix) prewarmed onto the node at boot; the
       # test then installs it onto the volume with install_fixture once something has promoted.
-      # This is the ONLY way a test node gets a workload (converge-at-promotion deleted the build-time service
+      # This is the ONLY way a test node gets a workload (converge-at-promotion deleted the build-time app
       # slot), and it is the way a shipped node gets one, which is the point: a test that put a
       # container on a node by a mechanism no user has proves a path nobody runs.
       fixture ? null,
-      # SEVERAL catalogued services on one node. `fixture` is the one-service spelling
+      # SEVERAL catalogued apps on one node. `fixture` is the one-app spelling
       # and stays exactly as it was; anything listed here is staged beside it, each under its own
       # name, so a test can prove what the plural coordination actually does — that installing or
-      # upgrading one service leaves the others alone.
+      # upgrading one app leaves the others alone.
       fixtures ? [ ],
     }:
     let

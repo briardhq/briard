@@ -73,7 +73,7 @@ func (cr *certRequester) keyFor(name string) string {
 // differently.
 //
 // Neither takes a ServiceSpec, and that is load-bearing rather than tidy: an OS upgrade must
-// not touch services, and a signature with nothing to name a service with is a
+// not touch apps, and a signature with nothing to name an app with is a
 // separation the compiler keeps rather than one a reader has to.
 type upgrader interface {
 	ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error) // the guest chain's release, image already staged
@@ -104,10 +104,10 @@ type selfUpdater interface {
 // back so the cloud moves the intent terminal -- the durable answer a post-outage reconcile
 // polls. Re-delivery of an already-applied directive is an idempotent no-op that re-reports done.
 //
-// IT TAKES NO SERVICE, and that is deliberate: nothing here acts on one.
+// IT TAKES NO APP, and that is deliberate: nothing here acts on one.
 // A version change is a service-install directive carrying a catalog name (applyServiceInstall),
-// an OS upgrade must not touch services at all, and the image re-pin that needed a single named
-// service died with the build-time payload slot.
+// an OS upgrade must not touch apps at all, and the image re-pin that needed a single named
+// app died with the build-time payload slot.
 func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any), upgradeBudget time.Duration, wd *beat) api.DirectiveOutcome {
 	done := api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone}
 	failed := func(detail string) api.DirectiveOutcome {
@@ -123,7 +123,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 	case api.DirectiveRescue:
 		if up == nil {
 			logf("directive kind=rescue ignored (no guest on this node)")
-			return failed("no guest on this node")
+			return failed("no VM on this machine")
 		}
 		// The bound is the bring-up budget plus room for the stop, and it is generous on purpose:
 		// past the stop the guest is down, so a context that expires mid-bring-up leaves a node
@@ -141,7 +141,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 	case api.DirectiveCertRequest:
 		if up == nil || d.Payload == "" || cr == nil {
 			logf("directive kind=cert-request ignored (no payload/target on this node)")
-			return failed("no target on this node")
+			return failed("no target on this machine")
 		}
 		if err := cr.request(d.Payload); err != nil {
 			logf("directive cert-request (%s): could not build CSR: %v", d.Payload, err)
@@ -152,7 +152,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 	case api.DirectiveCert:
 		if up == nil || d.Payload == "" {
 			logf("directive kind=cert ignored (no payload/target on this node)")
-			return failed("no target on this node")
+			return failed("no target on this machine")
 		}
 		var b api.CertBundle
 		if err := json.Unmarshal([]byte(d.Payload), &b); err != nil {
@@ -176,7 +176,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 	case api.DirectiveAgentUpdate:
 		if su == nil || d.Payload == "" {
 			logf("directive kind=agent-update ignored (no self-updater/payload on this node)")
-			return failed("no self-updater on this node")
+			return failed("no self-updater on this machine")
 		}
 		var u api.AgentUpdate
 		if err := json.Unmarshal([]byte(d.Payload), &u); err != nil || u.Version == "" {

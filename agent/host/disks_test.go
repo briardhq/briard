@@ -165,7 +165,7 @@ func TestGrowStateDiskGrowsFileThenVMThenGuest(t *testing.T) {
 }
 
 // The state disk is made at its initial size, through AllocateThick (whose own test asserts the
-// blocks): the host pays for an empty node's journal and scratch up front, and for each service
+// blocks): the host pays for an empty node's journal and scratch up front, and for each app
 // when it arrives (growStateDisk) -- never at write time.
 func TestProvisionDisksMakesTheStateDiskThick(t *testing.T) {
 	cfg := Config{StateDisk: filepath.Join(t.TempDir(), "state.img")}

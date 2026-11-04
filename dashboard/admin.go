@@ -107,8 +107,8 @@ func (p *serialPort) Submit(ctx context.Context, d api.Directive) (api.Directive
 	return api.DirectiveOutcome{}, errors.New("the admin port closed before the host answered")
 }
 
-// install is one service install the dashboard asked the host for, from the click until the
-// routes table lists the service (or the host said no). Update: it was the Update button on an
+// install is one app install the dashboard asked the host for, from the click until the
+// routes table lists the app (or the host said no). Update: it was the Update button on an
 // installed app -- the same directive, since an update is an install over what runs, and the
 // card says "updating" instead of turning back into a chooser.
 type install struct {
@@ -133,7 +133,7 @@ type installView struct {
 }
 
 // requestInstall is the Install button, and with update the Update button: one install in
-// flight per service, the directive relayed in the background because a pull runs minutes and
+// flight per app, the directive relayed in the background because a pull runs minutes and
 // a browser should not hold a request that long. The page shows the state and refreshes itself.
 // An update is asked only of an app the host's view offers one for; the host decides again.
 func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string, update bool) {
@@ -173,8 +173,8 @@ func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string
 	http.Redirect(w, r, back(r), http.StatusSeeOther)
 }
 
-// installState is what the card shows for a service, nil when nothing was asked. A finished,
-// successful install is forgotten once the routes table lists the service, and a successful
+// installState is what the card shows for an app, nil when nothing was asked. A finished,
+// successful install is forgotten once the routes table lists the app, and a successful
 // update once the host's view no longer offers it -- the card's ordinary states take over from
 // there.
 func (a *app) installState(name string, routed, offered bool) *installView {

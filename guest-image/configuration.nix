@@ -5,7 +5,7 @@
 #
 # The workload + DRBD 9 + drbd-reactor run *inside* this VM; the host agent runs
 # outside it (the host/guest boundary, V0). drbd-reactor's promoter
-# drives the ordered failover unit {DRBD-primary → data mount → services → VIP}
+# drives the ordered failover unit {DRBD-primary → data mount → apps → VIP}
 # on whichever node holds the DRBD primary role. The per-resource
 # promoter rules are supplied per-deployment as a snippet the agent drops into /run/briard/drbd-reactor.d
 # (the agent writes them in prod, V0; the harness writes them in tests),
@@ -657,7 +657,7 @@ in
   };
 
   # Image tarballs baked into this disk's closure and loaded into podman at boot. A NODE fact,
-  # not a service one: an image has to be RESIDENT before anything renders against it, because
+  # not an app one: an image has to be RESIDENT before anything renders against it, because
   # nothing on the failover path may pull. Used by the fleet's upgrade demo to pre-stage the
   # target of a rotation. Empty by default — the shipped image carries no workload.
   options.briard.stagedImages = lib.mkOption {
@@ -962,14 +962,14 @@ in
     # drbd-* units are not ours; and briard-stage below is a build-time fact about this image
     # (`config.briard.stagedImages`), which no pushed binary knows.
 
-    # Podman belongs to the guest OS, not to any service: it is the runtime a service will be
+    # Podman belongs to the guest OS, not to any app: it is the runtime an app will be
     # installed INTO, by the renderer, at runtime. There is no declared container
     # here and there is no `virtualisation.oci-containers` — a workload is not a build-time fact
     # about this image any more.
     virtualisation.podman.enable = true;
 
     # Pre-stage image tarballs into local podman storage at boot: images that must already be
-    # RESIDENT because nothing on the failover path may pull. A runtime-installed service renders
+    # RESIDENT because nothing on the failover path may pull. A runtime-installed app renders
     # `Pull=never` against a digest, so its image has to be here before it is installed.
     # Idempotent, runs on EVERY node (a standby is where a cold pull would hurt), and independent
     # of what is installed.
@@ -1057,7 +1057,7 @@ in
     };
 
     # Compressed swap in RAM. The guest's memory is fixed at boot with nothing above it but the OOM
-    # killer; zram turns memory a service touched once and never again into a fraction of its size,
+    # killer; zram turns memory an app touched once and never again into a fraction of its size,
     # so a burst lands there instead of on the killer. Page cache is never swapped, so what sits in
     # zram is anonymous memory only -- demand the guest's size has to cover -- which is why its usage
     # rides the resources verb. zstd and a cap of half the RAM (uncompressed) are the module's

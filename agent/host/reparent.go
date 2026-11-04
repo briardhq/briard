@@ -486,10 +486,10 @@ func (cfg Config) checkMovedLAN(ctx context.Context, n notify.Notifier, logf fun
 			Key:      "subnet",
 			Kind:     notify.Open,
 			Severity: notify.Warning,
-			Title:    "Briard: this node's private subnet now collides with the network it is on",
-			Body: fmt.Sprintf("this node numbers itself from %s, drawn when it was on a different network; "+
+			Title:    "Briard: this machine's private subnet now collides with the network it is on",
+			Body: fmt.Sprintf("this machine numbers itself from %s, drawn when it was on a different network; "+
 				"%s is now also in use here (%s). The address the household uses is unaffected. "+
-				"This is NOT fixed automatically -- the subnet is shared with this node's peers, so "+
+				"This is NOT fixed automatically -- the subnet is shared with this machine's peers, so "+
 				"re-drawing it here would break them.", cfg.SystemCIDR, p, where),
 		})
 		return
@@ -498,8 +498,8 @@ func (cfg Config) checkMovedLAN(ctx context.Context, n notify.Notifier, logf fun
 	fireAlert(ctx, n, logf, notify.Alert{
 		Key:   "subnet",
 		Kind:  notify.Resolved,
-		Title: "Briard: this node's private subnet no longer collides with its network",
-		Body:  fmt.Sprintf("nothing on the network this node is on now overlaps %s.", cfg.SystemCIDR),
+		Title: "Briard: this machine's private subnet no longer collides with its network",
+		Body:  fmt.Sprintf("nothing on the network this machine is on now overlaps %s.", cfg.SystemCIDR),
 	})
 }
 
@@ -514,9 +514,9 @@ func alertReparent(ctx context.Context, n notify.Notifier, logf func(string, ...
 		Key:      "reparent",
 		Kind:     notify.Event,
 		Severity: notify.Warning,
-		Title:    "Briard: this node moved to a different network device",
-		Body: fmt.Sprintf("the guest's network hung off %s, which disappeared or lost its link; it now hangs off %s (%s). "+
-			"The service was restarted to make the change. If you did not expect this, check the cabling "+
+		Title:    "Briard: this machine moved to a different network device",
+		Body: fmt.Sprintf("the VM's network hung off %s, which disappeared or lost its link; it now hangs off %s (%s). "+
+			"The VM was restarted to make the change. If you did not expect this, check the cabling "+
 			"and which network this machine is on.", from, to, rel),
 	})
 }

@@ -218,7 +218,7 @@ pkgs.testers.runNixOSTest {
     # on the free tier, the only delivery there is. Asserted through the verb, on the OPEN
     # section: the guest is a condition, and it is open from here until the guest answers.
     host.wait_until_succeeds(
-        "${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep -q 'the guest has stopped answering'",
+        "${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep -q 'the VM has stopped answering'",
         timeout=300, # the 60s window plus the re-dials, with room to spare
     )
 
@@ -269,18 +269,18 @@ pkgs.testers.runNixOSTest {
     # ANNOUNCED ONCE. recover() re-evaluates every time the window closes, which on a guest that
     # never came back is forever -- so an alert that re-fired would move the flap this rung exists
     # to prevent from the VM to the owner's phone.
-    alerts = int(host.succeed("journalctl -u briard-agent | grep -c 'Briard: the guest has stopped answering' || true").strip())
+    alerts = int(host.succeed("journalctl -u briard-agent | grep -c 'Briard: the VM has stopped answering' || true").strip())
     assert alerts == 1, f"{alerts} degraded alerts for one incident -- the announce-once latch is broken"
 
     # AND THE INCIDENT CLOSES ITSELF. The guest came back, so the owner is told it is over. This
     # is the half that used to be missing: the ladder announced trouble and then never mentioned
     # it again either way, so a resolved incident looked exactly like an ignored one.
     host.wait_until_succeeds(
-        "${agent}/bin/briard-agent alerts | sed -n '/history/,$p' | grep -q 'the guest is answering again'",
+        "${agent}/bin/briard-agent alerts | sed -n '/history/,$p' | grep -q 'the VM is answering again'",
         timeout=120,
     )
     # ...and that resolve closed the condition: it is no longer among the open alerts.
-    host.fail("${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep -q 'the guest has stopped answering'")
+    host.fail("${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep -q 'the VM has stopped answering'")
 
 
     print("host recovered an unresponsive guest by restarting its VM")

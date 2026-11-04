@@ -152,7 +152,7 @@ func TestAFailedWriteIsAnError(t *testing.T) {
 }
 
 // TestArgumentsAreRefusedRatherThanExecuted. Both of these become podman arguments, and the
-// schema's whole discipline is that nothing a catalogued service carries can reach past its own
+// schema's whole discipline is that nothing a catalogued app carries can reach past its own
 // box — so they are checked before they are run with, not after.
 func TestArgumentsAreRefusedRatherThanExecuted(t *testing.T) {
 	f := serving(nil)

@@ -292,7 +292,7 @@ pkgs.testers.runNixOSTest {
     # the first non-flag argument, so `install fixture -sock ...` would leave the flag positional.
     rc, out = host.execute("${agent}/bin/briard-agent app install fixture 2>&1")
     took = int(host.succeed("date +%s").strip()) - t_dir0
-    print(f"service install returned rc={rc} after {took}s:\n{out}")
+    print(f"app install returned rc={rc} after {took}s:\n{out}")
 
     # It really did reach dispatch -- the same line the stranger's journal opens with. Without
     # this, a CLI that failed to connect at all would look like a pass.

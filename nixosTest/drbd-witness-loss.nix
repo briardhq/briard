@@ -62,7 +62,7 @@ pkgs.testers.runNixOSTest {
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
 
-    # The front door first, with nothing installed -- the shipped state -- then the service goes
+    # The front door first, with nothing installed -- the shipped state -- then the app goes
     # onto the volume from whichever node promoted.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 
@@ -99,7 +99,7 @@ pkgs.testers.runNixOSTest {
     secondary.wait_until_fails("curl -fsS --max-time 3 http://192.168.1.100:8080/healthz")
 
     # Give drbd-reactor ample time to (wrongly) promote, then assert it did not:
-    # the survivor stays Secondary, claims no VIP, runs no service.
+    # the survivor stays Secondary, claims no VIP, runs no app.
     time.sleep(20)
     secondary.succeed("drbdadm role r0 | grep -q Secondary")
     secondary.fail("ip -4 addr show dev eth1 | grep -q 192.168.1.100")

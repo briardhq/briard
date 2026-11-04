@@ -3,7 +3,7 @@
 //
 // It is a deliberately small graph -- the framing, the handshake, the three push verbs and their
 // trial/aftermath rules, `os.poweroff`, and the Executor those shell out through. Everything
-// else the guest does (DRBD bring-up, services, telemetry, converge, the deadman) belongs to
+// else the guest does (DRBD bring-up, apps, telemetry, converge, the deadman) belongs to
 // agent/guestagent, which the host PUSHES as `briard-guest-agent` at every bring-up. The whole
 // point of the split is that an edit to any of those must NOT rebuild the image: the image's
 // inputs list is `go list -deps ./agent/cmd/briard-guest-firmware` and nothing more
@@ -166,7 +166,7 @@ func (osExecutor) Sethostname(name string) error {
 }
 
 // PowerOffGrace bounds the one handler that runs DETACHED from the serve context. Every other
-// verb is cancelled when the agent is asked to stop, and that is correct -- a service pull fetching a
+// verb is cancelled when the agent is asked to stop, and that is correct -- an app pull fetching a
 // closure has nothing worth finishing once the machine is going down. `os.poweroff` is the
 // exception, and the reason is circular: the shutdown it asks for is what SIGTERMs this process,
 // so inheriting that cancellation means the verb is killed by its own success.

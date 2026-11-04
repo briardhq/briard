@@ -66,7 +66,7 @@ pkgs.testers.runNixOSTest {
         return m.execute("drbdadm role r0")[1].strip()
 
     primary = next(m for m in machines if role(m) == "Primary")
-    # The service is installed onto the VOLUME by whoever holds it. The survivor never runs an
+    # The app is installed onto the VOLUME by whoever holds it. The survivor never runs an
     # install: it renders from that same volume when it promotes, which is the half
     # this test is really about.
     dataroot = install_fixture(primary)

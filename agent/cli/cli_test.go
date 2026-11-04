@@ -479,7 +479,7 @@ func TestUpdateDefaultsToStableAndTheOldVerbsAreGone(t *testing.T) {
 // TestAppUndoNamesThePointExactly: `undo` takes the point as history printed it, never an
 // index into that listing.
 //
-// An index is stale the moment anything takes a member, and members are taken on every service
+// An index is stale the moment anything takes a member, and members are taken on every app
 // start -- so "undo 3" would act on a different point than the one the operator read. This is
 // the assertion that keeps the safe shape: what the CLI sends is what the operator saw.
 func TestAppUndoNamesThePointExactly(t *testing.T) {

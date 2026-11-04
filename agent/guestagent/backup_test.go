@@ -15,7 +15,7 @@ import (
 	"briard.io/agent/quadlet"
 )
 
-// backupRig is a mounted volume holding two services, each with a ring whose newest member was
+// backupRig is a mounted volume holding two apps, each with a ring whose newest member was
 // taken by a different trigger, a VIP, manifests and the household's key but no certificate yet,
 // and a restic that answers from the table it is given (keyed by subcommand).
 func backupRig(restic map[string]func() ([]byte, error)) (*fakeExec, map[string]string) {
@@ -151,7 +151,7 @@ func TestTheBackupRefusesWhatIsNotARESTRepository(t *testing.T) {
 	}
 }
 
-// TestTheBackupCommandLines: the newest member of every service (whatever took it) at a stable
+// TestTheBackupCommandLines: the newest member of every app (whatever took it) at a stable
 // path, read-only; the volume's key in a 0600 file, never an argument; HA's own tarballs
 // excluded; the household's group on the backup and on the forget; the retention policy;
 // everything unmounted and removed after.
@@ -271,7 +271,7 @@ func TestAFailedBackupIsTheReportNotASilence(t *testing.T) {
 	}
 }
 
-// TestANodeWithNothingInstalledBacksUpNothing: no services is the shipped state, not a failure.
+// TestANodeWithNothingInstalledBacksUpNothing: no apps is the shipped state, not a failure.
 func TestANodeWithNothingInstalledBacksUpNothing(t *testing.T) {
 	f := ringExec()
 	f.runFn = func(n string, args []string) ([]byte, error) { return nil, errors.New("no such directory") }
@@ -291,7 +291,7 @@ func runIndex(f *fakeExec, from int, want ...string) int {
 	return -1
 }
 
-// TestTheBackupCarriesWhatARestoreNeeds: beside each service's data, the manifest it was written
+// TestTheBackupCarriesWhatARestoreNeeds: beside each app's data, the manifest it was written
 // under; the volume's flock-scoped facts that exist; the host's facts as 0600 files whose content
 // never reaches a command line -- all in place before restic reads, and the copies gone after.
 func TestTheBackupCarriesWhatARestoreNeeds(t *testing.T) {
@@ -425,7 +425,7 @@ func TestASnapshotWithNoGroupIsTheGuestsOwn(t *testing.T) {
 }
 
 // TestANightIsMaterialisedAsAMember: the sidecar is read from the backup first and names the
-// manifest; the member is created empty, restored into from the service's subtree of that night,
+// manifest; the member is created empty, restored into from the app's subtree of that night,
 // made read-only, labelled from-backup with the night's own TakenAt, and synced -- with the key
 // in a file, never on a command line; and a restore that fails leaves nothing in the ring.
 func TestANightIsMaterialisedAsAMember(t *testing.T) {
@@ -503,8 +503,8 @@ func TestANightIsMaterialisedAsAMember(t *testing.T) {
 	}
 }
 
-// TestANightIsRefusedBeforeAnythingIsRead: a snapshot that is not an id, a service that is a
-// path, a sidecar that describes another service -- none of them creates a member.
+// TestANightIsRefusedBeforeAnythingIsRead: a snapshot that is not an id, an app that is a
+// path, a sidecar that describes another app -- none of them creates a member.
 func TestANightIsRefusedBeforeAnythingIsRead(t *testing.T) {
 	ctx := context.Background()
 	other, _ := json.Marshal(quadlet.SnapshotMeta{Service: "mosquitto", Manifest: "{}"})

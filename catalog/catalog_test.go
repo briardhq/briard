@@ -1,4 +1,4 @@
-// Package catalog holds the published service manifests. It has no code: the test is the point.
+// Package catalog holds the published app manifests. It has no code: the test is the point.
 //
 // It parses every entry with the SAME function a node uses, so the schema check that would
 // otherwise happen for the first time on a household's node happens here instead. The failures it
@@ -57,9 +57,9 @@ func TestEveryPublishedEntryParses(t *testing.T) {
 				t.Errorf("entry is served as %q but names itself %q", want, m.Name)
 			}
 			// The identity is the hash of the bytes as published. Recording it in the log is how
-			// a reviewer sees that an edit here is a new service version, not a cosmetic change.
+			// a reviewer sees that an edit here is a new app version, not a cosmetic change.
 			t.Logf("%s %s -> %s", m.Name, m.Version, id)
-			// A trailing newline is a different identity for the same service (see README).
+			// A trailing newline is a different identity for the same app (see README).
 			if strings.HasSuffix(string(raw), "\n") {
 				t.Error("entry ends in a newline; the published bytes do not, and the bytes are the identity")
 			}

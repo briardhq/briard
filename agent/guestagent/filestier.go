@@ -21,10 +21,10 @@ import (
 // the clock, hourly, taken live (crash-consistent always; nothing evaluates it), kept hourly for
 // a day, daily for a week, weekly to thirty days, nothing older. They sit under
 // filesVersionsDir with the History's names and sidecars, and each is born into its app's files
-// group, so history spends the household's own cap.
+// group, so its Versions spend that app's own cap.
 //
 // THE ALLOCATION RULE gives the files tier whatever the data tier does not need, and keeps it
-// there by shedding history when the household's files need the room:
+// there by shedding old Versions when the household's files need the room:
 //
 //	slack    = (raw used − charged) + one metadata chunk     what btrfs keeps for itself, and room to grow it
 //	filesCap  = volume − dataUsed − max(20 % × dataUsed, 300 MB) − slack
@@ -37,24 +37,24 @@ import (
 // is kept free so btrfs can always allocate the next one.
 //
 // The cap is the files aggregate's limit, re-set only when it changes. The data tier has no
-// limit of its own: its reserve is the cap's headroom, so a growing service lowers the cap and the
-// valve answers. THE VALVE deletes the oldest user-ring member older than a day, anywhere, waits
+// limit of its own: its reserve is the cap's headroom, so a growing app lowers the cap and the
+// valve answers. THE VALVE deletes the oldest version older than a day, of any app, waits
 // for the space to come back, and re-reads, while filesFree is under the target. It is blind by
-// design -- simple quotas carry no per-snapshot exclusive number -- and it never touches a service
-// ring or a member younger than a day: when those hold the space, the uploader meets EDQUOT and
-// the house keeps running. Short says the valve could not buy five days of history, which is the
+// design -- simple quotas carry no per-snapshot exclusive number -- and it never touches an app's
+// History or a version younger than a day: when those hold the space, the uploader meets EDQUOT and
+// the house keeps running. Short says the valve could not keep five days of Versions, which is the
 // household's warning before the uploader's error.
 //
 // NO APP TAKES THE LAST OF ITS TIER'S FREE SPACE. Each app's group in each tier is limited to
 //
 //	appCap = max(90 % × (used + free), used + free − R)
 //
-// where free is what the tier has left (the volume's physical free space for a service, filesFree
+// where free is what the tier has left (the volume's physical free space for a data area, filesFree
 // for a files area) and R = max(300 MB, 1 % of what the tier divides: the volume, or filesCap). An
 // app growing alone does not move its own cap, since its growth is the tier's loss; it stops with
-// a tenth of the two together or R left for the others, whichever is less. Its history counts, as
+// a tenth of the two together or R left for the others, whichever is less. Its older copies count, as
 // it does in the tier. An app's room is never less than free − R, the valve holds filesFree at a
-// target no smaller than R, and a service's free space is filesFree and the headroom: while the
+// target no smaller than R, and a data area's free space is filesFree and the headroom: while the
 // household has not been warned, no app in either tier is at its cap.
 //
 // THE HOST SCHEDULES IT AND TELLS THE HOUSEHOLD; the work is here because only the guest mounts
@@ -69,7 +69,7 @@ const (
 	// versionEligibleAge is the valve's floor: nothing younger is shed, so a mistake made today can
 	// still be undone tomorrow.
 	versionEligibleAge = 24 * time.Hour
-	// versionsShortAge is what the household is warned below: history the valve had to cut under
+	// versionsShortAge is what the household is warned below: Versions the valve had to cut under
 	// five days.
 	versionsShortAge = 5 * 24 * time.Hour
 )

@@ -10,7 +10,7 @@ import (
 
 // dashboardMetrics is the closed allowlist of resource fields that leave a node as cloud
 // aggregates: product-health signals fit for a cloud dashboard -- disk capacity used
-// and system load -- not the soak's internal leak instruments (agent/service RSS+FDs,
+// and system load -- not the soak's internal leak instruments (agent/app RSS+FDs,
 // log/store sizes, guest kernel errors, restart counts), which stay home on shared/telemetry
 // . Expanding this set is a deliberate, visible act -- and a
 // cheap one: the cloud rollup is long-format (metric name as data), so a new metric is new

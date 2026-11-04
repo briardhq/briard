@@ -126,7 +126,7 @@ const (
 //
 // Below what the install USES the card refuses, rather than half-land. Below that plus one Home
 // Assistant plus the free space it advises, it warns and names each number: a node with no
-// service is a working node.
+// app is a working node.
 const (
 	// The guest image (~0.86 GB) and the agent, qemu and guest bundles (~0.1 GB), measured
 	// (briard 865e5d2).

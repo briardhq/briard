@@ -25,7 +25,7 @@ share no code, the seam and the guest image being all they have in common.
 | no-spurious-action-on-heal | `drbd-fence.nix`, reunion half: the ex-primary rejoins as Secondary, the survivor stays sole primary |
 | rollback-is-clean | `hass-upgrade-rollback.nix` (a deliberately broken upgrade rolls code and data back together) |
 | storage-seam-linear | `luks-convert.nix` (the data LV is one linear segment before and after an encryption round trip) |
-| user-data-on-the-replicated-volume | `zero-service.nix` (an empty node's volume is where service data would land) — partial; the rest is a review invariant |
+| user-data-on-the-replicated-volume | `zero-service.nix` (an empty node's volume is where app data would land) — partial; the rest is a review invariant |
 
 Three of these (alert-correctness, no-silent-restarts, no-bad-kernel-log) are checked by our
 long-running soak rather than by these tests; the rows are kept so the set stays complete and

@@ -374,7 +374,7 @@ func (cfg Config) reportDegraded(ctx context.Context, dg *degraded, logf func(st
 		logf("refusing %s from the controller: this node has no usable network device", d.Kind)
 		dg.pending = append(dg.pending, api.DirectiveOutcome{
 			ID: d.ID, State: api.OutcomeFailed,
-			Detail: "this node has no usable network device for its guest, so it is not running one",
+			Detail: "this machine has no usable network device for its VM, so it is not running one",
 		})
 	}
 }
@@ -408,7 +408,7 @@ func (cfg Config) waitTick(ctx context.Context, local <-chan localRequest, why s
 			logf("admin socket: refusing %s -- the node has no usable network device", req.d.Kind)
 			req.resp <- api.DirectiveOutcome{
 				ID: req.d.ID, State: api.OutcomeFailed,
-				Detail: "this node has no usable network device: " + why,
+				Detail: "this machine has no usable network device: " + why,
 			}
 		}
 	}

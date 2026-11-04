@@ -125,9 +125,9 @@ func TestTheStorageCardLoadsItselfAndStopsAskingOnceMeasured(t *testing.T) {
 	}
 
 	u.mu.Lock()
-	u.fail = "this guest is too old to measure an app; update the guest OS first"
+	u.fail = "this VM is too old to measure an app; update the VM first"
 	u.mu.Unlock()
-	if body := r.get(t, "/f/storage?app=home-assistant", c); !strings.Contains(body, "Could not read it: this guest is too old") {
+	if body := r.get(t, "/f/storage?app=home-assistant", c); !strings.Contains(body, "Could not read it: this VM is too old") {
 		t.Errorf("a failed read is not said:\n%s", body)
 	}
 	if resp := r.do("GET", "/f/storage?app=immich", c, nil); resp.StatusCode != http.StatusNotFound {

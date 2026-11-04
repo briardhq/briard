@@ -76,7 +76,7 @@ func newTestUpgrade(t *testing.T, fixture string) *osUpgrade {
 // THE SWITCH METHOD. What these two tests are for is less the sequence than the
 // shape gave it: an OS upgrade that does not touch the workload, and one rollback for
 // both methods. Both are things the code can lose silently, so both are asserted directly --
-// no service verb, no data snapshot, and exactly one activation on the failing run.
+// no app verb, no data snapshot, and exactly one activation on the failing run.
 //
 // What they cannot do is prove the rollback LEG. Restoring the point means stopping a real VM
 // and reverting a real qcow2, neither of which exists in a unit test; that is the lab7(f)'s, on
@@ -237,7 +237,7 @@ func newSwitchUpgrade(t *testing.T, healthy bool) (*osUpgrade, *recExec, *fakeQM
 	return u, x, q
 }
 
-// assertLeftTheWorkloadAlone is as a check: no service lifecycle, no service data. It
+// assertLeftTheWorkloadAlone is as a check: no app lifecycle, no app data. It
 // reads the recorded commands rather than the code because that is where a regression would
 // show up -- a re-added quiesce or data snapshot is a command, whoever calls it.
 func assertLeftTheWorkloadAlone(t *testing.T, x *recExec) {

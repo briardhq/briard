@@ -415,8 +415,8 @@ func (cfg Config) warnIfMeshForgotten(ctx context.Context, r statusReader, n not
 		Kind:     notify.Open,
 		Severity: notify.Warning,
 		Title:    "replication will be lost at the next restart",
-		Body: fmt.Sprintf("node %s is replicating to %d peer(s), but this machine has no record of "+
-			"that pairing, so it cannot put it back. The node is serving and replicating normally "+
+		Body: fmt.Sprintf("machine %s is replicating to %d peer(s), but this machine has no record of "+
+			"that pairing, so it cannot put it back. The machine is serving and replicating normally "+
 			"now; the next time its VM restarts it will come back on its own, replicating to "+
 			"nobody. Ask the cloud to pair this home again -- doing so is safe and repeatable, and "+
 			"it is what records the mesh here.", cfg.Node, len(cl.Peers)),
@@ -430,7 +430,7 @@ func meshRecorded(node string) notify.Alert {
 		Key:   "mesh-record",
 		Kind:  notify.Resolved,
 		Title: "replication is recorded on this machine again",
-		Body:  fmt.Sprintf("node %s holds the record of its pairing and will put it back at every restart.", node),
+		Body:  fmt.Sprintf("machine %s holds the record of its pairing and will put it back at every restart.", node),
 	}
 }
 

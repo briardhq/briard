@@ -52,14 +52,14 @@ type Index struct {
 // App is one entry: what a household sees of an app before and after it is installable.
 type App struct {
 	// Name is the catalog slug, the key everything else hangs on: the manifest a node fetches
-	// when the app is installable is `<Name>.json`, and the product's own knowledge of a
-	// service is keyed on it.
+	// when the app is installable is `<Name>.json`, and the product's own knowledge of an
+	// app is keyed on it.
 	Name string `json:"name"`
 	// Available: the app's signed manifest is published beside the index, so a node can
 	// install it. Absent for an app a household can only ask for.
 	Available bool `json:"available,omitempty"`
 	// Version and Identity restate that manifest, for an available app: its upstream version,
-	// for people, and the Identity of its exact bytes, which is the service a node would install
+	// for people, and the Identity of its exact bytes, which is the app a node would install
 	// now. A node that runs the app under another identity has an update to offer, learned from
 	// this one document and with no read that depends on what the node runs. Both or neither,
 	// and neither on an app that is not available; the catalog's own test holds them to the

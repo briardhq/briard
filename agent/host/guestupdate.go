@@ -66,14 +66,14 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 	}
 	if up == nil {
 		logf("directive kind=update-vm ignored (no guest on this node)")
-		return failed("no guest on this node")
+		return failed("no VM on this machine")
 	}
 	// Fail closed, as every verifier here does: no key, no release. The same PEM the catalog
 	// path verifies with (service.go), parsed the same way.
 	kr, err := selfupdate.NewKeyring(cfg.UpdateKeyring)
 	if err != nil || kr.Len() == 0 {
 		logf("directive kind=update-vm refused: no usable release keyring on this node (%v)", err)
-		return failed("no release keyring on this node; a guest release cannot be verified")
+		return failed("no release keyring on this machine; a VM release cannot be verified")
 	}
 	f := &install.Fetcher{BaseURL: cfg.ChannelURL, Chain: install.ChainVM, Platform: install.PlatformVM, Keyring: kr, Logf: logf}
 	rctx, cancel := context.WithTimeout(ctx, 2*time.Minute) // two small signed files, at most three
@@ -93,7 +93,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 	}
 	running, err := r.SystemPath(rctx)
 	if err != nil {
-		return failed("cannot read the guest's running system: " + err.Error())
+		return failed("cannot read the VM's running system: " + err.Error())
 	}
 	have := cfg.cachedGuestRelease(logf)
 	dec, err := decideGuest(target, want, have, stable, running, cfg.Version)
@@ -268,8 +268,8 @@ func (cfg Config) guestUpdateTimer(ctx context.Context, local chan<- localReques
 			Key:      "os-updates",
 			Kind:     notify.Open,
 			Severity: notify.Info,
-			Title:    "Briard: automatic OS updates are off on this node",
-			Body:     fmt.Sprintf("%s has %d peers and no orchestrator: nodes updating their OS independently would reboot together. Run `briard update --vm` on one node at a time.", cfg.Node, len(cfg.Resource.Peers)-1),
+			Title:    "Briard: automatic OS updates are off on this machine",
+			Body:     fmt.Sprintf("%s has %d peers and no orchestrator: machines updating their OS independently would reboot together. Run `briard update --vm` on one machine at a time.", cfg.Node, len(cfg.Resource.Peers)-1),
 		})
 		return
 	}
@@ -278,7 +278,7 @@ func (cfg Config) guestUpdateTimer(ctx context.Context, local chan<- localReques
 	fireAlert(ctx, n, logf, notify.Alert{
 		Key:   "os-updates",
 		Kind:  notify.Resolved,
-		Title: "Briard: OS updates are on again on this node",
+		Title: "Briard: OS updates are on again on this machine",
 		Body:  fmt.Sprintf("%s's OS is updated again, on its own schedule or by its orchestrator.", cfg.Node),
 	})
 	if cfg.ControllerURL != "" {

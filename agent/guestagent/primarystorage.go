@@ -77,8 +77,8 @@ func PrimaryStorage(ctx context.Context, x Executor) error {
 		_, _ = x.Run(ctx, "umount", dataMountRoot)
 		return fmt.Errorf("the volume is not in simple-quota mode (mode %q, %v): it was formatted by an older Briard and needs a reinstall", mode, err)
 	}
-	// First use: the snapshots dir. Idempotent. A service's own data subvolume is created when
-	// that service is INSTALLED (the guest's renderer makes it), so a node nobody has given a
+	// First use: the snapshots dir. Idempotent. An app's own data subvolume is created when
+	// that app is INSTALLED (the guest's renderer makes it), so a node nobody has given a
 	// workload to mounts an empty volume -- which is the honest state of one.
 	return run("mkdir", "-p", snapshotsDir())
 }

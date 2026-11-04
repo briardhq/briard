@@ -219,14 +219,14 @@ type Config struct {
 	Role      model.Role    // anchor / diskless ("" reserved for plain machines)
 	Resource  drbd.Resource // the DRBD resource this node serves
 	Promoter  []string      // drbd-reactor units in start order; nil on a witness
-	// ServiceRendered is the UNION of every runtime-installed service's units, re-derived from
+	// ServiceRendered is the UNION of every runtime-installed app's units, re-derived from
 	// the node-local manifest cache at start-up and handed to bring-up so they exist before the
 	// promoter looks for them. Set alongside Promoter by installedService, for the same reason and
-	// from the same source; zero when no service is installed.
+	// from the same source; zero when no app is installed.
 	//
-	// A union rather than a per-service value because its single consumer (restoreService) wants
+	// A union rather than a per-app value because its single consumer (restoreService) wants
 	// exactly that: every unit file to write back, every image unit to re-warm, after a guest
-	// reboot emptied /run. Unit filenames are service-prefixed by the renderer, so the merge
+	// reboot emptied /run. Unit filenames are app-prefixed by the renderer, so the merge
 	// cannot collide.
 	ServiceRendered quadlet.Rendered
 	Diskless        bool // this node is a diskless witness
@@ -270,7 +270,7 @@ type Config struct {
 	// collide with. The system subnet is the opposite -- it rides the LAN's L2 by design, which is
 	// why THAT one must be randomized per home.
 	WitnessCIDR string
-	// PodSubnet is the pool the GUEST allocates each private service's network from, first three
+	// PodSubnet is the pool the GUEST allocates each private app's network from, first three
 	// octets. Drawn at install (agent/subnet) and handed down at every bring-up like the rest of
 	// this node's addressing; the host itself never configures anything in it, which is what keeps
 	// a pod unreachable from outside the guest.
@@ -323,32 +323,32 @@ type Config struct {
 	// turns a broken-generation test into a timeout test that passes for the wrong reason.
 	UpgradeBudget time.Duration
 
-	// What this node RUNS: the ordered set of installed services, each naming its image, its data
+	// What this node RUNS: the ordered set of installed apps, each naming its image, its data
 	// subvolume and the units that serve it. An EMPTY set is the shipped state — a witness, or a
 	// node nothing has been installed on yet. ReactorSnippet enables promoter-coordinated quiesce.
 	//
-	// It is never read from the environment: services are installed at runtime, so this is filled
+	// It is never read from the environment: apps are installed at runtime, so this is filled
 	// from the node-local manifest cache at bring-up and from the VOLUME when this node promotes
 	// (the build-time slot that used to seed it is gone).
 	//
-	// A SET rather than the single spec it was: the per-service primitives were
-	// already plural — snapshot/restore take a spec and derive per-service paths, the quadlet
+	// A SET rather than the single spec it was: the per-app primitives were
+	// already plural — snapshot/restore take a spec and derive per-app paths, the quadlet
 	// renderer names everything from the manifest — and only the node's own bookkeeping was
 	// singular. Ordering is by name and therefore deterministic, which is all that cut owed:
-	// making the order a DEPENDENCY order is a separate decision, and needs a second real service to be
+	// making the order a DEPENDENCY order is a separate decision, and needs a second real app to be
 	// decided against.
 	Services       []model.ServiceSpec
 	ReactorSnippet string
 
-	// Runtime service install. CatalogURL is the signed catalog root;
+	// Runtime app install. CatalogURL is the signed catalog root;
 	// ServiceCache is the DIRECTORY where installed manifests are kept NODE-LOCALLY, one file
-	// per service, so the agent can rebuild the promoter chain at bring-up — before promotion,
+	// per app, so the agent can rebuild the promoter chain at bring-up — before promotion,
 	// when the replicated copies on the volume are not yet mountable. "" disables either.
 	//
 	// A directory rather than the single `service.json` it was, and the manifests are
-	// stored VERBATIM: a manifest's content hash IS the service identity (shared/manifest), so
+	// stored VERBATIM: a manifest's content hash IS the app's identity (shared/manifest), so
 	// re-encoding a set into one array file would destroy the identity of every member. One file
-	// of untouched bytes per service keeps the hash true and makes install/uninstall a file op.
+	// of untouched bytes per app keeps the hash true and makes install/uninstall a file op.
 	CatalogURL   string
 	ServiceCache string
 
@@ -473,7 +473,7 @@ type Config struct {
 	// %DOCUMENTS% (backup.go's resolveBackupDir); nil or empty while never read.
 	backupDocs *atomic.Pointer[string]
 
-	// readinessSettle overrides how long the S1 gate lets a service's signal settle before it
+	// readinessSettle overrides how long the S1 gate lets an app's signal settle before it
 	// judges it (agent/host/readiness.go). Machinery, not a knob: the production value is the
 	// const and nothing sets this but tests, which would otherwise spend a real minute per
 	// gated install to observe a verdict the fake already knows. 0 = the shipped window.
@@ -515,19 +515,19 @@ type statusReader interface {
 	// host may not be able to reach the VIP). An error (e.g. an old guest that predates the
 	// verb) falls the caller back to the legacy host-side probeHealth.
 	ServiceHealth(ctx context.Context, url string) (bool, error)
-	// ServiceHealthOf probes ONE named service, the guest resolving its address from the routing
+	// ServiceHealthOf probes ONE named app, the guest resolving its address from the routing
 	// table it converged. It answers a different question from ServiceHealth above: that
-	// one is the NODE's front door, this one is a service's own endpoint, and the observe loop
-	// needs both because a node can be up while a service on it is not.
+	// one is the NODE's front door, this one is an app's own endpoint, and the observe loop
+	// needs both because a node can be up while an app on it is not.
 	ServiceHealthOf(ctx context.Context, service string) (services.Health, error)
 	// VIP reads the address the service NIC actually holds, so the loop can probe an address
 	// the host did not choose (a lease acquired by DHCP inside the guest). Resolution is
 	// guest.ResolveHealthURL's — the observe loop and the readiness gate must answer "what do
 	// we probe?" the same way, and one rule in two packages is two rules waiting to disagree.
 	guest.VIPReader
-	// ServiceActive answers "is this unit up?" for ONE service, which is what per-service health
+	// ServiceActive answers "is this unit up?" for ONE app, which is what per-app health
 	// rides on. It is here rather than derived from Healthy because Healthy is the
-	// front door at the VIP -- which answers 200 on a node running no services at all.
+	// front door at the VIP -- which answers 200 on a node running no apps at all.
 	ServiceActive(ctx context.Context, unit string) (bool, error)
 	// MDNSPublished reads the name avahi ACTUALLY published, for exactly the reason VIP reads the
 	// address off the interface: the value we asked for is not evidence of the value in force.
@@ -654,12 +654,12 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// any single observe() call, since the re-dial loop below runs many of them and a second
 	// writer on the same path would be two goroutines racing one file. nil when telemetry is off.
 	cfg.telemetry = cfg.newTelemetryWriter(ctx, logf)
-	// A service installed at RUNTIME is not described by the environment, so rebuild what this
+	// An app installed at RUNTIME is not described by the environment, so rebuild what this
 	// node knows about it from the node-local manifest cache before anything derives from cfg.
 	//
 	// NOT THE PROMOTER CHAIN ANY MORE: the chain is static, and what a node runs
 	// comes from the VOLUME at promotion, not from this cache. What the cache is still for is
-	// everything the HOST needs before (or without) promotion -- which services to measure and
+	// everything the HOST needs before (or without) promotion -- which apps to measure and
 	// report, and the units to re-render so a standby is warm.
 	if specs, rendered, ok := cfg.installedServices(logf); ok {
 		names := make([]string, 0, len(specs))
@@ -775,8 +775,8 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// system subnet, which nothing else would ever notice.
 	movedLAN := cfg.net != nil && nic.Compare(cfg.recordedNetwork(), nic.Read(ctx, cfg.net.Parent)) == nic.Elsewhere
 	// The guest binding an `upgrade` directive drives: a guest.Manager for the health-gated
-	// service/system upgrades, plus the VM handle the reboot path needs.
-	// nil-safe: a witness / service-less node just won't act on those directives. guestCfg is
+	// app/system upgrades, plus the VM handle the reboot path needs.
+	// nil-safe: a witness / app-less node just won't act on those directives. guestCfg is
 	// hoisted so the reconnect loop can rebuild the Manager on a fresh connection.
 	guestCfg := guest.Config{
 		HealthURL: cfg.HealthURL,
@@ -858,12 +858,12 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		}
 	}
 
-	// EVERY node with a guest gets the Manager above, not only one running a service. Gating its
-	// construction on `cfg.hasService()` would leave `up == nil` on a zero-service node, and
+	// EVERY node with a guest gets the Manager above, not only one running an app. Gating its
+	// construction on `cfg.hasService()` would leave `up == nil` on a zero-app node, and
 	// applyDirective would then refuse every OS upgrade with "no target/upgrader on this node" —
 	// i.e. the shipped state, and the whole free tier, could not take an OS update. A system
 	// closure is a property of the NODE; what happens to run on top of it cannot decide whether
-	// the node can be updated. Service directives stay correctly refused: their own guard still
+	// the node can be updated. App directives stay correctly refused: their own guard still
 	// reads spec.Name.
 	//
 	// Redundancy alerting: a data node warns when it loses a replica connection while still
@@ -900,7 +900,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// now that both the channel and the notifier exist — see warnIfMeshForgotten.
 	cfg.warnIfMeshForgotten(ctx, client, n, logf)
 	// Roll this node's per-cycle resource samples into hourly aggregates and upload
-	// them up the cloud seam (never raw). Only a node with services reporting to a cloud has
+	// them up the cloud seam (never raw). Only a node with apps reporting to a cloud has
 	// dashboard metrics (volume/load); a witness or standalone node has none, so the
 	// aggregator stays nil and observe skips the upload. Built once here so it survives the
 	// reconnect loop (like the alerter).
@@ -1333,7 +1333,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	}
 	if err == nil && len(spec.Promoter) > 0 {
 		// A data node converges when quorate: drbd-reactor then promotes exactly one
-		// of them to Primary (VIP + services), the rest settle Secondary. Gating on
+		// of them to Primary (VIP + apps), the rest settle Secondary. Gating on
 		// quorate (not Primary) is what lets a multi-node cluster's secondaries
 		// converge instead of hanging. A witness has no promoter -- it just comes up.
 		err = client.WaitQuorate(bringup, cfg.Resource.Name, guestagent.DefaultPollInterval)
@@ -1467,7 +1467,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	// for the observe loop so each loop starts by setting it, which covers a fresh launch.
 	lm := &linkMirror{}
 	lc := cfg.linkChanges(logf)
-	// Which services already have tonight's ring member (nightly.go). Lives for the
+	// Which apps already have tonight's ring member (nightly.go). Lives for the
 	// observe loop for the same reason rp does, and is checked against the ring itself whenever
 	// this process has no record -- so an agent restart inside the window costs one listing
 	// rather than a second member every cycle for an hour.
@@ -1480,7 +1480,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	ut := &filesTickScheduler{}
 	// How long the host's clock has gone unsynchronised; lives here for the same reason.
 	ca := &clockAlerter{read: reportcard.NTPSynced}
-	// How long each installed service has been down (alert.go); same reason.
+	// How long each installed app has been down (alert.go); same reason.
 	sa := &serviceAlerter{}
 	// When the host disk holding this node's disks runs short (disks.go); same reason.
 	da := &diskAlerter{read: reportcard.DiskFreeMB}
@@ -1596,14 +1596,14 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// re-read the volume for nothing. (The redundancy alerter ignores a non-quorate reading
 		// on its own.) This cycle reports degraded and moves no edge on the state it did not get.
 		known := err == nil
-		// A node that has just PROMOTED may be running services it was never told about: converge
+		// A node that has just PROMOTED may be running apps it was never told about: converge
 		// renders from the volume, so the volume -- not this host's memory -- is what
 		// it is actually running. Read it once per promotion and re-derive this cycle's report, so
 		// the first status the cloud sees from a new primary already names what it serves.
 		if primary := cl.Serving(); known && primary != wasPrimary {
 			if primary {
 				cfg.beat.Beat()
-				actx, acancel := context.WithTimeout(ctx, 10*time.Second) // a list and one manifest per service
+				actx, acancel := context.WithTimeout(ctx, 10*time.Second) // a list and one manifest per app
 				cfg.adoptVolumeServices(actx, r, logf)
 				acancel()
 				undoDue = true
@@ -1618,7 +1618,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			i, ok := r.(serviceInstaller)
 			undoDue = ok && !cfg.undoPending(ctx, i, logf)
 		}
-		// THE CLOCK SAMPLE, once an interval per service, on the node that holds the
+		// THE CLOCK SAMPLE, once an interval per app, on the node that holds the
 		// volume. Cheap on every other cycle: a time comparison and nothing else.
 		cfg.beat.Beat()
 		kctx, kcancel := context.WithTimeout(ctx, clockSampleBudget)
@@ -1733,7 +1733,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cycle++
 		ca.observe(ctx, n, cfg.Node, time.Now(), logf) // one 5s-bounded read every clockReadEvery
 		cfg.sleep.observe(ctx, n, cfg.Node, logf)      // two power reads: a sleep since the last tick is an event
-		// Each installed service, from this cycle's report: no read of its own.
+		// Each installed app, from this cycle's report: no read of its own.
 		sa.observe(ctx, n, cfg.Node, st.Services, known, cl.Serving(), time.Now(), logf)
 
 		if cfg.StateDisk != "" {
@@ -1890,7 +1890,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		// the node's own journal rather than only an outcome the asker reads.
 		logf("directive kind=%s refused: local-only, and this one arrived from the %s", d.Kind, o)
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed,
-			Detail: "kind " + d.Kind + " is accepted only on this node's local admin socket"}
+			Detail: "kind " + d.Kind + " is accepted only on this machine's local admin socket"}
 	}
 	if d.Kind == api.DirectiveDebugArm || d.Kind == api.DirectiveDebugDisarm {
 		return cfg.applyDebugConsole(ctx, d, logf)
@@ -1913,19 +1913,19 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		// only the upgrader owns -- a guest restart, whose bring-up carries the new value.
 		rb, ok := up.(guestRebooter)
 		if !ok {
-			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "no guest to restart on this node"}
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "no VM to restart on this machine"}
 		}
 		return cfg.applyConfigSet(ctx, d, r, rb, logf)
 	}
 	if d.Kind == api.DirectiveCasaClaim {
 		if cs == nil {
-			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this node has no casa client"}
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this machine has no casa client"}
 		}
 		return cs.claim(ctx, d, logf)
 	}
 	if d.Kind == api.DirectiveCasaRecheck {
 		if cs == nil {
-			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this node has no casa client"}
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this machine has no casa client"}
 		}
 		return cs.recheck(d, logf)
 	}
@@ -1955,7 +1955,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	if d.Kind == api.DirectiveServiceInstall || d.Kind == api.DirectiveServicePrewarm ||
 		d.Kind == api.DirectiveServiceRestore || d.Kind == api.DirectiveServiceMembers || d.Kind == api.DirectiveBackupRestore ||
 		d.Kind == api.DirectiveServiceCacheEmpty {
-		// A service install needs the render/provision/bracket verbs, none of which the narrow upgrader has.
+		// An app install needs the render/provision/bracket verbs, none of which the narrow upgrader has.
 		i, ok := r.(serviceInstaller)
 		if !ok {
 			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "guest client cannot install a service"}
@@ -2016,7 +2016,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		}
 		rb, ok := up.(guestRebooter)
 		if !ok {
-			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "no guest to reboot on this node"}
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "no VM to reboot on this machine"}
 		}
 		if d.Kind == api.DirectiveUnpair {
 			sr, ok := r.(statusReader)
@@ -2058,7 +2058,7 @@ func resourceLog(r *telemetry.NodeResources) string {
 	if r == nil {
 		return ""
 	}
-	// The node-scoped series first, then one clause per service -- NAMED, because the status line
+	// The node-scoped series first, then one clause per app -- NAMED, because the status line
 	// is where a human looks first, and "something on this node is restarting" stops being an
 	// actionable sentence the moment a node runs more than one thing.
 	line := fmt.Sprintf(" agentRSS=%dk agentFDs=%d vol=%dk snaps=%d load1=%.2f kerr=%d",
@@ -2076,35 +2076,35 @@ func resourceLog(r *telemetry.NodeResources) string {
 // Resources gathers the node's resource telemetry for the soak trend oracle: the
 // host agent's own footprint (measured in-process, so it's present on every node -- witness
 // included -- as the "does the product daemon leak" surface) plus the appliance's, read from
-// the guest via the sys.resources verb. Best-effort throughout: a witness or service-less
+// the guest via the sys.resources verb. Best-effort throughout: a witness or app-less
 // node reports agent-only telemetry, and a guest read hiccup degrades to agent-only rather
 // than blanking the report or breaking the observe loop. Never nil (the agent footprint
 // always measures), so the trend oracle always has a numeric sample.
 func (cfg Config) resources(ctx context.Context, r guestReader) *telemetry.NodeResources {
 	var res telemetry.NodeResources
-	// EVERY service's footprint, and the guest is asked REGARDLESS of whether there are any.
+	// EVERY app's footprint, and the guest is asked REGARDLESS of whether there are any.
 	//
 	// Both halves of that were wrong, in the same way and for the same reason. The read used to be
-	// wrapped in "is there exactly one service?", so a node with N reported no footprint at all —
-	// and so did a node with NONE, which is the shipped zero-service anchor and the whole free
-	// tier. What that lost was not merely the per-service numbers: load average, journal size,
+	// wrapped in "is there exactly one app?", so a node with N reported no footprint at all —
+	// and so did a node with NONE, which is the shipped zero-app anchor and the whole free
+	// tier. What that lost was not merely the per-app numbers: load average, journal size,
 	// podman-store size and the guest's KERNEL ERRORS are node-scoped, need neither a unit nor a
-	// data dir, and went dark with them. A node-scoped fact gated on "has a service" is
-	// the service-means-guest conflation one layer out.
+	// data dir, and went dark with them. A node-scoped fact gated on "has an app" is
+	// the app-means-guest conflation one layer out.
 	//
 	// The guest already handles the empty case correctly (gatherResources guards each sub-read),
 	// so asking always is both the fix and the simpler code.
 	//
-	// ServingUnit, not a name rebuilt here: a runtime-installed service's units come from the
+	// ServingUnit, not a name rebuilt here: a runtime-installed app's units come from the
 	// quadlet renderer (briard-<service>-<container>.service), so "podman-<name>.service" named
 	// nothing, systemd answered with no MainPID, and the whole footprint sat at zero for every
-	// catalog-installed service. Restarts is the crash-loop signal, so a service that crash-looped
+	// catalog-installed app. Restarts is the crash-loop signal, so an app that crash-looped
 	// read exactly like one that never restarted.
 	units := make(map[string]string, len(cfg.Services))
 	var dataDir string
 	for _, spec := range cfg.Services {
 		units[spec.Name] = spec.ServingUnit()
-		dataDir = spec.DataDir // any service's data dir names the same volume; df/btrfs measure it
+		dataDir = spec.DataDir // any app's data dir names the same volume; df/btrfs measure it
 	}
 	// The soak-only reads ride only where a soak collects them: TelemetryPath is set by the lab
 	// and by nothing that ships, and a shipped node has no consumer for their I/O.
@@ -2321,7 +2321,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, vip guest.VIPRea
 	}
 	st.Quorum = cl.QuorumState
 	// AFTER the cluster read, because the state is only meaningful on the node that holds the
-	// volume -- the services run on whoever is Primary and nowhere else.
+	// volume -- the apps run on whoever is Primary and nowhere else.
 	st.Services = cfg.serviceStatuses(rctx, r, cl.Serving())
 	// A WITNESS is what "healthy == participating" belongs to, and role is how we know one --
 	// not an empty URL. Under DHCP a data node has no configured address either, and the two
@@ -2432,15 +2432,15 @@ func (cfg Config) readVIP(ctx context.Context, r guest.VIPReader) vipAnswer {
 // hasService reports whether this node runs anything at all. The shipped state is FALSE — a node
 // is installed before it is given something to run — so this is the "does it run anything" test the
 // singular `cfg.Service.Name != ""` used to be, with the trap that reading removed: it says
-// nothing about whether the node has a GUEST. A witness is Diskless; a zero-service anchor has a
+// nothing about whether the node has a GUEST. A witness is Diskless; a zero-app anchor has a
 // guest, a closure and an OS the cloud may roll, and conflating the two is the bug this name exists to prevent.
 func (cfg Config) hasService() bool { return len(cfg.Services) > 0 }
 
-// serviceStatuses is what the node reports for the services it has INSTALLED at runtime: one
-// entry per service, name plus manifest identity, in cfg.Services' order (by name, per
+// serviceStatuses is what the node reports for the apps it has INSTALLED at runtime: one
+// entry per app, name plus manifest identity, in cfg.Services' order (by name, per
 // installedServices).
 //
-// A spec with no Manifest is SKIPPED. Every service now has one -- it is the hash of the signed
+// A spec with no Manifest is SKIPPED. Every app now has one -- it is the hash of the signed
 // bytes it was installed from -- so this filter only ever drops a half-built spec, and dropping it
 // is right: the cloud compares this field against a catalog hash, and there is nothing else
 // honest to put in it.
@@ -2458,7 +2458,7 @@ func (cfg Config) hasService() bool { return len(cfg.Services) > 0 }
 // indistinguishable from a broken primary, which is the same conflation this field exists to
 // undo.
 //
-// A per-service read error leaves that ONE service empty and lets the others report. Losing the
+// A per-app read error leaves that ONE app empty and lets the others report. Losing the
 // whole set because one verb hiccuped is how a real outage gets hidden behind a transient.
 func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, primary bool) []api.ServiceStatus {
 	var out []api.ServiceStatus
@@ -2467,7 +2467,7 @@ func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, pri
 		// manifest bytes (specOf), so this cannot happen — and if it ever did, the empty string
 		// would land in the field the cloud compares against a catalog hash to confirm a rollout.
 		// Dropping the entry says "this node runs something I cannot name"; publishing it says
-		// "this node runs the service whose identity is nothing", which a confirmation loop would
+		// "this node runs the app whose identity is nothing", which a confirmation loop would
 		// read as a mismatch it can never resolve. Cheaper to keep than to argue about later.
 		if s.Manifest == "" {
 			continue
@@ -2480,19 +2480,19 @@ func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, pri
 					st.State = api.StateRunning
 				}
 			}
-			// ONLY WHEN IT IS RUNNING. A stopped service is not unhealthy, it is stopped, and
+			// ONLY WHEN IT IS RUNNING. A stopped app is not unhealthy, it is stopped, and
 			// State has already said so; probing it would spend a round trip to learn what we
 			// know and then report the same fact twice under two names. The interesting answer is
 			// the one this makes possible: running AND unhealthy — a container that came up and
 			// does not serve, which every signal we had read as fine.
 			//
-			// An ERROR LEAVES IT EMPTY rather than unhealthy. The guest cannot resolve a service
+			// An ERROR LEAVES IT EMPTY rather than unhealthy. The guest cannot resolve an app
 			// it has no route for, and a node mid-converge is briefly in exactly that state; a
 			// report of "unhealthy" there would be a false alarm about a healthy household, on a
 			// field whose whole value is that someone acts on it. So does UNKNOWN: an app
 			// our login to it failed for has told us nothing.
 			//
-			// SERVICE HEALTH is the guest's one answer (services.Health), spelled with this
+			// APP HEALTH is the guest's one answer (services.Health), spelled with this
 			// field's own values, so it is carried rather than translated.
 			if st.State == api.StateRunning {
 				if h, err := r.ServiceHealthOf(ctx, s.Name); err == nil {
@@ -2506,16 +2506,16 @@ func (cfg Config) serviceStatuses(ctx context.Context, r serviceStateReader, pri
 }
 
 // serviceStateReader is what serviceStatuses needs of the guest: is this unit up, and does the
-// service behind it answer. Narrow interface for DI, not a seam.
+// app behind it answer. Narrow interface for DI, not a seam.
 type serviceStateReader interface {
 	ServiceActive(ctx context.Context, unit string) (bool, error)
-	// ServiceHealthOf probes ONE service by name, the guest resolving its address from the
+	// ServiceHealthOf probes ONE app by name, the guest resolving its address from the
 	// routing table — the steady-state twin of the install gate, and the only reason
 	// the two can be trusted to be asking about the same address.
 	ServiceHealthOf(ctx context.Context, service string) (services.Health, error)
 }
 
-// serviceLog renders the reported services for the status line -- "name@identity" per service,
+// serviceLog renders the reported apps for the status line -- "name@identity" per app,
 // which is what a version change looks like from outside, plus "!unhealthy" for one that is
 // RUNNING and not serving.
 //
@@ -2523,7 +2523,7 @@ type serviceStateReader interface {
 // is a signal the free tier never gets, and this is the one state nothing else on the node makes
 // visible: the unit is up, the promoter is deliberately not watching it, and the
 // front door answers for the node. Empty means not asked or not applicable and prints nothing --
-// a standby would otherwise look like a node full of broken services.
+// a standby would otherwise look like a node full of broken apps.
 func serviceLog(svcs []api.ServiceStatus) string {
 	parts := make([]string, 0, len(svcs))
 	for _, s := range svcs {

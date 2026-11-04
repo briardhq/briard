@@ -12,7 +12,7 @@ import (
 // application-consistent instead of crash-consistent.
 //
 // WHY HOME ASSISTANT DOES THE LOCKING AND NOT US. The recorder's SQLite database is the one part
-// of /config that a snapshot of a RUNNING service can catch mid-write, and Home Assistant already
+// of /config that a snapshot of a RUNNING app can catch mid-write, and Home Assistant already
 // has the exact mechanism its own backups use (`recorder/util.py`, measured against the pinned
 // 2026.7.1): a `PRAGMA wal_checkpoint(TRUNCATE)` followed by a held `BEGIN IMMEDIATE`. Taking that
 // lock ourselves over a second connection would work and would also be worse in three ways —

@@ -4,13 +4,13 @@
 # and bake it into a disk with make-disk-image. This is the *bootstrap* artifact;
 # field updates are incremental NixOS generation switches, not re-imaging.
 #
-# The deliberately-broken generation that used to live here (`.brokenSystem`: the service
+# The deliberately-broken generation that used to live here (`.brokenSystem`: the app
 # container run with BRIARD_BROKEN=1) went with managed-upgrade.nix (c2-v). It was
 # PAYLOAD-derived, which is what dated it: the OS upgrade it fed no longer touches the payload
 # at all, and the lab rollback demo's broken generation breaks the FRONT DOOR instead — an ordinary delta on
 # the shipped disk, fetched over the cache like any other target, needing no argument here.
 #
-# stageImages (default none) bakes extra service image tarballs into the disk and loads them
+# stageImages (default none) bakes extra app image tarballs into the disk and loads them
 # into podman at boot (briard.stagedImages) — an image has to be resident before a manifest is
 # installed against it, since nothing on the failover path may pull. Used by the fleet upgrade
 # demo to pre-stage the target of a manifest rotation.
@@ -58,7 +58,7 @@ let
   briardFirmware = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-firmware"; version = agentVersion; };
 
   # Common bootable-guest modules, shared by the good and broken generations so the
-  # broken one is a minimal, honest delta (only the service env differs).
+  # broken one is a minimal, honest delta (only the app env differs).
   bootModule =
     { config, lib, modulesPath, ... }:
     let
@@ -126,7 +126,7 @@ let
 
       # THE STATE DISK: every byte the guest writes at runtime, in two classes on one filesystem.
       # PERSISTENT, a CLOSED and short list where adding to it is a design decision: podman's
-      # storage (the service images, content-addressed and digest-pinned by the quadlets --
+      # storage (the app images, content-addressed and digest-pinned by the quadlets --
       # re-pulling gigabytes after every restart would be pointless), the journal (the guest's own
       # forensics; the host's console capture covers the boot, not the day) and the deadman's
       # backoff (which exists precisely to survive the reboots the deadman itself causes).
@@ -361,7 +361,7 @@ let
           pkgs.systemd # systemctl, for service.* / reactor.* / os.*
           pkgs.coreutils # readlink, for os.system
           pkgs.btrfs-progs # btrfs for data.member/restore, mkfs.btrfs for the one-time format
-          # compsize, for data.usage: an app's current data on disk, each extent once -- what du
+          # compsize, for storage.usage: an app's current data on disk, each extent once -- what du
           # cannot say on a compressed btrfs, where it reports the bytes before compression
           pkgs.compsize
           pkgs.iproute2 # ip, for net.configure (the system/DRBD NIC)
@@ -474,7 +474,7 @@ let
       ] ++ commonModules ++ extraModules;
     };
 
-  # The one generation this image boots, with any pre-staged service images baked in and
+  # The one generation this image boots, with any pre-staged app images baked in and
   # warmed at boot. There is no second OS generation any more, baked or fetched: a different OS
   # is a different IMAGE, built by importing this file with a different
   # `commonModules` delta.
@@ -517,7 +517,7 @@ let
     partitionTableType = "legacy";
     # "auto": the closure plus make-disk-image's margin, and nothing more, because the guest never
     # writes this disk -- its partition is mounted read-only and every runtime write lands on the
-    # state disk (bootModule above). A service image a test bakes in (stageImages) is a store
+    # state disk (bootModule above). An app image a test bakes in (stageImages) is a store
     # path in the closure, so "auto" grows to fit it, and `podman load` puts it on the state disk.
     diskSize = "auto";
     label = "nixos";

@@ -51,7 +51,7 @@
 # verbatim. Reversibility is therefore a property of the atomic snapshot, not of
 # HA — total and version-agnostic. (For HA the discarded post-upgrade writes are
 # recorder history = disposable by design; the sacred-data caveat that bites other
-# services, does not bite here.)
+# apps, does not bite here.)
 #
 # ── Pin provenance / refresh procedure ────────────────────────────────────────
 # Per-arch amd64 manifest digests, resolved 2026-07-23 from the ghcr registry API

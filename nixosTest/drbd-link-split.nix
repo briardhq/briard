@@ -109,7 +109,7 @@
 # the first write it cannot replicate; that bump IS the divergence. With an unmounted device and
 # no I/O it never happens, and the pair rejoins `no-sync by rule=reconnected` even after a wrong
 # promotion -- measured, twice. Live, the evictee was serving a mounted btrfs with a running
-# service, so its writes did this for free. Here they have to be asked for.
+# app, so its writes did this for free. Here they have to be asked for.
 #
 # TWO DRBD KNOBS, BOTH DOCUMENTED TUNABLES INSIDE THEIR LEGAL RANGES, AND THE DECISION LOGIC
 # RUNS STOCK CODE ON STOCK INPUTS: the survivor's keepalive (`--ping-int=120 --ping-timeout=300`
@@ -462,7 +462,7 @@ pkgs.testers.runNixOSTest {
         if raced_promote:
             # ...and the OTHER half of the divergence. node2 started a new generation from its own
             # unreplicable write; node1 must start one too, or there is only one fork and DRBD
-            # would simply resync the stale side. This is the write the household's service would
+            # would simply resync the stale side. This is the write the household's app would
             # have been doing all along -- the moment the wrongly-promoted node serves anything,
             # this is what it does.
             node1.succeed("dd if=/dev/urandom of=/dev/drbd0 bs=4k count=1 oflag=direct")

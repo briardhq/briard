@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// svc is a fronted service in the shape converge writes.
+// svc is a fronted app in the shape converge writes.
 func svc(name, host string, port string) Service {
 	return Service{
 		Name: name, Hosts: []string{host}, Address: "127.0.0.1",
@@ -33,7 +33,7 @@ func TestHostNameIsASingleLabel(t *testing.T) {
 	}
 }
 
-// What a client actually sends in Host, all of which must find the same service: the port when it
+// What a client actually sends in Host, all of which must find the same app: the port when it
 // is not the scheme's default, a trailing dot from a fully-qualified resolver, and any case.
 func TestLookupNormalisesWhatClientsSend(t *testing.T) {
 	tbl := Table{Services: []Service{svc("home-assistant", "briard-brave-elf-home-assistant.local", "8123")}}
@@ -69,8 +69,8 @@ func TestNormaliseKeepsIPv6Literals(t *testing.T) {
 	}
 }
 
-// ONE ADDRESS PER SERVICE, spliced into every host-less spec. A service is one pod and a pod is one
-// network namespace, so the address is a service fact and the endpoints carry only ports -- which
+// ONE ADDRESS PER APP, spliced into every host-less spec. An app is one pod and a pod is one
+// network namespace, so the address is an app fact and the endpoints carry only ports -- which
 // is what makes the private-network flip change one field rather than every URL in the file.
 func TestResolveSplicesTheServiceAddress(t *testing.T) {
 	s := Service{Name: "x", Address: "10.89.0.7", Health: "http://:9883/api/v1/listeners",
@@ -96,7 +96,7 @@ func TestResolveSplicesTheServiceAddress(t *testing.T) {
 }
 
 // THE HOST-LESS RULE IS A SECURITY BOUNDARY, not a spelling convention: the only address that can
-// ever be spliced in is the service's own, so no table -- however written -- can aim the front
+// ever be spliced in is the app's own, so no table -- however written -- can aim the front
 // door at another machine. Validate is where that becomes true of the document rather than of the
 // code that happens to read it.
 func TestValidateRefusesATargetThatNamesAHost(t *testing.T) {
@@ -119,7 +119,7 @@ func TestValidateRefusesATargetThatNamesAHost(t *testing.T) {
 	}
 }
 
-// An unknown listener is REFUSED, never skipped. A route the door silently drops is a service that
+// An unknown listener is REFUSED, never skipped. A route the door silently drops is an app that
 // is unreachable with nothing saying why -- the failure mode that looks like a user error. This is
 // also what makes adding `tls:<port>` a change nobody can half-deploy.
 func TestValidateRefusesAnUnimplementedListener(t *testing.T) {
@@ -198,7 +198,7 @@ func TestInstanceNameIsTheHostNameWithoutTheDomain(t *testing.T) {
 	}
 }
 
-// TestValidateRefusesAnAnnouncementWithNothingToPointAt — the record's SRV target is the service's
+// TestValidateRefusesAnAnnouncementWithNothingToPointAt — the record's SRV target is the app's
 // own name, so an announcement without one is a record aimed nowhere. Refused rather than
 // published against the guest's hostname, which is node-scoped: on a failover every device that
 // had browsed for the broker would keep dialling the machine that just demoted.
@@ -257,7 +257,7 @@ func TestValidateRefusesUnusableAnnouncements(t *testing.T) {
 	}
 }
 
-// The casa name is the service under the flock under the zone, and nothing for a flock
+// The casa name is the app under the flock under the zone, and nothing for a flock
 // with no name -- the same rule HostName follows, so a nameless node routes nothing in either form.
 func TestCasaHostNameIsTheServiceUnderTheFlock(t *testing.T) {
 	if got := CasaHostName("brave-elf", "home-assistant"); got != "home-assistant.brave-elf.briard.casa" {

@@ -118,10 +118,10 @@ const (
 	QuietEvery = 24 * time.Hour
 )
 
-// sortedMembers is one service's members with a parseable name, OLDEST FIRST.
+// sortedMembers is one app's members with a parseable name, OLDEST FIRST.
 //
 // ⚠️ IT ORDERS BY THE TIME IN THE NAME, never by the name itself: the trigger sits between the
-// service and the stamp and would dominate a string comparison. A member whose name does not
+// app and the stamp and would dominate a string comparison. A member whose name does not
 // parse is somebody else's and is left out.
 func sortedMembers(members []SnapshotEntry) []SnapshotEntry {
 	var all []SnapshotEntry
@@ -204,7 +204,7 @@ func QuietPoint(members []SnapshotEntry, member string) (SnapshotEntry, bool) {
 	return SnapshotEntry{}, false
 }
 
-// RetentionPrune reports which of one service's members the history no longer needs, OLDEST
+// RetentionPrune reports which of one app's members the history no longer needs, OLDEST
 // FIRST — the order they should be deleted in, so an interrupted prune has still dropped the least
 // useful ones.
 //
@@ -272,7 +272,7 @@ type HistoryRow struct {
 	Point SnapshotEntry
 }
 
-// History is one service's events, NEWEST FIRST, from its members (any order). Times in a title
+// History is one app's events, NEWEST FIRST, from its members (any order). Times in a title
 // are read in loc, which is the reader's.
 func History(members []SnapshotEntry, loc *time.Location) []HistoryRow {
 	var rows []HistoryRow

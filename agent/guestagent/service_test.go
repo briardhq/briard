@@ -50,7 +50,7 @@ func TestServiceRenderWritesAndReloads(t *testing.T) {
 	}
 }
 
-// TestServiceRenderClearsStale: swapping which service occupies the slot must not leave the
+// TestServiceRenderClearsStale: swapping which app occupies the slot must not leave the
 // previous one's units behind for the promoter to trip over.
 func TestServiceRenderClearsStale(t *testing.T) {
 	f := &fakeExec{}
@@ -129,8 +129,8 @@ func TestServiceProvisionCreatesAndRecords(t *testing.T) {
 }
 
 // TestServiceProvisionKeepsExistingData is the one that protects the user's state: a re-install
-// onto an existing service must REUSE the subvolume. Re-creating it would silently delete
-// everything the service had written.
+// onto an existing app must REUSE the subvolume. Re-creating it would silently delete
+// everything the app had written.
 func TestServiceProvisionKeepsExistingData(t *testing.T) {
 	f := &fakeExec{output: []byte("Name: \t\thome-assistant\n")} // `subvolume show` succeeds
 	g := dial(t, f)
@@ -152,7 +152,7 @@ func TestServiceProvisionRefusesIncomplete(t *testing.T) {
 	}
 }
 
-// TestServiceInstalledAbsentIsEmptyNotError: the shipped zero-service node has no manifest, and
+// TestServiceInstalledAbsentIsEmptyNotError: the shipped zero-app node has no manifest, and
 // that is a legitimate state. Reading it as an error would make every empty node look broken.
 func TestServiceInstalledAbsentIsEmptyNotError(t *testing.T) {
 	f := &fakeExec{err: errors.New("cat: no such file")}
@@ -245,13 +245,13 @@ func TestFsSyncSkipsAnUnmountedVolume(t *testing.T) {
 	}
 }
 
-// THE PER-SERVICE SPLIT: the volume must be able to say WHICH service a manifest
-// belongs to. With one unnamed file, installing a second service recorded its identity over the
+// THE PER-APP SPLIT: the volume must be able to say WHICH app a manifest
+// belongs to. With one unnamed file, installing a second app recorded its identity over the
 // first's -- so the first's prior became unreadable, and on the host side filesToRemove then
-// deleted that service's rendered units as a renamed prior's orphans.
+// deleted that app's rendered units as a renamed prior's orphans.
 //
 // Asserted on the PATHS, because that is where the property lives: two provisions must write two
-// files, and each must be named for its own service.
+// files, and each must be named for its own app.
 func TestServiceProvisionRecordsPerService(t *testing.T) {
 	f := &fakeExec{output: []byte("Name: \t\tx\n")} // an existing subvolume; this is about the manifest
 	g := dial(t, f)
@@ -277,7 +277,7 @@ func TestServiceProvisionRecordsPerService(t *testing.T) {
 	}
 }
 
-// A service name becomes a PATH ELEMENT on both verbs, so both re-check it here rather than
+// An app name becomes a PATH ELEMENT on both verbs, so both re-check it here rather than
 // trusting the host to have validated its own input.
 func TestServiceVerbsRefuseAnEscapingName(t *testing.T) {
 	g := dial(t, &fakeExec{})
@@ -291,7 +291,7 @@ func TestServiceVerbsRefuseAnEscapingName(t *testing.T) {
 
 // service.list names what the VOLUME carries, with the `.json` the files wear on disk stripped:
 // it is how a node that promoted into somebody else's install can say what it runs at all
-// (measured: a survivor served the fixture while reporting no services).
+// (measured: a survivor served the fixture while reporting no apps).
 func TestServiceListNamesTheVolumesServices(t *testing.T) {
 	f := &fakeExec{output: []byte("dummy.json\nhome-assistant.json\nnot-a-manifest\n")}
 	g := dial(t, f)
@@ -304,7 +304,7 @@ func TestServiceListNamesTheVolumesServices(t *testing.T) {
 	}
 }
 
-// An absent manifest directory is the shipped zero-service node, not a failure -- the same rule
+// An absent manifest directory is the shipped zero-app node, not a failure -- the same rule
 // service.installed follows, and for the same reason: a node that refuses to answer because a
 // directory it never had is missing is worse than one that says "nothing".
 func TestServiceListEmptyOnAZeroServiceNode(t *testing.T) {

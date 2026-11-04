@@ -12,7 +12,7 @@ import (
 
 // THE OBSERVE LOOP KEEPS TICKING WHILE A DIRECTIVE RUNS.
 //
-// A directive used to run on the loop itself, so a service install held the tick -- and with it
+// A directive used to run on the loop itself, so an app install held the tick -- and with it
 // the guest's liveness observation, the recovery ladder and every CLI or dashboard request -- for
 // its whole budget: a guest that froze four seconds into a pull was first noticed when the
 // budget expired, twenty-five minutes later. The control channel now serves reads beside an act
@@ -83,7 +83,7 @@ var (
 		api.DirectiveServicePrewarm:    true,
 		api.DirectiveServiceRestore:    true,
 		api.DirectiveServiceCacheEmpty: true, // stops the app and starts it again, as a restore does
-		api.DirectiveBackupRestore:     true, // a restic restore then a service restore: an act, like the one it ends in
+		api.DirectiveBackupRestore:     true, // a restic restore then an app restore: an act, like the one it ends in
 		api.DirectiveHandover:          true,
 		api.DirectiveSync:              true,
 		api.DirectiveCert:              true,
@@ -175,7 +175,7 @@ func (cfg Config) run(ctx context.Context, d api.Directive, o origin, rq *localR
 		if held, ok := a.claim(d.Kind); !ok {
 			logf("directive kind=%s refused: busy with %s", d.Kind, held)
 			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed,
-				Detail: "busy: a " + held + " is in progress on this node; try again when it finishes"}, true
+				Detail: "busy: a " + held + " is in progress on this machine; try again when it finishes"}, true
 		}
 	}
 	a.mu.Lock()

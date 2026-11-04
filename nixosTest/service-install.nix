@@ -1,9 +1,9 @@
-# INSTALLING A SERVICE AT RUNTIME, on the shape a stranger actually installs.
+# INSTALLING AN APP AT RUNTIME, on the shape a stranger actually installs.
 #
-# A shipped node boots with NO service: it mounts, promotes, and serves a landing page
-# at the VIP. This test takes that node and puts a service on it the way `briard app install`
+# A shipped node boots with NO app: it mounts, promotes, and serves a landing page
+# at the VIP. This test takes that node and puts an app on it the way `briard app install`
 # does, then asserts the node ends up serving it — install -> promote -> serve, which is the
-# integration bar for the free tier (failover of a runtime-installed service is a flock concern,
+# integration bar for the free tier (failover of a runtime-installed app is a flock concern,
 # not v3's: on briard free each node is an isolated island).
 #
 # WHAT IS REAL HERE, because the value of this test is entirely in what it does NOT stub:
@@ -14,7 +14,7 @@
 #     copies rendered units in from the side any more;
 #   - real quadlet generation (files under /run/containers/systemd becoming units at daemon-reload),
 #     real podman, real drbd-reactor driving the static promoter chain, and the real front door;
-#   - the node promoting with ZERO services first, then with one — the shipped state, then the
+#   - the node promoting with ZERO apps first, then with one — the shipped state, then the
 #     installed one, so the install's effect is a change and not a coincidence.
 #
 # WHAT IS NOT COVERED, named so a green run is not read as more than it is:
@@ -24,12 +24,12 @@
 #     its bugs have actually surfaced. What the test does by hand is the Primary-only half an
 #     install performs on the volume, and then it hands over to converge.
 #
-# WITH broken = true, it runs the happy path and then keeps going: it UPGRADES the service
+# WITH broken = true, it runs the happy path and then keeps going: it UPGRADES the app
 # to a manifest whose container never becomes healthy (the dummy's BRIARD_BROKEN mode), proves the
 # health gate WOULD trip (the container stays active but its own endpoint stays 503, and the data
-# is poisoned), proves the node STAYS PROMOTED through it (a service failure alerts, it does not
-# demote — converge-at-promotion's failure rule), and then ROLLS BACK to the prior service with its data
-# intact — the service-level twin of the {code+data} OS rollback. The host agent's orchestration of
+# is poisoned), proves the node STAYS PROMOTED through it (an app failure alerts, it does not
+# demote — converge-at-promotion's failure rule), and then ROLLS BACK to the prior app with its data
+# intact — the app-level twin of the {code+data} OS rollback. The host agent's orchestration of
 # that sequence is unit-tested in agent/host/service_test.go (it drives the guest over
 # virtio-serial, absent here); this proves the REAL mechanisms it relies on — a real broken
 # container, a real btrfs snapshot/restore, a real converge re-render, and a real recovery.
@@ -58,9 +58,9 @@ let
     chmod 0644 $out/server.key
   '';
 
-  # The service's service: the existing dummy-service, which serves /healthz and ticks a counter
+  # The app itself: the existing dummy-service, which serves /healthz and ticks a counter
   # into its data dir. Reused rather than invented — it is already the fixture every other test
-  # trusts, and its tick is what proves the mounted subvolume is really the service's.
+  # trusts, and its tick is what proves the mounted subvolume is really the app's.
   fixtureImage = pkgs.dockerTools.buildImage {
     name = "briard-fixture";
     tag = "v0";
@@ -68,7 +68,7 @@ let
   };
   # The fixture's data path is a CONST in its source, not configurable — so the container's mount
   # point is dictated by the fixture, while the host-side directory is the renderer's to choose.
-  # That asymmetry is the normal case for a catalogued service (upstream decides where its data
+  # That asymmetry is the normal case for a catalogued app (upstream decides where its data
   # lives inside the container), which makes it the right shape to exercise.
   fixtureMount = "/var/lib/briard/dummy";
 
@@ -78,7 +78,7 @@ let
     { name = "witness"; id = 2; diskless = true; }
   ];
   # Promoter = false: the test writes the snippet itself, at the moment it chooses, so that the
-  # node is seen promoting with ZERO services before the install and with one after. The chain it
+  # node is seen promoting with ZERO apps before the install and with one after. The chain it
   # writes is the STATIC production one — it is no longer derived from a rendering,
   # by anyone.
   node =
@@ -150,7 +150,7 @@ pkgs.testers.runNixOSTest {
 
     # === 1. publish the fixture into the registry, and learn its DIGEST ===
     # The manifest schema accepts only digest-pinned images (a tag is mutable, so a tagged
-    # manifest would make the service identity a promise someone else could change), so the
+    # manifest would make the app identity a promise someone else could change), so the
     # digest is not a detail here — it IS the reference the whole install hangs off.
     zregistry.wait_for_open_port(5000)
     zregistry.succeed(
@@ -161,7 +161,7 @@ pkgs.testers.runNixOSTest {
     ).strip()
     print(f"fixture published at ${registryHost}/briard-fixture@{digest}")
 
-    # === 2. the service manifest, and the REAL renderer ===
+    # === 2. the app manifest, and the REAL renderer ===
     manifest = (
         '{"name":"fixture","version":"v0","network":"host","containers":[{'
         f'"name":"app","image":"${registryHost}/briard-fixture@{digest}",'
@@ -195,7 +195,7 @@ pkgs.testers.runNixOSTest {
     # NOTHING IS RUNNING YET, and nothing generated itself: the .image units are boot-time, the
     # pod and container are not, and no node has been given the manifest.
     node1.fail("systemctl cat briard-fixture-app.service")
-    print("the image is resident and the service does not exist — the state before an install")
+    print("the image is resident and the app does not exist — the state before an install")
 
     # === 4. bring DRBD up, and give the promoter the RENDERED chain ===
     for m in [node1, node2, witness]:
@@ -209,21 +209,21 @@ pkgs.testers.runNixOSTest {
 
     # THE CHAIN IS STATIC, and no longer derived from the rendering at all. The chain
     # is what drbd-reactor promotes WITH, but the volume it must converge to is only readable
-    # AFTER promotion — so the start-list cannot name the services, and briard-services is what
+    # AFTER promotion — so the start-list cannot name the apps, and briard-services is what
     # renders and starts them once the mount exists.
     #
     # TAKEN FROM lib.nix rather than restated. This used to be a hand-written list
     # annotated "exactly what host.promoterUnits writes in production", which is the kind of claim
     # that stops being true silently: when the front door and the mDNS publishers became chain
     # MEMBERS, this copy still had three units, so the door never started here at all and the
-    # service was unreachable by name — the failure this comment is now attached to.
+    # app was unreachable by name — the failure this comment is now attached to.
     snippet = """${h.promoterSnippet}"""
     for m in disk_nodes:
         m.succeed(f"install -D /dev/stdin /run/briard/drbd-reactor.d/briard.toml <<'SNIP'\n{snippet}SNIP")
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
 
-    # === 5. THE BAR: the node serves the installed service at the VIP ===
+    # === 5. THE BAR: the node serves the installed app at the VIP ===
     def role(m):
         return m.execute("drbdadm role r0")[1].strip()
 
@@ -231,7 +231,7 @@ pkgs.testers.runNixOSTest {
     primary = next(m for m in disk_nodes if role(m) == "Primary")
     print(f"primary={primary.name}")
 
-    # IT PROMOTED WITH ZERO SERVICES FIRST, which is the shipped state of every node a stranger
+    # IT PROMOTED WITH ZERO APPS FIRST, which is the shipped state of every node a stranger
     # installs: briard-services converged to nothing, the VIP came up, and the front
     # door answers. Asserted before the install so the install's effect is a change and not a
     # coincidence.
@@ -239,14 +239,14 @@ pkgs.testers.runNixOSTest {
     primary.fail("systemctl cat briard-fixture-app.service")
 
     # === 5b. the install's Primary-only half, by hand ===
-    # The service's data subvolume AND its manifest live on the replicated volume, so only the
+    # The app's data subvolume AND its manifest live on the replicated volume, so only the
     # primary can write them — this is what the install path's Primary-only provision step does.
     # ONE subvolume with plain per-container subdirectories: `btrfs subvolume delete` refuses on a
     # subvolume that contains nested subvolumes, so data.restore would break outright.
     dataroot = node1.succeed("cat /tmp/rendered/dataroot").strip()
     primary.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || (mkdir -p $(dirname {dataroot}) && btrfs subvolume create {dataroot})")
     primary.succeed(f"mkdir -p {dataroot}/app")
-    # The MANIFEST is the service's identity, and putting it on the volume is what an install
+    # The MANIFEST is the app's identity, and putting it on the volume is what an install
     # actually does. Everything after this point is the product's own code.
     primary.succeed("mkdir -p /var/lib/briard/.services")
     primary.succeed("cp /tmp/manifest.json /var/lib/briard/.services/fixture.json && sync")
@@ -262,18 +262,18 @@ pkgs.testers.runNixOSTest {
     primary.wait_until_succeeds("test $(systemctl is-active briard-fixture-app.service) = active", timeout=120)
     print(primary.succeed("podman ps --format '{{.Names}} {{.Pod}} {{.Status}}'"))
 
-    # The service answers on its OWN endpoint (host-networked :8080) — the same thing the health
+    # The app answers on its OWN endpoint (host-networked :8080) — the same thing the health
     # gate probes (agent/host/service.go awaitHealthy, which now asks the guest to resolve it
-    # rather than assembling this URL itself), and a REAL 200 from the service, not the front
+    # rather than assembling this URL itself), and a REAL 200 from the app, not the front
     # door's own answer.
     primary.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=120)
-    assert "ok" in primary.succeed("curl -fsS http://127.0.0.1:8080/healthz"), "service /healthz did not report ready"
-    print("the installed service answers healthy on its own endpoint — install -> promote -> serve")
+    assert "ok" in primary.succeed("curl -fsS http://127.0.0.1:8080/healthz"), "app /healthz did not report ready"
+    print("the installed app answers healthy on its own endpoint — install -> promote -> serve")
 
     # === 5c. AND THROUGH THE FRONT DOOR, under its own name ===
     # The install above happened on a node with no flock name, so it was routed and UNNAMED --
     # which is a real shipped state (a node publishes nothing rather than a guess) and the one this
-    # asserts first: the table carries the service, with no host to reach it by.
+    # asserts first: the table carries the app, with no host to reach it by.
     import json
     table = json.loads(primary.succeed("cat /run/briard/routes.json"))
     assert [s["name"] for s in table["services"]] == ["fixture"], f"routing table = {table}"
@@ -281,7 +281,7 @@ pkgs.testers.runNixOSTest {
     assert table["services"][0]["address"] == "127.0.0.1", f"routing table = {table}"
     assert table["services"][0]["routes"] == [{"listen": "name", "to": "http://:8080"}], f"routing table = {table}"
 
-    # Name the flock the way the agent does, re-converge, and the SAME service acquires a name.
+    # Name the flock the way the agent does, re-converge, and the SAME app acquires a name.
     # This is the sequence a real node runs in the other order; doing it this way is what proves
     # the name is composed from the flock name rather than baked at install.
     primary.succeed("mkdir -p /run/briard && printf 'FLOCK_NAME=brave-elf\\n' >/run/briard/mdns.env")
@@ -290,16 +290,16 @@ pkgs.testers.runNixOSTest {
     host = hosts[0]
     assert host == "briard-brave-elf-fixture.local", f"the node composed {host}"
     assert "briard-fixture.local" in hosts, f"the bare alias is not in the table: {hosts}"
-    # The door routes the flock-scoped name and the bare alias alike to the SERVICE.
+    # The door routes the flock-scoped name and the bare alias alike to the APP.
     for name in (host, "briard-fixture.local"):
         body = primary.succeed(f"curl -fsS -H 'Host: {name}' http://192.168.1.100/healthz")
         assert "ok" in body and "front door" not in body, (
-            f"the VIP under {name} answered {body!r}; want the SERVICE's own answer"
+            f"the VIP under {name} answered {body!r}; want the APP's own answer"
         )
     # The bare address is still the node's, and it names what it routes.
     node_health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
     assert "1 service(s) routed" in node_health and "fixture" in node_health, f"node /healthz = {node_health!r}"
-    # A name nobody serves still lands on the NODE's door rather than on some service's 404 --
+    # A name nobody serves still lands on the NODE's door rather than on some app's 404 --
     # the fall-through is the property, and it is unchanged. What the door then says is not: since
     # the dashboard landed it forwards to the household dashboard, which refuses a browser with no session
     # (401, one instruction, no inventory) because reaching the VIP is not authentication.
@@ -309,8 +309,8 @@ pkgs.testers.runNixOSTest {
     #
     # ⚠️ THIS IS THE NON-VACUOUS PLACE FOR THE NO-INVENTORY ASSERTION, which is why it is here and
     # not only in install-macvtap.nix. That test refuses on a node with NOTHING installed, so
-    # "the refusal names no service" passes there even if the refusal happily rendered whatever it
-    # knew. A service IS installed and routed by this point, under a name composed two lines up --
+    # "the refusal names no app" passes there even if the refusal happily rendered whatever it
+    # knew. An app IS installed and routed by this point, under a name composed two lines up --
     # so a refusal that leaked the inventory would print it, and this fails.
     refused = primary.succeed(
         "curl -sS -o /tmp/vip.html -w '%{http_code}' "
@@ -322,23 +322,23 @@ pkgs.testers.runNixOSTest {
         f"the refusal named the inventory to a browser with no session: {page!r}"
     )
 
-    # And the service's data really lands on the replicated subvolume.
+    # And the app's data really lands on the replicated subvolume.
     primary.wait_until_succeeds(f"test -s {dataroot}/app/state.json", timeout=60)
     print(primary.succeed(f"cat {dataroot}/app/state.json"))
-    print("service state is on the DRBD subvolume — install -> promote -> serve, on the shipped node")
+    print("app state is on the DRBD subvolume — install -> promote -> serve, on the shipped node")
 
     ${pkgs.lib.optionalString (!broken) ''
     # --- THE RENDERED UNITS ARE VOLATILE, AND CONVERGE PUTS THEM BACK BY ITSELF.
     #
     #     Happy-path run only: this reboots the node, so it cannot precede the broken-upgrade half,
-    #     which carries on from here against a live service.
+    #     which carries on from here against a live app.
     #
     #     /run/containers/systemd is tmpfs, chosen deliberately: the volume holds the MANIFEST and
     #     each node renders its own units from it, so there is one identity and no second durable
     #     copy to drift from it. The consequence is that a reboot erases every rendered unit.
     #
     #     ⚠️ THIS TEST'S CONCLUSION REVERSED WITH CONVERGE-AT-PROMOTION. It used to assert the premise and
-    #     stop there — "after a reboot the service is gone and stays gone until something
+    #     stop there — "after a reboot the app is gone and stays gone until something
     #     re-renders, which is why the HOST must, from its node-local cache at bring-up". Converge
     #     makes that cure unnecessary and the claim false: briard-services is a promoter chain
     #     member, so the node re-renders from the VOLUME the moment it promotes, with no host in
@@ -365,7 +365,7 @@ pkgs.testers.runNixOSTest {
 
     # WHICHEVER node holds the volume must be serving the fixture again, and it does not matter
     # which — that indifference IS the property. The peer very likely took over while
-    # this node was down, in which case it is serving a service it never installed, having read
+    # this node was down, in which case it is serving an app it never installed, having read
     # the manifest off the volume and rendered for itself. If the returning node takes its role
     # back instead, it re-rendered from the same volume after a reboot wiped its tmpfs. Both are
     # converge, which is why the assertion refuses to name a node.
@@ -387,16 +387,16 @@ pkgs.testers.runNixOSTest {
     # ============================================================================================
     import json as _json
 
-    # The good service is serving v0. Capture its tick — the rollback must bring exactly THIS back.
+    # The good app is serving v0. Capture its tick — the rollback must bring exactly THIS back.
     good_tick = _json.loads(primary.succeed(f"cat {dataroot}/app/state.json"))["ticks"]
     assert good_tick > 0, f"no pre-upgrade data to preserve (tick={good_tick}) — rollback proof would be vacuous"
     print(f"pre-upgrade good tick = {good_tick}")
 
     # --- STOP, THEN snapshot the rollback point — applyServiceInstall's quiesce + data.member,
     #     in that order since the rollback point started being taken quiesced. A live snapshot is only crash-consistent, and the catalog
-    #     cannot promise every service survives one: services-pair.nix measured mosquitto losing
+    #     cannot promise every app survives one: services-pair.nix measured mosquitto losing
     #     exactly the retained message a rollback would be FOR. The container unit, never the pod
-    #     — the pod would take the volume down under every other service.
+    #     — the pod would take the volume down under every other app.
     #
     #     The baseline tick above is read BEFORE this stop, which is the same ordering the product
     #     keeps for the S1 sample. The recovery assertion below is a RANGE (good <= recovered <
@@ -409,10 +409,10 @@ pkgs.testers.runNixOSTest {
     primary.succeed("systemctl stop briard-fixture-app.service")
     primary.succeed(f"btrfs subvolume snapshot -r {dataroot} {snap}")
 
-    # --- The BROKEN manifest: same image digest and same service/container names (so same units,
+    # --- The BROKEN manifest: same image digest and same app/container names (so same units,
     #     which is what makes this an UPGRADE and not a rename), the ONLY change being env
     #     BRIARD_BROKEN=1. The dummy then poisons its state and holds /healthz at 503 forever while
-    #     staying a live process — the exact shape a runtime service breaks in. ---
+    #     staying a live process — the exact shape a runtime app breaks in. ---
     broken_manifest = (
         '{"name":"fixture","version":"v1-broken","network":"host","containers":[{'
         f'"name":"app","image":"${registryHost}/briard-fixture@{digest}",'
@@ -422,11 +422,11 @@ pkgs.testers.runNixOSTest {
 
     # --- THE SWITCH, and it no longer takes a maintenance bracket. It used to:
     #     pause both nodes' promoters, quiesce the container, re-render on every node, resume. All
-    #     of that existed because the service units WERE promoter chain members, so touching them
+    #     of that existed because the app units WERE promoter chain members, so touching them
     #     under a live reactor meant stopping the reactor first. They are not members now, so an
     #     upgrade is: write the new manifest to the volume, converge.
     #
-    #     Converge does the quiesce itself, and only for the service whose rendered bytes actually
+    #     Converge does the quiesce itself, and only for the app whose rendered bytes actually
     #     changed — systemd does not restart an already-active unit on daemon-reload, so without
     #     that the old container would keep serving while every file on disk described the new one.
     primary.succeed(f"cat > /tmp/broken.json <<'EOF'\n{broken_manifest}\nEOF")
@@ -437,7 +437,7 @@ pkgs.testers.runNixOSTest {
     # --- THE GATE. The broken container comes up ACTIVE — a live process — so nothing at the DRBD
     #     layer knows anything is wrong, and under the new shape nothing at the promoter layer ever
     #     will: the container is not a chain member, so a crash could not demote the node either.
-    #     The signal is the SERVICE's own /healthz, which stays 503 (probed directly, the way the
+    #     The signal is the APP's own /healthz, which stays 503 (probed directly, the way the
     #     host health gate does — NOT via the front door, which reports node readiness and would
     #     mask this). Prove it is real, and prove the upgrade actually did damage (poisoned the
     #     data), so a green run can't pass vacuously. ---
@@ -448,16 +448,16 @@ pkgs.testers.runNixOSTest {
     print(f"health gate would TRIP: container active, its own endpoint 503, data poisoned to tick {poisoned}")
 
     # --- AND THE NODE IS STILL PROMOTED, which is the failure rule: converge's own
-    #     failure demotes, a SERVICE's failure alerts and promotes. A code fault is deterministic,
+    #     failure demotes, an APP's failure alerts and promotes. A code fault is deterministic,
     #     so a peer running the identical closure would hit it identically and the failover would
-    #     only flap; and one broken service must not take the other N-1 down with it. Asserted
-    #     here because this is the one place in the suite where a service is genuinely broken. ---
+    #     only flap; and one broken app must not take the other N-1 down with it. Asserted
+    #     here because this is the one place in the suite where an app is genuinely broken. ---
     primary.succeed("drbdadm role r0 | grep -q Primary")
     primary.succeed("mountpoint -q /var/lib/briard")
     primary.succeed("systemctl is-active briard-vip.service")
-    print("the node stayed Primary with the VIP up — a broken service alerts, it does not demote")
+    print("the node stayed Primary with the VIP up — a broken app alerts, it does not demote")
 
-    # --- ROLLBACK to the prior service (applyServiceInstall.revert): stop the broken CONTAINER,
+    # --- ROLLBACK to the prior app (applyServiceInstall.revert): stop the broken CONTAINER,
     #     restore the data subvolume from the snapshot (delete + rw-snapshot, the guest's
     #     data.restore), put the PRIOR manifest back on the volume, and converge — which re-renders
     #     v0 and starts it fresh on the restored data.
@@ -476,7 +476,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed("cp /tmp/manifest.json /var/lib/briard/.services/fixture.json && sync")
     primary.succeed("briard-guest-agent --converge")
 
-    # --- RECOVERY. The good (v0) service serves again and the poison is GONE — the tick is back at
+    # --- RECOVERY. The good (v0) app serves again and the poison is GONE — the tick is back at
     #     the pre-upgrade point and climbing. {code+data} both rolled back: a failed upgrade left a
     #     working node, not a broken one. ---
     primary.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=120)
@@ -485,7 +485,7 @@ pkgs.testers.runNixOSTest {
     assert good_tick <= recovered < poisoned, f"data not rolled back to the pre-upgrade point: tick={recovered} (good={good_tick}, poison={poisoned})"
     primary.succeed("sleep 2")
     climbing = _json.loads(primary.succeed(f"cat {dataroot}/app/state.json"))["ticks"]
-    assert climbing > recovered, f"restored service is not making progress: {recovered} -> {climbing}"
+    assert climbing > recovered, f"restored app is not making progress: {recovered} -> {climbing}"
     print(f"ROLLED BACK: v0 serving, data restored (tick {recovered} < poison {poisoned}) and ticking again")
     ''}
   '';

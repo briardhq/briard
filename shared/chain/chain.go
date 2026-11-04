@@ -31,22 +31,22 @@ const Target = "briard-chain.target"
 //
 // IT IS STATIC, and that is what makes converge-at-promotion possible. The chain is
 // what drbd-reactor promotes WITH, but the volume is only readable AFTER promotion -- so the
-// start-list cannot name the services themselves. briard-services is the unit that, once the
-// mount exists, reads the manifests, renders and starts them. The runtime-installed services are
-// therefore NOT members, which is also what makes "a service error alerts but never demotes"
+// start-list cannot name the apps themselves. briard-services is the unit that, once the
+// mount exists, reads the manifests, renders and starts them. The runtime-installed apps are
+// therefore NOT members, which is also what makes "an app error alerts but never demotes"
 // mechanically true: drbd-reactor never sees them, so a crashed container cannot deactivate the
 // target.
 //
-// Nothing here is conditional on a service existing. The old conditional membership existed
+// Nothing here is conditional on an app existing. The old conditional membership existed
 // because naming a unit the guest does not define fails the WHOLE ordered chain, and a
-// zero-service node has no service unit to name -- but briard-services is rendered
+// zero-app node has no app unit to name -- but briard-services is rendered
 // unconditionally, exactly as briard-primary-storage and briard-vip are, so there is nothing
 // left to make conditional. It takes no arguments, and that is the end state converge-at-promotion was
 // after: the chain is the same units on every anchor in the fleet.
 //
 // THE FRONT DOOR IS A MEMBER AND CARRIES THE HOUSEHOLD'S mDNS NAMES. On a
-// node with no `.casa` domain the door routes `byHost` against the service's own `.local` names,
-// so a request to the bare VIP matches nothing: the NAME is the only path to a service, and a
+// node with no `.casa` domain the door routes `byHost` against the app's own `.local` names,
+// so a request to the bare VIP matches nothing: the NAME is the only path to an app, and a
 // node that cannot publish is unreachable while every other part of it reports healthy. That is
 // what the promoter is for. Publishing and answering being one member is also what makes them
 // impossible to disagree -- the door answers for exactly the names it routes. Membership means

@@ -71,12 +71,12 @@ func TestPromotionNeverPulls(t *testing.T) {
 	}
 }
 
-// TestContainerSupervisesItself: the service units are NOT promoter chain members,
+// TestContainerSupervisesItself: the app units are NOT promoter chain members,
 // so drbd-reactor neither restarts nor watches them. A container that dies must be brought back
 // by its own unit or it stays dead with nothing noticing — the recovery the promoter used to
 // provide, in the only place left to put it.
 //
-// `always`, not `on-failure`: a service container has no legitimate exit, so exiting 0 is exactly
+// `always`, not `on-failure`: an app container has no legitimate exit, so exiting 0 is exactly
 // as dead as exiting 1. Asserting the exact value rather than mere presence is the point — the
 // weaker policy is the plausible-looking wrong answer here, and it is also the one quadlet
 // generates for the pod, so it could arrive by imitation.
@@ -137,7 +137,7 @@ func TestNothingAutoStarts(t *testing.T) {
 // at the file: quadlet generates Type=oneshot, and systemd disables TimeoutStartSec= by default
 // for oneshot — so the ABSENCE of this line means "wait forever", not "wait for the default".
 // converge starts this unit on the promotion path, and nixosTest/cold-converge-pull.nix measured
-// what that costs: a node Primary with no VIP, no services and nothing in `failed`, for as long
+// what that costs: a node Primary with no VIP, no apps and nothing in `failed`, for as long
 // as a registry cares to dribble bytes.
 //
 // The DURATION is asserted only as a floor, on purpose. The exact number is a judgement that may
@@ -217,7 +217,7 @@ func TestUnitOrder(t *testing.T) {
 //
 // Deliberately NOT the ha() fixture: `home-assistant` is a name the renderer knows, and it always
 // carries the control-channel binds (see TestControlChannelIsKeyedOnTheServiceName). This
-// assertion is about statelessness, so it needs a service the product holds no knowledge about.
+// assertion is about statelessness, so it needs an app the product holds no knowledge about.
 func TestStatelessContainerGetsNoVolume(t *testing.T) {
 	m := ha()
 	m.Name = "sample-app"
@@ -237,7 +237,7 @@ func TestStatelessContainerGetsNoVolume(t *testing.T) {
 // The manifest cannot ask for a host bind — the schema refuses them so a catalog entry cannot
 // reach the host — so these come from the product, keyed on the catalog name. The negative half
 // is the one that matters: an identical manifest under any other name must render an identical
-// unit WITHOUT them, or "service-specific by design" would be a comment rather than a property.
+// unit WITHOUT them, or "app-specific by design" would be a comment rather than a property.
 func TestControlChannelIsKeyedOnTheServiceName(t *testing.T) {
 	binds := []string{
 		"Volume=/run/briard/home-assistant:/briard:ro",
@@ -267,7 +267,7 @@ func TestControlChannelIsKeyedOnTheServiceName(t *testing.T) {
 	}
 }
 
-// TestMountsAreDirectoriesOfTheTiersAreas: each mount is a plain directory of the service's area
+// TestMountsAreDirectoriesOfTheTiersAreas: each mount is a plain directory of the app's area
 // in its tier -- never a subvolume of its own, which would break data.restore outright (`btrfs
 // subvolume delete` refuses on a subvolume containing nested ones) -- and Subdirs names each once,
 // with its tier. A nested mount renders after its parent whatever order the manifest lists them,
@@ -326,7 +326,7 @@ func TestDeterministic(t *testing.T) {
 }
 
 // TestSpecifiersEscaped: a literal '%' in a value is systemd specifier syntax and would expand
-// to something the catalog never wrote. Silent corruption of what the service was told.
+// to something the catalog never wrote. Silent corruption of what the app was told.
 func TestSpecifiersEscaped(t *testing.T) {
 	m := ha()
 	m.Containers[0].Env = map[string]string{"FMT": "100%done %n"}
@@ -346,7 +346,7 @@ func TestRenderRefusesInvalid(t *testing.T) {
 	}
 }
 
-// TestBrokerRendersItsConfigAndItsData: the second catalogued service renders as a plain unit
+// TestBrokerRendersItsConfigAndItsData: the second catalogued app renders as a plain unit
 // plus the one bind the product holds for it — its config, read-only, over the image's baked one.
 // The negative half is the same one the control channel gets: the same manifest under
 // another name renders without it.
@@ -381,7 +381,7 @@ func TestBrokerRendersItsConfigAndItsData(t *testing.T) {
 	}
 }
 
-// THE POD'S NETWORKING IS THE ONE DECISION THIS PACKAGE MAKES, and until a service asked for a private network it was made the
+// THE POD'S NETWORKING IS THE ONE DECISION THIS PACKAGE MAKES, and until an app asked for a private network it was made the
 // same way for everyone. These are the three shapes it can take, asserted on the rendered bytes
 // because that is what podman reads.
 func TestPodNetworkingFollowsTheManifest(t *testing.T) {
@@ -434,7 +434,7 @@ func TestPodNetworkingFollowsTheManifest(t *testing.T) {
 }
 
 // Images renders the pre-warm units and NOTHING that depends on an address -- which is what lets a
-// node that is not serving, and so has allocated nothing, hold a private service's images.
+// node that is not serving, and so has allocated nothing, hold a private app's images.
 func TestImagesNeedsNoAddress(t *testing.T) {
 	m := manifest.Manifest{Name: "svc", Version: "1", Containers: []manifest.Container{{
 		Name: "app", Image: digestA, Primary: true, Port: 8080, HealthPath: "/healthz",
@@ -487,7 +487,7 @@ func TestSnapshotMemberNamesTheSeries(t *testing.T) {
 //
 // This test asserted the opposite -- that lexical order over member names is chronological order
 // -- and it passed, because every case it compared shared one trigger. Across triggers the claim
-// is false and the format makes it false: the trigger sits between the service and the stamp, so
+// is false and the format makes it false: the trigger sits between the app and the stamp, so
 // every `-clock-` member sorts before every `-start-` one whatever their times. A reader that
 // took the lexically last member as the newest got an old start's age instead.
 //
@@ -518,7 +518,7 @@ func TestSnapshotMemberTimeIsTheOrder(t *testing.T) {
 	}
 }
 
-// TestDataContainerTakesARingMemberAtStart: the generic hook. Every catalogued service
+// TestDataContainerTakesARingMemberAtStart: the generic hook. Every catalogued app
 // gets a member at container start, which is the only boundary visible from outside the
 // container -- Home Assistant adds its own internal restarts through the inbound channel, and
 // nothing else can.
@@ -544,8 +544,8 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 	if line == "" {
 		t.Fatalf("the data container takes no member at start:\n%s", app)
 	}
-	// ⚠️ THE LEADING `-`: without it a snapshot that fails takes the household's service down
-	// with it, and a ring missing a member is nothing next to a service that will not start.
+	// ⚠️ THE LEADING `-`: without it a snapshot that fails takes the household's app down
+	// with it, and a ring missing a member is nothing next to an app that will not start.
 	if !strings.HasPrefix(line, "ExecStartPre=-") {
 		t.Errorf("%q can fail the service; systemd needs the `-` prefix", line)
 	}
@@ -557,13 +557,13 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 	if !strings.HasSuffix(line, "--service-starting=home-assistant") {
 		t.Errorf("%q does not name the service whose member it takes", line)
 	}
-	// A service's other containers share its ONE subvolume, so a hook on each of them would take
+	// An app's other containers share its ONE subvolume, so a hook on each of them would take
 	// a member of the same bytes at every start.
 	if side := r.Files["briard-home-assistant-sidecar.container"]; strings.Contains(side, "ExecStartPre=") {
 		t.Errorf("a container with no data of its own takes a member:\n%s", side)
 	}
 
-	// AND THE STOP HALF: a clean stop records that this service's data was flushed, so
+	// AND THE STOP HALF: a clean stop records that this app's data was flushed, so
 	// the next start's member can say what its bytes ARE. Without it every start after a container
 	// stop would read as crash-consistent -- which is what a promotion after a dead primary is,
 	// and what an ordinary restart is not.
@@ -604,7 +604,7 @@ func TestThePodOutlivesItsContainers(t *testing.T) {
 	}
 }
 
-// A service that declares a minimum is capped at MemoryLimitFactor times it in RAM and at the
+// An app that declares a minimum is capped at MemoryLimitFactor times it in RAM and at the
 // minimum in swap, inside its own unit; one that declares nothing is not capped at all -- an
 // unmeasured entry must not be guessed into a cage.
 func TestContainerMemoryLimitFollowsTheDeclaredMinimum(t *testing.T) {

@@ -165,8 +165,8 @@ func TestQuiescedMemberKeepsCrashWhenTheLockDidNotHold(t *testing.T) {
 	}
 }
 
-// A SERVICE THAT CANNOT BE ASKED STILL GETS ITS MEMBER. A Home Assistant that is down, an older
-// integration with no such view, a service with no way to hold still at all — the sample happens
+// An APP THAT CANNOT BE ASKED STILL GETS ITS MEMBER. A Home Assistant that is down, an older
+// integration with no such view, an app with no way to hold still at all — the sample happens
 // and the member says crash-consistent. A hole in the ring would be the worse answer.
 func TestQuiescedMemberTakesOneEvenWhenNothingCanHoldStill(t *testing.T) {
 	for name, f := range map[string]*fakeExec{

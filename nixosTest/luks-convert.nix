@@ -8,7 +8,7 @@
 # close and reopen its backing device.
 #
 # So this rig proves the claim in the direction that actually matters — BOTH — on the shape a
-# household runs: a service writing to a btrfs volume over a promoted DRBD. The service is the
+# household runs: an app writing to a btrfs volume over a promoted DRBD. The app is the
 # dummy, whose tick is an fsync'd write every second and whose counter may only grow -- a
 # workload that dies on the first write that fails, which is what makes it the right witness here.
 #
@@ -26,7 +26,7 @@
 # asserted by an I/O prober that writes and fsyncs continuously across both moves, records what
 # every write cost, and would record the failures if the queue became an error instead. DRBD must
 # never demote, never detach and never resync; btrfs must see no error, in the log or in its own
-# counters; the service must keep answering, and its counter keep climbing.
+# counters; the app must keep answering, and its counter keep climbing.
 #
 # AND IT MEASURES, because "a latency bump" is a number or it is a hope. The run prints the stall
 # distribution per move and the copy throughput, which is what the rule of thumb in the docs is
@@ -52,7 +52,7 @@ let
 
   # ── THE TWO PROBERS ────────────────────────────────────────────────────────────────────────
   # Separate because they measure separate claims at separate rates: the volume must not miss a
-  # write (as tight a loop as a synchronous write allows), and the service must not miss a request
+  # write (as tight a loop as a synchronous write allows), and the app must not miss a request
   # (once a second is what a household would notice).
   ioProbe = pkgs.writeShellScript "convert-io-probe" ''
     export PATH=${pkgs.lib.makeBinPath [ pkgs.coreutils ]}
@@ -235,7 +235,7 @@ pkgs.testers.runNixOSTest {
     def undisturbed(m, since, label):
         """WHAT HAD TO STAY TRUE, as negatives. DRBD never demoted, never detached, never
         resynced; btrfs saw no error in the log OR in its own counters; the prober lost no write;
-        the service answered every poll; and the resource still names the same backing device it was
+        the app answered every poll; and the resource still names the same backing device it was
         created with, which is the property the seam exists for."""
         m.fail(f"journalctl -k --since '{since}' | grep -q 'role( Primary -> Secondary )'")
         m.fail(f"journalctl -k --since '{since}' | grep -q 'disk( UpToDate -> '")
@@ -249,14 +249,14 @@ pkgs.testers.runNixOSTest {
         errs = m.succeed("cat /run/briard-probe.err")
         assert not errs.strip(), f"[{label}] the volume failed a write: {errs}"
         svc_errs = m.succeed("cat /run/briard-svc.err")
-        assert not svc_errs.strip(), f"[{label}] the service stopped answering: {svc_errs}"
+        assert not svc_errs.strip(), f"[{label}] the app stopped answering: {svc_errs}"
         polls = len(m.succeed("cat /run/briard-svc.ok").splitlines())
-        print(f"[{label}] undisturbed: {polls} service polls answered, no DRBD or btrfs event")
+        print(f"[{label}] undisturbed: {polls} app polls answered, no DRBD or btrfs event")
 
 
     node1.start()
     node1.wait_for_unit("multi-user.target")
-    # The service's image is resident before anything promotes, as on a real node.
+    # The app's image is resident before anything promotes, as on a real node.
     node1.wait_for_unit("briard-test-fixture-install.service", timeout=600)
     # ── THE SEAM, BUILT BY THE PRODUCT ─────────────────────────────────────────────────────────
     # briard-node-storage.service lays this down from the spec the host writes, and
@@ -294,7 +294,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds(f"{state} | grep -q '\"ticks\":[1-9]'", timeout=60)
     ticks_before = int(json.loads(node1.succeed(state))["ticks"])
 
-    # A megabyte of data whose checksum has to survive both moves. The service's ticks are the
+    # A megabyte of data whose checksum has to survive both moves. The app's ticks are the
     # live load; this is the deterministic witness beside it.
     # realistic load; this is the deterministic witness beside it.
     node1.succeed("head -c 1048576 /dev/urandom >/var/lib/briard/.convert-token")
@@ -385,7 +385,7 @@ pkgs.testers.runNixOSTest {
     assert witness == node1.succeed("sha256sum /var/lib/briard/.convert-token").split()[0], \
         "the witness file did not survive the round trip"
 
-    # The service is not merely still answering -- it is still the same service, counting on from
+    # The app is not merely still answering -- it is still the same app, counting on from
     # the state it wrote before the volume moved underneath it twice.
     ticks_after = int(json.loads(node1.succeed(state))["ticks"])
     assert ticks_after > ticks_before, f"the counter did not carry across the moves: {ticks_before} -> {ticks_after}"

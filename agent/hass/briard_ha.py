@@ -165,9 +165,9 @@ class QuiesceView(HomeAssistantView):
 # from scratch, so a lost, duplicated or unrelated one all cost the same.
 EVENT_RECONSIDER = "briard_reconsider"
 
-# The broker briard installs, as Home Assistant reaches it: every service shares the guest's
+# The broker briard installs, as Home Assistant reaches it: every app shares the guest's
 # network namespace or publishes into it, so the address is loopback and the config is anonymous.
-# The port is substituted by the node from the OTHER service's package, because it belongs to
+# The port is substituted by the node from the OTHER app's package, because it belongs to
 # that one and a second copy here would be a second thing to keep in step with the catalog.
 BROKER_HOST = "127.0.0.1"
 BROKER_PORT = @MQTT_PORT@

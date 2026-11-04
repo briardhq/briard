@@ -11,7 +11,7 @@ import (
 	"briard.io/shared/routes"
 )
 
-// backend stands in for a service behind the door, with Home Assistant's forwarded-header rule:
+// backend stands in for an app behind the door, with Home Assistant's forwarded-header rule:
 // X-Forwarded-For from a proxy it does not trust is a 400. unready is how many plain requests it
 // answers 503 before it is up.
 type backend struct {
@@ -119,8 +119,8 @@ func TestForwardedForOnlyToAServiceThatAcceptsIt(t *testing.T) {
 	}
 }
 
-// The agent signals BEFORE the service has opened a socket, so the probe must wait for a plain
-// answer first: a header sent to a service that is still starting would read its 503 as a verdict.
+// The agent signals BEFORE the app has opened a socket, so the probe must wait for a plain
+// answer first: a header sent to an app that is still starting would read its 503 as a verdict.
 func TestTheProbeWaitsForTheServiceToComeUp(t *testing.T) {
 	fastProbes(t)
 	b := newBackend(t, true, 5)
@@ -135,7 +135,7 @@ func TestTheProbeWaitsForTheServiceToComeUp(t *testing.T) {
 	}
 }
 
-// No answer is not "no": a service that never comes up within the wait keeps what the door
+// No answer is not "no": an app that never comes up within the wait keeps what the door
 // already knew, so a slow start never takes a household's client addresses away.
 func TestNoAnswerKeepsTheLastOne(t *testing.T) {
 	fastProbes(t)

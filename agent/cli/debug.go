@@ -184,7 +184,7 @@ const banner = `
 !! the next update, silently and without warning you first. Services, mounts and
 !! network here are managed by the agent, which will fight you for them and win.
 !!
-!! You can break this node from in here in ways ` + "`briard alerts`" + ` will not explain.
+!! You can break this machine from in here in ways ` + "`briard alerts`" + ` will not explain.
 
 Press Enter for a prompt (the shell's own is already in the log, not on the wire).
 Ctrl-] to leave — that also closes the console again.

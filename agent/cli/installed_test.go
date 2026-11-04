@@ -19,7 +19,7 @@ func TestServiceCacheDirMatchesTheAgents(t *testing.T) {
 	}
 }
 
-// The cache holds each service's manifest VERBATIM, so the name comes from the manifest's own
+// The cache holds each app's manifest VERBATIM, so the name comes from the manifest's own
 // parser rather than from a second reader of the format. install.sh used to `grep -o` for
 // `"name":"..."` and take the first match, which is a different implementation of a format whose
 // identity is its content hash.
@@ -33,7 +33,7 @@ func TestInstalledServicesReadsTheManifests(t *testing.T) {
 	}
 	write("home-assistant.json", `{"schema":1,"name":"home-assistant","containers":[{"name":"ha","image":"x","primary":true}]}`)
 	write("mosquitto.json", `{"schema":1,"name":"mosquitto","containers":[{"name":"m","image":"y","primary":true}]}`)
-	// ⚠️ A manifest that will not parse is STILL an installed service, under a vaguer name: it is
+	// ⚠️ A manifest that will not parse is STILL an installed app, under a vaguer name: it is
 	// on the node, and staying silent about it because we could not read its title is the one
 	// answer that is certainly wrong.
 	write("broken.json", `{not json at all`)
@@ -56,7 +56,7 @@ func TestInstalledServicesReadsTheManifests(t *testing.T) {
 }
 
 // The sentence, including the empty case -- which is empty ON PURPOSE. A fresh node hears "no
-// service is installed yet" from the installer, where it is news; a household running the verb a
+// app is installed yet" from the installer, where it is news; a household running the verb a
 // month later does not need telling twice.
 func TestInstalledLine(t *testing.T) {
 	for _, c := range []struct {

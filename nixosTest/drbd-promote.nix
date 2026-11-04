@@ -1,10 +1,10 @@
 # drbd-reactor's promoter runs the ordered failover unit on the primary.
 #
 # Steady-state only (no kill): bring r0 up on both nodes, then let drbd-reactor
-# promote exactly one and start the ordered unit {promote → data mount → service
+# promote exactly one and start the ordered unit {promote → data mount → apps
 # → VIP} there. Assert it converges on the primary and runs nowhere else.
 #
-# The service in that chain is a RUNTIME-INSTALLED one: the fixture arrives as a
+# The app in that chain is a RUNTIME-INSTALLED one: the fixture arrives as a
 # catalogued manifest, is rendered by the real renderer at boot, and its units are what the
 # promoter starts. It used to be a build-time payload slot -- a mechanism no shipped node had --
 # so the chain this test drove was one no user could produce (the slot is deleted).
@@ -43,11 +43,11 @@ pkgs.testers.runNixOSTest {
         # drbd@<res>.service → `drbdadm adjust`), which leaves the node Secondary.
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
 
-    # The service units come from the RENDERER, not from this file. They are NOT generated yet:
+    # The app's units come from the RENDERER, not from this file. They are NOT generated yet:
     # converge writes their source and reloads systemd at promotion, so asking for them here
     # would be asking before the product has done its half.
     service_units = fixture_units(node1)
-    print(f"service units the renderer produced: {service_units}")
+    print(f"app units the renderer produced: {service_units}")
 
     node1.wait_until_succeeds("drbdadm cstate r0 | grep -q Connected")
     # Skip the initial sync so the resource is promotable without force-promotion.
@@ -59,7 +59,7 @@ pkgs.testers.runNixOSTest {
         m.succeed("systemctl start drbd-reactor.service")
 
     # Identify the primary, then install the fixture on it -- only it has the volume mounted, and
-    # everything an install writes (the manifest that IS the service identity, its storage) lives
+    # everything an install writes (the manifest that IS the app's identity, its storage) lives
     # there. install_fixture ends by running the product's own converge.
     import time
 
@@ -95,7 +95,7 @@ pkgs.testers.runNixOSTest {
     # rendering could never match on the peer's half.
     secondary.succeed("drbdadm role r0 | grep -qx Secondary")
 
-    # BEFORE the install, the promoter has already run a full promotion with ZERO services --
+    # BEFORE the install, the promoter has already run a full promotion with ZERO apps --
     # briard-services converged to nothing and the VIP came up anyway. That is the shipped state
     # of every node a stranger installs, and it must not be a failure.
     primary.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
@@ -104,7 +104,7 @@ pkgs.testers.runNixOSTest {
     dataroot = install_fixture(primary)
 
     # Reaching the VIP's /healthz proves the whole chain converged on the primary
-    # (promote → mount → service past its slow start → VIP claimed).
+    # (promote → mount → app past its slow start → VIP claimed).
     primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
     primary.succeed("systemctl is-active drbd-promote@r0.service")  # stock promote ran

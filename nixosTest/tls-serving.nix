@@ -5,7 +5,7 @@
 # "TLS survives failover", folded in here).
 #
 # The node behind the door runs NOTHING, deliberately: routing the front door to a
-# runtime-installed service is deferred, so a test that put one there would prove the
+# runtime-installed app is deferred, so a test that put one there would prove the
 # door forwards to nothing in particular. Termination, replication and hot-reload are the layers
 # under test, and none of them needs a backend.
 #
@@ -73,7 +73,7 @@ pkgs.testers.runNixOSTest {
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
     # The front door comes up on the primary and answers plain HTTP at the VIP. It answers for
-    # ITSELF: this node runs no service, which is the shipped state and all a cert test needs --
+    # ITSELF: this node runs no app, which is the shipped state and all a cert test needs --
     # what is under test is termination and the cert's replication, not what sits behind it.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 
@@ -91,7 +91,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed("sync")
 
     # briard-reverse-proxy (woven into the promoter chain via briard-vip) hot-reloads the cert
-    # and serves HTTPS at the VIP, proxying to the service — https://<name> is now true.
+    # and serves HTTPS at the VIP, proxying to the app — https://<name> is now true.
     primary.wait_until_succeeds("curl -fsS --cacert ${testCert}/fullchain.pem https://192.168.1.100/healthz")
     print("HTTPS served at the VIP, terminated by briard-reverse-proxy")
     # The front door also answers PLAIN http on :80 — the only door a free node has,

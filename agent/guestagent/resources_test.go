@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// A service's memory comes from the unit's CGROUP, and specifically from anon -- not
-// memory.current, which counts page cache that a database-writing service grows indefinitely, and
+// An app's memory comes from the unit's CGROUP, and specifically from anon -- not
+// memory.current, which counts page cache that a database-writing app grows indefinitely, and
 // not the main process, which for a container is podman's supervisor.
 func TestParseCgroupAnonKB(t *testing.T) {
 	v2 := "anon 268435456\nfile 1073741824\nkernel 12345\nslab 678\n"
@@ -93,7 +93,7 @@ func TestResourcesVerbGathers(t *testing.T) {
 		case strings.HasPrefix(cmd, "systemctl show -p ControlGroup"):
 			return []byte("/system.slice/briard-ha-app.service\n"), nil
 		case cmd == "cat /sys/fs/cgroup/system.slice/briard-ha-app.service/memory.stat":
-			// anon is what the service actually holds; file is page cache and must NOT count.
+			// anon is what the app actually holds; file is page cache and must NOT count.
 			return []byte("anon 90112000\nfile 4294967296\n"), nil
 		case cmd == "ls /proc/4242/fd":
 			return []byte("0\n1\n2\n3\n4\n"), nil
@@ -209,7 +209,7 @@ func TestResourcesVerbWithoutSoakRunsNoWalks(t *testing.T) {
 	}
 }
 
-// A stopped service (MainPID=0) skips the /proc read rather than reading /proc/0, and the
+// A stopped app (MainPID=0) skips the /proc read rather than reading /proc/0, and the
 // rest of the telemetry still comes back -- best-effort, never fatal.
 func TestResourcesVerbSkipsAStoppedService(t *testing.T) {
 	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
@@ -273,10 +273,10 @@ func TestSplitJournalCursorDropsJournalctlMarkers(t *testing.T) {
 	})
 }
 
-// N SERVICES, EACH MEASURED AND EACH NAMED. The alternative was summing them into
+// N APPS, EACH MEASURED AND EACH NAMED. The alternative was summing them into
 // the three scalars this replaced, and summing is what loses the signal: NRestarts exists to make
-// a crash-loop loud, and one service flapping inside a total reads as a small climb. So the
-// assertion is that a crash-looping service is attributable BY NAME while its quiet neighbour
+// a crash-loop loud, and one app flapping inside a total reads as a small climb. So the
+// assertion is that a crash-looping app is attributable BY NAME while its quiet neighbour
 // stays at zero -- a sum could not tell those apart.
 func TestResourcesVerbMeasuresEachServiceSeparately(t *testing.T) {
 	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
@@ -315,7 +315,7 @@ func TestResourcesVerbMeasuresEachServiceSeparately(t *testing.T) {
 	}
 }
 
-// A service whose unit is unnamed is SKIPPED, not measured as zero. An unmeasured service and an
+// An app whose unit is unnamed is SKIPPED, not measured as zero. An unmeasured app and an
 // idle one must not read the same: a zero row would enter the oracle's series as a real sample and
 // flatten a trend that nobody is actually watching.
 func TestResourcesVerbSkipsAServiceWithNoUnit(t *testing.T) {

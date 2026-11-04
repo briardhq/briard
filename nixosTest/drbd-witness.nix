@@ -2,7 +2,7 @@
 #
 # The product's primary topology: two real nodes plus a cloud
 # tiebreaker. The witness runs DRBD *diskless* (a quorum voter with no data copy)
-# and does NOT run drbd-reactor — it never holds the service. Kill the primary
+# and does NOT run drbd-reactor — it never runs the apps. Kill the primary
 # disk node and the lone survivor still fails over, because survivor + witness =
 # 2 of 3 = quorum; a bare 2-node cluster (1 of 2) could not. That is the whole
 # point of the diskless tiebreaker, and what makes 2-node homes genuinely HA.
@@ -62,7 +62,7 @@ pkgs.testers.runNixOSTest {
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
 
-    # The front door answers first with nothing installed -- the shipped state -- and the service
+    # The front door answers first with nothing installed -- the shipped state -- and the app
     # is put on the volume by whoever promoted.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 

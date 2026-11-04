@@ -1,6 +1,6 @@
 package main
 
-// Live pull progress: how far a service install's download has got, read off the
+// Live pull progress: how far an app install's download has got, read off the
 // guest itself while the bytes move. Nothing here asks podman anything.
 //
 // Three local facts make a fraction:
@@ -14,7 +14,7 @@ package main
 //     which shrinks as a layer completes exactly as the finished sum grows by it.
 //
 // The number is monotonic to within a poll, honest about what it cannot know (no total -> no
-// bar), and never reaches 100 before the routes table says the service is there.
+// bar), and never reaches 100 before the routes table says the app is there.
 
 import (
 	"encoding/json"
@@ -52,7 +52,7 @@ type layer struct {
 	Created        time.Time `json:"created"`
 }
 
-// pullProgress reads the record the host left for the service and, when there is one, measures
+// pullProgress reads the record the host left for the app and, when there is one, measures
 // the pull against it. nil when nothing is recorded -- an older host, or nothing pulling.
 func (a *app) pullProgress(service string) *progressView {
 	raw, err := os.ReadFile(filepath.Join(a.pulls.records, filepath.Base(dashboard.PullPath(service))))
@@ -93,7 +93,7 @@ func (pp pullPaths) finishedSince(t time.Time) int64 {
 	return n
 }
 
-// inFlight is the bytes under the service's pull units' private tmp: systemd names each
+// inFlight is the bytes under the app's pull units' private tmp: systemd names each
 // PrivateTmp root systemd-private-<boot>-<unit>-<random>, and the units are
 // briard-<service>-<container>-image.service.
 func (pp pullPaths) inFlight(service string) int64 {

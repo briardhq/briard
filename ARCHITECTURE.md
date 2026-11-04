@@ -19,7 +19,7 @@ ships with the agent.
         │   ┌──────────────────────────────────────┐   │
         │   │ guest VM (NixOS)                     │   │
         │   │   front door (answers the VIP)       │   │
-        │   │   your services — or none yet        │   │
+        │   │   your apps — or none yet            │   │
         │   │   DRBD + drbd-reactor, over LUKS     │   │
         │   │   a small guest agent                │   │
         │   └──────────────────────────────────────┘   │
@@ -40,7 +40,7 @@ whole disk image, and its identity is the store path of its system closure. Ever
 makes a node *this* node — its name, its addresses, its storage layout, its peers — is held by
 the host and pushed in at every bring-up, never baked into the image. A fact shared by the whole
 home lives instead on the replicated volume, written by the primary and read by whichever node
-promotes next. Five qualify: the VIP address, the installed services' manifests, the TLS
+promotes next. Five qualify: the VIP address, the installed apps' manifests, the TLS
 material, and the backup's key with the flag that says you have saved it. Everything else is
 re-derived or pushed, so a stale copy has nowhere to live.
 
@@ -48,10 +48,10 @@ The guest's OS is a **read-only image** under a tmpfs root: nothing it writes la
 and an OS update is a different file, never a changed one. Everything it does write — the
 container store, the journal, each boot's scratch — goes to a small node-local **state disk**
 that an install grows before it pulls. Its memory is grown, never guessed: the guest boots with
-what the installed services declare they need, is given more by memory hotplug as they ask (up
+what the installed apps declare they need, is given more by memory hotplug as they ask (up
 to the host's RAM less what the host keeps), and starts over at the next launch, so a relaunch
 is the deliberate shrink. A host that fills up under a running guest never pauses it: the write
-fails inside the guest, where the service can see it, and the host warns you.
+fails inside the guest, where the app can see it, and the host warns you.
 
 **The guest is a citizen of your LAN, not a tenant behind your host.** Its network interfaces
 are children of the host's own NIC (macvtap on a wired NIC, ipvtap on a wireless one), so it
@@ -102,10 +102,10 @@ the failure mode. Two architecture tests hold the line, one at the API surface a
 the exec surface.
 
 What promotion starts is the **promoter chain**: five units, in order — the data mount, the
-services, the VIP, the front door and the dashboard. The list is defined once, in
+apps, the VIP, the front door and the dashboard. The list is defined once, in
 [`shared/chain`](shared/chain), and read by both the product and the test rigs. On a node with
 peers, drbd-reactor starts the chain on whichever node wins promotion; on a lone node a static
-target starts it. Services are rendered *at promotion* from the manifests on the volume, so a
+target starts it. Apps are rendered *at promotion* from the manifests on the volume, so a
 node that has just taken over runs exactly what the old primary ran without being told.
 
 **Both sides of the boundary watch each other.** If the guest stops hearing from its host agent
@@ -153,11 +153,16 @@ protection against someone who has the disk; it is the state from which protecti
 command away, without a reformat. Where the CPU has no AES it runs in the clear rather than
 crawl.
 
-Each service's data is its own btrfs subvolume, so a snapshot and a rollback touch that
-service and nothing else.
+An app's storage comes in up to four **tiers**, named for what they hold, each a directory of
+one btrfs subvolume per app at `/var/lib/briard/<tier>/<app>`: **data**, what it keeps to run,
+rolled back with it; **files**, what the household keeps in it, never rolled back and kept as
+hourly-to-weekly Versions; **cache**, what it can make again, emptied at every rollback; and
+**unversioned**, kept but never snapshotted or backed up. A snapshot and a rollback touch one
+app and nothing else, and an app writes only the directories its manifest mounts.
 
-**Off-site is a folder you own.** Every night the node backs the whole data volume up with
-`restic` — the same read-only sample the history already takes, so consistency is free — into a
+**Off-site is a folder you own.** Every night the node backs up, with `restic`, each app's
+data — the same read-only sample its History already takes, so consistency is free — and the
+household's files, into a
 folder on the host (`Briard Backup` in the installing user's home by default, or any folder you
 point it at: a USB disk, a NAS mount, a synced drive). It is on from install, asks nothing, and
 ships inside each night everything a fresh install needs to come back as *this* household. The
@@ -165,21 +170,21 @@ archive's key lives on the replicated volume and stays on the Briard page until 
 have saved it, with a README beside the
 archive telling you to copy it; the node warns after two failed nights and never gates an
 update on the copy. Restoring a night is an ordinary undo (below): the night is materialised as
-a point in the service's history and the same Undo steps back to it.
+a point in the app's History and the same Undo steps back to it.
 
 ## Updates, and undoing them
 
 The update model is the product, so it is built to be reversible. There are two kinds of
 update, and they are deliberately kept apart:
 
-**A service update** — a new signed manifest pinning a new container image — is a
+**An app update** — a new signed manifest pinning a new container image — is a
 `{code + data}` unit:
 
-1. **Snapshot** the service's data before anything changes.
+1. **Snapshot** the app's data before anything changes.
 2. **Switch** to the new manifest.
-3. **Gate** on health: the service must actually come back and serve. Unhealthy, or still
+3. **Gate** on health: the app must actually come back and serve. Unhealthy, or still
    starting when the gate closes, reverts. A health the node *cannot read* keeps the update and
-   says so, because reverting a working service over our own failed probe would be the gate
+   says so, because reverting a working app over our own failed probe would be the gate
    doing the damage it exists to prevent.
 4. **Roll back automatically** if it does not — *code and data together*, to the pair that
    was known good.
@@ -189,12 +194,12 @@ in place is how a "safe" rollback corrupts a home; the snapshot and the manifest
 to each other so that cannot happen.
 
 The same pairs make a short **history** that `briard app undo` can step back through. Every
-service start and every operation takes a snapshot, and an hourly sample fills the quiet
+app start and every operation takes a snapshot, and an hourly sample fills the quiet
 stretches. Points stay undoable for five days, and the most recent update's for two weeks,
 since "the update broke my house" is found days later. Home Assistant is **quiesced** for a
 sample: its recorder pauses writes so the database is caught consistent. A sample taken when
 the pause did not hold is recorded as crash-consistent instead. Each point is judged once,
-after the start that follows it, by the service's own health — healthy, unhealthy, still
+after the start that follows it, by the app's own health — healthy, unhealthy, still
 starting, or unknown — and the app-update gate reads the same verdict: it reverts on unhealthy
 or still starting, never on unknown. Undoing a row undoes exactly the rows above it.
 
@@ -203,11 +208,11 @@ stop), removes what the install laid down, and by default keeps your data and th
 identity whole, so the same install resumes the same home; `-delete-data` is the only finer
 knob. It tells nobody — a claimed name simply lapses.
 
-**An OS update** — a whole new guest image — never touches your services. The new OS boots,
+**An OS update** — a whole new guest image — never touches your apps. The new OS boots,
 runs the same containers on the same data, and is gated on their health; if it fails the
 gate, the OS reverts and the workload has not been stopped, snapshotted, or restored. The
-line is *read versus mutate*: the OS gate may read service health to judge itself; it may
-never rewrite what a service owns. On a two-machine home, a node that is serving refuses to
+line is *read versus mutate*: the OS gate may read app health to judge itself; it may
+never rewrite what an app owns. On a two-machine home, a node that is serving refuses to
 reboot for an update while a peer could take over: that reboot *is* a failover, and sequencing
 one is a handover to schedule, not a decision a node makes about itself.
 
@@ -219,12 +224,12 @@ signals, the old one comes back with no timer, no coordinator, and no decision t
 The agent itself is watched by init: a systemd watchdog catches the one failure shape with
 no other reflex — an agent that is alive but stuck. A trip kills it with a full stack dump
 of every goroutine in the journal (evidence, not just a restart), the restarted agent
-re-adopts the running guest, and your service never notices.
+re-adopts the running guest, and your app never notices.
 
 ## When something needs you
 
 The agent keeps a small, closed set of **alerts** — a disk filling up, a clock an hour out of
-sync, updates that stopped, a service down for ten minutes, the guest not answering, a backup
+sync, updates that stopped, an app down for ten minutes, the guest not answering, a backup
 that failed two nights running, a disk reporting media errors. Each is raised by the thing that
 observes it and cleared by the same thing when the condition ends; an alert the code does not
 list does not exist. They land where you already look: `sudo briard alerts` on the host, the
@@ -271,15 +276,15 @@ allowlist**, readable in one place (`shared/api`). Two properties make it checka
 
 Your home's data — automations, history, photos — stays on your hardware either way.
 
-## Services
+## Apps
 
-A node installs **no service**: a machine is set up first, and then you choose what runs on
+A node installs **no app**: a machine is set up first, and then you choose what runs on
 it. What can run is the **catalog** — signed manifests, served beside a detached signature
 over their exact bytes and checked in here (`catalog/`) so a change to what the fleet installs
 is reviewable before it is live. A manifest names the image by digest; the node keeps the raw
 manifest on its replicated volume, renders it into Podman units on whichever node is primary,
-and the front door routes to it by name. Nothing about a service is baked into the guest
-image, which is why the OS and the services update on independent schedules.
+and the front door routes to it by name. Nothing about an app is baked into the guest
+image, which is why the OS and the apps update on independent schedules.
 
 ## The protocols
 
@@ -312,9 +317,9 @@ demultiplexed by id: a deadline abandons its own call (and cancels it in the gue
 channel is declared down only when the guest has answered nothing at all since that call was
 sent. A hung act therefore never stops the tick that would notice the guest is gone.
 
-One tiny channel points the other way. A service that restarts *itself* — Home Assistant does,
+One tiny channel points the other way. An app that restarts *itself* — Home Assistant does,
 far more often than we restart it — needs to tell the guest agent so, and be told when it may
-proceed, so each service gets one socket and a token minted for it alone. The caller is
+proceed, so each app gets one socket and a token minted for it alone. The caller is
 untrusted (for Home Assistant that is every custom component ever installed): it never names
 itself, no verb names a path, no verb chooses what is destroyed, and every verb is bounded.
 
@@ -376,8 +381,9 @@ The words the code and its comments use, briefly:
 
 - **Machine / node** — the same thing. The product says *machine* to people; the code says
   *node*.
-- **App / service** — the same thing. What you install from the catalog is an *app*; in code
-  it is a *service*.
+- **App / service** — the same thing. What you install from the catalog is an *app*, in the
+  docs and comments too; only code identifiers and fixed names (`service-install`,
+  `.services/`) say *service*.
 - **Flock** — the home's nodes under one name. Every install has one, and a **lone node** is a
   flock of one, running no DRBD.
 - **Anchor** — an always-on node that holds a full copy of the data and can be primary. A
@@ -395,9 +401,14 @@ The words the code and its comments use, briefly:
   replicated volume.
 - **Promoter chain** — the five units promotion starts, in order.
 - **Deadman** — the guest's reboot when its host agent has gone silent.
-- **Quiesce** — pausing a service's writes so a snapshot of it is consistent.
+- **Quiesce** — pausing an app's writes so a snapshot of it is consistent.
+- **Storage tiers** — data, files, cache and unversioned (see [Storage](#storage)), named for
+  what they hold, never for whose it is. An app's **area** is its one subvolume in a tier.
 - **History / Undo** — the per-app list of points you can go back to, and going back to one.
-  Never *backup* (that is the off-site copy) and never *version* (that is the app's own).
+  Never *backup* (that is the off-site copy) and never *version* (that is the app's own
+  release).
+- **Versions** — the files tier's hourly-to-weekly copies, browsed and copied back from, never
+  undone to.
 - **Report card** — the verdict on whether a machine can be a node, at install and on demand
   with `briard doctor`. It refuses with a reason rather than half-installing.
 - **Dashboard / Briard page** — the household page at `briard-<name>.local`. The code calls it
@@ -415,11 +426,11 @@ agent/            the host daemon: orchestration, and the provider seams
   agent/guestagent  the guest side of that boundary: executes and reports, decides nothing
   agent/platform  launching and stopping the guest: QEMU, its units and routes, per OS behind a build tag
   agent/nic, agent/subnet  the guest's place on your LAN, derived from the host's
-  agent/services, agent/hass, agent/mosquitto  what a catalogued service needs beyond its manifest
+  agent/services, agent/hass, agent/mosquitto  what a catalogued app needs beyond its manifest
   agent/install, agent/selfupdate  fetching and verifying a release; the agent's own frozen pivot
   agent/reportcard  the install-time verdict on whether this machine can be a node
 shared/           wire types (api), domain types (model), the manifest schema, the casa contract, the notify seam
-catalog/          the signed service manifests, exactly as published
+catalog/          the signed app manifests, exactly as published
 guest-image/      the NixOS guest: DRBD, drbd-reactor, storage (ships running nothing)
 reverse-proxy/    the front door: answers the VIP, routes by name, terminates TLS, hot-reloads both
 dashboard/        the household dashboard, served from the guest at the VIP

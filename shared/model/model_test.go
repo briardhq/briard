@@ -2,9 +2,9 @@ package model
 
 import "testing"
 
-// ServingUnit is the one definition of "which unit is this service?". A service names its
+// ServingUnit is the one definition of "which unit is this app?". An app names its
 // quadlet-rendered container explicitly, and anything else names NOTHING — never a unit assembled
-// from the service name, which is what once had the host asking systemd about "podman-.service"
+// from the app name, which is what once had the host asking systemd about "podman-.service"
 // and being told "inactive" forever. The name-only case is asserted because it is the one a
 // derivation would be tempted to answer.
 func TestServingUnit(t *testing.T) {

@@ -67,7 +67,7 @@ import (
 //
 // The residual risk is smaller than it was but not zero, and it is named rather than argued
 // away: a guest whose agent is wedged AND whose deadman is dead (so the gate is unreachable)
-// while its services still serve gets rebooted, and on a node with no peer that is an outage the
+// while its apps still serve gets rebooted, and on a node with no peer that is an outage the
 // host chose. That is the trade locked in here -- serving is not healthy; reboot
 // serving nodes, patiently -- and it is now confined to the case where two independent in-guest
 // processes are both gone.
@@ -362,8 +362,8 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 				// we are now on the slow cadence), which the owner would otherwise never learn.
 				u.logf("guest-recovery: the guest keeps stopping after %d relaunches; "+
 					"backing off to the %s cadence", r.attempts, r.cadenceFor())
-				r.say("the guest keeps stopping; Briard restarts it again at %s", at(lastAction.Add(r.cadenceFor())))
-				u.announce(ctx, n, r, fmt.Sprintf("the guest keeps stopping after being restarted "+
+				r.say("the VM keeps stopping; Briard restarts it again at %s", at(lastAction.Add(r.cadenceFor())))
+				u.announce(ctx, n, r, fmt.Sprintf("the VM keeps stopping after being restarted "+
 					"%d times, so it is now being restarted every %s rather than immediately.",
 					r.attempts, r.cadenceFor()))
 				// Sleep out the rest of the cadence by waiting on the channel -- a guest someone
@@ -377,7 +377,7 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 				continue
 			}
 			u.logf("guest-recovery: the guest unit is stopped; relaunching (attempt %d)", r.attempts)
-			r.say("the guest stopped; Briard is restarting it")
+			r.say("the VM stopped; Briard is restarting it")
 			lastAction = time.Now()
 			client, err := u.converge(ctx)
 			if err != nil {
@@ -401,7 +401,7 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 		// here on the first pass and the rest of this function never runs. It also runs between
 		// reboot attempts, so a guest that comes back on its own during the cadence is picked up
 		// within one window rather than waiting out the full two hours.
-		r.say("the guest is not answering; Briard waits until %s for it before restarting it", at(time.Now().Add(r.waitFor())))
+		r.say("the VM is not answering; Briard waits until %s for it before restarting it", at(time.Now().Add(r.waitFor())))
 		client, err := u.awaitChannel(ctx, r.waitFor())
 		if err == nil {
 			// ANSWERING IS NOT CONVERGED, and telling the two apart is the point. The guest unit is
@@ -460,18 +460,18 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 			// heard from again. Holding is a state the owner needs to know about too, because it
 			// is the one the house cannot leave without them.
 			if !lastAction.IsZero() && sinceAction < r.cadenceFor() {
-				r.say("the guest is not answering after a restart; Briard restarts it again at %s", at(lastAction.Add(r.cadenceFor())))
+				r.say("the VM is not answering after a restart; Briard restarts it again at %s", at(lastAction.Add(r.cadenceFor())))
 			} else {
-				r.say("the guest is not answering, and restarting it would drop the rest of the cluster below quorum; Briard is leaving it alone and watching")
+				r.say("the VM is not answering, and restarting it would drop the rest of the cluster below quorum; Briard is leaving it alone and watching")
 			}
-			u.announce(ctx, n, r, fmt.Sprintf("no answer from the guest for %s. The host is not "+
-				"restarting it: the guest reports that restarting it would drop the rest of the "+
+			u.announce(ctx, n, r, fmt.Sprintf("no answer from the VM for %s. Briard is not "+
+				"restarting it: the VM reports that restarting it would drop the rest of the "+
 				"cluster below quorum. It is being left alone and watched.", r.waitFor()))
 			continue
 		}
 
-		r.say("the guest is not answering; Briard is restarting it")
-		u.announce(ctx, n, r, fmt.Sprintf("no answer from the guest for %s. The host is "+
+		r.say("the VM is not answering; Briard is restarting it")
+		u.announce(ctx, n, r, fmt.Sprintf("no answer from the VM for %s. Briard is "+
 			"restarting it.", r.waitFor()))
 		lastAction = time.Now()
 		client, err = u.rebootGuest(ctx)
@@ -543,9 +543,9 @@ func (u *osUpgrade) resolved(ctx context.Context, n notify.Notifier, r *guestRec
 	u.fire(ctx, n, notify.Alert{
 		Key:   "guest",
 		Kind:  notify.Resolved,
-		Title: "Briard: the guest is answering again",
-		Body: fmt.Sprintf("node %s: the guest is back and serving as of now. If it stops again "+
-			"the host will keep restarting it, and will say so if it stops recovering.", u.cfg.Node),
+		Title: "Briard: the VM is answering again",
+		Body: fmt.Sprintf("machine %s: the VM is back and serving as of now. If it stops again "+
+			"Briard will keep restarting it, and will say so if it stops recovering.", u.cfg.Node),
 	})
 }
 
@@ -568,16 +568,16 @@ func (u *osUpgrade) announce(ctx context.Context, n notify.Notifier, r *guestRec
 	if !r.takeAnnounce() {
 		return
 	}
-	body := fmt.Sprintf("node %s: %s This node is not serving until it comes back.", u.cfg.Node, situation)
+	body := fmt.Sprintf("machine %s: %s This machine is not serving until it comes back.", u.cfg.Node, situation)
 	if last := platform.LastLines(ctx, u.cfg.guestSpec()); last != "" {
 		u.logf("guest-recovery: the guest's last words: %s", last)
-		body += " The guest's last words: " + last + "."
+		body += " The VM's last words: " + last + "."
 	}
 	u.fire(ctx, n, notify.Alert{
 		Key:      "guest",
 		Kind:     notify.Open,
 		Severity: notify.Critical,
-		Title:    "Briard: the guest has stopped answering",
+		Title:    "Briard: the VM has stopped answering",
 		Body:     body + " " + tryNow,
 	})
 }
@@ -783,7 +783,7 @@ func hostUnreachableAlert(node string, ep deadman.LastEpisode) notify.Alert {
 		Kind:     notify.Event,
 		Severity: notify.Warning,
 		Title:    "Briard: the host agent was unreachable",
-		Body: fmt.Sprintf("node %s's host agent was unreachable from %s to %s (%s). The guest %s. "+
+		Body: fmt.Sprintf("machine %s's host agent was unreachable from %s to %s (%s). The VM %s. "+
 			"It is back now; if this was not a planned restart of the machine, check why the agent stopped.",
 			node, ep.Since.Local().Format("Mon 2 Jan 15:04"), ep.Until.Local().Format("15:04"),
 			ep.Until.Sub(ep.Since).Round(time.Minute), did),

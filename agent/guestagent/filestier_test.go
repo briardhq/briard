@@ -14,8 +14,8 @@ import (
 )
 
 // THE RULE AS DESIGNED, on numbers a human can check: a 100 GB volume with 2 GB of slack holding
-// 10 GB of service state gives the files tier 100 − 10 − 2 (20 %) − 2 = 86 GB, with a 4.3 GB
-// target. A small service state takes the 300 MB floor, a small cap the 1 GB target, and a volume
+// 10 GB of app state gives the files tier 100 − 10 − 2 (20 %) − 2 = 86 GB, with a 4.3 GB
+// target. A small app state takes the 300 MB floor, a small cap the 1 GB target, and a volume
 // the data tier fills leaves a cap of zero rather than a negative one.
 func TestFilesAllocationIsTheRule(t *testing.T) {
 	for _, tc := range []struct {
@@ -74,7 +74,7 @@ func TestAnAppsCapLeavesTheOthersTheirShare(t *testing.T) {
 	}
 }
 
-// EVERY APP IN EACH TIER IS CAPPED: a service app by the volume's physical free space and the
+// EVERY APP IN EACH TIER IS CAPPED: a data area by the volume's physical free space and the
 // volume's keep, a files area by the files tier's free space and its own. An app grown alone keeps
 // its cap -- what it adds, the tier loses -- and a tick with nothing changed sets no limit again.
 func TestTheTickCapsEveryApp(t *testing.T) {
@@ -87,7 +87,7 @@ func TestTheTickCapsEveryApp(t *testing.T) {
 	if len(rep.Errors) > 0 {
 		t.Fatalf("errors: %v", rep.Errors)
 	}
-	// 100 GB, 2 GiB of slack, 10 GB of service, 50 GB of files.
+	// 100 GB, 2 GiB of slack, 10 GB of app, 50 GB of files.
 	free := rep.Volume - rep.Slack - rep.DataUsed - rep.FilesUsed
 	if rep.Slack != 2<<30 || free != 100*gb-2<<30-10*gb-50*gb {
 		t.Fatalf("slack %d, free %d", rep.Slack, free)
@@ -209,7 +209,7 @@ type userVolume struct {
 	areaBytes   int64 // the household's own files, across every files area
 	volume      int64
 	dataUsed    int64
-	// Per app, when a test is about the apps' caps: the service state each holds (inside
+	// Per app, when a test is about the apps' caps: the app state each holds (inside
 	// dataUsed), and files on top of areaBytes. A member's bytes are its app's.
 	svcApp, userFiles map[string]int64
 	own               int64 // on the disk and charged to nobody
@@ -346,7 +346,7 @@ func TestAFreshInstallTakesAMemberAndSetsTheCap(t *testing.T) {
 	}
 }
 
-// A GROWING SERVICE LOWERS THE CAP, and the limit follows it -- below what the files tier holds,
+// A GROWING APP LOWERS THE CAP, and the limit follows it -- below what the files tier holds,
 // which the kernel accepts and which stops the next write.
 func TestAGrowingServiceLowersTheCap(t *testing.T) {
 	v := newUserVolume("immich")
@@ -365,7 +365,7 @@ func TestAGrowingServiceLowersTheCap(t *testing.T) {
 
 // THE VALVE sheds the oldest eligible member first, across apps, and stops when there is room:
 // members younger than a day are never shed, and nothing outside the versions is ever deleted.
-// History of ten days gave the room, so there is no warning.
+// Versions of ten days gave the room, so there is no warning.
 func TestTheValveShedsTheOldestUntilThereIsRoom(t *testing.T) {
 	v := newUserVolume("immich", "jellyfin")
 	v.memberBytes = 2 * gb
@@ -421,7 +421,7 @@ func TestTheValveStopsAtTheDayAndWarns(t *testing.T) {
 	}
 }
 
-// OLD HISTORY IS SHED WITHOUT A WARNING; recent history is not. A valve that had to reach into
+// OLD VERSIONS ARE SHED WITHOUT A WARNING; recent ones are not. A valve that had to reach into
 // the last five days is the warning, even when it found the room.
 func TestTheWarningIsAboutRecentHistory(t *testing.T) {
 	for _, tc := range []struct {

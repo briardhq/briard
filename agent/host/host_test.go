@@ -81,7 +81,7 @@ type fakeStatus struct {
 	resErr    error
 	health    bool                       // ServiceHealth return (the in-guest probe result)
 	hlthErr   error                      // when set, ServiceHealth errors -> snapshot falls back to the host-side probe
-	svcHealth map[string]services.Health // ServiceHealthOf: service name -> answers; absent = unresolvable
+	svcHealth map[string]services.Health // ServiceHealthOf: app name -> answers; absent = unresolvable
 	// vip is what net.vip answers: the address the service NIC ACTUALLY holds, in CIDR form,
 	// "" for a device that holds none. probed records the URL snapshot resolved from it, so a
 	// test can assert WHAT was probed and not merely that something was.
@@ -89,7 +89,7 @@ type fakeStatus struct {
 	vipErr error
 	probed *string
 	// active is what service.active answers per unit, and activeErr makes it fail -- the two
-	// halves per-service state needs, since "the unit is down" and "we could not ask" must not
+	// halves per-app state needs, since "the unit is down" and "we could not ask" must not
 	// report the same thing (api.ServiceStatus.State).
 	active    map[string]bool
 	activeErr error
@@ -109,7 +109,7 @@ type fakeStatus struct {
 	volume        map[string]string
 	volumeErr     error
 	noServiceList bool // a guest too old to list: the host must fall back, not fail
-	// The ring: what this service's history already holds, what the loop asked to take,
+	// The ring: what this app's history already holds, what the loop asked to take,
 	// and the two refusals -- a guest too old for the ring at all, and a take that fails.
 	members    map[string][]quadlet.SnapshotEntry
 	membersErr error
@@ -117,7 +117,7 @@ type fakeStatus struct {
 	snapErr    error
 	noRing     bool
 	noQuiesce  bool        // advertises the ring but not the quiesced take
-	held       bool        // the service held still across a quiesced take
+	held       bool        // the app held still across a quiesced take
 	quiesceErr error       // the quiesced take failed outright
 	db         *fakeDB     // the guest's recorder check; nil is a guest that has none
 	backup     *fakeBackup // the guest's backup run; nil is a guest that has none
@@ -137,7 +137,7 @@ func (f fakeStatus) SupportsMembers() bool { return !f.noRing }
 
 func (f fakeStatus) SupportsSnapshotMember() bool { return !f.noRing }
 
-// The QUIESCED take: `held` is what the fake service reports, and the recorded sidecar
+// The QUIESCED take: `held` is what the fake app reports, and the recorded sidecar
 // carries the class the GUEST would have written — upgraded only when it held, which is the thing
 // the host's side must not be able to claim on its own.
 func (f fakeStatus) QuiescedSnapshot(_ context.Context, service, _, dest, sidecar string) (bool, string, error) {
@@ -204,9 +204,9 @@ func (f fakeStatus) ServiceHealth(_ context.Context, url string) (bool, error) {
 	return f.health, f.hlthErr
 }
 
-// ServiceHealthOf is the PER-SERVICE probe, keyed on the service name rather than on a
+// ServiceHealthOf is the PER-APP probe, keyed on the app name rather than on a
 // URL: `svcHealth` maps a name to what the guest would answer, and an absent entry stands for the
-// service the guest cannot resolve -- which must leave the field empty, not report it unhealthy.
+// app the guest cannot resolve -- which must leave the field empty, not report it unhealthy.
 func (f fakeStatus) ServiceHealthOf(_ context.Context, service string) (services.Health, error) {
 	h, known := f.svcHealth[service]
 	if !known {
@@ -233,7 +233,7 @@ func (f fakeStatus) Resources(context.Context, map[string]string, string, bool) 
 	return f.res, f.resErr
 }
 
-// What the VOLUME carries: `volume` maps a service name to its manifest bytes, so a test can put
+// What the VOLUME carries: `volume` maps an app name to its manifest bytes, so a test can put
 // this node in the state a converged survivor is in -- running what somebody else installed.
 func (f fakeStatus) ServiceList(context.Context) ([]string, error) {
 	names := make([]string, 0, len(f.volume))
@@ -377,11 +377,11 @@ func TestConfigFromEnv_GuestGetsAMonitor(t *testing.T) {
 	}
 }
 
-// THE ENVIRONMENT CANNOT INSTALL A SERVICE, which is the end state the services work was after: there
+// THE ENVIRONMENT CANNOT INSTALL AN APP, which is the end state the services work was after: there
 // is no SERVICE_IMAGE (or any sibling) left to read, so an anchor comes up with the empty set and
 // fills it from what it was actually installed with -- the node-local cache, or the volume once it
 // promotes. Setting the old variables must therefore do NOTHING, which is what this asserts: a
-// re-introduced env path would give a node a service nobody installed.
+// re-introduced env path would give a node an app nobody installed.
 func TestConfigFromEnv_NoServiceComesFromTheEnvironment(t *testing.T) {
 	for _, k := range []string{"SERVICE_NAME", "SERVICE_IMAGE", "SERVICE_DATADIR"} {
 		t.Setenv(k, "briard-dummy:v0")
@@ -395,7 +395,7 @@ func TestConfigFromEnv_NoServiceComesFromTheEnvironment(t *testing.T) {
 // The chain is STATIC — data -> vip -> services — on every data node, whatever is installed.
 // That is what makes converge-at-promotion possible: the chain is what drbd-reactor
 // promotes WITH, but the volume it must converge to is only readable AFTER promotion, so the
-// start-list cannot name the services themselves.
+// start-list cannot name the apps themselves.
 //
 // The old assertion here was the opposite, and its reason was real: naming a unit the guest does
 // not define fails the whole ordered chain and takes the VIP down on every fresh install, which is
@@ -406,7 +406,7 @@ func TestConfigFromEnv_NoServiceComesFromTheEnvironment(t *testing.T) {
 // units on every anchor, whatever the node is running and whatever the environment says. The
 // SHAPE is what this guards, not the membership -- the two mDNS publishers were added later, and the
 // property that must survive any such change is that nothing about the environment or the
-// installed services can alter the list.
+// installed apps can alter the list.
 func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 	t.Setenv("ROLE", string(model.RoleAnchor))
 	cfg := ConfigFromEnv()
@@ -423,7 +423,7 @@ func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 	if !slices.Equal(cfg.Promoter, want) {
 		t.Errorf("promoter chain = %v, want %v", cfg.Promoter, want)
 	}
-	// A runtime-installed service does NOT join it — converge starts those, which is what keeps a
+	// A runtime-installed app does NOT join it — converge starts those, which is what keeps a
 	// crashed container from deactivating the promoter's target and demoting the node.
 	t.Setenv("SERVICE_IMAGE", "briard-dummy:v0")
 	if got := ConfigFromEnv().Promoter; !slices.Equal(got, want) {
@@ -437,7 +437,7 @@ func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 // means "resolve it from the address the guest actually holds", which is the only source that can
 // be right on a LAN we have never seen.
 //
-// The probe target is still the front door rather than a service's own port; that part was never
+// The probe target is still the front door rather than an app's own port; that part was never
 // the defect, and healthURLAt is what keeps it true once the address is dynamic.
 func TestConfigFromEnv_NoBakedHealthTarget(t *testing.T) {
 	t.Setenv("HEALTH_URL", "")
@@ -1188,7 +1188,7 @@ func TestDeriveUUID(t *testing.T) {
 
 // NodeStatus.System is the guest RELEASE this node runs: the record the host keeps of
 // the release whose image it booted -- not something read from the guest, which knows only a
-// closure. The shipped zero-service anchor reports it like any node (a node the rollout cannot
+// closure. The shipped zero-app anchor reports it like any node (a node the rollout cannot
 // see is a node it cannot update); a witness, diskless, has no guest and reports nothing; a
 // node with no record reports nothing rather than guessing.
 func TestCurrentSystem(t *testing.T) {

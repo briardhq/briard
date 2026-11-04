@@ -138,7 +138,7 @@ func writeOutcome(conn net.Conn, o api.DirectiveOutcome) {
 
 // LocalStatus is a status directive's answer, as JSON in the outcome's Detail: what the tray
 // shows. Everything in it is already on this host -- the last tick's health, the alert store,
-// the act lane, the lease's refusal, the catalog's view over the installed-service cache -- so
+// the act lane, the lease's refusal, the catalog's view over the installed-app cache -- so
 // asking costs no read of the guest.
 type LocalStatus struct {
 	Serving  bool `json:"serving"`  // the last tick found the node healthy

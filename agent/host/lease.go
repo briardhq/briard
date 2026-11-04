@@ -605,14 +605,14 @@ func (l *vipLeaser) tick(ctx context.Context, acts *actLane, up any, n notify.No
 			Key:      "address",
 			Kind:     notify.Open,
 			Severity: notify.Critical,
-			Title:    "Briard: this node cannot take an address on your network",
+			Title:    "Briard: this machine cannot take an address on your network",
 			Body:     detail + ". Nothing in your home can reach Briard until you " + fix + ".",
 		})
 	} else if !refused && open {
 		fireAlert(ctx, n, logf, notify.Alert{
 			Key:   "address",
 			Kind:  notify.Resolved,
-			Title: "Briard: this node has an address on your network",
+			Title: "Briard: this machine has an address on your network",
 			Body:  "Briard has an address on your network again.",
 		})
 	}

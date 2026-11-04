@@ -117,7 +117,7 @@ func (a *redundancyAlerter) alertFor(cur redundancy, cl model.Cluster) notify.Al
 			Key:   "redundancy",
 			Kind:  notify.Resolved,
 			Title: "Briard: redundancy restored",
-			Body:  fmt.Sprintf("node %s reconnected all replicas (%d/%d connected).", a.node, cl.Connected, a.peers),
+			Body:  fmt.Sprintf("machine %s reconnected all replicas (%d/%d connected).", a.node, cl.Connected, a.peers),
 		}
 	case redundancyAlone:
 		return notify.Alert{
@@ -125,7 +125,7 @@ func (a *redundancyAlerter) alertFor(cur redundancy, cl model.Cluster) notify.Al
 			Kind:     notify.Open,
 			Severity: notify.Critical,
 			Title:    "Briard: no second copy",
-			Body: fmt.Sprintf("node %s is the only node left holding your data (%d/%d peers connected, "+
+			Body: fmt.Sprintf("machine %s is the only machine left holding your data (%d/%d peers connected, "+
 				"none of them with a usable copy). It is still serving, but until a peer comes back "+
 				"there is no second copy of your files and nothing to fail over to.",
 				a.node, cl.Connected, a.peers),
@@ -133,14 +133,14 @@ func (a *redundancyAlerter) alertFor(cur redundancy, cl model.Cluster) notify.Al
 	default:
 		reassurance := ""
 		if cl.PeerCanTakeOver() {
-			reassurance = " Another node still holds a full copy of your data."
+			reassurance = " Another machine still holds a full copy of your data."
 		}
 		return notify.Alert{
 			Key:      "redundancy",
 			Kind:     notify.Open,
 			Severity: notify.Warning,
 			Title:    "Briard: reduced redundancy",
-			Body: fmt.Sprintf("node %s lost a replica connection (%d/%d connected) — still serving, "+
+			Body: fmt.Sprintf("machine %s lost a replica connection (%d/%d connected) — still serving, "+
 				"but one more failure would cause an outage.%s", a.node, cl.Connected, a.peers, reassurance),
 		}
 	}
@@ -189,7 +189,7 @@ func (c *clockAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 				Kind:     notify.Open,
 				Severity: notify.Warning,
 				Title:    "Briard: clock not synchronised",
-				Body: fmt.Sprintf("node %s has not synchronised its clock with a time server for over an hour. "+
+				Body: fmt.Sprintf("machine %s has not synchronised its clock with a time server for over an hour. "+
 					"Certificates, alerts and backups are dated by this clock; check that the machine can "+
 					"reach the internet and that `timedatectl set-ntp true` is on.", node),
 			})
@@ -200,32 +200,32 @@ func (c *clockAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 			Key:   "clock",
 			Kind:  notify.Resolved,
 			Title: "Briard: clock synchronised",
-			Body:  fmt.Sprintf("node %s is synchronised with a time server again.", node),
+			Body:  fmt.Sprintf("machine %s is synchronised with a time server again.", node),
 		})
 	}
 }
 
-// serviceAlerter tells the owner when an installed service has stopped working on the node that
-// runs it, and again when it works. Nothing else does: a service is not a promoter-chain member,
+// serviceAlerter tells the owner when an installed app has stopped working on the node that
+// runs it, and again when it works. Nothing else does: an app is not a promoter-chain member,
 // so a crashed one demotes nothing, and the front door answers for the node, so the node reads
-// healthy while the service behind it is down.
+// healthy while the app behind it is down.
 //
 // DOWN IS "STOPPED" OR "RUNNING AND UNHEALTHY", one condition under one title -- a crash-loop
 // moves between the two every few seconds, and the store records a change of title as news.
 // WORKING IS "RUNNING AND HEALTHY", and nothing short of it resolves. STARTING AND EMPTY SAY
-// NOTHING: a service booting is not down, and empty is "not asked" (a Secondary, a channel
+// NOTHING: an app booting is not down, and empty is "not asked" (a Secondary, a channel
 // hiccup, an app that told us nothing) -- an unknown is not an alarm.
 //
 // THE GRACE IS THE DEBOUNCE, and it is held across the readings that say nothing: a crash-loop
 // reads stopped, then starting, then stopped, and never healthy, so its run of "down" is never
-// broken and it opens. It opens only on a down reading, so a service that blipped once and is now
+// broken and it opens. It opens only on a down reading, so an app that blipped once and is now
 // starting through a long migration does not. The deliberate stops -- an install's quiesce,
 // a restore -- are shorter than the grace.
 //
-// A NODE THAT NO LONGER HOLDS THE VOLUME RESOLVES what it opened: the services run on whichever
+// A NODE THAT NO LONGER HOLDS THE VOLUME RESOLVES what it opened: the apps run on whichever
 // node does, and that node asserts its own.
 type serviceAlerter struct {
-	down map[string]time.Time // per service: start of the current run of "down"
+	down map[string]time.Time // per app: start of the current run of "down"
 }
 
 const serviceDownFor = 10 * time.Minute
@@ -245,7 +245,7 @@ func (a *serviceAlerter) observe(ctx context.Context, n notify.Notifier, node st
 				Key:   key,
 				Kind:  notify.Resolved,
 				Title: "Briard: " + s.Name + " handed over",
-				Body:  fmt.Sprintf("node %s no longer runs %s; the node holding your data does, and says so if it is not working.", node, s.Name),
+				Body:  fmt.Sprintf("machine %s no longer runs %s; the machine holding your data does, and says so if it is not working.", node, s.Name),
 			})
 		case s.State == api.StateRunning && s.Health == api.StateHealthy:
 			delete(a.down, s.Name)
@@ -253,7 +253,7 @@ func (a *serviceAlerter) observe(ctx context.Context, n notify.Notifier, node st
 				Key:   key,
 				Kind:  notify.Resolved,
 				Title: "Briard: " + s.Name + " is working again",
-				Body:  fmt.Sprintf("%s is running and answering on node %s.", s.Name, node),
+				Body:  fmt.Sprintf("%s is running and answering on machine %s.", s.Name, node),
 			})
 		case s.State == api.StateStopped || s.Health == api.StateUnhealthy:
 			since, ok := a.down[s.Name]
@@ -274,7 +274,7 @@ func (a *serviceAlerter) observe(ctx context.Context, n notify.Notifier, node st
 				Kind:     notify.Open,
 				Severity: notify.Critical,
 				Title:    "Briard: " + s.Name + " is not working",
-				Body: fmt.Sprintf("%s %s on node %s for over %d minutes. The rest of the node is unaffected.",
+				Body: fmt.Sprintf("%s %s on machine %s for over %d minutes. The rest of the machine is unaffected.",
 					s.Name, what, node, int(serviceDownFor/time.Minute)),
 			})
 		}

@@ -51,7 +51,7 @@ func newUpdateAlerter(n notify.Notifier, node string, lay selfupdate.Layout, log
 // watchUpdates reads the update run's verdict on a slow cadence for the life of the agent.
 // Started once, beside the guest update timer, and on EVERY node -- a witness included. A node
 // that can no longer update is outside its support window whatever else it is, and that is not a
-// statement about replicas, services or role.
+// statement about replicas, apps or role.
 //
 // The catalog's index rides the same tick (catalog.go): it is the one other read of the release
 // host a node makes, due daily like the update itself, and a cadence of its own would be a
@@ -107,7 +107,7 @@ func (a *updateAlerter) alertFor(failing bool, why string) notify.Alert {
 			Key:   "updates",
 			Kind:  notify.Resolved,
 			Title: "Briard: updates are working again",
-			Body: fmt.Sprintf("node %s completed an update check; it is following its release channel again.",
+			Body: fmt.Sprintf("machine %s completed an update check; it is following its release channel again.",
 				a.node),
 		}
 	}
@@ -115,8 +115,8 @@ func (a *updateAlerter) alertFor(failing bool, why string) notify.Alert {
 		Key:      "updates",
 		Kind:     notify.Open,
 		Severity: notify.Warning,
-		Title:    "Briard: this node has stopped updating",
-		Body: fmt.Sprintf("node %s's nightly update check is failing, so it has stopped receiving "+
+		Title:    "Briard: this machine has stopped updating",
+		Body: fmt.Sprintf("machine %s's nightly update check is failing, so it has stopped receiving "+
 			"fixes. It keeps serving in the meantime, and nothing you have is at risk right now. %s", a.node, why),
 	}
 }

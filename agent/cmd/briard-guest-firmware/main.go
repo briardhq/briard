@@ -2,7 +2,7 @@
 //
 // It serves the host over the virtio-serial channel and answers exactly five verbs: the
 // handshake, the three push verbs the host dresses a guest through, and the clean shutdown.
-// Everything else a running node needs -- DRBD bring-up, services, converge, telemetry, the
+// Everything else a running node needs -- DRBD bring-up, apps, converge, telemetry, the
 // deadman -- belongs to `briard-guest-agent`, which the host PUSHES at every bring-up and which
 // the guest's pivot then runs in this binary's place (guest-image/pivot.nix). The scratch the
 // pushed set lands in is emptied at every boot, so every boot starts here and the host re-dresses it.

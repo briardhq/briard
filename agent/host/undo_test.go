@@ -74,7 +74,7 @@ func TestTheUndoPointIsPinnedToTheStagedManifest(t *testing.T) {
 	}
 }
 
-// A FRESH install has nothing to put back: no restore, the stage discarded, and the service gone.
+// A FRESH install has nothing to put back: no restore, the stage discarded, and the app gone.
 func TestAStagedFreshInstallIsDiscarded(t *testing.T) {
 	staged, _ := json.Marshal(testManifest())
 	f := &fakeInstaller{staged: map[string]string{"home-assistant": string(staged)}, rollbacks: map[string]string{"home-assistant": ""}}
@@ -87,7 +87,7 @@ func TestAStagedFreshInstallIsDiscarded(t *testing.T) {
 	}
 }
 
-// A RESTORE THAT FAILS LEAVES THE STAGE IN PLACE: converge keeps holding the service back, so the
+// A RESTORE THAT FAILS LEAVES THE STAGE IN PLACE: converge keeps holding the app back, so the
 // prior version is never started on data that was not put back, and the next promotion tries again.
 func TestAnUndoWhoseRestoreFailsKeepsTheServiceHeldBack(t *testing.T) {
 	f, _, _ := crashedUpgrade(t)

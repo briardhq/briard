@@ -32,16 +32,16 @@ let
   # workload INSTALLS one -- the same way a shipped node gets one -- and the guest under test is
   # the guest that ships.
   guestModule = ../guest-image/configuration.nix;
-  # The dummy fixture as a CATALOGUED service: a digest-pinned manifest plus the tarball it names.
+  # The dummy fixture as a CATALOGUED app: a digest-pinned manifest plus the tarball it names.
   # This is how a test gets a workload onto a node (converge-at-promotion deleted the build-time slot that
   # was the alternative) — the same fixture, delivered the way a shipped node actually gets one.
   fixture = import ./fixture-service.nix { inherit pkgs; };
-  # HOME ASSISTANT AS A CATALOGUED SERVICE: a signed manifest naming a digest-pinned image,
-  # installed onto the volume after promotion -- exactly what a user's service is. Read from its
+  # HOME ASSISTANT AS A CATALOGUED APP: a signed manifest naming a digest-pinned image,
+  # installed onto the volume after promotion -- exactly what a user's app is. Read from its
   # catalog entry (its mounts, :8123, /manifest.json as the readiness path because HA has no /healthz
   # and `/` redirects into onboarding), so the tests run the version the catalog ships.
   hassFixture = import ./catalog-fixture.nix { inherit pkgs; entry = ../catalog/home-assistant.json; };
-  # The upgrade PAIR, as two published versions of one service: 2025.11.0 (recorder schema 51)
+  # The upgrade PAIR, as two published versions of one app: 2025.11.0 (recorder schema 51)
   # with 2025.12.0 (schema 53) as a variant. Installing the variant IS the upgrade -- same name,
   # new manifest, converge bounces the container onto it -- which is the shape a household's HA
   # update has, where the old test drove an image re-pin no user could produce.
@@ -74,14 +74,14 @@ let
   };
 
 
-  # THE BROKER AS A CATALOGUED SERVICE -- the second real entry, and the one that proves
-  # "N services" rather than "one service, twice". Its manifest differs from HA's in the way that
+  # THE BROKER AS A CATALOGUED APP -- the second real entry, and the one that proves
+  # "N apps" rather than "one app, twice". Its manifest differs from HA's in the way that
   # matters: `port` is the broker's HTTP MANAGEMENT endpoint (the only thing the liveness floor can
   # probe -- MQTT is not HTTP), bound to the guest's loopback by the config the product renders
   # for it (agent/mosquitto), while the port a household uses is 1883. Read from its catalog
   # entry, so the tests run the private, MQTT-only pod households run.
   mosquittoFixture = import ./catalog-fixture.nix { inherit pkgs; entry = ../catalog/mosquitto.json; };
-  # The same service published twice, 2.1.1 with 2.1.2 as a variant: installing the variant IS the
+  # The same app published twice, 2.1.1 with 2.1.2 as a variant: installing the variant IS the
   # upgrade. Both ends serve the same management API under Briard's config (measured before the
   # pair was pinned -- guest-image/pkgs/mosquitto-image), so an upgrade that failed here would be
   # reporting on the pipeline rather than on a broker that changed its API mid-pair.
@@ -119,13 +119,13 @@ let
     inherit pkgs guestModule;
     fixture = mosquittoFixture;
   };
-  # Two services on one node: both converge, upgrading one leaves the other alone, the rollback
+  # Two apps on one node: both converge, upgrading one leaves the other alone, the rollback
   # point restores only what moved, and a failover carries both.
   servicesPair = import ./services-pair.nix {
     inherit pkgs guestModule fixture;
     mosquitto = mosquittoPairFixture;
   };
-  # HA installed as a service: real Home Assistant boots and serves, its recorder
+  # HA installed as an app: real Home Assistant boots and serves, its recorder
   # SQLite + .storage landing on the DRBD subvolume.
   hassPayload = import ./hass-payload.nix {
     inherit pkgs guestModule;
@@ -140,7 +140,7 @@ let
   hassRecorderCheck = import ./hass-recorder-check.nix { inherit pkgs guestModule; fixture = hassFixture; };
 
   # The encryption conversion: the DRBD backing moves between a plaintext and an encrypted PV, live, both ways,
-  # with a service writing throughout. The dummy: the claim is about the storage stack, not an app.
+  # with an app writing throughout. The dummy: the claim is about the storage stack, not any one app.
   luksConvert = import ./luks-convert.nix { inherit pkgs guestModule fixture; };
 
   # A real HA upgrade (2025.11.0 → 2025.12.0) carrying a real recorder schema
@@ -157,7 +157,7 @@ let
     fixture = hassPairFixture;
   };
 
-  # THE SHIPPED ARTIFACT: the bootable disk `install.sh` lays down, running no service. This
+  # THE SHIPPED ARTIFACT: the bootable disk `install.sh` lays down, running no app. This
   # is what `.#artifacts.guest-disk` publishes and what the agent-driven bring-up tests boot,
   # so the shape a stranger installs is the shape CI exercises.
   guestDisk = (import ../guest-image/disk-image.nix { inherit nixpkgs pkgs overlay; agentVersion = guestVersion; }) // { inputs = guestInputs; };
@@ -219,7 +219,7 @@ let
     };
   };
   # An install killed inside its health gate is undone at the next start, from the volume alone.
-  # The broken variant poisons the service's data and never answers, so the undo has data to put
+  # The broken variant poisons the app's data and never answers, so the undo has data to put
   # back; both images are staged, so nothing pulls.
   undoFixture = import ./fixture-service.nix {
     inherit pkgs;
@@ -302,7 +302,7 @@ let
   maintenanceContract = import ./maintenance-contract.nix { inherit pkgs fixture guestModule; };
 
   # ⚠️ A HERMETIC NODE DOES NOT REPRODUCE THE SHUTDOWN DEADLOCK, measured while chasing the shutdown deadlock:
-  # a lib.nix node converged the same way — DRBD Primary, volume mounted, service serving, VIP up,
+  # a lib.nix node converged the same way — DRBD Primary, volume mounted, app serving, VIP up,
   # the reactor's `Before=` drop-in present — powered itself off in 1.5s while the SHIPPED guest
   # sat in that deadlock for 90s. The throwaway harness that showed this is not kept: it was green
   # against a broken product, which is the most expensive kind of test to leave lying around.
@@ -318,11 +318,11 @@ let
 
   # A whole cluster running NOTHING -- the state every node is in until something is installed.
   # Every other test here now boots the same guest, so what this one still owns is the assertion
-  # that a node with no services is a WORKING node: volume mounted, chain complete, VIP up, front
+  # that a node with no apps is a WORKING node: volume mounted, chain complete, VIP up, front
   # door answering for itself.
   zeroService = import ./zero-service.nix { inherit pkgs guestModule; };
 
-  # Put a service ONTO the shipped (zero-service) node at runtime — a real digest-pinned
+  # Put an app ONTO the shipped (zero-service) node at runtime — a real digest-pinned
   # TLS pull from a registry the test runs, our real renderer's quadlet output, and the promoter
   # chain it emits driving the pod up behind the front door.
   quadletRenderPkg = pkgs.callPackage ./quadlet-render-pkg.nix { };
@@ -332,7 +332,7 @@ let
     quadletRender = quadletRenderPkg;
   };
   # The failure half — upgrade to a broken manifest, gate trips, {code+data} rollback to the
-  # prior service. Reuses the whole hermetic scaffolding above (registry, CA, renderer, DRBD).
+  # prior app. Reuses the whole hermetic scaffolding above (registry, CA, renderer, DRBD).
   serviceInstallBroken = import ./service-install.nix {
     inherit pkgs;
     inherit guestModule;
@@ -375,7 +375,7 @@ let
   };
 
   # On the DEFAULT macvtap substrate: the whole free-local `curl | sh` install
-  # -> green, proven by an OFF-BOX LAN client reaching the service at the VIP, using the bundled
+  # -> green, proven by an OFF-BOX LAN client reaching the app at the VIP, using the bundled
   # qemu (no distro qemu) + a nested guest; plus the cattle/pet reinstall. It carries that
   # mode-independent chain here from the bridge test, so the default substrate carries it.
   installMacvtap = import ./install-macvtap.nix {
@@ -402,7 +402,7 @@ in
       drbd-witness = import ./drbd-witness.nix { inherit pkgs fixture guestModule; };
       drbd-witness-loss = import ./drbd-witness-loss.nix { inherit pkgs fixture guestModule; };
       single-node-chain = import ./single-node-chain.nix { inherit pkgs fixture guestModule; }; # a lone node runs no DRBD
-      service-memory-limit = import ./service-memory-limit.nix { inherit pkgs guestModule; }; # a leak is OOM-killed inside its own service
+      service-memory-limit = import ./service-memory-limit.nix { inherit pkgs guestModule; }; # a leak is OOM-killed inside its own app
       backup = import ./backup.nix { inherit pkgs fixture guestModule; }; # a ring member, through the real store, into a folder a person owns
       # The exit assertion of the lone node running no DRBD, a guard since the lone node stopped running DRBD: one bad
       # sector under a data file costs ONE file, and the node keeps serving. (The media-error spike
@@ -436,12 +436,12 @@ in
     };
 
 
-    # THE CATALOGUED SERVICES THEMSELVES. Everything else here tests a mechanism with a
-    # service standing in it; these test the services, and the properties that only exist once
+    # THE CATALOGUED APPS THEMSELVES. Everything else here tests a mechanism with an
+    # app standing in it; these test the apps, and the properties that only exist once
     # there is more than one of them.
     services = {
       mosquitto = mosquittoTest; # the broker: its config in effect, its data on the volume
-      services-pair = servicesPair; # two services: upgrade one, the other keeps serving
+      services-pair = servicesPair; # two apps: upgrade one, the other keeps serving
     };
     # EACH APP'S CONTRACT: the tests of Briard's own code for one catalogued app (agent/hass,
     # agent/mosquitto, its agent/services entry), on the entry the catalog ships. The tier runs them
@@ -454,7 +454,7 @@ in
     app-mosquitto = {
       mosquitto = mosquittoTest;
     };
-    # Real Home Assistant as an INSTALLED SERVICE (2.4 GB image boot).
+    # Real Home Assistant as an INSTALLED APP (2.4 GB image boot).
     ha = {
       hass-payload = hassPayload;
       hass-failover = hassFailover;
@@ -494,7 +494,7 @@ in
     # The free-local install path. qemu-bundle proves the relocatable qemu bundle runs
     # with /nix/store masked (the stock-host condition). Hermetic — one VM, rides the tier.
     install = {
-      zero-service = zeroService; # what a fresh install actually gives you — no service
+      zero-service = zeroService; # what a fresh install actually gives you — no app
       service-install = serviceInstall; # and putting something on it at runtime
       service-install-broken = serviceInstallBroken; # broken upgrade -> gate trips -> {code+data} rollback
       qemu-bundle = qemuBundle.test;

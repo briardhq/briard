@@ -33,8 +33,8 @@ import (
 // under one root (backupRoot), one directory per storage tier, in two snapshots. The data's,
 // tagged data:
 //
-//	data/<service>/                the newest member of the service's ring, bind-mounted read-only
-//	briard/members/<service>.json  that member's sidecar: the manifest its data was written under
+//	data/<app>/                the newest member of the app's ring, bind-mounted read-only
+//	briard/members/<app>.json  that member's sidecar: the manifest its data was written under
 //	briard/volume/                 the volume's flock-scoped facts -- .vip-address, .services/, tls/
 //	briard/host/<name>             the host's own facts, handed over in the request
 //
@@ -44,8 +44,8 @@ import (
 //
 // The data is the History sample, whatever trigger took it, so consistency comes with it and
 // there is no second snapshot schedule; crash-consistent is what every nightly tool gives, and
-// waiting for a quiesced member would skip a service that never has one. Its sidecar travels with
-// it because a service's data is only usable beside the code that wrote it. The volume's facts
+// waiting for a quiesced member would skip an app that never has one. Its sidecar travels with
+// it because an app's data is only usable beside the code that wrote it. The volume's facts
 // and the host's are read at run time, not at the member's: they are what the household has now.
 // Members are READ FROM THE RING, never from the request -- no path comes off the wire; the host's
 // facts arrive as content under names the guest checks.
@@ -160,7 +160,7 @@ func backupKeyState(ctx context.Context, x Executor, req backupKeyRequest) (Back
 const (
 	// backupRoot holds the paths restic backs up, which never change: restic finds a run's parent
 	// snapshot by them, and member names carry their stamp -- backing up `.snapshots/...`
-	// directly, or one path per service, would rescan every file whenever either changed.
+	// directly, or one path per app, would rescan every file whenever either changed.
 	backupRoot = "/run/briard/backup"
 	// The data's snapshot is backupData, the mount points, and backupFacts, the copies -- ours
 	// alone and never a mount, so clearing them cannot reach a member.
@@ -269,8 +269,8 @@ func backupResult() BackupState {
 	return s
 }
 
-// newestMembers is the member each installed service's backup reads: the newest of its ring.
-// A service with no member yet (installed, never started) is left out.
+// newestMembers is the member each installed app's backup reads: the newest of its ring.
+// An app with no member yet (installed, never started) is left out.
 func newestMembers(ctx context.Context, x Executor) (map[string]string, error) {
 	names, err := manifestNames(ctx, x)
 	if err != nil {
@@ -504,14 +504,14 @@ func Backup(ctx context.Context, x Executor, url string) BackupReport {
 	return runBackup(ctx, x, backupRequest{Repository: url})
 }
 
-// THE RESTORE'S GUEST HALF: one service's copy from one night of the backup, MATERIALISED AS A
+// THE RESTORE'S GUEST HALF: one app's copy from one night of the backup, MATERIALISED AS A
 // RING MEMBER -- a read-only subvolume with a sidecar, beside the members the ring took itself.
 // Putting it back is then the ordinary restore of a member (the host's service-restore: the
 // images first, the undo point, stop, swap, the member's manifest, converge), so there is one
 // restore path and the backup joins it rather than adding a second.
 //
-// WHAT IT READS is what the backup wrote (runBackup): the service's data from
-// services/<service>/ and the member's own sidecar from briard/members/<service>.json, which
+// WHAT IT READS is what the backup wrote (runBackup): the app's data from
+// services/<app>/ and the member's own sidecar from briard/members/<app>.json, which
 // names the manifest the data was written under -- the sidecar is the member's, verbatim, except
 // for its trigger (TriggerFromBackup says where these bytes come from) and Pending (nothing is
 // waiting to evaluate it). The snapshot may be any night's, of any group in the repository

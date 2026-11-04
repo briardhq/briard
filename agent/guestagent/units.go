@@ -80,7 +80,7 @@ func toolsBin() string {
 // the replicated volume (a bad routes table, a corrupt cert, a name that collides LAN-wide) is
 // hit identically by whoever promotes next, so the resource ping-pongs with a period of roughly
 // this value -- five minutes is about twelve hand-overs an hour, each costing a mount cycle and
-// a service restart. Longer is calmer and sidelines a recovered node for longer. A node-local
+// an app restart. Longer is calmer and sidelines a recovered node for longer. A node-local
 // fault (memory pressure, a failing disk, a leaked process holding :80) does not ping-pong at
 // all: the peer simply keeps serving and this node's hold expires against a resource it cannot
 // have.
@@ -300,7 +300,7 @@ ExecStart=` + agent + ` --primary-storage
 ExecStop=` + agent + ` --primary-storage-stop
 `
 
-	// 3. SERVICES -- CONVERGE-AT-PROMOTION. Once the volume is mounted and the VIP is held, read
+	// 3. APPS -- CONVERGE-AT-PROMOTION. Once the volume is mounted and the VIP is held, read
 	// every manifest under its `.services/`, render, warm and start them. This node makes itself
 	// match the VOLUME, so what a node was told -- or whether it was even up when the install ran
 	// -- stops deciding what the household gets after a failover. AFTER the VIP (shared/chain):
@@ -314,7 +314,7 @@ ExecStop=` + agent + ` --primary-storage-stop
 	// as a side-effect that shrugs, converge would put fallible work on the promotion path and
 	// leave the silent-healthy hole exactly as dangerous: a gate that shrugs is not a gate.
 	//
-	// THE SERVICE UNITS THEMSELVES ARE NOT MEMBERS, which is what makes "a service error alerts
+	// THE APP UNITS THEMSELVES ARE NOT MEMBERS, which is what makes "an app error alerts
 	// but never demotes" mechanically true -- drbd-reactor never sees them, so a crashed
 	// container cannot deactivate the target. A crash is the container unit's own Restart=
 	// (agent/quadlet), and the STOP is ExecStop below, because reverse-order chain unwinding
@@ -538,7 +538,7 @@ func WriteUnits(ctx context.Context, x Executor) error {
 // ⚠️ IT DELETES BY PREFIX, so what else may write a `briard-*` unit into this directory is the
 // whole safety argument, and the answer today is NOTHING. drbd-reactor's generated units and
 // the hold's `--runtime` mask are all named for the DRBD resource (`drbd-services@r0.target`),
-// and the service units converge renders are podman quadlets: they live under
+// and the app units converge renders are podman quadlets: they live under
 // /run/containers/systemd and are expanded by a systemd GENERATOR into /run/systemd/generator*,
 // never here (agent/quadlet). A component that ever does write one here has to be taught to
 // this function in the same change -- enumerate, do not assume the prefix stays ours.

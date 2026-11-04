@@ -13,7 +13,7 @@
 //	quadlet-render <manifest.json> <outdir>
 //
 // writes the rendered unit files into outdir, plus the sidecars a test reads: `units` (the
-// service units in start order), `images` (the .image warm units), `identity`, `dataroot` and
+// app's units in start order), `images` (the .image warm units), `identity`, `dataroot` and
 // `subdirs` (what the install path's provision step creates).
 package main
 
@@ -42,7 +42,7 @@ func main() {
 		fatal("parse manifest: %v", err)
 	}
 	// The address a node would allocate. The harness is not the allocator, so it passes the
-	// loopback a host-networked service gets anyway and a fixed pod address otherwise -- enough to
+	// loopback a host-networked app gets anyway and a fixed pod address otherwise -- enough to
 	// render, and never mistaken for what a real node would choose.
 	addr := "127.0.0.1"
 	if !m.HostNetwork() {
@@ -66,14 +66,14 @@ func main() {
 			fatal("write %s: %v", name, err)
 		}
 	}
-	// The service units, in start order. NOT a promoter chain: since converge-at-promotion the chain is
+	// The app's units, in start order. NOT a promoter chain: since converge-at-promotion the chain is
 	// static (data -> vip -> services) and these are not members of it -- briard-services starts
 	// them, which is what keeps a crashed container from demoting the node.
 	write("units", r.Units)
 	write("images", r.ImageUnits)
 	write("identity", []string{string(id)})
 	write("dataroot", []string{quadlet.DataRoot(m.Name)})
-	// The directories the install path's provision step creates, each in the service's area in its
+	// The directories the install path's provision step creates, each in the app's area in its
 	// tier, as full paths: a harness that has to stand in for `service.provision` makes each
 	// path's parent a subvolume and the path a directory in it, and deriving the layout a second
 	// time in a test is how the two drift.

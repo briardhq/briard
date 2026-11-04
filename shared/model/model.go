@@ -100,22 +100,22 @@ func (c Cluster) PeerCanTakeOver() bool {
 	return false
 }
 
-// ServiceSpec describes one service the node runs. Every spec is built from a signed manifest
+// ServiceSpec describes one app the node runs. Every spec is built from a signed manifest
 // (agent/host.specOf is the only constructor), so each field below is always filled.
 type ServiceSpec struct {
 	Name    string // e.g. "home-assistant"
 	DataDir string // path on the DRBD volume
 
-	// Units is the ordered set of systemd units the promoter starts for this service, between
+	// Units is the ordered set of systemd units the promoter starts for this app, between
 	// the data mount and the VIP, as the quadlet renderer produced them: the pod first, then its
 	// members, because starting a pod service does NOT start its containers (proven by the
 	// quadlet spike).
 	Units []string
 	// Unit is the single unit Start/Stop/Health act on — the container that actually serves, so
-	// "is the service up?" keeps one answer even when the pod has several members.
+	// "is the app up?" keeps one answer even when the pod has several members.
 	Unit string
 
-	// Manifest is the identity of the signed manifest this service was installed from --
+	// Manifest is the identity of the signed manifest this app was installed from --
 	// sha256 over the exact bytes (shared/manifest.Identity).
 	//
 	// It rides the spec rather than being re-read at report time because the bytes it hashes are
@@ -124,26 +124,26 @@ type ServiceSpec struct {
 	// a value that cannot change without an install would be a file read per node per cycle for
 	// nothing.
 	Manifest string
-	// Version is that manifest's upstream version, for people: what a page says the service runs
+	// Version is that manifest's upstream version, for people: what a page says the app runs
 	// and what an offered update moves it from.
 	Version string
 	// MinMemoryMB is the manifest's declared minimum (shared/manifest.Manifest.MinMemoryMB): what
-	// the guest must hold for this service from its first second, before growth can react.
+	// the guest must hold for this app from its first second, before growth can react.
 	MinMemoryMB int
 }
 
-// ServingUnit is the systemd unit that answers "is this service up?", and therefore the one to
-// measure a service's footprint from.
+// ServingUnit is the systemd unit that answers "is this app up?", and therefore the one to
+// measure an app's footprint from.
 //
-// The service names it explicitly: its units come from the quadlet renderer
+// The app names it explicitly: its units come from the quadlet renderer
 // (briard-<service>-<container>.service, plus a pod unit) and the SERVING container is the one
-// whose state is the service's state. The zero spec names nothing, which is the honest answer —
+// whose state is the app's state. The zero spec names nothing, which is the honest answer —
 // asking systemd about a unit assembled from an empty name is what once reported "inactive"
 // forever.
 //
 // It stays a method rather than a bare field read because the derivation was written twice: the
 // guest manager resolved it correctly while the host's resource telemetry rebuilt
-// "podman-<name>.service" inline, which names nothing on a runtime-installed service — so the
-// footprint, and with it the crash-loop counter, read zero for exactly the services users install.
+// "podman-<name>.service" inline, which names nothing on a runtime-installed app — so the
+// footprint, and with it the crash-loop counter, read zero for exactly the apps users install.
 // One definition, on the type that carries the fact.
 func (s ServiceSpec) ServingUnit() string { return s.Unit }

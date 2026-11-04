@@ -2,7 +2,7 @@
 // fsynced, renamed into place, and the directory fsynced so the rename itself survives.
 //
 // WHY THIS EXISTS AS A PACKAGE, since the contract says to wait for three call sites. It had two --
-// the cloud assignment cache and the service-manifest cache -- and `agent/cloud/cache.go` recorded
+// the cloud assignment cache and the app-manifest cache -- and `agent/cloud/cache.go` recorded
 // the trigger in writing: "two call sites in two packages is the rule of three's second instance…
 // The third one moves it." The mesh cache is the third, so this is that move, not a new
 // guess about what might be reused later.

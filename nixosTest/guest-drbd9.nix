@@ -3,7 +3,7 @@
 #
 # This is the harness skeleton M0 builds on: it boots N nodes (here 2) running
 # the real unit config on a shared L2 segment. It does NOT configure DRBD
-# resources or a promoter snippet, so the service never starts here —
+# resources or a promoter snippet, so no app ever starts here —
 # replication is covered by drbd-replicate and the promoter-driven failover
 # unit by drbd-promote.
 #

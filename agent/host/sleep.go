@@ -12,7 +12,7 @@ import (
 // by the time it can be said the sleep is over and there is nothing left to resolve. The agent
 // holds idle sleep off, so a sleep that happens anyway was asked for -- a closed lid, the power
 // button, Sleep from the Start menu, a Fast Startup shut down -- and every one of them took the
-// household's services down for its length. The last of them is a hibernate to the machine and a
+// household's apps down for its length. The last of them is a hibernate to the machine and a
 // Shut down to the household, and is told as the one they chose. When the machine has a lid that the power plan sleeps
 // on (plugged in), the alert says how to change that, since the lid is the one a person closes
 // without meaning to stop a server.
@@ -59,13 +59,13 @@ func (s *sleepAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 	}
 	from, to := slept.Local().Format("Mon 2 Jan 15:04"), woke.Local().Format("15:04")
 	title := "Briard: this computer was asleep"
-	body := fmt.Sprintf("node %s was asleep from %s to %s (%s), and Briard's services, Home Assistant included, "+
+	body := fmt.Sprintf("machine %s was asleep from %s to %s (%s), and Briard's apps, Home Assistant included, "+
 		"were unreachable for that time. Briard keeps this computer awake by itself, so the sleep was asked for: "+
 		"a closed lid, the power button, or Sleep from the Start menu.",
 		node, from, to, asleep)
 	if s.shutDown != nil && s.shutDown(slept) {
 		title = "Briard: this computer was shut down"
-		body = fmt.Sprintf("node %s was shut down from %s to %s (%s), and Briard's services, Home Assistant included, "+
+		body = fmt.Sprintf("machine %s was shut down from %s to %s (%s), and Briard's apps, Home Assistant included, "+
 			"were unreachable for that time. They came back by themselves when it was turned on.",
 			node, from, to, asleep)
 	} else if s.lid() == "sleeps" {

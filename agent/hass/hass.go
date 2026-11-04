@@ -1,8 +1,8 @@
 // Package hass is the one place Home Assistant's operational knowledge lives.
 //
 // A curated catalog is not a smaller app store — it is the licence to encode
-// service-specific knowledge in the product. Briard restricts itself to a handful of
-// services precisely so it can know how each one is operated, and the first thing it
+// app-specific knowledge in the product. Briard restricts itself to a handful of
+// apps precisely so it can know how each one is operated, and the first thing it
 // has to know about Home Assistant is how to TALK to it: HA's config-entry states are
 // what the S1 health gate reads to tell "the container answers" from "half the house's
 // integrations are dead", and reading them needs an authenticated, admin-scoped API.
@@ -72,17 +72,17 @@ import (
 )
 
 // Name is Home Assistant's catalog slug. Everything in this package is keyed on it:
-// a service that is not this one gets nothing from here, which is what makes the
-// knowledge encoded here service-specific by construction rather than by discipline.
+// an app that is not this one gets nothing from here, which is what makes the
+// knowledge encoded here app-specific by construction rather than by discipline.
 const Name = "home-assistant"
 
 // Dir is where the control channel's files live: node-local, tmpfs, re-derived by
 // every converge. Nothing here is replicated and nothing survives a guest reboot —
 // deliberately, since the token rotates per boot and the extracted script must match
 // the digest THIS node is running.
-// ⚠️ NAMED FOR THE SERVICE, not for this package (it was /run/briard/hass). The agent
+// ⚠️ NAMED FOR THE APP, not for this package (it was /run/briard/hass). The agent
 // resolves an inbound caller by reading the run directory and taking a DIRECTORY NAME as the
-// service, so a directory named after the Go package would resolve to a service that does not
+// app, so a directory named after the Go package would resolve to an app that does not
 // exist. agent/mosquitto already followed the convention; this was the one exception.
 // TestServiceDirMatchesTheRegistry asserts the two agree.
 const Dir = "/run/briard/home-assistant"
@@ -111,7 +111,7 @@ const wrapperPath = Dir + "/run"
 // scriptPath is the mint, run one-shot on the image's own python.
 const scriptPath = Dir + "/ensure-token.py"
 
-// notifierPath is the inbound-channel client: it tells the guest agent this service is
+// notifierPath is the inbound-channel client: it tells the guest agent this app is
 // starting and waits for the reply, which is what makes the stopped window an ordering guarantee
 // rather than a race. It decides nothing -- see notify.py.
 const notifierPath = Dir + "/notify.py"
@@ -135,7 +135,7 @@ const implPath = implDir + "/briard_ha.py"
 
 // mqttPortToken is the placeholder the integration carries for the broker's port. The value is
 // agent/mosquitto's, handed down by the registry rather than restated here: this is the one fact
-// that spans two catalogued services, and a second copy of it would be a second thing to keep in
+// that spans two catalogued apps, and a second copy of it would be a second thing to keep in
 // step with the catalog.
 const mqttPortToken = "@MQTT_PORT@"
 
@@ -153,9 +153,9 @@ const (
 )
 
 // ExternalURLPath is the URL the integration sets as Home Assistant's external_url when it has
-// none: `https://` and the service's casa name, written by the guest agent from the host's casa
+// none: `https://` and the app's casa name, written by the guest agent from the host's casa
 // view only once the household's network is known to resolve that name, and empty otherwise.
-// It is runtime state in the service directory, which the container sees at /briard: converge
+// It is runtime state in the app directory, which the container sees at /briard: converge
 // writes its own files there by name and never clears the directory, and a change to it
 // restarts nothing (only a changed unit file does).
 const ExternalURLPath = Dir + "/external-url"
@@ -242,18 +242,18 @@ type Executor interface {
 }
 
 // Volumes returns the extra quadlet Volume= values one container needs, which for
-// every service but Home Assistant is none.
+// every app but Home Assistant is none.
 //
 // The manifest schema cannot express a host bind, and that is not an oversight to work
 // around: capability comes by omission there, so that a catalog entry cannot ask for
-// the host. These two binds are the product's own knowledge about one service, applied
-// on the node — which is exactly where the readiness registry puts service-specific
+// the host. These two binds are the product's own knowledge about one app, applied
+// on the node — which is exactly where the readiness registry puts app-specific
 // knowledge too. Render stays a pure function of the manifest: the same manifest
 // renders the same units on every node.
 //
-// ⚠️ THE DIRECTORY MOUNT IS NOT HERE ANY MORE: one directory per service, read-only at
-// /briard, is the product's general shape rather than this service's arrangement, so
-// agent/services writes it for every service that has one. What stays is the half that IS Home
+// ⚠️ THE DIRECTORY MOUNT IS NOT HERE ANY MORE: one directory per app, read-only at
+// /briard, is the product's general shape rather than this app's arrangement, so
+// agent/services writes it for every app that has one. What stays is the half that IS Home
 // Assistant knowledge — our s6 wrapper shadow-mounted over the image's own `run`, at a path only
 // this image has. Both sources still live outside /config, so HA's restore wipe never sees them.
 func Volumes(m manifest.Manifest, c manifest.Container) []string {
@@ -285,7 +285,7 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 const RestoreMarker = ".HA_RESTORE"
 
 // Prepare materialises the control channel on this node, and is a no-op for every
-// other service.
+// other app.
 //
 // IT RUNS AT CONVERGE, not at install, and the difference is a node that was down when
 // the install ran. Converge is what a promoting survivor executes against the volume;
@@ -307,14 +307,14 @@ const RestoreMarker = ".HA_RESTORE"
 // directory, after which the container refuses to start — "not a directory: Are you trying
 // to mount a directory onto a file" — and the path is poisoned for the next attempt, since
 // a file has to go where a directory now sits. So a caller that ignores this error and
-// starts the container anyway gets a service that can never run again.
+// starts the container anyway gets an app that can never run again.
 //
 // What converge does with it is NOT to fail the whole node: it declines to start THIS
-// service and lets the others promote, which is the only safe use of the error and is
+// app and lets the others promote, which is the only safe use of the error and is
 // argued at its call site. Never starting the unit is what keeps podman from creating the
 // bad source in the first place.
 // mqttPort is the broker's port, passed in by the registry (agent/services) because it belongs
-// to the OTHER service. Zero means "this build knows of no broker", and the integration is then
+// to the OTHER app. Zero means "this build knows of no broker", and the integration is then
 // materialised with nothing to dial -- it still loads, and its own socket check is what stops it.
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest, mqttPort int) error {
 	if m.Name != Name {
@@ -465,7 +465,7 @@ func write(ctx context.Context, x Executor, path, content, mode string) error {
 // no backup can reach it.
 //
 // The broker's port is substituted in, because it arrives from the registry: it belongs to the
-// other service, and a second copy of it here would be a second thing to keep in step with the
+// other app, and a second copy of it here would be a second thing to keep in step with the
 // catalog. The alert copy's path and the dashboard's address are substituted for the same reason.
 //
 // THE SUBSTITUTION IS CHECKED BOTH WAYS, and the before-check is the half that actually bites: a

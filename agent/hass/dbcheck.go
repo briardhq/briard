@@ -145,7 +145,7 @@ func SetRecord(ctx context.Context, x Executor, app string, r *DBRecord) error {
 }
 
 // Sampled is the take path's half: a QUIESCED sample taken at least RetainEvery after the newest
-// member holding a record is retained. ring is the service's members, the new one among them.
+// member holding a record is retained. ring is the app's members, the new one among them.
 //
 // It only ever creates a sidecar, on a member that has just been taken; only the check rewrites
 // one.

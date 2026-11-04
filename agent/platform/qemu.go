@@ -280,7 +280,7 @@ func qemuArgs(s QEMUSpec) []string {
 		// werror=report: a write the host cannot back (a copy-on-write host filesystem the NOCOW flag
 		// did not reach) is an I/O error to the one guest writer, not qemu's default of pausing the
 		// whole VM -- the state disk holds a cache, a journal and scratch, none of which is worth the
-		// household's service stopping for.
+		// household's app stopping for.
 		args = append(args, "-drive", "file="+s.StateDisk+",if=none,format=raw,cache="+diskCache+",werror=report,id="+StateDriveID,
 			"-device", "virtio-blk-pci,drive="+StateDriveID+",iothread="+IOThreadID+",serial="+StateDiskSerial)
 	}
@@ -440,7 +440,7 @@ const guestStopTimeout = 75 * time.Second
 // ExecStop is what makes a HOST SHUTDOWN survivable, and its absence was the defect. Stopping
 // this unit SIGTERMs QEMU, which is a power cut to the guest (see Guest.Shutdown); systemd stops
 // every unit when the host reboots; so before this, a user rebooting their own machine for their
-// own distro's updates power-cut the appliance every time, losing whatever the services had not
+// own distro's updates power-cut the appliance every time, losing whatever the apps had not
 // itself flushed. The OS-upgrade path had already been fixed for exactly this and only for
 // itself.
 //

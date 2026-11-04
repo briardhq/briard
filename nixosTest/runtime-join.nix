@@ -80,13 +80,13 @@ pkgs.testers.runNixOSTest {
     no_resource(anchor1)
     anchor1.succeed("systemctl start briard-chain.target")
     # The front door first, with nothing installed: that is what a node coming up single-handed
-    # actually looks like. Then the service is installed onto the volume it now holds, which is
+    # actually looks like. Then the app is installed onto the volume it now holds, which is
     # what the joining anchor later replicates and converges from.
     anchor1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
     install_fixture(anchor1)
     anchor1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
-    # Let the service persist a margin of ticks on the lone node, then snapshot the counter --
+    # Let the app persist a margin of ticks on the lone node, then snapshot the counter --
     # our data-survival handle across the conversion, the failover and the leave.
     anchor1.wait_until_succeeds(
         "test $(curl -fsS http://192.168.1.100:8080/state | tr -cd 0-9) -ge 10", timeout=60

@@ -17,7 +17,7 @@
 // It is promoter-owned and a chain member like the door, because the registry lives on the
 // volume and only the primary has it. It reads the routing table the guest's converge writes,
 // which is how it finds Home Assistant -- the same way the door does, so the two cannot disagree
-// about where a service is.
+// about where an app is.
 //
 // DELIBERATELY PLAIN: templates, one stylesheet and one script (htmx, which polls a card while
 // it moves), built ahead of time (static/build.sh) and embedded, nothing fetched from anywhere
@@ -172,7 +172,7 @@ type app struct {
 	// each for a minute. In memory like pending.
 	hops map[string]hop
 	// port is the host's admin port; installs is what was asked through it, by
-	// service, from the click until the routes table lists the service.
+	// app, from the click until the routes table lists the app.
 	port     adminPort
 	installs map[string]*install
 	// restores is the picker's half (history.go): one restore in flight per app, from

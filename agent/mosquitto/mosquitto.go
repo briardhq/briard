@@ -1,17 +1,17 @@
-// Package mosquitto is the product-side knowledge Briard holds about one catalogued service: the
+// Package mosquitto is the product-side knowledge Briard holds about one catalogued app: the
 // MQTT broker a Home Assistant household needs anyway.
 //
-// WHY THE PRODUCT HOLDS A SERVICE'S CONFIG AT ALL, and why this is not a manifest field. The
+// WHY THE PRODUCT HOLDS AN APP'S CONFIG AT ALL, and why this is not a manifest field. The
 // manifest is a document a publisher writes, and its schema withholds host binds ON PURPOSE, so
 // a catalog entry cannot reach the host. But mosquitto cannot be usefully run as its image ships
 // it -- persistence is off by default and the image takes no configuration from the environment
 // -- so SOMETHING has to put a config file in front of it. Doing that from the product, keyed on
 // the catalog name, is the same call the readiness registry made and rests on the
-// same fact: the catalog is curated precisely so Briard can encode how each service is operated.
+// same fact: the catalog is curated precisely so Briard can encode how each app is operated.
 // agent/hass is the first instance of this shape; this is the second.
 //
 // WHAT IT DOES NOT DO, which is most of it. The broker needs no control channel, no credential
-// and nothing read out of its image: Prepare writes one file, and the service is otherwise the
+// and nothing read out of its image: Prepare writes one file, and the app is otherwise the
 // plain shape the manifest describes. It gets the liveness floor and no readiness assessor
 // (agent/host/readiness.go), because "the broker is answering" is the whole of what a broker
 // being ready means -- a differential gate would have nothing to differ.
@@ -64,7 +64,7 @@ const Protocol = "MQTT"
 // sitting on a household LAN is invisible to the Tasmota- and ESPHome-class devices that look
 // `_mqtt._tcp` up precisely in order to find one. The announcement therefore has to come from
 // outside the container, which for us costs nothing: the guest already runs avahi and
-// already publishes the service's name from the routing table.
+// already publishes the app's name from the routing table.
 //
 // `_mqtt._tcp` is the registered type for plain MQTT (`_secure-mqtt._tcp` is the TLS one, which
 // this broker does not speak).
@@ -89,7 +89,7 @@ const (
 var confSource string
 
 // Executor is the guest-side command runner. Structurally identical to agent/hass's, and
-// deliberately its own: a package that needs two verbs should not import another service's
+// deliberately its own: a package that needs two verbs should not import another app's
 // interface to name them.
 type Executor interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
@@ -108,9 +108,9 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 
 // Prepare materialises the config on this node. Called by converge before the container starts,
 // on every node that promotes -- the installer, the survivor that was never told about this
-// service, and every guest reboot.
+// app, and every guest reboot.
 //
-// A FAILURE HERE COSTS THIS SERVICE AND NOT THE NODE: converge skips a service it could not
+// A FAILURE HERE COSTS THIS APP AND NOT THE NODE: converge skips an app it could not
 // prepare and starts the rest (agent/guestagent/converge.go). Skipping is also what keeps podman
 // from creating the missing bind source as a root-owned DIRECTORY over the container's config
 // path, which no later Prepare could fix.

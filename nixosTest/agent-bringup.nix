@@ -57,7 +57,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("truncate -s 512M /tmp/data.img")
 
     # Run the product agent (host mode = plain `run`): boots the guest, drives the
-    # ordered bring-up (data -> VIP, no service -- the shipped disk runs none), then holds it in
+    # ordered bring-up (data -> VIP, no app -- the shipped disk runs none), then holds it in
     # the observe loop so systemd-run stays up. Same env contract the driver used (ConfigFromEnv).
     # The host holds a guest bundle tree, as install.sh lays on every install: the image
     # bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the store

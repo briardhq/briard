@@ -396,8 +396,8 @@ func runService(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	switch o.State {
 	case api.OutcomeDone:
 		// Say what actually happened, not what the product will eventually do. The gate probes the
-		// SERVICE's own endpoint in-guest (awaitHealthy); the front door does not route to a
-		// runtime-installed service yet -- its backend is baked at guest-build time and per-domain
+		// APP's own endpoint in-guest (awaitHealthy); the front door does not route to a
+		// runtime-installed app yet -- its backend is baked at guest-build time and per-domain
 		// routing is deferred with the routing work. "serving" reads as "reachable at the VIP",
 		// which walks the user to http://<vip>/ and shows them the "nothing is routed here" page.
 		//
@@ -463,8 +463,8 @@ func offeredVersion(ctx context.Context, sock, name string) string {
 // runRescue restarts this node's guest on its verified, read-only image.
 //
 // IT REQUIRES -yes, and that is the only place in this CLI that does. Every other verb here is
-// reversible or health-gated: an OS upgrade rolls back, a service install restores its data, a
-// handover can be handed back. This one stops the household's service on a node whose fault
+// reversible or health-gated: an OS upgrade rolls back, an app install restores its data, a
+// handover can be handed back. This one stops the household's app on a node whose fault
 // nobody has diagnosed, and empties the guest's scratch. A confirmation flag is the cheapest possible guard against the one invocation nobody
 // meant to type, and it costs an operator who did mean it four characters.
 //
@@ -812,7 +812,7 @@ func accountLang() string {
 // runAppHistory is `briard app history <name>` and `briard app undo <point>`.
 //
 // TWO VERBS AND NOT ONE INTERACTIVE PICKER, deliberately. An index into a list ("undo 3") is stale
-// the moment anything takes a member, and members are taken on every service start — so the second
+// the moment anything takes a member, and members are taken on every app start — so the second
 // command would act on a different point than the one the operator read. Naming the point exactly
 // as history printed it is copy-and-paste, and it cannot drift.
 func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer) int {

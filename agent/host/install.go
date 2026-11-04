@@ -15,7 +15,7 @@
 //  2. is it a DECISION about this machine?  The disks, the identifiers, the console's rotation:
 //     the agent's first start makes them, so no installer of any OS writes them.
 //
-// It installs NO SERVICE. A node is a node first: ready, replicating, able to fail over -- then
+// It installs NO APP. A node is a node first: ready, replicating, able to fail over -- then
 // you choose what runs on it. So the VIP answers with Briard's own page, and the health probe
 // watches that front door, the one address that answers whether or not anything is installed.
 //
@@ -126,7 +126,7 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 		os.Remove(filepath.Join(hostSrc, qemuBundleTar))
 	}
 	// ---- a node already running here stops first ----
-	// Only now, with everything fetched and verified: the household's services are down for the
+	// Only now, with everything fetched and verified: the household's apps are down for the
 	// lay-down alone, never for the download.
 	if err := stopRunning(ctx, say); err != nil {
 		return fmt.Errorf("stopping the node already installed here: %w", err)
@@ -139,7 +139,7 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 	// Every artifact has been copied out, so what is left there is a second copy of the largest
 	// thing we ship: the guest image byte for byte, a second qemu tree, a second agent -- 1.2 GB,
 	// measured on briard-test, 13% of a 9.5 GiB disk, on the same filesystem as the state disk
-	// that must grow to hold every service image the household installs.
+	// that must grow to hold every app image the household installs.
 	//
 	// Never fatal: this is space reclaimed from a finished install, not a step whose failure means
 	// the install did not happen.

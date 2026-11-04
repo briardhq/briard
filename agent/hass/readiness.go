@@ -91,7 +91,7 @@ func connect(ctx context.Context, x Executor, port int) (string, string, error) 
 // flow, with client_id omitted (a system token has none, and sending one is refused).
 //
 // Per use, never cached: an access token lives 30 minutes and the two samples this package is
-// asked for are taken minutes apart across a service restart. Holding one would trade a
+// asked for are taken minutes apart across an app restart. Holding one would trade a
 // negligible saving for a class of bug where the gate reads a stale credential.
 func exchange(ctx context.Context, base, token string) (string, error) {
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {token}}

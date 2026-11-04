@@ -1,7 +1,7 @@
 package main
 
 // The household's mDNS responder, which lives in the door for the reason the door
-// exists: a `.local` name means "this service is reachable here", and the door is what "here"
+// exists: a `.local` name means "this app is reachable here", and the door is what "here"
 // is. It answers off the SAME routing table the router reads, so a name that is published but
 // not routed is not expressible, where a separate publisher could only assert it, because it
 // is a second reader of the same file.
@@ -50,7 +50,7 @@ import (
 type mdnsService struct {
 	instance string // the flock-scoped label a household picks from, composed by routes.InstanceName
 	typ      string // `_mqtt._tcp` and its kin
-	host     string // the SRV target: the service's OWN name, never the guest's node-scoped hostname
+	host     string // the SRV target: the app's OWN name, never the guest's node-scoped hostname
 	port     uint16
 }
 
@@ -80,7 +80,7 @@ func mdnsWorldFor(addr, flock string, t routes.Table) mdnsWorld {
 	}
 	seen := map[string]bool{}
 	add := func(n string) {
-		// Only `.local` is ours to claim on the LAN: the table also carries each service's
+		// Only `.local` is ours to claim on the LAN: the table also carries each app's
 		// `<service>.<flock>.briard.casa` name, which public DNS answers for and
 		// mDNS must not -- a multicast responder for a unicast name is a name that lies.
 		if n == "" || seen[n] || !strings.HasSuffix(n, ".local") {
@@ -102,7 +102,7 @@ func mdnsWorldFor(addr, flock string, t routes.Table) mdnsWorld {
 	}
 	for _, s := range t.Services {
 		if len(s.Hosts) == 0 {
-			// An announcement needs an SRV target and the only candidate is the service's own
+			// An announcement needs an SRV target and the only candidate is the app's own
 			// name. routes.Validate already refuses this combination; skipping rather than
 			// composing a fallback keeps that the single rule.
 			continue

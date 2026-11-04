@@ -92,7 +92,7 @@ pkgs.testers.runNixOSTest {
         node1.wait_until_succeeds(f"{helper} set sensor.b31_alive {time.time()}", timeout=180)
 
     def restart():
-        # The way converge bounces a service: stop the container, start the units in order.
+        # The way converge bounces an app: stop the container, start the units in order.
         node1.succeed(f"systemctl stop {units[-1]}")
         for u in units:
             node1.succeed(f"systemctl start {u}")

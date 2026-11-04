@@ -82,7 +82,7 @@ func TestRetentionKeepsTheQuietStart(t *testing.T) {
 	}
 }
 
-// TestRetentionKeepsTheNewestEvenWhenOld: a service nobody touches for a week still has a
+// TestRetentionKeepsTheNewestEvenWhenOld: an app nobody touches for a week still has a
 // baseline. Age never removes the newest member.
 func TestRetentionKeepsTheNewestEvenWhenOld(t *testing.T) {
 	only := sample(TriggerClock, 30*day)
@@ -148,7 +148,7 @@ func TestRetentionHasNoCount(t *testing.T) {
 	}
 }
 
-// TestRetentionOrdersByTimeNotName: the trigger sits between the service and the stamp, so by
+// TestRetentionOrdersByTimeNotName: the trigger sits between the app and the stamp, so by
 // NAME every `-start-` member sorts after every `-clock-` one. An old start member with no event
 // must not be kept as though it were the newest.
 func TestRetentionOrdersByTimeNotName(t *testing.T) {
@@ -273,8 +273,8 @@ func TestHistoryTitlesFromReasons(t *testing.T) {
 	}
 }
 
-// TestSnapshotMemberParsesEveryTrigger: the *-before triggers carry dashes of their own, and a
-// service name may too.
+// TestSnapshotMemberParsesEveryTrigger: the *-before triggers carry dashes of their own, and an
+// app name may too.
 func TestSnapshotMemberParsesEveryTrigger(t *testing.T) {
 	for _, tr := range []Trigger{TriggerStart, TriggerClock, TriggerAppUpdateBefore, TriggerAppUndoBefore, TriggerHassRestoreBefore} {
 		svc, got, at, ok := ParseSnapshotMember(SnapshotMember("home-assistant", tr, retentionNow))

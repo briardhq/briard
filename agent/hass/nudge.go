@@ -23,7 +23,7 @@ const EventReconsider = "briard_reconsider"
 
 // Nudge tells a RUNNING Home Assistant to reconsider — and the emphasis is the whole reason this
 // exists. Everything briard's integration does, it does when Home Assistant starts, and converge
-// deliberately restarts only the services whose rendered bytes changed. So installing
+// deliberately restarts only the apps whose rendered bytes changed. So installing
 // the BROKER next to a Home Assistant that is already up leaves it running, unwired and
 // unaware, until something happens to restart it — which for a household is "briard says the
 // broker is installed and Home Assistant disagrees, indefinitely".

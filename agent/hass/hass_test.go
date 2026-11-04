@@ -142,7 +142,7 @@ func TestPrepareMaterialisesTheChannel(t *testing.T) {
 }
 
 // TestPrepareIsOnlyForHomeAssistant: the knowledge in this package is keyed on the catalog name,
-// so every other service must come out of Prepare untouched — no directory, no podman, nothing.
+// so every other app must come out of Prepare untouched — no directory, no podman, nothing.
 func TestPrepareIsOnlyForHomeAssistant(t *testing.T) {
 	m := ha()
 	m.Name = "sample-app"
@@ -214,7 +214,7 @@ func TestPrepareFailsLoudly(t *testing.T) {
 
 // TestVolumesAreTheImageSpecificBinds: the half of Home Assistant's binds that is Home Assistant
 // knowledge -- the s6 wrapper over a path only this image has, and the node's alert copy for the
-// integration's Repairs mirror. The service directory at /briard is the PRODUCT's general shape
+// integration's Repairs mirror. The app directory at /briard is the PRODUCT's general shape
 // and agent/services writes it, so it must not appear here. Every source is outside /config, so
 // HA's restore wipe — which clears the config directory wholesale — never sees them.
 func TestVolumesAreTheImageSpecificBinds(t *testing.T) {
@@ -253,7 +253,7 @@ func TestWrapperHandsOverToTheImagesOwnScript(t *testing.T) {
 	if strings.Contains(wrapperSource, "python3 -m homeassistant") {
 		t.Fatalf("the wrapper launches Home Assistant itself instead of relaying:\n%s", wrapperSource)
 	}
-	// The mint can never fail the service.
+	// The mint can never fail the app.
 	if !strings.Contains(wrapperSource, "|| true") {
 		t.Fatalf("the mint is not fenced; a token failure would stop HA from starting:\n%s", wrapperSource)
 	}
@@ -361,7 +361,7 @@ func TestExtractionFailureNamesTheLayout(t *testing.T) {
 
 // TestPrepareMaterialisesTheIntegration — briard's own integration is delivered the same way the
 // mint is, and the broker's port is SUBSTITUTED rather than hardcoded. The port belongs
-// to the other service, so it arrives from the registry; what this checks is that it lands.
+// to the other app, so it arrives from the registry; what this checks is that it lands.
 func TestPrepareMaterialisesTheIntegration(t *testing.T) {
 	f := withImage()
 	if err := Prepare(context.Background(), f, ha(), 1883); err != nil {
@@ -382,7 +382,7 @@ func TestPrepareMaterialisesTheIntegration(t *testing.T) {
 	if !strings.Contains(src, `ALERTS_PATH = "/briard-alerts/alerts.json"`) || !strings.Contains(src, `DASHBOARD_URL = "http://briard.local/"`) {
 		t.Error("the alert copy's path or the dashboard's address did not reach the integration")
 	}
-	// And where the external URL is read, inside the service directory's bind.
+	// And where the external URL is read, inside the app directory's bind.
 	if !strings.Contains(src, `EXTERNAL_URL_PATH = "/briard/external-url"`) {
 		t.Error("the external URL's path did not reach the integration")
 	}

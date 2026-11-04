@@ -1,5 +1,5 @@
 // Command reverse-proxy is Briard's front door at the service VIP. It answers plain HTTP
-// on :80, terminates TLS on :443, and forwards each request to the service the request's
+// on :80, terminates TLS on :443, and forwards each request to the app the request's
 // HOSTNAME names — completing v0's deferred half of "reachable by name with TLS" (proved
 // issuance; nothing served it).
 //
@@ -14,10 +14,10 @@
 // writes at every promotion, install and reboot (shared/routes), and this reloads it by mtime with
 // exactly the same discipline as the cert: a table that will not parse keeps the last good one,
 // because dropping every route because one write was caught half-done would take a household's
-// services down for a file it is about to be able to read.
+// apps down for a file it is about to be able to read.
 //
 // It does NOT build the table itself out of the volume's manifests, and the reason decides the
-// shape of everything here: a service's ADDRESS is a rendering fact, not a manifest fact — the
+// shape of everything here: an app's ADDRESS is a rendering fact, not a manifest fact — the
 // manifest names a port, and what host answers on it is whatever the renderer wired the pod for.
 // So this process knows names and forwards; it never knows podman.
 //
@@ -25,11 +25,11 @@
 // `briard-<flock>.local`, a typo — is forwarded to the household dashboard (`-fallback`), which is a
 // separate guest unit precisely so that nothing of ours lives inside the door and the door itself
 // stays replaceable. /healthz is ALWAYS its own: a node with nothing routed to it is *ready*, not sick, which is
-// what keeps the host agent's health probe honest. That stays true with N services routed, and it
+// what keeps the host agent's health probe honest. That stays true with N apps routed, and it
 // is a deliberate reversal of what one backend used to do (forward /healthz to it): with N
-// services there is no single answer to forward, and a service that is down must alert without
-// making the node it runs on look broken enough to fail over (converge-at-promotion: a service error
-// reports, it never demotes). Per-service health is a separate question, asked per service,
+// apps there is no single answer to forward, and an app that is down must alert without
+// making the node it runs on look broken enough to fail over (converge-at-promotion: an app error
+// reports, it never demotes). Per-app health is a separate question, asked per app,
 // through this same table.
 package main
 
@@ -57,7 +57,7 @@ import (
 
 func main() {
 	// FIRST, before anything can block: SIGHUP's default action is to terminate, and the guest
-	// agent sends one at every service start (forwardTrust) -- including starts that race this
+	// agent sends one at every app start (forwardTrust) -- including starts that race this
 	// door's own.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
@@ -101,15 +101,15 @@ func main() {
 	tbl := &routeReloader{path: *routesPath}
 	// Not fatal either, and for a stronger reason than the cert's: this unit starts after
 	// briard-services on the promoter chain, so a missing table means a node that converged to
-	// nothing — the shipped state — and refusing to start would replace "no service routed" with
+	// nothing — the shipped state — and refusing to start would replace "no app routed" with
 	// "no front door at all", which is the same node with nothing to tell the household.
 	if _, err := tbl.load(); err != nil {
 		log.Printf("reverse-proxy: no routing table yet (%v); forwarding to the dashboard until one appears", err)
 	}
 
 	h := newFrontDoor(tbl.current, fallback)
-	// Whether each service accepts X-Forwarded-For from this door: asked now, and again at every
-	// service start, which is when a service re-reads its proxy trust.
+	// Whether each app accepts X-Forwarded-For from this door: asked now, and again at every
+	// app start, which is when an app re-reads its proxy trust.
 	h.trust.recheck(tbl.current())
 	go func() {
 		for range hup {
@@ -168,13 +168,13 @@ func main() {
 }
 
 // frontDoor routes the VIP: /healthz is always Briard's own answer, a request whose Host names a
-// routed service goes to that service, and everything else is forwarded to the dashboard.
+// routed app goes to that app, and everything else is forwarded to the dashboard.
 //
 // Owning /healthz (rather than passing it through) is what kills the zombie state a fresh
 // node used to land in: the host agent probed the *payload's* port, so a node with nothing
 // installed reported unhealthy forever, and no reflex could tell that apart from a broken
-// service. The probe target is stable across zero, one and N services — which is the whole
-// point of it not being a service's answer.
+// app. The probe target is stable across zero, one and N apps — which is the whole
+// point of it not being an app's answer.
 type frontDoor struct {
 	routes   func() *routing
 	proxy    http.Handler
@@ -193,12 +193,12 @@ func newFrontDoor(current func() *routing, fallback *url.URL) *frontDoor {
 		Rewrite: func(r *httputil.ProxyRequest) {
 			rt := r.In.Context().Value(backendKey{}).(route)
 			r.SetURL(rt.to)
-			// Keep the client's Host. It is what a service uses to build absolute URLs, and
+			// Keep the client's Host. It is what an app uses to build absolute URLs, and
 			// it is now also the thing that SELECTED this backend — rewriting it to 127.0.0.1
-			// would hand the service a name nobody typed.
+			// would hand the app a name nobody typed.
 			r.Out.Host = r.In.Host
-			// X-Forwarded-For ONLY TO A SERVICE THAT HAS SAID IT ACCEPTS IT (forwardTrust). We do
-			// not own the service's configuration, and a service that is not expecting a proxy
+			// X-Forwarded-For ONLY TO AN APP THAT HAS SAID IT ACCEPTS IT (forwardTrust). We do
+			// not own the app's configuration, and an app that is not expecting a proxy
 			// must keep working when put behind one: Home Assistant answers 400 to the header from
 			// a proxy it has not been told to trust. Rewrite (not Director) is what strips every
 			// inbound X-Forwarded-* first, so the value is always the peer this door saw -- the
@@ -209,7 +209,7 @@ func newFrontDoor(current func() *routing, fallback *url.URL) *frontDoor {
 				}
 			}
 			//
-			// THE DASHBOARD IS OURS: it is not a service that never asked for a
+			// THE DASHBOARD IS OURS: it is not an app that never asked for a
 			// proxy, it is built for this door, and it needs the scheme the browser used -- a
 			// Secure cookie set over plain http would never come back, and the Home Assistant
 			// origin it hands the browser must match. So the door says https to the dashboard
@@ -229,11 +229,11 @@ func newFrontDoor(current func() *routing, fallback *url.URL) *frontDoor {
 func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	t := f.routes()
 	// THE NAME IS ASKED FIRST, AND /healthz IS NOT AN EXCEPTION TO IT. Under a name we route,
-	// every path belongs to that service — /healthz included, because that is the service's own
+	// every path belongs to that app — /healthz included, because that is the app's own
 	// readiness endpoint and the thing its install gate reads. Answering it ourselves would tell a
-	// client "the node is fine" to a question asked about a service, which is the same conflation
+	// client "the node is fine" to a question asked about an app, which is the same conflation
 	// the single baked backend used to make in reverse. The node's own /healthz is reached the way
-	// the node itself is: by address, or by any name that is not a service's.
+	// the node itself is: by address, or by any name that is not an app's.
 	r, ok := t.lookup(req.Host)
 	if !ok {
 		if req.URL.Path == "/healthz" {
@@ -262,12 +262,12 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 // health answers the NODE's readiness, and only ever its own.
 //
-// It says what it can see — how many services are routed — and never whether they are well. Those
+// It says what it can see — how many apps are routed — and never whether they are well. Those
 // are different questions with different consequences: this one is read by the OS health gate and
 // the rollback reflex, where a wrong answer costs a failover, while "is home-assistant serving" is
 // read by a household and an alert. The front door used to conflate them by forwarding /healthz to
-// its single backend, and with N services there is no single answer to forward. Per-service health
-// is asked per service, against this same table, by the guest's own probe.
+// its single backend, and with N apps there is no single answer to forward. Per-app health
+// is asked per app, against this same table, by the guest's own probe.
 //
 // A NODE WITH NOTHING ROUTED IS READY. That is the shipped state of a fresh install — running,
 // replicating, able to fail over — and calling it unhealthy is the zombie state this replaced.
@@ -275,7 +275,7 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // It NAMES what it routes, which is new and is not a leak: those same names are published on the
 // LAN over mDNS by the node itself, so anyone who can reach this port can already enumerate them.
 // It earns its place by making the one question a human asks here answerable in one curl — "does
-// this node know about my service?" — which was previously only visible by reading a file inside
+// this node know about my app?" — which was previously only visible by reading a file inside
 // the guest.
 func (f *frontDoor) health(w http.ResponseWriter, t *routing) {
 	fmt.Fprintf(w, "ok: front door up, %s\n", t.describe())
@@ -288,7 +288,7 @@ type routing struct {
 	byHost map[string]route
 }
 
-// route is one resolved destination. A nil `to` is a service that is named but has no route on
+// route is one resolved destination. A nil `to` is an app that is named but has no route on
 // this listener — see frontDoor.ServeHTTP.
 type route struct {
 	name string
@@ -299,15 +299,15 @@ func newRouting(t routes.Table) *routing {
 	r := &routing{table: t, byHost: make(map[string]route, len(t.Services))}
 	for _, s := range t.Services {
 		e := route{name: s.Name}
-		// A service with no route on this listener keeps its name and gets no destination here.
+		// An app with no route on this listener keeps its name and gets no destination here.
 		// The door is never handed an address it must be trusted not to use: with nothing to
 		// forward to, there is nothing to get wrong. mosquitto is the live case — its address is
 		// the broker's management API, probed by the guest and relayed to nobody.
 		if rt, ok := s.Route(routes.ListenName); ok {
 			u, err := s.Resolve(rt.To)
 			if err != nil {
-				// One unusable route must not cost the other services theirs. The name still
-				// resolves and says the service is not served over HTTP, which is true.
+				// One unusable route must not cost the other apps theirs. The name still
+				// resolves and says the app is not served over HTTP, which is true.
 				log.Printf("reverse-proxy: %s has an unusable route %q (%v); routing its name to nothing", s.Name, rt.To, err)
 			} else {
 				e.to = u

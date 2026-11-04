@@ -96,7 +96,7 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		// carry: the node is back where it started rather than broken. That includes the
 		// HA refusal, which never touched anything -- so the detail matters, not just the
 		// state.
-		fmt.Fprintf(stderr, "not applied; the node is unchanged and serving: %s\n", o.Detail)
+		fmt.Fprintf(stderr, "not applied; the machine is unchanged and serving: %s\n", o.Detail)
 		return 1
 	default:
 		fmt.Fprintf(stderr, "briard update -vm: %s\n", o.Detail)

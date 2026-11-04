@@ -15,7 +15,7 @@
 # ours -- and that the household's files go in as a snapshot of their own, tagged and on their own
 # path, which a "latest" restore of an app passes over and the next night builds on.
 #
-# Agent-less, as every rig that runs a service is: `briard-guest-agent --backup` runs the guest's
+# Agent-less, as every rig that runs an app is: `briard-guest-agent --backup` runs the guest's
 # backup in line (the product starts it through the host's verb, in the background), and
 # `backup-store` serves agent/host's store with no agent around it, on loopback. The 02:00
 # schedule, the key's rules and the host's facts are unit-tested.
@@ -68,7 +68,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_for_open_port(7791)
 
     def sample(payload):
-        # What the service wrote, and a member of the ring taken after it.
+        # What the app wrote, and a member of the ring taken after it.
         node1.succeed(f"echo {payload} > ${live}/payload.txt")
         # A member's name carries its second, and two members in one second are unordered. The
         # app's start took one as it came up -- an instant ago, and empty. The product's clock can
@@ -95,7 +95,7 @@ pkgs.testers.runNixOSTest {
         return node1.succeed(f"RESTIC_PASSWORD=\"$(cat /var/lib/briard/.backup-key)\" restic --no-cache -r {repo} {cmd}")
 
     # ---- the first night ----
-    # WEIGHT, so the sizes below mean something: 4 MiB of the service's own data (random, so it
+    # WEIGHT, so the sizes below mean something: 4 MiB of the app's own data (random, so it
     # neither compresses nor dedups) and 8 MiB of tarball in its unversioned area, where Home Assistant
     # keeps its own backups -- an area of its own, never in a member, so never in the backup.
     node1.succeed("head -c 4M /dev/urandom > ${live}/big.bin")
@@ -106,7 +106,7 @@ pkgs.testers.runNixOSTest {
     first = backup()
     # The key was minted on the volume by that first run, for the household alone.
     assert node1.succeed("stat -c %a /var/lib/briard/.backup-key").strip() == "600", "the key is not 0600"
-    # Between the two: the service's data went in, and the tarball did not.
+    # Between the two: the app's data went in, and the tarball did not.
     assert 4 << 20 < first["bytesAdded"] < 8 << 20, f"the first night added {first['bytesAdded']} bytes"
 
     files = plain("ls latest").split()

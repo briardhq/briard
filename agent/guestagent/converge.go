@@ -21,7 +21,7 @@ import (
 //
 // THE PROBLEM IT SOLVES, measured on a real fleet 2026-08-27: an install renders and chains on
 // the node that ran it, and a peer that was Secondary at the time (or absent, or joined later)
-// promoted onto whatever it had last rendered — nothing. The survivor served the zero-service
+// promoted onto whatever it had last rendered — nothing. The survivor served the zero-app
 // landing page and reported healthy, because the front door answers its own /healthz. So what a
 // node was TOLD decided what the household got after a failover.
 //
@@ -30,7 +30,7 @@ import (
 // `briard-primary-storage -> briard-services -> briard-vip` on every data node — and `briard-services` is
 // the unit that, once the mount exists, reads the manifests, renders, warms and starts them.
 // A constant chain is what made converge-at-promotion possible for the deleted payload slot;
-// generalising it is what makes it possible for N runtime-installed services.
+// generalising it is what makes it possible for N runtime-installed apps.
 //
 // The manifests are TRUSTED here, and the signature is not re-checked. Identity is the host's:
 // it fetched the manifest from the catalog, verified it against the release keyring, and wrote
@@ -38,7 +38,7 @@ import (
 // RENDERING, deliberately — the renderer belongs next to the podman it renders for. Parse still
 // validates the structure, so a corrupt manifest is refused rather than rendered.
 //
-// ⚠️ This is the natural home for a code↔data identity gate; whether it gates per service
+// ⚠️ This is the natural home for a code↔data identity gate; whether it gates per app
 // or for the whole node is that gate's open question, and nothing here answers it yet.
 
 // unitsFile records the ordered units converge started, so ConvergeStop can stop exactly those.
@@ -86,24 +86,24 @@ const unitPrefix = "briard-"
 //     no address, and snapshot() already reports a primary with no address as unhealthy. Loud,
 //     through machinery that already exists.
 //
-//   - A SERVICE's own failure to start is logged and survived. A container that crashes must not
+//   - An APP's own failure to start is logged and survived. A container that crashes must not
 //     demote: a code fault is deterministic, so the peer running the identical closure hits it
-//     identically and the failover only flaps — and one broken service must not take the other
+//     identically and the failover only flaps — and one broken app must not take the other
 //     N-1 down with it. Recovery is the unit's own Restart= (agent/quadlet), and the household
-//     hears about it through per-service health, which reports and never gates.
+//     hears about it through per-app health, which reports and never gates.
 //
 // A node with nothing installed converges successfully to nothing. That is the shipped state, not
 // an error.
 //
-// It RETURNS the services it could not prepare, having started every other one. That list is not
-// bookkeeping: preparation is per-service work that can fail for one service and not the rest
+// It RETURNS the apps it could not prepare, having started every other one. That list is not
+// bookkeeping: preparation is per-app work that can fail for one app and not the rest
 // (agent/hass), and the two callers need opposite things from it. `briard-services` is a promoter
-// chain member, so it must promote anyway and let the household keep the services that work; an
-// INSTALL must fail, because the service it was told to install is the one that did not start.
+// chain member, so it must promote anyway and let the household keep the apps that work; an
+// INSTALL must fail, because the app it was told to install is the one that did not start.
 // Same code, one report, each caller deciding for itself.
 //
 // live names the install the caller is running now, "" for none (staging.go): its STAGED
-// manifest is rendered for that service, and every other staged service is left out entirely --
+// manifest is rendered for that app, and every other staged app is left out entirely --
 // not rendered, not started, its stale units stopped -- until the host's undo puts its data back.
 func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 	svcs, err := renderVolume(ctx, x, live)
@@ -111,8 +111,8 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 		return nil, err
 	}
 	// The pod network, before any unit is written that names it. Only when something actually
-	// wants one: a node running host-networked services creates nothing, which keeps the shipped
-	// zero-service and all-host cases exactly as they were.
+	// wants one: a node running host-networked apps creates nothing, which keeps the shipped
+	// zero-app and all-host cases exactly as they were.
 	if needsPodNetwork(svcs) {
 		pool := podPool(x)
 		if pool == "" {
@@ -144,17 +144,17 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 			return nil, fmt.Errorf("converge: %w", err)
 		}
 	}
-	// The per-service knowledge the product holds about one catalogued service, materialised on
+	// The per-app knowledge the product holds about one catalogued app, materialised on
 	// this node: Home Assistant's control channel, mosquitto's config file (agent/services).
 	// Here because converge is the one path every node takes — the installing Primary, the
-	// survivor promoting into a service it was never told about, and every guest reboot, /run
+	// survivor promoting into an app it was never told about, and every guest reboot, /run
 	// being tmpfs. After the warm, because it reads the image; before the start, because the
 	// containers bind what it writes.
 	//
-	// A FAILURE HERE COSTS ONE SERVICE, NOT THE NODE. Preparation is the one step whose inputs
-	// are the SERVICE's (its image's own layout), so a service whose upstream packaging moved
+	// A FAILURE HERE COSTS ONE APP, NOT THE NODE. Preparation is the one step whose inputs
+	// are the APP's (its image's own layout), so an app whose upstream packaging moved
 	// must not take the other N-1 down with it, or the promoter chain becomes hostage to whatever
-	// a vendor did to a container this month. The service is skipped and named; everything else
+	// a vendor did to a container this month. The app is skipped and named; everything else
 	// promotes.
 	//
 	// SKIPPING IS ALSO WHAT MAKES IT SAFE, which is why this cannot simply log and carry on to
@@ -176,7 +176,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 		return nil, fmt.Errorf("converge: record started units: %w", err)
 	}
 	// The front door's routing table, from the same rendering. Before the start for the
-	// same reason as the unit record: a service that is coming up must never be running behind a
+	// same reason as the unit record: an app that is coming up must never be running behind a
 	// door that does not know about it, and the door 502s harmlessly for the seconds in between.
 	if err := writeRoutes(x, svcs); err != nil {
 		return nil, err
@@ -191,14 +191,14 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 		}
 		// A CHANGED RENDERING MUST BE MADE TO TAKE EFFECT, and a start alone will not do it:
 		// systemd does not restart an already-active unit on daemon-reload, so an upgrade
-		// (same service name => same unit names) would leave the OLD container serving while
+		// (same app name => same unit names) would leave the OLD container serving while
 		// every file on disk described the new one. That is what the install path's `quiesce`
 		// used to do inside the maintenance bracket, and it belongs here now that converge is
 		// the only thing that starts these units.
 		//
-		// Only the services whose bytes actually changed are bounced. Converge runs on every
+		// Only the apps whose bytes actually changed are bounced. Converge runs on every
 		// promotion and on every install, so restarting unconditionally would take an untouched
-		// service down because a DIFFERENT one was upgraded — the "one service must not cost the
+		// app down because a DIFFERENT one was upgraded — the "one app must not cost the
 		// others" rule, in its quietest form.
 		if s.touched(changed) {
 			stopService(ctx, x, s.r)
@@ -211,9 +211,9 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 		}
 	}
 	// Remember what is now running, so the NEXT converge can tell an upgrade from a promotion.
-	// A failure here is not worth aborting a converge that has already started the services: the
+	// A failure here is not worth aborting a converge that has already started the apps: the
 	// cost is a needless bounce next time, not a wrong one.
-	// Recorded WITHOUT the skipped services: their new bytes are on disk but are not running, and
+	// Recorded WITHOUT the skipped apps: their new bytes are on disk but are not running, and
 	// a record claiming otherwise would make the next converge treat them as current and never
 	// retry them.
 	if err := writeStarted(x, started(svcs)); err != nil {
@@ -227,8 +227,8 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 	return skipped, nil
 }
 
-// started folds the services converge actually started, for the record the NEXT converge compares
-// against. A skipped service is deliberately absent rather than present-and-stale.
+// started folds the apps converge actually started, for the record the NEXT converge compares
+// against. A skipped app is deliberately absent rather than present-and-stale.
 func started(svcs []convergedService) quadlet.Rendered {
 	out := quadlet.Rendered{Files: map[string]string{}}
 	for _, s := range svcs {
@@ -240,7 +240,7 @@ func started(svcs []convergedService) quadlet.Rendered {
 	return out
 }
 
-// stopService quiesces one service so a re-render takes effect: its CONTAINER units in reverse,
+// stopService quiesces one app so a re-render takes effect: its CONTAINER units in reverse,
 // then the pod. Best-effort — a unit that was not running is not a failure worth aborting for.
 //
 // Containers before the pod, never the pod alone: `systemctl stop <pod>` makes podman `pod stop`,
@@ -265,13 +265,13 @@ func stopService(ctx context.Context, x Executor, r quadlet.Rendered) {
 }
 
 // stopUnrendered stops what the previous converge started and this one no longer renders — a
-// service forgotten after its first install failed, or uninstalled — containers before their pod,
+// app forgotten after its first install failed, or uninstalled — containers before their pod,
 // as ConvergeStop does. Before the unit sources go, while systemd still has them.
 //
 // ⚠️ THE POD DOES NOT STOP ITSELF, which is why this exists. Pods are rendered with
 // ExitPolicy=continue so a crashed container is restarted, and the price is that stopping the last
 // container no longer takes the pod down with it. A pod left behind holds its address and its
-// published ports, and a reinstall of the same service would join the stale pod.
+// published ports, and a reinstall of the same app would join the stale pod.
 //
 // Best-effort, like every stop here: a unit already gone is the state this wants.
 func stopUnrendered(ctx context.Context, x Executor, all quadlet.Rendered) {
@@ -294,8 +294,8 @@ func stopUnrendered(ctx context.Context, x Executor, all quadlet.Rendered) {
 	}
 }
 
-// ConvergeStop stops the service units this node started, newest-dependency first. Run as
-// briard-services' ExecStop, i.e. by drbd-reactor unwinding the chain on demote — the service
+// ConvergeStop stops the app units this node started, newest-dependency first. Run as
+// briard-services' ExecStop, i.e. by drbd-reactor unwinding the chain on demote — the app
 // units are not chain members, so nothing else would stop them and the containers would be left
 // running on a volume about to be unmounted.
 //
@@ -321,18 +321,18 @@ func ConvergeStop(ctx context.Context, x Executor) error {
 }
 
 // renderVolume reads every manifest on the volume and renders them, returning them
-// as a per-service list.
+// as a per-app list.
 //
-// ORDER IS BY SERVICE NAME, and it owes nothing more than determinism today. A set of services
-// has a real dependency order, which gets settled once there is a second real service to
+// ORDER IS BY APP NAME, and it owes nothing more than determinism today. A set of apps
+// has a real dependency order, which gets settled once there is a second real app to
 // decide against; until then alphabetical is the cheapest way to be the same on every node.
 //
-// An ABSENT manifest directory is the shipped zero-service node, not a failure. A manifest that
+// An ABSENT manifest directory is the shipped zero-app node, not a failure. A manifest that
 // is present and unusable IS a failure, and the difference is deliberate: absence is a state we
 // ship, while a corrupt manifest means this node cannot honour what the volume says it runs, and
-// promoting anyway is how a household silently loses a service.
+// promoting anyway is how a household silently loses an app.
 //
-// A STAGED service is the exception to "render what the volume says" (staging.go): the live one
+// A STAGED app is the exception to "render what the volume says" (staging.go): the live one
 // renders from its `.json.next`, including a fresh install that has no accepted manifest yet,
 // and every other one is left out.
 func renderVolume(ctx context.Context, x Executor, live string) ([]convergedService, error) {
@@ -384,25 +384,25 @@ func renderVolume(ctx context.Context, x Executor, live string) ([]convergedServ
 	return svcs, nil
 }
 
-// allocator hands each service the address its pod answers on.
+// allocator hands each app the address its pod answers on.
 //
-// IT IS A LEDGER, NOT A FUNCTION, and that is the whole design. A pure hash of the service name
+// IT IS A LEDGER, NOT A FUNCTION, and that is the whole design. A pure hash of the app name
 // would be stable until the day it collides: the loser is probed to the next slot, and then
-// UNINSTALLING THE WINNER frees the loser's own hash, moves it, and bounces a service for a reason
+// UNINSTALLING THE WINNER frees the loser's own hash, moves it, and bounces an app for a reason
 // that has nothing to do with it. Any collision-resolution scheme without memory has that shape.
 //
-// The ledger is the previous routing table, because that table already records, per service, the
+// The ledger is the previous routing table, because that table already records, per app, the
 // address it has on this node -- a second file would hold the same fact twice. So: keep every
-// address already recorded, allocate only for services that have none, and take the lowest free
+// address already recorded, allocate only for apps that have none, and take the lowest free
 // slot, which needs no hashing at all once there is memory to consult.
 //
 // /run IS THE CORRECTNESS ARGUMENT, not just where it happens to live. The table dies with the
 // guest, so a reboot reallocates from nothing -- and at that moment no container is running, so no
-// address change can bounce anything. Within a run the ledger holds and a running service keeps
+// address change can bounce anything. Within a run the ledger holds and a running app keeps
 // its address whatever else is installed or removed around it.
 //
 // AN ADDRESS THAT DOES CHANGE MUST BOUNCE, which is why nothing here tries to prevent that in
-// general: a service moving from host networking to private genuinely changed where it answers,
+// general: an app moving from host networking to private genuinely changed where it answers,
 // and recreating the container is the correct response rather than something to suppress.
 type allocator struct {
 	pool  string          // the node's pod pool, first three octets; "" = none drawn
@@ -415,7 +415,7 @@ func newAllocator(x Executor) *allocator {
 	if raw, err := x.ReadFile(podSubnetPath); err == nil {
 		a.pool = strings.TrimSpace(string(raw))
 	}
-	// The ledger. A table that will not parse loses it, and every service reallocates once -- one
+	// The ledger. A table that will not parse loses it, and every app reallocates once -- one
 	// bounce, no worse. That is the honest cost of not persisting an allocation nobody needs to
 	// survive a reboot.
 	raw, err := x.ReadFile(routes.Path)
@@ -435,7 +435,7 @@ func newAllocator(x Executor) *allocator {
 	return a
 }
 
-// addressFor answers where this service's pod will be, keeping any address it already has.
+// addressFor answers where this app's pod will be, keeping any address it already has.
 func (a *allocator) addressFor(m manifest.Manifest) (string, error) {
 	if m.HostNetwork() {
 		// The pod IS the guest's namespace, so there is nothing to allocate and nothing that can
@@ -449,7 +449,7 @@ func (a *allocator) addressFor(m manifest.Manifest) (string, error) {
 		a.taken[prev] = true
 		return prev, nil
 	}
-	// .1 is the network's own gateway on the guest side, so services start at .2.
+	// .1 is the network's own gateway on the guest side, so apps start at .2.
 	for host := 2; host < 255; host++ {
 		addr := fmt.Sprintf("%s.%d", a.pool, host)
 		if !a.taken[addr] && !a.inUse(addr) {
@@ -460,9 +460,9 @@ func (a *allocator) addressFor(m manifest.Manifest) (string, error) {
 	return "", fmt.Errorf("the pod pool %s.0/24 is full", a.pool)
 }
 
-// inUse reports whether another service already holds this address in the ledger. Checked so that
-// a newly-allocated service cannot be handed an address a LATER service in the same pass is about
-// to keep -- the services are walked in name order, and a new one may sort before an existing one.
+// inUse reports whether another app already holds this address in the ledger. Checked so that
+// a newly-allocated app cannot be handed an address a LATER app in the same pass is about
+// to keep -- the apps are walked in name order, and a new one may sort before an existing one.
 func (a *allocator) inUse(addr string) bool {
 	for _, held := range a.known {
 		if held == addr {
@@ -472,25 +472,25 @@ func (a *allocator) inUse(addr string) bool {
 	return false
 }
 
-// convergedService is one service the volume names, with its rendering. Kept PER SERVICE rather
-// than merged, because the two decisions converge makes are per service: whether this one's
+// convergedService is one app the volume names, with its rendering. Kept PER APP rather
+// than merged, because the two decisions converge makes are per app: whether this one's
 // rendering changed (and so must be bounced), and whether this one failed to start (which must
 // not stop the others).
 type convergedService struct {
 	name string
 	// m is the manifest as the volume gave it, kept beside the rendering because the units are
 	// not the only thing derived from it: services.Prepare is handed the manifest so that the
-	// per-service knowledge stays keyed on the service's NAME and its pinned image, never on a
+	// per-app knowledge stays keyed on the app's NAME and its pinned image, never on a
 	// unit filename it would have to parse back out.
 	m manifest.Manifest
 	r quadlet.Rendered
-	// skip marks a service whose per-service preparation failed. Its units are written but never
+	// skip marks an app whose per-app preparation failed. Its units are written but never
 	// started, which is both the containment and the safety: an unstarted unit cannot make podman
 	// create the bind source Prepare did not write.
 	skip bool
 }
 
-// touched reports whether any of this service's unit source was written differently this pass.
+// touched reports whether any of this app's unit source was written differently this pass.
 func (s convergedService) touched(changed map[string]bool) bool {
 	for f := range s.r.Files {
 		if changed[f] {
@@ -500,9 +500,9 @@ func (s convergedService) touched(changed map[string]bool) bool {
 	return false
 }
 
-// merged folds every service's rendering into one set — what gets written to the quadlet
+// merged folds every app's rendering into one set — what gets written to the quadlet
 // directory, warmed, and recorded as the units to stop on demote. Unit filenames are
-// service-prefixed by the renderer (briard-<service>-…), so the Files merge cannot collide.
+// app-prefixed by the renderer (briard-<app>-…), so the Files merge cannot collide.
 func merged(svcs []convergedService) quadlet.Rendered {
 	all := quadlet.Rendered{Files: map[string]string{}}
 	for _, s := range svcs {
@@ -537,7 +537,7 @@ func manifestNames(ctx context.Context, x Executor) ([]string, error) {
 // briard- unit source that this converge did NOT render, and reports which files it actually
 // CHANGED.
 //
-// The removal is what makes converge the whole truth rather than an addition to it: a service
+// The removal is what makes converge the whole truth rather than an addition to it: an app
 // uninstalled on another node, or renamed, leaves orphan unit source behind, and an orphan
 // .container is a unit a future converge could start against data that no longer exists. Only
 // files carrying the renderer's own prefix are candidates — a quadlet file a user dropped there
@@ -546,7 +546,7 @@ func manifestNames(ctx context.Context, x Executor) ([]string, error) {
 // The changed set is what tells an UPGRADE apart from a promotion. Converge runs on both, and on
 // a promotion nothing is running so a start is enough; on an upgrade the units are already
 // active, and systemd does not restart an active unit on daemon-reload. Comparing the bytes is
-// how the caller learns which services must be bounced and, just as importantly, which must not.
+// how the caller learns which apps must be bounced and, just as importantly, which must not.
 func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string]bool, error) {
 	if _, err := x.Run(ctx, "mkdir", "-p", quadletDir); err != nil {
 		return nil, fmt.Errorf("converge: %s: %w", quadletDir, err)
@@ -606,7 +606,7 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 // be here (install warms it, prewarm puts it on every standby, and service-install.nix asserts
 // exactly that), so reaching this line means the design was not upheld and a short wait beats
 // refusing to run. Under converge that is not even an unlikely case any more -- a node that was
-// down when the install ran, or joined afterwards, promotes into a service it was never told
+// down when the install ran, or joined afterwards, promotes into an app it was never told
 // about and legitimately has no image for. Still deliberately NOT conditioned on whether some
 // other node could promote instead: two nodes that both lack the image would refuse in turn with
 // no flap bound (ReactorConfig emits only `start` + `adjust-resource-on-start`), and on the free
@@ -637,8 +637,8 @@ func warmImage(ctx context.Context, x Executor, unit, ref string) error {
 	return nil
 }
 
-// mergeInto folds one service's rendering into the set converge writes. Unit filenames are
-// service-prefixed by the renderer (briard-<service>-…), so the Files merge cannot collide.
+// mergeInto folds one app's rendering into the set converge writes. Unit filenames are
+// app-prefixed by the renderer (briard-<app>-…), so the Files merge cannot collide.
 func mergeInto(all *quadlet.Rendered, r quadlet.Rendered) {
 	for name, body := range r.Files {
 		all.Files[name] = body
@@ -698,20 +698,20 @@ func writeStarted(x Executor, r quadlet.Rendered) error {
 // writeRoutes materialises the front door's routing table from what this converge rendered — the
 // names included, so the mDNS publisher and the door read one list.
 //
-// IT IS WRITTEN EVEN WHEN THERE ARE NO SERVICES, as an empty table rather than an absent file:
+// IT IS WRITTEN EVEN WHEN THERE ARE NO APPS, as an empty table rather than an absent file:
 // "this node routes nothing" and "nobody has told me anything" are different states, and the door
 // reading a stale table left over from before an uninstall is exactly the failure the file exists
 // to make impossible. Converge is the whole truth here for the same reason it is for the units.
 //
-// SKIPPED SERVICES ARE INCLUDED, unlike the started-record. The volume says the node serves them,
+// SKIPPED APPS ARE INCLUDED, unlike the started-record. The volume says the node serves them,
 // so the door should say so too: a name that resolves and gives a 502 tells a household its
-// service is down, while a name that resolves to nothing tells them they typed it wrong. The
-// per-service health probe reads the same table and reports the same truth.
+// app is down, while a name that resolves to nothing tells them they typed it wrong. The
+// per-app health probe reads the same table and reports the same truth.
 //
 // A FAILURE HERE FAILS THE CONVERGE, and that is the harsher of the two options on purpose. This
 // runs as a promoter chain member ahead of briard-vip, so a node that cannot write its routing
 // table takes no address and is reported unhealthy, rather than promoting into a front door
-// serving the landing page over a household's running service — the silent-degradation shape
+// serving the landing page over a household's running app — the silent-degradation shape
 // converge-at-promotion was built to end, one layer up.
 func writeRoutes(x Executor, svcs []convergedService) error {
 	t := routesFor(flockName(x), svcs)
@@ -734,22 +734,22 @@ func putRoutes(x Executor, t routes.Table) error {
 	return nil
 }
 
-// routesFor turns the rendered services into the table. Three sources meet here and no one of
+// routesFor turns the rendered apps into the table. Three sources meet here and no one of
 // them could supply the others: the MANIFEST's port and health path, the RENDERER's address, and
 // the node's own flock name for the hostnames.
 //
-// A service gets a NAME whether or not the door serves it. The name resolves to the VIP, which is
-// where a non-HTTP service is listening anyway, and it is the anchor any future route hangs off —
+// An app gets a NAME whether or not the door serves it. The name resolves to the VIP, which is
+// where a non-HTTP app is listening anyway, and it is the anchor any future route hangs off —
 // so `briard-<flock>-mosquitto.local` is worth having even while nothing is fronted under it.
 //
 // It gets a ROUTE only if the product says the door may front it (agent/services.Fronted). No
 // route is how "do not expose this" is said: the door is then never handed a way to reach the
-// service at all, rather than being handed one and trusted not to use it. mosquitto is the live
+// app at all, rather than being handed one and trusted not to use it. mosquitto is the live
 // case — its manifest port is the broker's management API, bound inside the pod on purpose.
 //
 // It gets an ANNOUNCEMENT only if the product says the household's other devices go looking for
 // it (agent/services.Announce), and only alongside a name, because that name is what the record
-// points at. mosquitto is again the live case, from the other side: the one service whose clients
+// points at. mosquitto is again the live case, from the other side: the one app whose clients
 // are appliances that browse rather than people who type.
 func routesFor(flock string, svcs []convergedService) routes.Table {
 	t := routes.Table{Services: make([]routes.Service, 0, len(svcs))}
@@ -793,7 +793,7 @@ func routesFor(flock string, svcs []convergedService) routes.Table {
 // routing table with no name in it. The name is guest-local state for exactly the same reason the
 // manifests are volume state: it must be readable by a node that nobody is talking to.
 //
-// An unreadable or nameless file yields "", which routes.HostName turns into a service with no
+// An unreadable or nameless file yields "", which routes.HostName turns into an app with no
 // hostname — installed and reachable on its port, simply not yet named. That is the same rule
 // the front door already applies to the flock's own name, and it is the state of a node between
 // install and its first name.
@@ -838,15 +838,15 @@ func renameRoutes(x Executor, flock string) {
 	}
 }
 
-// serviceHealthURL resolves where to ask one service whether it is serving, from the routing table
+// serviceHealthURL resolves where to ask one app whether it is serving, from the routing table
 // this node last converged.
 //
 // It reads the SAME table the front door routes on, so "is it healthy" and "where do requests go"
 // can never be answered about two different addresses — which a caller-supplied URL allows by
 // construction. It does NOT go through the door: the probe is a direct GET from inside the guest,
-// which is why a service the door may not front is still probed here every cycle.
+// which is why an app the door may not front is still probed here every cycle.
 //
-// A service that is not in the table, or that has no health endpoint, yields an error rather than
+// An app that is not in the table, or that has no health endpoint, yields an error rather than
 // an unhealthy verdict — see the verb for why that distinction is load-bearing.
 func serviceHealthURL(x Executor, name string) (string, error) {
 	raw, err := x.ReadFile(routes.Path)
@@ -871,11 +871,11 @@ func serviceHealthURL(x Executor, name string) (string, error) {
 	return u.String(), nil
 }
 
-// serviceHealth is SERVICE HEALTH, the one answer to "does this app work": the registry's
+// serviceHealth is APP HEALTH, the one answer to "does this app work": the registry's
 // override for a curated app that has one (services.HealthOverride), otherwise the manifest's
 // healthPath answering 200. The status report, the app-update gate and the history all ask here.
 //
-// An unresolvable service is an ERROR, never a verdict (serviceHealthURL says why). A manifest
+// An unresolvable app is an ERROR, never a verdict (serviceHealthURL says why). A manifest
 // that cannot be read on the volume leaves the default probe, which needs none.
 func serviceHealth(ctx context.Context, x Executor, service string) (services.Health, error) {
 	url, err := serviceHealthURL(x, service)
@@ -903,13 +903,13 @@ func serviceHealth(ctx context.Context, x Executor, service string) (services.He
 // per converge and before anything starts, keeps promotion a sequence of steps that either work or
 // say why.
 //
-// ONE NETWORK FOR THE NODE, not one per service: the pool is a /24 and the addresses inside it are
-// what separate services, while a network each would spend a subnet to express the same thing.
+// ONE NETWORK FOR THE NODE, not one per app: the pool is a /24 and the addresses inside it are
+// what separate apps, while a network each would spend a subnet to express the same thing.
 //
 // A NETWORK THAT EXISTS ON A DIFFERENT SUBNET FAILS THE CONVERGE rather than being adopted. The
 // addresses this node allocates come from the pool it was handed, so a network carrying some other
 // range would place every pod outside its own address -- reachable by nothing, with the routing
-// table and the health probe both pointing where the service is not. That can only happen if the
+// table and the health probe both pointing where the app is not. That can only happen if the
 // pool was redrawn under a live guest, and the honest answer is to refuse and name it.
 func ensurePodNetwork(ctx context.Context, x Executor, pool string) error {
 	want := pool + ".0/24"
@@ -928,7 +928,7 @@ func ensurePodNetwork(ctx context.Context, x Executor, pool string) error {
 	return nil
 }
 
-// needsPodNetwork reports whether any service on this node wants a private pod.
+// needsPodNetwork reports whether any app on this node wants a private pod.
 func needsPodNetwork(svcs []convergedService) bool {
 	for _, s := range svcs {
 		if !s.m.HostNetwork() {
@@ -938,7 +938,7 @@ func needsPodNetwork(svcs []convergedService) bool {
 	return false
 }
 
-// podPool is the range this node allocates private service addresses from, as the first three
+// podPool is the range this node allocates private app addresses from, as the first three
 // octets, or "" if the host has sent none.
 func podPool(x Executor) string {
 	raw, err := x.ReadFile(podSubnetPath)

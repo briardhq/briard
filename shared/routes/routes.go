@@ -1,14 +1,14 @@
 // Package routes is the front door's routing table: the file the guest's converge WRITES and the
-// reverse proxy READS, mapping a hostname a household types to the service that answers it.
+// reverse proxy READS, mapping a hostname a household types to the app that answers it.
 //
 // IT IS A DERIVED PROJECTION, NOT THE CATALOG. The signed manifest is stored verbatim on the
-// replicated volume, because the service identity is the sha256 of those exact bytes — enriching
+// replicated volume, because the app identity is the sha256 of those exact bytes — enriching
 // it would remint the identity on every node, so the catalog document physically cannot be the
 // thing we add fields to. This is the separate document derived from it, and its inputs come from
 // three places that no single one of them could supply:
 //
-//   - the MANIFEST: the service's name, its port and its health path.
-//   - the RENDERER: Address. A service's address is a rendering fact, not a manifest fact — the
+//   - the MANIFEST: the app's name, its port and its health path.
+//   - the RENDERER: Address. An app's address is a rendering fact, not a manifest fact — the
 //     manifest names a port, and what host answers on it is decided by how the pod was wired.
 //   - NODE IDENTITY: Hosts, composed from the flock's minted name, which cannot exist in a
 //     published catalog because it is per-household and chosen at install.
@@ -39,18 +39,18 @@ import (
 // because a second file is a second thing that can be stale.
 const Path = "/run/briard/routes.json"
 
-// Table is the whole front door's routing, as one file. Ordered by service name, because converge
+// Table is the whole front door's routing, as one file. Ordered by app name, because converge
 // renders in that order and a table two nodes disagree about the ORDER of is a diff nobody wants
 // to read.
 type Table struct {
 	Services []Service `json:"services"`
 }
 
-// Service is one runtime-installed service as the node needs to see it.
+// Service is one runtime-installed app as the node needs to see it.
 type Service struct {
 	// Name is the catalog slug, the same one the manifest and the units carry.
 	Name string `json:"name"`
-	// Hosts are the names this service answers to, in the order HostNames composes them: the
+	// Hosts are the names this app answers to, in the order HostNames composes them: the
 	// flock-scoped mDNS label HostName composes, first — it is the SRV target announcements
 	// point at — then the bare alias BareHostName composes, and the per-home
 	// `<service>.<flock>.briard.casa` name CasaHostName composes, which resolves only once the
@@ -63,57 +63,57 @@ type Service struct {
 	// building a name stays in HostName.
 	//
 	// EMPTY IS A REAL STATE: a node whose flock has no minted name publishes nothing rather than
-	// a guess (net.mdnsname), so it routes nothing either. The service is still installed and
+	// a guess (net.mdnsname), so it routes nothing either. The app is still installed and
 	// still reachable on any port it publishes; it simply has no name yet.
 	Hosts []string `json:"hosts,omitempty"`
-	// Address is the host this service answers on — the guest's own loopback while the pod shares
+	// Address is the host this app answers on — the guest's own loopback while the pod shares
 	// the guest's network namespace, the pod's address once it does not. A bare host,
-	// with no port: a service is ONE pod and a pod is ONE network namespace, so one address serves
+	// with no port: an app is ONE pod and a pod is ONE network namespace, so one address serves
 	// every port it listens on, and Health and Routes below carry only the port.
 	//
 	// It comes from the renderer, which is the only thing that knows how the pod was wired, and it
 	// never appears in the catalog: a published, signed, node-independent document cannot carry a
 	// fact that differs per node and per render.
 	Address string `json:"address,omitempty"`
-	// Health is the endpoint that answers "is this service serving", as a host-less URL resolved
+	// Health is the endpoint that answers "is this app serving", as a host-less URL resolved
 	// against Address (see Resolve).
 	//
 	// It is NOT a route, and that is the point: the probe is performed by the guest, straight to
-	// the service, and never traverses the proxy. A service the door may not front is still
+	// the app, and never traverses the proxy. An app the door may not front is still
 	// probed here every cycle — mosquitto's management API is exactly that, bound inside the pod
 	// and relayed to nobody.
 	Health string `json:"health,omitempty"`
-	// Routes is what the DOOR does about this service, and an empty list means nothing — the
-	// service is named and probed, and no request is ever forwarded to it.
+	// Routes is what the DOOR does about this app, and an empty list means nothing — the
+	// app is named and probed, and no request is ever forwarded to it.
 	//
 	// ABSENCE RATHER THAN A FLAG, deliberately. A boolean saying "do not front this" leaves the
 	// door holding an address it is trusted not to use, one inverted condition away from relaying
 	// a pod-internal endpoint to the LAN. With no route there is nothing to forward and nothing to
 	// get wrong — the same reason shared/manifest grants capability by omission.
 	Routes []Route `json:"routes,omitempty"`
-	// Ports are what this service publishes to the household, reachable at the node's service
+	// Ports are what this app publishes to the household, reachable at the node's service
 	// address on the same number. NOT the door's business -- it forwards HTTP and these exist for
-	// the services that do not speak it -- but the node's, because the page and `briard service
-	// install` have to be able to say where a service actually is.
+	// the apps that do not speak it -- but the node's, because the page and `briard service
+	// install` have to be able to say where an app actually is.
 	//
 	// It stayed out of this table until a manifest could declare exposure, and the reason is worth
 	// keeping: under host networking every port a container listens on is reachable at the service
 	// address, and the manifest names only the primary's -- so any list written then would have
 	// been partial, and the page would have printed it as though it were the whole truth.
 	Ports []int `json:"ports,omitempty"`
-	// Announce are the mDNS SERVICE records this service wants on the household LAN -- what a
+	// Announce are the mDNS SERVICE records this app wants on the household LAN -- what a
 	// device looking for a broker browses for, as opposed to Hosts, which are names something has
 	// to know already in order to ask.
 	//
 	// PRODUCT KNOWLEDGE, never the manifest's: which service type a thing is found under is the
-	// kind of per-service fact a curated catalog exists to let us encode (agent/services), and a
+	// kind of per-app fact a curated catalog exists to let us encode (agent/services), and a
 	// publisher declaring its own type would be claiming a well-known name on a household's LAN.
 	// The catalog names a port; what protocol answers there is ours to say.
 	//
 	// MATERIALISED, for the same reason Hosts is: the publisher is a shell script, so every rule
 	// for composing a name lives in this package (InstanceName) and the script stays permanently
-	// dumb. Each record is pointed at the service's OWN name -- the first of Hosts -- which is why
-	// Validate refuses an announcement on a service that has none. An SRV record needs a target,
+	// dumb. Each record is pointed at the app's OWN name -- the first of Hosts -- which is why
+	// Validate refuses an announcement on an app that has none. An SRV record needs a target,
 	// and the only other candidate is the guest's own hostname, which is node-scoped and would
 	// send every device on the LAN to a machine that just stopped being the Primary.
 	Announce []Announcement `json:"announce,omitempty"`
@@ -121,7 +121,7 @@ type Service struct {
 
 // Announcement is one mDNS service record: the label a browser shows, the type it browses for,
 // and the port the SRV record carries. The target host is deliberately absent -- it is the
-// service's own Hosts[0], so there is one name per service rather than two that can disagree.
+// app's own Hosts[0], so there is one name per app rather than two that can disagree.
 type Announcement struct {
 	// Name is the service-instance label, composed by InstanceName.
 	Name string `json:"name"`
@@ -132,28 +132,28 @@ type Announcement struct {
 	Port int `json:"port"`
 }
 
-// Route is one way in to a service: which listener the request arrives on, and where it goes.
+// Route is one way in to an app: which listener the request arrives on, and where it goes.
 type Route struct {
 	// Listen is the listener this route is served on. ListenName is the shared :80/:443 front
-	// door, matched against the service's own Hosts; a dedicated listener is spelled
+	// door, matched against the app's own Hosts; a dedicated listener is spelled
 	// "tls:<port>" and is not implemented yet (Validate refuses it, loudly — a route the door
-	// silently ignored would be a service unreachable with nothing saying why).
+	// silently ignored would be an app unreachable with nothing saying why).
 	Listen string `json:"listen"`
-	// To is where the door forwards, as a host-less URL resolved against the service's Address.
+	// To is where the door forwards, as a host-less URL resolved against the app's Address.
 	// The scheme says how to speak to it: "http" is a proxied request, upgrades included.
 	//
 	// THE MISSING HOST IS A SECURITY PROPERTY, not a spelling convenience. Because the only
-	// address the door can ever splice in is the service's own, no table — however it was written
+	// address the door can ever splice in is the app's own, no table — however it was written
 	// — can point the front door at another machine. Validate refuses a host here.
 	To string `json:"to"`
 }
 
 // ListenName is the shared front door: :80 and :443, matched on the request's Host header against
-// the service's Hosts. The two ports are one listener here because the door treats them
+// the app's Hosts. The two ports are one listener here because the door treats them
 // identically; separating them is a new value, not a new shape.
 const ListenName = "name"
 
-// HostName is the single place a service's LAN name is composed: `briard-<flock>-<service>.local`.
+// HostName is the single place an app's LAN name is composed: `briard-<flock>-<service>.local`.
 //
 // ONE LABEL, and that is measured rather than stylistic: `mdns4_minimal`, the resolver in
 // Debian/Ubuntu's nsswitch, handles exactly ONE label before `.local`. So the flock-scoped
@@ -161,7 +161,7 @@ const ListenName = "name"
 // `home-assistant.briard-picked-hornet.local` would publish fine and resolve nowhere — the same
 // trap measured for the flock name itself, one level down.
 //
-// FLOCK-SCOPED, because this is the service's IDENTITY on the LAN: the SRV target every
+// FLOCK-SCOPED, because this is the app's IDENTITY on the LAN: the SRV target every
 // announcement points at, and the name that stays unambiguous when two flocks share a house.
 // The bare alias is BareHostName, and the split is the rule: the flock-scoped name is what the
 // node relies on, the bare name is what it prints.
@@ -182,7 +182,7 @@ func HostName(flock, service string) string {
 	return "briard-" + flock + "-" + service + ".local"
 }
 
-// BareHostName is the service's CONVENIENCE name: `briard-<service>.local`, the one a household
+// BareHostName is the app's CONVENIENCE name: `briard-<service>.local`, the one a household
 // types and the one every print site shows (the installer, `briard service install`, the
 // dashboard's links). Every flock answers it beside its flock-scoped name, and nearly every home
 // holds exactly one flock, so nearly every home gets the short name on its only no-account door.
@@ -194,7 +194,7 @@ func HostName(flock, service string) string {
 // flock-scoped names still tell the two apart, and they are what the agent relies on.
 //
 // Not a name derived from the flock-scoped one: BareFlockHostName is the same prefix with no
-// service, and the two are kept as literal strings so a reader sees the shape without computing it.
+// app, and the two are kept as literal strings so a reader sees the shape without computing it.
 func BareHostName(service string) string {
 	if service == "" {
 		return ""
@@ -202,7 +202,7 @@ func BareHostName(service string) string {
 	return "briard-" + service + ".local"
 }
 
-// HostNames is the ordered Hosts list for a service, and the only place that order is decided:
+// HostNames is the ordered Hosts list for an app, and the only place that order is decided:
 // the flock-scoped name first (Hosts[0] is the SRV target and the identity), the bare alias, the
 // casa name. Converge writes it into the table; an empty flock name yields no names at all, so a
 // nameless node routes nothing rather than answering the bare alias for a flock it cannot name.
@@ -214,7 +214,7 @@ func HostNames(flock, service string) []string {
 	return []string{h, BareHostName(service), CasaHostName(flock, service)}
 }
 
-// CasaHostName is the service's name under the household's casa domain:
+// CasaHostName is the app's name under the household's casa domain:
 // `<service>.<flock>.briard.casa`, covered by the flock's wildcard certificate and answered by
 // the same door that answers the `.local` name. Composed for every named flock, claimed or not:
 // a name that does not resolve routes nothing, and the alternative -- the table knowing whether
@@ -269,8 +269,8 @@ func (t Table) Validate() error {
 		}
 		for _, r := range s.Routes {
 			if r.Listen != ListenName {
-				// Deliberately not "ignore what we do not know": a route the door drops is a
-				// service that is unreachable with nothing saying why.
+				// Deliberately not "ignore what we do not know": a route the door drops is an
+				// app that is unreachable with nothing saying why.
 				return fmt.Errorf("routes: service %q has a route on unknown listener %q", s.Name, r.Listen)
 			}
 			if err := checkSpec(s.Name, "route target", r.To); err != nil {
@@ -330,7 +330,7 @@ func checkSpec(service, what, spec string) error {
 		return fmt.Errorf("routes: service %q %s %q: scheme must be http", service, what, spec)
 	}
 	if u.Hostname() != "" {
-		// The whole point of the missing host: with nothing but the service's own Address to
+		// The whole point of the missing host: with nothing but the app's own Address to
 		// splice, no table can aim the door at another machine.
 		return fmt.Errorf("routes: service %q %s %q names a host; it must be host-less", service, what, spec)
 	}
@@ -340,7 +340,7 @@ func checkSpec(service, what, spec string) error {
 	return nil
 }
 
-// Marshal renders the table for the file. Indented, because a human debugging why their service
+// Marshal renders the table for the file. Indented, because a human debugging why their app
 // is not reachable will `cat` this before they do anything else.
 func (t Table) Marshal() ([]byte, error) {
 	b, err := json.MarshalIndent(t, "", "  ")
@@ -350,9 +350,9 @@ func (t Table) Marshal() ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-// Resolve turns one of this service's host-less specs into a real URL by splicing in its Address.
+// Resolve turns one of this app's host-less specs into a real URL by splicing in its Address.
 // The one operation every consumer performs, implemented once so the door and the health probe
-// cannot disagree about where a service is.
+// cannot disagree about where an app is.
 func (s Service) Resolve(spec string) (*url.URL, error) {
 	u, err := url.Parse(spec)
 	if err != nil {
@@ -370,7 +370,7 @@ func (s Service) Resolve(spec string) (*url.URL, error) {
 	return u, nil
 }
 
-// Route returns this service's route on the given listener.
+// Route returns this app's route on the given listener.
 func (s Service) Route(listen string) (Route, bool) {
 	for _, r := range s.Routes {
 		if r.Listen == listen {
@@ -380,11 +380,11 @@ func (s Service) Route(listen string) (Route, bool) {
 	return Route{}, false
 }
 
-// Lookup finds the service a request's Host header names. The header is normalised first, because
+// Lookup finds the app a request's Host header names. The header is normalised first, because
 // what arrives is whatever the client typed: any case, a trailing dot from a fully-qualified
 // resolver, and a `:port` whenever the port is not the scheme's default.
 //
-// A match says only that the name is OURS. Whether anything is served under it is the service's
+// A match says only that the name is OURS. Whether anything is served under it is the app's
 // Routes, and the difference matters: the door can then say "this is ours and does not answer
 // HTTP" instead of a 404 that reads as "you typed it wrong".
 func (t Table) Lookup(host string) (Service, bool) {
@@ -402,7 +402,7 @@ func (t Table) Lookup(host string) (Service, bool) {
 	return Service{}, false
 }
 
-// Get finds a service by name — what the per-service health probe resolves through, so that the
+// Get finds an app by name — what the per-app health probe resolves through, so that the
 // address it probes is the one the renderer actually wired rather than one the caller assembled.
 func (t Table) Get(name string) (Service, bool) {
 	for _, s := range t.Services {

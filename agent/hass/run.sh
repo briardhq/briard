@@ -20,7 +20,7 @@
 # dies with the container and nothing can go stale. Tampering with it gains nothing: a
 # container can already call the socket or not, as it likes.
 #
-# No step can ever fail the service. A household losing Home Assistant because
+# No step can ever fail the app. A household losing Home Assistant because
 # briard could not write a token would be a far worse trade than a health gate that
 # degrades to liveness-only, which is exactly what an absent token leaves behind — and
 # the same trade, one notch smaller, for an integration that is not planted or a
@@ -34,7 +34,7 @@
 # ⚠️ THE SHEBANG IS LOAD-BEARING AND ITS ABSENCE IS NOT SUBTLE: s6-supervise reports
 # `unable to spawn ./run (waiting 60 seconds): Exec format error` and retries forever,
 # so Home Assistant simply never starts. Measured, by losing it to a careless edit.
-# FIRST, AND IT BLOCKS. The guest agent is told this service is starting and gets
+# FIRST, AND IT BLOCKS. The guest agent is told this app is starting and gets
 # to act before Home Assistant opens a single file — which is what makes a member taken there
 # application-consistent by construction rather than crash-consistent by luck. Ahead of the
 # two steps below deliberately: they write into /config, and a rollback point is worth more

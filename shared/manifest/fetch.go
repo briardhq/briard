@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	// MaxManifestSize bounds the download before anything is parsed or verified. A service
+	// MaxManifestSize bounds the download before anything is parsed or verified. An app
 	// manifest is a short JSON document; 1 MiB is vast headroom and still a hard ceiling.
 	maxManifestSize = 1 << 20
 	sigSuffix       = ".sig"
@@ -31,12 +31,12 @@ type Verifier interface {
 	Verify(artifact, sig []byte) error
 }
 
-// Catalog fetches signed service manifests from the published catalog (a signed,
+// Catalog fetches signed app manifests from the published catalog (a signed,
 // versioned, static, mirrorable artifact at a dumb URL, the apt-mirror shape rather than an
 // API). BaseURL is the catalog root, served from briard.io; Client is optional.
 //
 // Operation never depends on our liveness: a fetched manifest is kept on the DRBD volume as the
-// service's identity, so an installed service keeps running, failing over and rolling back with
+// app's identity, so an installed app keeps running, failing over and rolling back with
 // the catalog unreachable. This type is only ever on the INSTALL path, never the failover path.
 type Catalog struct {
 	BaseURL  string
@@ -54,13 +54,13 @@ type Catalog struct {
 // parse-then-verify flow might have already normalised.
 // The RAW bytes come back alongside the parsed form because they are what gets recorded on the
 // volume: the identity is the hash of exactly these bytes, so storing a re-marshalling would
-// store a different service.
+// store a different app.
 func (c *Catalog) Fetch(ctx context.Context, name string) (Manifest, Identity, []byte, error) {
 	if c.Verifier == nil {
 		return Manifest{}, "", nil, ErrNoVerifier // fail closed before touching the network
 	}
-	// The name becomes a URL path element; a catalog name is a slug for the same reason a
-	// service name is, and checking here keeps "../" out of the request we build.
+	// The name becomes a URL path element; a catalog name is a slug for the same reason an
+	// app name is, and checking here keeps "../" out of the request we build.
 	if !slug.MatchString(name) {
 		return Manifest{}, "", nil, fmt.Errorf("%w: catalog name %q is not a slug", ErrInvalid, name)
 	}
@@ -81,9 +81,9 @@ func (c *Catalog) Fetch(ctx context.Context, name string) (Manifest, Identity, [
 		return Manifest{}, "", nil, err
 	}
 	if m.Name != name {
-		// A manifest served at one name that calls itself another would install a service under
+		// A manifest served at one name that calls itself another would install an app under
 		// a handle the operator never asked for — and, since the name is the subvolume, would
-		// point it at another service's data.
+		// point it at another app's data.
 		return Manifest{}, "", nil, fmt.Errorf("%w: manifest at %q declares name %q", ErrInvalid, doc, m.Name)
 	}
 	return m, id, raw, nil
