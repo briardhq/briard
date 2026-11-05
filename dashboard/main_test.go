@@ -367,7 +367,7 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	must(t, err)
 	n, _ = page.Body.Read(buf)
 	page.Body.Close()
-	if !strings.Contains(string(buf[:n]), `<button type="submit" class="btn">Open Home Assistant`) {
+	if !strings.Contains(string(buf[:n]), `<button type="submit" class="btn" aria-label="Open Home Assistant" title="Open Home Assistant">Open</button>`) {
 		t.Error("the page on a set-up HA does not offer Open Home Assistant")
 	}
 }

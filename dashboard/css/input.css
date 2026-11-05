@@ -58,6 +58,11 @@ progress::-moz-progress-bar { background: var(--primary); }
 /* AN APP'S MARK, from the catalog's index, before its title: a little larger than the text, on
    its line, with room before the name. */
 .app-icon { @apply inline size-6 -mt-1 mr-2 align-middle; }
+/* In a row the title line is a centred flex line that clips what leaves it, so the mark needs no
+   lift there -- with one, its top is cut off. */
+.item .app-icon { @apply mt-0; }
+/* A card that is a choice (the first run's chooser): its checkbox on the title's line, before the mark. */
+.card > header > h2 > input { @apply inline-block align-middle -mt-1 mr-2; }
 .code { @apply font-mono text-4xl font-bold tracking-widest my-4 select-all; }
 
 /* THE HISTORY: pointing at a row -- hover, or a tap that focuses it -- greys it and every row
