@@ -50,6 +50,7 @@ import (
 	"sync"
 	"time"
 
+	"briard.io/agent/files"
 	"briard.io/agent/hass"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
@@ -284,6 +285,13 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.revoke(w, r)
+	case r.URL.Path == "/install" && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w, r)
+			return
+		}
+		_ = r.ParseForm()
+		a.requestInstallSet(w, r, r.PostForm["app"])
 	case strings.HasPrefix(r.URL.Path, "/install/") && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
 			a.refuse(w, r)
@@ -941,6 +949,7 @@ type appView struct {
 	Available, Wished bool
 	Installed         bool    // the routes table lists it
 	Gated             bool    // the door signs the household into it: it opens from here (gate.go)
+	Preselected       bool    // the first run's chooser ticks it: the apps most homes start with
 	HA                *haView // Home Assistant's own states, on its card alone
 	// Running is the version this machine runs (the host's word, "" when it has none), and
 	// Offer the version the catalog offers as an update, "" when it offers none: never taken
@@ -1074,16 +1083,22 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 		}
 	}
 	gated := gatedApps(a.routesPath)
+	var waiting []string
 	for _, av := range cards {
 		if av.Name == hass.Name {
 			av.HA = ha
 		}
 		_, av.Gated = gated[av.Name]
+		av.Preselected = av.Name == hass.Name || av.Name == files.Name
 		av.Install = a.installState(av.Name, av.Installed, av.Offer != "")
 		if av.Install != nil && av.Install.Updated {
 			av.Offer = "" // taken; the host's next push says so too
 		}
-		if av.Install != nil && av.Install.Running && !av.Install.Update {
+		switch {
+		case av.Install != nil && av.Install.Running && av.Install.Waiting:
+			// Behind another app of the same act: named on that one's card.
+			waiting = append(waiting, av.Title)
+		case av.Install != nil && av.Install.Running && !av.Install.Update:
 			// An update is not the home being set up: the app's own card says it is updating.
 			v.Installing = av
 		}
@@ -1091,6 +1106,9 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 			v.InstalledCount++
 		}
 		v.Apps = append(v.Apps, av)
+	}
+	if v.Installing != nil {
+		v.Installing.Install.Next = strings.Join(waiting, ", ")
 	}
 	switch {
 	case v.Installing != nil:

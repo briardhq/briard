@@ -233,7 +233,40 @@ func (cfg Config) applyAppPrewarm(ctx context.Context, g appInstaller, d api.Dir
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "prewarmed"}
 }
 
-// applyAppInstall installs — or UPGRADES — the catalogued app named by the directive,
+// applyAppInstall installs the apps the directive names -- one, or several separated by spaces --
+// in the order named, as ONE act. One act because a second act while one runs is refused "busy"
+// rather than queued: a household that picked three apps is told about the three together, and no
+// queue anywhere holds its intent for minutes with nothing to show for it. Each app is the whole
+// install path below, health gate and rollback included; the first that does not end healthy
+// ends the act, with the ones before it installed and said to be.
+func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Directive, n notify.Notifier, logf func(string, ...any)) api.DirectiveOutcome {
+	var names []string
+	for _, name := range strings.Fields(d.Payload) {
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	if len(names) <= 1 {
+		return cfg.applyOneAppInstall(ctx, g, d, n, logf)
+	}
+	var done, reach []string
+	for _, name := range names {
+		o := cfg.applyOneAppInstall(ctx, g, api.Directive{ID: d.ID, Kind: d.Kind, Payload: name}, n, logf)
+		if o.State != api.OutcomeDone {
+			o.Detail = name + ": " + o.Detail
+			if len(done) > 0 {
+				o.Detail = "installed " + strings.Join(done, ", ") + "; " + o.Detail
+			}
+			return o
+		}
+		done = append(done, name)
+		reach = append(reach, name+": "+o.Detail)
+		logf("app install: %s done (%d of %d)", name, len(done), len(names))
+	}
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: strings.Join(reach, "\n")}
+}
+
+// applyOneAppInstall installs — or UPGRADES — the catalogued app named by the directive,
 // returning the terminal outcome (announce-before-act). Install and upgrade are the
 // SAME path: install is an upgrade from "empty" to the target. Idempotent by construction —
 // re-installing the same manifest re-renders identical units and reuses the existing subvolume.
@@ -243,7 +276,7 @@ func (cfg Config) applyAppPrewarm(ctx context.Context, g appInstaller, d api.Dir
 // empty zero-app chain; for an UPGRADE it is the prior manifest AND its data — the app-level
 // twin of the {code+data} OS rollback. So the path snapshots the data before the switch and, on
 // a tripped gate, restores both the subvolume and the prior manifest, not just the promoter chain.
-func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Directive, n notify.Notifier, logf func(string, ...any)) api.DirectiveOutcome {
+func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.Directive, n notify.Notifier, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
@@ -669,8 +702,11 @@ func (cfg Config) manifestPath(name string) string {
 // Pointer receiver on purpose: it mutates the observe loop's own cfg, the copy every later cycle
 // reads. A failed re-read leaves the previous view in place -- the cache is the authority on what
 // is installed, and a transient read error is not evidence of an uninstall.
+//
+// AFTER ANY INSTALL'S OUTCOME, done or not: an act that installs several apps can fail on the
+// second with the first installed, and an install that did nothing leaves the cache as it was.
 func (cfg *Config) adoptInstalledApps(d api.Directive, o api.DirectiveOutcome, logf func(string, ...any)) {
-	if d.Kind != api.DirectiveAppInstall || o.State != api.OutcomeDone {
+	if d.Kind != api.DirectiveAppInstall {
 		return
 	}
 	specs, rendered, ok := cfg.installedApps(logf)

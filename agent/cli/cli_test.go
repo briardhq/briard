@@ -399,6 +399,26 @@ func TestAppInstallPrintsWhereToReachIt(t *testing.T) {
 	}
 }
 
+// Several names are ONE directive, in the order typed -- the agent installs them as one act --
+// and each app's own line comes back under the headline.
+func TestAppInstallOfSeveralIsOneAct(t *testing.T) {
+	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone,
+		Detail: "files: reach it at http://briard-files.local/\nhome-assistant: reach it at http://briard-home-assistant.local/"})
+	var out, errOut bytes.Buffer
+	if code := Main(context.Background(), []string{"app", "install", "-sock", sock, "files", "home-assistant"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %q)", code, errOut.String())
+	}
+	ds := seen()
+	if len(ds) != 1 || ds[0].Kind != api.DirectiveAppInstall || ds[0].Payload != "files home-assistant" {
+		t.Fatalf("submitted %+v, want one install of both, in order", ds)
+	}
+	for _, want := range []string{"files, home-assistant installed and healthy", "  files: reach it at http://briard-files.local/", "  home-assistant: reach it at"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("stdout = %q, want %q", out.String(), want)
+		}
+	}
+}
+
 func TestAccountLang(t *testing.T) {
 	for in, want := range map[string]string{"el_GR.UTF-8": "el", "C.UTF-8": "en", "": "en", "de": "de", "POSIX": "en"} {
 		t.Setenv("LANG", in)

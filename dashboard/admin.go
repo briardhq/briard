@@ -18,9 +18,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
+	"briard.io/agent/files"
 	"briard.io/shared/api"
 )
 
@@ -117,19 +120,26 @@ type install struct {
 	Done    bool
 	Failed  bool
 	Detail  string
+	// Set is the act this install is part of, in the host's order (requestInstallSet); nil for
+	// one app alone.
+	Set []string
 }
 
 // installView is the card's view of it. Updated: an update finished well while the host's view
-// still offers it -- the offer is hidden until the host's next push takes it away.
+// still offers it -- the offer is hidden until the host's next push takes it away. Waiting: it is
+// in a set, behind an app still on its way.
 type installView struct {
 	Running bool
 	Update  bool
 	Updated bool
 	Failed  bool
+	Waiting bool
 	Detail  string
 	Since   string
 	// Progress is the pull so far; nil when the host left no total to measure against.
 	Progress *progressView
+	// Next names the apps waiting behind this one, for the card of the one on its way.
+	Next string
 }
 
 // requestInstall is the Install button, and with update the Update button: one install in
@@ -173,6 +183,84 @@ func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string
 	http.Redirect(w, r, back(r), http.StatusSeeOther)
 }
 
+// requestInstallSet is the chooser's one Install button: every app it ticked, as ONE directive the
+// host installs in order -- one act, because a second act while one runs is refused "busy", and a
+// queue here would be a second place holding the household's intent that dies with this process.
+// Files goes first when it is ticked: it is small, so something works within seconds.
+func (a *app) requestInstallSet(w http.ResponseWriter, r *http.Request, picked []string) {
+	var names []string
+	for _, n := range picked {
+		if a.installable(n) && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		http.Error(w, "pick at least one app the catalog has a manifest for\n", http.StatusBadRequest)
+		return
+	}
+	slices.SortStableFunc(names, func(x, y string) int {
+		switch {
+		case x == files.Name && y != files.Name:
+			return -1
+		case y == files.Name && x != files.Name:
+			return 1
+		}
+		return 0
+	})
+	a.mu.Lock()
+	for _, n := range names {
+		if cur, ok := a.installs[n]; ok && !cur.Done {
+			a.mu.Unlock()
+			http.Redirect(w, r, back(r), http.StatusSeeOther)
+			return
+		}
+	}
+	for _, n := range names {
+		a.installs[n] = &install{Started: a.now(), Set: names}
+	}
+	a.mu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+		defer cancel()
+		o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveAppInstall, Payload: strings.Join(names, " ")})
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		// The host names the one that failed after those it installed ("installed a, b; c: why"):
+		// that one says why, the ones before it are done, and the ones after were never tried.
+		failed, why := "", ""
+		switch {
+		case err != nil:
+			failed, why = names[0], err.Error()
+		case o.State != api.OutcomeDone:
+			rest := o.Detail
+			if i := strings.Index(rest, "; "); strings.HasPrefix(rest, "installed ") && i >= 0 {
+				rest = rest[i+2:]
+			}
+			failed, why = names[0], o.Detail
+			for _, n := range names {
+				if strings.HasPrefix(rest, n+": ") {
+					failed, why = n, strings.TrimPrefix(rest, n+": ")
+				}
+			}
+		}
+		tried := true
+		for _, n := range names {
+			st := a.installs[n]
+			switch {
+			case !tried:
+				delete(a.installs, n)
+			case n == failed:
+				st.Done, st.Failed, st.Detail = true, true, why
+				tried = false
+			default:
+				st.Done = true
+			}
+		}
+		log.Printf("dashboard: install %v: outcome=%+v err=%v", names, o, err)
+	}()
+	http.Redirect(w, r, back(r), http.StatusSeeOther)
+}
+
 // installState is what the card shows for an app, nil when nothing was asked. A finished,
 // successful install is forgotten once the routes table lists the app, and a successful
 // update once the host's view no longer offers it -- the card's ordinary states take over from
@@ -190,7 +278,24 @@ func (a *app) installState(name string, routed, offered bool) *installView {
 	}
 	v := &installView{Running: !st.Done, Update: st.Update, Updated: st.Done && !st.Failed && st.Update,
 		Failed: st.Failed, Detail: st.Detail, Since: st.Started.In(zone()).Format("15:04")}
-	if v.Running {
+	if v.Running && st.Set != nil {
+		// THE HOST INSTALLS A SET IN ITS ORDER, so the table says where it is: a member it lists
+		// is installed (its own card shows it), and of the rest the first is on its way and the
+		// others wait their turn. The end of the act settles each as done or failed.
+		if routed {
+			return nil
+		}
+		routedNow := routedNames(a.routesPath)
+		for _, n := range st.Set {
+			if n == name {
+				break
+			}
+			if !slices.Contains(routedNow, n) {
+				v.Waiting = true
+			}
+		}
+	}
+	if v.Running && !v.Waiting {
 		v.Progress = a.pullProgress(name)
 	}
 	return v

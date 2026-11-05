@@ -1,10 +1,10 @@
-{{/* THE CHOOSER: the first run's one act -- which app to set up. The first installable is the
-     common one, the filled button. Before the host has read the catalog there is nothing to
-     choose from, and the card says so. */}}
+{{/* THE CHOOSER: the first run's one act -- which apps to set up, one or several, installed one
+     after another as one act. The common ones come ticked. Before the host has read the catalog
+     there is nothing to choose from, and the card says so. */}}
 {{define "chooser"}}
-  <div class="card wide"><header><h2>What should this machine run?</h2><p>{{if .Installable}}Pick one to start; the rest is a click away under Apps.{{else}}Briard has not read its catalog yet. The apps it can install appear here as soon as it has.{{end}}</p></header>{{if .Installable}}<section><div class="item-group">
-    {{range $i, $app := .Installable}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{template "app-title" .}}</h3><p>{{.Description}}</p>{{with .Install}}{{if .Failed}}<p class="note">Could not install {{$app.Title}}: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$app.Name}}</code></p>{{end}}{{end}}</section><aside><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn"{{if $i}} data-variant="outline"{{end}}>{{if and .Install .Install.Failed}}Try again{{else}}Install {{.Title}}{{end}}</button></form></aside></div>{{end}}
-  </div></section>{{end}}</div>
+  <div class="card wide"><header><h2>What should this machine run?</h2><p>{{if .Installable}}Pick what to start with; the rest is a click away under Apps.{{else}}Briard has not read its catalog yet. The apps it can install appear here as soon as it has.{{end}}</p></header>{{if .Installable}}<form method="post" action="/install"><section><div class="item-group">
+    {{range $i, $app := .Installable}}{{if $i}}<hr>{{end}}<label class="item"><section><h3>{{template "app-title" .}}</h3><p>{{.Description}}</p>{{with .Install}}{{if .Failed}}<p class="note">Could not install {{$app.Title}}: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$app.Name}}</code></p>{{end}}{{end}}</section><aside><input type="checkbox" name="app" value="{{.Name}}"{{if .Preselected}} checked{{end}}></aside></label>{{end}}
+  </div></section><footer><button type="submit" class="btn">Install</button></footer></form>{{end}}</div>
 {{end}}
 
 {{/* THE TITLE LINE of every card: the app's mark, its name, and in brand-less words what it does. */}}
@@ -13,7 +13,7 @@
 {{/* INSTALLING: the app on its way, with the pull's progress when the host left a record. */}}
 {{define "installing"}}
   <div class="card" hx-get="/f/install?app={{.Name}}" hx-trigger="every 5s" hx-swap="outerHTML"><header><h2>{{template "app-title" .}}</h2><p>{{with .Install}}{{with .Progress}}Installing · {{.DoneGB}} of {{.TotalGB}} downloaded ({{.Percent}}%){{else}}Installing · downloading it, which takes a minute or two{{end}}{{end}}</p></header><section>
-    {{with .Install}}{{with .Progress}}<progress max="100" value="{{.Percent}}"></progress>{{end}}<p class="note">Started at {{.Since}}. You can close this page; Briard carries on, and this page follows along while it is open.</p>{{end}}
+    {{with .Install}}{{with .Progress}}<progress max="100" value="{{.Percent}}"></progress>{{end}}{{with .Next}}<p>Then {{.}}, one after another.</p>{{end}}<p class="note">Started at {{.Since}}. You can close this page; Briard carries on, and this page follows along while it is open.</p>{{end}}
   </section></div>
 {{end}}
 

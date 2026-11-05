@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"briard.io/shared/api"
+	"briard.io/shared/dashboard"
+	"briard.io/shared/manifest"
 	"briard.io/shared/routes"
 )
 
@@ -161,6 +164,65 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 	}
 	if !strings.Contains(body, "no admin port") || !strings.Contains(body, "sudo briard app install home-assistant") {
 		t.Errorf("a host without the port is not surfaced: %s", body)
+	}
+}
+
+// THE FIRST RUN PICKS SEVERAL: the chooser ticks Files and Home Assistant, the household's
+// choice goes to the host as ONE install in the host's order (Files first, being small), the
+// app on its way names the one behind it, and a failure on the second leaves the first
+// installed and the second saying why.
+func TestTheChooserInstallsASetAsOneAct(t *testing.T) {
+	r := newRig(t)
+	c := r.trust()
+	cat := testCatalog()
+	cat.Apps = append(cat.Apps, dashboard.CatalogApp{App: manifest.App{Name: "files", Title: "Files", Functionality: "Web file browser", Description: "Every app's files.", Icon: testIcon, Homepage: "https://example.org", Available: true}})
+	r.hostLists(t, cat)
+	must(t, os.Remove(filepath.Join(r.dir, "routes.json"))) // nothing installed yet
+	port := newFakePort()
+	r.app.port = port
+	_, home := get(t, r, "/", c)
+	for _, want := range []string{`action="/install"`, `name="app" value="files" checked`, `name="app" value="home-assistant" checked`, `name="app" value="mosquitto">`} {
+		if !strings.Contains(home, want) {
+			t.Errorf("the chooser lacks %q:\n%s", want, home)
+		}
+	}
+	req, _ := http.NewRequest("POST", r.srv.URL+"/install", strings.NewReader(url.Values{"app": {"home-assistant", "files", "paperless-ngx"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(c)
+	resp, err := noRedirect.Do(req)
+	must(t, err)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("install = %d, want 303", resp.StatusCode)
+	}
+	<-port.waiting
+	port.mu.Lock()
+	asked := append([]api.Directive(nil), port.asked...)
+	port.mu.Unlock()
+	if len(asked) != 1 || asked[0].Payload != "files home-assistant" {
+		t.Fatalf("the host was asked %+v; want one install of files then home-assistant, and nothing it cannot install", asked)
+	}
+	_, home = get(t, r, "/", c)
+	if !strings.Contains(home, `hx-get="/f/install?app=files"`) || !strings.Contains(home, "Then Home Assistant, one after another.") {
+		t.Errorf("the page does not show Files on its way and Home Assistant behind it:\n%s", home)
+	}
+	port.answer <- api.DirectiveOutcome{ID: asked[0].ID, State: api.OutcomeFailed, Detail: "installed files; home-assistant: did not start"}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r.app.mu.Lock()
+		st := r.app.installs["home-assistant"]
+		settled := st != nil && st.Done
+		r.app.mu.Unlock()
+		if settled || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.app.mu.Lock()
+	fl, ha := r.app.installs["files"], r.app.installs["home-assistant"]
+	r.app.mu.Unlock()
+	if fl == nil || !fl.Done || fl.Failed || ha == nil || !ha.Failed || ha.Detail != "did not start" {
+		t.Fatalf("after the act files=%+v home-assistant=%+v; want files done and home-assistant failed with its reason", fl, ha)
 	}
 }
 

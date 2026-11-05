@@ -376,9 +376,12 @@ func runApp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprint(stderr, "briard app install: want exactly one app name\n")
+	if fs.NArg() < 1 {
+		fmt.Fprint(stderr, "briard app install: want one or more app names\n")
 		return 2
+	}
+	if fs.NArg() > 1 {
+		return installSeveral(ctx, *sock, fs.Args(), stdout, stderr)
 	}
 	name := fs.Arg(0)
 	// An installed app the catalog offers an update for is updated by this same act: say so,
@@ -423,6 +426,29 @@ func runApp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s install failed: %s\n", name, o.Detail)
 		return 1
 	}
+}
+
+// installSeveral installs several apps as one act, in the order named: the agent does them one
+// after another and stops at the first that does not come up, saying which were installed.
+func installSeveral(ctx context.Context, sock string, names []string, stdout, stderr io.Writer) int {
+	list := strings.Join(names, ", ")
+	fmt.Fprintf(stdout, "installing %s, in that order (this takes a few minutes; the machine stays up)\n", list)
+	o, err := submit(ctx, sock, api.Directive{Kind: api.DirectiveAppInstall, Payload: strings.Join(names, " ")})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	if o.State != api.OutcomeDone {
+		fmt.Fprintf(stderr, "install failed: %s\n", o.Detail)
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s installed and healthy\n", list)
+	for _, l := range strings.Split(o.Detail, "\n") {
+		if l != "" {
+			fmt.Fprintf(stdout, "  %s\n", l)
+		}
+	}
+	return 0
 }
 
 // offeredVersion is the version the catalog offers as an update for an installed app, from the

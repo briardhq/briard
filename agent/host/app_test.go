@@ -327,20 +327,22 @@ func (f *fakeInstaller) MDNSPublished(context.Context) (string, error) { return 
 func (f *fakeInstaller) MDNSOther(context.Context) (string, error)     { return "", nil }
 
 // catalogFor stands up a signed one-app catalog and returns a Config wired to it.
-func catalogFor(t *testing.T, m manifest.Manifest) Config {
+func catalogFor(t *testing.T, ms ...manifest.Manifest) Config {
 	t.Helper()
-	body, err := json.Marshal(m)
-	if err != nil {
-		t.Fatal(err)
-	}
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig := ed25519.Sign(priv, body)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/"+m.Name+".json", func(w http.ResponseWriter, _ *http.Request) { w.Write(body) })
-	mux.HandleFunc("/"+m.Name+".json.sig", func(w http.ResponseWriter, _ *http.Request) { w.Write(sig) })
+	for _, m := range ms {
+		body, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig := ed25519.Sign(priv, body)
+		mux.HandleFunc("/"+m.Name+".json", func(w http.ResponseWriter, _ *http.Request) { w.Write(body) })
+		mux.HandleFunc("/"+m.Name+".json.sig", func(w http.ResponseWriter, _ *http.Request) { w.Write(sig) })
+	}
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return Config{
@@ -840,25 +842,25 @@ func TestAdoptInstalledAppRefreshesLiveConfig(t *testing.T) {
 			t.Errorf("an install moved the promoter chain to %v — it must stay static", cfg.Promoter)
 		}
 	})
-	// The failable half: adopting on anything other than a completed install would let a failed
-	// or rolled-back install rewrite the live config from a cache that install did not write.
-	t.Run("ignores other kinds and non-Done outcomes", func(t *testing.T) {
-		for _, tc := range []struct {
-			name string
-			d    api.Directive
-			o    api.DirectiveOutcome
-		}{
-			{"rolled back", install, api.DirectiveOutcome{State: api.OutcomeRolledBack}},
-			{"failed", install, api.DirectiveOutcome{State: api.OutcomeFailed}},
-			{"another kind", api.Directive{Kind: api.DirectiveUpgradeSystem}, done},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				cfg := Config{AppCache: dir}
-				cfg.adoptInstalledApps(tc.d, tc.o, logf)
-				if len(cfg.Apps) != 0 {
-					t.Errorf("live config changed on %s: %+v", tc.name, cfg.Apps)
-				}
-			})
+	// AFTER ANY INSTALL, the view is what the cache holds. The cache is written only by an
+	// install's commit, so a failed or rolled-back one reads back exactly what was installed
+	// before it -- and an act that installed several apps and failed on a later one has
+	// committed the earlier ones, which must be adopted like any other.
+	t.Run("a failed install adopts what the cache holds", func(t *testing.T) {
+		for _, o := range []api.DirectiveOutcome{{State: api.OutcomeRolledBack}, {State: api.OutcomeFailed, Detail: "installed files; home-assistant: did not start"}} {
+			cfg := Config{AppCache: dir}
+			cfg.adoptInstalledApps(install, o, logf)
+			if len(cfg.Apps) != 1 || cfg.Apps[0].Name != "home-assistant" {
+				t.Errorf("after a %s install Apps = %+v, want what the cache holds", o.State, cfg.Apps)
+			}
+		}
+	})
+	// The failable half: another kind of act never rewrites the app view.
+	t.Run("ignores other kinds", func(t *testing.T) {
+		cfg := Config{AppCache: dir}
+		cfg.adoptInstalledApps(api.Directive{Kind: api.DirectiveUpgradeSystem}, done, logf)
+		if len(cfg.Apps) != 0 {
+			t.Errorf("live config changed on another kind: %+v", cfg.Apps)
 		}
 	})
 	// A cache that cannot be read is not evidence of an uninstall: keep what we had.
@@ -888,6 +890,48 @@ func TestInstallSaysWhereToReachIt(t *testing.T) {
 	// sentence was the address of an app reached around the front door rather than through it.
 	if want := "reach it at http://briard-home-assistant.local/"; o.Detail != want {
 		t.Fatalf("Detail = %q, want %q", o.Detail, want)
+	}
+}
+
+// SEVERAL APPS ARE ONE ACT, installed in the order named, each through the whole path; the act
+// says where to reach each. The first that does not come up ends it, naming what was installed
+// before it -- and nothing after it is tried.
+func TestOneActInstallsSeveralAppsInOrder(t *testing.T) {
+	second := testManifest()
+	second.Name = "files"
+	cfg := catalogFor(t, testManifest(), second)
+	cfg.FlockName = "picked-hornet"
+	f := &fakeInstaller{primary: true, active: true, healthy: true}
+	o := cfg.applyAppInstall(context.Background(), f, api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "files home-assistant files"}, nil, func(string, ...any) {})
+	if o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	var stages []string
+	for _, s := range f.steps {
+		if strings.HasPrefix(s, "stage:") {
+			stages = append(stages, s)
+		}
+	}
+	if !slices.Equal(stages, []string{"stage:files", "stage:home-assistant"}) {
+		t.Fatalf("staged %v, want files then home-assistant, each once", stages)
+	}
+	if want := "files: reach it at http://briard-files.local/\nhome-assistant: reach it at http://briard-home-assistant.local/"; o.Detail != want {
+		t.Fatalf("Detail = %q, want %q", o.Detail, want)
+	}
+
+	// The second fails: the act fails naming the first as installed, and a third is never tried.
+	third := testManifest()
+	third.Name = "mosquitto"
+	cfg = catalogFor(t, second, third)
+	f = &fakeInstaller{primary: true, active: true, healthy: true}
+	o = cfg.applyAppInstall(context.Background(), f, api.Directive{ID: "d2", Kind: api.DirectiveAppInstall, Payload: "files home-assistant mosquitto"}, nil, func(string, ...any) {})
+	if o.State == api.OutcomeDone || !strings.HasPrefix(o.Detail, "installed files; home-assistant: ") {
+		t.Fatalf("outcome = %+v, want a failure naming files as installed and home-assistant as the one that failed", o)
+	}
+	for _, s := range f.steps {
+		if s == "stage:mosquitto" {
+			t.Fatal("an app after the failed one was installed")
+		}
 	}
 }
 

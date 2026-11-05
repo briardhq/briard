@@ -346,7 +346,9 @@ const (
 	//                        a valid signature — stages+arms it for the Type=notify trial. A
 	//                        bad/absent signature is refused, current kept.
 	DirectiveAppInstall = "app-install" // Payload = a CATALOG NAME (a slug, e.g.
-	//                        "home-assistant"). The node fetches that name's signed manifest from the
+	//                        "home-assistant"), or several separated by spaces, installed in that
+	//                        order as one act that stops at the first that does not come up. For
+	//                        each, the node fetches that name's signed manifest from the
 	//                        catalog, verifies it against the release keyring, renders quadlet
 	//                        units, provisions the app subvolume (Primary only), and rewrites the
 	//                        promoter chain inside the maintenance bracket — health-gated, with
