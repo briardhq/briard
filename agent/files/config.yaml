@@ -53,6 +53,7 @@ frontend:
       url: "http://briard.local/"
   styling:
     disableEventThemes: true
+    customCSS: "/briard/briard.css"
 userDefaults:
   preview:
     # Off until the app makes square thumbnails without copying the whole image: a JPEG or PNG

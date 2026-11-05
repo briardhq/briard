@@ -78,6 +78,9 @@ func TestPrepareWritesTheConfigWithTheBootsSecret(t *testing.T) {
 	if _, ok := x.files[faviconPath]; !ok {
 		t.Error("the mark the config names was not written")
 	}
+	if css := x.files[cssPath]; !strings.Contains(css, ".logout-button") || !strings.Contains(conf, "customCSS: \"/briard/briard.css\"") {
+		t.Error("the stylesheet that hides the logout is not written, or the config does not name it")
+	}
 }
 
 // A second converge in the same boot keeps the secret: a running Files verifies with the one it

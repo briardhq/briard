@@ -52,6 +52,7 @@ const KeyPath = Dir + "/gate.key"
 const (
 	confPath    = Dir + "/config.yaml"
 	faviconPath = Dir + "/favicon.png"
+	cssPath     = Dir + "/briard.css"
 )
 
 //go:embed config.yaml
@@ -59,6 +60,9 @@ var confSource string
 
 //go:embed favicon.png
 var favicon []byte
+
+//go:embed briard.css
+var stylesheet []byte
 
 // secretToken is the placeholder config.yaml carries for the signing secret.
 const secretToken = "@SECRET@"
@@ -107,7 +111,10 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	if err := write(ctx, x, confPath, []byte(conf), "0600"); err != nil {
 		return err
 	}
-	return write(ctx, x, faviconPath, favicon, "0644")
+	if err := write(ctx, x, faviconPath, favicon, "0644"); err != nil {
+		return err
+	}
+	return write(ctx, x, cssPath, stylesheet, "0644")
 }
 
 // secret is the boot's signing secret: the one already written, or a new one.

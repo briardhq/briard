@@ -1,0 +1,4 @@
+/* Briard's stylesheet for Files, applied for every user. Files is signed in by the household's
+   Briard session, and there is no login of its own to log out to: its logout would land on a
+   login page with nothing to sign in with. */
+.inner-card:has(> .logout-button) { display: none !important; }
