@@ -24,12 +24,10 @@ import (
 	"fmt"
 	"log"
 	"maps"
-	"os"
 	"path"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"briard.io/agent/files"
@@ -81,18 +79,6 @@ func tearDownFilesView(ctx context.Context, x Executor) error {
 	}
 	defer unlock()
 	return reconcileFilesView(ctx, x, nil)
-}
-
-func lockFilesView() (func(), error) {
-	f, err := os.OpenFile(filesViewLock, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("files view: lock: %w", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("files view: lock: %w", err)
-	}
-	return func() { f.Close() }, nil
 }
 
 // filesViewWanted is the view the volume describes: nothing while Files is not installed.
