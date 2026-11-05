@@ -12,6 +12,7 @@ import (
 
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
+	"briard.io/shared/manifest"
 	"briard.io/shared/routes"
 )
 
@@ -127,5 +128,46 @@ func TestAGatedAppsCardOpensIt(t *testing.T) {
 	}
 	if strings.Contains(body, `href="/open/home-assistant"`) {
 		t.Fatal("Home Assistant's card opens through the gate")
+	}
+}
+
+// THE HOME LISTS THE APPS: one card, a row per installed app with Open where it has a page and
+// Details where its card now lives, and a few suggestions, Files first while it is not
+// installed. The per-app cards are the Apps page's and each app's own.
+func TestTheHomeListsTheAppsAndSuggestsMore(t *testing.T) {
+	r := newRig(t)
+	c := r.trust()
+	r.ha.mu.Lock()
+	for k := range r.ha.done {
+		r.ha.done[k] = true
+	}
+	r.ha.mu.Unlock()
+	cat := testCatalog()
+	cat.Apps = append(cat.Apps, dashboard.CatalogApp{App: manifest.App{Name: "files", Title: "Files", Functionality: "Web file browser", Description: "Every app's files.", Icon: testIcon, Homepage: "https://example.org", Available: true}})
+	r.hostLists(t, cat)
+	_, home := get(t, r, "/", c)
+	for _, want := range []string{"<h2>Apps running</h2>", `action="/open/home-assistant" target="_blank"`, `href="/apps/home-assistant">Details</a>`, "<h2>Suggested apps</h2>", `action="/install/files"`, `action="/install/mosquitto"`} {
+		if !strings.Contains(home, want) {
+			t.Errorf("the home lacks %q", want)
+		}
+	}
+	if i, j := strings.Index(home, `action="/install/files"`), strings.Index(home, `action="/install/mosquitto"`); i < 0 || j < i {
+		t.Error("Files is not the first suggestion")
+	}
+	for _, never := range []string{`hx-get="/f/app?app=`, `action="/install/home-assistant"`, `action="/install/paperless-ngx"`} {
+		if strings.Contains(home, never) {
+			t.Errorf("the home has %q: a per-app card, an installed app suggested, or one with no manifest", never)
+		}
+	}
+	// A list with nothing moving does not poll; its fragment says so by refreshing the page.
+	if strings.Contains(home, `hx-get="/f/apps-running"`) {
+		t.Error("an idle list polls")
+	}
+	if resp := r.on("briard.local", "/f/apps-running", c); resp.Header.Get("HX-Refresh") != "true" {
+		t.Errorf("the idle list's fragment = %d, HX-Refresh %q", resp.StatusCode, resp.Header.Get("HX-Refresh"))
+	}
+	// The Apps page keeps the cards.
+	if _, apps := get(t, r, "/apps", c); !strings.Contains(apps, "Opening from here signs you in.") || strings.Contains(home, "Opening from here signs you in.") {
+		t.Error("Home Assistant's card is not on the Apps page alone")
 	}
 }

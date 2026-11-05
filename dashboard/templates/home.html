@@ -6,10 +6,11 @@
 <div class="tiles">
 {{template "alerts" .}}
 {{with .Secure}}<div class="card"><header><h2>Open Briard securely</h2><p>This home has its own address, with a real certificate and no browser warnings.</p></header><footer><a class="btn" href="{{.}}">Open {{.}}</a></footer></div>{{end}}
-{{if eq .Stage "choose"}}{{template "chooser" .}}{{else}}{{with .Installing}}{{template "installing" .}}{{end}}{{range .Apps}}{{if .Installed}}{{template "app-card" .}}{{end}}{{end}}{{end}}
+{{if eq .Stage "choose"}}{{template "chooser" .}}{{else}}{{with .Installing}}{{template "installing" .}}{{end}}{{if .InstalledCount}}{{template "apps-running" .}}{{end}}{{end}}
 {{/* The steps wait for the stage: none beside the chooser, the address beside the install, both once an app runs -- one thing at a time. */}}
 {{if ne .Stage "choose"}}{{if .Steps.Address}}{{with .Casa}}{{template "address-step" .}}{{end}}{{end}}{{end}}
 {{if eq .Stage "running"}}{{if .Steps.Key}}{{with .Backup}}{{template "key-step" .}}{{end}}{{end}}{{end}}
+{{if eq .Stage "running"}}{{with .Suggested}}{{template "suggested" .}}{{end}}{{end}}
 {{if eq .Stage "running"}}{{template "glance" .}}{{end}}
 </div>
 {{template "foot" (shell "home" false)}}{{end}}

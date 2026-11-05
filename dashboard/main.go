@@ -892,6 +892,39 @@ func (v view) Installable() []*appView {
 }
 func (v view) Soon() []*appView { return v.pick(func(a *appView) bool { return !a.Available }) }
 
+// RunningApps are the home page's list: every installed app, one row each.
+func (v view) RunningApps() []*appView { return v.pick(func(a *appView) bool { return a.Installed }) }
+
+// AppsMoving says a row of the list is changing on its own -- an update on its way, Home
+// Assistant starting -- so the list refreshes itself until it is not.
+func (v view) AppsMoving() bool {
+	return len(v.pick(func(a *appView) bool {
+		return a.Installed && (a.Install != nil && a.Install.Running || a.HA != nil && !a.HA.Running)
+	})) > 0
+}
+
+// suggestedMax is how many apps the home page suggests: a few, the rest a section away.
+const suggestedMax = 3
+
+// Suggested are the apps the home page offers to install: Files first while it is not
+// installed, then the catalog's order -- never one already on its way.
+func (v view) Suggested() []*appView {
+	s := v.pick(func(a *appView) bool { return a.Available && !a.Installed && !(a.Install != nil && a.Install.Running) })
+	slices.SortStableFunc(s, func(x, y *appView) int {
+		switch {
+		case x.Name == files.Name && y.Name != files.Name:
+			return -1
+		case y.Name == files.Name && x.Name != files.Name:
+			return 1
+		}
+		return 0
+	})
+	if len(s) > suggestedMax {
+		s = s[:suggestedMax]
+	}
+	return s
+}
+
 func (v view) pick(keep func(*appView) bool) []*appView {
 	var out []*appView
 	for _, a := range v.Apps {

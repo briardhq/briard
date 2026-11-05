@@ -621,7 +621,7 @@ pkgs.testers.runNixOSTest {
     session = [l.split(":", 1)[1].split(";")[0].strip() for l in redeemed.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
     def node_page_offering():
         p = client.succeed(f"curl -fsS -H 'Host: {install_link_host}' -H 'Cookie: {session}' http://{vip}/")
-        return p if "Install Home Assistant" in p and 'action="/install/home-assistant"' in p else None
+        return p if 'action="/install"' in p and 'name="app" value="home-assistant" checked' in p else None
     deadline = time.time() + 120
     node_page = None
     while time.time() < deadline and node_page is None:
@@ -631,9 +631,10 @@ pkgs.testers.runNixOSTest {
     assert node_page, "the page never offered Home Assistant: the host did not read the index, or the list did not reach the guest"
     host.succeed("journalctl -u briard-agent | grep -q 'catalog: index read: '")
     host.succeed("test -S /run/briard-admin.sock")  # qemu serves the host end
+    # The chooser's one Install, with Home Assistant ticked -- the form the household submits.
     pressed = client.succeed(
         f"curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'Host: {install_link_host}' -H 'Cookie: {session}' "
-        f"http://{vip}/install/home-assistant"
+        f"--data-urlencode app=home-assistant http://{vip}/install"
     ).strip()
     assert pressed == "303", f"the button answered {pressed}"
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'admin port: directive kind=app-install submitted by the guest'", timeout=30)
@@ -647,7 +648,8 @@ pkgs.testers.runNixOSTest {
         if page_after is None:
             time.sleep(5)
     assert page_after, "the host's outcome never reached the page (the dashboard still says installing, or forgot the ask)"
-    assert "sudo briard app install home-assistant" in page_after and "Try again" in page_after, page_after
+    # The reason, the CLI, and the choice still there to press again.
+    assert "sudo briard app install home-assistant" in page_after and 'name="app" value="home-assistant" checked' in page_after, page_after
     assert "no admin port" not in page_after, "the dashboard found no port -- qemu did not expose it to the guest"
     print("the admin port carried the button's directive to the host and the host's refusal back")
 

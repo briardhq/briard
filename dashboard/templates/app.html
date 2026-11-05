@@ -2,9 +2,9 @@
      after another as one act. The common ones come ticked. Before the host has read the catalog
      there is nothing to choose from, and the card says so. */}}
 {{define "chooser"}}
-  <div class="card wide"><header><h2>What should this machine run?</h2><p>{{if .Installable}}Pick what to start with; the rest is a click away under Apps.{{else}}Briard has not read its catalog yet. The apps it can install appear here as soon as it has.{{end}}</p></header>{{if .Installable}}<form method="post" action="/install"><section><div class="item-group">
+  <form class="card wide" method="post" action="/install"><header><h2>What should this machine run?</h2><p>{{if .Installable}}Pick what to start with; the rest is a click away under Apps.{{else}}Briard has not read its catalog yet. The apps it can install appear here as soon as it has.{{end}}</p></header>{{if .Installable}}<section><div class="item-group">
     {{range $i, $app := .Installable}}{{if $i}}<hr>{{end}}<label class="item"><section><h3>{{template "app-title" .}}</h3><p>{{.Description}}</p>{{with .Install}}{{if .Failed}}<p class="note">Could not install {{$app.Title}}: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$app.Name}}</code></p>{{end}}{{end}}</section><aside><input type="checkbox" name="app" value="{{.Name}}"{{if .Preselected}} checked{{end}}></aside></label>{{end}}
-  </div></section><footer><button type="submit" class="btn">Install</button></footer></form>{{end}}</div>
+  </div></section><footer><button type="submit" class="btn">Install</button></footer>{{end}}</form>
 {{end}}
 
 {{/* THE TITLE LINE of every card: the app's mark, its name, and in brand-less words what it does. */}}
@@ -37,6 +37,25 @@
     {{if and .Gated .Installed (not (and .Install .Install.Running))}}<a class="btn" href="/open/{{.Name}}" target="_blank" rel="noopener">Open {{.Title}}</a>{{end}}
     {{if not .Here}}<a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a>{{end}}
   </footer></div>
+{{end}}
+
+{{/* APPS RUNNING: the home page's list, one row per installed app -- its mark, a badge when
+     something is happening to it, Open for an app with a page of its own, and Details, where its
+     card says the rest. The list refreshes itself while a row is moving. */}}
+{{define "apps-running"}}
+  <div class="card wide"{{if .AppsMoving}} hx-get="/f/apps-running" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>Apps running</h2></header><section><div class="item-group">
+    {{range $i, $a := .RunningApps}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{template "app-title" .}}{{if and .Install .Install.Running}} <span class="badge" data-variant="secondary">Updating</span>{{else if and .Install .Install.Failed .Install.Update}} <span class="badge" data-variant="destructive">Update did not finish</span>{{else if .Offering}} <span class="badge" data-variant="secondary">Update available</span>{{else if and .HA (not .HA.Running)}} <span class="badge" data-variant="secondary">Starting</span>{{end}}</h3>{{with .Functionality}}<p>{{.}}</p>{{end}}</section><aside>
+      {{with .HA}}{{if .Reachable}}<form method="post" action="/open/home-assistant" target="_blank"><button type="submit" class="btn"{{if not .Running}} disabled{{end}}>Open Home Assistant</button></form>{{end}}{{end}}
+      {{if and .Gated (not (and .Install .Install.Running))}}<a class="btn" href="/open/{{.Name}}" target="_blank" rel="noopener">Open {{.Title}}</a>{{end}}
+      <a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a></aside></div>{{end}}
+  </div></section></div>
+{{end}}
+
+{{/* SUGGESTED APPS: a few the machine could run next, each one click away; the rest under Apps. */}}
+{{define "suggested"}}
+  <div class="card wide"><header><h2>Suggested apps</h2><p>More this machine can run, each a click away.</p></header><section><div class="item-group">
+    {{range $i, $a := .}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{template "app-title" .}}</h3><p>{{.Description}}</p></section><aside><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn" data-variant="outline">Install {{.Title}}</button></form></aside></div>{{end}}
+  </div></section><footer><a class="btn" data-variant="ghost" href="/apps">All apps</a></footer></div>
 {{end}}
 
 {{/* THE AVAILABLE CARD: an app this machine can install, and -- when the household asked for it

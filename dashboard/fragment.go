@@ -64,6 +64,9 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 		moving bool
 	)
 	switch part {
+	case "apps-running":
+		v := a.view(ctx, r, self)
+		tmpl, data, moving = part, v, v.AppsMoving()
 	case "install", "app":
 		if !a.knows(name) {
 			http.NotFound(w, r)
