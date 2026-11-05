@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"briard.io/agent/files"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/shared/api"
@@ -133,6 +134,8 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 		out = hass.Volumes(m, c)
 	case mosquitto.Name:
 		out = mosquitto.Volumes(m, c)
+	case files.Name:
+		out = files.Volumes(m, c)
 	}
 	// THE APP'S OWN DIRECTORY, read-only, and it is the product's general shape rather than
 	// one app's arrangement -- which is why it lives here and not in agent/hass, where the
@@ -394,8 +397,37 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 		return hass.Prepare(ctx, x, m, mosquitto.MQTTPort)
 	case mosquitto.Name:
 		return mosquitto.Prepare(ctx, x, m)
+	case files.Name:
+		return files.Prepare(ctx, x, m)
 	}
 	return nil
+}
+
+// User is the user a container runs as, "" for its image's own.
+//
+// Files runs as root because what it shows is root's: containers here run without a user
+// namespace and every app's area is created root-owned, so the image's own uid could read Home
+// Assistant's configuration and write none of it -- and a file Files saves keeps the owner its app
+// gave it only when Files writes as that owner.
+func User(m manifest.Manifest, c manifest.Container) string {
+	if m.Name == files.Name && c.Primary {
+		return "0"
+	}
+	return ""
+}
+
+// Gate is where the secret lives that the reverse proxy signs the household into this app with,
+// "" for an app the door forwards to unsigned.
+//
+// GATED means the door lets a browser through only with the household dashboard's session, and
+// then tells the app who it is in a token the app verifies. Today that is Files alone: it holds
+// every app's data and signs in by token, while Home Assistant keeps its own login because its
+// companion app has no browser session to bring.
+func Gate(m manifest.Manifest) string {
+	if m.Name == files.Name {
+		return files.KeyPath
+	}
+	return ""
 }
 
 // Reach is the sentence `briard app install` ends on: where the household now finds the
@@ -568,8 +600,8 @@ func mintInboundToken(ctx context.Context, x Executor, app string) error {
 }
 
 // NeedsAppDir reports whether a container gets its app's own directory at AppMount.
-// True for anything the product hands something to: Home Assistant's control channel, or the
-// inbound token. An app needing neither gets no directory and no mount.
+// True for anything the product hands something to: Home Assistant's control channel, Files'
+// config, or the inbound token. An app needing none of these gets no directory and no mount.
 func NeedsAppDir(m manifest.Manifest, c manifest.Container) bool {
-	return (m.Name == hass.Name && c.Primary) || WantsInbound(m, c)
+	return ((m.Name == hass.Name || m.Name == files.Name) && c.Primary) || WantsInbound(m, c)
 }

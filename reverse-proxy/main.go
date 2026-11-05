@@ -180,6 +180,7 @@ type frontDoor struct {
 	proxy    http.Handler
 	fallback *url.URL // the dashboard; nil answers 503 for a name nobody routes
 	trust    forwardTrust
+	gate     *gate // signs the household into a gated app (gate.go)
 }
 
 // backendKey carries the resolved route from ServeHTTP into the proxy's Rewrite hook. One
@@ -188,7 +189,7 @@ type frontDoor struct {
 type backendKey struct{}
 
 func newFrontDoor(current func() *routing, fallback *url.URL) *frontDoor {
-	f := &frontDoor{routes: current, fallback: fallback}
+	f := &frontDoor{routes: current, fallback: fallback, gate: newGate(fallback)}
 	f.proxy = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			rt := r.In.Context().Value(backendKey{}).(route)
@@ -246,6 +247,12 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "nothing answers at this name on this machine\n", http.StatusServiceUnavailable)
 			return
 		}
+		// The dashboard's answers to the gate are the door's to ask, over loopback, and never a
+		// browser's: they trade a code for a session and say whether a session stands.
+		if strings.HasPrefix(req.URL.Path, "/gate/") {
+			http.NotFound(w, req)
+			return
+		}
 		f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, route{to: f.fallback})))
 		return
 	}
@@ -255,6 +262,9 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// is a management API the door is deliberately given no way to reach. Saying so beats a
 		// 404 that reads as "you typed the name wrong".
 		http.Error(w, fmt.Sprintf("%s does not answer HTTP; reach it on its own port\n", r.name), http.StatusNotImplemented)
+		return
+	}
+	if r.gate != "" && !f.gate.admit(w, req, r) {
 		return
 	}
 	f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, r)))
@@ -293,12 +303,13 @@ type routing struct {
 type route struct {
 	name string
 	to   *url.URL
+	gate string // the app's signing secret's file; "" for an app forwarded as it is
 }
 
 func newRouting(t routes.Table) *routing {
 	r := &routing{table: t, byHost: make(map[string]route, len(t.Apps))}
 	for _, s := range t.Apps {
-		e := route{name: s.Name}
+		e := route{name: s.Name, gate: s.Gate}
 		// An app with no route on this listener keeps its name and gets no destination here.
 		// The door is never handed an address it must be trusted not to use: with nothing to
 		// forward to, there is nothing to get wrong. mosquitto is the live case — its address is

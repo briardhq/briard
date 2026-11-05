@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 
@@ -117,6 +118,14 @@ type App struct {
 	// and the only other candidate is the guest's own hostname, which is node-scoped and would
 	// send every device on the LAN to a machine that just stopped being the Primary.
 	Announce []Announcement `json:"announce,omitempty"`
+	// Gate, when set, is the file holding the secret the door signs the household into this app
+	// with, and its presence is what makes the app GATED: the door lets a browser through only
+	// with the household dashboard's session, and tells the app who it is in a short-lived token
+	// signed with this secret, which the app verifies on every request. Empty is an app with a
+	// login of its own, forwarded as it is.
+	//
+	// A PATH, NEVER THE SECRET: this table is world-readable on the node, and the secret is root's.
+	Gate string `json:"gate,omitempty"`
 }
 
 // Announcement is one mDNS service record: the label a browser shows, the type it browses for,
@@ -276,6 +285,9 @@ func (t Table) Validate() error {
 			if err := checkSpec(s.Name, "route target", r.To); err != nil {
 				return err
 			}
+		}
+		if s.Gate != "" && (!path.IsAbs(s.Gate) || path.Clean(s.Gate) != s.Gate) {
+			return fmt.Errorf("routes: app %q has a gate %q that is not an absolute, clean path", s.Name, s.Gate)
 		}
 		if (s.Health != "" || len(s.Routes) > 0) && s.Address == "" {
 			return fmt.Errorf("routes: app %q has endpoints but no address to resolve them against", s.Name)

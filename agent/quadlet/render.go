@@ -255,6 +255,11 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		for _, v := range apps.Volumes(m, c) {
 			lines = append(lines, "Volume="+v)
 		}
+		// The user, from the product for the same reason: a catalog entry that could pick its uid
+		// could pick root.
+		if u := apps.User(m, c); u != "" {
+			lines = append(lines, "User="+u)
+		}
 		for _, k := range sortedKeys(c.Env) {
 			lines = append(lines, "Environment="+k+"="+escape(c.Env[k]))
 		}

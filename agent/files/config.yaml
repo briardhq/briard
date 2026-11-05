@@ -1,0 +1,64 @@
+# Briard's configuration for Files (FileBrowser Quantum). It is NOT the household's to edit: it is
+# rendered into the guest's /run by every converge and bound read-only into the container, so a
+# node re-derives it at every promotion and every guest boot. What a household changes in the app
+# (its own preferences) lives in the app's database, in its cache area, which is disposable.
+server:
+  # The updates come through the catalog, so the app asking its maintainer for news is noise.
+  disableUpdateCheck: true
+  # One preview at a time: a preview decodes a whole image, and two at once is twice the peak.
+  numImageProcessors: 1
+  cacheDir: "/home/filebrowser/data/tmp"
+  indexSqlConfig:
+    cacheSizeMB: 4
+  database:
+    activity:
+      disabled: true
+  # ONE SOURCE, the view: a folder per app holding the directories its manifest mounts, bound
+  # there by the guest agent (agent/guestagent). The app sees real directories, so every one of
+  # them lists, opens and edits as what it is.
+  sources:
+    - path: "/srv"
+      name: "Apps"
+      config:
+        defaultEnabled: true
+        defaultPermissions:
+          view: true
+          download: true
+          modify: true
+          delete: true
+          create: true
+          configured: true
+auth:
+  methods:
+    password:
+      enabled: false
+    # SIGNED, NOT TRUSTED. Briard's reverse proxy lets a browser through only with the household
+    # dashboard's session, and then signs who it is: a token the app verifies with this secret on
+    # every request. A header the app believed blindly would be only as safe as the network path
+    # to it; a signature needs the key, which only root on this node can read.
+    jwt:
+      enabled: true
+      header: "X-JWT-Assertion"
+      algorithm: "HS256"
+      secret: "@SECRET@"
+  adminUsername: "household"
+frontend:
+  name: "Files"
+  description: "Every app's files on this Briard machine"
+  favicon: "/briard/favicon.png"
+  disableDefaultLinks: true
+  externalLinks:
+    - text: "Briard"
+      title: "Back to the Briard dashboard"
+      url: "http://briard.local/"
+  styling:
+    disableEventThemes: true
+userDefaults:
+  preview:
+    # Off until the app makes square thumbnails without copying the whole image: a JPEG or PNG
+    # thumbnail decodes the full picture, and a folder of phone photos is several hundred MB.
+    disablePreviewExt: "jpg,jpeg,png"
+  ui:
+    themeColor: "oklch(.42 .06 170)"
+http:
+  port: 80

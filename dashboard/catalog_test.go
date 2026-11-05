@@ -212,15 +212,6 @@ func TestANewlyAvailableWishedAppSaysSo(t *testing.T) {
 	}
 }
 
-// A slug the index does not list is titled from its words.
-func TestTitleOfSlug(t *testing.T) {
-	for slug, want := range map[string]string{"home-assistant": "Home Assistant", "mosquitto": "Mosquitto", "z-wave-js-ui": "Z Wave Js Ui"} {
-		if got := titleOf(slug); got != want {
-			t.Errorf("titleOf(%q) = %q, want %q", slug, got, want)
-		}
-	}
-}
-
 func init() {
 	// Every rig has the host's view of the index unless a test takes it away: the product's
 	// two apps were on every page before the index existed, and still are.

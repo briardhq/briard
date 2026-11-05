@@ -381,6 +381,38 @@ func TestBrokerRendersItsConfigAndItsData(t *testing.T) {
 	}
 }
 
+// Files renders as root, with the view the agent keeps (slave propagation, so later binds reach
+// it) and its own directory -- and the same manifest under any other name renders none of that.
+func TestFilesRendersAsRootOverTheView(t *testing.T) {
+	m := manifest.Manifest{
+		Name:    "files",
+		Version: "2.0.2",
+		Containers: []manifest.Container{{
+			Name: "app", Image: digestB, Mounts: []manifest.Mount{{Tier: manifest.TierCache, Dir: "state", Path: "/home/filebrowser/data"}},
+			Primary: true, Port: 80, HealthPath: "/health",
+		}},
+	}
+	got := mustRender(t, m).Files["briard-files-app.container"]
+	for _, want := range []string{
+		"Volume=/run/briard/files-view:/srv:rslave",
+		"Volume=/run/briard/files:/briard:ro",
+		"Volume=/var/lib/briard/cache/files/state:/home/filebrowser/data",
+		"User=0",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Files is missing %q:\n%s", want, got)
+		}
+	}
+	other := m
+	other.Name = "sample-app"
+	got = mustRender(t, other).Files["briard-sample-app-app.container"]
+	for _, never := range []string{"files-view", "User="} {
+		if strings.Contains(got, never) {
+			t.Fatalf("an app that is not Files got %q:\n%s", never, got)
+		}
+	}
+}
+
 // THE POD'S NETWORKING IS THE ONE DECISION THIS PACKAGE MAKES, and until an app asked for a private network it was made the
 // same way for everyone. These are the three shapes it can take, asserted on the rendered bytes
 // because that is what podman reads.

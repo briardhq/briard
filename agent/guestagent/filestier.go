@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -120,6 +121,11 @@ func startFilesTick(x Executor) bool {
 	go func() {
 		// NOT THE REQUEST'S CONTEXT: that ends with the reply, and this outlives it.
 		rep := filesTick(context.Background(), x, time.Now().UTC())
+		// The ring has just changed, and Files names its members: the view follows it here,
+		// and catches anything else that moved since it was last refreshed.
+		if err := refreshFilesView(context.Background(), x); err != nil {
+			log.Printf("files tick: %v", err)
+		}
 		filesTicks.Lock()
 		filesTicks.busy, filesTicks.report = false, &rep
 		filesTicks.Unlock()

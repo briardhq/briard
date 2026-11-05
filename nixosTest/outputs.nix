@@ -119,6 +119,13 @@ let
     inherit pkgs guestModule;
     fixture = mosquittoFixture;
   };
+  # FILES AS A CATALOGUED APP, read from its entry, beside the app with a mount in every tier
+  # (undoFixture): the view, its modes, a restore underneath, a Version, and the way in.
+  filesFixture = import ./catalog-fixture.nix { inherit pkgs; entry = ../catalog/files.json; };
+  filesTest = import ./files.nix {
+    inherit pkgs guestModule filesFixture;
+    fixture = undoFixture;
+  };
   # Two apps on one node: both converge, upgrading one leaves the other alone, the rollback
   # point restores only what moved, and a failover carries both.
   appsPair = import ./apps-pair.nix {
@@ -442,6 +449,7 @@ in
     apps = {
       mosquitto = mosquittoTest; # the broker: its config in effect, its data on the volume
       apps-pair = appsPair; # two apps: upgrade one, the other keeps serving
+      files = filesTest; # every app's directories, through the door, signed in by the dashboard
     };
     # EACH APP'S CONTRACT: the tests of Briard's own code for one catalogued app (agent/hass,
     # agent/mosquitto, its agent/apps entry), on the entry the catalog ships. The tier runs them
@@ -453,6 +461,9 @@ in
     };
     app-mosquitto = {
       mosquitto = mosquittoTest;
+    };
+    app-files = {
+      files = filesTest;
     };
     # Real Home Assistant as an INSTALLED APP (2.4 GB image boot).
     ha = {

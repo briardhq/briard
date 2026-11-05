@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	apps "briard.io/agent/apps"
+	"briard.io/agent/files"
 	"briard.io/agent/quadlet"
 	"briard.io/shared/manifest"
 	"briard.io/shared/routes"
@@ -210,6 +211,14 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 			}
 		}
 	}
+	// Files' view, once every app's areas exist and Files is running: an install, an undo and
+	// a promotion all end here, so this is where the view catches up with them. A failure costs
+	// the view, never the converge.
+	if slices.ContainsFunc(svcs, func(s convergedApp) bool { return s.name == files.Name }) {
+		if err := refreshFilesView(ctx, x); err != nil {
+			log.Printf("converge: %v; Files shows what it can", err)
+		}
+	}
 	// Remember what is now running, so the NEXT converge can tell an upgrade from a promotion.
 	// A failure here is not worth aborting a converge that has already started the apps: the
 	// cost is a needless bounce next time, not a wrong one.
@@ -303,6 +312,10 @@ func stopUnrendered(ctx context.Context, x Executor, all quadlet.Rendered) {
 // demote. A failed ExecStop would leave briard-apps active, which blocks the unmount behind
 // it — strictly worse than a container that outlives its data.
 func ConvergeStop(ctx context.Context, x Executor) error {
+	// Files' view first: every bind in it holds the volume, which is unmounted after this.
+	if err := tearDownFilesView(ctx, x); err != nil {
+		log.Printf("converge stop: %v (continuing)", err)
+	}
 	raw, err := x.ReadFile(unitsFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -778,6 +791,8 @@ func routesFor(flock string, svcs []convergedApp) routes.Table {
 				Listen: routes.ListenName,
 				To:     fmt.Sprintf("http://:%d", p.Port),
 			}}
+			// Gated: the door admits the household's dashboard session and signs it in.
+			e.Gate = apps.Gate(s.m)
 		}
 		t.Apps = append(t.Apps, e)
 	}

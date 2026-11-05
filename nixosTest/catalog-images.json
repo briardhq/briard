@@ -1,4 +1,5 @@
 {
   "docker.io/library/eclipse-mosquitto@sha256:6f8d8a947c506f8a2290ec65cd4bd2bc7cb4d43fb5f6271f861cb013e2ef9797": { "amd64": "sha256-D85jVUinf8xZIuYYA9PaIbMpqOv95SYwPdPgEcvttlc=" },
-  "ghcr.io/home-assistant/home-assistant@sha256:3e6710a7ab2a61311d9d899b719f6c3657791c63e8f4942cec4ebc42401d6b76": { "amd64": "sha256-45ES3e7FHFli+U2/ChyJc6HJBvWJiCaIQXBIwU0XKfU=" }
+  "ghcr.io/home-assistant/home-assistant@sha256:3e6710a7ab2a61311d9d899b719f6c3657791c63e8f4942cec4ebc42401d6b76": { "amd64": "sha256-45ES3e7FHFli+U2/ChyJc6HJBvWJiCaIQXBIwU0XKfU=" },
+  "docker.io/gtstef/filebrowser@sha256:de2b4c4d18485ea202ab2cdada5bd25d8f0b8ed071712c8216a67194c31285ae": { "amd64": "sha256-wWucrXEYFI/73LjZEPXvEenHsJNdM6R8J0sB740n0jY=" }
 }

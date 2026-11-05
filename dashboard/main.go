@@ -266,6 +266,18 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.openHomeAssistant(w, r)
+	case strings.HasPrefix(r.URL.Path, "/open/") && r.Method == http.MethodGet:
+		// A gated app (gate.go). A GET because the door sends a browser here: a page another
+		// site makes a browser load opens the household's own app, signed in as itself.
+		if _, ok := a.session(r); !ok {
+			a.refuse(w, r)
+			return
+		}
+		a.openGated(w, r, strings.TrimPrefix(r.URL.Path, "/open/"))
+	case r.URL.Path == "/gate/redeem" && r.Method == http.MethodPost:
+		a.gateRedeem(w, r)
+	case r.URL.Path == "/gate/check" && r.Method == http.MethodGet:
+		a.gateCheck(w, r)
 	case r.URL.Path == "/devices/revoke" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
 			a.refuse(w, r)
@@ -460,7 +472,11 @@ func sessionToken(r *http.Request) string {
 
 // session says whether the request carries a registered device's token, and which device.
 func (a *app) session(r *http.Request) (device, bool) {
-	tok := sessionToken(r)
+	return a.deviceOf(sessionToken(r))
+}
+
+// deviceOf is the registered device a session token belongs to, if any.
+func (a *app) deviceOf(tok string) (device, bool) {
 	if tok == "" {
 		return device{}, false
 	}
@@ -924,6 +940,7 @@ type appView struct {
 	// household asked for it while it had none.
 	Available, Wished bool
 	Installed         bool    // the routes table lists it
+	Gated             bool    // the door signs the household into it: it opens from here (gate.go)
 	HA                *haView // Home Assistant's own states, on its card alone
 	// Running is the version this machine runs (the host's word, "" when it has none), and
 	// Offer the version the catalog offers as an update, "" when it offers none: never taken
@@ -1053,13 +1070,15 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 	}
 	for _, name := range routedNames(a.routesPath) {
 		if !slices.ContainsFunc(cards, func(av *appView) bool { return av.Name == name }) {
-			cards = append(cards, &appView{Name: name, Title: titleOf(name), Available: true, Installed: true})
+			cards = append(cards, &appView{Name: name, Title: dashboard.TitleOf(name), Available: true, Installed: true})
 		}
 	}
+	gated := gatedApps(a.routesPath)
 	for _, av := range cards {
 		if av.Name == hass.Name {
 			av.HA = ha
 		}
+		_, av.Gated = gated[av.Name]
 		av.Install = a.installState(av.Name, av.Installed, av.Offer != "")
 		if av.Install != nil && av.Install.Updated {
 			av.Offer = "" // taken; the host's next push says so too

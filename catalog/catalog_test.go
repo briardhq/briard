@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	"briard.io/agent/apps"
+	"briard.io/agent/files"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/shared/manifest"
@@ -165,6 +167,28 @@ func TestHomeAssistantEntryMatchesWhatTheProductAssumes(t *testing.T) {
 	}
 	if !m.HostNetwork() {
 		t.Error("Home Assistant is off host networking; its discovery would see nothing on the household's LAN")
+	}
+}
+
+// Files' entry is what agent/files configures: it reads the config written into its own
+// directory, keeps its state in its cache (its index and users are disposable), owns no data of
+// its own, and answers only inside its pod -- the door is the one way in, and it signs.
+func TestFilesEntryMatchesWhatTheProductAssumes(t *testing.T) {
+	m, _, err := manifest.Parse(read(t, files.Name+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := m.Primary()
+	if got, want := p.Env["FILEBROWSER_CONFIG"], apps.AppMount+"/config.yaml"; got != want {
+		t.Errorf("Files reads its config from %q; agent/files writes it at %q", got, want)
+	}
+	for _, mt := range p.Mounts {
+		if mt.Tier != manifest.TierCache {
+			t.Errorf("Files mounts %v; its own state is disposable and belongs in the cache", mt)
+		}
+	}
+	if m.HostNetwork() || len(m.Ports) != 0 {
+		t.Errorf("Files is reachable other than through the door: network %q, ports %v", m.Network, m.Ports)
 	}
 }
 

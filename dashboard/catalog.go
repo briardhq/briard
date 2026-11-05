@@ -18,7 +18,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"briard.io/shared/api"
@@ -80,19 +79,7 @@ func (a *app) appTitle(name string) string {
 	if l := a.listed(name); l != nil {
 		return l.Title
 	}
-	return titleOf(name)
-}
-
-// titleOf is a slug as a title: "home-assistant" reads "Home Assistant". A fallback, never the
-// first choice; the index carries the name the project spells.
-func titleOf(slug string) string {
-	words := strings.Split(slug, "-")
-	for i, w := range words {
-		if w != "" {
-			words[i] = strings.ToUpper(w[:1]) + w[1:]
-		}
-	}
-	return strings.Join(words, " ")
+	return dashboard.TitleOf(name)
 }
 
 // requestWish is the button on a coming-soon card, and its second press: one wish directive to

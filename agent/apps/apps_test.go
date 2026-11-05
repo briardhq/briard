@@ -3,9 +3,11 @@ package apps
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
+	"briard.io/agent/files"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/shared/manifest"
@@ -98,6 +100,47 @@ func TestEachKnownAppGetsItsOwn(t *testing.T) {
 		if strings.Contains(v, hass.Dir) {
 			t.Errorf("mosquitto was handed Home Assistant's control channel: %v", mqVols)
 		}
+	}
+}
+
+// TestOnlyFilesSeesTheViewAsRootBehindTheGate: the one app that reads other apps' areas gets the
+// view, root and the gate, and no other app gets any of the three -- a name the registry does not
+// key on must not inherit the household's data.
+func TestOnlyFilesSeesTheViewAsRootBehindTheGate(t *testing.T) {
+	fl := svc(files.Name, 80)
+	vols := Volumes(fl, fl.Containers[0])
+	if !slices.Contains(vols, files.ViewDir+":"+files.ViewMount+":rslave") {
+		t.Errorf("Files lacks the view with slave propagation: %v", vols)
+	}
+	if !slices.Contains(vols, AppDir(files.Name)+":"+AppMount+":ro") {
+		t.Errorf("Files lacks its own directory, read-only: %v", vols)
+	}
+	if u := User(fl, fl.Containers[0]); u != "0" {
+		t.Errorf("User(files) = %q, want 0", u)
+	}
+	if g := Gate(fl); g != files.KeyPath {
+		t.Errorf("Gate(files) = %q, want %q", g, files.KeyPath)
+	}
+	for _, m := range []manifest.Manifest{svc(hass.Name, 8123), svc(mosquitto.Name, mosquitto.HealthPort), svc("something-else", 8080)} {
+		for _, v := range Volumes(m, m.Containers[0]) {
+			if strings.Contains(v, files.ViewDir) {
+				t.Errorf("%s was handed the view: %v", m.Name, v)
+			}
+		}
+		if u := User(m, m.Containers[0]); u != "" {
+			t.Errorf("User(%s) = %q, want the image's own", m.Name, u)
+		}
+		if g := Gate(m); g != "" {
+			t.Errorf("Gate(%s) = %q, want none", m.Name, g)
+		}
+	}
+	// A second container of Files is not the browser, and gets none of the browser's binds.
+	side := manifest.Container{Name: "sidecar", Image: image}
+	if v := Volumes(fl, side); v != nil {
+		t.Errorf("a non-primary container of Files was handed %v", v)
+	}
+	if u := User(fl, side); u != "" {
+		t.Errorf("a non-primary container of Files runs as %q", u)
 	}
 }
 
@@ -361,6 +404,7 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 	for _, m := range []manifest.Manifest{
 		{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/config"}}}}},
 		{Name: "mosquitto", Containers: []manifest.Container{{Name: "broker", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "broker", Path: "/data"}}}}},
+		{Name: "files", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierCache, Dir: "state", Path: "/home/filebrowser/data"}}}}},
 	} {
 		for _, c := range m.Containers {
 			var dests []string
@@ -403,6 +447,7 @@ func TestAppDirMatchesTheRegistry(t *testing.T) {
 	for _, c := range []struct{ name, dir string }{
 		{hass.Name, hass.Dir},
 		{mosquitto.Name, mosquitto.Dir},
+		{files.Name, files.Dir},
 	} {
 		if want := defaultRunDir + "/" + c.name; c.dir != want {
 			t.Errorf("%s's package declares %q, the registry derives %q", c.name, c.dir, want)

@@ -34,6 +34,7 @@
   <footer>
     {{if .Offering}}<form method="post" action="/update/{{.Name}}"><button type="submit" class="btn" data-variant="outline">{{if and .Install .Install.Failed}}Try again{{else}}Update{{end}}</button></form>{{end}}
     {{with .HA}}{{if .Reachable}}<form method="post" action="/open/home-assistant" target="_blank"><button type="submit" class="btn"{{if not .Running}} disabled{{end}}>Open Home Assistant</button></form>{{end}}{{end}}
+    {{if and .Gated .Installed (not (and .Install .Install.Running))}}<a class="btn" href="/open/{{.Name}}" target="_blank" rel="noopener">Open {{.Title}}</a>{{end}}
     {{if not .Here}}<a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a>{{end}}
   </footer></div>
 {{end}}

@@ -17,6 +17,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"briard.io/shared/manifest"
@@ -51,6 +52,32 @@ type CatalogApp struct {
 	Installed bool   `json:"installed,omitempty"`
 	Running   string `json:"running,omitempty"`
 	Update    bool   `json:"update,omitempty"`
+}
+
+// Title is an app's name for a person: the index's, or the slug made readable for an app the
+// index does not list (one installed before the index was read, or by hand). The dashboard's
+// cards and Files' folders both say it, so a household reads one name for one app.
+func (c *Catalog) Title(name string) string {
+	if c != nil {
+		for _, a := range c.Apps {
+			if a.Name == name {
+				return a.Title
+			}
+		}
+	}
+	return TitleOf(name)
+}
+
+// TitleOf is a slug as a title: "home-assistant" reads "Home Assistant". A fallback, never the
+// first choice; the index carries the name the project spells.
+func TitleOf(slug string) string {
+	words := strings.Split(slug, "-")
+	for i, w := range words {
+		if w != "" {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // Dir is the guest-side directory, on tmpfs and node-local like the routing table beside it: a
