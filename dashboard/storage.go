@@ -88,7 +88,7 @@ func (a *app) storage(ctx context.Context, app string) storageView {
 	return v
 }
 
-// cacheWords is what the app's cache holds, as nowWords says an area.
+// cacheWords is what the app's cache holds: on disk alone, since a cache is only ever cleared.
 func cacheWords(t dashboard.TierUsage, measuring bool) string {
 	switch {
 	case !t.Measured && measuring:
@@ -96,7 +96,7 @@ func cacheWords(t dashboard.TierUsage, measuring bool) string {
 	case !t.Measured:
 		return "Not measured"
 	}
-	return nowWords(t, measuring, "")
+	return gb(t.Current) + " on disk"
 }
 
 // requestClearCache is the Storage card's Clear: the host stops the app, empties its cache and

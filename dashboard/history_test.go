@@ -101,8 +101,7 @@ func TestHistoryListsWhatTheHostReports(t *testing.T) {
 	for _, want := range []string{
 		"Updated to 2026.8.0", // the events the host recorded, not re-derived here
 		"Ran normally",
-		"taken while the app was running", // the day's point's class, in the CLI's words
-		"also goes back to 2026.7.1",      // undoing the update moves the version too
+		"also goes back to 2026.7.1", // undoing the update moves the version too
 		"Undo these changes",
 		"<h3>Version</h3><p>2026.8.0</p>", // the About card, off the newest member's manifest
 		"Its image takes 2.49 GB",
@@ -116,9 +115,9 @@ func TestHistoryListsWhatTheHostReports(t *testing.T) {
 	if strings.Index(body, "Updated to") > strings.Index(body, "Ran normally") {
 		t.Errorf("the rows are oldest-first on a page that is read from the top:\n%s", body)
 	}
-	// The clean point carries no note at all: a note on every line is a note nobody reads.
-	if strings.Count(body, "taken while the app was running") != 1 {
-		t.Errorf("the clean point was annotated too:\n%s", body)
+	// A row carries no note on how its point was taken: that is the confirm step's to say.
+	if strings.Contains(body, "taken while the app was running") {
+		t.Errorf("a row says how its point was taken:\n%s", body)
 	}
 	if strings.Contains(body, quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Date(2026, 9, 21, 3, 5, 0, 0, time.Local))) {
 		t.Errorf("the start after the update is listed as a row:\n%s", body)
@@ -354,5 +353,27 @@ func TestHistoryShowsTheHouseholdsHours(t *testing.T) {
 	localtime = "/nonexistent/localtime"
 	if zone() != time.UTC {
 		t.Errorf("a guest with no zone link renders in %v, want UTC", zone())
+	}
+}
+
+// A row says today and yesterday by name, by the household's own midnight, and older by its date.
+func TestWhenWordsNameTodayAndYesterday(t *testing.T) {
+	loc := time.FixedZone("here", 2*3600)
+	now := time.Date(2026, 11, 6, 9, 30, 0, 0, loc)
+	for _, tc := range []struct {
+		at   time.Time
+		want string
+	}{
+		{time.Date(2026, 11, 6, 0, 0, 0, 0, loc), "Today at 00:00"},
+		{time.Date(2026, 11, 6, 9, 15, 0, 0, loc), "Today at 09:15"},
+		{time.Date(2026, 11, 5, 23, 59, 0, 0, loc), "Yesterday at 23:59"},
+		{time.Date(2026, 11, 5, 0, 0, 0, 0, loc), "Yesterday at 00:00"},
+		{time.Date(2026, 11, 4, 23, 59, 0, 0, loc), "Wed 4 Nov, 23:59"},
+		// Stored in UTC, said in the household's zone: 22:30 UTC on the 5th is the 6th here.
+		{time.Date(2026, 11, 5, 22, 30, 0, 0, time.UTC), "Today at 00:30"},
+	} {
+		if got := whenWords(tc.at, now, loc); got != tc.want {
+			t.Errorf("whenWords(%v) = %q, want %q", tc.at, got, tc.want)
+		}
 	}
 }

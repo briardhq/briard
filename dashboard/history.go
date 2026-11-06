@@ -183,7 +183,7 @@ func (a *app) rows(ctx context.Context, app string) ([]rowView, *manifest.Manife
 		back, _ := quadlet.SnapshotMemberTime(h.Point.Member)
 		out = append(out, rowView{
 			Point:     h.Point.Member,
-			When:      h.At.In(loc).Format("Mon 2 Jan, 15:04"),
+			When:      whenWords(h.At, a.now(), loc),
 			What:      h.What,
 			Note:      h.Point.Meta.Consistency.Note(),
 			Back:      back.In(loc).Format("Mon 2 Jan 2006, 15:04:05"),
@@ -194,6 +194,21 @@ func (a *app) rows(ctx context.Context, app string) ([]rowView, *manifest.Manife
 		})
 	}
 	return out, newest, nil
+}
+
+// whenWords is a row's moment as a person says it: today and yesterday by name, anything older by
+// its date.
+func whenWords(at, now time.Time, loc *time.Location) string {
+	at, now = at.In(loc), now.In(loc)
+	y, m, d := now.Date()
+	today := time.Date(y, m, d, 0, 0, 0, 0, loc)
+	switch {
+	case !at.Before(today) && at.Before(today.AddDate(0, 0, 1)):
+		return "Today at " + at.Format("15:04")
+	case !at.Before(today.AddDate(0, 0, -1)) && at.Before(today):
+		return "Yesterday at " + at.Format("15:04")
+	}
+	return at.Format("Mon 2 Jan, 15:04")
 }
 
 // runningManifest is what the app is on now, read off the NEWEST member.

@@ -21,7 +21,7 @@
         <span class="when">{{.When}}</span>
         <span class="what">{{.What}}</span>
         {{if .Caption}}<span class="bad">{{.Caption}}</span>{{end}}
-        {{if or .MovesCode .Note}}<span class="note">{{if .MovesCode}}also goes back to {{.Version}}{{end}}{{if and .MovesCode .Note}} · {{end}}{{.Note}}</span>{{end}}
+        {{if .MovesCode}}<span class="note">also goes back to {{.Version}}</span>{{end}}
         <form method="post" action="/undo" class="undo"><input type="hidden" name="point" value="{{.Point}}"><input type="hidden" name="what" value="{{or .What .Caption}}"><button type="submit" class="btn" data-variant="outline" data-size="sm">Undo these changes</button></form>
       </li>{{end}}
     </ol>
