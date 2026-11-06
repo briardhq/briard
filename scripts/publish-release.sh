@@ -16,11 +16,11 @@
 #                                       download page's installer, which installs current stable
 #   briard/
 #     <version>/linux-amd64/            manifest.json(+.sig), briard-agent, briard-net-wrap,
-#                                       install.sh,
+#                                       install.sh, keyring.pem,
 #                                       briard-update,
 #                                       qemu-bundle.tar.zst, guest-bundle.tar.zst,
 #                                       briard-{agent,update}.service, briard-update.timer
-#     <version>/windows-amd64/          manifest.json(+.sig), briard-agent.exe, briard-tray.exe, install.ps1, briard-update.ps1,
+#     <version>/windows-amd64/          manifest.json(+.sig), briard-agent.exe, briard-tray.exe, install.ps1, briard-update.ps1, keyring.pem,
 #                                       qemu-bundle-windows.tar.zst, guest-bundle.tar.zst, tap-windows.exe,
 #                                       briard-setup.exe
 #     latest/{linux,windows}-amd64/     manifest.json(+.sig), briard-agent / briard-agent.exe
@@ -117,15 +117,29 @@
 # while together they are arbitrary code on every installed machine. Keeping them apart from
 # day one means the split wants is a matter of WHERE each runs, not a rewrite.
 #
+# THE KEY LIVES IN A GITHUB ENVIRONMENT, AND GIT CARRIES WHAT IT SIGNS. `stage` commits each
+# manifest to main under releases/<id>/<arm>/ and pushes; the push starts the sign workflow
+# (.github/workflows/sign.yml), which waits for its required reviewer, signs every manifest that
+# has no signature and commits the signatures; `sign` then waits for them, verifies each and
+# copies it into the staged tree. The machine that publishes holds the credential and never the
+# key. With $RELEASE_SIGN_KEY set the release is signed here instead and nothing goes to git:
+# that is how a key rotation's transition release is signed, by the old key.
+#
+# A KEY ROTATES BY RELEASE. $RELEASE_PUBKEY is the keyring, one or more PEM public keys: it is
+# embedded in the installers, and it is the `keyring.pem` artifact of both briard arms, which an
+# updating node lays over its own. The transition release ships [old, new] signed by old; a node
+# that has taken it trusts releases of the new key. `verify` accepts a signature of any key in it.
+#
 # A DIRTY TREE IS REFUSED. The version is derived from the tree (flake.nix: epoch + commit
 # date + short rev) and a dirty tree has no rev, so it stamps `v3.dirty`. A build nobody can
 # reproduce must not be publishable — and the reproducibility acceptance test is precisely
 # "re-derive this artifact from its tag", which a working directory can never satisfy.
 #
 # Subcommands:
-#   stage    [DIR]        build the artifacts, lay the tree out under DIR, write the manifests
-#   sign     [DIR]        detached-sign every manifest
-#                         (needs $RELEASE_SIGN_KEY, no credential)
+#   stage    [DIR]        build the artifacts, lay the tree out under DIR, write the manifests,
+#                         commit them to main (not with $RELEASE_SIGN_KEY set)
+#   sign     [DIR]        wait for the sign workflow's signatures, verify them, copy them in;
+#                         with $RELEASE_SIGN_KEY set, detached-sign every manifest here
 #   publish  [DIR]        upload the versioned dirs and NOTHING ELSE -- no pointer, no root
 #                         install.sh, so the release reaches nobody until it is pointed at
 #                         (needs the credential, no key; refuses an already-published version)
@@ -138,7 +152,7 @@
 #                         and an upgrade floor newer than the newest Store exe under setup/)
 #   dev      [DIR]        stage + sign + publish + move `dev`, in one run and with NO gate, then
 #                         delete the previous dev release unless stable/latest names it
-#                         (needs the key AND the credential; a HEAD on pushed main, like any id)
+#                         (needs the credential; a HEAD on pushed main, like any id)
 #   gc       [--keep V]…  DELETE versioned dirs no pointer names and nothing pins, older than
 #                         the 30-day floor — whole releases, never files
 #   verify   [VERSION]    fetch stable + latest of every chain and arm from the LIVE channel and
@@ -155,8 +169,9 @@
 #   BRIARD_CHANNEL_URL  public read ROOT            (default https://get.briard.io)
 #   RELEASE_WRITE       write store URL — required by `publish`/`promote`/`gc`, e.g.
 #                       's3://get-briard-io?endpoint=<account>.r2.cloudflarestorage.com&region=auto'
-#   RELEASE_SIGN_KEY    PKCS8 PEM Ed25519 private key (sign mode; release secret store)
-#   RELEASE_PUBKEY      PKIX PEM public key, for `verify` (default: alongside the private key)
+#   RELEASE_SIGN_KEY    PKCS8 PEM Ed25519 private key: unset, except to sign a transition release
+#   RELEASE_PUBKEY      the keyring, one or more PKIX PEM public keys: staged, and what every
+#                       signature is verified against
 #   RELEASE_PURGE_URL   optional: CDN purge endpoint, POSTed a {"files":[...]} list after upload
 #   RELEASE_PURGE_TOKEN optional: bearer token for RELEASE_PURGE_URL (see purge_edge for why)
 #   CERTUM_EMAIL        the SimplySign account's e-mail -- required by `stage`/`dev`/`setup build`,
@@ -373,6 +388,64 @@ embed_keyring() {
 		|| die "no public key landed in the staged $dst"
 }
 
+# Does <sig> verify <file> under ANY key of the keyring <pem>? The way a node's Keyring does: openssl
+# reads only the first key of a PEM file, so each block gets its own file.
+verify_sig() {
+	local file=$1 sig=$2 pem=$3 d k
+	d=$(mktemp -d)
+	awk -v d="$d" '/BEGIN PUBLIC KEY/ { n++ } n { print > (d "/" n ".pem") }' "$pem"
+	for k in "$d"/*.pem; do
+		if ossl pkeyutl -verify -pubin -inkey "$k" -rawin -in "$file" -sigfile "$sig" >/dev/null 2>&1; then
+			rm -rf "$d"; return 0
+		fi
+	done
+	rm -rf "$d"; return 1
+}
+
+# The release's manifests, committed to main: the push is what starts the sign workflow. <dir>...,
+# each staged as <chain>/<id>/<arm>. Built on origin/main with the plumbing, so neither the checkout
+# nor the HEAD the release was cut from moves, and that HEAD may be behind main. A manifest staged
+# again under the same id (a run that never reached `publish`) drops the signature of the old bytes,
+# so the workflow's question stays "has this a signature at all".
+commit_manifests() {
+	local idx d p blob try
+	idx=$(mktemp -u)
+	for try in 1 2 3; do
+		git fetch --quiet origin main || die "cannot fetch origin/main to commit the manifests"
+		GIT_INDEX_FILE=$idx git read-tree origin/main
+		for d in "$@"; do
+			p="releases/$(basename "$(dirname "$d")")/$(basename "$d")"
+			blob=$(git hash-object -w --no-filters "$d/manifest.json")
+			GIT_INDEX_FILE=$idx git update-index --add --cacheinfo "100644,$blob,$p/manifest.json"
+			GIT_INDEX_FILE=$idx git update-index --force-remove "$p/manifest.json.sig"
+		done
+		blob=$(git commit-tree "$(GIT_INDEX_FILE=$idx git write-tree)" -p origin/main -m "release: the manifests of $(cat "$DIR/VERSION")")
+		rm -f "$idx"
+		if git push --quiet origin "$blob:refs/heads/main"; then
+			say "committed the manifests to main: approve the sign job"
+			return 0
+		fi
+	done
+	die "cannot push the manifests to main"
+}
+
+# The sign workflow's signature of one staged manifest, verified and copied beside it. <manifest>
+# <id> <arm>. An hour, then it gives up: a job waits a month for its reviewer, a publish does not.
+pull_signature() {
+	local m=$1 p="releases/$2/$3" deadline
+	deadline=$(($(date +%s) + 3600))
+	until git fetch --quiet origin main && git cat-file -e "origin/main:$p/manifest.json.sig" 2>/dev/null; do
+		[ "$(date +%s)" -lt "$deadline" ] || die "no signature of $p after an hour: is the sign job approved?"
+		sleep 15
+	done
+	git show "origin/main:$p/manifest.json" | cmp -s - "$m" ||
+		die "main's $p/manifest.json is not the staged one: was it staged again elsewhere?"
+	git show "origin/main:$p/manifest.json.sig" > "$m.sig"
+	verify_sig "$m" "$m.sig" "$RELEASE_PUBKEY" ||
+		{ rm -f "$m.sig"; die "the signature of $p does NOT verify against $RELEASE_PUBKEY"; }
+	say "signed $p (signature from main, verified)"
+}
+
 # The files a pointer directory carries, in the upload order that fails closed: the bootstrap
 # agent (if any) first, then the signature, then the manifest. A client racing the upload sees a
 # coherent old pair, a coherent new pair, or a manifest/signature mismatch it refuses — never a
@@ -419,8 +492,7 @@ verify_manifest_at() {
 	curl -fsS "$base/manifest.json.sig" -o "$tmp/manifest.json.sig" || die "no signature at $base"
 	# Verify the way the agent does: raw Ed25519 over the exact bytes. A failure here is the
 	# whole point of the check — an unsigned or re-signed channel must not read as green.
-	ossl pkeyutl -verify -pubin -inkey "$PUB" -rawin \
-		-in "$tmp/manifest.json" -sigfile "$tmp/manifest.json.sig" >/dev/null \
+	verify_sig "$tmp/manifest.json" "$tmp/manifest.json.sig" "$PUB" \
 		|| die "the live manifest at $base does NOT verify against $PUB"
 	v=$(jq -r .version "$tmp/manifest.json")
 	ch=$(jq -r .chain "$tmp/manifest.json"); pl=$(jq -r '.platform // ""' "$tmp/manifest.json")
@@ -550,6 +622,8 @@ stage)
 	grep -q "BEGIN PUBLIC KEY" "$RELEASE_PUBKEY" || die "$RELEASE_PUBKEY is not a PEM PUBLIC KEY"
 	embed_keyring scripts/install.sh "$H/install.sh"
 	sh -n "$H/install.sh" || die "the staged install.sh is not valid shell after substitution"
+	# The keyring again, as an artifact: the installers carry it to a new node, this to an old one.
+	install -m0644 "$RELEASE_PUBKEY" "$H/keyring.pem"
 
 	# The manifest, written BY THE AGENT rather than by this script: the format is a contract
 	# between the publisher and every installing node, and it used to have two implementations
@@ -596,6 +670,7 @@ stage)
 	rm -rf "$Q"
 	zst "$W/qemu-bundle-windows.tar" "$W/qemu-bundle-windows.tar.zst"
 	embed_keyring scripts/install.ps1 "$W/install.ps1"
+	install -m0644 "$RELEASE_PUBKEY" "$W/keyring.pem"
 	# The update launcher, the windows arm's twin of briard-update: frozen, laid down by the install.
 	install -m0644 scripts/agent/briard-update.ps1 "$W/briard-update.ps1"
 	"$H/briard-agent" --stage-manifest "$W" --chain briard --platform "$WINDOWS_ARM" --release "$V" --vm "$GV" || die "writing the windows manifest failed"
@@ -623,6 +698,7 @@ stage)
 	done
 
 	echo "$V" > "$DIR/VERSION" # not part of the tree; a human-readable marker for the operator
+	[ -n "${RELEASE_SIGN_KEY:-}" ] || commit_manifests $MANIFESTS
 	say "staged $V:"
 	for c in $CHAINS; do
 		if [ "$c" = vm ] && [ -n "$VM_REUSED" ]; then
@@ -639,8 +715,8 @@ stage)
 
 sign)
 	DIR="${2:-$STAGE_DEFAULT}"
-	[ -n "${RELEASE_SIGN_KEY:-}" ] || die "set RELEASE_SIGN_KEY to the PKCS8 PEM Ed25519 private key"
-	[ -e "$RELEASE_SIGN_KEY" ] || die "no signing key at $RELEASE_SIGN_KEY"
+	[ -z "${RELEASE_SIGN_KEY:-}" ] || [ -e "$RELEASE_SIGN_KEY" ] || die "no signing key at $RELEASE_SIGN_KEY"
+	[ -n "${RELEASE_SIGN_KEY:-}" ] || [ -n "${RELEASE_PUBKEY:-}" ] || die "set RELEASE_PUBKEY to the keyring the signatures verify against"
 	for c in $CHAINS; do
 		if [ "$c" = vm ] && [ -f "$DIR/VM_REUSED" ]; then
 			say "vm chain: $(cat "$DIR/VM") is reused (unchanged inputs) -- nothing to sign"; continue
@@ -649,6 +725,10 @@ sign)
 		for arm in $(arms_of "$c"); do
 			rel=$(sub "$v" "$arm"); m="$DIR/$c/$rel/manifest.json"
 			[ -f "$m" ] || die "no manifest at $m"
+			if [ -z "${RELEASE_SIGN_KEY:-}" ]; then
+				pull_signature "$m" "$v" "$arm"
+				continue
+			fi
 			# -rawin is what makes this PureEdDSA over the whole file, which is what Verify does.
 			# Without it openssl would pre-hash and every signature would be rejected.
 			ossl pkeyutl -sign -inkey "$RELEASE_SIGN_KEY" -rawin -in "$m" -out "$m.sig"
@@ -903,7 +983,6 @@ dev)
 	DIR="${2:-$STAGE_DEFAULT}"
 	need nix; need curl; need jq
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
-	[ -n "${RELEASE_SIGN_KEY:-}" ] || die "set RELEASE_SIGN_KEY -- dev signs and publishes in one run"
 	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
 	say "dev release: reading what dev names now (quiet for a moment -- awscli through nix), then stage, sign, publish, point"
 	# What a pointer names, read from the BUCKET rather than the edge: this decides a delete, and
