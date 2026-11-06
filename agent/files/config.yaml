@@ -48,9 +48,9 @@ frontend:
   favicon: "/briard/favicon.png"
   disableDefaultLinks: true
   externalLinks:
-    - text: "Briard"
-      title: "Back to the Briard dashboard"
-      url: "http://briard.local/"
+    - text: "Powered by FileBrowser Quantum"
+      title: "FileBrowser Quantum"
+      url: "https://filebrowserquantum.com"
   styling:
     disableEventThemes: true
     customCSS: "/briard/briard.css"
