@@ -156,7 +156,7 @@ pkgs.testers.runNixOSTest {
     bundle("good", 'exec ${qemu}/bin/qemu-system-x86_64 "$@"', "a qemu that runs here")
     bundle("bad", "echo QEMU", "a qemu that does not")
 
-    def publish(version, artifact, pointers=("latest", "stable"), qemu="good"):
+    def publish(version, artifact, pointers=("latest", "stable"), qemu="good", key="/root/release.key", keyring=None):
         # One release of the host chain's linux arm, the way publish-release.sh lays it: the
         # artifacts under the versioned directory, a manifest written by the REAL writer, a
         # detached signature, and the pointers as byte-copies carrying the REAL agent as the
@@ -164,8 +164,10 @@ pkgs.testers.runNixOSTest {
         d = f"/srv/briard/{version}/linux-amd64"
         machine.succeed(f"mkdir -p {d} && install -m755 {artifact} {d}/briard-agent")
         machine.succeed(f"install -m755 /root/net-wrap {d}/briard-net-wrap && install -m644 /root/{qemu}.tar.zst {d}/qemu-bundle.tar.zst")
+        if keyring:
+            machine.succeed(f"install -m644 {keyring} {d}/keyring.pem")
         machine.succeed(f"${realAgent} --stage-manifest {d} --chain briard --platform linux-amd64 --release {version}")
-        machine.succeed(f"${stubExe} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
+        machine.succeed(f"${stubExe} sign {key} {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
         for p in pointers:
             machine.succeed(f"mkdir -p /srv/briard/{p}/linux-amd64 && cp {d}/manifest.json {d}/manifest.json.sig /srv/briard/{p}/linux-amd64/")
             machine.succeed(f"install -m755 ${realAgent} /srv/briard/{p}/linux-amd64/briard-agent")
@@ -309,6 +311,28 @@ pkgs.testers.runNixOSTest {
     machine.succeed("cmp ${agentBin} ${readyV4}")
     machine.succeed("systemctl is-active briard-agent.service")
     print("8) a pin below stable refused; at the moved floor it went past the decision")
+
+    # === 9) A KEY ROTATES BY THE UPDATE ALONE. A release signed by a key the node does not hold is
+    #        refused (the failable control); the transition release, signed by the old key,
+    #        carries both, and lands at the path the frozen launcher names; then the same
+    #        release of the new key is taken. ===
+    machine.succeed("${stubExe} keygen /root/next.key /root/next.pem")
+    machine.succeed("cat /etc/briard/keyring.pem /root/next.pem > /root/both.pem")
+    machine.succeed("cp /etc/briard/keyring.pem /root/old.pem")
+    V9, V10 = "v3.99100100.aaaaaaa", "v3.99100200.bbbbbbb"
+    publish(V10, "${readyV4}", pointers=("stable",), key="/root/next.key", keyring="/root/next.pem")
+    machine.fail("systemctl start briard-update.service")
+    assert verdict().startswith("failed"), f"a release of an unknown key was not refused: {verdict()!r}"
+    machine.succeed("cmp /etc/briard/keyring.pem /root/old.pem")
+    publish(V9, "${readyV4}", pointers=("stable",), keyring="/root/both.pem")
+    machine.succeed("systemctl start briard-update.service")
+    assert verdict().startswith(f"ok updated to {V9}"), f"unexpected verdict: {verdict()!r}"
+    machine.succeed("cmp /etc/briard/keyring.pem /root/both.pem")
+    publish(V10, "${readyV4}", pointers=("stable",), key="/root/next.key", keyring="/root/next.pem")
+    machine.succeed("systemctl start briard-update.service")
+    assert verdict().startswith(f"ok updated to {V10}"), f"unexpected verdict: {verdict()!r}"
+    machine.succeed("cmp /etc/briard/keyring.pem /root/next.pem")
+    print("9) a release of an unknown key refused; the transition release carried both keys; the new key's release taken")
 
     print("the update unit below the agent fetches, verifies, stages, smoke-tests, stops with patience, swaps, starts and commits a good release; it reverts a candidate that crashes or hangs and a run cut mid-swap, and refuses a tampered, unsigned, below-floor or not-runnable-here release with nothing stopped")
   '';

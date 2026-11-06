@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -43,6 +44,7 @@ const (
 	artifactNetWrap = "briard-net-wrap"      // Linux only: the Windows arm ships none
 	artifactTray    = "briard-tray.exe"      // Windows only: the notification-area icon
 	artifactGuest   = "guest-bundle.tar.zst" // the binaries the host dresses its guest with
+	artifactKeyring = "keyring.pem"          // the release keys this node trusts from now on
 )
 
 // ErrBelowFloor is returned for an exact pin older than the current stable (or one whose floor
@@ -232,6 +234,9 @@ const StopPatience = 30 * time.Minute
 type Update struct {
 	Fetcher *Fetcher
 	Layout  selfupdate.Layout
+	// Keyring is the path of the node's release keyring, the file a release's own keyring.pem
+	// replaces.
+	Keyring string
 	Logf    func(string, ...any)
 	// Stop stops the agent through its ordinary stop path, forcing it after patience (0: at once).
 	Stop func(ctx context.Context, patience time.Duration) error
@@ -308,7 +313,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	}
 	defer os.RemoveAll(tmp)
 	from := path.Join(u.Fetcher.Chain, want.Version, u.Fetcher.Platform)
-	var agent, netWrap, tray *Entry
+	var agent, netWrap, tray, keyring *Entry
 	guestTree := ""
 	qemuTree := ""
 	for i := range want.Artifacts {
@@ -388,6 +393,13 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 				}
 			}
 			guestTree = tree
+		case artifactKeyring:
+			// Never hash-skipped: a few hundred bytes, and what it is compared with is the file on
+			// disk, not the installed manifest, so a run that died after the swap heals on the next.
+			if err := u.Fetcher.fetchArtifact(ctx, from, tmp, *a); err != nil {
+				return "", err
+			}
+			keyring = a
 		default:
 			logf("update: %s is not part of the briard bundle this agent knows; left alone", a.Name)
 		}
@@ -445,6 +457,17 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 		if err := u.Smoke(ctx, qemuTree); err != nil {
 			u.discard(logf)
 			return "", fmt.Errorf("host bundle %s refused on this host: %w", want.Version, err)
+		}
+	}
+
+	// THE KEYRING MOVES HERE: past every refusal, before the agent that reads it starts. It is how a
+	// key rotates, so it is not an entry of the swap: its path is the one the frozen launcher hands
+	// every run, outside the layout, and a revert leaves it. A revert is about this release's code,
+	// and the keys were vouched for by a key the node already trusts.
+	if keyring != nil {
+		if err := u.layKeyring(filepath.Join(tmp, keyring.Name), logf); err != nil {
+			u.discard(logf)
+			return "", err
 		}
 	}
 
@@ -573,6 +596,29 @@ func unchanged(have *Manifest, a Entry) bool {
 		}
 	}
 	return false
+}
+
+// layKeyring replaces the node's keyring with the verified one at src, unless they already agree.
+// Refused when src holds no key: on disk it would fail every later fetch closed, and nothing but a
+// reinstall could bring the node back.
+func (u *Update) layKeyring(src string, logf func(string, ...any)) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("install: read the release's keyring: %w", err)
+	}
+	if kr, err := selfupdate.NewKeyring(b); err != nil {
+		return fmt.Errorf("%w: the release's keyring: %v", ErrManifest, err)
+	} else if kr.Len() == 0 {
+		return fmt.Errorf("%w: the release's keyring holds no key", ErrManifest)
+	}
+	if have, err := os.ReadFile(u.Keyring); err == nil && bytes.Equal(have, b) {
+		return nil
+	}
+	if err := atomicfile.Write(u.Keyring, b, 0o644, 0o755); err != nil {
+		return fmt.Errorf("install: write the keyring: %w", err)
+	}
+	logf("update: the release keyring is now the release's own")
+	return nil
 }
 
 func stageFile(src string, stage func(io.Reader) error) error {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"os"
@@ -279,6 +280,106 @@ func TestUpdateRefusesAQEMUThatFailsItsSmokeTest(t *testing.T) {
 	assertBundleNotStaged(t, l)
 	if len(f.stops) != 0 || f.starts != 0 {
 		t.Errorf("a refused release stopped (%v) or started (%d) the agent", f.stops, f.starts)
+	}
+}
+
+// keyringChannel serves a release that carries keyring as its keyring.pem.
+func keyringChannel(t *testing.T, keyring []byte) *channel {
+	t.Helper()
+	agent := []byte("the briard-agent static binary")
+	return newChannel(t, []Entry{
+		{Name: artifactAgent, SHA256: sha(agent), Size: int64(len(agent)), Mode: 0o755},
+		{Name: artifactKeyring, SHA256: sha(keyring), Size: int64(len(keyring))},
+	}, map[string][]byte{artifactAgent: agent, artifactKeyring: keyring})
+}
+
+// twoKeys is a keyring of two public keys, the shape a rotation ships.
+func twoKeys(t *testing.T) []byte {
+	t.Helper()
+	var b []byte
+	for range 2 {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b = append(b, pubPEM(t, pub)...)
+	}
+	return b
+}
+
+// A rotation reaches a node by the update alone: the release's keyring replaces the node's before
+// the agent that reads it starts, and the file it replaced is the one the run was told about.
+func TestUpdateLaysTheReleasesKeyring(t *testing.T) {
+	want := twoKeys(t)
+	u, _, f := updateFixture(t, keyringChannel(t, want), nil)
+	u.Keyring = filepath.Join(t.TempDir(), "keyring.pem")
+	if err := os.WriteFile(u.Keyring, []byte("the installer's"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	start := u.Start
+	u.Start = func(ctx context.Context) error {
+		if got, _ := os.ReadFile(u.Keyring); !bytes.Equal(got, want) {
+			t.Error("the agent started on the old keyring")
+		}
+		return start(ctx)
+	}
+	if _, err := u.Run(context.Background(), TargetLatest); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if f.starts != 1 {
+		t.Fatalf("starts = %d", f.starts)
+	}
+	if fi, _ := os.Stat(u.Keyring); unixModes && fi.Mode().Perm() != 0o644 {
+		t.Errorf("keyring mode = %o, want 0644", fi.Mode().Perm())
+	}
+}
+
+// A revert concerns the release's code: the keys were vouched for by one the node trusts, and the
+// release that comes next is signed by whichever of them the channel has moved to.
+func TestUpdateKeepsTheKeyringThroughARevert(t *testing.T) {
+	want := twoKeys(t)
+	u, l, f := updateFixture(t, keyringChannel(t, want), nil)
+	u.Keyring = filepath.Join(t.TempDir(), "keyring.pem")
+	f.startErr = []error{errors.New("no READY")}
+	if _, err := u.Run(context.Background(), TargetLatest); err == nil {
+		t.Fatal("a candidate that did not start reported success")
+	}
+	if committed(t, l) {
+		t.Fatal("the failed candidate stayed committed")
+	}
+	if got, _ := os.ReadFile(u.Keyring); !bytes.Equal(got, want) {
+		t.Error("the revert took the keyring back")
+	}
+}
+
+// The refusals keep the node's keyring: a release refused on this host moved nothing, and a keyring
+// with no key in it would refuse every release after it, the one that fixes it included.
+func TestUpdateRefusalsLeaveTheKeyring(t *testing.T) {
+	const installed = "the installer's"
+	for _, tc := range []struct {
+		name    string
+		keyring []byte
+	}{
+		{"a keyring with no key in it", []byte("no PEM here\n")},
+		{"a keyring of something else", []byte("-----BEGIN NOT A KEY-----\nAAAA\n-----END NOT A KEY-----\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u, l, f := updateFixture(t, keyringChannel(t, tc.keyring), nil)
+			u.Keyring = filepath.Join(t.TempDir(), "keyring.pem")
+			if err := os.WriteFile(u.Keyring, []byte(installed), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := u.Run(context.Background(), TargetLatest); !errors.Is(err, ErrManifest) {
+				t.Fatalf("err = %v, want %v", err, ErrManifest)
+			}
+			if got, _ := os.ReadFile(u.Keyring); string(got) != installed {
+				t.Errorf("the keyring became %q", got)
+			}
+			assertNothingStaged(t, l)
+			if len(f.stops) != 0 {
+				t.Error("a refused keyring stopped the agent")
+			}
+		})
 	}
 }
 

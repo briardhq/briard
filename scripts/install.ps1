@@ -53,7 +53,7 @@ $Keyring = if ($env:BRIARD_UPDATE_KEYRING) { $env:BRIARD_UPDATE_KEYRING } else {
 
 # The release signing public key(s), embedded at release time: this script is fetched over TLS from
 # the channel, so the key travels with it (the installer-carries-the-pubkey pattern). A placeholder
-# in the source tree that the release pipeline fills. Used only when no keyring is on disk.
+# in the source tree that the release pipeline fills.
 $RELEASE_KEYRING_PEM = '__BRIARD_RELEASE_KEYRING_PEM__'
 
 # THE TAP DRIVER: tap-windows6, OpenVPN's signed build. A kernel driver is signed by whoever
@@ -127,11 +127,14 @@ $Boot = ''
 # the installed agent's own fetches do -- its self-updates, and the guest image its first start
 # fetches when the install laid none.
 New-Item -ItemType Directory -Force $Prefix | Out-Null
-if (-not (Test-Path $Keyring)) {
-	if ($RELEASE_KEYRING_PEM -notlike '*BEGIN PUBLIC KEY*') {
-		Die "no release keyring at $Keyring (the embedded key is a build placeholder; set BRIARD_UPDATE_KEYRING)"
+# The embedded keyring wins over one on disk, unless the operator named a file: a node that missed a
+# key rotation is one that must reinstall, and its keyring is the reason.
+if ($RELEASE_KEYRING_PEM -like '*BEGIN PUBLIC KEY*') {
+	if (-not $env:BRIARD_UPDATE_KEYRING -or -not (Test-Path $Keyring)) {
+		Set-Content -Path $Keyring -Value $RELEASE_KEYRING_PEM -Encoding ascii
 	}
-	Set-Content -Path $Keyring -Value $RELEASE_KEYRING_PEM -Encoding ascii
+} elseif (-not (Test-Path $Keyring)) {
+	Die "no release keyring at $Keyring (the embedded key is a build placeholder; set BRIARD_UPDATE_KEYRING)"
 }
 if ($env:BRIARD_ARTIFACTS) {
 	# Offline / rig path: the staging dir's own agent installs from it.

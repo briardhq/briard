@@ -47,7 +47,7 @@ KEYRING="${BRIARD_UPDATE_KEYRING:-$PREFIX/keyring.pem}"
 
 # The release signing public key(s), embedded at release time: this script is fetched over TLS from
 # the channel, so the key travels with it (the installer-carries-the-pubkey pattern). A placeholder
-# in the source tree that the release pipeline fills. Used only when no keyring is on disk.
+# in the source tree that the release pipeline fills.
 RELEASE_KEYRING_PEM='__BRIARD_RELEASE_KEYRING_PEM__'
 
 say() { printf 'briard: %s\n' "$*"; }
@@ -76,12 +76,16 @@ else
 	# keyring. The bootstrap only RUNS the verified fetch; what lands under /opt is the
 	# Ed25519-verified set, so a compromised bootstrap cannot seed bad cattle.
 	mkdir -p "$PREFIX"
-	if [ ! -f "$KEYRING" ]; then
-		case "$RELEASE_KEYRING_PEM" in
-		*"BEGIN PUBLIC KEY"*) printf '%s\n' "$RELEASE_KEYRING_PEM" >"$KEYRING" ;;
-		*) die "no release keyring at $KEYRING (the embedded key is a build placeholder; set BRIARD_UPDATE_KEYRING)" ;;
-		esac
-	fi
+	# The embedded keyring wins over one on disk, unless the operator named a file: a node that
+	# missed a key rotation is one that must reinstall, and its keyring is the reason.
+	case "$RELEASE_KEYRING_PEM" in
+	*"BEGIN PUBLIC KEY"*)
+		if [ -z "${BRIARD_UPDATE_KEYRING:-}" ] || [ ! -f "$KEYRING" ]; then
+			printf '%s\n' "$RELEASE_KEYRING_PEM" >"$KEYRING"
+		fi
+		;;
+	*) [ -f "$KEYRING" ] || die "no release keyring at $KEYRING (the embedded key is a build placeholder; set BRIARD_UPDATE_KEYRING)" ;;
+	esac
 	say "bootstrapping the installer agent from $CHANNEL (briard/$RELEASE) ..."
 	# Under $PREFIX, NOT /run: Debian and Ubuntu mount /run `noexec`, so a bootstrap staged
 	# there cannot be executed at all. $PREFIX is where the agent lives anyway.

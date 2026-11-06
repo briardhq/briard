@@ -90,6 +90,7 @@ func runUpdate(ctx context.Context, target string) (string, error) {
 	u := &install.Update{
 		Fetcher: &install.Fetcher{BaseURL: base, Chain: install.ChainBriard, Platform: install.PlatformHost, Keyring: kr, Logf: log.Printf},
 		Layout:  selfupdate.New(os.Getenv("UPDATE_BASE"), os.Getenv("UPDATE_RUN_DIR")),
+		Keyring: keyPath,
 		Logf:    log.Printf,
 		Stop:    updateStop,
 		Start:   updateStart,
