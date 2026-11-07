@@ -34,9 +34,8 @@ var ErrBadSignature = errors.New("selfupdate: signature does not verify against 
 //   - a lost signing key is survivable — the offline M-of-N root blesses a fresh warm signer
 //     and its public key joins the ring; agents trust the union, no flag-day.
 //
-// The ring itself is part of the frozen base install, not something the volatile agent can
-// rewrite — same trust boundary as the update launcher (a compromised agent must not be able to widen
-// what it will accept).
+// The ring on disk is replaced only by a release's own keyring.pem, an artifact of a manifest a
+// key already in the ring signed, so the ring widens only by a release the ring vouched for.
 type Keyring struct {
 	keys []ed25519.PublicKey
 }

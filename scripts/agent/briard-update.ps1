@@ -2,14 +2,21 @@
 # briard-update, run by the briard-update scheduled task as SYSTEM, one run at a time.
 #
 # SHIPPED VERBATIM and FROZEN: a signed artifact of the briard chain's windows arm that the install
-# copies into place. The freeze is the safety property -- this is dumb, agent-INDEPENDENT script, so
-# a bug in the volatile agent can never wedge the thing that replaces it -- and it is frozen by
-# necessity: it launches the replacement of the binary, so no release can be what fixes it.
+# copies into place. The freeze is the safety property -- this is dumb script, so a bug in the
+# volatile agent can never wedge the thing that replaces it -- and it is frozen by necessity: it
+# launches the replacement of the binary, so no release can be what fixes it.
 #
-# IT HAS NO PRODUCT KNOWLEDGE, and that is the whole design: four steps -- read the channel and
-# keyring, read the target, download the pointer's agent, run it with --update -- and the verdict
-# written down. The fetched binary does the whole update (stop, swap, start, commit or revert), so
-# nothing in the product can make this script need a new release.
+# IT HAS NO PRODUCT KNOWLEDGE, and that is the whole design: five steps -- read the channel and
+# keyring, read the target, download the pointer's agent, have the committed agent check it
+# against the target's signed manifest, run it with --update -- and the verdict written down. The
+# fetched binary does the whole update (stop, swap, start, commit or revert), so nothing in the
+# product can make this script need a new release.
+#
+# THE ONE QUESTION IT ASKS THE AGENT IT REPLACES is that check, and only because it cannot be
+# asked of the binary being checked: a forged agent would skip it, and the fetched agent runs as
+# SYSTEM, so without it whoever can write to the channel could run code on every node with no
+# signing key. Every release answers it for its own release before it may become the committed
+# agent, so a committed agent that cannot answer it is one no update produced.
 #
 # Windows PowerShell 5.1 -- what every Windows Home ships -- so nothing newer is used here.
 $ErrorActionPreference = 'Stop'
@@ -74,7 +81,18 @@ try {
 	$code = & curl.exe -fsSL @hdr -w '%{http_code}' $url -o "$tmp\briard-agent.exe"
 	if ($LASTEXITCODE -ne 0) { throw "could not fetch a bootstrap agent from $url" }
 	if ($code -eq '304') { Move-Item -Force "$tmp\have.exe" "$tmp\briard-agent.exe" }
-	# (3) Its log goes to the update log (stderr); its last stdout line is the verdict.
+	# (3) The COMMITTED agent checks it before it runs: the target's manifest and signature, as
+	#     served beside it, must be a release the node's keyring signed and must name these bytes.
+	#     A publish moving the pointer between the downloads fails this run, and the next one finds
+	#     them agreeing. Its stdout only: 5.1 turns a native command's stderr into an error record.
+	foreach ($f in 'manifest.json', 'manifest.json.sig') {
+		& curl.exe -fsSL -o "$tmp\$f" "$Channel/briard/$target/windows-amd64/$f"
+		if ($LASTEXITCODE -ne 0) { throw "could not fetch $Channel/briard/$target/windows-amd64/$f" }
+	}
+	$env:BRIARD_KEYRING = $Keyring
+	$v = @(& "$Base\briard-agent.exe" --verify-agent $tmp)
+	if ($LASTEXITCODE -ne 0) { throw "the fetched agent was not run: $(if ($v.Count) { $v[-1] })" }
+	# (4) Its log goes to the update log (stderr); its last stdout line is the verdict.
 	$env:BRIARD_CHANNEL_URL = $Channel
 	$env:BRIARD_KEYRING = $Keyring
 	$env:UPDATE_BASE = $Base

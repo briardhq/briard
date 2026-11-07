@@ -2,16 +2,22 @@
 # briard-update: converge this node to the release channel.
 #
 # SHIPPED VERBATIM and FROZEN: a signed artifact of the host chain that install.sh copies
-# into place, never a heredoc. The freeze is the safety property -- this is dumb, agent-INDEPENDENT
-# shell, so a bug in the volatile agent can never wedge the thing that replaces it -- and it is
-# frozen by necessity: it launches the replacement of the binary, so no release can be what
-# fixes it. What shipping adds is that the file is versioned, diffable and covered by the release
-# signature.
+# into place, never a heredoc. The freeze is the safety property -- this is dumb shell, so a bug
+# in the volatile agent can never wedge the thing that replaces it -- and it is frozen by
+# necessity: it launches the replacement of the binary, so no release can be what fixes it. What
+# shipping adds is that the file is versioned, diffable and covered by the release signature.
 #
-# ⚠️ IT HAS NO PRODUCT KNOWLEDGE, and that is the whole design: four steps -- read the channel and
-# keyring, read the target, download the pointer's agent, run it with --update -- and the verdict
-# written down. The fetched binary does the whole update (stop, swap, start, commit or revert), so
-# nothing in the product can make this script need a new release.
+# ⚠️ IT HAS NO PRODUCT KNOWLEDGE, and that is the whole design: five steps -- read the channel and
+# keyring, read the target, download the pointer's agent, have the committed agent check it
+# against the target's signed manifest, run it with --update -- and the verdict written down. The
+# fetched binary does the whole update (stop, swap, start, commit or revert), so nothing in the
+# product can make this script need a new release.
+#
+# THE ONE QUESTION IT ASKS THE AGENT IT REPLACES is that check, and only because it cannot be
+# asked of the binary being checked: a forged agent would skip it, and the fetched agent runs as
+# root, so without it whoever can write to the channel could run code on every node with no
+# signing key. Every release answers it for its own release before it may become the committed
+# agent, so a committed agent that cannot answer it is one no update produced.
 set -eu
 
 # The node's own configuration, when it has one. The unit delivers it as an EnvironmentFile, so
@@ -53,7 +59,18 @@ if command -v curl >/dev/null 2>&1; then
 elif command -v wget >/dev/null 2>&1; then wget -qO "$tmp/briard-agent" "$url"
 else report failed "need curl or wget to fetch $url"; exit 1; fi || { report failed "could not fetch a bootstrap agent from $url"; exit 1; }
 chmod +x "$tmp/briard-agent"
-# (3) Its log goes to the journal as it happens (stderr); its last stdout line is the verdict.
+# (3) The COMMITTED agent checks it before it runs: the target's manifest and signature, as
+#     served beside it, must be a release the node's keyring signed and must name these bytes.
+#     A publish moving the pointer between the two downloads fails this run, and the next one
+#     finds them agreeing.
+for f in manifest.json manifest.json.sig; do
+	if command -v curl >/dev/null 2>&1; then curl -fsSL "${url%/*}/$f" -o "$tmp/$f"
+	else wget -qO "$tmp/$f" "${url%/*}/$f"; fi || { report failed "could not fetch ${url%/*}/$f"; exit 1; }
+done
+if ! BRIARD_KEYRING="$KEYRING" "$BASE/briard-agent" --verify-agent "$tmp" > "$tmp/verify" 2>&1; then
+	report failed "the fetched agent was not run: $(tail -n1 "$tmp/verify")"; exit 1
+fi
+# (4) Its log goes to the journal as it happens (stderr); its last stdout line is the verdict.
 set +e
 BRIARD_CHANNEL_URL="$CHANNEL" BRIARD_KEYRING="$KEYRING" UPDATE_BASE="$BASE" UPDATE_RUN_DIR="$RUN" \
 	"$tmp/briard-agent" --update "$target" > "$tmp/out"

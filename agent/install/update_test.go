@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -116,7 +117,10 @@ type fakeAgent struct {
 	stopErr  error
 	smoked   []string
 	smokeErr error
-	onStop   func(n int) // called after the n-th stop (1-based), to change what the stop left behind
+	// selfTests is each self-test's candidate and keyring, in order; selfTestErr fails them.
+	selfTests   [][2]string
+	selfTestErr error
+	onStop      func(n int) // called after the n-th stop (1-based), to change what the stop left behind
 }
 
 func (f *fakeAgent) wire(u *Update) {
@@ -136,6 +140,27 @@ func (f *fakeAgent) wire(u *Update) {
 		return nil
 	}
 	u.Smoke = func(_ context.Context, tree string) error { f.smoked = append(f.smoked, tree); return f.smokeErr }
+	// The self-test is VerifyAgent against the keyring file it is handed, which is what the
+	// candidate's --verify-agent runs: so a dir laid out wrongly, or a keyring without the
+	// release's signer, fails here as it would there.
+	u.SelfTest = func(_ context.Context, path, dir, keyring string) error {
+		f.selfTests = append(f.selfTests, [2]string{path, keyring})
+		if f.selfTestErr != nil {
+			return f.selfTestErr
+		}
+		if filepath.Join(dir, artifactAgent) != path {
+			return fmt.Errorf("the candidate %s is not the agent in %s", path, dir)
+		}
+		b, err := os.ReadFile(keyring)
+		if err != nil {
+			return err
+		}
+		kr, err := selfupdate.NewKeyring(b)
+		if err != nil {
+			return err
+		}
+		return VerifyAgent(kr, dir)
+	}
 }
 
 // updateFixture is a channel plus a layout to stage into: a fresh Base (same fs as the
@@ -153,7 +178,11 @@ func updateFixture(t *testing.T, c *channel, installed []byte) (*Update, selfupd
 	if err := os.WriteFile(l.AgentPath(), []byte("the committed agent"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	u, f := &Update{Fetcher: c.fetcher(), Layout: l}, &fakeAgent{}
+	ring := filepath.Join(t.TempDir(), "keyring.pem")
+	if err := os.WriteFile(ring, pubPEM(t, c.priv.Public().(ed25519.PublicKey)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	u, f := &Update{Fetcher: c.fetcher(), Layout: l, Keyring: ring}, &fakeAgent{}
 	f.wire(u)
 	return u, l, f
 }
@@ -283,35 +312,39 @@ func TestUpdateRefusesAQEMUThatFailsItsSmokeTest(t *testing.T) {
 	}
 }
 
-// keyringChannel serves a release that carries keyring as its keyring.pem.
-func keyringChannel(t *testing.T, keyring []byte) *channel {
+// keyringChannel serves a release signed by priv that carries keyring as its keyring.pem.
+func keyringChannel(t *testing.T, priv ed25519.PrivateKey, keyring []byte) *channel {
 	t.Helper()
 	agent := []byte("the briard-agent static binary")
-	return newChannel(t, []Entry{
+	return newChannelSignedBy(t, priv, []Entry{
 		{Name: artifactAgent, SHA256: sha(agent), Size: int64(len(agent)), Mode: 0o755},
 		{Name: artifactKeyring, SHA256: sha(keyring), Size: int64(len(keyring))},
 	}, map[string][]byte{artifactAgent: agent, artifactKeyring: keyring})
 }
 
-// twoKeys is a keyring of two public keys, the shape a rotation ships.
-func twoKeys(t *testing.T) []byte {
+// signer is a fresh release key.
+func signer(t *testing.T) ed25519.PrivateKey {
 	t.Helper()
-	var b []byte
-	for range 2 {
-		pub, _, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		b = append(b, pubPEM(t, pub)...)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return b
+	return priv
+}
+
+// twoKeys is a keyring of two public keys, the shape a rotation ships: the key that signs the
+// release carrying it and the one that signs the next.
+func twoKeys(t *testing.T, priv ed25519.PrivateKey) []byte {
+	t.Helper()
+	return append(pubPEM(t, priv.Public().(ed25519.PublicKey)), pubPEM(t, signer(t).Public().(ed25519.PublicKey))...)
 }
 
 // A rotation reaches a node by the update alone: the release's keyring replaces the node's before
 // the agent that reads it starts, and the file it replaced is the one the run was told about.
 func TestUpdateLaysTheReleasesKeyring(t *testing.T) {
-	want := twoKeys(t)
-	u, _, f := updateFixture(t, keyringChannel(t, want), nil)
+	priv := signer(t)
+	want := twoKeys(t, priv)
+	u, _, f := updateFixture(t, keyringChannel(t, priv, want), nil)
 	u.Keyring = filepath.Join(t.TempDir(), "keyring.pem")
 	if err := os.WriteFile(u.Keyring, []byte("the installer's"), 0o644); err != nil {
 		t.Fatal(err)
@@ -337,8 +370,9 @@ func TestUpdateLaysTheReleasesKeyring(t *testing.T) {
 // A revert concerns the release's code: the keys were vouched for by one the node trusts, and the
 // release that comes next is signed by whichever of them the channel has moved to.
 func TestUpdateKeepsTheKeyringThroughARevert(t *testing.T) {
-	want := twoKeys(t)
-	u, l, f := updateFixture(t, keyringChannel(t, want), nil)
+	priv := signer(t)
+	want := twoKeys(t, priv)
+	u, l, f := updateFixture(t, keyringChannel(t, priv, want), nil)
 	u.Keyring = filepath.Join(t.TempDir(), "keyring.pem")
 	f.startErr = []error{errors.New("no READY")}
 	if _, err := u.Run(context.Background(), TargetLatest); err == nil {
@@ -364,7 +398,7 @@ func TestUpdateRefusalsLeaveTheKeyring(t *testing.T) {
 		{"a keyring of something else", []byte("-----BEGIN NOT A KEY-----\nAAAA\n-----END NOT A KEY-----\n")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			u, l, f := updateFixture(t, keyringChannel(t, tc.keyring), nil)
+			u, l, f := updateFixture(t, keyringChannel(t, signer(t), tc.keyring), nil)
 			u.Keyring = filepath.Join(t.TempDir(), "keyring.pem")
 			if err := os.WriteFile(u.Keyring, []byte(installed), 0o644); err != nil {
 				t.Fatal(err)
@@ -1167,5 +1201,57 @@ func TestUpdateGivesUpOnARevertThatKeepsMissing(t *testing.T) {
 	}
 	if !l.Interrupted() {
 		t.Error("a revert that gave up left no .prev: the next run could not finish it")
+	}
+}
+
+// The candidate runs the launcher's check on its own release before anything stops, with the
+// keyring the node will hold: the committed agent is what every later update asks.
+func TestUpdateSelfTestsTheCandidate(t *testing.T) {
+	u, l, f := updateFixture(t, goodChannel(t), nil)
+	if _, err := u.Run(context.Background(), TargetLatest); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if len(f.selfTests) != 1 || filepath.Base(f.selfTests[0][0]) != artifactAgent || f.selfTests[0][1] != u.Keyring {
+		t.Fatalf("self-tests = %v, want one of the candidate against %s", f.selfTests, u.Keyring)
+	}
+	if !committed(t, l) {
+		t.Fatal("the candidate is not the committed agent")
+	}
+}
+
+// A candidate whose check fails would refuse every release after it: it is refused itself, with
+// nothing stopped and the node's keyring untouched.
+func TestUpdateRefusesACandidateThatCannotVerifyItself(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T) (*Update, selfupdate.Layout, *fakeAgent)
+	}{
+		{"its check fails", func(t *testing.T) (*Update, selfupdate.Layout, *fakeAgent) {
+			u, l, f := updateFixture(t, goodChannel(t), nil)
+			f.selfTestErr = errors.New("exit status 2: no internal helper named")
+			return u, l, f
+		}},
+		{"its keyring lacks the key that signed it", func(t *testing.T) (*Update, selfupdate.Layout, *fakeAgent) {
+			return updateFixture(t, keyringChannel(t, signer(t), twoKeys(t, signer(t))), nil)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u, l, f := tc.setup(t)
+			ring, _ := os.ReadFile(u.Keyring)
+			_, err := u.Run(context.Background(), TargetLatest)
+			if err == nil || !strings.Contains(err.Error(), "cannot verify its own release") {
+				t.Fatalf("err = %v, want the self-test's refusal", err)
+			}
+			if len(f.selfTests) != 1 {
+				t.Errorf("self-tests = %d, want 1", len(f.selfTests))
+			}
+			assertNothingStaged(t, l)
+			if len(f.stops) != 0 {
+				t.Error("a refused candidate stopped the agent")
+			}
+			if got, _ := os.ReadFile(u.Keyring); !bytes.Equal(got, ring) {
+				t.Error("a refused candidate replaced the keyring")
+			}
+		})
 	}
 }

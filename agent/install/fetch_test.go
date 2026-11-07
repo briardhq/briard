@@ -67,11 +67,17 @@ type channel struct {
 // shape `publish-release.sh sign` lays out.
 func newChannel(t *testing.T, arts []Entry, bytesByName map[string][]byte) *channel {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	kr, err := selfupdate.NewKeyring(pubPEM(t, pub))
+	return newChannelSignedBy(t, priv, arts, bytesByName)
+}
+
+// newChannelSignedBy is newChannel with the signing key given.
+func newChannelSignedBy(t *testing.T, priv ed25519.PrivateKey, arts []Entry, bytesByName map[string][]byte) *channel {
+	t.Helper()
+	kr, err := selfupdate.NewKeyring(pubPEM(t, priv.Public().(ed25519.PublicKey)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,5 +696,82 @@ func TestFetchReleaseSkipsTheInstalledImage(t *testing.T) {
 		if got := err == nil; got != tc.wantImage {
 			t.Errorf("installed %q: image staged=%v, want %v", tc.have, got, tc.wantImage)
 		}
+	}
+}
+
+// verifyDir lays out what the update launcher hands --verify-agent: the target's manifest and
+// signature as served, and the downloaded agent.
+func verifyDir(t *testing.T, c *channel, agent []byte) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, b := range map[string][]byte{
+		ManifestName:             c.bodies[pointerPath(ManifestName)],
+		ManifestName + sigSuffix: c.bodies[pointerPath(ManifestName+sigSuffix)],
+		artifactAgent:            agent,
+	} {
+		if b == nil {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// The launcher's check passes the agent the signed manifest names, and nothing else: whoever can
+// write to the channel but holds no key cannot get an agent past it.
+func TestVerifyAgent(t *testing.T) {
+	good := []byte("the briard-agent static binary")
+	if err := VerifyAgent(goodChannel(t).kr, verifyDir(t, goodChannel(t), good)); err == nil {
+		t.Fatal("a manifest signed by a key not in the ring verified") // two channels, two keys
+	}
+	c := goodChannel(t)
+	if err := VerifyAgent(c.kr, verifyDir(t, c, good)); err != nil {
+		t.Fatalf("the signed agent was refused: %v", err)
+	}
+	other, err := json.Marshal(Manifest{Chain: ChainBriard, Platform: "windows-amd64", Version: testVersion,
+		Artifacts: []Entry{{Name: artifactAgent, SHA256: sha(good), Size: int64(len(good))}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noAgent, err := json.Marshal(Manifest{Chain: ChainBriard, Platform: PlatformHost, Version: testVersion,
+		Artifacts: []Entry{{Name: "briard-net-wrap", SHA256: sha(good), Size: int64(len(good))}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		agent []byte
+		edit  func(c *channel)
+		want  error
+	}{
+		{"an agent the manifest does not name", []byte("the briard-agent static binarY"), nil, ErrArtifactMismatch},
+		{"an agent longer than the one it names", append(append([]byte{}, good...), '!'), nil, ErrArtifactMismatch},
+		{"no agent at all", nil, nil, nil},
+		{"no signature", good, func(c *channel) { delete(c.bodies, pointerPath(ManifestName+sigSuffix)) }, nil},
+		{"a tampered manifest", good, func(c *channel) {
+			c.bodies[pointerPath(ManifestName)] = bytes.Replace(c.bodies[pointerPath(ManifestName)], []byte(testVersion), []byte("v3.20260905.fffffff"), 1)
+		}, selfupdate.ErrBadSignature},
+		{"another platform's signed manifest", good, func(c *channel) {
+			c.bodies[pointerPath(ManifestName)], c.bodies[pointerPath(ManifestName+sigSuffix)] = other, ed25519.Sign(c.priv, other)
+		}, ErrWrongChain},
+		{"a signed manifest that ships no agent", good, func(c *channel) {
+			c.bodies[pointerPath(ManifestName)], c.bodies[pointerPath(ManifestName+sigSuffix)] = noAgent, ed25519.Sign(c.priv, noAgent)
+		}, ErrManifest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := goodChannel(t)
+			if tc.edit != nil {
+				tc.edit(c)
+			}
+			err := VerifyAgent(c.kr, verifyDir(t, c, tc.agent))
+			if err == nil {
+				t.Fatal("verified")
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Errorf("err = %v, want %v", err, tc.want)
+			}
+		})
 	}
 }

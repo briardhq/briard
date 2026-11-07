@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"briard.io/agent/host"
 	"briard.io/agent/install"
@@ -65,6 +67,50 @@ func runFetchInstall(ctx context.Context, dest string) error {
 	return install.FetchRelease(ctx, base, release, kr, dest, "", log.Printf)
 }
 
+// readKeyring loads the release keyring the environment names (BRIARD_KEYRING).
+func readKeyring() (*selfupdate.Keyring, string, error) {
+	keyPath := os.Getenv("BRIARD_KEYRING")
+	if keyPath == "" {
+		return nil, "", errors.New("BRIARD_KEYRING unset (the release keyring PEM path)")
+	}
+	pemBytes, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("read keyring %s: %w", keyPath, err)
+	}
+	kr, err := selfupdate.NewKeyring(pemBytes)
+	return kr, keyPath, err
+}
+
+// runVerifyAgent is --verify-agent: install.VerifyAgent against the node's keyring.
+func runVerifyAgent(dir string) error {
+	kr, _, err := readKeyring()
+	if err != nil {
+		return err
+	}
+	return install.VerifyAgent(kr, dir)
+}
+
+// selfTestTimeout bounds the candidate's check: a few hashes and a signature, so anything near it
+// is a candidate that hangs, which is a refusal like any other.
+const selfTestTimeout = time.Minute
+
+// selfTest runs the candidate agent at path with --verify-agent, as the update unit will once it
+// is committed: its own process and command line, so what is proven is the invocation itself.
+func selfTest(ctx context.Context, path, dir, keyring string) error {
+	ctx, cancel := context.WithTimeout(ctx, selfTestTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "--verify-agent", dir)
+	cmd.Env = append(os.Environ(), "BRIARD_KEYRING="+keyring)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if line := strings.TrimSpace(string(out)); line != "" {
+			return fmt.Errorf("%w: %s", err, line)
+		}
+		return err
+	}
+	return nil
+}
+
 // runUpdate is the update unit's verb: the whole self-update (install.Update), run on the fresh
 // binary the unit just pulled. The layout comes from the env the unit passes through (UPDATE_BASE /
 // UPDATE_RUN_DIR), and the smoke test's accelerator and CPU from the node's own config, so the
@@ -74,15 +120,7 @@ func runUpdate(ctx context.Context, target string) (string, error) {
 	if base == "" {
 		return "", errors.New("BRIARD_CHANNEL_URL unset (the release channel root URL)")
 	}
-	keyPath := os.Getenv("BRIARD_KEYRING")
-	if keyPath == "" {
-		return "", errors.New("BRIARD_KEYRING unset (the release keyring PEM path)")
-	}
-	pemBytes, err := os.ReadFile(keyPath)
-	if err != nil {
-		return "", fmt.Errorf("read keyring %s: %w", keyPath, err)
-	}
-	kr, err := selfupdate.NewKeyring(pemBytes)
+	kr, keyPath, err := readKeyring()
 	if err != nil {
 		return "", err
 	}
@@ -97,7 +135,8 @@ func runUpdate(ctx context.Context, target string) (string, error) {
 		Smoke: func(ctx context.Context, tree string) error {
 			return platform.SmokeTest(ctx, tree, cfg.Accel, cfg.CPUModel, log.Printf)
 		},
-		Stopped: func(context.Context) (bool, error) { return platform.ServiceStopped(selfupdate.DefaultAgentUnit) },
+		SelfTest: selfTest,
+		Stopped:  func(context.Context) (bool, error) { return platform.ServiceStopped(selfupdate.DefaultAgentUnit) },
 	}
 	line, err := u.Run(ctx, target)
 	if err != nil && install.Unreachable(err) {

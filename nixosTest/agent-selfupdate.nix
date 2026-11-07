@@ -16,11 +16,11 @@
 # The update unit runs the SHIPPED scripts/agent/briard-update with one line changed (its base
 # directory: this rig runs nothing at /opt/briard), so there is no second copy of its logic to
 # drift. The channel is the real tree served by the stub's http.FileServer, the manifests are
-# written by the REAL `--stage-manifest`, the pointer's bootstrap is the REAL agent, and the
-# artifact it swaps in is a stub candidate -- that one divergence (the pointer's briard-agent and
-# the versioned briard-agent are different bytes) is what makes the procedure drivable without a
-# nested guest; publish-release.sh verify refuses it on a real channel. install-macvtap.nix
-# proves the shipped units and script on a real install.
+# written by the REAL `--stage-manifest`, and every agent a release ships is a stand-in that hands
+# `--update` and `--verify-agent` to the REAL agent and is a stub candidate otherwise: so the
+# launcher's check, the release's self-test and the update itself are the real code, and what
+# the swap starts decides whether it reaches READY. install-macvtap.nix proves the shipped units
+# and script on a real install.
 #
 # The qemu bundle a release ships is a tree whose bin/qemu-system-x86_64 execs a real qemu, so
 # the updater's smoke test boots a real scratch machine (TCG); a bundle whose qemu only prints
@@ -46,7 +46,14 @@ let
   # the stub's READY=1 comes from MAINPID (NotifyAccess=main, exactly like the real agent). The
   # identity string is what the test greps to prove which binary ran.
   candidate = mode: id: pkgs.writeShellScript "briard-agent-${mode}${pkgs.lib.optionalString (id != "") "-${id}"}" ''
+    case "''${1:-}" in --update | --verify-agent) exec ${realAgent} "$@" ;; esac
     exec ${stubExe} ${mode} ${id}
+  '';
+  # What whoever can write to the channel, holding no key, would put at a pointer: an agent that
+  # does the update as asked, and runs its own code as root first.
+  forged = pkgs.writeShellScript "briard-agent-forged" ''
+    touch /root/forged-ran
+    exec ${realAgent} "$@"
   '';
   slowV1 = candidate "slowstop" "v1"; # the committed agent at install: it takes 8s to stop
   readyV2 = candidate "ready" "v2"; # a good agent, run directly in the interrupted-run case
@@ -159,8 +166,7 @@ pkgs.testers.runNixOSTest {
     def publish(version, artifact, pointers=("latest", "stable"), qemu="good", key="/root/release.key", keyring=None):
         # One release of the host chain's linux arm, the way publish-release.sh lays it: the
         # artifacts under the versioned directory, a manifest written by the REAL writer, a
-        # detached signature, and the pointers as byte-copies carrying the REAL agent as the
-        # bootstrap (the one deliberate divergence, explained in the header).
+        # detached signature, and the pointers as byte-copies carrying the agent.
         d = f"/srv/briard/{version}/linux-amd64"
         machine.succeed(f"mkdir -p {d} && install -m755 {artifact} {d}/briard-agent")
         machine.succeed(f"install -m755 /root/net-wrap {d}/briard-net-wrap && install -m644 /root/{qemu}.tar.zst {d}/qemu-bundle.tar.zst")
@@ -170,7 +176,7 @@ pkgs.testers.runNixOSTest {
         machine.succeed(f"${stubExe} sign {key} {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
         for p in pointers:
             machine.succeed(f"mkdir -p /srv/briard/{p}/linux-amd64 && cp {d}/manifest.json {d}/manifest.json.sig /srv/briard/{p}/linux-amd64/")
-            machine.succeed(f"install -m755 ${realAgent} /srv/briard/{p}/linux-amd64/briard-agent")
+            machine.succeed(f"install -m755 {d}/briard-agent /srv/briard/{p}/linux-amd64/briard-agent")
 
     V4 = "v3.99090600.aaaaaaa"
     publish(V4, "${readyV4}")
@@ -334,6 +340,28 @@ pkgs.testers.runNixOSTest {
     machine.succeed("cmp /etc/briard/keyring.pem /root/next.pem")
     print("9) a release of an unknown key refused; the transition release carried both keys; the new key's release taken")
 
-    print("the update unit below the agent fetches, verifies, stages, smoke-tests, stops with patience, swaps, starts and commits a good release; it reverts a candidate that crashes or hangs and a run cut mid-swap, and refuses a tampered, unsigned, below-floor or not-runnable-here release with nothing stopped")
+    # === 10) A FORGED AGENT AT THE POINTER IS NEVER RUN. Writing to the channel is not signing:
+    #         the committed agent checks the fetched one against the signed manifest before the
+    #         launcher runs it, so the forged agent's own code never runs, and nothing stops. The
+    #         same release with its real agent is then taken (the failable control), every update
+    #         having self-tested its candidate on the way. ===
+    V11 = "v3.99100300.ccccccc"
+    publish(V11, "${readyV2}", pointers=("stable",), key="/root/next.key")
+    machine.succeed("install -m755 ${forged} /srv/briard/stable/linux-amd64/briard-agent")
+    inv = invocation()
+    machine.fail("systemctl start briard-update.service")
+    assert verdict().startswith("failed the fetched agent was not run: install: artifact does not match the signed manifest"), f"unexpected verdict: {verdict()!r}"
+    machine.fail("test -e /root/forged-ran")
+    assert invocation() == inv, "a forged agent's run stopped the agent"
+    machine.succeed("cmp ${agentBin} ${readyV4}")
+    machine.succeed(f"install -m755 /srv/briard/{V11}/linux-amd64/briard-agent /srv/briard/stable/linux-amd64/briard-agent")
+    machine.succeed("systemctl start briard-update.service")
+    assert verdict().startswith(f"ok updated to {V11}"), f"unexpected verdict: {verdict()!r}"
+    machine.succeed("cmp ${agentBin} ${readyV2}")
+    machine.fail("test -e /root/forged-ran")
+    machine.succeed(f"journalctl -u briard-update | grep -q \"update: {V11}'s agent verifies its own release\"")
+    print("10) a forged agent at the pointer was refused unrun; the same release's real agent taken")
+
+    print("the update unit below the agent fetches, verifies, stages, smoke-tests, stops with patience, swaps, starts and commits a good release; it reverts a candidate that crashes or hangs and a run cut mid-swap, and refuses a tampered, unsigned, below-floor or not-runnable-here release, and a forged agent at the pointer unrun, with nothing stopped")
   '';
 }

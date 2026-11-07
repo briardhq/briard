@@ -21,12 +21,15 @@ import (
 
 // THE UPDATE VERB. `briard-agent --update <target>` is the whole self-update, run by the frozen
 // update unit on a FRESH binary it just pulled from the target's pointer, never on the committed
-// one, so a fetch/verify/manifest bug in the running agent cannot prevent its own replacement
-// (install.sh's bootstrap pattern, on a timer). One process, in order: reconcile a run that died
-// mid-swap, decide against the installed manifest, fetch and verify, stage, smoke-test a staged
-// qemu, stop the agent through its ordinary stop path, swap, start and watch it reach READY, then
-// commit -- or revert and leave the reason for the agent that comes back. The running agent
-// carries no update logic: its stop path is the safe point.
+// one, so a fetch/manifest bug in the running agent cannot prevent its own replacement
+// (install.sh's bootstrap pattern, on a timer). The unit runs it only once the COMMITTED agent's
+// VerifyAgent has passed it, and that check is the one thing the running agent does for its
+// replacement: a release proves its own check (the self-test) before it may become the committed
+// agent. One process, in order: reconcile a run that died mid-swap, decide against the installed
+// manifest, fetch and verify, stage, self-test the candidate, smoke-test a staged qemu, stop the
+// agent through its ordinary stop path, swap, start and watch it reach READY, then commit -- or
+// revert and leave the reason for the agent that comes back. The running agent carries no other
+// update logic: its stop path is the safe point.
 //
 // Scope is the BRIARD BUNDLE: the agent, the guest launch shim, the qemu tree and the guest
 // bundle move as one release, staged as .next siblings and swapped together. Only entries whose
@@ -244,6 +247,10 @@ type Update struct {
 	Start func(ctx context.Context) error
 	// Smoke proves a staged qemu tree runs on this host.
 	Smoke func(ctx context.Context, tree string) error
+	// SelfTest runs the candidate agent at path the way the update launcher will run it once it
+	// is committed -- its VerifyAgent check, as its own process, against dir (laid out as
+	// VerifyAgent reads it) with the keyring at keyring -- and returns why it refused.
+	SelfTest func(ctx context.Context, path, dir, keyring string) error
 	// Stopped reports whether the agent's OS service is down and staying down -- `briard stop` -- in
 	// which case the run defers. nil never defers.
 	Stopped func(ctx context.Context) (bool, error)
@@ -279,14 +286,14 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 			return Deferred, nil
 		}
 	}
-	want, wantBytes, err := u.Fetcher.fetchManifest(ctx, target)
+	want, wantBytes, wantSig, err := u.Fetcher.fetchManifest(ctx, target)
 	if err != nil {
 		return "", err
 	}
 	have := u.installed(logf)
 	var stable *Manifest
 	if !IsPointer(target) {
-		s, _, err := u.Fetcher.fetchManifest(ctx, TargetStable)
+		s, _, _, err := u.Fetcher.fetchManifest(ctx, TargetStable)
 		if err != nil {
 			return "", fmt.Errorf("%w: cannot pin %s — reading stable failed: %v", ErrBelowFloor, target, err)
 		}
@@ -460,12 +467,47 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 		}
 	}
 
+	// THE RELEASE'S KEYRING, READ BEFORE THE SELF-TEST THAT USES IT. A keyring with no key would
+	// fail every later fetch closed, and nothing but a reinstall could bring the node back.
+	var ringBytes []byte
+	if keyring != nil {
+		if ringBytes, err = releaseKeyring(filepath.Join(tmp, keyring.Name)); err != nil {
+			u.discard(logf)
+			return "", err
+		}
+	}
+
+	// THE CHECK EVERY LATER UPDATE RESTS ON, PROVEN BEFORE ANYTHING STOPS. Once committed, this
+	// candidate is what the update launcher asks whether the next release's agent may run, so a
+	// candidate whose check fails would refuse every release after it, and only a reinstall would
+	// mend the node. It runs here as the launcher will run it -- its own process, this release's
+	// manifest and signature, its own bytes, and the keyring that will be on disk -- and a refusal
+	// costs nothing: the staged set goes and the committed agent stays. Which also refuses a
+	// release whose keyring does not hold the key that signed it.
+	ring := u.Keyring
+	if ringBytes != nil {
+		ring = filepath.Join(tmp, keyring.Name)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ManifestName), wantBytes, 0o644); err != nil {
+		u.discard(logf)
+		return "", fmt.Errorf("install: self-test: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ManifestName+sigSuffix), wantSig, 0o644); err != nil {
+		u.discard(logf)
+		return "", fmt.Errorf("install: self-test: %w", err)
+	}
+	if err := u.SelfTest(ctx, filepath.Join(tmp, agent.Name), tmp, ring); err != nil {
+		u.discard(logf)
+		return "", fmt.Errorf("host bundle %s refused: its agent cannot verify its own release, so it could verify no later one: %w", want.Version, err)
+	}
+	logf("update: %s's agent verifies its own release", want.Version)
+
 	// THE KEYRING MOVES HERE: past every refusal, before the agent that reads it starts. It is how a
 	// key rotates, so it is not an entry of the swap: its path is the one the frozen launcher hands
 	// every run, outside the layout, and a revert leaves it. A revert is about this release's code,
 	// and the keys were vouched for by a key the node already trusts.
-	if keyring != nil {
-		if err := u.layKeyring(filepath.Join(tmp, keyring.Name), logf); err != nil {
+	if ringBytes != nil {
+		if err := u.layKeyring(ringBytes, logf); err != nil {
 			u.discard(logf)
 			return "", err
 		}
@@ -598,19 +640,23 @@ func unchanged(have *Manifest, a Entry) bool {
 	return false
 }
 
-// layKeyring replaces the node's keyring with the verified one at src, unless they already agree.
-// Refused when src holds no key: on disk it would fail every later fetch closed, and nothing but a
-// reinstall could bring the node back.
-func (u *Update) layKeyring(src string, logf func(string, ...any)) error {
+// releaseKeyring reads the verified keyring at src, refused when it holds no key.
+func releaseKeyring(src string) ([]byte, error) {
 	b, err := os.ReadFile(src)
 	if err != nil {
-		return fmt.Errorf("install: read the release's keyring: %w", err)
+		return nil, fmt.Errorf("install: read the release's keyring: %w", err)
 	}
 	if kr, err := selfupdate.NewKeyring(b); err != nil {
-		return fmt.Errorf("%w: the release's keyring: %v", ErrManifest, err)
+		return nil, fmt.Errorf("%w: the release's keyring: %v", ErrManifest, err)
 	} else if kr.Len() == 0 {
-		return fmt.Errorf("%w: the release's keyring holds no key", ErrManifest)
+		return nil, fmt.Errorf("%w: the release's keyring holds no key", ErrManifest)
 	}
+	return b, nil
+}
+
+// layKeyring replaces the node's keyring with the release's (releaseKeyring), unless they already
+// agree.
+func (u *Update) layKeyring(b []byte, logf func(string, ...any)) error {
 	if have, err := os.ReadFile(u.Keyring); err == nil && bytes.Equal(have, b) {
 		return nil
 	}

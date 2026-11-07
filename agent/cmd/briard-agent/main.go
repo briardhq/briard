@@ -116,6 +116,7 @@ func runInternal(args []string) {
 	reportCard := fs.Bool("report-card", false, "check whether this machine can run briard, then exit (0 = yes, 1 = no, with reasons)")
 	fetchInstall := fs.String("fetch-install", "", "download and verify the signed release (briard + vm chains) into <dir>, then exit (env: BRIARD_CHANNEL_URL, BRIARD_RELEASE, BRIARD_KEYRING)")
 	update := fs.String("update", "", "update this node to <target> (stable, latest, or a release id) -- fetch, verify, stage, stop the agent, swap, start, commit or revert -- then exit; the frozen update unit's verb (env: BRIARD_CHANNEL_URL, BRIARD_KEYRING, UPDATE_BASE, UPDATE_RUN_DIR)")
+	verifyAgent := fs.String("verify-agent", "", "check that <dir>/briard-agent is the agent its signed <dir>/manifest.json(+.sig) names, against the node's release keyring, then exit (0 = it is) -- the update unit's check on the agent it fetched, run on the committed one (env: BRIARD_KEYRING)")
 	fetchUpdate := fs.String("fetch-update", "", "the update verb of an install that predates --update: refused, naming the reinstall")
 	stageManifest := fs.String("stage-manifest", "", "describe the artifacts in <dir> into <dir>/manifest.json and exit -- the release pipeline's manifest writer (with --chain, --platform, --release)")
 	stageChain := fs.String("chain", "", "with --stage-manifest: the release chain the directory belongs to (briard, vm)")
@@ -190,6 +191,16 @@ func runInternal(args []string) {
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stdout, line)
+		return
+	}
+	// The update unit's check on the agent it just fetched, asked of the COMMITTED agent before
+	// the fetched one runs as root: the signature check cannot live in the binary it is checking.
+	// Silent on success; the reason on stdout otherwise, the line the unit relays as its verdict.
+	if *verifyAgent != "" {
+		if err := runVerifyAgent(*verifyAgent); err != nil {
+			fmt.Fprintln(os.Stdout, err.Error())
+			os.Exit(1)
+		}
 		return
 	}
 	// AN INSTALL THAT PREDATES --update asks for this flag, from a frozen script no release can

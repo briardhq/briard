@@ -244,7 +244,7 @@ func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error 
 	}
 
 	// 1. Fetch + verify the manifest — the trust root. Nothing else is trusted until this passes.
-	man, mBytes, err := f.fetchManifest(ctx, target)
+	man, mBytes, _, err := f.fetchManifest(ctx, target)
 	if err != nil {
 		return err
 	}
@@ -293,55 +293,133 @@ func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error 
 // that verified, and nothing on disk -- what the guest chain's resolver needs, since a
 // guest upgrade activates a closure from the cache rather than fetching an artifact.
 func (f *Fetcher) Manifest(ctx context.Context, target string) (Manifest, []byte, error) {
-	return f.fetchManifest(ctx, target)
+	man, mBytes, _, err := f.fetchManifest(ctx, target)
+	return man, mBytes, err
 }
 
 // fetchManifest downloads <root>/<chain>/<target>/<platform>/manifest.json and its detached
-// signature, verifies the signature against the keyring, and returns the parsed manifest with
-// the exact bytes that verified — after asserting it is non-empty, names a usable version and
-// belongs to the chain/platform asked for. Nothing else is trusted until this passes; nothing
-// touches disk here at all.
-func (f *Fetcher) fetchManifest(ctx context.Context, target string) (Manifest, []byte, error) {
+// signature and checks them (checkManifest), returning the parsed manifest, the exact bytes that
+// verified and the signature. Nothing else is trusted until this passes; nothing touches disk
+// here at all.
+func (f *Fetcher) fetchManifest(ctx context.Context, target string) (Manifest, []byte, []byte, error) {
 	var man Manifest
 	if f.Keyring == nil || f.Keyring.Len() == 0 {
-		return man, nil, ErrNoKeyring // fail closed before touching the network
+		return man, nil, nil, ErrNoKeyring // fail closed before touching the network
 	}
 	if !validSegment(f.Chain) {
-		return man, nil, fmt.Errorf("install: bad chain name %q", f.Chain)
+		return man, nil, nil, fmt.Errorf("install: bad chain name %q", f.Chain)
 	}
 	if !validSegment(f.Platform) {
-		return man, nil, fmt.Errorf("install: bad platform name %q", f.Platform)
+		return man, nil, nil, fmt.Errorf("install: bad platform name %q", f.Platform)
 	}
 	if !validSegment(target) {
-		return man, nil, fmt.Errorf("install: bad release target %q", target)
+		return man, nil, nil, fmt.Errorf("install: bad release target %q", target)
 	}
 	at := path.Join(f.Chain, target, f.Platform)
 	mBytes, err := f.get(ctx, path.Join(at, ManifestName), maxManifestSize)
 	if err != nil {
-		return man, nil, fmt.Errorf("install: fetch manifest: %w", err)
+		return man, nil, nil, fmt.Errorf("install: fetch manifest: %w", err)
 	}
 	sig, err := f.get(ctx, path.Join(at, ManifestName+sigSuffix), ed25519.SignatureSize+1)
 	if err != nil {
-		return man, nil, fmt.Errorf("install: fetch manifest signature: %w", err)
+		return man, nil, nil, fmt.Errorf("install: fetch manifest signature: %w", err)
 	}
-	if err := f.Keyring.Verify(mBytes, sig); err != nil {
-		return man, nil, err // ErrUnsigned / ErrBadSignature / ErrNoKeys — refuse, touch nothing
+	man, err = checkManifest(f.Keyring, f.Chain, f.Platform, mBytes, sig)
+	if err != nil {
+		return man, nil, nil, err
+	}
+	return man, mBytes, sig, nil
+}
+
+// checkManifest is THE ONE RULE for a manifest: its signature verifies against the keyring, it
+// parses, it lists artifacts, it names a usable version, and it belongs to the chain and platform
+// asked for. The fetch and VerifyAgent both apply it, so the agent that runs an update and the
+// check the update launcher asks for cannot disagree about what a release is.
+func checkManifest(kr *selfupdate.Keyring, chain, platform string, mBytes, sig []byte) (Manifest, error) {
+	var man Manifest
+	if kr == nil || kr.Len() == 0 {
+		return man, ErrNoKeyring
+	}
+	if err := kr.Verify(mBytes, sig); err != nil {
+		return man, err // ErrUnsigned / ErrBadSignature / ErrNoKeys — refuse, touch nothing
 	}
 	if err := json.Unmarshal(mBytes, &man); err != nil {
-		return man, nil, fmt.Errorf("%w: %v", ErrManifest, err)
+		return man, fmt.Errorf("%w: %v", ErrManifest, err)
 	}
 	if len(man.Artifacts) == 0 {
-		return man, nil, ErrManifest
+		return man, ErrManifest
 	}
 	// The version is about to become a URL path element; a manifest that verifies but names
 	// something unusable there is malformed, not merely surprising.
 	if !validSegment(man.Version) {
-		return man, nil, fmt.Errorf("%w: version %q", ErrManifest, man.Version)
+		return man, fmt.Errorf("%w: version %q", ErrManifest, man.Version)
 	}
-	if man.Chain != f.Chain || man.Platform != f.Platform {
-		return man, nil, fmt.Errorf("%w: asked for %s, manifest says %q", ErrWrongChain, at, path.Join(man.Chain, man.Platform))
+	if man.Chain != chain || man.Platform != platform {
+		return man, fmt.Errorf("%w: asked for %s, manifest says %q", ErrWrongChain, path.Join(chain, platform), path.Join(man.Chain, man.Platform))
 	}
-	return man, mBytes, nil
+	return man, nil
+}
+
+// VerifyAgent is the check the update launcher runs, on the COMMITTED agent, before it lets the
+// agent it just downloaded run as root: dir holds the target's manifest.json and
+// manifest.json.sig as the channel served them and the downloaded agent under its artifact name,
+// and it passes only when the manifest is a signed release of this chain and platform and that
+// agent's bytes are the ones it names. Without it, whoever can write to the channel could run code
+// on every node at its next update, with no signing key at all.
+//
+// A release's own update runs this same check from its candidate before the swap, so a release
+// whose check cannot pass its own release is refused before it can become the committed agent
+// every later update depends on.
+func VerifyAgent(kr *selfupdate.Keyring, dir string) error {
+	mBytes, err := readBounded(filepath.Join(dir, ManifestName), maxManifestSize)
+	if err != nil {
+		return err
+	}
+	sig, err := readBounded(filepath.Join(dir, ManifestName+sigSuffix), ed25519.SignatureSize+1)
+	if err != nil {
+		return err
+	}
+	man, err := checkManifest(kr, ChainBriard, PlatformHost, mBytes, sig)
+	if err != nil {
+		return err
+	}
+	for _, a := range man.Artifacts {
+		if a.Name != artifactAgent {
+			continue
+		}
+		in, err := os.Open(filepath.Join(dir, artifactAgent))
+		if err != nil {
+			return fmt.Errorf("install: open the agent to verify: %w", err)
+		}
+		defer in.Close()
+		h := sha256.New()
+		n, err := io.Copy(h, io.LimitReader(in, a.Size+1))
+		if err != nil {
+			return fmt.Errorf("install: read the agent to verify: %w", err)
+		}
+		if got := hex.EncodeToString(h.Sum(nil)); n != a.Size || got != a.SHA256 {
+			return fmt.Errorf("%w: %s (%d bytes, sha256 %s) is not the one %s's signed manifest names", ErrArtifactMismatch, artifactAgent, n, got, man.Version)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: release %s ships no %s", ErrManifest, man.Version, artifactAgent)
+}
+
+// readBounded reads a file the way the fetch reads a response: refused past limit bytes.
+func readBounded(name string, limit int64) ([]byte, error) {
+	in, err := os.Open(name)
+	if err != nil {
+		return nil, fmt.Errorf("install: %w", err)
+	}
+	defer in.Close()
+	b, err := io.ReadAll(io.LimitReader(in, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("install: read %s: %w", filepath.Base(name), err)
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("install: %s is larger than %d bytes", filepath.Base(name), limit)
+	}
+	return b, nil
 }
 
 // FetchArtifact streams <root>/<from>/<a.Name> into dir/<a.Name>, computing its SHA-256 as it
