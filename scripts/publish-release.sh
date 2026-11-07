@@ -117,12 +117,13 @@
 # while together they are arbitrary code on every installed machine. Keeping them apart from
 # day one means the split wants is a matter of WHERE each runs, not a rewrite.
 #
-# THE KEY LIVES IN A GITHUB ENVIRONMENT, AND GIT CARRIES WHAT IT SIGNS. `stage` commits each
-# manifest to main under releases/<id>/<arm>/ and pushes; the push starts the sign workflow
-# (.github/workflows/sign.yml), which waits for its required reviewer, signs every manifest that
-# has no signature and commits the signatures; `sign` then waits for them, verifies each and
-# copies it into the staged tree. The machine that publishes holds the credential and never the
-# key. With $RELEASE_SIGN_KEY set the release is signed here instead and nothing goes to git:
+# THE KEY LIVES IN THE SIGNING REPOSITORY, AND GIT CARRIES WHAT IT SIGNS. The key is a secret of
+# github.com/briardhq/signing, which only its owner can write to. `stage` commits each manifest
+# under releases/<id>/<arm>/ on top of that repository's main, pushes it to the operator's fork and
+# opens a pull request; the owner reads the diff and merges, the merge starts its sign workflow,
+# which signs every manifest that has no signature and commits the signatures; `sign` then waits
+# for them, verifies each and copies it into the staged tree. The machine that publishes holds the
+# credential and never the key, and nothing it can push to holds the key. With $RELEASE_SIGN_KEY set the release is signed here instead and nothing goes to git:
 # that is how a key rotation's transition release is signed, by the old key.
 #
 # A KEY ROTATES BY RELEASE. $RELEASE_PUBKEY is the keyring, one or more PEM public keys: it is
@@ -137,8 +138,9 @@
 #
 # Subcommands:
 #   stage    [DIR]        build the artifacts, lay the tree out under DIR, write the manifests,
-#                         commit them to main (not with $RELEASE_SIGN_KEY set)
-#   sign     [DIR]        wait for the sign workflow's signatures, verify them, copy them in;
+#                         open the signing pull request (not with $RELEASE_SIGN_KEY set; needs gh,
+#                         logged in as the operator, and its fork of briardhq/signing)
+#   sign     [DIR]        wait for the merged manifests' signatures, verify them, copy them in;
 #                         with $RELEASE_SIGN_KEY set, detached-sign every manifest here
 #   publish  [DIR]        upload the versioned dirs and NOTHING ELSE -- no pointer, no root
 #                         install.sh, so the release reaches nobody until it is pointed at
@@ -402,48 +404,66 @@ verify_sig() {
 	rm -rf "$d"; return 1
 }
 
-# The release's manifests, committed to main: the push is what starts the sign workflow. <dir>...,
-# each staged as <chain>/<id>/<arm>. Built on origin/main with the plumbing, so neither the checkout
-# nor the HEAD the release was cut from moves, and that HEAD may be behind main. A manifest staged
-# again under the same id (a run that never reached `publish`) drops the signature of the old bytes,
-# so the workflow's question stays "has this a signature at all".
-commit_manifests() {
-	local idx d p blob try
+# The repository whose main holds every signed manifest and the job that signs them. Fetched into
+# a ref of this checkout, so its objects and briard's share one store and nothing else moves.
+SIGNING=briardhq/signing
+SIGNING_MAIN=refs/signing/main
+fetch_signing() { git fetch --quiet "https://github.com/$SIGNING.git" "+main:$SIGNING_MAIN"; }
+
+# The release's manifests, proposed to the signing repository: the owner's merge is what starts
+# the sign job. <dir>..., each staged as <chain>/<id>/<arm>. One commit on its main, built with the
+# plumbing so the checkout does not move, force-pushed to release-<id> on the operator's fork,
+# which re-staging the id updates. A manifest staged again under the same id (a run that never
+# reached `publish`) drops the signature of the old bytes, so the job's question stays "has this a
+# signature at all". The description is a claim of this machine's: the diff is what is reviewed.
+propose_manifests() {
+	local idx d p blob commit me v branch paths=""
+	need gh
+	v=$(cat "$DIR/VERSION")
+	branch="release-$v"
+	me=$(gh api user --jq .login) || die "gh is not logged in: the manifests reach $SIGNING as a pull request from your fork"
+	fetch_signing || die "cannot fetch $SIGNING's main"
 	idx=$(mktemp -u)
-	for try in 1 2 3; do
-		git fetch --quiet origin main || die "cannot fetch origin/main to commit the manifests"
-		GIT_INDEX_FILE=$idx git read-tree origin/main
-		for d in "$@"; do
-			p="releases/$(basename "$(dirname "$d")")/$(basename "$d")"
-			blob=$(git hash-object -w --no-filters "$d/manifest.json")
-			GIT_INDEX_FILE=$idx git update-index --add --cacheinfo "100644,$blob,$p/manifest.json"
-			GIT_INDEX_FILE=$idx git update-index --force-remove "$p/manifest.json.sig"
-		done
-		blob=$(git commit-tree "$(GIT_INDEX_FILE=$idx git write-tree)" -p origin/main -m "release: the manifests of $(cat "$DIR/VERSION")")
-		rm -f "$idx"
-		if git push --quiet origin "$blob:refs/heads/main"; then
-			say "committed the manifests to main: approve the sign job"
-			return 0
-		fi
+	GIT_INDEX_FILE=$idx git read-tree "$SIGNING_MAIN"
+	for d in "$@"; do
+		p="releases/$(basename "$(dirname "$d")")/$(basename "$d")"
+		blob=$(git hash-object -w --no-filters "$d/manifest.json")
+		GIT_INDEX_FILE=$idx git update-index --add --cacheinfo "100644,$blob,$p/manifest.json"
+		GIT_INDEX_FILE=$idx git update-index --force-remove "$p/manifest.json.sig"
+		paths="$paths
+- \`$p/manifest.json\`"
 	done
-	die "cannot push the manifests to main"
+	commit=$(git commit-tree "$(GIT_INDEX_FILE=$idx git write-tree)" -p "$SIGNING_MAIN" -m "release: the manifests of $v")
+	rm -f "$idx"
+	git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+		push --quiet --force "https://github.com/$me/${SIGNING#*/}.git" "$commit:refs/heads/$branch" ||
+		die "cannot push to $me/${SIGNING#*/}: fork it first (gh repo fork $SIGNING --clone=false)"
+	if [ -z "$(gh pr list -R "$SIGNING" --head "$branch" --state open --json number --jq '.[].number')" ]; then
+		gh pr create -R "$SIGNING" --base main --head "$me:$branch" --title "release: $v" --body "Release \`$v\`, cut from briardhq/briard@$(git rev-parse HEAD) by $me on $(hostname) at $(date -u +%FT%TZ).
+$paths
+
+Merging signs every manifest on main that has no signature." >/dev/null ||
+			die "cannot open the pull request on $SIGNING"
+	fi
+	say "proposed the manifests to $SIGNING ($me:$branch): merge the pull request to sign them"
 }
 
-# The sign workflow's signature of one staged manifest, verified and copied beside it. <manifest>
-# <id> <arm>. An hour, then it gives up: a job waits a month for its reviewer, a publish does not.
+# The sign job's signature of one staged manifest, verified and copied beside it. <manifest> <id>
+# <arm>. An hour, then it gives up: a pull request waits a month for its merge, a publish does not.
 pull_signature() {
 	local m=$1 p="releases/$2/$3" deadline
 	deadline=$(($(date +%s) + 3600))
-	until git fetch --quiet origin main && git cat-file -e "origin/main:$p/manifest.json.sig" 2>/dev/null; do
-		[ "$(date +%s)" -lt "$deadline" ] || die "no signature of $p after an hour: is the sign job approved?"
+	# Other bytes under the id on main are the ones a re-stage replaces, until its merge lands.
+	until fetch_signing && git cat-file -e "$SIGNING_MAIN:$p/manifest.json.sig" 2>/dev/null &&
+		git show "$SIGNING_MAIN:$p/manifest.json" | cmp -s - "$m"; do
+		[ "$(date +%s)" -lt "$deadline" ] ||
+			die "no signature of the staged $p after an hour: is the pull request on $SIGNING merged, and was the id staged again elsewhere?"
 		sleep 15
 	done
-	git show "origin/main:$p/manifest.json" | cmp -s - "$m" ||
-		die "main's $p/manifest.json is not the staged one: was it staged again elsewhere?"
-	git show "origin/main:$p/manifest.json.sig" > "$m.sig"
+	git show "$SIGNING_MAIN:$p/manifest.json.sig" > "$m.sig"
 	verify_sig "$m" "$m.sig" "$RELEASE_PUBKEY" ||
 		{ rm -f "$m.sig"; die "the signature of $p does NOT verify against $RELEASE_PUBKEY"; }
-	say "signed $p (signature from main, verified)"
+	say "signed $p (signature from $SIGNING, verified)"
 }
 
 # The files a pointer directory carries, in the upload order that fails closed: the bootstrap
@@ -698,7 +718,7 @@ stage)
 	done
 
 	echo "$V" > "$DIR/VERSION" # not part of the tree; a human-readable marker for the operator
-	[ -n "${RELEASE_SIGN_KEY:-}" ] || commit_manifests $MANIFESTS
+	[ -n "${RELEASE_SIGN_KEY:-}" ] || propose_manifests $MANIFESTS
 	say "staged $V:"
 	for c in $CHAINS; do
 		if [ "$c" = vm ] && [ -n "$VM_REUSED" ]; then
