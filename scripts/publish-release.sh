@@ -123,13 +123,14 @@
 # opens a pull request; the owner reads the diff and merges, the merge starts its sign workflow,
 # which signs every manifest that has no signature and commits the signatures; `sign` then waits
 # for them, verifies each and copies it into the staged tree. The machine that publishes holds the
-# credential and never the key, and nothing it can push to holds the key. With $RELEASE_SIGN_KEY set the release is signed here instead and nothing goes to git:
-# that is how a key rotation's transition release is signed, by the old key.
+# credential and never the key, and nothing it can push to holds the key. There is no second way
+# to sign a release: no key is read here.
 #
 # A KEY ROTATES BY RELEASE. $RELEASE_PUBKEY is the keyring, one or more PEM public keys: it is
 # embedded in the installers, and it is the `keyring.pem` artifact of both briard arms, which an
-# updating node lays over its own. The transition release ships [old, new] signed by old; a node
-# that has taken it trusts releases of the new key. `verify` accepts a signature of any key in it.
+# updating node lays over its own. A rotation that nodes must survive without a reinstall ships
+# [old, new] signed by old, and only then is the job's secret replaced by new; a node that has taken
+# it trusts releases of the new key. `verify` accepts a signature of any key in it.
 #
 # A DIRTY TREE IS REFUSED. The version is derived from the tree (flake.nix: epoch + commit
 # date + short rev) and a dirty tree has no rev, so it stamps `v3.dirty`. A build nobody can
@@ -138,10 +139,9 @@
 #
 # Subcommands:
 #   stage    [DIR]        build the artifacts, lay the tree out under DIR, write the manifests,
-#                         open the signing pull request (not with $RELEASE_SIGN_KEY set; needs gh,
-#                         logged in as the operator, and its fork of briardhq/signing)
-#   sign     [DIR]        wait for the merged manifests' signatures, verify them, copy them in;
-#                         with $RELEASE_SIGN_KEY set, detached-sign every manifest here
+#                         open the signing pull request (needs gh, logged in as the operator,
+#                         and its fork of briardhq/signing)
+#   sign     [DIR]        wait for the merged manifests' signatures, verify them, copy them in
 #   publish  [DIR]        upload the versioned dirs and NOTHING ELSE -- no pointer, no root
 #                         install.sh, so the release reaches nobody until it is pointed at
 #                         (needs the credential, no key; refuses an already-published version)
@@ -171,7 +171,6 @@
 #   BRIARD_CHANNEL_URL  public read ROOT            (default https://get.briard.io)
 #   RELEASE_WRITE       write store URL — required by `publish`/`promote`/`gc`, e.g.
 #                       's3://get-briard-io?endpoint=<account>.r2.cloudflarestorage.com&region=auto'
-#   RELEASE_SIGN_KEY    PKCS8 PEM Ed25519 private key: unset, except to sign a transition release
 #   RELEASE_PUBKEY      the keyring, one or more PKIX PEM public keys: staged, and what every
 #                       signature is verified against
 #   RELEASE_PURGE_URL   optional: CDN purge endpoint, POSTed a {"files":[...]} list after upload
@@ -179,7 +178,7 @@
 #   CERTUM_EMAIL        the SimplySign account's e-mail -- required by `stage`/`dev`/`setup build`,
 #                       which Authenticode-sign every windows PE (see authenticode)
 #   CERTUM_OTP          the base32 seed of that account's one-time codes: a signing secret,
-#                       held like RELEASE_SIGN_KEY
+#                       held like the release key
 #
 # Run from the repo root. There is no second publish and no second trust root any more: the
 # guest OS travels as the signed image in this tree, verified by the release keyring the host
@@ -718,7 +717,7 @@ stage)
 	done
 
 	echo "$V" > "$DIR/VERSION" # not part of the tree; a human-readable marker for the operator
-	[ -n "${RELEASE_SIGN_KEY:-}" ] || propose_manifests $MANIFESTS
+	propose_manifests $MANIFESTS
 	say "staged $V:"
 	for c in $CHAINS; do
 		if [ "$c" = vm ] && [ -n "$VM_REUSED" ]; then
@@ -735,8 +734,7 @@ stage)
 
 sign)
 	DIR="${2:-$STAGE_DEFAULT}"
-	[ -z "${RELEASE_SIGN_KEY:-}" ] || [ -e "$RELEASE_SIGN_KEY" ] || die "no signing key at $RELEASE_SIGN_KEY"
-	[ -n "${RELEASE_SIGN_KEY:-}" ] || [ -n "${RELEASE_PUBKEY:-}" ] || die "set RELEASE_PUBKEY to the keyring the signatures verify against"
+	[ -n "${RELEASE_PUBKEY:-}" ] || die "set RELEASE_PUBKEY to the keyring the signatures verify against"
 	for c in $CHAINS; do
 		if [ "$c" = vm ] && [ -f "$DIR/VM_REUSED" ]; then
 			say "vm chain: $(cat "$DIR/VM") is reused (unchanged inputs) -- nothing to sign"; continue
@@ -745,16 +743,7 @@ sign)
 		for arm in $(arms_of "$c"); do
 			rel=$(sub "$v" "$arm"); m="$DIR/$c/$rel/manifest.json"
 			[ -f "$m" ] || die "no manifest at $m"
-			if [ -z "${RELEASE_SIGN_KEY:-}" ]; then
-				pull_signature "$m" "$v" "$arm"
-				continue
-			fi
-			# -rawin is what makes this PureEdDSA over the whole file, which is what Verify does.
-			# Without it openssl would pre-hash and every signature would be rejected.
-			ossl pkeyutl -sign -inkey "$RELEASE_SIGN_KEY" -rawin -in "$m" -out "$m.sig"
-			n=$(stat -c%s "$m.sig")
-			[ "$n" = 64 ] || die "$m.sig is $n bytes, want a raw 64 — the verifier rejects anything else"
-			say "signed $c/$rel (64-byte detached Ed25519)"
+			pull_signature "$m" "$v" "$arm"
 		done
 	done
 	;;
@@ -1134,7 +1123,7 @@ gc)
 
 verify)
 	need curl; need sha256sum; need jq
-	PUB="${RELEASE_PUBKEY:-${RELEASE_SIGN_KEY:-}}"
+	PUB="${RELEASE_PUBKEY:-}"
 	[ -n "$PUB" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key"
 	tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
@@ -1293,7 +1282,7 @@ setup)
 		;;
 	*) die "usage: setup {build|publish} VERSION" ;;
 	esac
-	PUB="${RELEASE_PUBKEY:-${RELEASE_SIGN_KEY:-}}"
+	PUB="${RELEASE_PUBKEY:-}"
 	[ -n "$PUB" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key"
 	tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 	verify_manifest_at "$CHANNEL/briard/$(sub "$V" "$WINDOWS_ARM")" briard "$WINDOWS_ARM" "$V"

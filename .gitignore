@@ -24,9 +24,9 @@
 !.env.example
 /.secrets/
 /token
-# Signing keys. The release key (RELEASE_SIGN_KEY, a PKCS8 PEM) belongs outside the tree
-# entirely; this is a backstop against an unguarded `git add -A` committing the trust root of
-# every node's updates, not the plan.
+# Signing keys. The release key (a PKCS8 PEM) lives in the signing repository's secrets, never on
+# a machine that builds; this is a backstop against an unguarded `git add -A` committing the
+# trust root of every node's updates, not the plan.
 *.pem
 
 # The release staging directory `/publish-release` builds into: signed binaries, the guest
