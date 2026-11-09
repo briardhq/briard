@@ -25,8 +25,12 @@
   fixture,
 }:
 let
-  # Room for the guest's image store and the data, measured from what the entry says it holds.
-  diskMB = 10240 + 3 * (fixture.installedSize / 1048576);
+  # Room for the guest's image store, measured from what the entry says it holds: the guest
+  # loads BOTH versions' images into its state disk at boot, before the agent grows that disk for
+  # an install, so the rig makes the state disk that size up front (the agent keeps a disk that
+  # exists), and the host disk holds it.
+  stateMB = 2048 + 4 * (fixture.installedSize / 1048576);
+  diskMB = 10240 + stateMB;
 in
 pkgs.testers.runNixOSTest {
   name = "app-edge-${fixture.appName}";
@@ -96,6 +100,7 @@ pkgs.testers.runNixOSTest {
     )
     host.succeed("ln -s ${guestDisk}/nixos.qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 3G /tmp/data.img")
+    host.succeed("fallocate -l ${toString stateMB}M /tmp/state.img")
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     def publish(src):
