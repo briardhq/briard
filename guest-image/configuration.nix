@@ -990,7 +990,12 @@ in
           mkdir -p /run/briard
           : > /run/briard/staged-images.tmp
           for img in ${lib.concatStringsSep " " config.briard.stagedImages}; do
-            for name in $(podman load -i "$img" | sed -n 's/^Loaded image[^:]*: //p' | tr ',' ' '); do
+            # The load is its own command, so a failed one fails the unit: inside the `for` list's
+            # $(…) its status was lost and the unit reported success with nothing staged.
+            loaded=$(podman load -i "$img")
+            names=$(printf '%s\n' "$loaded" | sed -n 's/^Loaded image[^:]*: //p' | tr ',' ' ')
+            [ -n "$names" ] || { echo "briard-stage: $img loaded no image" >&2; exit 1; }
+            for name in $names; do
               podman image inspect --format '{{.Id}}' "$name" >> /run/briard/staged-images.tmp
             done
           done
