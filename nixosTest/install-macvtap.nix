@@ -1441,11 +1441,13 @@ pkgs.testers.runNixOSTest {
     again = client.succeed(f"curl -sS -D - -o /dev/null -H 'Host: {m.group(1)}' 'http://{moved}/?code={m.group(2)}'")
     assert " 303 " in again.splitlines()[0], again
     session = [l.split(":", 1)[1].split(";")[0].strip() for l in again.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
+    # The page is read whole, then searched: `curl | grep -q` fails under pipefail whenever grep
+    # matches and exits before curl has written the rest ("Failed writing body"), which a page
+    # longer than a pipe buffer makes a race.
     client.wait_until_succeeds(
-        f"curl -fsS -H 'Host: {m.group(1)}' -H 'Cookie: {session}' http://{moved}/ "
-        "| grep -q 'Needs attention' && "
-        f"curl -fsS -H 'Host: {m.group(1)}' -H 'Cookie: {session}' http://{moved}/ "
-        "| grep -qF 'this machine has stopped updating'",
+        f"curl -fsS -H 'Host: {m.group(1)}' -H 'Cookie: {session}' -o /tmp/home.html http://{moved}/ "
+        "&& grep -q 'Needs attention' /tmp/home.html "
+        "&& grep -qF 'this machine has stopped updating' /tmp/home.html",
         timeout=60,
     )
     print("the open alert crossed the guest channel and is on the home page")
