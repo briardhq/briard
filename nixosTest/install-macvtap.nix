@@ -1496,8 +1496,10 @@ pkgs.testers.runNixOSTest {
         host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
         if pointer:
             p = f"/srv/briard/{pointer}/linux-amd64"
+            # A pointer is a copy of its release: the launcher checks the agent it fetches from it
+            # against the manifest beside it.
             # The pointer's files may be links into the store (the channel set-up above): replace, never write through.
-            host.succeed(f"mkdir -p {p} && rm -f {p}/manifest.json {p}/manifest.json.sig {p}/briard-agent && cp {d}/manifest.json {d}/manifest.json.sig {p}/ && cp -L /srv/briard/{V}/linux-amd64/briard-agent {p}/briard-agent")
+            host.succeed(f"mkdir -p {p} && rm -f {p}/manifest.json {p}/manifest.json.sig {p}/briard-agent && cp {d}/manifest.json {d}/manifest.json.sig {p}/ && cp {d}/briard-agent {p}/briard-agent")
     def agent_invocation():
         return host.succeed("systemctl show -p InvocationID --value briard-agent.service").strip()
     V2 = "v3.99123000.b86b0000"
@@ -1543,10 +1545,13 @@ pkgs.testers.runNixOSTest {
 
     # AN AGENT THAT DOES NOT START is reverted whole, on the shipped units: the swap puts it in,
     # its start fails, the committed release goes back and starts, and the agent that comes back
-    # escalates what the run left it. Through `latest`, so the bootstrap is a working updater.
-    # The guest never noticed.
+    # escalates what the run left it. The guest never noticed. The candidate is the real agent for
+    # every verb but `run`: the launcher runs the release's own agent as the updater, and the
+    # update proves its candidate with `--verify-agent` before stopping anything, so an agent that
+    # fails those is refused before the swap -- a different path. Only its start fails.
     V3b = "v3.99123100.b86bdead"
-    host.succeed("printf '#!/bin/sh\\nexit 1\\n' > /root/dead-agent && chmod 755 /root/dead-agent")
+    host.succeed(f"cp -L /srv/briard/{V}/linux-amd64/briard-agent /root/real-agent")
+    host.succeed("printf '#!/bin/sh\\n[ \"$1\" = run ] && exit 1\\nexec /root/real-agent \"$@\"\\n' > /root/dead-agent && chmod 755 /root/dead-agent")
     publish_pin(V3b, "/root/bundle2", agent="/root/dead-agent", pointer="latest")
     host.succeed("sha256sum /opt/briard/agent/briard-agent > /tmp/committed.sha")
     out = host.fail("/opt/briard/agent/briard-agent update -to latest 2>&1")
