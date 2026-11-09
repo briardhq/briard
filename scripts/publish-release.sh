@@ -179,6 +179,8 @@
 #                       which Authenticode-sign every windows PE (see authenticode)
 #   CERTUM_OTP          the base32 seed of that account's one-time codes: a signing secret,
 #                       held like the release key
+#   CATALOG_DEV_PUBKEY  the catalog's dev key, public half -- required by `stage`, which refuses a
+#                       RELEASE_PUBKEY that holds it
 #
 # Run from the repo root. There is no second publish and no second trust root any more: the
 # guest OS travels as the signed image in this tree, verified by the release keyring the host
@@ -639,6 +641,13 @@ stage)
 	# placeholder, same embedding, same root copy at `promote`.
 	[ -n "${RELEASE_PUBKEY:-}" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key (embedded into install.sh)"
 	grep -q "BEGIN PUBLIC KEY" "$RELEASE_PUBKEY" || die "$RELEASE_PUBKEY is not a PEM PUBLIC KEY"
+	# THE CATALOG'S DEV KEY NEVER SHIPS. It signs the candidate list the test rigs read, so a
+	# release whose keyring held it would let every node take a candidate signed by nobody but a
+	# test machine. Fail closed: a publisher that cannot name the dev key cannot prove its absence.
+	[ -f "${CATALOG_DEV_PUBKEY:-}" ] || die "set CATALOG_DEV_PUBKEY to the catalog's dev public key, which no release keyring may hold"
+	devkey=$(grep -v "PUBLIC KEY" "$CATALOG_DEV_PUBKEY")
+	[ -n "$devkey" ] && ! grep -qxF "$devkey" "$RELEASE_PUBKEY" ||
+		die "$RELEASE_PUBKEY holds the catalog's dev key ($CATALOG_DEV_PUBKEY); a release keyring never does"
 	embed_keyring scripts/install.sh "$H/install.sh"
 	sh -n "$H/install.sh" || die "the staged install.sh is not valid shell after substitution"
 	# The keyring again, as an artifact: the installers carry it to a new node, this to an old one.
