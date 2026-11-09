@@ -147,6 +147,7 @@ pkgs.testers.runNixOSTest {
         if re.search(r"STAGED=yes", guest("echo S\"\"TAGED=$(test -s /run/briard/staged-images && echo yes)")):
             break
     else:
+        print(guest("systemctl status briard-stage --no-pager | head -8; df -h / /var/tmp /var/lib/containers; free -m; dmesg | grep -i -E \"oom|killed\" | tail -5; journalctl -b --no-pager -u briard-stage | tail -15", wait=15))
         raise Exception("the guest never finished loading the staged images")
 
     # === THE PREVIOUS VERSION, installed and healthy, with data of its own. ===
