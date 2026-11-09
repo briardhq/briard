@@ -102,7 +102,7 @@ pkgs.testers.runNixOSTest {
         host.succeed(f"mkdir -p /srv/catalog && cp -rf {src}/. /srv/catalog/ && chmod -R u+w /srv/catalog")
     publish("${fixture}/catalog")
     host.succeed("systemd-run --unit=catalog --collect darkhttpd /srv/catalog --addr 127.0.0.1 --port 8098")
-    host.wait_until_succeeds(f"curl -fsS http://127.0.0.1:8098/latest.json -o /dev/null", timeout=30)
+    host.wait_until_succeeds("curl -fsS http://127.0.0.1:8098/latest.json -o /dev/null", timeout=30)
 
     host.succeed("systemctl start briard-agent")
     try:
