@@ -61,5 +61,8 @@ userDefaults:
     disablePreviewExt: "jpg,jpeg,png"
   ui:
     themeColor: "oklch(.42 .06 170)"
+    # The app's theme is a stored choice per user, with no "follow the system" setting; light is
+    # the safer first sight. A household that prefers dark switches it once in the app's settings.
+    darkMode: false
 http:
   port: 80
