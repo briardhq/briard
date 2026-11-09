@@ -1013,7 +1013,14 @@ dev)
 	prev=$(named_by briard dev "$LINUX_ARM" .version); prev_vm=$(named_by briard dev "$LINUX_ARM" .vm)
 	[ -z "$prev" ] || say "dev currently names $prev (vm ${prev_vm:-?}); it is retired once the new one is up"
 
-	"$0" stage "$DIR"
+	# A dev run whose `sign` gave up before the merge resumes on the tree it staged: staging this
+	# HEAD again would propose its manifests anew and drop the signatures the merge made.
+	staged=$(cat "$DIR/VERSION" 2>/dev/null || true)
+	if [ -n "$staged" ] && [ "${staged##*.}" = "$(git rev-parse --short=7 HEAD)" ]; then
+		say "resuming: $DIR already holds $staged, staged for this HEAD"
+	else
+		"$0" stage "$DIR"
+	fi
 	"$0" sign "$DIR"
 	"$0" publish "$DIR"
 	V=$(cat "$DIR/VERSION") || die "no $DIR/VERSION after stage"
