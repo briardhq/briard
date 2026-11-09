@@ -96,10 +96,10 @@
       tags = import ./nixosTest/run-here.nix { inherit lib; } (tests.tags // lib.mapAttrs
         (n: g: (tests.tags.${n} or { }) // g)
         private.tags);
-      # Every tag but `debug` is a real test group; flatten them into the full set. Derived
+      # Every tag but `debug` and `edge` is a real test group; flatten them into the full set. Derived
       # rather than hand-listed so a tag appearing or vanishing with the private half needs no
       # edit here (it also drops the old union's risk of silently forgetting a new tag).
-      allTests = lib.foldl' (a: b: a // b) { } (lib.attrValues (removeAttrs tags [ "debug" ]));
+      allTests = lib.foldl' (a: b: a // b) { } (lib.attrValues (removeAttrs tags [ "debug" "edge" ]));
       # The lab rig's flake outputs (fleet module + containers, the demo/soak guest
       # disks, the self-hosted runner), layered in ONLY when `lab/` is present. `lab/` runs on
       # our L0 box and never in a user's home, so OSS's property line puts the whole of it
@@ -195,7 +195,7 @@
       # something you can type at nix. A GROUP IS STILL A THING YOU CAN RUN — see `test-manifest`
       # below and CONTRIBUTING's "run a whole tag" recipe, which spells the cap out loud instead
       # of hiding it behind an attribute that looks free.
-      tests = allTests // (tags.debug or { });
+      tests = allTests // (tags.debug or { }) // (tags.edge or { });
 
       # What the tier IS, as data: `tests.tsv` (name, tags, curated, nodes, memory) and
       # `tags/<name>` member lists, including `tags/all` — the curated set `.#all` used to hold.

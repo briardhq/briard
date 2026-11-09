@@ -242,6 +242,21 @@ let
     ];
     variants.bad = { version = "0.0.0-bad"; env = { BRIARD_BROKEN = "1"; }; };
   };
+  # AN APP'S EDGE, its previous version to the candidate (app-edge.nix): one test per catalogued
+  # app with a version below the listed one, so an app gains its edge with its second version
+  # file and needs nothing here. Run per app by the catalog run, never by the nightly: what it
+  # tests is an upstream release, which the night's verdict must not depend on.
+  edgeTest = fixture: import ./app-edge.nix {
+    inherit pkgs netWrap dressBase fixture;
+    agent = agentPkg;
+    guestDisk = import ../guest-image/disk-image.nix {
+      inherit nixpkgs pkgs overlay; agentVersion = guestVersion;
+      stageImages = [ fixture.image fixture.variants.next.image ];
+    };
+  };
+  edgeApps = pkgs.lib.filter
+    (a: a.available or false && pkgs.lib.length (pkgs.lib.attrNames (builtins.readDir "${catalog}/catalog/${a.name}")) > 1)
+    (pkgs.lib.importJSON "${catalog}/catalog/latest.json").apps;
   agentInstallUndo = import ./agent-install-undo.nix {
     inherit pkgs netWrap dressBase;
     agent = agentPkg;
@@ -518,10 +533,23 @@ in
       install-wifi-refuse = installWifiRefuse; # ...whose router leases the flock nothing: refused, then the remedy
     };
 
+    # EACH APP'S EDGE, previous version to candidate: out of the nightly like `debug`
+    # (manifest.nix), run by name by the catalog run for the apps it proposes.
+    edge = builtins.listToAttrs (map (a: {
+      name = "app-edge-${a.name}";
+      value = edgeTest (import ./catalog-fixture.nix { inherit pkgs catalog; app = a.name; edge = true; });
+    }) edgeApps);
+
     # Debug harnesses — deliberately EXCLUDED from the curated set the nightly runs (the manifest
     # marks them uncurated and flake.nix merges them into the flat `.#tests.*` only). `tags/debug`
     # lists them. Run by hand in a repro loop.
     debug = {
+      # — **RED BY DESIGN**: the edge test over the dummy's poisoning version, which never
+      # passes its health gate. The proof that the gate's verdict reaches app-edge.nix.
+      app-edge-dummy-bad = edgeTest (import ./fixture-app.nix {
+        inherit pkgs;
+        variants.next = { version = "0.0.0-bad"; env = { BRIARD_BROKEN = "1"; }; };
+      });
       # — **THIS TEST FAILS TODAY, AND THAT IS ITS JOB.** Act 1 (crash the primary, the
       # survivor promotes) passes and is the control; act 2 (the survivor then restarts while its
       # peer is still absent) does not, because a diskless witness can KEEP quorum but never GRANT

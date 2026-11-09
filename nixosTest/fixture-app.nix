@@ -263,6 +263,7 @@ pkgs.runCommand "briard-fixture-${name}"
       name = name;
       appName = name;
       image = base.tarball;
+      inherit installedSize;
       # Each extra version's IMAGE and the label it is published under. A guest disk stages these
       # so a node can be rolled onto one without a pull, and a hermetic test stages them the same
       # way through lib.nix's fixture wiring.

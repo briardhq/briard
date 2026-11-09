@@ -25,10 +25,11 @@
 let
   lib = pkgs.lib;
 
-  # CURATION, decided here and nowhere else. `debug` harnesses stay reachable by name and out of
+  # CURATION, decided here and nowhere else. `debug` harnesses and the apps' `edge` tests (run by the
+  # catalog run, about an upstream release) stay reachable by name and out of
   # the tier — the same rule `allTests` encoded back when the aggregates defined it.
-  curated = lib.foldl' (a: b: a // b) { } (lib.attrValues (removeAttrs tags [ "debug" ]));
-  every = curated // (tags.debug or { });
+  curated = lib.foldl' (a: b: a // b) { } (lib.attrValues (removeAttrs tags [ "debug" "edge" ]));
+  every = curated // (tags.debug or { }) // (tags.edge or { });
 
   tagsOf = n: lib.attrNames (lib.filterAttrs (_n: g: g ? ${n}) tags);
   nodesOf = t: lib.attrValues t.nodes;
