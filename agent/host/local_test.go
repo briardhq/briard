@@ -293,7 +293,7 @@ func TestStatusCarriesOfferedUpdates(t *testing.T) {
 	offer := func(identity string) LocalStatus {
 		t.Helper()
 		f.mu.Lock()
-		f.idx = strings.Replace(testIndex, `"available":true,`, `"available":true,"version":"2026.10.1","identity":"`+identity+`",`, 1)
+		f.idx = strings.Replace(testIndex, `"version":"2026.9.4","identity":"`+listedID+`",`, `"version":"2026.10.1","identity":"`+identity+`",`, 1)
 		f.mu.Unlock()
 		cfg.catalog, _ = newTestCatalog(t, cat)
 		cfg.catalog.refresh(context.Background())

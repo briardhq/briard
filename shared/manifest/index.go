@@ -5,25 +5,26 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
 )
 
-// The catalog's INDEX is the list of apps a household can see: the ones it can install today
-// and the ones it may ask for. It is published beside the manifests as `index.json` with a
-// detached signature over the same bytes, signed by the same release key, fetched and verified
-// the same way, so a mirror that cannot forge a manifest cannot forge the list either.
+// The catalog's LIST is what a household can see: the apps it can install today and the ones it
+// may ask for. A node reads one, `latest.json` (each app's newest version), at its CATALOG_URL,
+// with a detached signature over the same bytes made by the release key; rigs read `dev.json`,
+// the same shape. It is the only signed document in the catalog: a line names an app's version
+// file beside it, `<name>/<version>.json`, by the sha256 of its exact bytes, so a mirror that
+// cannot forge the list can forge neither the list nor any manifest it names.
 //
-// THE INDEX SAYS WHICH APPS ARE INSTALLABLE. An entry marked available has its signed
-// manifest, `<name>.json` + `.sig`, beside the index; the rest are listed so a household can
-// ask for them. The flag restates the manifest's presence, so the two are kept from
-// disagreeing where both are written (the catalog's own test) and are published together.
-// Omission is the LESS capable shape, the same discipline the manifest schema keeps: an entry
-// that says nothing is one a node cannot install. A node learns the whole list from this one
-// document, read whole and cached, the way every add-on store and package index is read;
-// asking the catalog per app is what those moved away from.
+// THE LIST SAYS WHICH APPS ARE INSTALLABLE. An entry marked available names its version and
+// identity; the rest are listed so a household can ask for them. Omission is the LESS capable
+// shape, the same discipline the manifest schema keeps: an entry that says nothing is one a
+// node cannot install. A node learns the whole catalog from this one document, read whole and
+// cached, the way every add-on store and package index is read; asking the catalog per app is
+// what those moved away from.
 //
 // IT IS PROSE AND PICTURES, NOT CAPABILITY, which is why its rules are about size and safety
 // rather than about what a node may do: nothing here is rendered into a unit file. The icon is
@@ -38,9 +39,7 @@ const (
 	// maxIconSize bounds one decoded icon. Vector marks from a curated collection run 1 to 12
 	// KB; a bitmap smuggled in as base64 does not fit.
 	maxIconSize = 16 << 10
-	// IndexName is the document's name under the catalog root.
-	IndexName = "index.json"
-	iconSVG   = "data:image/svg+xml;base64,"
+	iconSVG     = "data:image/svg+xml;base64,"
 )
 
 // Index is the catalog's listing, in the order a page shows it: the file's order IS the order,
@@ -51,19 +50,17 @@ type Index struct {
 
 // App is one entry: what a household sees of an app before and after it is installable.
 type App struct {
-	// Name is the catalog slug, the key everything else hangs on: the manifest a node fetches
-	// when the app is installable is `<Name>.json`, and the product's own knowledge of an
-	// app is keyed on it.
+	// Name is the catalog slug, the key everything else hangs on: an installable app's version
+	// files are under `<Name>/`, and the product's own knowledge of an app is keyed on it.
 	Name string `json:"name"`
-	// Available: the app's signed manifest is published beside the index, so a node can
-	// install it. Absent for an app a household can only ask for.
+	// Available: the list names a version of the app a node can install. Absent for an app a
+	// household can only ask for.
 	Available bool `json:"available,omitempty"`
-	// Version and Identity restate that manifest, for an available app: its upstream version,
-	// for people, and the Identity of its exact bytes, which is the app a node would install
-	// now. A node that runs the app under another identity has an update to offer, learned from
-	// this one document and with no read that depends on what the node runs. Both or neither,
-	// and neither on an app that is not available; the catalog's own test holds them to the
-	// manifest beside them.
+	// Version and Identity name that version, for an available app and only for one: its
+	// upstream version, which is also its file's name (`<Name>/<Version>.json`), and the
+	// Identity of the file's exact bytes, which is the app a node would install now and what it
+	// checks the file against. A node that runs the app under another identity has an update to
+	// offer, learned from this one document and with no read that depends on what the node runs.
 	Version  string   `json:"version,omitempty"`
 	Identity Identity `json:"identity,omitempty"`
 	// Title is the app's name for a person ("Paperless-ngx").
@@ -150,20 +147,27 @@ func (idx Index) Validate() error {
 // identityRe is an Identity as Parse spells one.
 var identityRe = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
-// validRelease holds Version and Identity to their rule: both or neither, only on an available
-// app, the version one line and the identity a hash as Parse spells it.
+// versionRe is a version a list may name: it is also the version file's name, so it is one path
+// element -- no separator, and no leading dot to make it `.` or `..`.
+var versionRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
+
+// validRelease holds Version and Identity to their rule: an available app names both and an
+// unavailable one neither, the version one path element and the identity a hash as Parse
+// spells it.
 func validRelease(a App) error {
 	switch {
-	case a.Version == "" && a.Identity == "":
+	case !a.Available && a.Version == "" && a.Identity == "":
 		return nil
 	case !a.Available:
 		return fmt.Errorf("%w: index app %q names a release but is not available", ErrInvalid, a.Name)
 	case a.Version == "" || a.Identity == "":
-		return fmt.Errorf("%w: index app %q names a version or an identity without the other", ErrInvalid, a.Name)
+		return fmt.Errorf("%w: index app %q is available without both a version and an identity", ErrInvalid, a.Name)
 	case !identityRe.MatchString(string(a.Identity)):
 		return fmt.Errorf("%w: index app %q identity %q is not sha256:<64 hex>", ErrInvalid, a.Name, a.Identity)
+	case !versionRe.MatchString(a.Version):
+		return fmt.Errorf("%w: index app %q version %q cannot name a file", ErrInvalid, a.Name, a.Version)
 	}
-	return safeValue(a.Name+" version", a.Version)
+	return nil
 }
 
 func validHomepage(name, s string) error {
@@ -206,23 +210,27 @@ func validIcon(name, s string) error {
 // eventHandler matches an SVG attribute that runs script on an event (onload=, onclick=, ...).
 var eventHandler = regexp.MustCompile(`\son[a-z]+\s*=`)
 
-// FetchIndex downloads the index and its detached signature from the catalog root, verifies
-// the signature over the exact bytes received, and returns the parsed index with those bytes,
-// which are what a node caches. Verify-then-parse, as Fetch does and for the same reason.
+// FetchIndex downloads the list at the catalog's URL and its detached signature beside it
+// (`<URL>.sig`), verifies the signature over the exact bytes received, and returns the parsed
+// list with those bytes, which are what a node caches. Verify-then-parse, as Fetch does and for
+// the same reason.
 func (c *Catalog) FetchIndex(ctx context.Context) (Index, []byte, error) {
 	if c.Verifier == nil {
 		return Index{}, nil, ErrNoVerifier
 	}
-	raw, err := c.get(ctx, IndexName)
-	if err != nil {
-		return Index{}, nil, fmt.Errorf("manifest: fetch %s: %w", IndexName, err)
+	if c.URL == "" {
+		return Index{}, nil, errors.New("manifest: no catalog URL configured")
 	}
-	sig, err := c.get(ctx, IndexName+sigSuffix)
+	raw, err := c.get(ctx, c.URL)
 	if err != nil {
-		return Index{}, nil, fmt.Errorf("manifest: fetch %s%s: %w", IndexName, sigSuffix, err)
+		return Index{}, nil, fmt.Errorf("manifest: fetch the catalog: %w", err)
+	}
+	sig, err := c.get(ctx, c.URL+sigSuffix)
+	if err != nil {
+		return Index{}, nil, fmt.Errorf("manifest: fetch the catalog's signature: %w", err)
 	}
 	if err := c.Verifier.Verify(raw, sig); err != nil {
-		return Index{}, nil, fmt.Errorf("manifest: %s: %w", IndexName, err)
+		return Index{}, nil, fmt.Errorf("manifest: %s: %w", c.URL, err)
 	}
 	idx, err := ParseIndex(raw)
 	if err != nil {

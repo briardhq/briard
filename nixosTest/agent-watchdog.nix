@@ -139,7 +139,7 @@ pkgs.testers.runNixOSTest {
           # hermetic, so the fetch needs somewhere local to go -- and step 3 makes that somewhere
           # unreachable on purpose. Set here rather than in the step because the agent reads its
           # configuration once, at start.
-          CATALOG_URL = "http://127.0.0.1:8098/catalog";
+          CATALOG_URL = "http://127.0.0.1:8098/catalog/latest.json";
           # Without this the SIGABRT dump names one arbitrary goroutine instead of the wedged one.
           GOTRACEBACK = "all";
         };

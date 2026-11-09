@@ -34,7 +34,7 @@
 # Heavy (two nested guest boots + a multi-GB guest disk) -> rides the `install` nightly tag
 # alongside install-bridge, qemu-bundle + report-card. Run:
 #   nix build .#tests.install-macvtap -L
-{ pkgs, guestDisk, agent, qemuBundle, guestBundle, selfupdateStub }:
+{ pkgs, guestDisk, agent, qemuBundle, guestBundle, selfupdateStub, catalog }:
 let
   # THE RELEASE CHANNEL, BUILT THE WAY A RELEASE IS BUILT.
   #
@@ -101,11 +101,11 @@ let
   # What install.sh needs to reach the channel: where it lives, and the release public key it
   # verifies the manifest against -- the two the shipped one-liner sets -- plus where the
   # catalog lives, which the one-liner leaves at its default. The keyring is minted into /root
-  # at test start (see the signing step in the script); the catalog served is the real index,
-  # signed with the same key, and NO manifest beside it: the page offers what the index says
+  # at test start (see the signing step in the script); the catalog served is the real list,
+  # signed with the same key, and NO version file beside it: the page offers what the list says
   # is installable, and the install that follows fails closed on the manifest it cannot get.
-  channelEnv = "BRIARD_CHANNEL_URL=http://127.0.0.1:8099 BRIARD_UPDATE_KEYRING=/root/keyring.pem BRIARD_CATALOG_URL=http://127.0.0.1:8099/catalog";
-  catalogIndex = ../catalog/index.json;
+  channelEnv = "BRIARD_CHANNEL_URL=http://127.0.0.1:8099 BRIARD_UPDATE_KEYRING=/root/keyring.pem BRIARD_CATALOG_URL=http://127.0.0.1:8099/catalog/latest.json";
+  catalogIndex = "${catalog}/catalog/latest.json";
   installScript = ../scripts/install.sh;
 in
 pkgs.testers.runNixOSTest {
@@ -358,10 +358,10 @@ pkgs.testers.runNixOSTest {
             host.succeed(f"mkdir -p /srv/{chain}/{ptr}{arm} && cp {d}/manifest.json {d}/manifest.json.sig /srv/{chain}/{ptr}{arm}/")
     for ptr in ("stable", "latest"):
         host.succeed(f"ln -sf ${channel}/briard/{V}/linux-amd64/briard-agent /srv/briard/{ptr}/linux-amd64/briard-agent")
-    # The catalog's index, as published: the real one, signed here with the rig's key. No
-    # manifest is served beside it (see channelEnv).
-    host.succeed("mkdir -p /srv/catalog && cp ${catalogIndex} /srv/catalog/index.json")
-    host.succeed(f"{stub} sign /root/release.key /srv/catalog/index.json | base64 -d > /srv/catalog/index.json.sig")
+    # The catalog's list, as published: the real one, signed here with the rig's key. No
+    # version file is served beside it (see channelEnv).
+    host.succeed("mkdir -p /srv/catalog && cp ${catalogIndex} /srv/catalog/latest.json")
+    host.succeed(f"{stub} sign /root/release.key /srv/catalog/latest.json | base64 -d > /srv/catalog/latest.json.sig")
 
     host.succeed(
         f"systemd-run --unit=briard-channel --collect {stub} serve 127.0.0.1:8099 /srv"
@@ -610,7 +610,7 @@ pkgs.testers.runNixOSTest {
     # THE GUEST'S ADMIN PORT, END TO END: the trusted browser presses "Install Home
     # Assistant"; the dashboard relays a app-install directive over the second virtio-serial
     # port; the host agent dispatches it exactly as it would the CLI's. The catalog here is the
-    # signed index and no manifest, so the install FAILS -- and that is the measurement: the
+    # signed list and no version file, so the install FAILS -- and that is the measurement: the
     # page must carry the host's own refusal back, which proves the whole wire (device -> qemu
     # -> host acceptor -> dispatch -> outcome -> device -> page) rather than a page that merely
     # says "installing" forever. (The alert list's copy across the channel is measured where

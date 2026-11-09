@@ -340,7 +340,7 @@ type Config struct {
 	Apps           []model.AppSpec
 	ReactorSnippet string
 
-	// Runtime app install. CatalogURL is the signed catalog root;
+	// Runtime app install. CatalogURL is the signed catalog list (its version files beside it);
 	// AppCache is the DIRECTORY where installed manifests are kept NODE-LOCALLY, one file
 	// per app, so the agent can rebuild the promoter chain at bring-up — before promotion,
 	// when the replicated copies on the volume are not yet mountable. "" disables either.

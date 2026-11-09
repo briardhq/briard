@@ -75,7 +75,7 @@ pkgs.testers.runNixOSTest {
           NET_WRAP_BIN = "${netWrap}/bin/briard-net-wrap";
           STATUS_EVERY = "2s";
           GUEST_SERIAL = "/tmp/guest-serial.log";
-          CATALOG_URL = "http://127.0.0.1:8098";
+          CATALOG_URL = "http://127.0.0.1:8098/latest.json";
           UPDATE_KEYRING = "/srv/catalog/keyring.pem";
         };
       };
@@ -99,10 +99,10 @@ pkgs.testers.runNixOSTest {
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     def publish(src):
-        host.succeed(f"mkdir -p /srv/catalog && cp -f {src}/* /srv/catalog/ && chmod -R u+w /srv/catalog")
+        host.succeed(f"mkdir -p /srv/catalog && cp -rf {src}/. /srv/catalog/ && chmod -R u+w /srv/catalog")
     publish("${fixture}/catalog")
     host.succeed("systemd-run --unit=catalog --collect darkhttpd /srv/catalog --addr 127.0.0.1 --port 8098")
-    host.wait_until_succeeds(f"curl -fsS http://127.0.0.1:8098/{svc}.json -o /dev/null", timeout=30)
+    host.wait_until_succeeds(f"curl -fsS http://127.0.0.1:8098/latest.json -o /dev/null", timeout=30)
 
     host.succeed("systemctl start briard-agent")
     try:

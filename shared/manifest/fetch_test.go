@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -24,71 +25,131 @@ func (r ring) Verify(artifact, sig []byte) error {
 	return nil
 }
 
-// catalogServer serves one manifest and its detached signature, signed with a throwaway key.
-// tamper mutates the served document AFTER signing, to model a compromised mirror.
-func catalogServer(t *testing.T, name string, body []byte, sign bool, tamper func([]byte) []byte) (*httptest.Server, Verifier) {
+// served is one published catalog: a list naming one app's version, that version's file beside
+// it, and the list's signature, made with a throwaway key over the list as listed.
+type served struct {
+	line App    // the list's line for the app
+	file []byte // the bytes served at <name>/<version>.json
+	sign bool   // serve the list's signature
+	// tamper mutates the served LIST after signing, to model a compromised mirror.
+	tamper func([]byte) []byte
+}
+
+// listing is the line a list carries for exactly these manifest bytes.
+func listing(t *testing.T, body []byte) App {
+	t.Helper()
+	m, id, err := Parse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := goodApp()
+	a.Name, a.Available, a.Version, a.Identity = m.Name, true, m.Version, id
+	return a
+}
+
+func catalogServer(t *testing.T, s served) (*Catalog, *[]string) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("keygen: %v", err)
 	}
-	sig := ed25519.Sign(priv, body)
-	served := body
-	if tamper != nil {
-		served = tamper(append([]byte(nil), body...))
+	list := rawIndex(t, Index{Apps: []App{s.line}})
+	sig := ed25519.Sign(priv, list)
+	if s.tamper != nil {
+		list = s.tamper(list)
 	}
+	var asked []string
 	mux := http.NewServeMux()
-	mux.HandleFunc("/"+name+".json", func(w http.ResponseWriter, r *http.Request) { w.Write(served) })
-	mux.HandleFunc("/"+name+".json.sig", func(w http.ResponseWriter, r *http.Request) {
-		if !sign {
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Path)
+		switch r.URL.Path {
+		case "/catalog/latest.json":
+			w.Write(list)
+		case "/catalog/latest.json.sig":
+			if !s.sign {
+				http.NotFound(w, r)
+				return
+			}
+			w.Write(sig)
+		case "/catalog/" + s.line.Name + "/" + s.line.Version + ".json":
+			w.Write(s.file)
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		w.Write(sig)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return srv, ring{pub}
+	return &Catalog{URL: srv.URL + "/catalog/latest.json", Verifier: ring{pub}, Client: srv.Client()}, &asked
 }
 
 func TestFetchVerified(t *testing.T) {
 	body := raw(t, good())
-	srv, v := catalogServer(t, "home-assistant", body, true, nil)
-	c := &Catalog{BaseURL: srv.URL, Verifier: v, Client: srv.Client()}
+	c, asked := catalogServer(t, served{line: listing(t, body), file: body, sign: true})
 
-	m, id, _, err := c.Fetch(context.Background(), "home-assistant")
+	m, id, got, err := c.Fetch(context.Background(), "home-assistant")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if m.Name != "home-assistant" {
-		t.Fatalf("got %q", m.Name)
+	if m.Name != "home-assistant" || string(got) != string(body) {
+		t.Fatalf("got %q and %d bytes", m.Name, len(got))
 	}
 	_, want, _ := Parse(body)
 	if id != want {
 		t.Fatalf("identity = %q, want the hash of the served bytes %q", id, want)
 	}
+	// The version file is read from beside the list, by the version the list names.
+	if w := "/catalog/home-assistant/2026.7.1.json"; !slices.Contains(*asked, w) {
+		t.Fatalf("asked %v; want %s", *asked, w)
+	}
 }
 
-// TestFetchRefusesTamperedDocument: the mirror served a valid signature over the ORIGINAL bytes
-// and a modified document. Verification is over the raw bytes, so this must fail — and it must
-// fail before Parse, because parsing untrusted input is the larger attack surface.
-func TestFetchRefusesTamperedDocument(t *testing.T) {
+// TestFetchRefusesAFileTheListDoesNotName: the list is signed and genuine, and the version file
+// beside it is a valid manifest -- just not the one the list names (a mirror swapped the pinned
+// image). Only the hash in the signed line catches it, and it must, before the file is parsed.
+func TestFetchRefusesAFileTheListDoesNotName(t *testing.T) {
 	body := raw(t, good())
-	srv, v := catalogServer(t, "home-assistant", body, true, func(b []byte) []byte {
-		return []byte(strings.Replace(string(b), hex64, hex64b, 1)) // swap the pinned image
-	})
-	c := &Catalog{BaseURL: srv.URL, Verifier: v, Client: srv.Client()}
+	swapped := []byte(strings.Replace(string(body), hex64, hex64b, 1))
+	c, _ := catalogServer(t, served{line: listing(t, body), file: swapped, sign: true})
+	_, _, _, err := c.Fetch(context.Background(), "home-assistant")
+	if err == nil || !strings.Contains(err.Error(), "the signed list names") {
+		t.Fatalf("err = %v; want the file refused against the list's identity", err)
+	}
+}
+
+// TestFetchRefusesTamperedList: the mirror served a valid signature over the ORIGINAL list and a
+// modified one. Verification is over the raw bytes, so this must fail.
+func TestFetchRefusesTamperedList(t *testing.T) {
+	body := raw(t, good())
+	c, _ := catalogServer(t, served{line: listing(t, body), file: body, sign: true, tamper: func(b []byte) []byte {
+		return []byte(strings.Replace(string(b), "Paperless-ngx", "Paperless-nix", 1))
+	}})
 	if _, _, _, err := c.Fetch(context.Background(), "home-assistant"); err == nil {
-		t.Fatal("Fetch accepted a document that did not match its signature")
+		t.Fatal("Fetch accepted a list that did not match its signature")
 	}
 }
 
 // TestFetchRefusesUnsigned: no signature served at all.
 func TestFetchRefusesUnsigned(t *testing.T) {
-	srv, v := catalogServer(t, "home-assistant", raw(t, good()), false, nil)
-	c := &Catalog{BaseURL: srv.URL, Verifier: v, Client: srv.Client()}
+	body := raw(t, good())
+	c, _ := catalogServer(t, served{line: listing(t, body), file: body})
 	if _, _, _, err := c.Fetch(context.Background(), "home-assistant"); err == nil {
-		t.Fatal("Fetch accepted an unsigned manifest")
+		t.Fatal("Fetch accepted an unsigned list")
+	}
+}
+
+// TestFetchRefusesAnUnlistedApp: an app with no line, or a line with no version, has nothing to
+// install, whatever files sit beside the list.
+func TestFetchRefusesAnUnlistedApp(t *testing.T) {
+	body := raw(t, good())
+	c, _ := catalogServer(t, served{line: listing(t, body), file: body, sign: true})
+	if _, _, _, err := c.Fetch(context.Background(), "mosquitto"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid", err)
+	}
+	asked := goodApp()
+	asked.Name = "home-assistant"
+	c, _ = catalogServer(t, served{line: asked, file: body, sign: true})
+	if _, _, _, err := c.Fetch(context.Background(), "home-assistant"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid for an app listed but not available", err)
 	}
 }
 
@@ -98,7 +159,7 @@ func TestFetchFailsClosedWithoutAKeyring(t *testing.T) {
 	reached := false
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
 	defer srv.Close()
-	c := &Catalog{BaseURL: srv.URL, Client: srv.Client()}
+	c := &Catalog{URL: srv.URL + "/catalog/latest.json", Client: srv.Client()}
 	if _, _, _, err := c.Fetch(context.Background(), "home-assistant"); !errors.Is(err, ErrNoVerifier) {
 		t.Fatalf("err = %v, want ErrNoVerifier", err)
 	}
@@ -107,14 +168,16 @@ func TestFetchFailsClosedWithoutAKeyring(t *testing.T) {
 	}
 }
 
-// TestFetchRefusesNameMismatch: a manifest served at one name that calls itself another would
+// TestFetchRefusesNameMismatch: a file listed under one name that calls itself another would
 // install under a handle nobody asked for — and, since the name is the subvolume, would aim it
-// at a different app's data.
+// at a different app's data. The list names it, and the hash matches: the name is what's wrong.
 func TestFetchRefusesNameMismatch(t *testing.T) {
 	m := good()
 	m.Name = "something-else"
-	srv, v := catalogServer(t, "home-assistant", raw(t, m), true, nil)
-	c := &Catalog{BaseURL: srv.URL, Verifier: v, Client: srv.Client()}
+	body := raw(t, m)
+	line := listing(t, body)
+	line.Name = "home-assistant"
+	c, _ := catalogServer(t, served{line: line, file: body, sign: true})
 	_, _, _, err := c.Fetch(context.Background(), "home-assistant")
 	if err == nil || !strings.Contains(err.Error(), "declares name") {
 		t.Fatalf("err = %v, want a name-mismatch refusal", err)
@@ -123,7 +186,7 @@ func TestFetchRefusesNameMismatch(t *testing.T) {
 
 // TestFetchRejectsUnsafeName keeps "../" out of the URL we build.
 func TestFetchRejectsUnsafeName(t *testing.T) {
-	c := &Catalog{BaseURL: "https://briard.io/catalog", Verifier: ring{}}
+	c := &Catalog{URL: "https://briard.io/catalog/latest.json", Verifier: ring{}}
 	for _, name := range []string{"../secrets", "a/b", "", "UPPER"} {
 		if _, _, _, err := c.Fetch(context.Background(), name); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("Fetch(%q) err = %v, want ErrInvalid", name, err)

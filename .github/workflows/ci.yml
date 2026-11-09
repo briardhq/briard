@@ -1,4 +1,4 @@
-# Per-commit gate: fast, hosted-runner-safe. Go build/vet/test + the architecture
+# Per-commit gate: fast, hosted-runner-safe. Go build/vet/test + the catalog check + the architecture
 # guards (the enforced invariants — see CONTRIBUTING.md) + a parse-only *.nix syntax
 # check + the no-AI-trailers gate.
 #
@@ -57,6 +57,12 @@ jobs:
       # Runs inside `nix develop`, so a broken flake.nix / devShell already fails here.
       - name: Go checks (fmt, vet, unit + architecture guards)
         run: nix develop --command bash -c 'test -z "$(gofmt -l .)" && go vet ./... && go test ./...'
+
+      # The catalog: its files live in briardhq/catalog, and this lays the pinned input beside
+      # catalog/catalog_test.go and runs it (the `catalog` build tag keeps the plain `go test` above
+      # from compiling it on a checkout with no files). A Go test, not a VM.
+      - name: Catalog check
+        run: nix build --print-build-logs .#catalog-test
 
       # The GOOS seam is only a seam while something re-runs this. It is a
       # CROSS-COMPILE, not a test run — a Windows test binary cannot execute on this runner, and

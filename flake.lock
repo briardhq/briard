@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "catalog": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794224023,
+        "narHash": "sha256-pOJkGgCp5EeqO75SsDwV1w9/NFGyPXtPdy7K9gVmSME=",
+        "owner": "briardhq",
+        "repo": "catalog",
+        "rev": "11ca52530714c209a702277c08b73a31eba46984",
+        "type": "github"
+      },
+      "original": {
+        "owner": "briardhq",
+        "repo": "catalog",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1782691344,
@@ -18,6 +34,7 @@
     },
     "root": {
       "inputs": {
+        "catalog": "catalog",
         "nixpkgs": "nixpkgs"
       }
     }

@@ -342,7 +342,7 @@ func (cfg Config) newCatalog(ctx context.Context, logf func(string, ...any)) *ca
 		logf("catalog: release keyring: %v (the page lists only what is installed)", err)
 		return nil
 	}
-	s := newCatalogState(cfg.stateDir(), &manifest.Catalog{BaseURL: cfg.CatalogURL, Verifier: kr}, logf)
+	s := newCatalogState(cfg.stateDir(), &manifest.Catalog{URL: cfg.CatalogURL, Verifier: kr}, logf)
 	if cfg.CasaURL != "" {
 		voter := cfg.wishVoter()
 		s.tell = func(app string) {

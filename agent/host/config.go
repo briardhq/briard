@@ -292,7 +292,7 @@ func ConfigFromEnv() Config {
 		// under the same trust root (the release keyring verifies manifests and artifacts alike),
 		// with one publish credential and one thing for a third party to mirror. briard.io itself
 		// is the marketing site; an app catalog is not a web page.
-		CatalogURL: env("CATALOG_URL", "https://get.briard.io/catalog"),
+		CatalogURL: env("CATALOG_URL", "https://get.briard.io/catalog/latest.json"),
 		AppCache:   env("APP_CACHE", filepath.Join(stateDir, "apps")),
 		// declared, not env: BACKUP_DIR="" is the household turning the backup off.
 		BackupDir:         declared("BACKUP_DIR", defaultBackupDir),

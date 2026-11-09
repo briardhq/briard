@@ -1207,7 +1207,7 @@ func (cfg Config) fetchManifest(ctx context.Context, name string) (manifest.Mani
 	if err != nil {
 		return manifest.Manifest{}, nil, fmt.Errorf("release keyring: %w", err)
 	}
-	cat := &manifest.Catalog{BaseURL: cfg.CatalogURL, Verifier: kr}
+	cat := &manifest.Catalog{URL: cfg.CatalogURL, Verifier: kr}
 	m, _, raw, err := cat.Fetch(ctx, name)
 	return m, raw, err
 }

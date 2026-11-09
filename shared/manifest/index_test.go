@@ -99,6 +99,13 @@ func TestIndexValidateRejects(t *testing.T) {
 		"line break in version": func(a *App) {
 			a.Available, a.Version, a.Identity = true, "1.0\n2", Identity("sha256:"+strings.Repeat("a", 64))
 		},
+		"available with no version": func(a *App) { a.Available = true },
+		"version a path": func(a *App) {
+			a.Available, a.Version, a.Identity = true, "../../x", Identity("sha256:"+strings.Repeat("a", 64))
+		},
+		"version a dot": func(a *App) {
+			a.Available, a.Version, a.Identity = true, "..", Identity("sha256:"+strings.Repeat("a", 64))
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -156,8 +163,8 @@ func indexServer(t *testing.T, body []byte, sign bool, tamper func([]byte) []byt
 		served = tamper(append([]byte(nil), body...))
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/"+IndexName, func(w http.ResponseWriter, r *http.Request) { w.Write(served) })
-	mux.HandleFunc("/"+IndexName+sigSuffix, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/catalog/latest.json", func(w http.ResponseWriter, r *http.Request) { w.Write(served) })
+	mux.HandleFunc("/catalog/latest.json.sig", func(w http.ResponseWriter, r *http.Request) {
 		if !sign {
 			http.NotFound(w, r)
 			return
@@ -172,7 +179,7 @@ func indexServer(t *testing.T, body []byte, sign bool, tamper func([]byte) []byt
 func TestFetchIndexVerified(t *testing.T) {
 	body := rawIndex(t, Index{Apps: []App{goodApp()}})
 	srv, v := indexServer(t, body, true, nil)
-	c := &Catalog{BaseURL: srv.URL, Verifier: v, Client: srv.Client()}
+	c := &Catalog{URL: srv.URL + "/catalog/latest.json", Verifier: v, Client: srv.Client()}
 	idx, raw, err := c.FetchIndex(context.Background())
 	if err != nil {
 		t.Fatalf("FetchIndex: %v", err)
@@ -190,7 +197,7 @@ func TestFetchIndexRefusesTamperedDocument(t *testing.T) {
 	srv, v := indexServer(t, body, true, func(b []byte) []byte {
 		return []byte(strings.Replace(string(b), "Paperless-ngx", "Paperless-nix", 1))
 	})
-	c := &Catalog{BaseURL: srv.URL, Verifier: v, Client: srv.Client()}
+	c := &Catalog{URL: srv.URL + "/catalog/latest.json", Verifier: v, Client: srv.Client()}
 	if _, _, err := c.FetchIndex(context.Background()); err == nil {
 		t.Fatal("a document altered after signing was accepted")
 	}
@@ -199,7 +206,7 @@ func TestFetchIndexRefusesTamperedDocument(t *testing.T) {
 func TestFetchIndexRefusesUnsigned(t *testing.T) {
 	body := rawIndex(t, Index{Apps: []App{goodApp()}})
 	srv, v := indexServer(t, body, false, nil)
-	c := &Catalog{BaseURL: srv.URL, Verifier: v, Client: srv.Client()}
+	c := &Catalog{URL: srv.URL + "/catalog/latest.json", Verifier: v, Client: srv.Client()}
 	if _, _, err := c.FetchIndex(context.Background()); err == nil {
 		t.Fatal("an index with no signature was accepted")
 	}
@@ -208,7 +215,7 @@ func TestFetchIndexRefusesUnsigned(t *testing.T) {
 func TestFetchIndexFailsClosedWithoutAKeyring(t *testing.T) {
 	body := rawIndex(t, Index{Apps: []App{goodApp()}})
 	srv, _ := indexServer(t, body, true, nil)
-	c := &Catalog{BaseURL: srv.URL, Client: srv.Client()}
+	c := &Catalog{URL: srv.URL + "/catalog/latest.json", Client: srv.Client()}
 	if _, _, err := c.FetchIndex(context.Background()); !errors.Is(err, ErrNoVerifier) {
 		t.Fatalf("with no trust root, got %v; want ErrNoVerifier before any byte is fetched", err)
 	}

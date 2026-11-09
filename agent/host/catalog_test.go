@@ -42,8 +42,11 @@ type fakeCatalog struct {
 	idx  string
 }
 
+// listedID is the identity the test list names for Home Assistant 2026.9.4.
+const listedID = "sha256:" + "0000000000000000000000000000000000000000000000000000000000000000"
+
 const testIndex = `{"apps":[` +
-	`{"name":"home-assistant","available":true,"title":"Home Assistant","functionality":"Smart home control","description":"Runs your home.","homepage":"https://www.home-assistant.io"},` + "\n" +
+	`{"name":"home-assistant","available":true,"version":"2026.9.4","identity":"` + listedID + `","title":"Home Assistant","functionality":"Smart home control","description":"Runs your home.","homepage":"https://www.home-assistant.io"},` + "\n" +
 	`{"name":"paperless-ngx","title":"Paperless-ngx","functionality":"Document management system","description":"Scan it, find it.","homepage":"https://docs.paperless-ngx.com"}` +
 	`]}`
 
@@ -55,30 +58,30 @@ func newFakeCatalog(t *testing.T) (*fakeCatalog, *manifest.Catalog) {
 	}
 	f := &fakeCatalog{priv: priv, idx: testIndex}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/index.json", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/catalog/latest.json", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		w.Write([]byte(f.idx))
 	})
-	mux.HandleFunc("/index.json.sig", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/catalog/latest.json.sig", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		w.Write(ed25519.Sign(f.priv, []byte(f.idx)))
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("the node asked the catalog for %s; the index is the whole read", r.URL.Path)
+		t.Errorf("the node asked the catalog for %s; the list is the whole read", r.URL.Path)
 		http.NotFound(w, r)
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
-	return f, &manifest.Catalog{BaseURL: f.srv.URL, Verifier: indexRing{pub}, Client: f.srv.Client()}
+	return f, &manifest.Catalog{URL: f.srv.URL + "/catalog/latest.json", Verifier: indexRing{pub}, Client: f.srv.Client()}
 }
 
 // publish marks name available in the index, as the catalog's publish does beside the manifest.
 func (f *fakeCatalog) publish(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.idx = strings.Replace(f.idx, `{"name":"`+name+`",`, `{"name":"`+name+`","available":true,`, 1)
+	f.idx = strings.Replace(f.idx, `{"name":"`+name+`",`, `{"name":"`+name+`","available":true,"version":"1.0","identity":"`+listedID+`",`, 1)
 }
 
 // newTestCatalog is a catalog state over a temp directory on a fixed clock.
@@ -124,7 +127,7 @@ func TestCatalogRefreshReadsTheIndexAndWhatIsInstallable(t *testing.T) {
 
 	// The same directory, a catalog that cannot be reached: the cache answers, and nothing is
 	// asked for until the cache is a day old.
-	off := newCatalogState(s.dir, &manifest.Catalog{BaseURL: "http://127.0.0.1:1", Verifier: indexRing{}}, s.logf)
+	off := newCatalogState(s.dir, &manifest.Catalog{URL: "http://127.0.0.1:1/catalog/latest.json", Verifier: indexRing{}}, s.logf)
 	off.now = s.now
 	off.refresh(ctx)
 	if v2 := off.view(nil); len(v2.Apps) != 2 || !appOf(t, v2, "home-assistant").Available {
@@ -344,26 +347,26 @@ func TestCatalogViewIsPushedWhenItMoves(t *testing.T) {
 
 // THE OFFER is the index's identity against the one this node runs, at every look: an app run
 // under another identity has the index's version on offer; the same identity, an app not
-// installed, an app the index cannot install, or an index that names no identity offers
-// nothing. The Home Assistant file carries the same answer.
+// installed, or an app the index cannot install offers nothing. The Home Assistant file carries
+// the same answer.
 func TestCatalogViewOffersAnUpdate(t *testing.T) {
 	f, cat := newFakeCatalog(t)
 	const newer = "sha256:" + "1111111111111111111111111111111111111111111111111111111111111111"
 	s, _ := newTestCatalog(t, cat)
 	ctx := context.Background()
-	s.refresh(ctx) // an index from before the field: no identity named
+	s.refresh(ctx)
 	running := func(id string) map[string]model.AppSpec {
 		return map[string]model.AppSpec{
 			"home-assistant": {Name: "home-assistant", Manifest: id, Version: "2026.9.4"},
 			"paperless-ngx":  {Name: "paperless-ngx", Manifest: "sha256:by-hand", Version: "2.0"},
 		}
 	}
-	if a := appOf(t, s.view(running("sha256:old")), "home-assistant"); !a.Installed || a.Running != "2026.9.4" || a.Update {
-		t.Fatalf("an index naming no identity must offer nothing: %+v", a)
+	if a := appOf(t, s.view(running(listedID)), "home-assistant"); !a.Installed || a.Running != "2026.9.4" || a.Update {
+		t.Fatalf("a node running what the list names has nothing on offer: %+v", a)
 	}
 
 	f.mu.Lock()
-	f.idx = strings.Replace(f.idx, `"available":true,`, `"available":true,"version":"2026.10.1","identity":"`+newer+`",`, 1)
+	f.idx = strings.Replace(f.idx, `"version":"2026.9.4","identity":"`+listedID+`",`, `"version":"2026.10.1","identity":"`+newer+`",`, 1)
 	f.mu.Unlock()
 	s2 := newCatalogState(t.TempDir(), cat, s.logf)
 	s2.now = s.now

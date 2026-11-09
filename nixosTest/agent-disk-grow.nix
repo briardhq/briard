@@ -50,10 +50,10 @@ pkgs.testers.runNixOSTest {
     # The fixture's signed catalog, served the way the lab serves its own -- from a copy, because
     # publishing a version is replacing what it serves (every version is signed by one key).
     def publish(src):
-        host.succeed(f"mkdir -p /srv/catalog && cp -f {src}/* /srv/catalog/ && chmod -R u+w /srv/catalog")
+        host.succeed(f"mkdir -p /srv/catalog && cp -rf {src}/. /srv/catalog/ && chmod -R u+w /srv/catalog")
     publish("${fixture}/catalog")
     host.succeed("systemd-run --unit=catalog --collect darkhttpd /srv/catalog --addr 127.0.0.1 --port 8098")
-    host.wait_until_succeeds("curl -fsS http://127.0.0.1:8098/${fixture.appName}.json -o /dev/null", timeout=30)
+    host.wait_until_succeeds("curl -fsS http://127.0.0.1:8098/latest.json -o /dev/null", timeout=30)
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
@@ -65,7 +65,7 @@ pkgs.testers.runNixOSTest {
         "--setenv=STATUS_EVERY=2s "
         "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
         "--setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "
-        "--setenv=CATALOG_URL=http://127.0.0.1:8098 --setenv=UPDATE_KEYRING=/srv/catalog/keyring.pem "
+        "--setenv=CATALOG_URL=http://127.0.0.1:8098/latest.json --setenv=UPDATE_KEYRING=/srv/catalog/keyring.pem "
         "${agent}/bin/briard-agent run"
     )
     try:

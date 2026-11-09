@@ -1,11 +1,18 @@
-// Package catalog holds the published app manifests. It has no code: the test is the point.
+//go:build catalog
+
+// Package catalog checks the published catalog, which lives in its own repository and is laid
+// here by `nix build .#catalog-test` from the pinned `catalog` flake input (or another one given
+// with --override-input). It has no code: the test is the point. The build tag keeps a plain
+// `go test ./...` from compiling it, so a checkout without the files reports nothing rather than
+// a pass it never earned.
 //
-// It parses every entry with the SAME function a node uses, so the schema check that would
-// otherwise happen for the first time on a household's node happens here instead. The failures it
-// is built to catch are the cheap ones that are expensive live: an image reference that is not
-// digest-pinned, a container name that is not a slug, a missing or duplicated primary, a health
-// path that is not a path — every one of them a manifest a node will refuse AFTER the signature
-// verified and the fetch succeeded.
+// It parses every version file with the SAME function a node uses, so the schema check that
+// would otherwise happen for the first time on a household's node happens here instead. The
+// failures it is built to catch are the cheap ones that are expensive live: an image reference
+// that is not digest-pinned, a container name that is not a slug, a missing or duplicated
+// primary, a health path that is not a path — every one of them a manifest a node will refuse
+// AFTER the list verified and the fetch succeeded. And it holds the entries to what Briard's own
+// code for each app assumes, which nothing at runtime would notice drifting apart.
 package catalog
 
 import (
@@ -22,46 +29,39 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// manifests is every published manifest here: the `.json` files other than the index, which
-// is the listing of them and not one of them.
-func manifests(t *testing.T) []string {
+// list is the list a node reads.
+const list = "latest.json"
+
+// versionFiles is every published version of every app: `<app>/<version>.json`.
+func versionFiles(t *testing.T) []string {
 	t.Helper()
-	entries, err := filepath.Glob("*.json")
+	out, err := filepath.Glob("*/*.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out []string
-	for _, path := range entries {
-		if path != manifest.IndexName {
-			out = append(out, path)
-		}
-	}
 	if len(out) == 0 {
-		t.Fatal("no catalog entries found; this test is vacuous without them")
+		t.Fatal("no version files found; this test is vacuous without them")
 	}
 	return out
 }
 
-func TestEveryPublishedEntryParses(t *testing.T) {
-	for _, path := range manifests(t) {
+func TestEveryVersionFileParses(t *testing.T) {
+	for _, path := range versionFiles(t) {
 		t.Run(path, func(t *testing.T) {
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
+			raw := read(t, path)
 			m, id, err := manifest.Parse(raw)
 			if err != nil {
 				t.Fatalf("a node would refuse this entry: %v", err)
 			}
-			// The filename is what the node requests (`<name>.json`), so a manifest whose name
-			// differs is one no `briard app install <name>` can ever reach.
-			if want := strings.TrimSuffix(path, ".json"); m.Name != want {
-				t.Errorf("entry is served as %q but names itself %q", want, m.Name)
+			// The path is what a list line names (`<name>/<version>.json`), so a file whose
+			// name or version differs is one no line can reach, or reaches as another app.
+			if dir, ver := filepath.Dir(path), strings.TrimSuffix(filepath.Base(path), ".json"); m.Name != dir || m.Version != ver {
+				t.Errorf("served as %s %s but names itself %s %s", dir, ver, m.Name, m.Version)
 			}
 			// The identity is the hash of the bytes as published. Recording it in the log is how
 			// a reviewer sees that an edit here is a new app version, not a cosmetic change.
 			t.Logf("%s %s -> %s", m.Name, m.Version, id)
-			// A trailing newline is a different identity for the same app (see README).
+			// A trailing newline is a different identity for the same app (see the README).
 			if strings.HasSuffix(string(raw), "\n") {
 				t.Error("entry ends in a newline; the published bytes do not, and the bytes are the identity")
 			}
@@ -69,51 +69,67 @@ func TestEveryPublishedEntryParses(t *testing.T) {
 	}
 }
 
-// TestIndexListsEveryManifest parses the index with the function a node uses and checks the one
-// relation between it and the manifests beside it: an app is installable when its manifest
-// exists, so a manifest with no index entry is an installable app no page can show, and an
-// entry is marked available exactly when its manifest is here: the index's word is the only
-// one a node reads, so the two documents must agree where both are written. An entry with no
-// manifest and no mark is the point of the index -- an app a household may ask for.
-func TestIndexListsEveryManifest(t *testing.T) {
-	idx, err := manifest.ParseIndex(read(t, manifest.IndexName))
+// TestTheListNamesItsVersionFiles parses the list with the function a node uses and checks what
+// ties it to the files beside it: an app is installable when it has a version file, so an app
+// with files and no line is one no page can show, and an entry is marked available exactly
+// when its directory is here. An available line names one of its files by version and by the
+// sha256 of its bytes -- the check a node makes before it parses the file, and the identity it
+// compares with the one it runs, so a stale line is an install refused, or an update offered for
+// nothing. An entry with no files and no mark is the point of the list: an app a household may
+// ask for.
+func TestTheListNamesItsVersionFiles(t *testing.T) {
+	idx, err := manifest.ParseIndex(read(t, list))
 	if err != nil {
-		t.Fatalf("a node would refuse the index: %v", err)
+		t.Fatalf("a node would refuse the list: %v", err)
 	}
 	published := make(map[string]bool)
-	for _, path := range manifests(t) {
-		published[strings.TrimSuffix(path, ".json")] = true
+	for _, path := range versionFiles(t) {
+		published[filepath.Dir(path)] = true
 	}
 	listed := make(map[string]bool, len(idx.Apps))
 	for _, a := range idx.Apps {
 		listed[a.Name] = true
-		// Every published entry carries its mark: the title's initial is a page's fallback for an
-		// icon that could not be sourced, not a shape this file ships.
+		// Every entry carries its mark: the title's initial is a page's fallback for an icon
+		// that could not be sourced, not a shape this file ships.
 		if a.Icon == "" {
 			t.Errorf("%s has no icon", a.Name)
 		}
 		if a.Available != published[a.Name] {
-			t.Errorf("%s: available=%v in the index, manifest beside it=%v", a.Name, a.Available, published[a.Name])
+			t.Errorf("%s: available=%v in the list, version files beside it=%v", a.Name, a.Available, published[a.Name])
 		}
-		// An available entry names its manifest's release, and names it exactly: the identity
-		// is what a node compares with the one it runs, so a stale one here is an update offered
-		// for nothing, or one never offered.
 		if a.Available {
-			m, id, err := manifest.Parse(read(t, a.Name+".json"))
+			m, id, err := manifest.Parse(read(t, filepath.Join(a.Name, a.Version+".json")))
 			switch {
 			case err != nil:
-				t.Errorf("%s.json: %v", a.Name, err)
+				t.Errorf("%s %s: %v", a.Name, a.Version, err)
 			case a.Identity != id || a.Version != m.Version:
-				t.Errorf("%s: the index names %q %s, the manifest beside it is %q %s", a.Name, a.Version, a.Identity, m.Version, id)
+				t.Errorf("%s: the list names %q %s, the file is %q %s", a.Name, a.Version, a.Identity, m.Version, id)
 			}
 		}
 	}
 	for name := range published {
 		if !listed[name] {
-			t.Errorf("manifest %s.json is not listed in the index", name)
+			t.Errorf("%s has version files but is not in the list", name)
 		}
 	}
 	t.Logf("%d apps listed, %d installable", len(idx.Apps), len(published))
+}
+
+// current is the version file the list names for an app: what a node installs now, and what
+// Briard's code for the app has to agree with. Older versions agreed with the code of their day.
+func current(t *testing.T, name string) []byte {
+	t.Helper()
+	idx, err := manifest.ParseIndex(read(t, list))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range idx.Apps {
+		if a.Name == name && a.Available {
+			return read(t, filepath.Join(name, a.Version+".json"))
+		}
+	}
+	t.Fatalf("the list names no version of %s", name)
+	return nil
 }
 
 // TestMosquittoEntryMatchesTheProductsConfig is the cross-document check: this entry and the
@@ -122,11 +138,7 @@ func TestIndexListsEveryManifest(t *testing.T) {
 // health gate that can never pass; a mount changed here and not there puts the broker's retained
 // state outside the replicated volume, where a failover silently loses it.
 func TestMosquittoEntryMatchesTheProductsConfig(t *testing.T) {
-	raw, err := os.ReadFile("mosquitto.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, _, err := manifest.Parse(raw)
+	m, _, err := manifest.Parse(current(t, mosquitto.Name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +166,7 @@ func TestMosquittoEntryMatchesTheProductsConfig(t *testing.T) {
 // restore from one of those backups removes every entry of /config but `backups`, and a mount
 // point refuses its removal, leaving /config half cleared (homeassistant/backup_restore.py).
 func TestHomeAssistantEntryMatchesWhatTheProductAssumes(t *testing.T) {
-	m, _, err := manifest.Parse(read(t, hass.Name+".json"))
+	m, _, err := manifest.Parse(current(t, hass.Name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +186,7 @@ func TestHomeAssistantEntryMatchesWhatTheProductAssumes(t *testing.T) {
 // directory, keeps its state in its cache (its index and users are disposable), owns no data of
 // its own, and answers only inside its pod -- the door is the one way in, and it signs.
 func TestFilesEntryMatchesWhatTheProductAssumes(t *testing.T) {
-	m, _, err := manifest.Parse(read(t, files.Name+".json"))
+	m, _, err := manifest.Parse(current(t, files.Name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +213,7 @@ func TestFilesEntryMatchesWhatTheProductAssumes(t *testing.T) {
 // was taught to honour it, and both published entries kept saying nothing -- which would have moved
 // Home Assistant onto a private network and taken the mDNS/SSDP discovery it exists for with it.
 func TestEveryEntryDeclaresItsNetworking(t *testing.T) {
-	for _, path := range manifests(t) {
+	for _, path := range versionFiles(t) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -223,7 +235,7 @@ func TestEveryEntryDeclaresItsNetworking(t *testing.T) {
 // private keeps it off the LAN, publishing 1883 and only 1883 is what the household actually
 // reaches, and the front door is not involved because no reverse proxy can serve MQTT.
 func TestTheBrokerIsPrivateAndPublishesOnlyMQTT(t *testing.T) {
-	m, _, err := manifest.Parse(read(t, "mosquitto.json"))
+	m, _, err := manifest.Parse(current(t, mosquitto.Name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +268,7 @@ func read(t *testing.T, name string) []byte {
 // learn neither until the pull is over. Measured with skopeo (copy, then sum the manifest's
 // layer sizes and the decompressed layers), 2026-09-04.
 func TestEveryEntryDeclaresItsSizes(t *testing.T) {
-	for _, path := range manifests(t) {
+	for _, path := range versionFiles(t) {
 		m, _, err := manifest.Parse(read(t, path))
 		if err != nil {
 			t.Fatalf("%s: %v", path, err)

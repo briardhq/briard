@@ -326,7 +326,8 @@ func (f *fakeInstaller) AppHealthOf(_ context.Context, app string) (apps.Health,
 func (f *fakeInstaller) MDNSPublished(context.Context) (string, error) { return "", nil }
 func (f *fakeInstaller) MDNSOther(context.Context) (string, error)     { return "", nil }
 
-// catalogFor stands up a signed one-app catalog and returns a Config wired to it.
+// catalogFor stands up a signed catalog of these apps -- a list naming each one's version and
+// the version files beside it -- and returns a Config wired to it.
 func catalogFor(t *testing.T, ms ...manifest.Manifest) Config {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -334,19 +335,31 @@ func catalogFor(t *testing.T, ms ...manifest.Manifest) Config {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
+	var idx manifest.Index
 	for _, m := range ms {
 		body, err := json.Marshal(m)
 		if err != nil {
 			t.Fatal(err)
 		}
-		sig := ed25519.Sign(priv, body)
-		mux.HandleFunc("/"+m.Name+".json", func(w http.ResponseWriter, _ *http.Request) { w.Write(body) })
-		mux.HandleFunc("/"+m.Name+".json.sig", func(w http.ResponseWriter, _ *http.Request) { w.Write(sig) })
+		_, id, err := manifest.Parse(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		idx.Apps = append(idx.Apps, manifest.App{Name: m.Name, Available: true, Version: m.Version, Identity: id,
+			Title: m.Name, Functionality: "an app under test", Description: "A test app.", Homepage: "https://example.org"})
+		mux.HandleFunc("/catalog/"+m.Name+"/"+m.Version+".json", func(w http.ResponseWriter, _ *http.Request) { w.Write(body) })
 	}
+	list, err := json.Marshal(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := ed25519.Sign(priv, list)
+	mux.HandleFunc("/catalog/latest.json", func(w http.ResponseWriter, _ *http.Request) { w.Write(list) })
+	mux.HandleFunc("/catalog/latest.json.sig", func(w http.ResponseWriter, _ *http.Request) { w.Write(sig) })
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return Config{
-		CatalogURL:    srv.URL,
+		CatalogURL:    srv.URL + "/catalog/latest.json",
 		UpdateKeyring: pemKey(t, pub),
 		Resource:      drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{{Name: "n1", Address: "127.0.0.1:7789", Disk: drbd.DataDevice}}},
 		Promoter:      promoterUnits(),

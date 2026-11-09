@@ -24,7 +24,9 @@
 , agentVersion ? "0.0.0-dev"
 # The guest image's own version and inputs hash (flake.nix): what the product image is
 # stamped with and what `.#artifacts.guest-disk.inputs` reports to the publish script.
-, guestVersion ? agentVersion, guestInputs ? "" }:
+, guestVersion ? agentVersion, guestInputs ? ""
+# The app catalog (the flake input): the fixtures of the catalogued apps are its entries.
+, catalog }:
 let
   # THE GUEST AS SHIPPED, and now the only one the framework tests boot. There used
   # to be two: this one, which zero-app alone used, and a `dummy-guest` that baked the fixture
@@ -40,7 +42,7 @@ let
   # installed onto the volume after promotion -- exactly what a user's app is. Read from its
   # catalog entry (its mounts, :8123, /manifest.json as the readiness path because HA has no /healthz
   # and `/` redirects into onboarding), so the tests run the version the catalog ships.
-  hassFixture = import ./catalog-fixture.nix { inherit pkgs; entry = ../catalog/home-assistant.json; };
+  hassFixture = import ./catalog-fixture.nix { inherit pkgs catalog; app = "home-assistant"; };
   # The upgrade PAIR, as two published versions of one app: 2025.11.0 (recorder schema 51)
   # with 2025.12.0 (schema 53) as a variant. Installing the variant IS the upgrade -- same name,
   # new manifest, converge bounces the container onto it -- which is the shape a household's HA
@@ -80,7 +82,7 @@ let
   # probe -- MQTT is not HTTP), bound to the guest's loopback by the config the product renders
   # for it (agent/mosquitto), while the port a household uses is 1883. Read from its catalog
   # entry, so the tests run the private, MQTT-only pod households run.
-  mosquittoFixture = import ./catalog-fixture.nix { inherit pkgs; entry = ../catalog/mosquitto.json; };
+  mosquittoFixture = import ./catalog-fixture.nix { inherit pkgs catalog; app = "mosquitto"; };
   # The same app published twice, 2.1.1 with 2.1.2 as a variant: installing the variant IS the
   # upgrade. Both ends serve the same management API under Briard's config (measured before the
   # pair was pinned -- guest-image/pkgs/mosquitto-image), so an upgrade that failed here would be
@@ -121,7 +123,7 @@ let
   };
   # FILES AS A CATALOGUED APP, read from its entry, beside the app with a mount in every tier
   # (undoFixture): the view, its modes, a restore underneath, a Version, and the way in.
-  filesFixture = import ./catalog-fixture.nix { inherit pkgs; entry = ../catalog/files.json; };
+  filesFixture = import ./catalog-fixture.nix { inherit pkgs catalog; app = "files"; };
   filesTest = import ./files.nix {
     inherit pkgs guestModule filesFixture;
     fixture = undoFixture;
@@ -388,7 +390,7 @@ let
   installMacvtap = import ./install-macvtap.nix {
     # selfupdateStub serves the signed release channel over HTTP so the install runs the REAL
     # network path (fetch + verify + expand) rather than the BRIARD_ARTIFACTS escape hatch.
-    inherit pkgs guestDisk selfupdateStub guestBundle;
+    inherit pkgs guestDisk selfupdateStub guestBundle catalog;
     agent = agentPkg;
     qemuBundle = qemuBundle.bundle;
   };

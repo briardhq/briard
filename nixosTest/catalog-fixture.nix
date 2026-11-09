@@ -1,4 +1,5 @@
-# A catalogued app's fixture, read from its published entry -- catalog/<name>.json is the one
+# A catalogued app's fixture, read from the version the catalog's list names for it -- the
+# `catalog` flake input's catalog/<app>/<version>.json, as catalog/latest.json names it, is the one
 # place an app's name, version, networking, container, mounts, port, health path, memory and sizes
 # are written, so a test runs what the catalog ships and a version bump touches nothing here.
 #
@@ -6,7 +7,7 @@
 # copies with `--override-arch`, so the amd64 image under it is resolved, never stored. What
 # cannot be derived is the hash nix demands of the fetch: pullImage repacks the image into a
 # docker-archive, and that archive's hash is no digest a registry knows. It lives in
-# catalog-images.json, keyed on the entry's image ref, one per arch. It is not a manifest field: a
+# the catalog's catalog-images.json, keyed on the entry's image ref, one per arch. It is not a manifest field: a
 # node never needs it, and it moves when nixpkgs' skopeo does, which as identity would offer every
 # household an update to the same app. An entry missing there builds with the fake hash and fails
 # printing the real one, which is what goes in the file.
@@ -15,17 +16,22 @@
 # says why), so a test proves the entry's fields, not its exact bytes.
 {
   pkgs,
-  entry,
+  # The catalog (the flake input) and the app in it.
+  catalog,
+  app,
   # Further versions of the same app, as fixture-app.nix takes them.
   variants ? { },
 }:
 let
   inherit (pkgs) lib;
-  m = lib.importJSON entry;
+  line = lib.findFirst (a: a.name == app && a.available or false)
+    (throw "catalog-fixture: the catalog lists no installable version of ${app}")
+    (lib.importJSON "${catalog}/catalog/latest.json").apps;
+  m = lib.importJSON "${catalog}/catalog/${app}/${line.version}.json";
   c = lib.head m.containers;
   ref = lib.splitString "@" c.image;
   repo = lib.head ref;
-  hashes = lib.importJSON ./catalog-images.json;
+  hashes = lib.importJSON "${catalog}/catalog-images.json";
 in
 assert lib.assertMsg (lib.length m.containers == 1)
   "catalog-fixture: ${m.name} has ${toString (lib.length m.containers)} containers; a fixture is one";

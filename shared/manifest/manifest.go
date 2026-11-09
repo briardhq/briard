@@ -259,8 +259,13 @@ func Parse(raw []byte) (Manifest, Identity, error) {
 	if err := m.Validate(); err != nil {
 		return Manifest{}, "", err
 	}
+	return m, identityOf(raw), nil
+}
+
+// identityOf is the Identity of exact bytes, before anything has parsed them.
+func identityOf(raw []byte) Identity {
 	sum := sha256.Sum256(raw)
-	return m, Identity("sha256:" + hex.EncodeToString(sum[:])), nil
+	return Identity("sha256:" + hex.EncodeToString(sum[:]))
 }
 
 // Validate enforces the security boundary. Every rule here exists because the renderer writes

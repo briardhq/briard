@@ -2,8 +2,16 @@
   description = "Briard — managed, highly-available home automation";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+  # The app catalog, its own repository: the version files and the list a node reads, and the
+  # image hashes the test fixtures pull by. The tests read it from here (outputs.nix, `.#catalog-test`);
+  # a node never does -- it fetches the published copy from get.briard.io. Moving this pin is
+  # housekeeping: whoever tests what is about to ship overrides it with the catalog's `main`.
+  inputs.catalog = {
+    url = "github:briardhq/catalog";
+    flake = false;
+  };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, catalog }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f:
@@ -64,7 +72,7 @@
       ));
       guestVersion = "guest-build." + builtins.substring 0 12 guestInputs;
       tests = import ./nixosTest/outputs.nix {
-        inherit nixpkgs agentVersion guestVersion guestInputs;
+        inherit nixpkgs agentVersion guestVersion guestInputs catalog;
         pkgs = pkgsX;
         overlay = self.overlays.default;
       };
@@ -155,6 +163,8 @@
         postgresql = pkgs.postgresql;
         # The release pipeline's Authenticode signer (scripts/ssign.nix).
         ssign = pkgs.callPackage ./scripts/ssign.nix { };
+        # The catalog check (catalog/package.nix): catalog/catalog_test.go over the `catalog` input.
+        catalog-test = pkgs.callPackage ./catalog/package.nix { inherit catalog; };
       });
 
       # The guest VM image: NixOS + DRBD 9 + drbd-reactor, and NO workload -- an app is

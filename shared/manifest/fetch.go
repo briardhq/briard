@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path"
+	"slices"
 	"time"
 )
 
@@ -33,25 +33,33 @@ type Verifier interface {
 
 // Catalog fetches signed app manifests from the published catalog (a signed,
 // versioned, static, mirrorable artifact at a dumb URL, the apt-mirror shape rather than an
-// API). BaseURL is the catalog root, served from briard.io; Client is optional.
+// API). URL is the signed LIST a node reads (`…/catalog/latest.json`, served from briard.io);
+// every app version a list names is a file beside it, `<app>/<version>.json`. Client is
+// optional.
+//
+// ONLY THE LIST IS SIGNED. A list line carries the identity of its version file -- the sha256 of
+// its exact bytes -- and a version file pins its images by digest, so one signature covers
+// everything down to the image bytes, and every version ever published stays where it is,
+// readable by whoever still needs it, without being signed again.
 //
 // Operation never depends on our liveness: a fetched manifest is kept on the DRBD volume as the
 // app's identity, so an installed app keeps running, failing over and rolling back with
 // the catalog unreachable. This type is only ever on the INSTALL path, never the failover path.
 type Catalog struct {
-	BaseURL  string
+	URL      string
 	Verifier Verifier
 	Client   *http.Client
 }
 
-// Fetch downloads <BaseURL>/<name>.json and its detached signature at <BaseURL>/<name>.json.sig,
-// verifies the signature over the exact bytes received, and returns the parsed manifest with the
-// identity of those bytes.
+// Fetch reads the signed list, takes the named app's line, downloads the version file the line
+// names from beside the list and refuses it unless its sha256 is the line's identity. It returns
+// the parsed manifest with the identity of those bytes.
 //
-// Order matters and is the whole safety property: verify the signature over the RAW bytes first,
-// parse second. Parsing untrusted input is a larger attack surface than checking 64 bytes of
-// Ed25519 over it, and the identity must be the hash of what was signed — not of anything a
-// parse-then-verify flow might have already normalised.
+// Order matters and is the whole safety property: the list's signature is verified over its RAW
+// bytes before the list is parsed, and the version file's hash is checked against the signed
+// line before the file is parsed. Parsing untrusted input is a larger attack surface than
+// checking a signature or a hash over it, and the identity must be the hash of what was signed
+// for -- not of anything a parse-then-verify flow might have already normalised.
 // The RAW bytes come back alongside the parsed form because they are what gets recorded on the
 // volume: the identity is the hash of exactly these bytes, so storing a re-marshalling would
 // store a different app.
@@ -64,36 +72,43 @@ func (c *Catalog) Fetch(ctx context.Context, name string) (Manifest, Identity, [
 	if !slug.MatchString(name) {
 		return Manifest{}, "", nil, fmt.Errorf("%w: catalog name %q is not a slug", ErrInvalid, name)
 	}
-	doc := name + ".json"
-	raw, err := c.get(ctx, doc)
+	idx, _, err := c.FetchIndex(ctx)
+	if err != nil {
+		return Manifest{}, "", nil, err
+	}
+	i := slices.IndexFunc(idx.Apps, func(a App) bool { return a.Name == name })
+	if i < 0 || idx.Apps[i].Version == "" {
+		return Manifest{}, "", nil, fmt.Errorf("%w: the catalog lists no installable version of %q", ErrInvalid, name)
+	}
+	line := idx.Apps[i]
+	doc := name + "/" + line.Version + ".json" // the version is a path element: ParseIndex checked it
+	u, err := besideList(c.URL, doc)
+	if err != nil {
+		return Manifest{}, "", nil, err
+	}
+	raw, err := c.get(ctx, u)
 	if err != nil {
 		return Manifest{}, "", nil, fmt.Errorf("manifest: fetch %s: %w", doc, err)
 	}
-	sig, err := c.get(ctx, doc+sigSuffix)
-	if err != nil {
-		return Manifest{}, "", nil, fmt.Errorf("manifest: fetch %s%s: %w", doc, sigSuffix, err)
-	}
-	if err := c.Verifier.Verify(raw, sig); err != nil {
-		return Manifest{}, "", nil, fmt.Errorf("manifest: %s: %w", doc, err)
+	if id := identityOf(raw); id != line.Identity {
+		return Manifest{}, "", nil, fmt.Errorf("manifest: %s is %s; the signed list names %s", doc, id, line.Identity)
 	}
 	m, id, err := Parse(raw)
 	if err != nil {
 		return Manifest{}, "", nil, err
 	}
-	if m.Name != name {
+	if m.Name != name || m.Version != line.Version {
 		// A manifest served at one name that calls itself another would install an app under
 		// a handle the operator never asked for — and, since the name is the subvolume, would
-		// point it at another app's data.
-		return Manifest{}, "", nil, fmt.Errorf("%w: manifest at %q declares name %q", ErrInvalid, doc, m.Name)
+		// point it at another app's data. The hash binds the bytes to the line; this binds the
+		// line to what the bytes say they are.
+		return Manifest{}, "", nil, fmt.Errorf("%w: manifest at %q declares name %q version %q", ErrInvalid, doc, m.Name, m.Version)
 	}
 	return m, id, raw, nil
 }
 
-func (c *Catalog) get(ctx context.Context, name string) ([]byte, error) {
-	u, err := joinURL(c.BaseURL, name)
-	if err != nil {
-		return nil, err
-	}
+// get downloads one catalog document, bounded.
+func (c *Catalog) get(ctx context.Context, u string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -122,14 +137,13 @@ func (c *Catalog) get(ctx context.Context, name string) ([]byte, error) {
 	return b, nil
 }
 
-func joinURL(base, name string) (string, error) {
-	if base == "" {
-		return "", errors.New("manifest: no catalog URL configured")
-	}
-	u, err := url.Parse(base)
+// besideList resolves a document against the list's URL the way a relative link resolves
+// against a page: `home-assistant/2026.9.4.json` beside `…/catalog/latest.json` is
+// `…/catalog/home-assistant/2026.9.4.json`.
+func besideList(list, name string) (string, error) {
+	u, err := url.Parse(list)
 	if err != nil {
-		return "", fmt.Errorf("manifest: bad catalog URL %q: %w", base, err)
+		return "", fmt.Errorf("manifest: bad catalog URL %q: %w", list, err)
 	}
-	u.Path = path.Join(u.Path, name)
-	return u.String(), nil
+	return u.ResolveReference(&url.URL{Path: name}).String(), nil
 }
