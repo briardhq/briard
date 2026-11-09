@@ -136,7 +136,18 @@ pkgs.testers.runNixOSTest {
     def install():
         rc, out = host.execute(f"briard-agent app install {svc} 2>&1")
         print(f"app install {svc}: rc={rc}\n{out}")
+        if rc != 0:
+            print(guest(f"systemctl status briard-stage --no-pager | head -5; journalctl -b --no-pager -u briard-stage -u briard-{svc}-app-image | tail -30", wait=10))
         return rc
+
+    # BOTH VERSIONS' IMAGES ARE STAGED, loaded by the guest at boot beside everything else: an
+    # install before the load is done finds no image and, with no registry here, cannot pull one.
+    # Seconds for the dummy, minutes for two real images.
+    for _ in range(120):
+        if re.search(r"STAGED=yes", guest("echo S\"\"TAGED=$(test -s /run/briard/staged-images && echo yes)")):
+            break
+    else:
+        raise Exception("the guest never finished loading the staged images")
 
     # === THE PREVIOUS VERSION, installed and healthy, with data of its own. ===
     assert install() == 0, "installing the previous version failed"
