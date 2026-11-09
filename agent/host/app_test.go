@@ -2057,6 +2057,37 @@ func TestRestorePutsBackTheMembersOwnManifest(t *testing.T) {
 	}
 }
 
+// TestRestoreRecordsTheMembersManifestNodeLocally: a restore that moved the code moved what this
+// node runs, so the node-local cache -- what bring-up rebuilds from, and what the live view and
+// the status line are adopted from after the act -- holds the member's manifest, not the
+// version the restore undid. Left behind, the node reports the newer identity while it runs the
+// older one, and an update the catalog offers is never offered.
+func TestRestoreRecordsTheMembersManifestNodeLocally(t *testing.T) {
+	old := testManifest()
+	old.Version = "2026.5.0"
+	cfg, f, member := ringWith(t, old, nil)
+	cfg.AppCache = t.TempDir()
+	_, running := priorManifest(t)
+	if err := cfg.cacheApp("home-assistant", []byte(running)); err != nil {
+		t.Fatal(err)
+	}
+	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
+		t.Fatalf("outcome = %+v, want done", o)
+	}
+	cached, err := os.ReadFile(cfg.manifestPath("home-assistant"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, _, err := manifest.Parse(cached); err != nil || m.Version != "2026.5.0" {
+		t.Fatalf("the node-local cache holds %s (%v), want the restored member's 2026.5.0", cached, err)
+	}
+	// And the live view follows the act, as it does an install's.
+	cfg.adoptInstalledApps(api.Directive{Kind: api.DirectiveAppRestore}, api.DirectiveOutcome{State: api.OutcomeDone}, func(string, ...any) {})
+	if len(cfg.Apps) != 1 || cfg.Apps[0].Version != "2026.5.0" {
+		t.Fatalf("after the restore the live view is %+v, want the restored 2026.5.0", cfg.Apps)
+	}
+}
+
 // TestRestoreRefusesAMemberTheRingNoLongerHas: the picker's list can be stale -- pruning runs on
 // every take -- so the member is read back from the RING rather than trusted from the payload.
 func TestRestoreRefusesAMemberTheRingNoLongerHas(t *testing.T) {

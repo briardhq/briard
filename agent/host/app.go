@@ -705,8 +705,10 @@ func (cfg Config) manifestPath(name string) string {
 //
 // AFTER ANY INSTALL'S OUTCOME, done or not: an act that installs several apps can fail on the
 // second with the first installed, and an install that did nothing leaves the cache as it was.
+// And after a restore, from the history or the backup, which can move an app to the version its
+// point was taken under, or put back an app this node did not have.
 func (cfg *Config) adoptInstalledApps(d api.Directive, o api.DirectiveOutcome, logf func(string, ...any)) {
-	if d.Kind != api.DirectiveAppInstall {
+	if d.Kind != api.DirectiveAppInstall && d.Kind != api.DirectiveAppRestore && d.Kind != api.DirectiveBackupRestore {
 		return
 	}
 	specs, rendered, ok := cfg.installedApps(logf)
@@ -1398,6 +1400,11 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 	// revert uses: {manifest + data} move together or the node is describing something it is not.
 	if err := g.AppProvision(ctx, app, dataDir, quadlet.Subdirs(pm), target.Meta.Manifest); err != nil {
 		return failed(fmt.Sprintf("record the member's manifest (the app is left stopped): %v", err))
+	}
+	// And node-locally, as an install's commit records it: bring-up rebuilds from this copy, and
+	// the live view the status line reports is adopted from it after the act.
+	if err := cfg.cacheApp(app, []byte(target.Meta.Manifest)); err != nil {
+		logf("app restore %s: WARNING: could not cache the restored manifest (%v); this node reports the version it undid until it next promotes", app, err)
 	}
 	// (6) CONVERGE, which re-renders from the volume and starts what it now names. Its start sample
 	// is not compared with the undo's point: the app did not run between them.
