@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,12 +17,14 @@ import (
 
 // fakeMealie is Mealie's API as measured on v3.30.0: one first account, `admin` with the shipped
 // password and email, that says it is a first login while that email is held; a token for the
-// right password; and an admin's rename and a password change.
+// right password, which a password change makes worthless; and an admin's rename and a password
+// change.
 type fakeMealie struct {
 	mu                        sync.Mutex
 	username, email, fullName string
 	password                  string
 	logins                    int
+	since                     int // tokens issued before the last password change are refused, as Mealie does
 	failRename                bool
 }
 
@@ -32,7 +35,9 @@ func newFakeMealie() *fakeMealie {
 func (f *fakeMealie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	authed := r.Header.Get("Authorization") == "Bearer tok"
+	var n int
+	_, err := fmt.Sscanf(r.Header.Get("Authorization"), "Bearer tok-%d", &n)
+	authed := err == nil && n >= f.since
 	switch {
 	case r.URL.Path == "/api/app/about/startup-info":
 		_ = json.NewEncoder(w).Encode(map[string]bool{"isFirstLogin": f.email == "changeme@example.com", "isDemo": false})
@@ -42,7 +47,7 @@ func (f *fakeMealie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "tok"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": fmt.Sprintf("tok-%d", f.logins)})
 	case r.URL.Path == "/api/users/self" && authed:
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "u-1", "username": f.username, "email": f.email, "fullName": f.fullName, "admin": true, "authMethod": "Mealie"})
 	case r.URL.Path == "/api/users/password" && r.Method == http.MethodPut && authed:
@@ -52,7 +57,7 @@ func (f *fakeMealie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		f.password = b.NewPassword
+		f.password, f.since = b.NewPassword, f.logins+1
 	case r.URL.Path == "/api/admin/users/u-1" && r.Method == http.MethodPut && authed:
 		if f.failRename {
 			w.WriteHeader(http.StatusInternalServerError)

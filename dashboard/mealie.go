@@ -89,6 +89,11 @@ func (a *app) takeOverMealie(ctx context.Context, s routes.App) error {
 		map[string]string{"currentPassword": mealieFirstPassword, "newPassword": pw}, nil); err != nil {
 		return fmt.Errorf("change the password of Mealie's first account: %w", err)
 	}
+	// A password change voids every token issued in an earlier second, the one in hand among them.
+	form, tok.AccessToken = url.Values{"username": {mealieFirstUser}, "password": {pw}}, ""
+	if err := m.do(ctx, http.MethodPost, "/api/auth/token", "", form, &tok); err != nil || tok.AccessToken == "" {
+		return fmt.Errorf("sign in to Mealie's first account with its new password: %v", err)
+	}
 	self["username"], self["fullName"], self["email"] = acct.Username, acct.Name, acct.Username+"@"+emailDomain
 	if err := m.do(ctx, http.MethodPut, "/api/admin/users/"+url.PathEscape(id), tok.AccessToken, self, nil); err != nil {
 		return fmt.Errorf("make Mealie's first account yours: %w", err)
