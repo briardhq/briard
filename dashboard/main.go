@@ -75,10 +75,12 @@ var htmxJS []byte
 
 const htmxPath = "/htmx-2.0.11.min.js"
 
-// favicon is the tab's icon: the mark briard.io shows, at 96 px (the site's briard-mark.png).
+// images are the brand's, as briard.io shows them: the tab's icon (the mark, 96 px) and the
+// sidebar's lockup, light and dark (3x its 32 px). They are generated with the other brand
+// images; regenerate them, never edit one.
 //
-//go:embed static/favicon.png
-var favicon []byte
+//go:embed static/favicon.png static/lockup.png static/lockup-dark.png
+var images embed.FS
 
 var page = template.Must(template.New("").Funcs(template.FuncMap{
 	"shell": shellOf, "theme": theme, "drawer": drawer, "htmx": func() string { return htmxPath },
@@ -240,9 +242,10 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == htmxPath && r.Method == http.MethodGet:
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		_, _ = w.Write(htmxJS)
-	case r.URL.Path == "/favicon.png" && r.Method == http.MethodGet:
+	case (r.URL.Path == "/favicon.png" || r.URL.Path == "/lockup.png" || r.URL.Path == "/lockup-dark.png") && r.Method == http.MethodGet:
+		b, _ := images.ReadFile("static" + r.URL.Path)
 		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write(favicon)
+		_, _ = w.Write(b)
 	case strings.HasPrefix(r.URL.Path, "/f/") && r.Method == http.MethodGet:
 		d, ok := a.session(r)
 		if !ok {

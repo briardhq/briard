@@ -148,8 +148,11 @@ func TestThePageCarriesOneScriptAndAPolicyThatAllowsNothingElse(t *testing.T) {
 	if _, body := get(t, r, "/", nil); !strings.Contains(body, `<link rel="icon" type="image/png" href="/favicon.png">`) {
 		t.Errorf("the page names no icon: %s", body)
 	}
-	if resp, body := get(t, r, "/favicon.png", nil); resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/png" || !strings.HasPrefix(body, "\x89PNG") {
-		t.Errorf("the icon is not served to every browser: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	// It and the sidebar's lockup, light and dark, are served to every browser.
+	for _, p := range []string{"/favicon.png", "/lockup.png", "/lockup-dark.png"} {
+		if resp, body := get(t, r, p, nil); resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/png" || !strings.HasPrefix(body, "\x89PNG") {
+			t.Errorf("%s is not served to every browser: %d %s", p, resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
 	}
 }
 

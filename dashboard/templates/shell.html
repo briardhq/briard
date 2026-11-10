@@ -9,7 +9,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Briard{{with .Title}} — {{.}}{{end}}</title>{{with .Refresh}}<meta http-equiv="refresh" content="{{.}}">{{end}}<link rel="icon" type="image/png" href="/favicon.png"><link rel="stylesheet" href="/app.css"><script>{{theme}}</script>{{if .Section}}<script src="{{htmx}}"></script>{{end}}</head>
 <body>
 {{if .Section}}<aside class="sidebar" data-side="left" aria-hidden="false"><nav aria-label="Briard">
-  <header>Briard</header>
+  <header><picture><source media="(prefers-color-scheme: dark)" srcset="/lockup-dark.png"><img src="/lockup.png" alt="Briard" width="119" height="32"></picture></header>
   <section>
     <div role="group"><ul>
       <li><a href="/"{{if eq .Section "home"}} aria-current="page"{{end}}>{{template "icon-home"}}<span>Home</span></a></li>
