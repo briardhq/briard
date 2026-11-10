@@ -3,8 +3,9 @@
 // program's directory, defining BRIARD_VERSION (the release id) and BRIARD_FILEVERSION (the id as
 // Windows' four 16-bit fields).
 //
-// briard.ico is Briard's mark (agent/hass/component/brand/icon@2x.png) at 256, 48, 32 and 16 px,
-// each a PNG, as Windows reads an icon since Vista.
+// briard.ico is Briard's mark at 256, 64, 48, 32, 24, 20 and 16 px (the last three the taskbar's
+// at 150, 125 and 100 % scaling), each with a thin white rim so it reads on a dark taskbar. It is
+// generated with the other brand images; regenerate it, never edit it.
 
 #define STR2(x) #x
 #define STR(x) STR2(x)

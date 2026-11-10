@@ -10,8 +10,9 @@ import (
 	"math"
 )
 
-// mark.png is Briard's mark at the icon's size, 32 px, made from the Home Assistant integration's
-// brand icon (agent/hass/component/brand/icon@2x.png) -- the shield the site's favicon is too.
+// mark.png is Briard's mark at the icon's size, 32 px: the dog's head in navy with a thin
+// white rim, so it reads on a light taskbar and a dark one. It is generated with the other brand
+// images; regenerate it, never edit it.
 //
 //go:embed mark.png
 var markPNG []byte
