@@ -128,6 +128,11 @@ let
     inherit pkgs guestModule filesFixture;
     fixture = undoFixture;
   };
+  # MEALIE AS A CATALOGUED APP, on a lone node: its settings from files, its first account taken
+  # over at the first open, the user signed in by header on both names, and its data still an
+  # ordinary Mealie.
+  mealieFixture = import ./catalog-fixture.nix { inherit pkgs catalog; app = "mealie"; };
+  mealieTest = import ./mealie.nix { inherit pkgs guestModule mealieFixture; };
   # Two apps on one node: both converge, upgrading one leaves the other alone, the rollback
   # point restores only what moved, and a failover carries both.
   appsPair = import ./apps-pair.nix {
@@ -467,6 +472,7 @@ in
       mosquitto = mosquittoTest; # the broker: its config in effect, its data on the volume
       apps-pair = appsPair; # two apps: upgrade one, the other keeps serving
       files = filesTest; # every app's directories, through the door, signed in by the dashboard
+      mealie = mealieTest; # recipes, signed in by the door by header, never locked in
     };
     # EACH APP'S CONTRACT: the tests of Briard's own code for one catalogued app (agent/hass,
     # agent/mosquitto, its agent/apps entry), on the entry the catalog ships. The tier runs them
@@ -481,6 +487,9 @@ in
     };
     app-files = {
       files = filesTest;
+    };
+    app-mealie = {
+      mealie = mealieTest;
     };
     # Real Home Assistant as an INSTALLED APP (2.4 GB image boot).
     ha = {
