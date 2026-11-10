@@ -126,14 +126,15 @@ pkgs.testers.runNixOSTest {
     hd = curl(files_host, loc.path + "?" + loc.query)
     files_cookie = header(hd, "Set-Cookie").split(";")[0]
     assert status(hd) == 303 and files_cookie == session, f"{hd}\nwant the dashboard's own token, {session}"
-    # ... and the household is in, as itself, with no login of the app's own.
+    # ... and the user is in, as themselves, with no login of the app's own.
     hd = curl(files_host, "/api/resources?source=Apps&path=/", files_cookie)
     assert status(hd) == 200, hd
     folders = [f["name"] for f in json.loads(browser.succeed("cat /tmp/body")).get("folders", [])]
     assert folders == ["Dummy"], f"Files shows {folders}"
     hd = curl(files_host, "/api/users?username=self", files_cookie)
     me = json.loads(browser.succeed("cat /tmp/body"))
-    assert me["username"] == "household" and me["permissions"]["admin"], me
+    # As the user the open's record names, an admin by the group the door signs.
+    assert me["username"] == "kostas" and me["permissions"]["admin"], me
 
     # (2) THROUGH THE APP: an edit to the data lands on the volume; one to the files tier is refused.
     hd = curl(files_host, "/api/resources?source=Apps&path=/Dummy/app/hello.txt&override=true", files_cookie, "-X POST --data-binary edited")

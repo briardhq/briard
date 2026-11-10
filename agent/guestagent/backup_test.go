@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"briard.io/agent/quadlet"
+	"briard.io/shared/dashboard"
 )
 
 // backupRig is a mounted volume holding two apps, each with a ring whose newest member was
@@ -314,6 +315,7 @@ func TestTheBackupCarriesWhatARestoreNeeds(t *testing.T) {
 	}
 	before("the VIP", "cp", "-a", dataMountRoot+"/.vip-address", backupFacts+"/volume/")
 	before("the installed apps", "cp", "-a", manifestDir, backupFacts+"/volume/")
+	before("the user's record", "cp", "-a", dashboard.AccountPath, backupFacts+"/volume/")
 	if runIndex(f, 0, "cp", "-a", tlsDir, backupFacts+"/volume/") >= 0 {
 		t.Error("copied a certificate directory the volume does not have")
 	}

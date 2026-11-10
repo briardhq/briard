@@ -123,7 +123,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8087", "listen address (loopback: the front door forwards to it)")
 	routesPath := flag.String("routes", routes.Path, "the routing table written by the guest's converge")
 	handoffPath := flag.String("handoff", dashboard.HandoffPath, "the one-time code the host handed over")
-	statePath := flag.String("state", "/var/lib/briard/dashboard", "device registry + the handed-over account (on the volume)")
+	statePath := flag.String("state", dashboard.StateDir, "device registry + the user's record (on the volume)")
 	tokenPath := flag.String("hass-token", hass.TokenPath, "the control channel's Home Assistant token")
 	adminPortPath := flag.String("admin-port", dashboard.AdminPortDev, "the guest end of the host's admin port (an app install rides it)")
 	layersPath := flag.String("layers", defaultPullPaths.layers, "podman's layer store, for pull progress")
@@ -445,11 +445,11 @@ func (a *app) redeem(w http.ResponseWriter, r *http.Request, code string) {
 		http.Error(w, "could not consume the code\n", http.StatusInternalServerError)
 		return
 	}
-	// What the host knew about the OS account outlives the code: Home Assistant's first user is
-	// made from it, possibly minutes later, once HA is running.
-	h.Code = ""
-	if err := a.writeState(accountFile, h); err != nil {
-		log.Printf("dashboard: keep account: %v", err)
+	// The first redeemed open writes the user's record from what the host knew about the OS
+	// account (account.go); every later one leaves it as it is. A record that could not be written
+	// is written by the next open, so the device is still let in.
+	if err := a.keepAccount(h); err != nil {
+		log.Printf("dashboard: keep the user's record: %v", err)
 	}
 	tok, err := newSecret()
 	if err != nil {
@@ -1162,7 +1162,7 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 }
 
 // openHomeAssistant is the button. By HA's own onboarding state:
-//   - user step not done: create the first user from the account the host handed over, mark
+//   - user step not done: create the first user from the user's record (account.go), mark
 //     analytics done with the control channel's token (the user's code is single-use and
 //     belongs to the browser), and send the browser to HA's onboarding page with that code --
 //     it resumes at the location step, then discovered devices, then logs in (measured);
@@ -1202,9 +1202,10 @@ func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Home Assistant is still starting; try again in a moment\n", http.StatusConflict)
 		return
 	}
-	var acct dashboard.Handoff
-	if err := a.readState(accountFile, &acct); err != nil {
-		log.Printf("dashboard: no account from the handoff (%v); using defaults", err)
+	acct, err := a.account()
+	if err != nil {
+		http.Error(w, "Home Assistant's first user is made from your Briard profile, which is not written yet; run `briard open` on the machine\n", http.StatusConflict)
+		return
 	}
 	pw, err := newPassword()
 	if err != nil {
@@ -1212,8 +1213,8 @@ func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := hass.NewUser{
-		Name: or(acct.Name, "Home"), Username: or(acct.Username, "home"), Password: pw,
-		ClientID: hass.ClientID(origin), Language: or(acct.Language, "en"),
+		Name: acct.Name, Username: acct.Username, Password: pw,
+		ClientID: hass.ClientID(origin), Language: acct.Language,
 	}
 	// The password is GENERATED AND FORGOTTEN: every later open is minted, so no
 	// session ever depends on it, and the household sets its own -- for the companion app -- in
@@ -1268,13 +1269,6 @@ func scheme(r *http.Request) string {
 		return "https"
 	}
 	return "http"
-}
-
-func or(v, def string) string {
-	if v == "" {
-		return def
-	}
-	return v
 }
 
 // newPassword is a starting credential: 20 characters from a set with no look-alikes, shown to

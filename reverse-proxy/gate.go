@@ -1,6 +1,6 @@
 package main
 
-// THE GATE: how the door signs the household into an app that has no login of its own worth
+// THE GATE: how the door signs the user into an app that has no login of its own worth
 // trusting (a route with a Gate, shared/routes). Files is the live case.
 //
 // THE SESSION IS THE DASHBOARD'S, carried to the app's own name. A browser arriving at a gated
@@ -12,8 +12,8 @@ package main
 //
 // THE APP IS TOLD WHO IT IS IN A SIGNATURE, NOT A HEADER IT BELIEVES. After the dashboard says the
 // token stands (asked over loopback, the answer kept for half a minute), the door forwards the
-// request with a token signed with the app's secret (the route's Gate file) naming the household,
-// valid for a minute. The app verifies it on every request, so nothing that can reach the app's
+// request with a token signed with the app's secret (the route's Gate file) naming the user
+// by the username the dashboard answers with, valid for a minute. The app verifies it on every request, so nothing that can reach the app's
 // address -- another workload on this node, a LAN host routing to the pod network -- can sign in
 // without the key, which only root on this node can read.
 //
@@ -50,13 +50,13 @@ const (
 	// parameter it would also read one from, which a client may not use to bring its own.
 	assertionHeader = "X-JWT-Assertion"
 	assertionQuery  = "jwt"
-	// household is who the token names: one household, one person to the app.
-	household = "household"
+	// adminGroup is the group the token puts the user in: the admin, in the app's config too.
+	adminGroup = "admin"
 	// assertionLife is how long a signed token is good for: one request's worth, with room for a
 	// clock that is a little off.
 	assertionLife = time.Minute
-	// standsFor is how long the dashboard's word that a token stands is kept. A revoked device
-	// is shut out within it.
+	// standsFor is how long the dashboard's word that a token stands, and whose it is, is kept. A
+	// revoked device is shut out within it.
 	standsFor = 30 * time.Second
 	// sessionLife matches the dashboard's own cookie.
 	sessionLife = 365 * 24 * time.Hour
@@ -69,8 +69,14 @@ type gate struct {
 	now       func() time.Time
 
 	mu    sync.Mutex
-	stood map[string]time.Time // a token's hash -> when the dashboard last said it stands
-	keys  map[string]gateKey   // a Gate file -> the secret read from it
+	stood map[string]stood   // a token's hash -> the dashboard's last word that it stands
+	keys  map[string]gateKey // a Gate file -> the secret read from it
+}
+
+// stood is the dashboard's word on a token: when it said so, and the username it named.
+type stood struct {
+	at   time.Time
+	user string
 }
 
 type gateKey struct {
@@ -83,7 +89,7 @@ func newGate(dashboard *url.URL) *gate {
 		dashboard: dashboard,
 		client:    &http.Client{Timeout: 5 * time.Second},
 		now:       time.Now,
-		stood:     map[string]time.Time{},
+		stood:     map[string]stood{},
 		keys:      map[string]gateKey{},
 	}
 }
@@ -117,7 +123,19 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 	if c, err := req.Cookie(sessionCookie); err == nil {
 		tok = c.Value
 	}
-	if tok == "" || !g.stands(req.Context(), tok) {
+	user := ""
+	if tok != "" {
+		u, err := g.whose(req.Context(), tok)
+		if err != nil {
+			// A trusted device with nobody to name: sending it to the dashboard would come straight
+			// back here.
+			log.Printf("reverse-proxy: %s: %v", r.name, err)
+			http.Error(w, "This app cannot be signed in to right now: "+err.Error()+"\n", http.StatusServiceUnavailable)
+			return false
+		}
+		user = u
+	}
+	if user == "" {
 		if req.Method != http.MethodGet && req.Method != http.MethodHead {
 			// A page's own request after its session went: a redirect would be followed into
 			// HTML it cannot use. The next navigation is sent to the dashboard.
@@ -138,7 +156,7 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 		q.Del(assertionQuery)
 		req.URL.RawQuery = q.Encode()
 	}
-	req.Header.Set(assertionHeader, sign(key, household, g.now()))
+	req.Header.Set(assertionHeader, sign(key, user, g.now()))
 	return true
 }
 
@@ -166,35 +184,40 @@ func (g *gate) redeem(ctx context.Context, code string) (string, error) {
 	return strings.TrimSpace(body), nil
 }
 
-// stands reports whether a session token is still a trusted device's, from the dashboard's last
-// answer while it is fresh.
-func (g *gate) stands(ctx context.Context, tok string) bool {
+// whose is the username a session token signs in as, from the dashboard's last answer while it
+// is fresh: empty when the token is no trusted device's (or the dashboard cannot be asked, which
+// sends the browser to it), an error when it is one the dashboard has nobody to name for.
+func (g *gate) whose(ctx context.Context, tok string) (string, error) {
 	h := sha256.Sum256([]byte(tok))
 	id := hex.EncodeToString(h[:])
 	g.mu.Lock()
-	at, ok := g.stood[id]
+	s, ok := g.stood[id]
 	g.mu.Unlock()
-	if ok && g.now().Sub(at) < standsFor {
-		return true
+	if ok && g.now().Sub(s.at) < standsFor {
+		return s.user, nil
 	}
-	_, status, err := g.ask(ctx, http.MethodGet, "/gate/check", nil, tok)
+	body, status, err := g.ask(ctx, http.MethodGet, "/gate/check", nil, tok)
 	if err != nil {
 		log.Printf("reverse-proxy: the dashboard could not be asked about a session (%v)", err)
-		return false
+		return "", nil
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	for k, t := range g.stood {
-		if g.now().Sub(t) >= standsFor {
+	for k, s := range g.stood {
+		if g.now().Sub(s.at) >= standsFor {
 			delete(g.stood, k)
 		}
 	}
-	if status != http.StatusNoContent {
-		delete(g.stood, id)
-		return false
+	delete(g.stood, id)
+	user := strings.TrimSpace(body)
+	switch {
+	case status == http.StatusUnauthorized:
+		return "", nil
+	case status != http.StatusOK || user == "":
+		return "", fmt.Errorf("the dashboard answered %d: %s", status, user)
 	}
-	g.stood[id] = g.now()
-	return true
+	g.stood[id] = stood{at: g.now(), user: user}
+	return user, nil
 }
 
 // ask is one request to the dashboard over loopback.
@@ -247,11 +270,13 @@ func (g *gate) key(path string) ([]byte, error) {
 	return k, nil
 }
 
-// sign is an HS256 JSON Web Token naming sub, issued now and good for assertionLife.
+// sign is an HS256 JSON Web Token naming sub, issued now and good for assertionLife. Its groups
+// say the user is the admin, which the only user is: the app makes an admin of whoever carries
+// adminGroup, so its config never has to know who that is.
 func sign(key []byte, sub string, now time.Time) string {
 	enc := base64.RawURLEncoding
 	head, _ := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
-	claims, _ := json.Marshal(map[string]any{"sub": sub, "iat": now.Unix(), "exp": now.Add(assertionLife).Unix()})
+	claims, _ := json.Marshal(map[string]any{"sub": sub, "groups": []string{adminGroup}, "iat": now.Unix(), "exp": now.Add(assertionLife).Unix()})
 	unsigned := enc.EncodeToString(head) + "." + enc.EncodeToString(claims)
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(unsigned))

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -27,11 +28,12 @@ type gateDashboard struct {
 	srv    *httptest.Server
 	codes  map[string]string // code -> token
 	valid  map[string]bool   // token -> stands
+	user   string            // the username a standing token is answered with; empty: no record
 	checks atomic.Int32
 }
 
 func newGateDashboard(t *testing.T) *gateDashboard {
-	d := &gateDashboard{codes: map[string]string{}, valid: map[string]bool{}}
+	d := &gateDashboard{codes: map[string]string{}, valid: map[string]bool{}, user: "kostas"}
 	d.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/gate/redeem":
@@ -45,7 +47,11 @@ func newGateDashboard(t *testing.T) *gateDashboard {
 		case "/gate/check":
 			d.checks.Add(1)
 			if d.valid[r.Header.Get("X-Briard-Session")] {
-				w.WriteHeader(http.StatusNoContent)
+				if d.user == "" {
+					http.Error(w, "no user record yet", http.StatusConflict)
+					return
+				}
+				fmt.Fprint(w, d.user)
 				return
 			}
 			w.WriteHeader(http.StatusUnauthorized)
@@ -59,22 +65,23 @@ func newGateDashboard(t *testing.T) *gateDashboard {
 
 // gatedApp is an app that verifies the door's signature as Files does, and records what reached it.
 type gatedApp struct {
-	srv  *httptest.Server
-	key  []byte
-	seen *http.Request
-	sub  string
+	srv    *httptest.Server
+	key    []byte
+	seen   *http.Request
+	sub    string
+	groups []string
 }
 
 func newGatedApp(t *testing.T, key []byte) *gatedApp {
 	a := &gatedApp{key: key}
 	a.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.seen = r
-		sub, err := verify(r.Header.Get(assertionHeader), a.key)
+		sub, groups, err := verify(r.Header.Get(assertionHeader), a.key)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
-		a.sub = sub
+		a.sub, a.groups = sub, groups
 		fmt.Fprint(w, "app")
 	}))
 	t.Cleanup(a.srv.Close)
@@ -82,28 +89,29 @@ func newGatedApp(t *testing.T, key []byte) *gatedApp {
 }
 
 // verify is the app's side of HS256: the signature over the first two parts, and the expiry.
-func verify(tok string, key []byte) (string, error) {
+func verify(tok string, key []byte) (string, []string, error) {
 	parts := strings.Split(tok, ".")
 	if len(parts) != 3 {
-		return "", fmt.Errorf("not a token: %q", tok)
+		return "", nil, fmt.Errorf("not a token: %q", tok)
 	}
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(parts[0] + "." + parts[1]))
 	if base64.RawURLEncoding.EncodeToString(mac.Sum(nil)) != parts[2] {
-		return "", fmt.Errorf("bad signature")
+		return "", nil, fmt.Errorf("bad signature")
 	}
 	raw, _ := base64.RawURLEncoding.DecodeString(parts[1])
 	var c struct {
-		Sub string `json:"sub"`
-		Exp int64  `json:"exp"`
+		Sub    string   `json:"sub"`
+		Groups []string `json:"groups"`
+		Exp    int64    `json:"exp"`
 	}
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if time.Now().Unix() > c.Exp {
-		return "", fmt.Errorf("expired")
+		return "", nil, fmt.Errorf("expired")
 	}
-	return c.Sub, nil
+	return c.Sub, c.Groups, nil
 }
 
 type gateRig struct {
@@ -204,7 +212,7 @@ func TestACodeBecomesTheSession(t *testing.T) {
 	}
 }
 
-// A standing session is forwarded signed: the app verifies the household, never sees the
+// A standing session is forwarded signed: the app verifies the user the dashboard named, never sees the
 // dashboard's token, and keeps its own cookies. A token a client brings is replaced.
 func TestASessionIsForwardedSignedAndWithoutTheDashboardsToken(t *testing.T) {
 	r := newGateRig(t)
@@ -221,8 +229,8 @@ func TestASessionIsForwardedSignedAndWithoutTheDashboardsToken(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || r.app.sub != household {
-		t.Fatalf("status %d (%s), signed in as %q", resp.StatusCode, body, r.app.sub)
+	if resp.StatusCode != http.StatusOK || r.app.sub != "kostas" || !slices.Equal(r.app.groups, []string{"admin"}) {
+		t.Fatalf("status %d (%s), signed in as %q in %v; want kostas, the admin", resp.StatusCode, body, r.app.sub, r.app.groups)
 	}
 	if _, err := r.app.seen.Cookie(sessionCookie); err == nil {
 		t.Fatal("the dashboard's session token reached the app")
@@ -268,5 +276,20 @@ func TestUngatedAppsAndTheDashboardsGateAnswers(t *testing.T) {
 	}
 	if code, _ := getHost(t, srv.URL, "/gate/redeem", "briard.local"); code != http.StatusNotFound {
 		t.Fatalf("the dashboard's gate answer was served through the door: %d", code)
+	}
+}
+
+// A trusted device the dashboard has nobody to name for is refused here, never sent to the
+// dashboard, whose /open would send it straight back.
+func TestATrustedDeviceWithNoUserIsRefusedNotBounced(t *testing.T) {
+	r := newGateRig(t)
+	r.dash.valid["tok-1"] = true
+	r.dash.user = ""
+	resp := r.do(t, "GET", "/", filesHost, &http.Cookie{Name: sessionCookie, Value: "tok-1"})
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("answered %d (to %q), want 503", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if r.app.seen != nil {
+		t.Fatal("the app was reached with nobody to sign in")
 	}
 }

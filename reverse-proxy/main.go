@@ -180,7 +180,7 @@ type frontDoor struct {
 	proxy    http.Handler
 	fallback *url.URL // the dashboard; nil answers 503 for a name nobody routes
 	trust    forwardTrust
-	gate     *gate // signs the household into a gated app (gate.go)
+	gate     *gate // signs the user into a gated app (gate.go)
 }
 
 // backendKey carries the resolved route from ServeHTTP into the proxy's Rewrite hook. One

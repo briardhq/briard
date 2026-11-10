@@ -122,7 +122,9 @@ func (a *app) gateRedeem(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, h.token)
 }
 
-// gateCheck says whether a session token is still a trusted device's: 204 yes, 401 no.
+// gateCheck says whether a session token is still a trusted device's, and whose: 200 with the
+// user's username (account.go), the one the door signs into the app; 401 not a trusted device;
+// 409 a trusted device with no record to name, which only an open writes.
 func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 	if viaDoor(r) {
 		http.NotFound(w, r)
@@ -132,5 +134,11 @@ func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	acct, err := a.account()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, acct.Username)
 }

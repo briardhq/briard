@@ -74,8 +74,16 @@ func TestOpeningAGatedAppCarriesTheSessionToItsName(t *testing.T) {
 	if status, _ := r.loopback("POST", "/gate/redeem", "", url.Values{"code": {code}}); status != http.StatusNotFound {
 		t.Fatalf("a spent code redeemed again: %d", status)
 	}
-	if status, _ := r.loopback("GET", "/gate/check", c.Value, nil); status != http.StatusNoContent {
-		t.Fatalf("check on a trusted device's token = %d, want 204", status)
+	// The check names the user the door signs in: the record the open wrote, never "household".
+	if status, user := r.loopback("GET", "/gate/check", c.Value, nil); status != http.StatusOK || user != "kostas" {
+		t.Fatalf("check on a trusted device's token = %d %q, want 200 kostas", status, user)
+	}
+	// A trusted device with no record (one that could not be written) is a conflict, not a stranger.
+	if err := os.Remove(filepath.Join(r.dir, "state", accountFile)); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := r.loopback("GET", "/gate/check", c.Value, nil); status != http.StatusConflict {
+		t.Fatalf("check with no record = %d, want 409", status)
 	}
 	if status, _ := r.loopback("GET", "/gate/check", "not-a-token", nil); status != http.StatusUnauthorized {
 		t.Fatalf("check on a stranger's token = %d, want 401", status)

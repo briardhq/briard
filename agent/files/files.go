@@ -15,9 +15,9 @@
 // and Files never restarts for another app's sake.
 //
 // SIGNED-IN BY THE DASHBOARD. The reverse proxy lets a browser through to Files only with the
-// dashboard's own session, and then signs the household into the app with a short-lived token
-// made with KeyPath's secret. Files verifies it on every request; nothing without the key can make
-// one, wherever on the network it sits.
+// dashboard's own session, and then signs the user in -- by the username in the dashboard's
+// record -- with a short-lived token made with KeyPath's secret. Files verifies it on every
+// request; nothing without the key can make one, wherever on the network it sits.
 package files
 
 import (
@@ -44,7 +44,7 @@ const (
 	ViewMount = "/srv"
 )
 
-// KeyPath is the secret the reverse proxy signs the household's token with, and Files verifies it
+// KeyPath is the secret the reverse proxy signs the user's token with, and Files verifies it
 // with. Root's alone (0600): Files runs as root and reads it from its config, the proxy reads it
 // from here.
 const KeyPath = Dir + "/gate.key"

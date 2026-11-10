@@ -87,6 +87,14 @@ const Dir = "/run/briard/dashboard"
 // HandoffPath is the file the verb writes (0600, root) and the dashboard reads then removes.
 const HandoffPath = Dir + "/handoff.json"
 
+// StateDir is the dashboard's own directory on the replicated volume: the trusted devices and the
+// user's record, which whichever node promotes next reads.
+const StateDir = "/var/lib/briard/dashboard"
+
+// AccountPath is the user's record: written once at the first redeemed open, and carried by the
+// backup.
+const AccountPath = StateDir + "/account.json"
+
 // TTL is how long a code is presentable. Ten minutes matches Home Assistant's own auth-code
 // lifetime and is long enough to walk from the terminal to a phone.
 const TTL = 10 * time.Minute
@@ -95,8 +103,9 @@ const TTL = 10 * time.Minute
 type Handoff struct {
 	// Code is 32 random bytes, hex. Compared in constant time, consumed on first use.
 	Code string `json:"code"`
-	// Name, Username and Language describe the OS account the CLI ran under, for the Home
-	// Assistant user the dashboard creates. Empty means the dashboard picks defaults.
+	// Name, Username and Language describe the OS account the CLI ran under: the seed of the
+	// user's record, which the first redeemed open writes and later ones ignore. Empty means
+	// nothing is known, and the record takes its defaults.
 	Name     string `json:"name,omitempty"`
 	Username string `json:"username,omitempty"`
 	Language string `json:"language,omitempty"`

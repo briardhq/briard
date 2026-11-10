@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"strings"
 	"time"
 
@@ -766,9 +767,11 @@ func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	fs := flag.NewFlagSet("briard open", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
-	name := fs.String("name", accountName(), "the display name for Home Assistant's first user")
-	user := fs.String("user", accountUser(), "the username for Home Assistant's first user")
-	lang := fs.String("lang", accountLang(), "the language for Home Assistant's first user (two letters)")
+	// Your Briard profile is written from these at the first open, and every app's account is made
+	// from it; later opens ignore them.
+	name := fs.String("name", accountName(), "your display name (counts at the first open only)")
+	user := fs.String("user", accountUser(), "your username in every app (counts at the first open only)")
+	lang := fs.String("lang", accountLang(), "your language, two letters (counts at the first open only)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -806,22 +809,27 @@ func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	return 0
 }
 
-// The OS account the CLI runs under, as Home Assistant's first user would like it: the invoking
-// user through sudo rather than root, a capitalised display name, and the two-letter language
-// from LANG (en when it says nothing usable).
+// The OS account the CLI runs under, the seed of the user's record: the invoking user through sudo
+// rather than root (USERNAME on Windows, where an elevated prompt is still the person), the
+// account's own display name, and the two-letter language from LANG (en when it says nothing
+// usable). The dashboard normalises them and fills what is missing.
 func accountUser() string {
-	if u := os.Getenv("SUDO_USER"); u != "" {
-		return u
+	for _, k := range []string{"SUDO_USER", "USER", "USERNAME"} {
+		if u := os.Getenv(k); u != "" {
+			return u
+		}
 	}
-	return os.Getenv("USER")
+	return ""
 }
 
+// accountName is the account's display name -- the passwd entry's name field on Linux, the full
+// name on Windows -- or empty when it has none.
 func accountName() string {
-	u := accountUser()
-	if u == "" {
+	u, err := user.Lookup(accountUser())
+	if err != nil {
 		return ""
 	}
-	return strings.ToUpper(u[:1]) + u[1:]
+	return u.Name
 }
 
 func accountLang() string {

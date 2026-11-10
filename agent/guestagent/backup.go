@@ -35,7 +35,8 @@ import (
 //
 //	data/<app>/                the newest member of the app's ring, bind-mounted read-only
 //	briard/members/<app>.json  that member's sidecar: the manifest its data was written under
-//	briard/volume/                 the volume's flock-scoped facts -- .vip-address, .apps/, tls/
+//	briard/volume/                 the volume's flock-scoped facts -- .vip-address, .apps/, tls/,
+//	                               the user's record (account.json)
 //	briard/host/<name>             the host's own facts, handed over in the request
 //
 // and then the household's files', tagged files:
@@ -184,7 +185,9 @@ const (
 
 // volumeFacts are the replicated volume's flock-scoped facts -- the ones every node shares and
 // whichever promotes next reads -- copied whole when present. tls/ carries the private key; the repository is encrypted under the household's key.
-var volumeFacts = []string{dataMountRoot + "/.vip-address", manifestDir, tlsDir}
+// The user's record rides with them because every app matches its account on the username in it:
+// a restore that came back as a different user would be a stranger to every app it restored.
+var volumeFacts = []string{dataMountRoot + "/.vip-address", manifestDir, tlsDir, dashboard.AccountPath}
 
 // backupRequest is what the host hands a run: where the repository is, whose snapshots these are,
 // and the facts only the host holds.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -426,9 +427,25 @@ func TestAccountLang(t *testing.T) {
 			t.Errorf("LANG=%q -> %q, want %q", in, got, want)
 		}
 	}
-	t.Setenv("SUDO_USER", "kostas")
-	if accountUser() != "kostas" || accountName() != "Kostas" {
-		t.Errorf("under sudo: user %q name %q", accountUser(), accountName())
+	// The person behind sudo, then USER, then Windows' USERNAME; the name is the account's own.
+	me, err := user.Current()
+	if err != nil {
+		t.Skip(err)
+	}
+	t.Setenv("SUDO_USER", me.Username)
+	t.Setenv("USER", "root")
+	if accountUser() != me.Username || accountName() != me.Name {
+		t.Errorf("under sudo: user %q name %q, want %q %q", accountUser(), accountName(), me.Username, me.Name)
+	}
+	t.Setenv("SUDO_USER", "")
+	t.Setenv("USER", "")
+	t.Setenv("USERNAME", "Kostas")
+	if accountUser() != "Kostas" {
+		t.Errorf("with only USERNAME: user %q", accountUser())
+	}
+	t.Setenv("USERNAME", "no-such-account-here")
+	if accountName() != "" {
+		t.Errorf("an account the system does not know has the name %q", accountName())
 	}
 }
 

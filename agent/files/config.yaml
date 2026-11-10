@@ -41,7 +41,10 @@ auth:
       header: "X-JWT-Assertion"
       algorithm: "HS256"
       secret: "@SECRET@"
-  adminUsername: "household"
+      # The one user is the admin: the proxy puts whoever it signs in in this group, so the
+      # config never names the user (that is the dashboard's record, on the volume).
+      groupsClaim: "groups"
+      adminGroup: "admin"
 frontend:
   name: "Files"
   description: "Every app's files on this Briard machine"
