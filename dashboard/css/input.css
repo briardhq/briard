@@ -6,9 +6,17 @@
 @import "basecoat-css";
 @source "../templates";
 
-/* The palette over Basecoat's neutral: one green, light and dark. */
-:root { --primary: oklch(.42 .06 170); --primary-foreground: oklch(.99 0 0); --ring: oklch(.42 .06 170); --sidebar-primary: oklch(.42 .06 170); }
+/* The palette over Basecoat's neutral: one green, light and dark, and amber for what needs the
+   person -- the tray's dot for the same alerts, the same colour. Basecoat's red stays for an act
+   that failed and for a button that destroys. */
+:root { --primary: oklch(.42 .06 170); --primary-foreground: oklch(.99 0 0); --ring: oklch(.42 .06 170); --sidebar-primary: oklch(.42 .06 170); --attention: oklch(.75 .15 70); }
 :root.dark { --primary: oklch(.78 .08 170); --primary-foreground: oklch(.2 0 0); --ring: oklch(.78 .08 170); --sidebar-primary: oklch(.78 .08 170); }
+
+/* ATTENTION: an alert and a badge in amber. The words keep the card's ink -- amber text on white is
+   too faint to read -- and the amber is the border, the icon and a tint. */
+.alert[data-variant=attention] { border-color: var(--attention); background: color-mix(in oklab, var(--attention) 8%, var(--card)); }
+.alert[data-variant=attention] > svg { color: var(--attention); }
+.badge[data-variant=attention] { background: color-mix(in oklab, var(--attention) 25%, transparent); color: var(--foreground); }
 
 /* THE SHELL: the sidebar (Basecoat's, coloured and spaced here; a drawer under its width) and,
    under its width, the top bar whose button opens the drawer. */

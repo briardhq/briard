@@ -3,9 +3,9 @@
 {{define "alerts"}}
   {{with .Alerts}}
   {{if .Unreachable}}
-  <div class="alert wide" data-variant="destructive">{{template "icon-alert"}}<h2>Briard is not answering</h2><section><p>The Briard agent on this machine has not been heard from since {{.Unreachable}}. Your apps keep running, but nothing is watching over them until it is back.</p><p>Restarting the machine that runs Briard usually brings it back.</p></section></div>
+  <div class="alert wide" data-variant="attention">{{template "icon-alert"}}<h2>Briard is not answering</h2><section><p>The Briard agent on this machine has not been heard from since {{.Unreachable}}. Your apps keep running, but nothing is watching over them until it is back.</p><p>Restarting the machine that runs Briard usually brings it back.</p></section></div>
   {{else if .Open}}
-  <div class="alert wide" data-variant="destructive">{{template "icon-alert"}}<h2>Needs attention</h2><section><div class="item-group">
+  <div class="alert wide" data-variant="attention">{{template "icon-alert"}}<h2>Needs attention</h2><section><div class="item-group">
     {{range $i, $a := .Open}}{{if $i}}<hr>{{end}}<div class="item" id="alert-{{.Key}}"><section><h3>{{.Title}}</h3><p>{{.Body}}</p></section><aside class="when">since {{.When}}</aside></div>{{end}}
   </div></section></div>
   {{end}}
@@ -20,7 +20,7 @@
 {{template "alerts" .}}
 <div class="card wide"><section>
   {{with .Alerts}}{{if .Recent}}<div class="item-group">
-    {{range $i, $a := .Recent}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{.Title}}{{if .Resolved}} <span class="badge" data-variant="secondary">resolved</span>{{else if ne .Severity "info"}} <span class="badge" data-variant="destructive">{{.Severity}}</span>{{end}}</h3>{{with .Body}}<p>{{.}}</p>{{end}}</section><aside class="when">{{.When}}</aside></div>{{end}}
+    {{range $i, $a := .Recent}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{.Title}}{{if .Resolved}} <span class="badge" data-variant="secondary">resolved</span>{{else if ne .Severity "info"}} <span class="badge" data-variant="attention">{{.Severity}}</span>{{end}}</h3>{{with .Body}}<p>{{.}}</p>{{end}}</section><aside class="when">{{.When}}</aside></div>{{end}}
   </div>{{else}}<p class="note">Nothing yet. What Briard notices and does on this machine appears here.</p>{{end}}
   {{else}}<p class="note">Nothing yet. What Briard notices and does on this machine appears here.</p>{{end}}
 </section></div>

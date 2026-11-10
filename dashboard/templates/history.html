@@ -13,7 +13,7 @@
       <p class="note">Or, on the machine that runs Briard: <code>sudo briard app history {{.App}}</code></p>
     {{else if not .Rows}}<p class="note">Nothing yet. Updates, the changes Briard notices, and quiet stretches appear here.</p>
     {{else}}
-    {{with .Banner}}<div class="alert" data-variant="destructive">{{template "icon-alert"}}<h2>{{$.Title}} is not working</h2><section><p>Undoing takes it back to {{.Back}}, its last healthy state, and loses everything since.</p>
+    {{with .Banner}}<div class="alert" data-variant="attention">{{template "icon-alert"}}<h2>{{$.Title}} is not working</h2><section><p>Undoing takes it back to {{.Back}}, its last healthy state, and loses everything since.</p>
       <form method="post" action="/undo"><input type="hidden" name="point" value="{{.Point}}"><input type="hidden" name="what" value="{{or .What .Caption}}"><button type="submit" class="btn" data-variant="destructive">Undo these changes</button></form></section></div>{{end}}
     <p class="note">Newest first. Point at a change to see what undoing it takes away: that change and everything above it.</p>
     <ol class="history">
