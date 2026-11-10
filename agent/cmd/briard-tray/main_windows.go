@@ -34,6 +34,7 @@ var (
 	user32  = windows.NewLazySystemDLL("user32.dll")
 	shell32 = windows.NewLazySystemDLL("shell32.dll")
 	gdi32   = windows.NewLazySystemDLL("gdi32.dll")
+	shcore  = windows.NewLazySystemDLL("shcore.dll")
 
 	registerClassEx       = user32.NewProc("RegisterClassExW")
 	createWindowEx        = user32.NewProc("CreateWindowExW")
@@ -53,6 +54,10 @@ var (
 	setForegroundWindow   = user32.NewProc("SetForegroundWindow")
 	getCursorPos          = user32.NewProc("GetCursorPos")
 	createIconIndirect    = user32.NewProc("CreateIconIndirect")
+	destroyIcon           = user32.NewProc("DestroyIcon")
+	monitorFromWindow     = user32.NewProc("MonitorFromWindow")
+	getSystemMetricsDpi   = user32.NewProc("GetSystemMetricsForDpi")
+	getDpiForMonitor      = shcore.NewProc("GetDpiForMonitor")
 	findWindow            = user32.NewProc("FindWindowW")
 	getWindowThreadPID    = user32.NewProc("GetWindowThreadProcessId")
 	allowSetForeground    = user32.NewProc("AllowSetForegroundWindow")
@@ -65,18 +70,24 @@ var (
 )
 
 const (
-	wmNull        = 0x0000
-	wmDestroy     = 0x0002
-	wmClose       = 0x0010
-	wmContextMenu = 0x007B
-	wmApp         = 0x8000
-	msgIcon       = wmApp + 1 // the icon's callback
-	msgRead       = wmApp + 2 // the poll or an action has something to show
-	msgLaunch     = wmApp + 3 // a Start menu click, handed over by the instance it started
+	wmNull          = 0x0000
+	wmDestroy       = 0x0002
+	wmClose         = 0x0010
+	wmSettingChange = 0x001A
+	wmContextMenu   = 0x007B
+	wmDpiChanged    = 0x02E0
+	wmApp           = 0x8000
+	msgIcon         = wmApp + 1 // the icon's callback
+	msgRead         = wmApp + 2 // the poll or an action has something to show
+	msgLaunch       = wmApp + 3 // a Start menu click, handed over by the instance it started
 
 	mbIconWarning   = 0x30
 	mbSetForeground = 0x10000
 	mbTopmost       = 0x40000
+
+	smCxSmIcon              = 49
+	monitorDefaultToPrimary = 1
+	mdtEffectiveDpi         = 0
 
 	ninSelect           = 0x0400
 	ninKeySelect        = 0x0401
@@ -157,6 +168,7 @@ type tray struct {
 	wnd      windows.HWND
 	sock     string
 	icons    [4]windows.Handle
+	px       int    // the icons' size, in pixels
 	created  uint32 // the TaskbarCreated message: Explorer restarted, the icon must be added again
 	wake     chan struct{}
 	relaunch bool
@@ -211,9 +223,7 @@ func main() {
 	self, _ := os.Stat(exe)
 
 	t = &tray{sock: host.ConfigFromEnv().AdminSock, wake: make(chan struct{}, 1)}
-	for _, s := range []state{serving, degraded, stopped, working} {
-		t.icons[s] = icon(art(s))
-	}
+	t.size()
 	created, _ := windows.UTF16PtrFromString("TaskbarCreated")
 	r, _, _ := registerWindowMessage.Call(uintptr(unsafe.Pointer(created)))
 	t.created = uint32(r)
@@ -282,7 +292,13 @@ func wndProc(wnd windows.HWND, m uint32, wp, lp uintptr) uintptr {
 		t.show()
 		return 0
 	case m == t.created && m != 0:
+		t.size()
 		t.add()
+		return 0
+	case m == wmDpiChanged, m == wmSettingChange: // the scaling may have changed
+		if t.size() {
+			t.show()
+		}
 		return 0
 	case m == wmClose:
 		destroyWindow.Call(uintptr(wnd))
@@ -622,7 +638,41 @@ func copyUTF16(dst []uint16, s string) {
 	copy(dst, u)
 }
 
-// icon makes a Windows icon of an image (art), for Windows to scale.
+// size draws the four icons at the size the taskbar asks for now, unless they are that size
+// already, and says whether it drew them.
+func (t *tray) size() bool {
+	px := iconSize()
+	if px == t.px {
+		return false
+	}
+	for s, h := range t.icons {
+		if h != 0 {
+			destroyIcon.Call(uintptr(h))
+		}
+		t.icons[s] = icon(art(state(s), px))
+	}
+	t.px = px
+	return true
+}
+
+// iconSize is a notification icon's size at the scaling of the monitor the notification area is
+// on: the primary taskbar's (with Explorer not running, the primary monitor's).
+func iconSize() int {
+	class, _ := windows.UTF16PtrFromString("Shell_TrayWnd")
+	bar, _, _ := findWindow.Call(uintptr(unsafe.Pointer(class)), 0)
+	mon, _, _ := monitorFromWindow.Call(bar, monitorDefaultToPrimary)
+	var dpi, dpiY uint32
+	if r, _, _ := getDpiForMonitor.Call(mon, mdtEffectiveDpi, uintptr(unsafe.Pointer(&dpi)), uintptr(unsafe.Pointer(&dpiY))); r != 0 {
+		dpi = 96
+	}
+	px, _, _ := getSystemMetricsDpi.Call(smCxSmIcon, uintptr(dpi))
+	if px == 0 {
+		return 16
+	}
+	return int(px)
+}
+
+// icon makes a Windows icon of an image (art).
 func icon(img *image.NRGBA) windows.Handle {
 	w, h := img.Bounds().Dx(), img.Bounds().Dy()
 	hdr := struct {

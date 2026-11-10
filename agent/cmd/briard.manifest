@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!-- The application manifest of briard-agent and briard-tray, compiled into each through its .rc.
      Common Controls 6: their message boxes in today's style. asInvoker: each asks for elevation, or
-     says it needs it, itself. No DPI awareness: the tray draws its icon at one size, which Windows
-     scales. briard-setup has a manifest of its own, which is DPI-aware. -->
+     says it needs it, itself. Per-monitor DPI aware: the tray draws its icon at the size the
+     taskbar asks for at its scaling, and Windows scales their menus and message boxes itself.
+     briard-setup has a manifest of its own. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <dependency>
     <dependentAssembly>
@@ -17,4 +18,9 @@
       </requestedPrivileges>
     </security>
   </trustInfo>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
 </assembly>
