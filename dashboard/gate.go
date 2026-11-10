@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strings"
 
+	"briard.io/agent/mealie"
 	"briard.io/shared/casa"
 	"briard.io/shared/routes"
 )
@@ -56,6 +57,14 @@ func (a *app) openGated(w http.ResponseWriter, r *http.Request, name string) {
 	if !ok {
 		http.NotFound(w, r)
 		return
+	}
+	// Mealie's own first account becomes the user's before anyone is let through (mealie.go).
+	if name == mealie.Name {
+		if err := a.takeOverMealie(r.Context(), s); err != nil {
+			log.Printf("dashboard: take over Mealie's first account: %v", err)
+			http.Error(w, err.Error()+"\n", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	// Back to the name the browser was on when it is one of the app's own; else the one that
 	// matches how this page was reached -- the household's name on its name, the alias otherwise.

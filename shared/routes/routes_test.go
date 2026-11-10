@@ -119,6 +119,24 @@ func TestValidateRefusesATargetThatNamesAHost(t *testing.T) {
 	}
 }
 
+// A gate header names a plain header beside a gate: never alone (there would be no secret to send),
+// and never something that could split the request or name a second header.
+func TestValidateHoldsAGateHeaderToAHeaderBesideAGate(t *testing.T) {
+	ok := App{Name: "mealie", Gate: "/run/briard/mealie/secret", GateHeader: "X-Mealie-Reverse-Proxy-Secret"}
+	if err := (Table{Apps: []App{ok}}).Validate(); err != nil {
+		t.Fatalf("a gate header beside a gate was refused: %v", err)
+	}
+	for _, a := range []App{
+		{Name: "mealie", GateHeader: "X-Mealie-Reverse-Proxy-Secret"},
+		{Name: "mealie", Gate: "/run/s", GateHeader: "X-Secret: 1\r\nX-Forwarded-User: admin"},
+		{Name: "mealie", Gate: "/run/s", GateHeader: "X Secret"},
+	} {
+		if err := (Table{Apps: []App{a}}).Validate(); err == nil {
+			t.Errorf("gate header %q (gate %q) validated", a.GateHeader, a.Gate)
+		}
+	}
+}
+
 // An unknown listener is REFUSED, never skipped. A route the door silently drops is an app that
 // is unreachable with nothing saying why -- the failure mode that looks like a user error. This is
 // also what makes adding `tls:<port>` a change nobody can half-deploy.

@@ -25,6 +25,7 @@ import (
 	"briard.io/agent/apps"
 	"briard.io/agent/files"
 	"briard.io/agent/hass"
+	"briard.io/agent/mealie"
 	"briard.io/agent/mosquitto"
 	"briard.io/shared/manifest"
 )
@@ -201,6 +202,32 @@ func TestFilesEntryMatchesWhatTheProductAssumes(t *testing.T) {
 	}
 	if m.HostNetwork() || len(m.Ports) != 0 {
 		t.Errorf("Files is reachable other than through the door: network %q, ports %v", m.Network, m.Ports)
+	}
+}
+
+// MEALIE IS REACHED ONLY THROUGH THE DOOR AND TOLD ONLY BY BRIARD. Private, with nothing published:
+// the door is what signs the user in. Its data is one area at /app/data. And its manifest sets
+// none of the settings agent/mealie writes as files: Mealie lets an environment variable win over
+// its settings file, so an entry that set one -- the password form, the sign-in, the address --
+// would quietly overrule the product.
+func TestMealieEntryMatchesWhatTheProductAssumes(t *testing.T) {
+	m, _, err := manifest.Parse(current(t, mealie.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.HostNetwork() || len(m.Ports) != 0 {
+		t.Errorf("Mealie is reachable other than through the door: network %q, ports %v", m.Network, m.Ports)
+	}
+	p := m.Primary()
+	if want := []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/app/data"}}; !slices.Equal(p.Mounts, want) {
+		t.Errorf("Mealie mounts %v, want its data at /app/data", p.Mounts)
+	}
+	for k := range p.Env {
+		for _, owned := range []string{"ALLOW_PASSWORD_LOGIN", "REVERSE_PROXY_AUTH", "BASE_URL", "OIDC_", "LDAP_", "ALLOW_SIGNUP"} {
+			if strings.HasPrefix(k, owned) {
+				t.Errorf("Mealie's entry sets %s, which would overrule what briard tells it", k)
+			}
+		}
 	}
 }
 

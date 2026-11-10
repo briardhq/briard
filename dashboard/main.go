@@ -205,6 +205,9 @@ type app struct {
 	// viewWait is how long a backup setting's answer waits for the host to push the view it
 	// changed (awaitView): a few of the host's ticks.
 	viewWait time.Duration
+	// mealieMu holds a second open of Mealie while the first takes over its first account
+	// (mealie.go), so the two never race through its password change.
+	mealieMu sync.Mutex
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {

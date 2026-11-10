@@ -126,6 +126,11 @@ type App struct {
 	//
 	// A PATH, NEVER THE SECRET: this table is world-readable on the node, and the secret is root's.
 	Gate string `json:"gate,omitempty"`
+	// GateHeader, when set beside Gate, is the other way the door tells a gated app who it is,
+	// for an app that reads its user from a reverse proxy's header rather than a token: the
+	// username in X-Forwarded-User, and the secret itself in this header, which the app compares
+	// with its own copy. Empty is the signed token.
+	GateHeader string `json:"gateHeader,omitempty"`
 }
 
 // Announcement is one mDNS service record: the label a browser shows, the type it browses for,
@@ -288,6 +293,9 @@ func (t Table) Validate() error {
 		}
 		if s.Gate != "" && (!path.IsAbs(s.Gate) || path.Clean(s.Gate) != s.Gate) {
 			return fmt.Errorf("routes: app %q has a gate %q that is not an absolute, clean path", s.Name, s.Gate)
+		}
+		if s.GateHeader != "" && (s.Gate == "" || !headerName(s.GateHeader)) {
+			return fmt.Errorf("routes: app %q has a gate header %q that is not a header name beside a gate", s.Name, s.GateHeader)
 		}
 		if (s.Health != "" || len(s.Routes) > 0) && s.Address == "" {
 			return fmt.Errorf("routes: app %q has endpoints but no address to resolve them against", s.Name)
@@ -461,3 +469,13 @@ func FlockHostName(flock string) string {
 // same alias rule as BareHostName, and the same accepted ambiguity in a two-flock house. The door
 // forwards it to the dashboard the way it forwards every name it does not route.
 const BareFlockHostName = "briard.local"
+
+// headerName says a string is a plain HTTP header name: letters, digits and dashes.
+func headerName(h string) bool {
+	for _, c := range h {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return h != ""
+}

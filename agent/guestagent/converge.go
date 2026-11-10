@@ -792,7 +792,7 @@ func routesFor(flock string, svcs []convergedApp) routes.Table {
 				To:     fmt.Sprintf("http://:%d", p.Port),
 			}}
 			// Gated: the door admits the household's dashboard session and signs it in.
-			e.Gate = apps.Gate(s.m)
+			e.Gate, e.GateHeader = apps.Gate(s.m), apps.GateHeader(s.m)
 		}
 		t.Apps = append(t.Apps, e)
 	}

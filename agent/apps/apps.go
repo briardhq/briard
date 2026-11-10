@@ -29,6 +29,7 @@ import (
 
 	"briard.io/agent/files"
 	"briard.io/agent/hass"
+	"briard.io/agent/mealie"
 	"briard.io/agent/mosquitto"
 	"briard.io/shared/api"
 	"briard.io/shared/manifest"
@@ -136,6 +137,8 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 		out = mosquitto.Volumes(m, c)
 	case files.Name:
 		out = files.Volumes(m, c)
+	case mealie.Name:
+		out = mealie.Volumes(m, c)
 	}
 	// THE APP'S OWN DIRECTORY, read-only, and it is the product's general shape rather than
 	// one app's arrangement -- which is why it lives here and not in agent/hass, where the
@@ -399,6 +402,8 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 		return mosquitto.Prepare(ctx, x, m)
 	case files.Name:
 		return files.Prepare(ctx, x, m)
+	case mealie.Name:
+		return mealie.Prepare(ctx, x, m)
 	}
 	return nil
 }
@@ -416,16 +421,29 @@ func User(m manifest.Manifest, c manifest.Container) string {
 	return ""
 }
 
-// Gate is where the secret lives that the reverse proxy signs the household into this app with,
-// "" for an app the door forwards to unsigned.
+// Gate is where the secret lives that the reverse proxy signs the user into this app with, ""
+// for an app the door forwards to unsigned.
 //
 // GATED means the door lets a browser through only with the household dashboard's session, and
-// then tells the app who it is in a token the app verifies. Today that is Files alone: it holds
-// every app's data and signs in by token, while Home Assistant keeps its own login because its
-// companion app has no browser session to bring.
+// then tells the app who it is in a way the app checks against the secret. Files and Mealie are
+// gated: Files holds every app's data, and Mealie has no sign-in of its own briard would not have
+// to tell the user a password for. Home Assistant keeps its own login because its companion app
+// has no browser session to bring.
 func Gate(m manifest.Manifest) string {
-	if m.Name == files.Name {
+	switch m.Name {
+	case files.Name:
 		return files.KeyPath
+	case mealie.Name:
+		return mealie.KeyPath
+	}
+	return ""
+}
+
+// GateHeader is the header a gated app takes the secret itself in, beside the username, for an app
+// that reads its user from a reverse proxy's header; "" is Files' signed token.
+func GateHeader(m manifest.Manifest) string {
+	if m.Name == mealie.Name {
+		return mealie.SecretHeader
 	}
 	return ""
 }

@@ -9,6 +9,7 @@ import (
 
 	"briard.io/agent/files"
 	"briard.io/agent/hass"
+	"briard.io/agent/mealie"
 	"briard.io/agent/mosquitto"
 	"briard.io/shared/manifest"
 )
@@ -103,6 +104,21 @@ func TestEachKnownAppGetsItsOwn(t *testing.T) {
 	}
 }
 
+// Mealie is gated by header: its settings bound read-only where it reads them, the secret in them,
+// and the secret's header named; it runs as its image's own user.
+func TestMealieIsGatedByHeaderWithItsSettingsBound(t *testing.T) {
+	m := svc(mealie.Name, 9000)
+	if v := Volumes(m, m.Containers[0]); !slices.Contains(v, mealie.SettingsDir+":"+mealie.SettingsMount+":ro") {
+		t.Errorf("Mealie lacks its settings: %v", v)
+	}
+	if g, h := Gate(m), GateHeader(m); g != mealie.KeyPath || h != mealie.SecretHeader {
+		t.Errorf("Gate(mealie) = %q %q, want %q %q", g, h, mealie.KeyPath, mealie.SecretHeader)
+	}
+	if u := User(m, m.Containers[0]); u != "" {
+		t.Errorf("User(mealie) = %q, want the image's own", u)
+	}
+}
+
 // TestOnlyFilesSeesTheViewAsRootBehindTheGate: the one app that reads other apps' areas gets the
 // view, root and the gate, and no other app gets any of the three -- a name the registry does not
 // key on must not inherit the household's data.
@@ -130,9 +146,12 @@ func TestOnlyFilesSeesTheViewAsRootBehindTheGate(t *testing.T) {
 		if u := User(m, m.Containers[0]); u != "" {
 			t.Errorf("User(%s) = %q, want the image's own", m.Name, u)
 		}
-		if g := Gate(m); g != "" {
-			t.Errorf("Gate(%s) = %q, want none", m.Name, g)
+		if g, h := Gate(m), GateHeader(m); g != "" || h != "" {
+			t.Errorf("Gate(%s) = %q %q, want none", m.Name, g, h)
 		}
+	}
+	if h := GateHeader(fl); h != "" {
+		t.Errorf("GateHeader(files) = %q, want the signed token", h)
 	}
 	// A second container of Files is not the browser, and gets none of the browser's binds.
 	side := manifest.Container{Name: "sidecar", Image: image}

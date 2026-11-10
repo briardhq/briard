@@ -17,6 +17,11 @@ package main
 // address -- another workload on this node, a LAN host routing to the pod network -- can sign in
 // without the key, which only root on this node can read.
 //
+// OR BY HEADER, for an app that reads its user from a reverse proxy (Mealie): the username in
+// X-Forwarded-User and the secret itself in the route's GateHeader, which the app compares with
+// its own copy. The secret is then a standing bearer rather than a minute's signature -- as safe
+// as the file it is kept in, which nothing off this node reads.
+//
 // THE DASHBOARD'S TOKEN NEVER REACHES THE APP. The cookie is the household's credential for the
 // dashboard itself, so the door takes it off every request it forwards.
 
@@ -52,6 +57,8 @@ const (
 	assertionQuery  = "jwt"
 	// adminGroup is the group the token puts the user in: the admin, in the app's config too.
 	adminGroup = "admin"
+	// userHeader names the user to an app gated by header (a route with a GateHeader).
+	userHeader = "X-Forwarded-User"
 	// assertionLife is how long a signed token is good for: one request's worth, with room for a
 	// clock that is a little off.
 	assertionLife = time.Minute
@@ -152,6 +159,13 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 		return false
 	}
 	dropCookie(req, sessionCookie)
+	if r.gateHeader != "" {
+		// The app's own reverse-proxy sign-in: who, and the secret that says the door sent it.
+		// Set, never added, so a client's own copy of either header never reaches the app.
+		req.Header.Set(userHeader, user)
+		req.Header.Set(r.gateHeader, string(key))
+		return true
+	}
 	if q.Has(assertionQuery) {
 		q.Del(assertionQuery)
 		req.URL.RawQuery = q.Encode()

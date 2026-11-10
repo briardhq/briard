@@ -293,3 +293,45 @@ func TestATrustedDeviceWithNoUserIsRefusedNotBounced(t *testing.T) {
 		t.Fatal("the app was reached with nobody to sign in")
 	}
 }
+
+// An app gated by header gets the user and the secret itself, in place of whatever a client sent in
+// either header, and no token and no dashboard cookie.
+func TestAHeaderGatedAppGetsTheUserAndTheSecret(t *testing.T) {
+	key := filepath.Join(t.TempDir(), "REVERSE_PROXY_AUTH_SECRET")
+	if err := os.WriteFile(key, []byte("s3cret"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	var seen *http.Request
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = r }))
+	t.Cleanup(app.Close)
+	dash := newGateDashboard(t)
+	dash.valid["tok-1"] = true
+	s := fronted("mealie", "briard-mealie.local", app.URL)
+	s.Gate, s.GateHeader = key, "X-Mealie-Reverse-Proxy-Secret"
+	du, _ := url.Parse(dash.srv.URL)
+	door := httptest.NewServer(newFrontDoor(fixed(routes.Table{Apps: []routes.App{s}}), du))
+	t.Cleanup(door.Close)
+
+	req, _ := http.NewRequest("GET", door.URL+"/api/auth/reverse-proxy", nil)
+	req.Host = "briard-mealie.local"
+	req.Header.Set("X-Forwarded-User", "admin")
+	req.Header.Set("X-Mealie-Reverse-Proxy-Secret", "guessed")
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "tok-1"})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || seen == nil {
+		t.Fatalf("status %d, reached the app: %v", resp.StatusCode, seen != nil)
+	}
+	if u, sec := seen.Header.Values("X-Forwarded-User"), seen.Header.Values("X-Mealie-Reverse-Proxy-Secret"); !slices.Equal(u, []string{"kostas"}) || !slices.Equal(sec, []string{"s3cret"}) {
+		t.Fatalf("the app was told user %v with secret %v; want only kostas and the file's secret", u, sec)
+	}
+	if seen.Header.Get(assertionHeader) != "" {
+		t.Fatal("a header-gated app was also handed a token")
+	}
+	if _, err := seen.Cookie(sessionCookie); err == nil {
+		t.Fatal("the dashboard's session token reached the app")
+	}
+}
