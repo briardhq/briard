@@ -30,6 +30,7 @@ type gateDashboard struct {
 	valid  map[string]bool   // token -> stands
 	user   string            // the username a standing token is answered with; empty: no record
 	checks atomic.Int32
+	asked  []string // the app each check named, in order
 }
 
 func newGateDashboard(t *testing.T) *gateDashboard {
@@ -46,6 +47,7 @@ func newGateDashboard(t *testing.T) *gateDashboard {
 			fmt.Fprint(w, tok)
 		case "/gate/check":
 			d.checks.Add(1)
+			d.asked = append(d.asked, r.URL.Query().Get("app"))
 			if d.valid[r.Header.Get("X-Briard-Session")] {
 				if d.user == "" {
 					http.Error(w, "no user record yet", http.StatusConflict)
@@ -260,6 +262,32 @@ func TestARevokedSessionIsShutOutAndAStandingOneIsKept(t *testing.T) {
 	r.dash.valid["tok-1"] = false
 	if resp := r.do(t, "GET", "/", filesHost, &http.Cookie{Name: sessionCookie, Value: "tok-2"}); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("an unknown token answered %d, want 303", resp.StatusCode)
+	}
+}
+
+// The dashboard is asked about a session for each app by name, and its word for one app never
+// admits the same session to another: its answer covers the app too (Mealie's first account is
+// the user's before the answer is yes).
+func TestASessionIsCheckedForEachAppByName(t *testing.T) {
+	r := newGateRig(t)
+	r.dash.valid["tok-1"] = true
+	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(other.Close)
+	s := fronted("files", filesHost, r.app.srv.URL)
+	s.Gate = r.key
+	m := fronted("mealie", "briard-mealie.local", other.URL)
+	m.Gate, m.GateHeader = r.key, "X-Mealie-Reverse-Proxy-Secret"
+	du, _ := url.Parse(r.dash.srv.URL)
+	r.door = httptest.NewServer(newFrontDoor(fixed(routes.Table{Apps: []routes.App{s, m}}), du))
+	t.Cleanup(r.door.Close)
+	ck := &http.Cookie{Name: sessionCookie, Value: "tok-1"}
+	for _, host := range []string{filesHost, "briard-mealie.local", "briard-mealie.local", filesHost} {
+		if resp := r.do(t, "GET", "/", host, ck); resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s answered %d", host, resp.StatusCode)
+		}
+	}
+	if !slices.Equal(r.dash.asked, []string{"files", "mealie"}) {
+		t.Fatalf("the dashboard was asked about %q, want files then mealie, once each", r.dash.asked)
 	}
 }
 

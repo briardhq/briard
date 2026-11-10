@@ -11,7 +11,8 @@ package main
 // dashboard does not trust meets the dashboard's ordinary way in, and nothing else.
 //
 // THE APP IS TOLD WHO IT IS IN A SIGNATURE, NOT A HEADER IT BELIEVES. After the dashboard says the
-// token stands (asked over loopback, the answer kept for half a minute), the door forwards the
+// token stands for this app (asked over loopback, naming the app, so the dashboard can make the
+// app ready for the user first; the answer kept for half a minute), the door forwards the
 // request with a token signed with the app's secret (the route's Gate file) naming the user
 // by the username the dashboard answers with, valid for a minute. The app verifies it on every request, so nothing that can reach the app's
 // address -- another workload on this node, a LAN host routing to the pod network -- can sign in
@@ -76,7 +77,7 @@ type gate struct {
 	now       func() time.Time
 
 	mu    sync.Mutex
-	stood map[string]stood   // a token's hash -> the dashboard's last word that it stands
+	stood map[string]stood   // a token's hash and an app -> the dashboard's last word that it stands
 	keys  map[string]gateKey // a Gate file -> the secret read from it
 }
 
@@ -132,10 +133,10 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 	}
 	user := ""
 	if tok != "" {
-		u, err := g.whose(req.Context(), tok)
+		u, err := g.whose(req.Context(), tok, r.name)
 		if err != nil {
-			// A trusted device with nobody to name: sending it to the dashboard would come straight
-			// back here.
+			// A trusted device with nobody to name, or an app the dashboard cannot make ready for
+			// them: sending it to the dashboard would come straight back here.
 			log.Printf("reverse-proxy: %s: %v", r.name, err)
 			http.Error(w, "This app cannot be signed in to right now: "+err.Error()+"\n", http.StatusServiceUnavailable)
 			return false
@@ -198,19 +199,21 @@ func (g *gate) redeem(ctx context.Context, code string) (string, error) {
 	return strings.TrimSpace(body), nil
 }
 
-// whose is the username a session token signs in as, from the dashboard's last answer while it
-// is fresh: empty when the token is no trusted device's (or the dashboard cannot be asked, which
-// sends the browser to it), an error when it is one the dashboard has nobody to name for.
-func (g *gate) whose(ctx context.Context, tok string) (string, error) {
+// whose is the username a session token signs in to an app as, from the dashboard's last answer
+// for that app while it is fresh: empty when the token is no trusted device's (or the dashboard
+// cannot be asked, which sends the browser to it), an error when the dashboard has nobody to name
+// or cannot make the app ready for them. Each app is asked about on its own, because the
+// dashboard's answer covers the app as well as the token.
+func (g *gate) whose(ctx context.Context, tok, app string) (string, error) {
 	h := sha256.Sum256([]byte(tok))
-	id := hex.EncodeToString(h[:])
+	id := hex.EncodeToString(h[:]) + " " + app
 	g.mu.Lock()
 	s, ok := g.stood[id]
 	g.mu.Unlock()
 	if ok && g.now().Sub(s.at) < standsFor {
 		return s.user, nil
 	}
-	body, status, err := g.ask(ctx, http.MethodGet, "/gate/check", nil, tok)
+	body, status, err := g.ask(ctx, http.MethodGet, "/gate/check?"+url.Values{"app": {app}}.Encode(), nil, tok)
 	if err != nil {
 		log.Printf("reverse-proxy: the dashboard could not be asked about a session (%v)", err)
 		return "", nil
@@ -237,7 +240,7 @@ func (g *gate) whose(ctx context.Context, tok string) (string, error) {
 // ask is one request to the dashboard over loopback.
 func (g *gate) ask(ctx context.Context, method, path string, form url.Values, session string) (string, int, error) {
 	u := *g.dashboard
-	u.Path = path
+	u.Path, u.RawQuery, _ = strings.Cut(path, "?")
 	var body io.Reader
 	if form != nil {
 		body = strings.NewReader(form.Encode())

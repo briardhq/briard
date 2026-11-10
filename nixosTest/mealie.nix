@@ -15,7 +15,9 @@
 #   4. THE EMAIL IS THE USER'S TO CHANGE: changed inside Mealie, the next sign-in lands on the same
 #      account;
 #   5. NEVER LOCKED IN: the same data, under a plain Mealie with none of briard's settings, gives
-#      the user a working admin account with Mealie's own recovery script.
+#      the user a working admin account with Mealie's own recovery script;
+#   6. A MEALIE BACK AT ITS FIRST ACCOUNT IS TAKEN OVER AGAIN without an open from the dashboard:
+#      a browser that kept its cookie is signed in, and the shipped password is shut again.
 { pkgs, guestModule, mealieFixture }:
 
 let
@@ -48,7 +50,7 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     ${h.fixtureHelpers}
-    import json, shlex, urllib.parse
+    import json, shlex, time, urllib.parse
     VIP = "192.168.1.100"
     CASA = "brave-elf.briard.casa"
     MEALIE_CASA = "mealie." + CASA
@@ -181,5 +183,26 @@ pkgs.testers.runNixOSTest {
     tok = json.loads(out)["access_token"]
     me = json.loads(node1.succeed(f"curl -fsS -H 'Authorization: Bearer {tok}' http://127.0.0.1:9000/api/users/self"))
     assert me["id"] == first_id and me["admin"] is True, me
+
+    # (6) BACK AT THE FIRST ACCOUNT -- an undo to before the takeover, a reinstall without the data
+    # -- and a browser that kept its cookie, never opening from the dashboard: the door's next
+    # check takes the account over again, so the user is signed in and the shipped password is shut.
+    node1.succeed("podman rm -f plain && find /var/lib/briard/data/mealie/app -mindepth 1 -delete")
+    for unit in fixture_units(node1, app="mealie"):
+        node1.succeed(f"systemctl start {unit}")
+    node1.wait_until_succeeds(f"curl -fsS http://{pod}/api/app/about", timeout=300)
+    assert json.loads(at_pod("/api/app/about/startup-info")[1])["isFirstLogin"] is True, "the emptied Mealie is not at its first account"
+    deadline = time.monotonic() + 120  # the door keeps its last answer for half a minute
+    while True:
+        code, _, body = door(MEALIE, "/api/auth/reverse-proxy", app_cookie)
+        if code == 200 or time.monotonic() > deadline:
+            break
+        time.sleep(5)
+    assert code == 200, f"the kept cookie was not signed in to the emptied Mealie: {code} {body}"
+    tok = json.loads(body)["access_token"]
+    code, _, body = door(MEALIE, "/api/users/self", app_cookie, f"-H 'Authorization: Bearer {tok}'")
+    me = json.loads(body)
+    assert (me["username"], me["admin"]) == ("kostas", True) and me["id"] != first_id, me
+    assert seed_login() == 401, "the emptied Mealie's first account still answers the shipped password"
   '';
 }

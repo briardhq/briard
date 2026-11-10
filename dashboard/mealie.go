@@ -1,16 +1,19 @@
 package main
 
-// MEALIE'S FIRST ACCOUNT, TAKEN OVER AT THE FIRST OPEN. Mealie makes an admin at its first start,
-// `admin` with a password every copy of Mealie ships with, and its API answers that password even
-// with the login form turned off. The door signs the user in by username and makes nobody new, so
-// before the first browser goes through, that account becomes the user's: its password changed to
+// MEALIE'S FIRST ACCOUNT, TAKEN OVER BEFORE ANYONE IS LET IN. Mealie makes an admin whenever it
+// starts with no users, `admin` with a password every copy of Mealie ships with, and its API
+// answers that password even with the login form turned off. The door signs the user in by
+// username and makes nobody new, so before the door lets a browser through -- it asks at every
+// session check (gate.go), so a Mealie undone or reinstalled to its first account is taken over
+// again within the half minute the door keeps an answer -- that account becomes the user's: its
+// password changed to
 // one briard generates and forgets -- as Home Assistant's first is -- then its username, name and
 // email the record's (account.go). It stays an ordinary Mealie account, so the same data under a
 // Mealie anywhere else signs in with the tools Mealie gives everyone.
 //
 // THE PASSWORD GOES FIRST. Mealie says it still holds its first account while one carries the
 // email it ships with, and the rename is what ends that. A rename that failed after the password
-// changed leaves an account nobody can sign in to, which the next open says; the other order could
+// changed leaves an account nobody can sign in to, which the next check says; the other order could
 // leave the user's account answering the shipped password with nothing to notice.
 
 import (

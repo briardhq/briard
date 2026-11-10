@@ -8,7 +8,9 @@ package main
 //     OWN token and sends the browser to the app's name with it. A browser it does not trust gets
 //     the ordinary refusal (and on the household's name, the bounce), with the address kept.
 //   - The door redeems the code at /gate/redeem and sets the token as the app name's cookie,
-//     then asks /gate/check whether a token still stands before it signs anyone in.
+//     then asks /gate/check whether a token still stands for the app before it signs anyone in.
+//     That question comes before every way in -- an open, an address typed, a page left open --
+//     so it is where an app is made ready for the user (Mealie's first account, mealie.go).
 //
 // Both answers are the door's alone, asked over loopback: the door never forwards /gate/ from a
 // browser, and refusing a request that came through it (it always says the scheme) is the
@@ -57,14 +59,6 @@ func (a *app) openGated(w http.ResponseWriter, r *http.Request, name string) {
 	if !ok {
 		http.NotFound(w, r)
 		return
-	}
-	// Mealie's own first account becomes the user's before anyone is let through (mealie.go).
-	if name == mealie.Name {
-		if err := a.takeOverMealie(r.Context(), s); err != nil {
-			log.Printf("dashboard: take over Mealie's first account: %v", err)
-			http.Error(w, err.Error()+"\n", http.StatusServiceUnavailable)
-			return
-		}
 	}
 	// Back to the name the browser was on when it is one of the app's own; else the one that
 	// matches how this page was reached -- the household's name on its name, the alias otherwise.
@@ -131,9 +125,10 @@ func (a *app) gateRedeem(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, h.token)
 }
 
-// gateCheck says whether a session token is still a trusted device's, and whose: 200 with the
-// user's username (account.go), the one the door signs into the app; 401 not a trusted device;
-// 409 a trusted device with no record to name, which only an open writes.
+// gateCheck says whether a session token is still a trusted device's, and whose, for the app the
+// door names: 200 with the user's username (account.go), the one the door signs into the app; 401
+// not a trusted device; 409 a trusted device with no record to name, which only an open writes;
+// 503 an app that cannot be made the user's.
 func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 	if viaDoor(r) {
 		http.NotFound(w, r)
@@ -147,6 +142,17 @@ func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
+	}
+	// Mealie's first account is the user's before anyone is let in, and again whenever Mealie is
+	// back at it -- an undo to before the first open, a reinstall without its data.
+	if app := r.URL.Query().Get("app"); app == mealie.Name {
+		if s, ok := gatedApps(a.routesPath)[app]; ok {
+			if err := a.takeOverMealie(r.Context(), s); err != nil {
+				log.Printf("dashboard: take over Mealie's first account: %v", err)
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
+				return
+			}
+		}
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprint(w, acct.Username)

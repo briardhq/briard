@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -92,16 +91,18 @@ func mealieRig(t *testing.T) (*rig, *fakeMealie) {
 	return r, f
 }
 
-// THE FIRST OPEN MAKES MEALIE'S FIRST ACCOUNT THE USER'S: the shipped password no longer works,
-// the account carries the record's username, name and placeholder email, and the browser goes on
-// to Mealie's name. A later open asks Mealie nothing it could count as a failed login.
-func TestTheFirstOpenTakesOverMealiesFirstAccount(t *testing.T) {
+// THE DOOR'S CHECK MAKES MEALIE'S FIRST ACCOUNT THE USER'S: the shipped password no longer works,
+// and the account carries the record's username, name and placeholder email before the answer is
+// yes. A later check asks Mealie nothing it could count as a failed login; a check for another app
+// asks Mealie nothing at all.
+func TestTheCheckTakesOverMealiesFirstAccount(t *testing.T) {
 	r, f := mealieRig(t)
 	c := r.trust()
-	resp := r.on(routes.BareFlockHostName, "/open/mealie", c)
-	loc, _ := url.Parse(resp.Header.Get("Location"))
-	if resp.StatusCode != http.StatusSeeOther || loc.Host != "briard-mealie.local" || loc.Query().Get(gateHopParam) == "" {
-		t.Fatalf("open = %d %q", resp.StatusCode, loc)
+	if status, _ := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || f.username != "admin" {
+		t.Fatalf("a check for another app = %d and Mealie's first account is %q", status, f.username)
+	}
+	if status, user := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusOK || user != "kostas" {
+		t.Fatalf("check = %d %q", status, user)
 	}
 	if f.username != "kostas" || f.fullName != "Kostas" || f.email != "kostas@briard.local" {
 		t.Fatalf("Mealie's first account is %q %q %q, want the record's", f.username, f.fullName, f.email)
@@ -110,36 +111,49 @@ func TestTheFirstOpenTakesOverMealiesFirstAccount(t *testing.T) {
 		t.Fatalf("the first account's password is %q, want a generated one", f.password)
 	}
 	logins := f.logins
-	if resp := r.on(routes.BareFlockHostName, "/open/mealie", c); resp.StatusCode != http.StatusSeeOther {
-		t.Fatalf("second open = %d", resp.StatusCode)
+	if status, _ := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusOK {
+		t.Fatalf("second check = %d", status)
 	}
 	if f.logins != logins {
-		t.Fatal("a second open tried a login, which Mealie counts toward locking the account")
+		t.Fatal("a second check tried a login, which Mealie counts toward locking the account")
+	}
+	// A stranger's token never reaches Mealie.
+	if status, _ := r.loopback("GET", "/gate/check?app=mealie", "not-a-token", nil); status != http.StatusUnauthorized || f.logins != logins {
+		t.Fatalf("a stranger's check = %d, logins %d -> %d", status, logins, f.logins)
+	}
+}
+
+// A Mealie back at its first account -- undone to before the takeover, reinstalled without its
+// data -- is taken over again at the next check, with no open from the dashboard: a browser that
+// kept its cookie goes straight to the app.
+func TestAMealieBackAtItsFirstAccountIsTakenOverAgain(t *testing.T) {
+	r, f := mealieRig(t)
+	c := r.trust()
+	if status, _ := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusOK {
+		t.Fatalf("check = %d", status)
+	}
+	f.mu.Lock()
+	f.username, f.email, f.fullName, f.password = "admin", "changeme@example.com", "Change Me", mealieFirstPassword
+	f.mu.Unlock()
+	if status, _ := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusOK || f.username != "kostas" || f.password == mealieFirstPassword {
+		t.Fatalf("check on a Mealie back at its first account = %d, account %q", status, f.username)
 	}
 }
 
 // A takeover that stopped after the password changed leaves an account nobody can sign in to: the
-// next open says so and lets nobody through, never quietly carrying on.
-func TestATakeoverCutShortRefusesTheOpen(t *testing.T) {
+// next check says so and lets nobody through, never quietly carrying on.
+func TestATakeoverCutShortRefusesTheCheck(t *testing.T) {
 	r, f := mealieRig(t)
 	f.failRename = true
 	c := r.trust()
-	if resp := r.on(routes.BareFlockHostName, "/open/mealie", c); resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("open with a failed rename = %d, want 503", resp.StatusCode)
+	if status, _ := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusServiceUnavailable {
+		t.Fatalf("check with a failed rename = %d, want 503", status)
 	}
 	if f.password == mealieFirstPassword {
 		t.Fatal("the rename was tried before the password changed")
 	}
 	f.failRename = false
-	req, _ := http.NewRequest("GET", r.srv.URL+"/open/mealie", nil)
-	req.Host = routes.BareFlockHostName
-	req.AddCookie(c)
-	resp, err := noRedirect.Do(req)
-	must(t, err)
-	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	body := string(raw)
-	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "reinstall Mealie") {
-		t.Fatalf("the next open = %d %q, want a refusal that says what to do", resp.StatusCode, body)
+	if status, body := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusServiceUnavailable || !strings.Contains(body, "reinstall Mealie") {
+		t.Fatalf("the next check = %d %q, want a refusal that says what to do", status, body)
 	}
 }
