@@ -16,6 +16,7 @@
 package catalog
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -305,6 +306,32 @@ func TestEveryEntryDeclaresItsSizes(t *testing.T) {
 		}
 		if m.InstalledSize < m.Size {
 			t.Errorf("%s: installed %d < downloaded %d; swapped?", path, m.InstalledSize, m.Size)
+		}
+	}
+}
+
+// imageHashes is the catalog's catalog-images.json, laid beside the version files: the hash nix
+// checks each pulled image against, keyed on the image ref, one per arch.
+const imageHashes = "catalog-images.json"
+
+// TestEveryImageHasItsHash: every image a version file names has its amd64 hash. The tests pull
+// an entry's image by it, and an image without one builds with nix's placeholder hash and fails
+// every test that pulls it -- found only after the version is published, when the tests read the
+// catalog as published.
+func TestEveryImageHasItsHash(t *testing.T) {
+	var hashes map[string]map[string]string
+	if err := json.Unmarshal(read(t, imageHashes), &hashes); err != nil {
+		t.Fatalf("%s: %v", imageHashes, err)
+	}
+	for _, path := range versionFiles(t) {
+		m, _, err := manifest.Parse(read(t, path))
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		for _, c := range m.Containers {
+			if h := hashes[c.Image]["amd64"]; !strings.HasPrefix(h, "sha256-") {
+				t.Errorf("%s: %s has no amd64 hash in %s (got %q)", path, c.Image, imageHashes, h)
+			}
 		}
 	}
 }
