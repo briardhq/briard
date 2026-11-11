@@ -7,6 +7,7 @@ import (
 	"net"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -293,7 +294,7 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 		"logs":      groupEveryday,
 		"doctor":    groupEveryday,
 		"app":       groupEveryday,
-		"handover":  groupEveryday,
+		"handover":  groupUnlisted, // needs a second machine: the flock, not yet a product
 		"open":      groupEveryday,
 		"backup":    groupRepair, // restore from the nightly backup -- the one verb of a data repair
 		"config":    groupRepair,
@@ -303,8 +304,8 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 		"start":     groupRepair,
 		"uninstall": groupRepair,
 		"version":   groupRepair,
-		"directive": groupRepair,
-		"run":       groupRepair,
+		"directive": groupUnlisted,
+		"run":       groupUnlisted, // the daemon; the units type it
 	}
 	var listing bytes.Buffer
 	usage(&listing)
@@ -331,7 +332,12 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 		if c.synopsis == "" || c.group == "" {
 			t.Errorf("command %q has no synopsis or no group, so it cannot appear in the help", c.name)
 		}
-		if !strings.Contains(listing.String(), c.name) {
+		// A row of the listing is two spaces, the verb, then its args or the synopsis column.
+		listed := regexp.MustCompile(`(?m)^  ` + c.name + ` `).MatchString(listing.String())
+		if c.group == groupUnlisted && listed {
+			t.Errorf("command %q is unlisted but the help lists it", c.name)
+		}
+		if c.group != groupUnlisted && !listed {
 			t.Errorf("command %q dispatches but the help never names it", c.name)
 		}
 		// `run` and `uninstall` are the rows main() intercepts before the CLI is reached; everything

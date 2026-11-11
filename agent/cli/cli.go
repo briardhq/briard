@@ -63,6 +63,10 @@ type command struct {
 const (
 	groupEveryday = "Everyday"
 	groupRepair   = "Repair and maintenance"
+	// groupUnlisted is a verb the listing leaves out: it works, and `briard help <name>` explains it
+	// to whoever was told its name, but nobody running Briard for themselves types it -- the daemon,
+	// the raw directive, and the hand-over that needs a second machine.
+	groupUnlisted = "unlisted"
 )
 
 // The order here is the order in the help. Everyday first, because the first screen should answer
@@ -117,7 +121,7 @@ var commands = []command{
 		run: runApp, probe: []string{"install", "-h"},
 	},
 	{
-		name: "handover", group: groupEveryday,
+		name: "handover", group: groupUnlisted,
 		synopsis: "hand this machine's work to the other machine (a planned failover)",
 		detail: "For when you are about to take this machine away: the other machine picks the work up,\n" +
 			"rather than your home discovering the loss on its own.",
@@ -215,14 +219,14 @@ var commands = []command{
 		// from the host agent's own config, which this package does not link.
 	},
 	{
-		name: "directive", args: "<kind> [payload]", group: groupRepair,
+		name: "directive", args: "<kind> [payload]", group: groupUnlisted,
 		synopsis: "submit a directive to the local agent",
-		detail: "The primitive every other verb above is sugar over. Useful when a support answer names\n" +
+		detail: "The primitive every other verb is sugar over. Useful when a support answer names\n" +
 			"a directive kind that has no verb of its own.",
 		run: runDirective, probe: []string{"-h"},
 	},
 	{
-		name: "run", group: groupRepair,
+		name: "run", group: groupUnlisted,
 		synopsis: "run the agent itself — systemd does this for you",
 		detail: "The daemon: the host agent. (The in-VM agent is its own binary, briard-guest-agent,\n" +
 			"started by units inside the VM image.) You should not need to type it: the installer\n" +
