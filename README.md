@@ -22,20 +22,10 @@ curl -fsSL https://get.briard.io/install.sh | sudo sh
 When it finishes, it prints a one-time link to the machine's Briard page. Open it and pick
 your apps. If the link has expired, `sudo briard open` prints a new one.
 
-## The command line
-
-The dashboard is where you use Briard. The `briard` command is for when something looks off:
-
-- `briard doctor` checks the machine.
-- `briard alerts` lists what Briard has warned about.
-- `briard logs` shows its logs. Include them in a bug report.
-- `briard stop` and `briard start` take it down for a while and bring it back.
-- `briard help` lists every command.
-
-On Linux, run them with `sudo`.
-
 ## More
 
+- [The briard command](https://briard.io/docs/cli/): what to run when something looks off.
+  `briard doctor`'s output belongs in every bug report.
 - [ARCHITECTURE.md](ARCHITECTURE.md): how it is built and why, and what it sends where.
 - [CONTRIBUTING.md](CONTRIBUTING.md): building from source, testing, and proposing a change.
 
