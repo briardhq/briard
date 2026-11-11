@@ -490,13 +490,20 @@ const (
 	// would take it first. It counts as Before(): the app never ran on it, so nothing is compared
 	// against it.
 	TriggerFromBackup Trigger = "from-backup"
+	// TriggerUninstall is the member an uninstall KEEPS: the app stopped, its data as it stood, and
+	// the manifest it ran. It outlives the app's manifest on the volume, so for 30 days it is the
+	// app's whole presence there (agent/guestagent/uninstall.go), and installing the app again is
+	// the restore of it. A data area's is in the ring; a files area's, of the same name, beside
+	// the Versions.
+	TriggerUninstall Trigger = "uninstall"
 )
 
 // Before reports whether a member was taken just before an operation, with the app stopped --
-// or put in place for one (TriggerFromBackup): either way the app did not run on it.
+// or put in place for one (TriggerFromBackup), or kept by an uninstall: either way the app did not
+// run on it.
 func (t Trigger) Before() bool {
 	return t == TriggerAppUpdateBefore || t == TriggerAppUndoBefore || t == TriggerHassRestoreBefore ||
-		t == TriggerHassDBRestoreBefore || t == TriggerFromBackup
+		t == TriggerHassDBRestoreBefore || t == TriggerFromBackup || t == TriggerUninstall
 }
 
 // SnapshotMemberApp reads the app out of a member's name, and reports whether the name is
@@ -520,7 +527,7 @@ func SnapshotMemberTime(name string) (time.Time, bool) {
 // comes from a closed set, which leaves whatever precedes them as the name.
 func ParseSnapshotMember(name string) (app string, trigger Trigger, at time.Time, ok bool) {
 	name = strings.TrimPrefix(name, SnapshotsDir)
-	for _, t := range []Trigger{TriggerStart, TriggerClock, TriggerAppUpdateBefore, TriggerAppUndoBefore, TriggerHassRestoreBefore, TriggerHassDBRestoreBefore, TriggerFromBackup} {
+	for _, t := range []Trigger{TriggerStart, TriggerClock, TriggerAppUpdateBefore, TriggerAppUndoBefore, TriggerHassRestoreBefore, TriggerHassDBRestoreBefore, TriggerFromBackup, TriggerUninstall} {
 		suffix := "-" + string(t) + "-"
 		i := strings.LastIndex(name, suffix)
 		if i <= 0 {
@@ -654,6 +661,9 @@ type SnapshotMeta struct {
 	// No member holds them before the next sample does, so a comparison with this
 	// member as the earlier side does not find them again.
 	Resets []string `json:"resets,omitempty"`
+	// BackedUp marks an uninstall's kept copy once a nightly backup that holds it has finished:
+	// only then may the files tier's valve shed it for room.
+	BackedUp bool `json:"backed_up,omitempty"`
 }
 
 // Subdirs lists the directories the install step must create, each `<tier>/<dir>`, once each and

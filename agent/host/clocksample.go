@@ -388,8 +388,8 @@ func (cfg Config) collectFilesTick(ctx context.Context, g filesTicker, u *filesT
 	u.waiting = false
 	rep := *s.Report
 	// One line a tick, twelve an hour: what the cap is and what the tick did is the trail a full disk is read back from.
-	logf("files tier: cap=%d free=%d target=%d slack=%d took=%d pruned=%d shed=%d short=%t errors=%q",
-		rep.FilesCap, rep.FilesFree, rep.Target, rep.Slack, len(rep.Taken), len(rep.Pruned), len(rep.Shed), rep.Short, rep.Errors)
+	logf("files tier: cap=%d free=%d target=%d slack=%d took=%d pruned=%d shed=%d expired=%d short=%t errors=%q",
+		rep.FilesCap, rep.FilesFree, rep.Target, rep.Slack, len(rep.Taken), len(rep.Pruned), len(rep.Shed), len(rep.Expired), rep.Short, rep.Errors)
 	if rep.Volume == 0 {
 		return // nothing measured: no app has a files area, or the read failed (logged above)
 	}

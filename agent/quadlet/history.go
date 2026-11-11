@@ -54,6 +54,9 @@ const (
 	// ReasonDBRestore is briard putting back Home Assistant's recorder database alone, from a
 	// member that passed its integrity check, on its hass-db-restore-before sample.
 	ReasonDBRestore ReasonKind = "hass-db-restore"
+	// ReasonAppUninstall is briard uninstalling the app, on the member it keeps: undoing it puts the
+	// app back as it was at the uninstall, which is what installing it again does.
+	ReasonAppUninstall ReasonKind = "app-uninstall"
 	// ReasonQuiet is a restore point where nothing was found: the backstop for every change the
 	// detectors do not see (QuietPoint). It never shares its record.
 	ReasonQuiet ReasonKind = "quiet"
@@ -109,6 +112,9 @@ const (
 	// RetainApp is the longest an app sidecar holds a member, so an app's bug cannot hold the ring
 	// forever.
 	RetainApp = 7 * 24 * time.Hour
+	// RetainUninstalled is how long an uninstalled app's kept copy stays (TriggerUninstall): the
+	// files tier's Versions horizon, so a household's files are never gone sooner by uninstalling.
+	RetainUninstalled = 30 * 24 * time.Hour
 )
 
 // Quiet time fills the gaps: a stretch with nothing found gets a restore point at its

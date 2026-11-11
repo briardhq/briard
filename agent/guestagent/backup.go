@@ -273,8 +273,22 @@ func backupResult() BackupState {
 }
 
 // newestMembers is the member each installed app's backup reads: the newest of its ring.
-// An app with no member yet (installed, never started) is left out.
+// An app with no member yet (installed, never started) is left out. An uninstalled app's kept copy
+// is its member while it is kept (uninstall.go).
 func newestMembers(ctx context.Context, x Executor) (map[string]string, error) {
+	out, err := installedNewestMembers(ctx, x)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range keptCopies(ctx, x) { // oldest first, so the newest wins
+		if !k.files {
+			out[k.app] = k.path
+		}
+	}
+	return out, nil
+}
+
+func installedNewestMembers(ctx context.Context, x Executor) (map[string]string, error) {
 	names, err := manifestNames(ctx, x)
 	if err != nil {
 		return nil, err
@@ -303,7 +317,21 @@ func newestFileVersions(ctx context.Context, x Executor) map[string]string {
 			out[m.app], at[m.app] = m.path, m.at
 		}
 	}
+	for _, k := range keptCopies(ctx, x) { // an uninstalled app's files, while they are kept
+		if k.files {
+			out[k.app] = k.path
+		}
+	}
 	return out
+}
+
+// markKept marks the kept copies among the members a finished backup holds (uninstall.go).
+func markKept(x Executor, run func(string, ...string) error, members map[string]string) {
+	for _, m := range members {
+		if _, tr, _, ok := quadlet.ParseSnapshotMember(path.Base(m)); ok && tr == quadlet.TriggerUninstall {
+			markBackedUp(x, run, m)
+		}
+	}
 }
 
 // runBackup is one run: lay out the tree, open (or create) the repository, clear a stale lock,
@@ -431,12 +459,15 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 	out, err := restic("backup", "--json", "--quiet", "--host", group, "--tag", backupDataTag, backupData, backupFacts)
 	rep := backupSummary(out)
 	rep.Apps = apps
+	runErr := func(name string, args ...string) error { _, err := run(name, args...); return err }
 	if err != nil {
 		rep.Error = err.Error()
 		log.Printf("backup: %v", err)
 		if rep.Snapshot == "" {
 			return rep
 		}
+	} else {
+		markKept(x, runErr, members)
 	}
 	// THE HOUSEHOLD'S FILES, AFTER THE DATA, IN A SNAPSHOT OF THEIR OWN: a library's first copy can
 	// run for hours and a folder can fill on it, and neither may cost the night its apps' backup,
@@ -462,6 +493,9 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 		out, err := restic("backup", "--json", "--quiet", "--host", group, "--tag", backupFilesTag, backupFiles)
 		u := backupSummary(out)
 		rep.FilesSnapshot, rep.Files, rep.BytesAdded = u.Snapshot, rep.Files+u.Files, rep.BytesAdded+u.BytesAdded
+		if err == nil {
+			markKept(x, runErr, members)
+		}
 		return err
 	}
 	if err := files(); err != nil {

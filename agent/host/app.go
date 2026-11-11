@@ -308,6 +308,29 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	if !g.SupportsSnapshotMember() {
 		return failed("this VM is too old to take a titled rollback point (no data.member); update the VM before installing")
 	}
+	// AN UNINSTALLED APP'S KEPT COPY is what installing it again puts back: the restore of that
+	// member, at the version it was uninstalled at, after which a newer one in the catalog is the
+	// ordinary update offer, on the update's rails. Installing the catalog's version over the kept
+	// data instead would be a fresh install's path, with no rollback point for the first start's
+	// migration. A ring that cannot be read refuses rather than installing empty beside a copy it
+	// could not see.
+	if kept, err := cfg.keptCopyOf(ctx, g, d.Payload); err != nil {
+		return failed(err.Error())
+	} else if kept.Member != "" {
+		// The install's memory gate, which the restore does not have.
+		if km, _, err := manifest.Parse([]byte(kept.Meta.Manifest)); err == nil {
+			if refusal := cfg.memoryFor(ctx, km, logf); refusal != "" {
+				return failed(refusal)
+			}
+		}
+		o := cfg.applyAppRestore(ctx, g, api.Directive{ID: d.ID, Kind: api.DirectiveAppRestore, Payload: kept.Member}, logf)
+		if o.State == api.OutcomeDone {
+			if _, err := g.HassNudge(ctx); err != nil {
+				logf("app install %s: could not tell Home Assistant to reconsider (%v); it will pick this up at its next start", d.Payload, err)
+			}
+		}
+		return o
+	}
 	parent := ctx
 	ctx, cancel := cfg.beat.budget(parent, installBudget)
 	defer func() { cancel() }()
@@ -332,16 +355,8 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	// app's first start is its busiest moment and growth reacts in minutes. So the running
 	// guest is grown to that now, and the install refused only when the host cannot give it that
 	// much at all. A guest whose size cannot be read installs unmeasured, like the image store.
-	if need := cfg.memoryNeeded(m.Name, m.MinMemoryMB); need > cfg.MemoryMB {
-		vm := platform.Adopt(cfg.guestSpec())
-		host := reportcard.MemTotalMB()
-		switch err := growGuestMemoryTo(ctx, need, host, vm.MemoryMB, vm.AddMemory); {
-		case errors.Is(err, errMemoryCeiling):
-			return failed(fmt.Sprintf("not enough memory on this machine: %s needs the VM to hold %d MB and this host can give it at most %d MB (keeping %d MB for itself)",
-				m.Name, need, guestMemoryCeilingMB(host), hostMemoryReserveMB))
-		case err != nil:
-			logf("app install %s: cannot size the guest's memory (%v); installing unmeasured", d.Payload, err)
-		}
+	if refusal := cfg.memoryFor(ctx, m, logf); refusal != "" {
+		return failed(refusal)
 	}
 	// No address: this render supplies unit names and image digests, and converge re-renders with
 	// the allocated one before anything starts (see Render).
@@ -658,6 +673,26 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: reach}
 }
 
+// memoryFor grows the running guest to hold m beside every installed app, and answers why not when
+// the host cannot give it that much: the install's memory gate, and installing an uninstalled app
+// again.
+func (cfg Config) memoryFor(ctx context.Context, m manifest.Manifest, logf func(string, ...any)) string {
+	need := cfg.memoryNeeded(m.Name, m.MinMemoryMB)
+	if need <= cfg.MemoryMB {
+		return ""
+	}
+	vm := platform.Adopt(cfg.guestSpec())
+	host := reportcard.MemTotalMB()
+	switch err := growGuestMemoryTo(ctx, need, host, vm.MemoryMB, vm.AddMemory); {
+	case errors.Is(err, errMemoryCeiling):
+		return fmt.Sprintf("not enough memory on this machine: %s needs the VM to hold %d MB and this host can give it at most %d MB (keeping %d MB for itself)",
+			m.Name, need, guestMemoryCeilingMB(host), hostMemoryReserveMB)
+	case err != nil:
+		logf("app install %s: cannot size the guest's memory (%v); installing unmeasured", m.Name, err)
+	}
+	return ""
+}
+
 // cacheApp writes one app's manifest into the node-local cache directory, named for the
 // app. Written only after the health gate passes, so a failed install is never the thing a
 // restart converges to.
@@ -714,13 +749,15 @@ func (cfg Config) manifestPath(name string) string {
 // AFTER ANY INSTALL'S OUTCOME, done or not: an act that installs several apps can fail on the
 // second with the first installed, and an install that did nothing leaves the cache as it was.
 // And after a restore, from the history or the backup, which can move an app to the version its
-// point was taken under, or put back an app this node did not have.
+// point was taken under, or put back an app this node did not have. And after an uninstall.
 func (cfg *Config) adoptInstalledApps(d api.Directive, o api.DirectiveOutcome, logf func(string, ...any)) {
-	if d.Kind != api.DirectiveAppInstall && d.Kind != api.DirectiveAppRestore && d.Kind != api.DirectiveBackupRestore {
+	if d.Kind != api.DirectiveAppInstall && d.Kind != api.DirectiveAppRestore && d.Kind != api.DirectiveBackupRestore &&
+		d.Kind != api.DirectiveAppUninstall {
 		return
 	}
 	specs, rendered, ok := cfg.installedApps(logf)
-	if !ok {
+	// An uninstall's empty cache is an answer: the last app went.
+	if !ok && (d.Kind != api.DirectiveAppUninstall || cfg.AppCache == "") {
 		return
 	}
 	// Not cfg.Promoter: the chain is static, and an install that changed it would be
@@ -1384,7 +1421,12 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 			fresh = true
 		}
 	}
-	if err := cfg.takeMember(ctx, g, app, undo, quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
+	// INSTALLING AN UNINSTALLED APP AGAIN takes no undo point: undoing it would only put back the
+	// empty app made a moment ago, and its History reads "Uninstalled", whose undo this is.
+	reinstall := fresh && target.Meta.Trigger == quadlet.TriggerUninstall
+	if reinstall {
+		unchanged = app + ` is installed here but empty and stopped; undo "Uninstalled" in its History to finish`
+	} else if err := cfg.takeMember(ctx, g, app, undo, quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
 		// THE UNDO IS ITSELF AN EVENT, on the point that undoes it -- which is the redo.
 		&quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUndo, What: what}}},
 		at, logf); err != nil {
@@ -1403,6 +1445,18 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 		// Do NOT converge: that would start the app on data that is neither what it was nor
 		// what was asked for. A stopped app is recoverable; silent corruption is not.
 		return failed(fmt.Sprintf("restore the data (the app is left stopped): %v", err))
+	}
+	// AN UNINSTALL'S COPY CARRIES THE FILES TOO, kept beside the Versions under the same name: they
+	// come back with the data, and the copy goes (the files are never rolled back, so no History
+	// holds them).
+	if target.Meta.Trigger == quadlet.TriggerUninstall {
+		u, ok := g.(appUninstaller)
+		if !ok || !u.SupportsAppUninstall() {
+			return failed("this VM cannot put an uninstalled app's files back (the app is left stopped); update the VM first")
+		}
+		if err := u.AppReinstate(ctx, app, target.Member); err != nil {
+			return failed(fmt.Sprintf("put %s's files back (the app is left stopped): %v", app, err))
+		}
 	}
 	// (5) THE CODE, when the member was taken under a different one. Same rule the failed-upgrade
 	// revert uses: {manifest + data} move together or the node is describing something it is not.
@@ -1431,8 +1485,11 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 	// undo point names it, and putting it back re-pulls (step 1 above).
 	cfg.dropSuperseded(ctx, g, runningRaw, logf)
 	done := "undone back to"
-	if target.Meta.Trigger == quadlet.TriggerFromBackup {
+	switch {
+	case target.Meta.Trigger == quadlet.TriggerFromBackup:
 		done = "restored from the backup, as it was at"
+	case reinstall:
+		done = "installed again as it was when uninstalled, at"
 	}
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone,
 		Detail: fmt.Sprintf("%s %s, %s", done, back, moved)}

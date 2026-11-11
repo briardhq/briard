@@ -88,9 +88,10 @@ type FilesTickReport struct {
 	FilesCap  int64     `json:"files_cap"`
 	FilesFree int64     `json:"files_free"`
 	Target    int64     `json:"target"`
-	Taken     []string  `json:"taken,omitempty"`  // ring members the clock took
-	Pruned    []string  `json:"pruned,omitempty"` // members retention let go
-	Shed      []string  `json:"shed,omitempty"`   // members the valve deleted for room
+	Taken     []string  `json:"taken,omitempty"`   // ring members the clock took
+	Pruned    []string  `json:"pruned,omitempty"`  // members retention let go
+	Shed      []string  `json:"shed,omitempty"`    // members the valve deleted for room
+	Expired   []string  `json:"expired,omitempty"` // uninstalled apps' kept copies past keptFor
 	// Short: filesFree was under the target while the oldest member the valve could shed was under
 	// five days old, or there was none left to shed.
 	Short  bool     `json:"short,omitempty"`
@@ -198,6 +199,19 @@ func filesTick(ctx context.Context, x Executor, now time.Time) FilesTickReport {
 		}
 	}
 
+	// THE KEPT COPIES' END: an uninstalled app's copy goes at keptFor, whatever the tier holds.
+	kept := slices.DeleteFunc(keptCopies(ctx, x), func(k keptCopy) bool {
+		if now.Sub(k.at) <= keptFor {
+			return false
+		}
+		if err := deleteCopy(run, k.path); err != nil {
+			failed("expire "+k.path, err)
+		} else {
+			rep.Expired = append(rep.Expired, k.path)
+		}
+		return true
+	})
+
 	// THE ALLOCATION. Nothing to bound until an app has a files area.
 	use, err := volumeUsage(ctx, x)
 	if err != nil {
@@ -222,29 +236,38 @@ func filesTick(ctx context.Context, x Executor, now time.Time) FilesTickReport {
 		rep.FilesFree = rep.FilesCap - rep.FilesUsed
 	}
 	measure()
-	if tree[filesAgg].limit != rep.FilesCap {
-		if err := run("btrfs", "qgroup", "limit", strconv.FormatInt(rep.FilesCap, 10), filesAgg, dataMountRoot); err != nil {
-			failed("set the files tier's limit", err)
-		}
-	}
 
-	// THE VALVE: the oldest eligible member, anywhere, until there is room or nothing to shed.
+	// THE VALVE: first an uninstalled app's kept copy, oldest first, once a finished backup holds it
+	// -- either tier's: a data copy's room comes back to the files tier through the cap -- then the
+	// oldest eligible Version, anywhere; until there is room or nothing to shed. Short speaks of the
+	// Versions alone: shedding a kept copy is not yet cutting the household's files' history.
+	var kq []keptCopy
+	if rep.FilesFree < rep.Target {
+		kq = slices.DeleteFunc(kept, func(k keptCopy) bool { return !backedUp(x, k.path) })
+	}
 	eligible := slices.DeleteFunc(slices.Clone(ring), func(m fileVersion) bool { return now.Sub(m.at) <= versionEligibleAge })
 	slices.SortFunc(eligible, func(a, b fileVersion) int { return a.at.Compare(b.at) })
 	for rep.FilesFree < rep.Target {
-		if len(eligible) == 0 || now.Sub(eligible[0].at) < versionsShortAge {
-			rep.Short = true
+		var path string
+		var err error
+		if len(kq) > 0 {
+			path, kq = kq[0].path, kq[1:]
+			err = deleteCopy(run, path)
+		} else {
+			if len(eligible) == 0 || now.Sub(eligible[0].at) < versionsShortAge {
+				rep.Short = true
+			}
+			if len(eligible) == 0 {
+				break
+			}
+			path, eligible = eligible[0].path, eligible[1:]
+			err = deleteFileVersion(run, path)
 		}
-		if len(eligible) == 0 {
-			break
-		}
-		m := eligible[0]
-		eligible = eligible[1:]
-		if err := deleteFileVersion(run, m.path); err != nil {
-			failed("shed "+m.path, err)
+		if err != nil {
+			failed("shed "+path, err)
 			continue
 		}
-		rep.Shed = append(rep.Shed, m.path)
+		rep.Shed = append(rep.Shed, path)
 		// The space comes back when the cleaner has dropped the subvolume, not when the delete
 		// returns; only then does the re-read count it.
 		if err := run("btrfs", "subvolume", "sync", dataMountRoot); err != nil {
@@ -256,6 +279,13 @@ func filesTick(ctx context.Context, x Executor, now time.Time) FilesTickReport {
 			break
 		}
 		measure()
+	}
+	// The files tier's limit from what the valve left: a shed data copy moves the cap, a Version
+	// does not.
+	if tree[filesAgg].limit != rep.FilesCap {
+		if err := run("btrfs", "qgroup", "limit", strconv.FormatInt(rep.FilesCap, 10), filesAgg, dataMountRoot); err != nil {
+			failed("set the files tier's limit", err)
+		}
 	}
 
 	// THE APPS' CAPS, from what the valve left: each tier's free space and the share it keeps back.

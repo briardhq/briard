@@ -83,6 +83,7 @@ var (
 		api.DirectiveAppPrewarm:    true,
 		api.DirectiveAppRestore:    true,
 		api.DirectiveAppCacheEmpty: true, // stops the app and starts it again, as a restore does
+		api.DirectiveAppUninstall:  true, // stops the app and removes it
 		api.DirectiveBackupRestore: true, // a restic restore then an app restore: an act, like the one it ends in
 		api.DirectiveHandover:      true,
 		api.DirectiveSync:          true,

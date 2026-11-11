@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"briard.io/shared/api"
@@ -235,6 +236,13 @@ const appDownFor = 10 * time.Minute
 func (a *appAlerter) observe(ctx context.Context, n notify.Notifier, node string, svcs []api.AppStatus, known, serving bool, now time.Time, logf func(string, ...any)) {
 	if a.down == nil {
 		a.down = map[string]time.Time{}
+	}
+	// An app no longer reported was uninstalled (its alert closed with it): installed again, it
+	// starts a count of its own.
+	for name := range a.down {
+		if !slices.ContainsFunc(svcs, func(s api.AppStatus) bool { return s.Name == name }) {
+			delete(a.down, name)
+		}
 	}
 	for _, s := range svcs {
 		key := "app:" + s.Name

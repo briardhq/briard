@@ -41,7 +41,7 @@
     {{if .Offering}}<form method="post" action="/update/{{.Name}}"><button type="submit" class="btn" data-variant="outline">{{if and .Install .Install.Failed}}Try again{{else}}Update{{end}}</button></form>{{end}}
     {{with .HA}}{{if .Reachable}}<form method="post" action="/open/home-assistant" target="_blank"><button type="submit" class="btn"{{if not .Running}} disabled{{end}}>Open Home Assistant</button></form>{{end}}{{end}}
     {{if and .Gated .Installed (not (and .Install .Install.Running))}}<a class="btn" href="/open/{{.Name}}" target="_blank" rel="noopener">Open {{.Title}}</a>{{end}}
-    {{if not .Here}}<a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a>{{end}}
+    {{if not .Here}}<a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a>{{else if and .Installed (not (and .Install .Install.Running))}}<form method="post" action="/uninstall"><input type="hidden" name="app" value="{{.Name}}"><button type="submit" class="btn" data-variant="ghost">Uninstall</button></form>{{end}}
   </footer></div>
 {{end}}
 
@@ -71,8 +71,10 @@
   <div class="card"><header><h2>{{template "app-title" .}}</h2>{{with .Functionality}}<p>{{.}}</p>{{end}}</header>
     <section><p>{{.Description}}</p>
     {{if .Wished}}<p class="ok">You asked for this. It is available now.</p>{{end}}
+    {{with .Kept}}<p class="note">Uninstalled; its data is kept until {{.Until}}. Installing it before then brings it back as you left it.</p>{{end}}
     {{with .Install}}{{if .Failed}}<p class="note">Could not install it: {{.Detail}} — or, on the machine that runs Briard: <code>sudo briard app install {{$.Name}}</code></p>{{end}}{{end}}</section>
     <footer><form method="post" action="/install/{{.Name}}"><button type="submit" class="btn" data-variant="outline">{{if and .Install .Install.Failed}}Try again{{else}}Install {{.Title}}{{end}}</button></form>
+    {{if .Kept}}<form method="post" action="/uninstall"><input type="hidden" name="app" value="{{.Name}}"><input type="hidden" name="now" value="yes"><button type="submit" class="btn" data-variant="ghost">Delete now</button></form>{{end}}
     {{if .Wished}}<form method="post" action="/wish/{{.Name}}" hx-post="/wish/{{.Name}}" hx-target="closest .card" hx-swap="outerHTML"><button type="submit" class="btn" data-variant="ghost">Never mind</button></form>{{end}}
     {{with .Homepage}}<a class="btn" data-variant="ghost" href="{{.}}" target="_blank" rel="noopener">About</a>{{end}}</footer></div>
 {{end}}
@@ -131,4 +133,34 @@
 <div class="tiles">
   {{range .}}{{template "soon-card" .}}{{end}}
 </div>{{end}}
+{{template "foot" (shell "apps" false)}}{{end}}
+
+{{/* THE PAGE BETWEEN an app's Uninstall, or its kept copy's Delete now, and the act: what is kept,
+     until when, and what goes now. */}}
+{{define "uninstall"}}{{template "head" (shell "apps" false)}}
+{{if .Installed}}<header class="page-head"><h1>Uninstall {{.Title}}?</h1><p>{{.Title}} stops and is removed from this machine.</p></header>
+<div class="card">
+  <section>
+    {{with .Error}}<div class="alert" data-variant="destructive"><section>Could not uninstall it: {{.}}</section></div>{{end}}
+    <p>Its data is kept until {{.Until}}{{with .Size}}, at most {{.}}{{end}}. Installing {{.Title}} again before then brings it back as you left it, at the version it runs now.</p>
+    <p class="note">Its History, its cache and the backups it made itself are deleted now. While its data is kept, the nightly backup copies it with the rest.</p>
+  </section>
+  <footer>
+    <form method="post" action="/uninstall"><input type="hidden" name="app" value="{{.App}}"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn" data-variant="destructive">Uninstall</button></form>
+    <form method="post" action="/uninstall"><input type="hidden" name="app" value="{{.App}}"><input type="hidden" name="now" value="yes"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn" data-variant="outline">Uninstall and delete its data now</button></form>
+    <a class="btn" data-variant="ghost" href="/apps/{{.App}}">Cancel</a>
+  </footer>
+</div>
+{{else}}<header class="page-head"><h1>Delete what {{.Title}} kept?</h1><p>{{with .Kept}}{{$.Title}} was uninstalled, and its data is kept until {{.Until}}.{{else}}Nothing of {{.Title}} is kept on this machine.{{end}}</p></header>
+<div class="card">
+  <section>
+    {{with .Error}}<div class="alert" data-variant="destructive"><section>Could not delete it: {{.}}</section></div>{{end}}
+    <p>Deleting it cannot be undone here: installing {{.Title}} again then starts it empty. A backup made while it was kept still holds it, for about a week.</p>
+  </section>
+  <footer>
+    <form method="post" action="/uninstall"><input type="hidden" name="app" value="{{.App}}"><input type="hidden" name="now" value="yes"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn" data-variant="destructive">Delete now</button></form>
+    <a class="btn" data-variant="ghost" href="/apps">Cancel</a>
+  </footer>
+</div>
+{{end}}
 {{template "foot" (shell "apps" false)}}{{end}}

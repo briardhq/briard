@@ -423,5 +423,48 @@ pkgs.testers.runNixOSTest {
     assert "YOUNG=1" in guest(f"test -e {young} && echo Y""OUNG=1"), "the day's member is gone"
     host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep -q 'alert open files-storage-short'", timeout=60)
     print("the files tier is capped by the rule, its valve sheds the oldest history, and at the floor it warns")
+
+    # === UNINSTALL, AND INSTALLING AGAIN, through the real agent. The data and the files are kept
+    # as copies named for the uninstall, and everything else of the app goes: every area, every
+    # other copy, the manifest, the running app. Installing it again puts back the data the app
+    # wrote and the household's file -- from the kept copy, not the catalog, which still offers
+    # the poisoning version. Delete now then leaves nothing of it. Each marker is written first,
+    # so the restore cannot pass on data that was never there.
+    guest(f"rm -f {area}/more {area}/files; echo uninstalled-data > /var/lib/briard/data/{svc}/kept-marker; echo the-households > {area}/kept-file; sync -f /var/lib/briard; echo D\"\"ONE", wait=10)
+    def leftovers():
+        out = guest(f'echo A""REAS=$(ls -d /var/lib/briard/*/{svc} 2>/dev/null | tr "\\n" " ")E C""OPIES=$(ls -1 /var/lib/briard/data/.snapshots /var/lib/briard/files/.snapshots | grep "^{svc}-" | grep -v "\\.json$" | tr "\\n" " ")E M""AN=$(ls -1 /var/lib/briard/.apps | grep -c "^{svc}\\.json")E')
+        m = re.search(r"AREAS=(.*?)E COPIES=(.*?)E MAN=(\d+)E", out)
+        assert m, f"no answer from the guest:\n{out}"
+        return m.group(1).split(), m.group(2).split(), int(m.group(3))
+    def serving():
+        return "CODE=200" in guest("curl -fsS -o /dev/null -w CODE=%{http_code} http://127.0.0.1:8080/healthz; echo", wait=8)
+
+    rc, out = host.execute(f"briard-agent app uninstall {svc} 2>&1")
+    print(f"uninstall: rc={rc}\n{out}")
+    assert rc == 0 and "kept until" in out, f"the uninstall failed (rc={rc}):\n{out}"
+    areas, copies, man = leftovers()
+    print(f"after the uninstall: areas {areas}, copies {copies}, manifest {man}")
+    assert areas == [] and man == 0, f"the uninstall left areas {areas} and {man} manifest(s)"
+    assert len(copies) == 2 and all(c.startswith(f"{svc}-uninstall-") for c in copies), \
+        f"kept {copies}, want the data's and the files' uninstall copies alone"
+    assert not serving(), "the app still answers after its uninstall"
+    assert outside(tree()) == [], "the uninstall left a subvolume outside the quota tree"
+
+    rc, out = host.execute(f"briard-agent app install {svc} 2>&1")
+    print(f"install again: rc={rc}\n{out}")
+    assert rc == 0 and "installed again" in out, f"installing it again did not restore the kept copy (rc={rc}):\n{out}"
+    out = guest(f'echo D""ATA=$(cat /var/lib/briard/data/{svc}/kept-marker)E F""ILE=$(cat {area}/kept-file)E K""EPT=$(ls -1 /var/lib/briard/files/.snapshots | grep -v "\\.json$" | grep -c "^{svc}-uninstall-")E')
+    assert re.search(r"DATA=uninstalled-dataE FILE=the-householdsE KEPT=0E", out), f"after installing it again:\n{out}"
+    host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
+    assert serving(), "the app does not answer after installing it again"
+    _, ticks = volume()
+    assert ticks != poison, "installing it again ran the catalog's poisoning version, not the kept one"
+
+    rc, out = host.execute(f"briard-agent app uninstall -now {svc} 2>&1")
+    print(f"uninstall -now: rc={rc}\n{out}")
+    assert rc == 0 and "deleted" in out, f"uninstall -now failed (rc={rc}):\n{out}"
+    areas, copies, man = leftovers()
+    assert (areas, copies, man) == ([], [], 0), f"uninstall -now left areas {areas}, copies {copies}, {man} manifest(s)"
+    print("an uninstall keeps the data and the files, installing again puts them back, and -now leaves nothing")
   '';
 }

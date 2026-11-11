@@ -1870,6 +1870,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveBackupList:    true, // what the household backed up is the household's to see
 	api.DirectiveAppUsage:      true, // ...and how much it stores
 	api.DirectiveAppCacheEmpty: true, // ...and empties an app's cache, restarting it
+	api.DirectiveAppUninstall:  true, // ...and removes an app, keeping its data for 30 days or not
 	api.DirectiveBackupNow:     true, // ...and backs it up now
 	api.DirectiveBackupFolder:  true, // ...and moves it, as its settings are
 	api.DirectiveCasaClaim:     true, // the household claims its own name; the cloud never does
@@ -1954,7 +1955,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectiveAppInstall || d.Kind == api.DirectiveAppPrewarm ||
 		d.Kind == api.DirectiveAppRestore || d.Kind == api.DirectiveAppMembers || d.Kind == api.DirectiveBackupRestore ||
-		d.Kind == api.DirectiveAppCacheEmpty {
+		d.Kind == api.DirectiveAppCacheEmpty || d.Kind == api.DirectiveAppUninstall {
 		// An app install needs the render/provision/bracket verbs, none of which the narrow upgrader has.
 		i, ok := r.(appInstaller)
 		if !ok {
@@ -1971,6 +1972,8 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 			return cfg.applyAppMembers(ctx, i, d, logf)
 		case api.DirectiveAppCacheEmpty:
 			return cfg.applyAppCacheEmpty(ctx, i, d, logf)
+		case api.DirectiveAppUninstall:
+			return cfg.applyAppUninstall(ctx, i, d, n, logf)
 		}
 		return cfg.applyAppInstall(ctx, i, d, n, logf)
 	}

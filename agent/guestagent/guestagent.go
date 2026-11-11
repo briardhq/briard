@@ -462,7 +462,7 @@ var guestCapabilities = []string{
 	verbAppStart, verbAppStop, verbAppActive, verbAppHealth, verbAppHealthOf,
 	verbFilesTick, verbFilesTickResult,
 	verbDataMember, verbDataMemberQuiesced, verbDataMembers, verbStorageUsage, verbCacheEmpty, verbDataBackup, verbDataBackupResult, verbDataBackupKey, verbDataBackupRestore, verbDataBackupAdopt, verbDataBackupList, verbDataRestore, verbDataReplace, verbImageEnsure, verbImageRemove,
-	verbAppRender, verbAppProvision, verbAppInstalled, verbAppList, verbAppWarm, verbAppConverge, verbAppStage, verbAppCommit, verbAppDiscard, verbAppPending, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
+	verbAppRender, verbAppProvision, verbAppInstalled, verbAppList, verbAppWarm, verbAppConverge, verbAppStage, verbAppCommit, verbAppDiscard, verbAppPending, verbAppUninstall, verbAppReinstate, verbHassReadiness, verbHassNudge, verbHassDBCheck, verbHassDBCheckResult, verbHassDBRestore, verbMosquittoProbe, verbReactorActive,
 	verbAppPulling, verbStorageFree, verbStorageGrow, verbDeadmanEpisode,
 	verbOSSystem, verbOSState, guestfirmware.VerbOSPowerOff,
 	verbReactorPause, verbReactorResume, verbReactorEvict,
@@ -1507,6 +1507,18 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return nil, stageApp(ctx, x, run, req)
+		case verbAppUninstall:
+			var req appUninstallRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, uninstallApp(ctx, x, run, req)
+		case verbAppReinstate:
+			var req appReinstateRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, reinstateApp(ctx, x, run, req)
 		case verbAppCommit, verbAppDiscard:
 			var req appInstalledRequest
 			if err := json.Unmarshal(payload, &req); err != nil {

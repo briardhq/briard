@@ -423,6 +423,13 @@ const (
 	//                        the app, empties its cache area and starts it again: the Storage
 	//                        card's Clear. Refused for an app that keeps no cache. Local-only: a
 	//                        household's app restarting is the household's to ask for.
+	DirectiveAppUninstall = "app-uninstall" // Payload = an APP NAME, or the name and "now". The
+	//                        node stops the app and removes it, keeping its data and files areas
+	//                        as they stood for 30 days -- installing it again in that time brings
+	//                        it back as it was -- and deleting everything else of it at once. With
+	//                        "now" it keeps nothing, and on an app already uninstalled it deletes
+	//                        the copy kept: Delete now. Local-only: what a household runs and keeps
+	//                        is the household's to remove.
 	DirectiveRescue = "rescue" // Payload = "" — restart this node's guest on its verified,
 	//                        read-only image: stop the VM and bring it up again, its scratch emptied
 	//                        at boot and every binary pushed afresh. The REPLICATED DATA DISK and

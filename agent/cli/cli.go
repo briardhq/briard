@@ -95,14 +95,19 @@ var commands = []command{
 		run: runDoctor, probe: []string{"-h"},
 	},
 	{
-		name: "app", args: "install|history|undo", group: groupEveryday,
-		synopsis: "install or update an app, look at its history, or undo changes",
+		name: "app", args: "install|uninstall|history|undo", group: groupEveryday,
+		synopsis: "install, update or uninstall an app, look at its history, or undo changes",
 		detail: "install <name> -- the name is an entry in the signed catalog. It downloads the image,\n" +
 			"puts its data on the replicated volume, and starts it behind a health gate that reverts the\n" +
 			"machine if it does not come up. It blocks until the machine reaches a terminal state.\n" +
 			"Run on an installed app, it updates it to the catalog's version the same way, and the update\n" +
 			"is a row in its history. Apps never update by themselves; `briard doctor` lists the updates\n" +
-			"on offer.\n\n" +
+			"on offer. Run on an app uninstalled less than 30 days ago, it brings it back as it was then,\n" +
+			"at the version it ran; a newer one in the catalog is then an update on offer.\n\n" +
+			"uninstall [-now] <name> -- stop the app and remove it. Its data is kept for 30 days, and the\n" +
+			"nightly backup keeps copying it meanwhile; everything else of it goes at once (its history,\n" +
+			"its cache, its own backups). With -now nothing is kept; run on an app already uninstalled,\n" +
+			"-now deletes the data kept.\n\n" +
 			"history <name> -- what happened to this app, oldest first: updates, undos, the changes\n" +
 			"Briard noticed, and quiet days. Under each row is the point that undoes it.\n\n" +
 			"undo <point> -- undo that row and everything after it, naming the point exactly as history\n" +
@@ -367,8 +372,11 @@ func runApp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) >= 1 && (args[0] == "history" || args[0] == "undo") {
 		return runAppHistory(ctx, args, stdout, stderr)
 	}
+	if len(args) >= 1 && args[0] == "uninstall" {
+		return runAppUninstall(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) < 1 || args[0] != "install" {
-		fmt.Fprint(stderr, "briard app: want `install <name>`, `history <name>` or `undo <point>`\n")
+		fmt.Fprint(stderr, "briard app: want `install <name>`, `uninstall <name>`, `history <name>` or `undo <point>`\n")
 		return 2
 	}
 	fs := flag.NewFlagSet("briard app install", flag.ContinueOnError)
@@ -427,6 +435,36 @@ func runApp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s install failed: %s\n", name, o.Detail)
 		return 1
 	}
+}
+
+// runAppUninstall is `briard app uninstall [-now] <name>`: sugar over `directive app-uninstall`.
+func runAppUninstall(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("briard app uninstall", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	sock := fs.String("sock", sockDefault(), "the agent's admin socket")
+	now := fs.Bool("now", false, "keep nothing: delete the app's data now (or, if it is uninstalled already, the data kept)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprint(stderr, "briard app uninstall: want one app name\n")
+		return 2
+	}
+	payload := fs.Arg(0)
+	if *now {
+		payload += " now"
+	}
+	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveAppUninstall, Payload: payload})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	if o.State != api.OutcomeDone {
+		fmt.Fprintf(stderr, "%s was not uninstalled: %s\n", fs.Arg(0), o.Detail)
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s\n", o.Detail)
+	return 0
 }
 
 // installSeveral installs several apps as one act, in the order named: the agent does them one

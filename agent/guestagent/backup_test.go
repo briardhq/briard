@@ -19,7 +19,7 @@ import (
 // backupRig is a mounted volume holding two apps, each with a ring whose newest member was
 // taken by a different trigger, a VIP, manifests and the household's key but no certificate yet,
 // and a restic that answers from the table it is given (keyed by subcommand).
-func backupRig(restic map[string]func() ([]byte, error)) (*fakeExec, map[string]string) {
+func backupRig(restic map[string]func() ([]byte, error), extra ...string) (*fakeExec, map[string]string) {
 	now := time.Now()
 	name := func(svc string, tr quadlet.Trigger, ago time.Duration) string {
 		return strings.TrimPrefix(quadlet.SnapshotMember(svc, tr, now.Add(-ago)), quadlet.SnapshotsDir)
@@ -34,7 +34,7 @@ func backupRig(restic map[string]func() ([]byte, error)) (*fakeExec, map[string]
 		"home-assistant": quadlet.SnapshotsDir + members[1],
 		"mosquitto":      quadlet.SnapshotsDir + members[3],
 	}
-	f := ringExec(members...)
+	f := ringExec(append(members, extra...)...)
 	if f.files == nil {
 		f.files = map[string]string{}
 	}
@@ -277,8 +277,9 @@ func TestANodeWithNothingInstalledBacksUpNothing(t *testing.T) {
 	f := ringExec()
 	f.runFn = func(n string, args []string) ([]byte, error) { return nil, errors.New("no such directory") }
 	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/"})
-	if rep.Error != "" || rep.Snapshot != "" || len(f.runs) != 1 {
-		t.Fatalf("report %+v after %v, want nothing done", rep, f.runs)
+	read := !slices.ContainsFunc(f.runs, func(r []string) bool { return r[0] != "ls" })
+	if rep.Error != "" || rep.Snapshot != "" || !read {
+		t.Fatalf("report %+v after %v, want nothing done but reads", rep, f.runs)
 	}
 }
 

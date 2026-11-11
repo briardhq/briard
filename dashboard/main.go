@@ -52,6 +52,7 @@ import (
 
 	"briard.io/agent/files"
 	"briard.io/agent/hass"
+	"briard.io/agent/quadlet"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/routes"
@@ -202,6 +203,9 @@ type app struct {
 	// catalogPath is the host's view of the catalog's index (catalog.go): every card's text and
 	// icon, which apps are installable, which the household wished for.
 	catalogPath string
+	// snapshotsPath is the volume's History directory, whose names say what an uninstall kept
+	// (uninstall.go).
+	snapshotsPath string
 	// viewWait is how long a backup setting's answer waits for the host to push the view it
 	// changed (awaitView): a few of the host's ticks.
 	viewWait time.Duration
@@ -216,7 +220,7 @@ func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
 	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now, viewWait: 15 * time.Second,
 		pending: map[string]*pending{}, hops: map[string]hop{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
 		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths, casaPath: dashboard.CasaPath,
-		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath, backupPath: dashboard.BackupPath, catalogPath: dashboard.CatalogPath}
+		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath, backupPath: dashboard.BackupPath, catalogPath: dashboard.CatalogPath, snapshotsPath: quadlet.SnapshotsDir}
 }
 
 const (
@@ -342,6 +346,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.requestClearCache(w, r)
+	case r.URL.Path == "/uninstall" && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w, r)
+			return
+		}
+		a.requestUninstall(w, r)
 	case r.URL.Path == "/join" && r.Method == http.MethodPost:
 		a.ask(w, r)
 	case r.URL.Path == "/join" && r.Method == http.MethodGet:
@@ -1017,6 +1027,8 @@ type appView struct {
 	// Here says the card is on the app's own page (its fragment asks with &here), which it
 	// then need not link to.
 	Here bool
+	// Kept is what an uninstall kept of it, on the Apps page's Available card (uninstall.go).
+	Kept *keptView
 }
 
 // deviceView is one row of the trusted-device list: a label a person can tell apart, when it
@@ -1073,6 +1085,9 @@ func (a *app) render(w http.ResponseWriter, r *http.Request, self device, name s
 	}
 	if name == "backup" {
 		a.sayRunEnded(v.Backup) // said on this page, once
+	}
+	if name == "apps" {
+		a.readKept(v.Installable())
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := page.ExecuteTemplate(w, name, v); err != nil {
