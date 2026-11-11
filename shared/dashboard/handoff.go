@@ -128,7 +128,7 @@ func (h Handoff) Expired(now time.Time) bool {
 }
 
 // URL is where the household opens the dashboard with this code: the bare `briard.local` at the
-// front door, which forwards every name it does not route to the dashboard. The bare alias
+// reverse proxy, which forwards every name it does not route to the dashboard. The bare alias
 // rather than the flock-scoped name because this is the one line a household reads and types
 // (routes.BareHostName has the trade: in a two-flock house the link may reach the other flock,
 // which refuses the code, and the flock-scoped name still works).

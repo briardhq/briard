@@ -114,7 +114,8 @@ func TestBinTestProvesTheSetOrDiscardsIt(t *testing.T) {
 		t.Errorf("a passing test discarded the set: %v", got)
 	}
 
-	// The door fails: the error names it, and the set is gone -- every staged file, the release.
+	// The reverse proxy fails: the error names it, and the set is gone -- every staged file, the
+	// release.
 	if err := os.WriteFile(filepath.Join(dir, "RELEASE.next"), []byte("v3.x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +127,7 @@ func TestBinTestProvesTheSetOrDiscardsIt(t *testing.T) {
 	}
 	err := g.Call(context.Background(), VerbBinTest, BinTest{Names: BinNames}, nil)
 	if err == nil || !strings.Contains(err.Error(), "briard-reverse-proxy failed its test launch") || !strings.Contains(err.Error(), "no such device") {
-		t.Fatalf("bin.test error = %v; want the door named, with its output", err)
+		t.Fatalf("bin.test error = %v; want the reverse proxy named, with its output", err)
 	}
 	if got := stagedSet(); got != nil {
 		t.Errorf("a failed test left staged files: %v", got)
@@ -136,7 +137,7 @@ func TestBinTestProvesTheSetOrDiscardsIt(t *testing.T) {
 	}
 }
 
-// systemctlFake answers is-active/try-restart for the doors the way a guest would: `active`
+// systemctlFake answers is-active/try-restart for the web units the way a guest would: `active`
 // names the units that are running, `fail` the one whose real launch fails.
 type systemctlFake struct {
 	active  map[string]bool
@@ -182,14 +183,14 @@ func (s *systemctlFake) run(name string, args []string) ([]byte, error) {
 
 // mark models what restarting a promoter chain member actually does: that member AND everything
 // ordered after it go down and come back in the same transaction, each through its own picker.
-// A fake without this cannot show why restarting the doors in the wrong order cancels a start
+// A fake without this cannot show why restarting the web units in the wrong order cancels a start
 // job -- which is the demote this item measured.
 func (s *systemctlFake) mark(bin, what string) {
 	if s.run_ == "" {
 		return
 	}
 	carried := false
-	for _, n := range doorNames {
+	for _, n := range webNames {
 		if n == bin {
 			carried = true
 			s.write(n, what)
@@ -219,17 +220,17 @@ func (s *systemctlFake) write(n, what string) {
 // clearMarkers wipes what the pickers left, as the commit or a fresh boot would.
 func clearMarkers(t *testing.T, run string) {
 	t.Helper()
-	for _, n := range doorNames {
+	for _, n := range webNames {
 		if err := os.Remove(filepath.Join(run, n+".ran")); err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
 	}
 }
 
-// THE VERDICT: a trial start try-restarts each door that is running and passes only
-// if every one comes back active; on a secondary (nothing running) it passes at once. A door
+// THE VERDICT: a trial start try-restarts each web unit that is running and passes only
+// if every one comes back active; on a secondary (nothing running) it passes at once. A web unit
 // that fails refuses the trial -- and the trial agent restarts nothing itself: the failed
-// door's own auto-restart is the revert.
+// web unit's own auto-restart is the revert.
 func TestBinStartupTrialVerdict(t *testing.T) {
 	dir, run := binDirs(t)
 	stageSet(t, dir)
@@ -239,10 +240,10 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(run, "briard-guest-agent.ran"), []byte("trial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Armed, as bin.activate leaves things: every name of the set, single-use. Each door's picker
+	// Armed, as bin.activate leaves things: every name of the set, single-use. Each web unit's picker
 	// consumes its own on the start that carries it.
 	arm := func() {
-		for _, n := range doorNames {
+		for _, n := range webNames {
 			if err := os.WriteFile(filepath.Join(run, n+".update"), nil, 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -251,7 +252,7 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 	arm()
 	logf := func(string, ...any) {}
 
-	// A secondary: no door is running, the verdict is immediate, nothing is restarted.
+	// A secondary: no web unit is running, the verdict is immediate, nothing is restarted.
 	s := &systemctlFake{active: map[string]bool{}}
 	if err := BinStartup(context.Background(), &fakeExec{runFn: s.run}, logf); err != nil {
 		t.Fatalf("secondary: %v", err)
@@ -265,7 +266,7 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 		t.Errorf("a passing verdict discarded the set: %v", got)
 	}
 
-	// THE PRIMARY, both doors running and both taking the staged copy. ONE restart, at the
+	// THE PRIMARY, both web units running and both taking the staged copy. ONE restart, at the
 	// EARLIEST member of the chain: restarting it carries everything ordered after it in the same
 	// transaction, so the dashboard is verified where it stands rather than restarted again. Two
 	// restarts across an ordered chain are how a start job gets cancelled, and a cancelled start
@@ -297,29 +298,29 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 		t.Errorf("reset-failed at %d, try-restart at %d; the budget must be cleared before the trial spends it", reset, restart)
 	}
 
-	// The primary, the door's real launch fails: the verdict is a refusal that names it, and
+	// The primary, the reverse proxy's real launch fails: the verdict is a refusal that names it, and
 	// the trial agent leaves the set alone (the committed agent's start is what cleans up).
 	clearMarkers(t, run)
 	arm()
 	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}, fail: "briard-reverse-proxy.service"}
 	err := BinStartup(context.Background(), &fakeExec{runFn: s.run}, logf)
 	if err == nil || !strings.Contains(err.Error(), "REFUSED") || !strings.Contains(err.Error(), "briard-reverse-proxy failed its real launch") {
-		t.Fatalf("a failed door: err = %v", err)
+		t.Fatalf("a failed reverse proxy: err = %v", err)
 	}
 	if got := stagedSet(); !reflect.DeepEqual(got, BinNames) {
 		t.Errorf("the trial agent discarded the set itself: %v", got)
 	}
 
-	// THE TRAP THE FIRST RIG RUN FOUND: the staged door fails, systemd's own auto-restart puts
-	// the unit back on the committed binary, and the restart job reports SUCCESS -- active, exit
-	// 0. Only the picker's marker says the door is running what it ran before, and the verdict
-	// must refuse on it, or the set commits a door that has already reverted.
+	// THE TRAP THE FIRST RIG RUN FOUND: the staged reverse proxy fails, systemd's own auto-restart
+	// puts the unit back on the committed binary, and the restart job reports SUCCESS -- active,
+	// exit 0. Only the picker's marker says the reverse proxy is running what it ran before, and
+	// the verdict must refuse on it, or the set commits a reverse proxy that has already reverted.
 	clearMarkers(t, run)
 	arm()
 	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}, reverts: "briard-reverse-proxy.service"}
 	err = BinStartup(context.Background(), &fakeExec{runFn: s.run}, logf)
 	if err == nil || !strings.Contains(err.Error(), "REFUSED") || !strings.Contains(err.Error(), "running the pushed binary") {
-		t.Fatalf("a door that reverted under a successful restart job: err = %v", err)
+		t.Fatalf("a reverse proxy that reverted under a successful restart job: err = %v", err)
 	}
 }
 
@@ -368,7 +369,7 @@ func TestRunningBundleReportsTheCommittedRelease(t *testing.T) {
 }
 
 // THE COMMIT: only a trial start moves the set, it moves every staged name plus
-// RELEASE together, it gives the doors their start budget back, and it clears every flag --
+// RELEASE together, it gives the web units their start budget back, and it clears every flag --
 // on a non-trial start too, where the markers are all it touches.
 func TestBinCommitMovesTheWholeSetAndClearsTheFlags(t *testing.T) {
 	dir, run := binDirs(t)
@@ -432,7 +433,7 @@ func TestBinCommitMovesTheWholeSetAndClearsTheFlags(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(dir, "RELEASE")); strings.TrimSpace(string(b)) != "v3.20260908.new00000" {
 		t.Errorf("RELEASE = %q, want the staged id", b)
 	}
-	// The doors get their budget back -- the trial spent one of it where a door was running.
+	// The web units get their budget back -- the trial spent one of it where one was running.
 	want := []string{"systemctl", "reset-failed", "briard-reverse-proxy.service", "briard-dashboard.service"}
 	if len(fx.runs) != 1 || !reflect.DeepEqual(fx.runs[0], want) {
 		t.Errorf("the commit ran %v, want exactly %v", fx.runs, want)
@@ -450,7 +451,7 @@ func TestBinCommitMovesTheWholeSetAndClearsTheFlags(t *testing.T) {
 }
 
 // THE AFTERMATH: a non-trial start that finds a staged set discards it and puts both
-// doors back on the committed files -- whichever of the three failed, because it cannot know.
+// web units back on the committed files -- whichever of the three failed, because it cannot know.
 // A non-trial start with nothing staged does nothing at all.
 func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
 	dir, run := binDirs(t)
@@ -470,7 +471,7 @@ func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Both doors are running the STAGED copies the dead trial left them on, which is what the
+	// Both web units are running the STAGED copies the dead trial left them on, which is what the
 	// aftermath has to undo.
 	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}}
 	s.mark("briard-reverse-proxy", "trial")
@@ -485,8 +486,8 @@ func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
 		{"systemctl", "is-active", "briard-reverse-proxy.service"},
 		{"systemctl", "reset-failed", "briard-reverse-proxy.service"},
 		{"systemctl", "try-restart", "briard-reverse-proxy.service"},
-		// The dashboard is looked at and left alone: the door's restart carried it back, so its
-		// marker no longer says it is on a staged copy.
+		// The dashboard is looked at and left alone: the reverse proxy's restart carried it back, so
+		// its marker no longer says it is on a staged copy.
 		{"systemctl", "is-active", "briard-dashboard.service"},
 	}
 	if !reflect.DeepEqual(s.runs, want) {
@@ -495,9 +496,9 @@ func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
 	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
 		t.Errorf("the staged set survived the aftermath: %v", ents)
 	}
-	// Nothing is armed any more, and BOTH doors are back on their committed binaries -- the
-	// dashboard because the door's restart carried it.
-	for _, n := range doorNames {
+	// Nothing is armed any more, and BOTH web units are back on their committed binaries -- the
+	// dashboard because the reverse proxy's restart carried it.
+	for _, n := range webNames {
 		if _, err := os.Stat(filepath.Join(run, n+".update")); !os.IsNotExist(err) {
 			t.Errorf("%s is still armed after the aftermath", n)
 		}

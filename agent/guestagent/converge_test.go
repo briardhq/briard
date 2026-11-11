@@ -22,7 +22,7 @@ const otherManifest = `{"name":"other","version":"1","network":"host","container
 	`"primary":true,"port":9090,"healthPath":"/healthz"}]}`
 
 // mosquitto where it matters here: the manifest port is 9883, the management API the broker binds
-// to the guest's loopback -- which is exactly why the front door must not route to it.
+// to the guest's loopback -- which is exactly why the reverse proxy must not route to it.
 const mosquittoManifest = `{"name":"mosquitto","version":"2.1.2","containers":[{"name":"broker",` +
 	`"image":"docker.io/library/eclipse-mosquitto@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +
 	`"mounts":[{"tier":"data","dir":"broker","path":"/mosquitto/data"}],"primary":true,"port":9883,"healthPath":"/api/v1/listeners"}]}`
@@ -567,9 +567,9 @@ func TestPreparationFailureLeavesTheOldContainerServing(t *testing.T) {
 	}
 }
 
-// The front door's routing table is converge's output too: the same pass that renders the
+// The reverse proxy's routing table is converge's output too: the same pass that renders the
 // units writes where each app can be reached and under what name. Before this, a
-// runtime-installed app was reachable only on its own port -- the door kept serving the
+// runtime-installed app was reachable only on its own port -- the reverse proxy kept serving the
 // landing page over a running household.
 func TestConvergeWritesTheRoutingTable(t *testing.T) {
 	x := dummyNode(t)
@@ -602,15 +602,15 @@ func TestConvergeWritesTheRoutingTable(t *testing.T) {
 	if _, ok := x.fakeExec.files["/run/briard/routes.hosts"]; ok {
 		t.Error("converge wrote a second hosts file; the publisher reads the table itself")
 	}
-	// And the door has a route to it: an ordinary app is fronted by default.
+	// And the reverse proxy has a route to it: an ordinary app is fronted by default.
 	if r, ok := s.Route(routes.ListenName); !ok || r.To != "http://:8080" {
-		t.Errorf("route = %+v %v, want a host-less target on the shared door", r, ok)
+		t.Errorf("route = %+v %v, want a host-less target on the reverse proxy's shared listener", r, ok)
 	}
 }
 
 // A node whose flock has no minted name publishes nothing rather than a guess -- the rule
-// the front door already follows for the flock's own name. The app is still installed and still
-// routed in the table; it simply has no name yet, and the front door says exactly that.
+// the reverse proxy already follows for the flock's own name. The app is still installed and still
+// routed in the table; it simply has no name yet, and the reverse proxy says exactly that.
 func TestConvergeRoutesWithoutANameWhenTheFlockHasNone(t *testing.T) {
 	x := dummyNode(t) // no mdns.env at all
 	if _, err := Converge(context.Background(), x, ""); err != nil {
@@ -653,11 +653,11 @@ func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 	}
 }
 
-// The by-name health probe resolves through the SAME table the door routes on, which is the whole
-// reason the install gate and the steady-state probe can be trusted to be asking about one
-// address. It resolves for an app with NO ROUTE too: not-fronted is a statement about the door,
-// never about whether the node may look. An unresolvable app is an error, never an unhealthy
-// verdict -- see the verb.
+// The by-name health probe resolves through the SAME table the reverse proxy routes on, which is
+// the whole reason the install gate and the steady-state probe can be trusted to be asking about
+// one address. It resolves for an app with NO ROUTE too: not-fronted is a statement about the
+// reverse proxy, never about whether the node may look. An unresolvable app is an error, never
+// an unhealthy verdict -- see the verb.
 func TestAppHealthURLResolvesThroughTheTable(t *testing.T) {
 	x := &convergeExec{}
 	x.fakeExec.files = map[string]string{
@@ -672,7 +672,7 @@ func TestAppHealthURLResolvesThroughTheTable(t *testing.T) {
 	if err != nil || got != "http://127.0.0.1:8080/healthz" {
 		t.Fatalf("appHealthURL(dummy) = %q, %v; want the rendered endpoint", got, err)
 	}
-	// The broker has no route and is probed anyway, at the address the door is never given.
+	// The broker has no route and is probed anyway, at the address the reverse proxy is never given.
 	got, err = appHealthURL(x, "mosquitto")
 	if err != nil || got != "http://127.0.0.1:9883/api/v1/listeners" {
 		t.Fatalf("appHealthURL(mosquitto) = %q, %v; an app with no route must still be probed", got, err)
@@ -718,10 +718,10 @@ func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
 }
 
 // mosquitto is in the table with a name and an address and NO ROUTE. The address is
-// real and is what the health floor probes; what must not happen is the front door forwarding LAN
+// real and is what the health floor probes; what must not happen is the reverse proxy forwarding LAN
 // traffic to it, because that address is the broker's MANAGEMENT API, bound to the guest's
-// loopback on purpose — and the door runs inside that guest. A routing table that fronted it would
-// undo a deliberate bind through a mechanism that never mentions it.
+// loopback on purpose — and the reverse proxy runs inside that guest. A routing table that
+// fronted it would undo a deliberate bind through a mechanism that never mentions it.
 func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	x := &convergeExec{apps: []string{"dummy.json", "mosquitto.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{
@@ -753,14 +753,14 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 		t.Errorf("broker hosts = %v, want it named", mq.Hosts)
 	}
 	if mq.Address == "" || mq.Health == "" {
-		t.Errorf("broker = %+v, want an address to probe even though the door may not use it", mq)
+		t.Errorf("broker = %+v, want an address to probe even though the reverse proxy may not use it", mq)
 	}
 	if _, err := appHealthURL(x, "mosquitto"); err != nil {
 		t.Errorf("the broker cannot be health-probed (%v); having no route must not decide that", err)
 	}
 	// AND IT ANNOUNCES ITSELF. The one app the household's other devices go
 	// looking for rather than type a name at -- and the record must carry MQTT's port, not the
-	// management port two lines above that the door is being kept away from.
+	// management port two lines above that the reverse proxy is being kept away from.
 	if len(mq.Announce) != 1 {
 		t.Fatalf("the broker announces %+v, want exactly one record", mq.Announce)
 	}
@@ -770,7 +770,7 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	if mq.Announce[0].Name != "briard-brave-elf-mosquitto" {
 		t.Errorf("the announcement's label %q is not the name it is pointed at (%v)", mq.Announce[0].Name, mq.Hosts)
 	}
-	// And an ordinary app is unaffected: the default is the front door.
+	// And an ordinary app is unaffected: the default is the reverse proxy.
 	d, _ := tbl.Get("dummy")
 	if _, ok := d.Route(routes.ListenName); !ok {
 		t.Error("an ordinary app came out with no route")

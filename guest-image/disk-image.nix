@@ -7,7 +7,7 @@
 # The deliberately-broken generation that used to live here (`.brokenSystem`: the app
 # container run with BRIARD_BROKEN=1) went with managed-upgrade.nix (c2-v). It was
 # PAYLOAD-derived, which is what dated it: the OS upgrade it fed no longer touches the payload
-# at all, and the lab rollback demo's broken generation breaks the FRONT DOOR instead — an ordinary delta on
+# at all, and the lab rollback demo's broken generation breaks the REVERSE PROXY instead — an ordinary delta on
 # the shipped disk, fetched over the cache like any other target, needing no argument here.
 #
 # stageImages (default none) bakes extra app image tarballs into the disk and loads them
@@ -53,7 +53,7 @@
 let
   lib = nixpkgs.lib;
   # THE ONE BRIARD BINARY THIS IMAGE BAKES: the push protocol, and nothing else. The
-  # guest AGENT is pushed by the host like the doors are, so an edit to it does not move this
+  # guest AGENT is pushed by the host like the web units are, so an edit to it does not move this
   # image's inputs hash and does not republish a 400 MB guest chain (flake.nix guestInputPackages).
   briardFirmware = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-firmware"; version = agentVersion; };
 
@@ -399,7 +399,7 @@ let
           # THROUGH THE PIVOT (pivot.nix): the agent the host pushed
           # when there is one, else the baked firmware -- which is the ONE binary this image
           # carries, and serves only the handshake, the three push verbs and os.poweroff. This
-          # unit is the one an activation restarts, and its start is the verdict on the doors:
+          # unit is the one an activation restarts, and its start is the verdict on the web units:
           # trial verdict, then the port, then the ONE commit of the whole pushed set, and only
           # then READY (the mains). ⚠️ NO ExecStartPost, and its absence is deliberate:
           # a commit systemd ran after READY ran after the host's first bring-up verbs too, and

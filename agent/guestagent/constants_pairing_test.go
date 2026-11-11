@@ -18,7 +18,7 @@ import (
 // ITS SUBJECT HAS CHANGED TWICE, which is the point of having the mechanism rather than the
 // subject. It was written for the payload slot's `payloadPinPath`/`payloadServeTag`,
 // since deleted; it then paired the TLS directory, which the agent-written units
-// deleted from the Nix side when the front door's unit moved to the agent and nothing in the
+// deleted from the Nix side when the reverse proxy's unit moved to the agent and nothing in the
 // image read the path any more.
 //
 // WHAT IT PAIRS NOW is what the move of the units into the agent left genuinely shared. The tool profile is the load-bearing

@@ -72,7 +72,7 @@ func TestDoctorFailures(t *testing.T) {
 		{"primary without quorum", func(f *doctorFacts) { f.Peers = 1; f.Cluster.Quorate = false }, "role"},
 		{"nobody holds the home", func(f *doctorFacts) { f.Cluster.Primary = false }, "role"},
 		{"serving with no address", func(f *doctorFacts) { f.Probe = "" }, "address"},
-		{"front door silent", func(f *doctorFacts) { f.Healthy = false }, "address"},
+		{"reverse proxy silent", func(f *doctorFacts) { f.Healthy = false }, "address"},
 		{"standby holding the address", func(f *doctorFacts) {
 			f.Peers = 1
 			f.Cluster = model.Cluster{QuorumState: model.QuorumState{Quorate: true, Connected: 1, Diskful: true, UpToDate: true},
@@ -223,7 +223,7 @@ func TestDoctorThroughDispatch(t *testing.T) {
 		t.Fatalf("detail is not the checks: %v: %q", err, o.Detail)
 	}
 	if c := checkNamed(t, cs, "address"); c.Status != reportcard.Pass || !strings.Contains(c.Detail, "192.168.1.50") {
-		t.Errorf("address = %+v, want the front door the snapshot probed", c)
+		t.Errorf("address = %+v, want the reverse proxy the snapshot probed", c)
 	}
 	if c := checkNamed(t, cs, "cert"); c.Status != reportcard.Refuse {
 		t.Errorf("cert = %+v, want the expired cert read through the guest to fail", c)

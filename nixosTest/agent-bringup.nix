@@ -60,8 +60,8 @@ pkgs.testers.runNixOSTest {
     # ordered bring-up (data -> VIP, no app -- the shipped disk runs none), then holds it in
     # the observe loop so systemd-run stays up. Same env contract the driver used (ConfigFromEnv).
     # The host holds a guest bundle tree, as install.sh lays on every install: the image
-    # bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the store
-    # because the host writes `guest.good` beside the tree.
+    # bakes no reverse proxy, so a guest is dressed by its host or it cannot serve. Copied out of
+    # the store because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     host.succeed(
@@ -98,16 +98,17 @@ pkgs.testers.runNixOSTest {
     )
 
     # THE CONSOLE IS THE WINDOW, and it covers BRING-UP too --
-    # not just the front door. Bring-up is the first thing that can fail and the one whose cause is
-    # entirely inside the guest: a chain member that would not start, a device the resource names
+    # not just the reverse proxy. Bring-up is the first thing that can fail and the one whose cause
+    # is entirely inside the guest: a chain member that would not start, a device the resource names
     # and the guest does not have. Without the dump here, the only evidence is the agent's one-line
     # "a dependency job for drbd@r0.target failed", which names no dependency.
     try:
         # The agent prints CONVERGED once the guest reports quorate Primary.
         host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
 
-        # The whole point: L1 reaches Briard's front door at the agent-claimed VIP. This boots the
-        # SHIPPED disk, so what answers here is the node itself, not a workload baked in for the test.
+        # The whole point: L1 reaches Briard's reverse proxy at the agent-claimed VIP. This boots
+        # the SHIPPED disk, so what answers here is the node itself, not a workload baked in
+        # for the test.
         host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
     except Exception:
         # The FAILURE LINES FIRST, then the tail. A tail alone is not enough once the host agent
@@ -132,7 +133,7 @@ pkgs.testers.runNixOSTest {
     )
     # The piece beyond the driver: the standing observe loop reports the *correct*
     # converged NodeStatus -- quorate primary AND healthy (a failable assertion:
-    # health follows the real probe, so it only flips true once the front door actually serves).
+    # health follows the real probe, so it only flips true once the reverse proxy actually serves).
     host.wait_until_succeeds(
         "journalctl -u briard-agent | grep -q 'status node=guest role=anchor primary=true quorate=true connected=0 healthy=true'",
         timeout=60,

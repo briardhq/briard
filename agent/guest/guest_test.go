@@ -305,12 +305,12 @@ func TestAssessVerdicts(t *testing.T) {
 	}
 }
 
-// A ZERO-APP node -- the shipped state -- must health-gate on the front
-// door alone. Before the fix, unitOf on an empty spec named the nonexistent
+// A ZERO-APP node -- the shipped state -- must health-gate on the reverse
+// proxy alone. Before the fix, unitOf on an empty spec named the nonexistent
 // `podman-.service`, systemd said "inactive", and Ready was false forever: every OS upgrade a
 // fresh install was offered rolled back, while the same node reported Healthy: true to the
 // cloud (cfg.snapshot takes the probe's answer with no such conjunct).
-func TestHealthZeroAppGatesOnTheFrontDoorAlone(t *testing.T) {
+func TestHealthZeroAppGatesOnTheReverseProxyAlone(t *testing.T) {
 	srv := codeServer(t, http.StatusOK)
 	f := &fakeControl{active: false} // no app unit exists, so it cannot be active
 	m := newManager(f, srv.URL)
@@ -320,17 +320,17 @@ func TestHealthZeroAppGatesOnTheFrontDoorAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !h.Ready {
-		t.Error("a zero-app node whose front door answers 200 must be Ready")
+		t.Error("a zero-app node whose reverse proxy answers 200 must be Ready")
 	}
 	if !h.Running {
 		t.Error("Running should be vacuously true with no app -- there is nothing that could be down")
 	}
 }
 
-// The converse, so the above is not "always ready": a zero-app node whose FRONT DOOR is
+// The converse, so the above is not "always ready": a zero-app node whose REVERSE PROXY is
 // down is NOT ready. This is exactly the failure the rollback demo breaks deliberately, so if this
 // went vacuous the broken-generation test would too.
-func TestHealthZeroAppUnreadyWhenTheFrontDoorIsDown(t *testing.T) {
+func TestHealthZeroAppUnreadyWhenTheReverseProxyIsDown(t *testing.T) {
 	srv := codeServer(t, http.StatusServiceUnavailable)
 	m := newManager(&fakeControl{}, srv.URL)
 	h, err := m.Health(context.Background(), model.AppSpec{})
@@ -338,7 +338,7 @@ func TestHealthZeroAppUnreadyWhenTheFrontDoorIsDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	if h.Ready {
-		t.Error("front door 503 on a zero-app node must NOT be Ready")
+		t.Error("reverse proxy 503 on a zero-app node must NOT be Ready")
 	}
 }
 
@@ -440,22 +440,22 @@ func TestHealthOnANodeWithNoAddressDoesNotProbe(t *testing.T) {
 //
 // The defect it fixes, measured live: the OS gate probed HealthURL — the VIP — which a SECONDARY
 // does not own. Its peer answers, so a Secondary health-gated its own upgrade against another
-// machine's front door and committed a broken generation. The table below is the whole predicate,
+// machine's reverse proxy and committed a broken generation. The table below is the whole predicate,
 // enumerated, and the Secondary rows are the ones that were wrong.
 func TestOSReadyAsksEachNodeAboutTheJobItHolds(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		cluster model.Cluster
-		doorOK  bool
+		proxyOK bool
 		want    bool
 	}{
-		// Primary ⇒ /healthz. This is the only case that may consult the front door.
+		// Primary ⇒ /healthz. This is the only case that may consult the reverse proxy.
 		{"primary serving", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true}}, true, true},
-		{"primary with a dead front door", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true}}, false, false},
+		{"primary with a dead reverse proxy", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true}}, false, false},
 
 		// Diskful ∧ quorate ⇒ UpToDate. A Secondary is judged on being a viable failover
-		// target, and NOT on the front door — the row that used to pass by asking the peer.
-		{"secondary uptodate, front door dead", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true, UpToDate: true}}, false, true},
+		// target, and NOT on the reverse proxy — the row that used to pass by asking the peer.
+		{"secondary uptodate, reverse proxy dead", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true, UpToDate: true}}, false, true},
 		{"secondary NOT uptodate", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true}}, true, false},
 
 		// The vacuous rows, and they are correct rather than tolerated: a node with no present
@@ -467,7 +467,7 @@ func TestOSReadyAsksEachNodeAboutTheJobItHolds(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				if tc.doorOK {
+				if tc.proxyOK {
 					w.WriteHeader(http.StatusOK)
 					return
 				}
@@ -488,14 +488,14 @@ func TestOSReadyAsksEachNodeAboutTheJobItHolds(t *testing.T) {
 	}
 }
 
-// A Secondary must not consult the front door AT ALL — not merely reach the right verdict by
+// A Secondary must not consult the reverse proxy AT ALL — not merely reach the right verdict by
 // coincidence. That is the actual defect: the probe went to the VIP, which the peer answers, so
-// any front-door result read on a Secondary is a statement about a different machine.
-func TestOSReadySecondaryNeverProbesTheFrontDoor(t *testing.T) {
+// any reverse-proxy result read on a Secondary is a statement about a different machine.
+func TestOSReadySecondaryNeverProbesTheReverseProxy(t *testing.T) {
 	var probes int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		probes++
-		w.WriteHeader(http.StatusOK) // the PEER's front door, healthy — the trap
+		w.WriteHeader(http.StatusOK) // the PEER's reverse proxy, healthy — the trap
 	}))
 	defer srv.Close()
 	f := &fakeControl{cluster: model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true}}} // not UpToDate
@@ -509,7 +509,7 @@ func TestOSReadySecondaryNeverProbesTheFrontDoor(t *testing.T) {
 		t.Error("a Secondary that is not UpToDate is not a viable failover target; it must fail its gate")
 	}
 	if probes != 0 {
-		t.Errorf("the front door was probed %d times on a Secondary; it belongs to whoever holds the VIP", probes)
+		t.Errorf("the reverse proxy was probed %d times on a Secondary; it belongs to whoever holds the VIP", probes)
 	}
 }
 
@@ -525,7 +525,7 @@ func TestOSReadyUnreadableClusterIsNotReady(t *testing.T) {
 }
 
 // The lone holder of the house must come back SERVING, not merely unobliged. This is the row
-// OSReady passes vacuously and OSReadyServing must not: a node whose front door failed after
+// OSReady passes vacuously and OSReadyServing must not: a node whose reverse proxy failed after
 // the boot and which its own failure handling has already demoted (measured 2026-09-07, lab
 // os-rollback: start-limit-hit -> OnFailure -> promotion hold -> Secondary, in 14 s, before the
 // gate looked). Nobody else could be serving, so a Secondary here is a dark house.
@@ -533,22 +533,22 @@ func TestOSReadyServingRefusesADemotedHolder(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		cluster model.Cluster
-		doorOK  bool
+		proxyOK bool
 		plain   bool // OSReady's verdict, for contrast
 		serving bool // OSReadyServing's verdict
 	}{
 		{"primary serving", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true}}, true, true, true},
-		{"primary with a dead front door", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true}}, false, false, false},
-		// The measured case: demoted by its own OnFailure, front door dead. OSReady passes it
+		{"primary with a dead reverse proxy", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true}}, false, false, false},
+		// The measured case: demoted by its own OnFailure, reverse proxy dead. OSReady passes it
 		// (a standby has no present obligation); the holder's gate must not.
-		{"demoted holder, front door dead", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true, UpToDate: true}}, false, true, false},
+		{"demoted holder, reverse proxy dead", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true, UpToDate: true}}, false, true, false},
 		// Not yet promoted after the boot: not a pass either -- the gate polls until it is.
-		{"quorate, not yet primary, front door up", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true, UpToDate: true}}, true, true, false},
+		{"quorate, not yet primary, reverse proxy up", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true, UpToDate: true}}, true, true, false},
 		{"primary but not UpToDate", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true}}, true, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				if tc.doorOK {
+				if tc.proxyOK {
 					w.WriteHeader(http.StatusOK)
 					return
 				}

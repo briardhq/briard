@@ -187,10 +187,10 @@ func TestWriteUnitsIsIdempotent(t *testing.T) {
 }
 
 // THE CHAIN IS AN ORDERED CHAIN, and the order is a dependency rather than a preference: each
-// member Requires= and After= the PREVIOUS one, so the door starts only once briard-vip holds
-// the address its names resolve to (shared/chain). A rendered set that got this wrong
-// would still start on a lone node -- the target Wants them all -- and would start them in
-// whatever order systemd liked, which is how a door comes up before its address.
+// member Requires= and After= the PREVIOUS one, so the reverse proxy starts only once briard-vip
+// holds the address its names resolve to (shared/chain). A rendered set that got this wrong would
+// still start on a lone node -- the target Wants them all -- and would start them in whatever
+// order systemd liked, which is how a reverse proxy comes up before its address.
 func TestWriteUnitsChainsTheMembersInOrder(t *testing.T) {
 	guestWithTools(t)
 	u := units()
@@ -232,7 +232,7 @@ func TestWriteUnitsEveryMemberCanHandTheResourceOn(t *testing.T) {
 	for _, m := range chain.Members() {
 		// WHOLE LINES, not substrings: "StartLimitBurst=5" is a prefix of "StartLimitBurst=50",
 		// so a substring check passes over a budget ten times the intended one -- which is a
-		// door that keeps crash-looping instead of handing the house to a peer.
+		// reverse proxy that keeps crash-looping instead of handing the house to a peer.
 		for _, want := range []string{
 			"OnFailure=" + holdUnit + "\n",
 			"OnFailureJobMode=replace-irreversibly\n",
@@ -300,7 +300,7 @@ func TestWriteUnitsHoldSecs(t *testing.T) {
 // EVERY Exec* LINE IS AN ABSOLUTE PATH, because systemd requires one for the first word and
 // silently refuses the unit otherwise -- a failure that shows up as "unit not found"-shaped
 // noise at promotion rather than at render. And every unit that shells out carries the profile
-// on its PATH, which includes the doors: the picker they exec is shell, and it
+// on its PATH, which includes the web units: the picker they exec is shell, and it
 // `rm`s its own trial flag.
 func TestWriteUnitsExecLinesAreAbsoluteAndPathed(t *testing.T) {
 	_, tools := guestWithTools(t)

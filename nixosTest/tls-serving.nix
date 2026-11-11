@@ -4,10 +4,10 @@
 # replicate and a survivor serves the SAME cert at the SAME VIP after a failover (the deferred
 # "TLS survives failover", folded in here).
 #
-# The node behind the door runs NOTHING, deliberately: routing the front door to a
+# Nothing runs behind the reverse proxy, deliberately: routing the reverse proxy to a
 # runtime-installed app is deferred, so a test that put one there would prove the
-# door forwards to nothing in particular. Termination, replication and hot-reload are the layers
-# under test, and none of them needs a backend.
+# reverse proxy forwards to nothing in particular. Termination, replication and hot-reload are the
+# layers under test, and none of them needs a backend.
 #
 # Also covers the DELIVERY end: dropping a renewed cert on the vol is hot-reloaded live
 # (no restart), and the survivor serves the renewed cert after failover. The certs are
@@ -72,7 +72,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
-    # The front door comes up on the primary and answers plain HTTP at the VIP. It answers for
+    # The reverse proxy comes up on the primary and answers plain HTTP at the VIP. It answers for
     # ITSELF: this node runs no app, which is the shipped state and all a cert test needs --
     # what is under test is termination and the cert's replication, not what sits behind it.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
@@ -94,7 +94,7 @@ pkgs.testers.runNixOSTest {
     # and serves HTTPS at the VIP, proxying to the app — https://<name> is now true.
     primary.wait_until_succeeds("curl -fsS --cacert ${testCert}/fullchain.pem https://192.168.1.100/healthz")
     print("HTTPS served at the VIP, terminated by briard-reverse-proxy")
-    # The front door also answers PLAIN http on :80 — the only door a free node has,
+    # The reverse proxy also answers PLAIN http on :80 — the only door a free node has,
     # since :443 needs a cert and a cert needs a domain. One stable URL either way, which is
     # what lets the host agent probe the same address on every node.
     primary.succeed("curl -fsS http://192.168.1.100/healthz")

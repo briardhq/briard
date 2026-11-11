@@ -104,8 +104,8 @@ pkgs.testers.runNixOSTest {
 
     # Boot: the agent launches the guest as a transient service and drives bring-up.
     # The host holds a guest bundle tree, as install.sh lays on every install: the
-    # image bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the
-    # store because the host writes `guest.good` beside the tree.
+    # image bakes no reverse proxy, so a guest is dressed by its host or it cannot serve. Copied out
+    # of the store because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
     host.succeed("systemctl start briard-agent")
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)

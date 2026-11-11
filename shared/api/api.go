@@ -165,8 +165,8 @@ type AppStatus struct {
 	// MEASURED one. NodeStatus.Apps deliberately carried no health, on the grounds that an
 	// app's own endpoint is not probed from here and Healthy covers the node. A fleet run on
 	// 2026-08-27 showed what that costs: a survivor promoted, ran no app at all, and reported
-	// `healthy=true` -- because Healthy is the FRONT DOOR at the VIP, and the front door answers
-	// its own /healthz on a zero-app node. A home degraded to zero apps and every signal
+	// `healthy=true` -- because Healthy is the REVERSE PROXY at the VIP, and the reverse proxy
+	// answers its own /healthz on a zero-app node. A home degraded to zero apps and every signal
 	// said fine. Healthy is not wrong about its own subject; it is pointed at a different one.
 	//
 	// Converge-at-promotion makes this load-bearing rather than merely nice. It takes the
@@ -180,7 +180,8 @@ type AppStatus struct {
 	//
 	// WHAT IT DELIBERATELY IS NOT: a health probe. It answers "is the unit up", not "is the
 	// application well" -- an app that is running but broken stays invisible here, because the
-	// front door does not route to it. That is the routing table's, and this does not pretend to it.
+	// reverse proxy does not route to it. That is the routing table's, and this does not pretend to
+	// it.
 	//
 	// EMPTY IS A REAL ANSWER and must not be read as "stopped": a Secondary is not supposed to be
 	// running anything (the apps run on whoever holds the volume), and a node whose control
@@ -202,8 +203,8 @@ type AppStatus struct {
 	// Widening the closed allowlist is a deliberate act, so here is the argument, and it is the
 	// second half of the one State makes. State closed the hole where a promoted node ran NOTHING
 	// and reported healthy. It cannot close the next one: a container that is up while the
-	// application inside it is broken reads as `running`, and the node-level Healthy is the front
-	// door, which answers for the NODE. So "the unit is up" was the only thing anyone could see,
+	// application inside it is broken reads as `running`, and the node-level Healthy is the reverse
+	// proxy, which answers for the NODE. So "the unit is up" was the only thing anyone could see,
 	// and an app that starts and then fails to serve was invisible to every signal we have.
 	//
 	// It became askable at all with the routing table: before it, the address of an

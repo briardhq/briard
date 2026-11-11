@@ -10,20 +10,20 @@ import (
 	"briard.io/shared/routes"
 )
 
-// forwardTrust is what the door knows about each routed app's willingness to be told who the
-// client is: whether a request carrying X-Forwarded-For is accepted from this door. It starts
+// forwardTrust is what the reverse proxy knows about each routed app's willingness to be told who
+// the client is: whether a request carrying X-Forwarded-For is accepted from this proxy. It starts
 // empty, which means NO header for anyone -- an app that is not expecting a proxy must keep
 // working when put behind one, and Home Assistant answers 400 to the header from a proxy it has
 // not been told to trust.
 //
-// IT IS LEARNED, NEVER CONFIGURED. We do not own the app's configuration, so the door asks the
-// app instead: a household that trusts 127.0.0.1 in Home Assistant gets real client addresses
+// IT IS LEARNED, NEVER CONFIGURED. We do not own the app's configuration, so the reverse proxy asks
+// the app instead: a household that trusts 127.0.0.1 in Home Assistant gets real client addresses
 // (login tracking, ip_ban, trusted_networks), and one that does not loses nothing.
 //
 // IT IS ASKED ONLY WHEN AN APP STARTS. An app reads its proxy trust at start, so a start is
 // the only moment the answer can change; the guest agent sends SIGHUP on every start it sees (the
-// container's own and Home Assistant's restarts inside it), and the door asks once at its own
-// start. No timer: each refused probe is an error line in the app's log, one per start is
+// container's own and Home Assistant's restarts inside it), and the reverse proxy asks once at its
+// own start. No timer: each refused probe is an error line in the app's log, one per start is
 // what a household that never opted in pays, and nothing more.
 type forwardTrust struct {
 	mu      sync.RWMutex
@@ -56,7 +56,7 @@ func (t *forwardTrust) set(app string, ok bool) {
 		t.trusted = map[string]bool{}
 	}
 	if t.trusted[app] != ok {
-		log.Printf("reverse-proxy: %s %s X-Forwarded-For from this door", app, map[bool]string{true: "accepts", false: "refuses"}[ok])
+		log.Printf("reverse-proxy: %s %s X-Forwarded-For from this proxy", app, map[bool]string{true: "accepts", false: "refuses"}[ok])
 	}
 	t.trusted[app] = ok
 }

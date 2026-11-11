@@ -1,18 +1,18 @@
 package main
 
-// THE GATE: how the door signs the user into an app that has no login of its own worth
+// THE GATE: how the reverse proxy signs the user into an app that has no login of its own worth
 // trusting (a route with a Gate, shared/routes). Files is the live case.
 //
 // THE SESSION IS THE DASHBOARD'S, carried to the app's own name. A browser arriving at a gated
 // app without the dashboard's cookie for that name is sent to the dashboard's /open/<app>, which
 // -- on a browser it trusts -- hands back a one-time code for the device's OWN session token. The
-// door redeems the code with the dashboard and sets the same token as the app name's cookie, so a
-// device is one row on the Trusted devices page and revoking it closes the app too. A browser the
-// dashboard does not trust meets the dashboard's ordinary way in, and nothing else.
+// reverse proxy redeems the code with the dashboard and sets the same token as the app name's
+// cookie, so a device is one row on the Trusted devices page and revoking it closes the app too. A
+// browser the dashboard does not trust meets the dashboard's ordinary way in, and nothing else.
 //
 // THE APP IS TOLD WHO IT IS IN A SIGNATURE, NOT A HEADER IT BELIEVES. After the dashboard says the
 // token stands for this app (asked over loopback, naming the app, so the dashboard can make the
-// app ready for the user first; the answer kept for half a minute), the door forwards the
+// app ready for the user first; the answer kept for half a minute), the reverse proxy forwards the
 // request with a token signed with the app's secret (the route's Gate file) naming the user
 // by the username the dashboard answers with, valid for a minute. The app verifies it on every request, so nothing that can reach the app's
 // address -- another workload on this node, a LAN host routing to the pod network -- can sign in
@@ -24,7 +24,7 @@ package main
 // as the file it is kept in, which nothing off this node reads.
 //
 // THE DASHBOARD'S TOKEN NEVER REACHES THE APP. The cookie is the household's credential for the
-// dashboard itself, so the door takes it off every request it forwards.
+// dashboard itself, so the reverse proxy takes it off every request it forwards.
 
 import (
 	"context"
@@ -161,8 +161,8 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 	}
 	dropCookie(req, sessionCookie)
 	if r.gateHeader != "" {
-		// The app's own reverse-proxy sign-in: who, and the secret that says the door sent it.
-		// Set, never added, so a client's own copy of either header never reaches the app.
+		// The app's own reverse-proxy sign-in: who, and the secret that says the reverse proxy sent
+		// it. Set, never added, so a client's own copy of either header never reaches the app.
 		req.Header.Set(userHeader, user)
 		req.Header.Set(r.gateHeader, string(key))
 		return true

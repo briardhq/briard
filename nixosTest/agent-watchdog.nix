@@ -175,8 +175,8 @@ pkgs.testers.runNixOSTest {
     # before READY moved to loop entry, systemd would kill this unit at TimeoutStartSec=30 instead.
     t0 = int(host.succeed("date +%s").strip())
     # The host holds a guest bundle tree, as install.sh lays on every install: the
-    # image bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the
-    # store because the host writes `guest.good` beside the tree.
+    # image bakes no reverse proxy, so a guest is dressed by its host or it cannot serve. Copied out
+    # of the store because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
     host.succeed("systemctl start briard-agent")
     t1 = int(host.succeed("date +%s").strip())

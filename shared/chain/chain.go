@@ -44,19 +44,19 @@ const Target = "briard-chain.target"
 // left to make conditional. It takes no arguments, and that is the end state converge-at-promotion was
 // after: the chain is the same units on every anchor in the fleet.
 //
-// THE FRONT DOOR IS A MEMBER AND CARRIES THE HOUSEHOLD'S mDNS NAMES. On a
-// node with no `.casa` domain the door routes `byHost` against the app's own `.local` names,
-// so a request to the bare VIP matches nothing: the NAME is the only path to an app, and a
+// THE REVERSE PROXY IS A MEMBER AND CARRIES THE HOUSEHOLD'S mDNS NAMES. On a
+// node with no `.casa` domain the reverse proxy routes `byHost` against the app's own `.local`
+// names, so a request to the bare VIP matches nothing: the NAME is the only path to an app, and a
 // node that cannot publish is unreachable while every other part of it reports healthy. That is
 // what the promoter is for. Publishing and answering being one member is also what makes them
-// impossible to disagree -- the door answers for exactly the names it routes. Membership means
-// it never runs on the node that LOST the promotion race: reactor gives every member
+// impossible to disagree -- the reverse proxy answers for exactly the names it routes. Membership
+// means it never runs on the node that LOST the promotion race: reactor gives every member
 // `Requires=drbd-promote@<res>.service`, so its job fails with 'dependency' and never executes,
 // where a `wantedBy` binding would start it into a node that had claimed no address.
 //
-// ORDER IS THE DEPENDENCY: each member Requires= and After= the PREVIOUS one, so the door starts
-// only once briard-vip holds the address its names resolve to. Publishing a name that nothing
-// answers is the failure mode the order exists to avoid.
+// ORDER IS THE DEPENDENCY: each member Requires= and After= the PREVIOUS one, so the reverse proxy
+// starts only once briard-vip holds the address its names resolve to. Publishing a name that
+// nothing answers is the failure mode the order exists to avoid.
 func Members() []string {
 	return []string{
 		"briard-primary-storage.service",

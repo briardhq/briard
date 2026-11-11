@@ -21,8 +21,8 @@ import (
 // fakeMealie is Mealie's API as measured on v3.30.0, with its accounts in the order they were
 // made: the first one, `admin` with the shipped password and email, which Mealie calls a first
 // login while that email is held; a password sign-in, whose token a password change makes
-// worthless; a header sign-in with the door's secret, by username then email, which makes an
-// ordinary account for a name it does not know; and what an admin may do -- list the accounts,
+// worthless; a header sign-in with the reverse proxy's secret, by username then email, which makes
+// an ordinary account for a name it does not know; and what an admin may do -- list the accounts,
 // oldest first only when asked, and rename one.
 type fakeMealie struct {
 	mu         sync.Mutex
@@ -43,7 +43,7 @@ type fakeUser struct {
 }
 
 func newFakeMealie() *fakeMealie {
-	f := &fakeMealie{secret: "door-secret"}
+	f := &fakeMealie{secret: "proxy-secret"}
 	f.add("admin", mealieFirstEmail, "Change Me", mealieFirstPassword, "Mealie", true)
 	return f
 }
@@ -201,15 +201,15 @@ func mealieRig(t *testing.T) (*rig, *fakeMealie) {
 	return r, f
 }
 
-// check is the door's check for Mealie, with a trusted device's session.
+// check is the reverse proxy's check for Mealie, with a trusted device's session.
 func check(r *rig, c *http.Cookie) (int, string) {
 	return r.loopback("GET", "/gate/check?app=mealie", c.Value, nil)
 }
 
-// THE DOOR'S CHECK MAKES MEALIE'S FIRST ACCOUNT THE USER'S AND NAMES IT: the shipped password no
-// longer works, the account keeps its username and carries the record's name and placeholder
-// email, and briard's own account is an admin beside it. A later check asks Mealie nothing it could count as
-// a failed login; a check for another app asks Mealie nothing at all.
+// THE REVERSE PROXY'S CHECK MAKES MEALIE'S FIRST ACCOUNT THE USER'S AND NAMES IT: the shipped
+// password no longer works, the account keeps its username and carries the record's name and
+// placeholder email, and briard's own account is an admin beside it. A later check asks Mealie
+// nothing it could count as a failed login; a check for another app asks Mealie nothing at all.
 func TestTheCheckTakesOverMealiesFirstAccount(t *testing.T) {
 	r, f := mealieRig(t)
 	c := r.trust()
@@ -240,9 +240,9 @@ func TestTheCheckTakesOverMealiesFirstAccount(t *testing.T) {
 	}
 }
 
-// WHATEVER MEALIE'S ACCOUNTS SAY IS WHAT THE DOOR DOES: the user renamed inside Mealie, briard's
-// own account deleted or no longer an admin -- each is followed at the next check, with nothing
-// kept on briard's side to fall out of step.
+// WHATEVER MEALIE'S ACCOUNTS SAY IS WHAT THE REVERSE PROXY DOES: the user renamed inside Mealie,
+// briard's own account deleted or no longer an admin -- each is followed at the next check, with
+// nothing kept on briard's side to fall out of step.
 func TestTheCheckFollowsMealiesAccounts(t *testing.T) {
 	r, f := mealieRig(t)
 	c := r.trust()
@@ -322,9 +322,9 @@ func TestATakeoverCutShortIsFinishedByTheNextCheck(t *testing.T) {
 	}
 }
 
-// A PASSWORD CHANGE BEATEN TO IT BY AN EARLIER CHECK'S -- one the door stopped waiting for, which
-// Mealie finished all the same -- is that same end: the takeover goes on to the rename. A change
-// that failed with the shipped password still answering refuses the check.
+// A PASSWORD CHANGE BEATEN TO IT BY AN EARLIER CHECK'S -- one the reverse proxy stopped waiting
+// for, which Mealie finished all the same -- is that same end: the takeover goes on to the rename.
+// A change that failed with the shipped password still answering refuses the check.
 func TestAPasswordChangeBeatenToItFinishesTheTakeover(t *testing.T) {
 	r, f := mealieRig(t)
 	f.beatenTo = true
@@ -344,9 +344,9 @@ func TestAPasswordChangeBeatenToItFinishesTheTakeover(t *testing.T) {
 	}
 }
 
-// A CHECK THE DOOR STOPPED WAITING FOR RUNS TO ITS END: the door gives up while Mealie's admin
-// tool runs, and the takeover is finished all the same.
-func TestACheckTheDoorStoppedWaitingForStillFinishes(t *testing.T) {
+// A CHECK THE REVERSE PROXY STOPPED WAITING FOR RUNS TO ITS END: the reverse proxy gives up while
+// Mealie's admin tool runs, and the takeover is finished all the same.
+func TestACheckTheProxyStoppedWaitingForStillFinishes(t *testing.T) {
 	r, f := mealieRig(t)
 	r.trust()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -356,7 +356,7 @@ func TestACheckTheDoorStoppedWaitingForStillFinishes(t *testing.T) {
 	}
 	user, err := r.app.mealieUser(ctx, gatedApps(r.app.routesPath)["mealie"])
 	if err != nil || user != "admin" || f.users[0].password == mealieFirstPassword || f.users[0].email != "kostas@briard.local" {
-		t.Fatalf("a check the door stopped waiting for = %q, %v; first account %+v", user, err, *f.users[0])
+		t.Fatalf("a check the reverse proxy stopped waiting for = %q, %v; first account %+v", user, err, *f.users[0])
 	}
 }
 

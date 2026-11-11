@@ -110,7 +110,7 @@ pkgs.testers.runNixOSTest {
     # failed the precondition 19ms after promotion (nightly 2026-07-27).
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     # Nothing is installed until the node has promoted -- the volume is where an app lives, so
-    # that ordering is the product's, not the harness's. The front door answers meanwhile.
+    # that ordering is the product's, not the harness's. The reverse proxy answers meanwhile.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
     install_fixture(node1)
     assert "${appUnit}" in fixture_units(node1), "the renderer stopped producing the unit this test names"

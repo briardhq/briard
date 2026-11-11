@@ -1,4 +1,4 @@
-// Package routes is the front door's routing table: the file the guest's converge WRITES and the
+// Package routes is the reverse proxy's routing table: the file the guest's converge WRITES and the
 // reverse proxy READS, mapping a hostname a household types to the app that answers it.
 //
 // IT IS A DERIVED PROJECTION, NOT THE CATALOG. The signed manifest is stored verbatim on the
@@ -19,7 +19,7 @@
 // A HOSTNAME APPEARS HERE AND NOWHERE ELSE. These entries are what the mDNS publisher claims on
 // the LAN and what the proxy matches on, so a name that is published but not routed — or routed
 // but not published — is not expressible. That is why the names are composed once, here
-// (HostName), rather than independently by the door and by the publisher.
+// (HostName), rather than independently by the reverse proxy and by the publisher.
 package routes
 
 import (
@@ -40,7 +40,7 @@ import (
 // because a second file is a second thing that can be stale.
 const Path = "/run/briard/routes.json"
 
-// Table is the whole front door's routing, as one file. Ordered by app name, because converge
+// Table is the reverse proxy's whole routing, as one file. Ordered by app name, because converge
 // renders in that order and a table two nodes disagree about the ORDER of is a diff nobody wants
 // to read.
 type Table struct {
@@ -80,22 +80,22 @@ type App struct {
 	// against Address (see Resolve).
 	//
 	// It is NOT a route, and that is the point: the probe is performed by the guest, straight to
-	// the app, and never traverses the proxy. An app the door may not front is still
+	// the app, and never traverses the proxy. An app the reverse proxy may not front is still
 	// probed here every cycle — mosquitto's management API is exactly that, bound inside the pod
 	// and relayed to nobody.
 	Health string `json:"health,omitempty"`
-	// Routes is what the DOOR does about this app, and an empty list means nothing — the
+	// Routes is what the REVERSE PROXY does about this app, and an empty list means nothing — the
 	// app is named and probed, and no request is ever forwarded to it.
 	//
 	// ABSENCE RATHER THAN A FLAG, deliberately. A boolean saying "do not front this" leaves the
-	// door holding an address it is trusted not to use, one inverted condition away from relaying
-	// a pod-internal endpoint to the LAN. With no route there is nothing to forward and nothing to
-	// get wrong — the same reason shared/manifest grants capability by omission.
+	// reverse proxy holding an address it is trusted not to use, one inverted condition away from
+	// relaying a pod-internal endpoint to the LAN. With no route there is nothing to forward and
+	// nothing to get wrong — the same reason shared/manifest grants capability by omission.
 	Routes []Route `json:"routes,omitempty"`
 	// Ports are what this app publishes to the household, reachable at the node's
-	// service address on the same number. NOT the door's business -- it forwards HTTP and these
-	// exist for the apps that do not speak it -- but the node's, because the page and `briard app
-	// install` have to be able to say where an app actually is.
+	// service address on the same number. NOT the reverse proxy's business -- it forwards HTTP and
+	// these exist for the apps that do not speak it -- but the node's, because the page and `briard
+	// app install` have to be able to say where an app actually is.
 	//
 	// It stayed out of this table until a manifest could declare exposure, and the reason is worth
 	// keeping: under host networking every port a container listens on is reachable at the
@@ -118,16 +118,16 @@ type App struct {
 	// and the only other candidate is the guest's own hostname, which is node-scoped and would
 	// send every device on the LAN to a machine that just stopped being the Primary.
 	Announce []Announcement `json:"announce,omitempty"`
-	// Gate, when set, is the file holding the secret the door signs the household into this app
-	// with, and its presence is what makes the app GATED: the door lets a browser through only
-	// with the household dashboard's session, and tells the app who it is in a short-lived token
-	// signed with this secret, which the app verifies on every request. Empty is an app with a
-	// login of its own, forwarded as it is.
+	// Gate, when set, is the file holding the secret the reverse proxy signs the household into
+	// this app with, and its presence is what makes the app GATED: the reverse proxy lets a browser
+	// through only with the household dashboard's session, and tells the app who it is in a
+	// short-lived token signed with this secret, which the app verifies on every request. Empty is
+	// an app with a login of its own, forwarded as it is.
 	//
 	// A PATH, NEVER THE SECRET: this table is world-readable on the node, and the secret is root's.
 	Gate string `json:"gate,omitempty"`
-	// GateHeader, when set beside Gate, is the other way the door tells a gated app who it is,
-	// for an app that reads its user from a reverse proxy's header rather than a token: the
+	// GateHeader, when set beside Gate, is the other way the reverse proxy tells a gated app who it
+	// is, for an app that reads its user from a reverse proxy's header rather than a token: the
 	// username in X-Forwarded-User, and the secret itself in this header, which the app compares
 	// with its own copy. Empty is the signed token.
 	GateHeader string `json:"gateHeader,omitempty"`
@@ -148,23 +148,23 @@ type Announcement struct {
 
 // Route is one way in to an app: which listener the request arrives on, and where it goes.
 type Route struct {
-	// Listen is the listener this route is served on. ListenName is the shared :80/:443 front
-	// door, matched against the app's own Hosts; a dedicated listener is spelled
-	// "tls:<port>" and is not implemented yet (Validate refuses it, loudly — a route the door
-	// silently ignored would be an app unreachable with nothing saying why).
+	// Listen is the listener this route is served on. ListenName is the reverse proxy's shared
+	// :80/:443 listener, matched against the app's own Hosts; a dedicated listener is spelled
+	// "tls:<port>" and is not implemented yet (Validate refuses it, loudly — a route the reverse
+	// proxy silently ignored would be an app unreachable with nothing saying why).
 	Listen string `json:"listen"`
-	// To is where the door forwards, as a host-less URL resolved against the app's Address.
-	// The scheme says how to speak to it: "http" is a proxied request, upgrades included.
+	// To is where the reverse proxy forwards, as a host-less URL resolved against the app's
+	// Address. The scheme says how to speak to it: "http" is a proxied request, upgrades included.
 	//
 	// THE MISSING HOST IS A SECURITY PROPERTY, not a spelling convenience. Because the only
-	// address the door can ever splice in is the app's own, no table — however it was written
-	// — can point the front door at another machine. Validate refuses a host here.
+	// address the reverse proxy can ever splice in is the app's own, no table — however it was
+	// written — can point the reverse proxy at another machine. Validate refuses a host here.
 	To string `json:"to"`
 }
 
-// ListenName is the shared front door: :80 and :443, matched on the request's Host header against
-// the app's Hosts. The two ports are one listener here because the door treats them
-// identically; separating them is a new value, not a new shape.
+// ListenName is the reverse proxy's shared listener: :80 and :443, matched on the request's Host
+// header against the app's Hosts. The two ports are one listener here because the reverse proxy
+// treats them identically; separating them is a new value, not a new shape.
 const ListenName = "name"
 
 // HostName is the single place an app's LAN name is composed: `briard-<flock>-<app>.local`.
@@ -230,9 +230,9 @@ func HostNames(flock, app string) []string {
 
 // CasaHostName is the app's name under the household's casa domain:
 // `<app>.<flock>.briard.casa`, covered by the flock's wildcard certificate and answered by
-// the same door that answers the `.local` name. Composed for every named flock, claimed or not:
-// a name that does not resolve routes nothing, and the alternative -- the table knowing whether
-// the household has an account -- would put a cloud fact where only local facts live.
+// the same reverse proxy that answers the `.local` name. Composed for every named flock, claimed or
+// not: a name that does not resolve routes nothing, and the alternative -- the table knowing
+// whether the household has an account -- would put a cloud fact where only local facts live.
 func CasaHostName(flock, app string) string {
 	if flock == "" || app == "" {
 		return ""
@@ -269,8 +269,8 @@ func Parse(raw []byte) (Table, error) {
 	return t, nil
 }
 
-// Validate enforces the two rules that are not style. A host in a URL would let the door be
-// pointed off this node; an unrecognised listener would be a route silently not served.
+// Validate enforces the two rules that are not style. A host in a URL would let the reverse proxy
+// be pointed off this node; an unrecognised listener would be a route silently not served.
 func (t Table) Validate() error {
 	for _, s := range t.Apps {
 		if s.Name == "" {
@@ -283,8 +283,8 @@ func (t Table) Validate() error {
 		}
 		for _, r := range s.Routes {
 			if r.Listen != ListenName {
-				// Deliberately not "ignore what we do not know": a route the door drops is an
-				// app that is unreachable with nothing saying why.
+				// Deliberately not "ignore what we do not know": a route the reverse proxy drops is
+				// an app that is unreachable with nothing saying why.
 				return fmt.Errorf("routes: app %q has a route on unknown listener %q", s.Name, r.Listen)
 			}
 			if err := checkSpec(s.Name, "route target", r.To); err != nil {
@@ -351,7 +351,7 @@ func checkSpec(app, what, spec string) error {
 	}
 	if u.Hostname() != "" {
 		// The whole point of the missing host: with nothing but the app's own Address to
-		// splice, no table can aim the door at another machine.
+		// splice, no table can aim the reverse proxy at another machine.
 		return fmt.Errorf("routes: app %q %s %q names a host; it must be host-less", app, what, spec)
 	}
 	if u.Port() == "" {
@@ -371,8 +371,8 @@ func (t Table) Marshal() ([]byte, error) {
 }
 
 // Resolve turns one of this app's host-less specs into a real URL by splicing in its Address.
-// The one operation every consumer performs, implemented once so the door and the health probe
-// cannot disagree about where an app is.
+// The one operation every consumer performs, implemented once so the reverse proxy and the health
+// probe cannot disagree about where an app is.
 func (s App) Resolve(spec string) (*url.URL, error) {
 	u, err := url.Parse(spec)
 	if err != nil {
@@ -405,8 +405,8 @@ func (s App) Route(listen string) (Route, bool) {
 // resolver, and a `:port` whenever the port is not the scheme's default.
 //
 // A match says only that the name is OURS. Whether anything is served under it is the app's
-// Routes, and the difference matters: the door can then say "this is ours and does not answer
-// HTTP" instead of a 404 that reads as "you typed it wrong".
+// Routes, and the difference matters: the reverse proxy can then say "this is ours and does not
+// answer HTTP" instead of a 404 that reads as "you typed it wrong".
 func (t Table) Lookup(host string) (App, bool) {
 	h := Normalise(host)
 	if h == "" {
@@ -452,8 +452,8 @@ func Normalise(host string) string {
 // does: every rule for building a name belongs to one function, so a second name form is one
 // change rather than one per language.
 //
-// The publisher composes nothing: it claims the names this package builds, so the door and the
-// agent cannot disagree about what a flock is called.
+// The publisher composes nothing: it claims the names this package builds, so the reverse proxy and
+// the agent cannot disagree about what a flock is called.
 //
 // An empty flock name yields no name at all, the same rule HostName follows: a node with no minted
 // name publishes nothing rather than `briard-.local`, which is worse than silence.
@@ -466,8 +466,8 @@ func FlockHostName(flock string) string {
 
 // BareFlockHostName is the flock's convenience name, `briard.local`: what the installer prints
 // and the one-time dashboard link carries, answered by every named flock beside FlockHostName. The
-// same alias rule as BareHostName, and the same accepted ambiguity in a two-flock house. The door
-// forwards it to the dashboard the way it forwards every name it does not route.
+// same alias rule as BareHostName, and the same accepted ambiguity in a two-flock house. The
+// reverse proxy forwards it to the dashboard the way it forwards every name it does not route.
 const BareFlockHostName = "briard.local"
 
 // headerName says a string is a plain HTTP header name: letters, digits and dashes.

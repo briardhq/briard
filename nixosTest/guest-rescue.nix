@@ -76,8 +76,8 @@ pkgs.testers.runNixOSTest {
     host.succeed("${stub}/bin/briard-selfupdate-stub keygen /root/release.key /root/keyring.pem")
 
     # The host holds a guest bundle tree, as install.sh lays on every install: the image
-    # bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the store
-    # because the host writes `guest.good` beside the tree.
+    # bakes no reverse proxy, so a guest is dressed by its host or it cannot serve. Copied out of
+    # the store because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     host.succeed(
@@ -302,8 +302,8 @@ pkgs.testers.runNixOSTest {
         "the data volume has a different LUKS UUID -- the rescue reformatted the replicated volume"
     print("data disk untouched: same file, same size, same volume")
 
-    # (3) And it is a node again: the restarted guest came up on the existing replica and the front
-    # door answers.
+    # (3) And it is a node again: the restarted guest came up on the existing replica and the
+    # reverse proxy answers.
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
 
     # (4) THE IMAGE IS READ-ONLY, AND NOTHING REACHED IT. Two boots and a clean stop later, its

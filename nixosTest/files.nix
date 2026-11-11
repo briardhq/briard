@@ -12,9 +12,9 @@
 #      copy -- the stale bind is where an edit would otherwise vanish;
 #   4. A VERSION APPEARS under its absolute name;
 #   5. THE HOUSEHOLD GETS IN WITH THE DASHBOARD'S SESSION AND NOTHING ELSE: from the other
-#      machine, through the door -- a stranger is sent to the dashboard, a trusted browser is
-#      signed in with no login of the app's own -- while a forged token is refused both at the
-#      pod and at the door;
+#      machine, through the reverse proxy -- a stranger is sent to the dashboard, a trusted browser
+#      is signed in with no login of the app's own -- while a forged token is refused both at the
+#      pod and at the reverse proxy;
 #   6. THE VIEW LETS GO OF THE VOLUME when the chain stops.
 #
 # node2 is the household's other machine: every browser request is made from it, to the VIP.
@@ -100,10 +100,12 @@ pkgs.testers.runNixOSTest {
         return next(l.split(":", 1)[1].strip() for l in headers.splitlines() if l.lower().startswith(name.lower() + ":"))
     hd = curl(files_host, "/files/Dummy")
     assert status(hd) == 303 and header(hd, "Location").startswith("http://briard.local/open/files?"), hd
-    # A token the browser brings is not a way in either: the door sends it to the dashboard too.
+    # A token the browser brings is not a way in either: the reverse proxy sends it to the
+    # dashboard too.
     hd = curl(files_host, "/api/resources?source=Apps&path=/", extra="-H 'X-JWT-Assertion: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJob3VzZWhvbGQifQ.forged'")
     assert status(hd) == 303, hd
-    # And at the pod itself, around the door: no token is 401, a token not signed with the key 403.
+    # And at the pod itself, around the reverse proxy: no token is 401, a token not signed with
+    # the key 403.
     assert primary.succeed(f"curl -s -o /dev/null -w '%{{http_code}}' http://{pod}/api/resources?source=Apps&path=/").strip() == "401"
     forged = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJob3VzZWhvbGQiLCJleHAiOjQxMDI0NDQ4MDB9.c2lnbmVkLWJ5LW5vYm9keQ"
     assert primary.succeed(f"curl -s -o /dev/null -w '%{{http_code}}' -H 'X-JWT-Assertion: {forged}' http://{pod}/api/resources?source=Apps&path=/").strip() == "403"
@@ -133,7 +135,8 @@ pkgs.testers.runNixOSTest {
     assert folders == ["Dummy"], f"Files shows {folders}"
     hd = curl(files_host, "/api/users?username=self", files_cookie)
     me = json.loads(browser.succeed("cat /tmp/body"))
-    # As Files' one fixed name, never the record's (kostas), an admin by the group the door signs.
+    # As Files' one fixed name, never the record's (kostas), an admin by the group the reverse
+    # proxy signs.
     assert me["username"] == "owner" and me["permissions"]["admin"], me
 
     # (2) THROUGH THE APP: an edit to the data lands on the volume; one to the files tier is refused.

@@ -59,14 +59,14 @@ Source: <https://github.com/OpenVPN/tap-windows6> · releases at
 ## Go modules compiled into our binaries
 
 The agent (`briard-agent`, the same binary on the host and as `briard`), the guest agent and the
-firmware the guest image bakes, the front door and the dashboard are Go programs, and they link the modules pinned in
+firmware the guest image bakes, the reverse proxy and the dashboard are Go programs, and they link the modules pinned in
 [`go.mod`](go.mod) / [`go.sum`](go.sum) — permissive licenses, all of them, and each module's
 `LICENSE` file ships in its source:
 
 - [`github.com/klauspost/compress`](https://github.com/klauspost/compress) (BSD-3-Clause, with
   Apache-2.0 and MIT parts; see its LICENSE) — decompressing the release artifacts.
 - [`github.com/pion/mdns/v2`](https://github.com/pion/mdns) (MIT) and its dependency
-  `github.com/pion/logging` (MIT) — the front door's `.local` names.
+  `github.com/pion/logging` (MIT) — the reverse proxy's `.local` names.
 - `golang.org/x/net`, `golang.org/x/crypto`, `golang.org/x/sys` (BSD-3-Clause).
 
 Under Nix the module set is vendored from those exact versions (`vendor-hash.nix` pins it), so the

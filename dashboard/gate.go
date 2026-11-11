@@ -1,20 +1,21 @@
 package main
 
-// THE GATE'S DASHBOARD HALF (reverse-proxy/gate.go is the door's). A gated app -- Files -- has no
-// login of its own; the household reaches it with this dashboard's session, carried to the
+// THE GATE'S DASHBOARD HALF (reverse-proxy/gate.go is the reverse proxy's). A gated app -- Files --
+// has no login of its own; the household reaches it with this dashboard's session, carried to the
 // app's own name the way the hop carries it between the dashboard's names:
 //
 //   - GET /open/<app>, on a browser this dashboard trusts, mints a one-time code for the device's
 //     OWN token and sends the browser to the app's name with it. A browser it does not trust gets
 //     the ordinary refusal (and on the household's name, the bounce), with the address kept.
-//   - The door redeems the code at /gate/redeem and sets the token as the app name's cookie,
-//     then asks /gate/check whether a token still stands for the app before it signs anyone in.
+//   - The reverse proxy redeems the code at /gate/redeem and sets the token as the app name's
+//     cookie, then asks /gate/check whether a token still stands for the app before it signs
+//     anyone in.
 //     That question comes before every way in -- an open, an address typed, a page left open --
 //     so it is where an app is made ready for the user (Mealie's first account, mealie.go).
 //
-// Both answers are the door's alone, asked over loopback: the door never forwards /gate/ from a
-// browser, and refusing a request that came through it (it always says the scheme) is the
-// second guard.
+// Both answers are the reverse proxy's alone, asked over loopback: the reverse proxy never forwards
+// /gate/ from a browser, and refusing a request that came through it (it always says the scheme) is
+// the second guard.
 
 import (
 	"fmt"
@@ -31,7 +32,7 @@ import (
 	"briard.io/shared/routes"
 )
 
-// gateHopParam carries the code to the app's name; the door's name for it.
+// gateHopParam carries the code to the app's name; the reverse proxy's name for it.
 const gateHopParam = "briard_hop"
 
 // gatedApps is every app the routing table gates, by name.
@@ -102,13 +103,13 @@ func (a *app) openGated(w http.ResponseWriter, r *http.Request, name string) {
 	http.Redirect(w, r, u.String(), http.StatusSeeOther)
 }
 
-// viaDoor says a request came through the front door, which names the scheme on everything it
-// forwards here; the door's own loopback questions name none.
-func viaDoor(r *http.Request) bool { return r.Header.Get("X-Forwarded-Proto") != "" }
+// viaProxy says a request came through the reverse proxy, which names the scheme on everything it
+// forwards here; the reverse proxy's own loopback questions name none.
+func viaProxy(r *http.Request) bool { return r.Header.Get("X-Forwarded-Proto") != "" }
 
 // gateRedeem trades a code openGated minted for the token it was minted for, once.
 func (a *app) gateRedeem(w http.ResponseWriter, r *http.Request) {
-	if viaDoor(r) {
+	if viaProxy(r) {
 		http.NotFound(w, r)
 		return
 	}
@@ -127,12 +128,12 @@ func (a *app) gateRedeem(w http.ResponseWriter, r *http.Request) {
 }
 
 // gateCheck says whether a session token is still a trusted device's, and whose, for the app the
-// door names: 200 with the username the door signs into the app -- Files' one fixed name
-// (agent/files), or the one Mealie's accounts say (mealie.go); 401 not a trusted device; 409 a
-// trusted device with no record, which only an open writes and Mealie's first account takes its
-// name from; 503 an app with no account of the user's to open.
+// reverse proxy names: 200 with the username the reverse proxy signs into the app -- Files' one
+// fixed name (agent/files), or the one Mealie's accounts say (mealie.go); 401 not a trusted device;
+// 409 a trusted device with no record, which only an open writes and Mealie's first account takes
+// its name from; 503 an app with no account of the user's to open.
 func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
-	if viaDoor(r) {
+	if viaProxy(r) {
 		http.NotFound(w, r)
 		return
 	}

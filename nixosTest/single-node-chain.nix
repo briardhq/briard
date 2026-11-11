@@ -7,7 +7,7 @@
 # node converges, serves, survives the OS-upgrade bracket's gesture, and holds-and-restarts.
 #
 #   1 the seam builds the LVs and formats; DRBD is nowhere (no device, no module, no .res)
-#   2 the chain converges from the target: the volume is mounted, the front door answers, a
+#   2 the chain converges from the target: the volume is mounted, the reverse proxy answers, a
 #     fixture installs -- and no reactor runs
 #   3 a daemon-reload (what switch-to-configuration does inside the OS upgrade's bracket) does not
 #     disturb the chain
@@ -94,7 +94,7 @@ pkgs.testers.runNixOSTest {
     print("### 3 a daemon-reload left the chain alone")
 
     # === 4 HOLD-AND-RESTART ==============================================================
-    # Spend the front door's start limit (StartLimitBurst=5). Under RestartMode=direct the
+    # Spend the reverse proxy's start limit (StartLimitBurst=5). Under RestartMode=direct the
     # crashes below the limit are absorbed; the one that crosses it fires OnFailure into the
     # hold, which on a lone node stops the chain, unmounts, waits, and starts it again.
     node1.succeed(f"systemctl reset-failed {member}")

@@ -22,8 +22,8 @@ import (
 	"briard.io/shared/routes"
 )
 
-// gateDashboard stands in for the dashboard's two answers to the door: a one-time code for a
-// device's session token, and whether a token is still a trusted device's.
+// gateDashboard stands in for the dashboard's two answers to the reverse proxy: a one-time code for
+// a device's session token, and whether a token is still a trusted device's.
 type gateDashboard struct {
 	srv    *httptest.Server
 	codes  map[string]string // code -> token
@@ -65,7 +65,8 @@ func newGateDashboard(t *testing.T) *gateDashboard {
 	return d
 }
 
-// gatedApp is an app that verifies the door's signature as Files does, and records what reached it.
+// gatedApp is an app that verifies the reverse proxy's signature as Files does, and records what
+// reached it.
 type gatedApp struct {
 	srv    *httptest.Server
 	key    []byte
@@ -117,10 +118,10 @@ func verify(tok string, key []byte) (string, []string, error) {
 }
 
 type gateRig struct {
-	door *httptest.Server
-	dash *gateDashboard
-	app  *gatedApp
-	key  string
+	proxy *httptest.Server
+	dash  *gateDashboard
+	app   *gatedApp
+	key   string
 }
 
 const filesHost = "briard-files.local"
@@ -137,15 +138,15 @@ func newGateRig(t *testing.T) *gateRig {
 	s.Hosts = append(s.Hosts, "files.brave-elf.briard.casa")
 	s.Gate = key
 	du, _ := url.Parse(r.dash.srv.URL)
-	r.door = httptest.NewServer(newFrontDoor(fixed(routes.Table{Apps: []routes.App{s}}), du))
-	t.Cleanup(r.door.Close)
+	r.proxy = httptest.NewServer(newRouter(fixed(routes.Table{Apps: []routes.App{s}}), du))
+	t.Cleanup(r.proxy.Close)
 	return r
 }
 
-// do sends one request through the door without following redirects.
+// do sends one request through the reverse proxy without following redirects.
 func (r *gateRig) do(t *testing.T, method, path, host string, cookies ...*http.Cookie) *http.Response {
 	t.Helper()
-	req, _ := http.NewRequest(method, r.door.URL+path, nil)
+	req, _ := http.NewRequest(method, r.proxy.URL+path, nil)
 	req.Host = host
 	for _, c := range cookies {
 		req.AddCookie(c)
@@ -220,7 +221,7 @@ func TestASessionIsForwardedSignedAndWithoutTheDashboardsToken(t *testing.T) {
 	r := newGateRig(t)
 	r.dash.valid["tok-1"] = true
 	forged := sign([]byte("not the key"), "household", time.Now())
-	req, _ := http.NewRequest("GET", r.door.URL+"/api/resources?jwt="+forged, nil)
+	req, _ := http.NewRequest("GET", r.proxy.URL+"/api/resources?jwt="+forged, nil)
 	req.Host = filesHost
 	req.Header.Set(assertionHeader, forged)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "tok-1"})
@@ -278,8 +279,8 @@ func TestASessionIsCheckedForEachAppByName(t *testing.T) {
 	m := fronted("mealie", "briard-mealie.local", other.URL)
 	m.Gate, m.GateHeader = r.key, "X-Mealie-Reverse-Proxy-Secret"
 	du, _ := url.Parse(r.dash.srv.URL)
-	r.door = httptest.NewServer(newFrontDoor(fixed(routes.Table{Apps: []routes.App{s, m}}), du))
-	t.Cleanup(r.door.Close)
+	r.proxy = httptest.NewServer(newRouter(fixed(routes.Table{Apps: []routes.App{s, m}}), du))
+	t.Cleanup(r.proxy.Close)
 	ck := &http.Cookie{Name: sessionCookie, Value: "tok-1"}
 	for _, host := range []string{filesHost, "briard-mealie.local", "briard-mealie.local", filesHost} {
 		if resp := r.do(t, "GET", "/", host, ck); resp.StatusCode != http.StatusOK {
@@ -292,18 +293,18 @@ func TestASessionIsCheckedForEachAppByName(t *testing.T) {
 }
 
 // An app without a gate is forwarded exactly as before, and the dashboard's gate answers are
-// never served to a browser through the door.
+// never served to a browser through the reverse proxy.
 func TestUngatedAppsAndTheDashboardsGateAnswers(t *testing.T) {
 	plain := newGatedApp(t, nil)
 	dash := newGateDashboard(t)
 	du, _ := url.Parse(dash.srv.URL)
-	srv := httptest.NewServer(newFrontDoor(fixed(routes.Table{Apps: []routes.App{fronted("other", "briard-other.local", plain.srv.URL)}}), du))
+	srv := httptest.NewServer(newRouter(fixed(routes.Table{Apps: []routes.App{fronted("other", "briard-other.local", plain.srv.URL)}}), du))
 	t.Cleanup(srv.Close)
 	if code, _ := getHost(t, srv.URL, "/", "briard-other.local"); code != http.StatusForbidden || plain.seen.Header.Get(assertionHeader) != "" {
 		t.Fatalf("an ungated app was signed into (status %d, header %q)", code, plain.seen.Header.Get(assertionHeader))
 	}
 	if code, _ := getHost(t, srv.URL, "/gate/redeem", "briard.local"); code != http.StatusNotFound {
-		t.Fatalf("the dashboard's gate answer was served through the door: %d", code)
+		t.Fatalf("the dashboard's gate answer was served through the reverse proxy: %d", code)
 	}
 }
 
@@ -337,10 +338,10 @@ func TestAHeaderGatedAppGetsTheUserAndTheSecret(t *testing.T) {
 	s := fronted("mealie", "briard-mealie.local", app.URL)
 	s.Gate, s.GateHeader = key, "X-Mealie-Reverse-Proxy-Secret"
 	du, _ := url.Parse(dash.srv.URL)
-	door := httptest.NewServer(newFrontDoor(fixed(routes.Table{Apps: []routes.App{s}}), du))
-	t.Cleanup(door.Close)
+	proxy := httptest.NewServer(newRouter(fixed(routes.Table{Apps: []routes.App{s}}), du))
+	t.Cleanup(proxy.Close)
 
-	req, _ := http.NewRequest("GET", door.URL+"/api/auth/reverse-proxy", nil)
+	req, _ := http.NewRequest("GET", proxy.URL+"/api/auth/reverse-proxy", nil)
 	req.Host = "briard-mealie.local"
 	req.Header.Set("X-Forwarded-User", "admin")
 	req.Header.Set("X-Mealie-Reverse-Proxy-Secret", "guessed")

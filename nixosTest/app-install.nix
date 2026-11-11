@@ -13,7 +13,7 @@
 #     `briard-guest-agent --converge`, off the manifest this test puts on the replicated volume. Nothing
 #     copies rendered units in from the side any more;
 #   - real quadlet generation (files under /run/containers/systemd becoming units at daemon-reload),
-#     real podman, real drbd-reactor driving the static promoter chain, and the real front door;
+#     real podman, real drbd-reactor driving the static promoter chain, and the real reverse proxy;
 #   - the node promoting with ZERO apps first, then with one — the shipped state, then the
 #     installed one, so the install's effect is a change and not a coincidence.
 #
@@ -214,9 +214,9 @@ pkgs.testers.runNixOSTest {
     #
     # TAKEN FROM lib.nix rather than restated. This used to be a hand-written list
     # annotated "exactly what host.promoterUnits writes in production", which is the kind of claim
-    # that stops being true silently: when the front door and the mDNS publishers became chain
-    # MEMBERS, this copy still had three units, so the door never started here at all and the
-    # app was unreachable by name — the failure this comment is now attached to.
+    # that stops being true silently: when the reverse proxy and the mDNS publishers became chain
+    # MEMBERS, this copy still had three units, so the reverse proxy never started here at all and
+    # the app was unreachable by name — the failure this comment is now attached to.
     snippet = """${h.promoterSnippet}"""
     for m in disk_nodes:
         m.succeed(f"install -D /dev/stdin /run/briard/drbd-reactor.d/briard.toml <<'SNIP'\n{snippet}SNIP")
@@ -232,8 +232,8 @@ pkgs.testers.runNixOSTest {
     print(f"primary={primary.name}")
 
     # IT PROMOTED WITH ZERO APPS FIRST, which is the shipped state of every node a stranger
-    # installs: briard-apps converged to nothing, the VIP came up, and the front
-    # door answers. Asserted before the install so the install's effect is a change and not a
+    # installs: briard-apps converged to nothing, the VIP came up, and the reverse
+    # proxy answers. Asserted before the install so the install's effect is a change and not a
     # coincidence.
     primary.wait_until_succeeds("test $(systemctl is-active briard-apps.service) = active", timeout=120)
     primary.fail("systemctl cat briard-fixture-app.service")
@@ -264,13 +264,13 @@ pkgs.testers.runNixOSTest {
 
     # The app answers on its OWN endpoint (host-networked :8080) — the same thing the health
     # gate probes (agent/host/app.go awaitHealthy, which now asks the guest to resolve it
-    # rather than assembling this URL itself), and a REAL 200 from the app, not the front
-    # door's own answer.
+    # rather than assembling this URL itself), and a REAL 200 from the app, not the reverse
+    # proxy's own answer.
     primary.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=120)
     assert "ok" in primary.succeed("curl -fsS http://127.0.0.1:8080/healthz"), "app /healthz did not report ready"
     print("the installed app answers healthy on its own endpoint — install -> promote -> serve")
 
-    # === 5c. AND THROUGH THE FRONT DOOR, under its own name ===
+    # === 5c. AND THROUGH THE REVERSE PROXY, under its own name ===
     # The install above happened on a node with no flock name, so it was routed and UNNAMED --
     # which is a real shipped state (a node publishes nothing rather than a guess) and the one this
     # asserts first: the table carries the app, with no host to reach it by.
@@ -290,19 +290,20 @@ pkgs.testers.runNixOSTest {
     host = hosts[0]
     assert host == "briard-brave-elf-fixture.local", f"the node composed {host}"
     assert "briard-fixture.local" in hosts, f"the bare alias is not in the table: {hosts}"
-    # The door routes the flock-scoped name and the bare alias alike to the APP.
+    # The reverse proxy routes the flock-scoped name and the bare alias alike to the APP.
     for name in (host, "briard-fixture.local"):
         body = primary.succeed(f"curl -fsS -H 'Host: {name}' http://192.168.1.100/healthz")
-        assert "ok" in body and "front door" not in body, (
+        assert "ok" in body and "reverse proxy" not in body, (
             f"the VIP under {name} answered {body!r}; want the APP's own answer"
         )
     # The bare address is still the node's, and it names what it routes.
     node_health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
     assert "1 app(s) routed" in node_health and "fixture" in node_health, f"node /healthz = {node_health!r}"
-    # A name nobody serves still lands on the NODE's door rather than on some app's 404 --
-    # the fall-through is the property, and it is unchanged. What the door then says is not: since
-    # the dashboard landed it forwards to the household dashboard, which refuses a browser with no session
-    # (401, one instruction, no inventory) because reaching the VIP is not authentication.
+    # A name nobody serves still lands on the NODE's reverse proxy rather than on some app's 404 --
+    # the fall-through is the property, and it is unchanged. What the reverse proxy then says is
+    # not: since the dashboard landed it forwards to the household dashboard, which refuses a
+    # browser with no session (401, one instruction, no inventory) because reaching the VIP is not
+    # authentication.
     # The half of the old claim that a household "reads which names this node
     # answers to" HERE is therefore gone -- that reading needs a session now, and the
     # unauthenticated version of it is /healthz, asserted just above.
@@ -438,7 +439,7 @@ pkgs.testers.runNixOSTest {
     #     layer knows anything is wrong, and under the new shape nothing at the promoter layer ever
     #     will: the container is not a chain member, so a crash could not demote the node either.
     #     The signal is the APP's own /healthz, which stays 503 (probed directly, the way the
-    #     host health gate does — NOT via the front door, which reports node readiness and would
+    #     host health gate does — NOT via the reverse proxy, which reports node readiness and would
     #     mask this). Prove it is real, and prove the upgrade actually did damage (poisoned the
     #     data), so a green run can't pass vacuously. ---
     primary.wait_until_succeeds("test $(systemctl is-active briard-fixture-app.service) = active", timeout=120)

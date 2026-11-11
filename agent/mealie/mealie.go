@@ -1,15 +1,15 @@
 // Package mealie is the product-side knowledge Briard holds about Mealie, the recipe manager: what
-// it is told on this node, and how the door signs the user into it.
+// it is told on this node, and how the reverse proxy signs the user into it.
 //
-// SIGNED IN BY THE DOOR, BY HEADER. Mealie reads its user from a reverse proxy's header when the
-// proxy also sends a secret it shares with Mealie, and its login page asks for that sign-in as it
-// loads, so it opens with no dialog. The door lets a browser through only with the dashboard's
-// session, and then sends the user's username and the secret (shared/routes: Gate, GateHeader).
-// Nothing that reaches Mealie's address without the door holds the secret, which only root and
-// Mealie's own uid on this node can read. Signing up by header is on, for one account: briard's
-// own, which the dashboard signs in as to find the user's (dashboard/mealie.go), and makes again
-// whenever it is gone. The door sends no other name than one the dashboard read off Mealie's own
-// list of accounts.
+// SIGNED IN BY THE REVERSE PROXY, BY HEADER. Mealie reads its user from a reverse proxy's header
+// when the proxy also sends a secret it shares with Mealie, and its login page asks for that
+// sign-in as it loads, so it opens with no dialog. The reverse proxy lets a browser through only
+// with the dashboard's session, and then sends the user's username and the secret (shared/routes:
+// Gate, GateHeader). Nothing that reaches Mealie's address without the reverse proxy holds the
+// secret, which only root and Mealie's own uid on this node can read. Signing up by header is on,
+// for one account: briard's own, which the dashboard signs in as to find the user's
+// (dashboard/mealie.go), and makes again whenever it is gone. The reverse proxy sends no other name
+// than one the dashboard read off Mealie's own list of accounts.
 //
 // ITS SETTINGS ARE FILES. Mealie reads any setting from a file of that name in /run/secrets, so
 // everything briard decides about it -- the sign-in, the password form, its address -- is written
@@ -40,8 +40,8 @@ const (
 	SettingsMount = "/run/secrets"
 )
 
-// KeyPath is the secret the door sends Mealie, in SecretHeader; Mealie compares it with this same
-// file.
+// KeyPath is the secret the reverse proxy sends Mealie, in SecretHeader; Mealie compares it with
+// this same file.
 const (
 	KeyPath      = SettingsDir + "/REVERSE_PROXY_AUTH_SECRET"
 	SecretHeader = "X-Mealie-Reverse-Proxy-Secret"
@@ -60,8 +60,8 @@ const uid = "911"
 const BaseURL = "http://briard-mealie.local"
 
 // settings is every setting briard gives Mealie, beside the secret: the password form gone (the API
-// it hides refuses the user's forgotten password anyway), the door's sign-in on, and briard's own
-// account made by a header whenever it is missing.
+// it hides refuses the user's forgotten password anyway), the reverse proxy's sign-in on, and
+// briard's own account made by a header whenever it is missing.
 var settings = map[string]string{
 	"ALLOW_PASSWORD_LOGIN":              "false",
 	"REVERSE_PROXY_AUTH_ENABLED":        "true",
@@ -89,7 +89,7 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 //
 // THE SECRET IS KEPT FOR THE BOOT, as Files' is: converge restarts only the apps whose units
 // changed, so a secret minted anew would leave a running Mealie comparing against the old one
-// while the door sends the new. /run ends it with the boot.
+// while the reverse proxy sends the new. /run ends it with the boot.
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	if m.Name != Name {
 		return nil

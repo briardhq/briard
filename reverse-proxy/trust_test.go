@@ -11,9 +11,9 @@ import (
 	"briard.io/shared/routes"
 )
 
-// backend stands in for an app behind the door, with Home Assistant's forwarded-header rule:
-// X-Forwarded-For from a proxy it does not trust is a 400. unready is how many plain requests it
-// answers 503 before it is up.
+// backend stands in for an app behind the reverse proxy, with Home Assistant's forwarded-header
+// rule: X-Forwarded-For from a proxy it does not trust is a 400. unready is how many plain requests
+// it answers 503 before it is up.
 type backend struct {
 	srv     *httptest.Server
 	trusts  bool
@@ -61,8 +61,9 @@ func fastProbes(t *testing.T) {
 	t.Cleanup(func() { probeEvery, probeWaitFor = every, wait })
 }
 
-// settled waits for the door to have an answer for app, which is the probe having finished.
-func settled(t *testing.T, f *frontDoor, app string) {
+// settled waits for the reverse proxy to have an answer for app, which is the probe having
+// finished.
+func settled(t *testing.T, f *router, app string) {
 	t.Helper()
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 		f.trust.mu.RLock()
@@ -88,13 +89,13 @@ func getXFF(t *testing.T, base, host, xff string) int {
 	return resp.StatusCode
 }
 
-// The default household: Home Assistant trusts no proxy, so the door must keep sending nothing
-// and keep working. The household that added 127.0.0.1: the door tells it who the client is --
-// the peer the door saw, never what the client claimed.
+// The default household: Home Assistant trusts no proxy, so the reverse proxy must keep sending
+// nothing and keep working. The household that added 127.0.0.1: the reverse proxy tells it who the
+// client is -- the peer the reverse proxy saw, never what the client claimed.
 func TestForwardedForOnlyToAAppThatAcceptsIt(t *testing.T) {
 	fastProbes(t)
 	refuser, accepter := newBackend(t, false, 0), newBackend(t, true, 0)
-	f := door(fixed(routes.Table{Apps: []routes.App{
+	f := bareRouter(fixed(routes.Table{Apps: []routes.App{
 		fronted("refuser", "refuser.test", refuser.srv.URL),
 		fronted("accepter", "accepter.test", accepter.srv.URL),
 	}}))
@@ -106,16 +107,16 @@ func TestForwardedForOnlyToAAppThatAcceptsIt(t *testing.T) {
 	settled(t, f, "accepter")
 
 	if code := getXFF(t, srv.URL, "refuser.test", "6.6.6.6"); code != http.StatusOK {
-		t.Errorf("an app that refuses the header = %d through the door, want 200", code)
+		t.Errorf("an app that refuses the header = %d through the reverse proxy, want 200", code)
 	}
 	if got := refuser.xff(); got != "" {
 		t.Errorf("refuser saw X-Forwarded-For %q, want none", got)
 	}
 	if code := getXFF(t, srv.URL, "accepter.test", "6.6.6.6"); code != http.StatusOK {
-		t.Fatalf("an app that accepts the header = %d through the door, want 200", code)
+		t.Fatalf("an app that accepts the header = %d through the reverse proxy, want 200", code)
 	}
 	if got := accepter.xff(); got != "127.0.0.1" {
-		t.Errorf("accepter saw X-Forwarded-For %q, want the peer the door saw (127.0.0.1), never the client's claim", got)
+		t.Errorf("accepter saw X-Forwarded-For %q, want the peer the reverse proxy saw (127.0.0.1), never the client's claim", got)
 	}
 }
 
@@ -124,7 +125,7 @@ func TestForwardedForOnlyToAAppThatAcceptsIt(t *testing.T) {
 func TestTheProbeWaitsForTheAppToComeUp(t *testing.T) {
 	fastProbes(t)
 	b := newBackend(t, true, 5)
-	f := door(fixed(routes.Table{Apps: []routes.App{fronted("svc", "svc.test", b.srv.URL)}}))
+	f := bareRouter(fixed(routes.Table{Apps: []routes.App{fronted("svc", "svc.test", b.srv.URL)}}))
 	f.trust.recheck(f.routes())
 	settled(t, f, "svc")
 	if !f.trust.allows("svc") {
@@ -135,13 +136,13 @@ func TestTheProbeWaitsForTheAppToComeUp(t *testing.T) {
 	}
 }
 
-// No answer is not "no": an app that never comes up within the wait keeps what the door
+// No answer is not "no": an app that never comes up within the wait keeps what the reverse proxy
 // already knew, so a slow start never takes a household's client addresses away.
 func TestNoAnswerKeepsTheLastOne(t *testing.T) {
 	fastProbes(t)
 	probeWaitFor = 50 * time.Millisecond
 	b := newBackend(t, false, 1<<30)
-	f := door(fixed(routes.Table{Apps: []routes.App{fronted("svc", "svc.test", b.srv.URL)}}))
+	f := bareRouter(fixed(routes.Table{Apps: []routes.App{fronted("svc", "svc.test", b.srv.URL)}}))
 	f.trust.set("svc", true)
 	f.trust.recheck(f.routes())
 	time.Sleep(200 * time.Millisecond)

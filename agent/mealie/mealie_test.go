@@ -95,7 +95,7 @@ func TestPrepareWritesEverySettingForMealiesUidAlone(t *testing.T) {
 }
 
 // A second converge in the same boot keeps the secret: a running Mealie compares with the one it
-// started with, and the door must go on sending that one.
+// started with, and the reverse proxy must go on sending that one.
 func TestTheSecretOutlivesAConverge(t *testing.T) {
 	x := &fake{}
 	if err := Prepare(context.Background(), x, recipes()); err != nil {

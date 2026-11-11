@@ -33,7 +33,8 @@ func gateRig(t *testing.T) *rig {
 	return r
 }
 
-// loopback is the door asking: no X-Forwarded-Proto, which the door sets on all it forwards.
+// loopback is the reverse proxy asking: no X-Forwarded-Proto, which the reverse proxy sets on all
+// it forwards.
 func (r *rig) loopback(method, path, session string, form url.Values) (int, string) {
 	r.t.Helper()
 	var body io.Reader
@@ -54,8 +55,8 @@ func (r *rig) loopback(method, path, session string, form url.Values) (int, stri
 	return resp.StatusCode, string(b)
 }
 
-// A trusted browser opening Files is sent to Files' own name with a one-time code, which the door
-// trades -- once -- for the device's own token: one device, one row, one revoke.
+// A trusted browser opening Files is sent to Files' own name with a one-time code, which the
+// reverse proxy trades -- once -- for the device's own token: one device, one row, one revoke.
 func TestOpeningAGatedAppCarriesTheSessionToItsName(t *testing.T) {
 	r := gateRig(t)
 	c := r.trust()
@@ -75,7 +76,8 @@ func TestOpeningAGatedAppCarriesTheSessionToItsName(t *testing.T) {
 	if status, _ := r.loopback("POST", "/gate/redeem", "", url.Values{"code": {code}}); status != http.StatusNotFound {
 		t.Fatalf("a spent code redeemed again: %d", status)
 	}
-	// The check names the user the door signs in: Files' one fixed name, never the record's (kostas).
+	// The check names the user the reverse proxy signs in: Files' one fixed name, never the
+	// record's (kostas).
 	if status, user := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || user != files.User {
 		t.Fatalf("check on a trusted device's token = %d %q, want 200 %s", status, user, files.User)
 	}
@@ -106,7 +108,7 @@ func TestOpeningFollowsTheNameAndGoesNowhereElse(t *testing.T) {
 }
 
 // Only a gated app opens this way, only for a trusted browser, and the gate's answers are never
-// given to a browser through the door.
+// given to a browser through the reverse proxy.
 func TestTheGateIsShut(t *testing.T) {
 	r := gateRig(t)
 	c := r.trust()
@@ -122,7 +124,7 @@ func TestTheGateIsShut(t *testing.T) {
 			method = "POST"
 		}
 		if resp := r.do(method, path, nil, map[string]string{"X-Forwarded-Proto": "http", "X-Briard-Session": c.Value}); resp.StatusCode != http.StatusNotFound {
-			t.Errorf("%s answered a request through the door: %d", path, resp.StatusCode)
+			t.Errorf("%s answered a request through the reverse proxy: %d", path, resp.StatusCode)
 		}
 	}
 }

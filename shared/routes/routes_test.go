@@ -96,8 +96,8 @@ func TestResolveSplicesTheServiceAddress(t *testing.T) {
 }
 
 // THE HOST-LESS RULE IS A SECURITY BOUNDARY, not a spelling convention: the only address that can
-// ever be spliced in is the app's own, so no table -- however written -- can aim the front
-// door at another machine. Validate is where that becomes true of the document rather than of the
+// ever be spliced in is the app's own, so no table -- however written -- can aim the reverse
+// proxy at another machine. Validate is where that becomes true of the document rather than of the
 // code that happens to read it.
 func TestValidateRefusesATargetThatNamesAHost(t *testing.T) {
 	for _, tbl := range []Table{
@@ -137,9 +137,9 @@ func TestValidateHoldsAGateHeaderToAHeaderBesideAGate(t *testing.T) {
 	}
 }
 
-// An unknown listener is REFUSED, never skipped. A route the door silently drops is an app that
-// is unreachable with nothing saying why -- the failure mode that looks like a user error. This is
-// also what makes adding `tls:<port>` a change nobody can half-deploy.
+// An unknown listener is REFUSED, never skipped. A route the reverse proxy silently drops is an app
+// that is unreachable with nothing saying why -- the failure mode that looks like a user error.
+// This is also what makes adding `tls:<port>` a change nobody can half-deploy.
 func TestValidateRefusesAnUnimplementedListener(t *testing.T) {
 	tbl := Table{Apps: []App{{Name: "mosquitto", Address: "127.0.0.1",
 		Routes: []Route{{Listen: "tls:8883", To: "http://:1883"}}}}}
@@ -156,8 +156,9 @@ func TestValidateRefusesAnUnimplementedListener(t *testing.T) {
 func TestMarshalParseRoundTripAndRefusesUnknownFields(t *testing.T) {
 	in := Table{Apps: []App{
 		svc("home-assistant", "briard-brave-elf-home-assistant.local", "8123"),
-		// The broker: named and probed, with NO route. Absence is how "the door may not serve
-		// this" is said -- there is no address here for the door to be trusted not to use.
+		// The broker: named and probed, with NO route. Absence is how "the reverse proxy may not
+		// serve this" is said -- there is no address here for the reverse proxy to be trusted not
+		// to use.
 		{Name: "mosquitto", Hosts: []string{"briard-brave-elf-mosquitto.local"},
 			Address: "127.0.0.1", Health: "http://:9883/api/v1/listeners"},
 	}}
@@ -180,10 +181,10 @@ func TestMarshalParseRoundTripAndRefusesUnknownFields(t *testing.T) {
 		t.Errorf("route = %+v %v, want the host-less target", r, ok)
 	}
 	// The broker's name is OURS -- it matches -- and there is nothing to serve under it. Both
-	// halves matter: the door needs the match to say so instead of 404ing.
+	// halves matter: the reverse proxy needs the match to say so instead of 404ing.
 	mq, ok := out.Lookup("briard-brave-elf-mosquitto.local")
 	if !ok {
-		t.Fatal("the broker's name did not match; the door would 404 a name it owns")
+		t.Fatal("the broker's name did not match; the reverse proxy would 404 a name it owns")
 	}
 	if _, ok := mq.Route(ListenName); ok {
 		t.Error("the broker has a route; its management API would be republished on the LAN")
@@ -322,7 +323,7 @@ func TestBareNamesRideBesideTheFlockScopedOnes(t *testing.T) {
 	if got := BareHostName(""); got != "" {
 		t.Errorf("BareHostName with no app = %q, want none", got)
 	}
-	// And the door routes on the alias exactly as it does on the identity.
+	// And the reverse proxy routes on the alias exactly as it does on the identity.
 	tbl := Table{Apps: []App{{Name: "home-assistant", Hosts: HostNames("brave-elf", "home-assistant"),
 		Address: "127.0.0.1", Routes: []Route{{Listen: ListenName, To: "http://:8123"}}}}}
 	if s, ok := tbl.Lookup("BRIARD-HOME-ASSISTANT.local:80"); !ok || s.Name != "home-assistant" {

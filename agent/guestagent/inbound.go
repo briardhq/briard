@@ -136,7 +136,7 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 		// FROM INSIDE A RUNNING CONTAINER: Home Assistant restarting itself, which is the one
 		// boundary nothing outside the container can see -- and one whose previous instance the
 		// clean-stop marker says nothing about.
-		defer signalDoor(ctx, x)
+		defer signalProxy(ctx, x)
 		detail, err := startingMember(ctx, x, app, false)
 		if err != nil {
 			return reply(inboundResponse{Error: err.Error()})
@@ -963,7 +963,7 @@ func ToolsBin() string { return toolsBin() }
 // yet to ask. The same start is when the app's cache is emptied, if its space is short.
 func TakeStartMember(ctx context.Context, x Executor, app string) (string, error) {
 	ensureToolsOnPath()
-	defer signalDoor(ctx, x)
+	defer signalProxy(ctx, x)
 	if done, err := cacheAtStart(ctx, x, app); err != nil {
 		log.Printf("app-starting %s: the cache: %v", app, err)
 	} else if done != "" {
@@ -972,18 +972,18 @@ func TakeStartMember(ctx context.Context, x Executor, app string) (string, error
 	return startingMember(ctx, x, app, true)
 }
 
-// signalDoor tells the front door an app is starting, so it asks again whether that app
+// signalProxy tells the reverse proxy an app is starting, so it asks again whether that app
 // accepts X-Forwarded-For from it: an app reads its proxy trust at start, so a start is the only
 // moment the answer can change. Both start boundaries come through here -- the container's own
 // (TakeStartMember) and Home Assistant restarting inside it (the inbound verb) -- whatever the
 // member's outcome.
 //
-// BEST-EFFORT, like the take: a door that is not running yet (a promotion starts apps before
-// the door) asks at its own start instead, and a missed recheck costs client addresses, never a
-// request.
-func signalDoor(ctx context.Context, x Executor) {
+// BEST-EFFORT, like the take: a reverse proxy that is not running yet (a promotion starts apps
+// before the reverse proxy) asks at its own start instead, and a missed recheck costs client
+// addresses, never a request.
+func signalProxy(ctx context.Context, x Executor) {
 	if _, err := x.Run(ctx, "systemctl", "kill", "--kill-whom=main", "--signal=SIGHUP", reverseProxyUnit); err != nil {
-		log.Printf("signal the front door to recheck forwarded-header trust: %v", err)
+		log.Printf("signal the reverse proxy to recheck forwarded-header trust: %v", err)
 	}
 }
 

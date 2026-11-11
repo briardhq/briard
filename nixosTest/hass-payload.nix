@@ -11,9 +11,9 @@
 # one place: whether HA's OWN zeroconf library, inside HA's own container, sees a record the
 # guest published. The broker is installed alongside for exactly that, and for nothing else.
 #
-# HA reachable THROUGH the front door under its own name is asserted again, at the bottom of this
+# HA reachable THROUGH the reverse proxy under its own name is asserted again, at the bottom of this
 # file (the routing table landed it). It was lost when the build-time app slot went
-# -- the door's `-backend` came from that slot, so with the slot gone no node routed
+# -- the reverse proxy's `-backend` came from that slot, so with the slot gone no node routed
 # to an app at all -- and it comes back keyed on the APP's name rather than on there being
 # exactly one thing to forward to, which is what the table changed.
 { pkgs, guestModule, fixture, mosquitto }:
@@ -158,7 +158,7 @@ pkgs.testers.runNixOSTest {
     name_the_flock(node1)
 
     # Hand off to the promoter: it has quorum alone, promotes, and runs the ordered chain. Nothing
-    # is installed yet, so the front door comes up answering for itself.
+    # is installed yet, so the reverse proxy comes up answering for itself.
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     node1.wait_until_succeeds("systemctl is-active briard-primary-storage.service", timeout=120)
@@ -461,9 +461,9 @@ pkgs.testers.runNixOSTest {
     # ...and that restart, the container's second run, is the one `run` notifies for.
     node1.wait_until_succeeds(f"test \"$({unit_log} | grep -c '\\]: briard: ')\" = 1", timeout=60)
 
-    # ── THROUGH THE FRONT DOOR ───────────────────────────────────────────────────────
+    # ── THROUGH THE REVERSE PROXY ───────────────────────────────────────────────────────
     #
-    # THE ASSERTION THIS FILE OWED BACK. The door once forwarded to a backend
+    # THE ASSERTION THIS FILE OWED BACK. The reverse proxy once forwarded to a backend
     # baked at guest-build time; deleting that slot left, for two epochs, no node routing
     # to a runtime-installed app at all -- an installed HA answered only on :8123 while the
     # VIP's :80 served Briard's own page. It comes back keyed on the app's NAME, from the table
@@ -471,18 +471,18 @@ pkgs.testers.runNixOSTest {
     host = routed_host(node1, "home-assistant")
     assert host == "briard-brave-elf-home-assistant.local", f"the node composed {host}"
 
-    # HA itself, through the door, on :80 -- no port in the address.
+    # HA itself, through the reverse proxy, on :80 -- no port in the address.
     node1.wait_until_succeeds(
         f"curl -fsS -o /dev/null -H 'Host: {host}' http://192.168.1.100${fixture.healthPath}", timeout=120
     )
     # And /healthz under that name is NOT the node's answer: under a name we route, EVERY path
     # belongs to the app (HA has no /healthz of its own, so what comes back is HA's 404 --
-    # which is precisely the proof, because the node's own /healthz is a 200 saying "front door
+    # which is precisely the proof, because the node's own /healthz is a 200 saying "reverse proxy
     # up"). The node's answer is still there at the bare address, where the OS health gate reads
     # it, and that is why a wedged app cannot change it.
     under_name = node1.succeed(f"curl -sS -H 'Host: {host}' http://192.168.1.100/healthz || true")
-    assert "front door up" not in under_name, (
-        f"/healthz under the app's name was answered by the front door: {under_name!r}"
+    assert "reverse proxy up" not in under_name, (
+        f"/healthz under the app's name was answered by the reverse proxy: {under_name!r}"
     )
     node_health = node1.succeed("curl -fsS http://192.168.1.100/healthz")
     assert "2 app(s) routed" in node_health, f"the node's /healthz = {node_health!r}"
@@ -503,11 +503,12 @@ pkgs.testers.runNixOSTest {
     # SO_REUSEADDR/SO_REUSEPORT so sharing :5353 is normal, and Linux defaults IP_MULTICAST_LOOP on
     # for IPv4 -- and "should" is not a measurement.
     #
-    # ⚠️ IT IS ALSO THE COEXISTENCE GATE FOR THE DOOR'S RESPONDER. HA is host-networked,
-    # so its python-zeroconf and the door's responder bind :5353 in ONE namespace, and the door is
-    # a promoter chain member: a responder that cannot bind does not merely lose the name, it fails
-    # the door and hands the resource to a peer that would fail identically. This test runs both at
-    # once, so the pairing is exercised on every run rather than argued.
+    # ⚠️ IT IS ALSO THE COEXISTENCE GATE FOR THE REVERSE PROXY'S RESPONDER. HA is host-networked,
+    # so its python-zeroconf and the reverse proxy's responder bind :5353 in ONE namespace, and the
+    # reverse proxy is a promoter chain member: a responder that cannot bind does not merely lose
+    # the name, it fails the reverse proxy and hands the resource to a peer that would fail
+    # identically. This test runs both at once, so the pairing is exercised on every run
+    # rather than argued.
     #
     # ⚠️ INSIDE THE CONTAINER ON PURPOSE, not from the guest shell. Under host networking the two
     # share a netns, so the socket behaviour ought to be identical and a guest-side probe would be
@@ -851,13 +852,13 @@ pkgs.testers.runNixOSTest {
     # The install ends by handing the household a logged-in Home Assistant: briard
     # creates the first user through HA's onboarding API and sends the browser to HA's OWN
     # onboarding page with the returned code, which resumes at the first undone step. Every claim
-    # below is the SERVER half of that path, driven through the front door under the name the
+    # below is the SERVER half of that path, driven through the reverse proxy under the name the
     # browser would use -- because the code is bound to the client_id, and HA's `getAuth` refuses
     # a callback whose state names any other origin (`limitHassInstance`). The frontend half is
     # source-verified (ha-onboarding.ts `_fetchOnboardingSteps`, `_curStep`) and not driven here.
     import shlex as _sx
-    # The browser is at the name the dashboard LINKS: the bare alias the door routes beside the
-    # flock-scoped name, so that is the origin the code is bound to.
+    # The browser is at the name the dashboard LINKS: the bare alias the reverse proxy routes beside
+    # the flock-scoped name, so that is the origin the code is bound to.
     host = "briard-home-assistant.local"
     assert host in next(
         s for s in _zj.loads(node1.succeed("cat /run/briard/routes.json"))["apps"]
@@ -865,8 +866,8 @@ pkgs.testers.runNixOSTest {
     )["hosts"], "the bare alias is not routed"
     origin = f"http://{host}"
     client_id = origin + "/"  # genClientId(): protocol//host + trailing slash
-    def door(path, bearer=None, post=None, form=None):
-        """One request through the front door, as the browser would make it."""
+    def through_proxy(path, bearer=None, post=None, form=None):
+        """One request through the reverse proxy, as the browser would make it."""
         cmd = f"curl -fsS -H 'Host: {host}' "
         if bearer:
             cmd += f"-H 'Authorization: Bearer {bearer}' "
@@ -877,7 +878,7 @@ pkgs.testers.runNixOSTest {
         return node1.succeed(cmd + f"http://192.168.1.100{path}")
     def steps_done():
         """HA's own view of onboarding, unauthenticated -- the thing our button reads."""
-        return {s["step"]: s["done"] for s in _zj.loads(door("/api/onboarding"))}
+        return {s["step"]: s["done"] for s in _zj.loads(through_proxy("/api/onboarding"))}
 
     # NOTHING IS DONE, and in particular the USER step is not: HA marks it done at startup if any
     # OWNER exists, and the system user the control channel minted is not one. That is the
@@ -909,8 +910,8 @@ pkgs.testers.runNixOSTest {
     # THE USER STEP RUNS THROUGH THE DASHBOARD, the way the household's does. The
     # host's one-time code is written here as the `dashboard.handoff` verb writes it (no host
     # agent drives this rig; the verb has its own test), redeemed under the node's OWN name at the
-    # door -- which forwards every name it does not route to the dashboard -- and then "Open Home
-    # Assistant" does the user step and sends the browser on with the code.
+    # reverse proxy -- which forwards every name it does not route to the dashboard -- and then
+    # "Open Home Assistant" does the user step and sends the browser on with the code.
     node_name = "briard-brave-elf.local"
     code0 = "c0ffee" * 10 + "0123"
     issued = node1.succeed("date -u +%Y-%m-%dT%H:%M:%SZ").strip()
@@ -963,13 +964,13 @@ pkgs.testers.runNixOSTest {
 
     # THE RESUME, as getAuth does it: the code exchanges for tokens with the same client_id.
     # This is what `onboarding.html?auth_callback=1&code=…&state=…` does on arrival.
-    tokens = _zj.loads(door("/auth/token", form={
+    tokens = _zj.loads(through_proxy("/auth/token", form={
         "grant_type": "authorization_code", "code": first["auth_code"], "client_id": client_id,
     }))
     human = tokens["access_token"]
     assert tokens.get("refresh_token"), f"the exchange returned no refresh token: {tokens}"
     # ...and the page the browser lands on is served while onboarding is in progress.
-    door("/onboarding.html")
+    through_proxy("/onboarding.html")
 
     # ANALYTICS WAS MARKED DONE BY THE DASHBOARD, out of order and with the CONTROL CHANNEL's
     # token before the browser was sent on: preferences untouched means off, and the frontend
@@ -988,24 +989,24 @@ pkgs.testers.runNixOSTest {
     # and it is why the install does the latter. The negative is not vacuous: all
     # three flows start in the same loop and `met`'s abort has no await before it, so once both
     # unconditional entries exist the `met` flow has run and chosen.
-    door("/api/onboarding/core_config", bearer=human, post={})
+    through_proxy("/api/onboarding/core_config", bearer=human, post={})
     for domain in ("radio_browser", "google_translate"):
         node1.wait_until_succeeds(
             f"curl -fsS -H 'Host: {host}' -H 'Authorization: Bearer {human}' "
             f"'http://192.168.1.100/api/config/config_entries/entry?domain={domain}' | grep -q entry_id",
             timeout=120,
         )
-    met = _zj.loads(door("/api/config/config_entries/entry?domain=met", bearer=human))
+    met = _zj.loads(through_proxy("/api/config/config_entries/entry?domain=met", bearer=human))
     assert met == [], f"met set itself up without a home location: {met}"
 
     # THE INTEGRATION STEP hands back a FRESH code for the final login. ⚠️ Called exactly once,
     # with the HUMAN token and a same-origin redirect: the view marks itself done BEFORE it
     # validates either (views.py, 2026.7.1), so a wrong call burns the step with no code.
-    final = _zj.loads(door("/api/onboarding/integration", bearer=human, post={
+    final = _zj.loads(through_proxy("/api/onboarding/integration", bearer=human, post={
         "client_id": client_id, "redirect_uri": origin + "/?auth_callback=1",
     }))
     assert final.get("auth_code") and final["auth_code"] != first["auth_code"], f"no fresh code: {final}"
-    landed = _zj.loads(door("/auth/token", form={
+    landed = _zj.loads(through_proxy("/auth/token", form={
         "grant_type": "authorization_code", "code": final["auth_code"], "client_id": client_id,
     }))
     assert landed.get("refresh_token"), f"the final code did not exchange: {landed}"
@@ -1048,7 +1049,7 @@ pkgs.testers.runNixOSTest {
     # The code exchanges, and what it logs in as is THE OWNER: HA's own refresh-token store names
     # the user each token belongs to, and the new one belongs to the household's owner, not to
     # our system user or anyone else.
-    landed_later = _zj.loads(door("/auth/token", form={
+    landed_later = _zj.loads(through_proxy("/auth/token", form={
         "grant_type": "authorization_code", "code": minted, "client_id": client_id,
     }))
     assert landed_later.get("refresh_token"), f"the minted code did not exchange: {landed_later}"
@@ -1099,8 +1100,8 @@ pkgs.testers.runNixOSTest {
 
     # QUICK-CONNECT: a second browser asks, shows a six-digit code, and the trusted
     # one types it. The session goes to the ASKER's own cookie -- the code alone collects nothing
-    # -- and nobody untrusted can approve. Measured through the door under the node's name, the
-    # way both browsers would reach it.
+    # -- and nobody untrusted can approve. Measured through the reverse proxy under the node's name,
+    # the way both browsers would reach it.
     asked = node1.succeed(f"curl -sS -D - -o /dev/null -X POST -A 'phone/1.0' -H 'Host: {node_name}' http://192.168.1.100/join")
     assert " 303 " in asked.splitlines()[0], asked
     join = [l.split(":", 1)[1].split(";")[0].strip() for l in asked.splitlines() if l.lower().startswith("set-cookie: briard_join=")][0]

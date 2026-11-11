@@ -186,7 +186,7 @@ func TestHomeAssistantEntryMatchesWhatTheProductAssumes(t *testing.T) {
 
 // Files' entry is what agent/files configures: it reads the config written into its own
 // directory, keeps its state in its cache (its index and users are disposable), owns no data of
-// its own, and answers only inside its pod -- the door is the one way in, and it signs.
+// its own, and answers only inside its pod -- the reverse proxy is the one way in, and it signs.
 func TestFilesEntryMatchesWhatTheProductAssumes(t *testing.T) {
 	m, _, err := manifest.Parse(current(t, files.Name))
 	if err != nil {
@@ -202,22 +202,23 @@ func TestFilesEntryMatchesWhatTheProductAssumes(t *testing.T) {
 		}
 	}
 	if m.HostNetwork() || len(m.Ports) != 0 {
-		t.Errorf("Files is reachable other than through the door: network %q, ports %v", m.Network, m.Ports)
+		t.Errorf("Files is reachable other than through the reverse proxy: network %q, ports %v", m.Network, m.Ports)
 	}
 }
 
-// MEALIE IS REACHED ONLY THROUGH THE DOOR AND TOLD ONLY BY BRIARD. Private, with nothing published:
-// the door is what signs the user in. Its data is one area at /app/data. And its manifest sets
-// none of the settings agent/mealie writes as files: Mealie lets an environment variable win over
-// its settings file, so an entry that set one -- the password form, the sign-in, the address --
-// would quietly overrule the product.
+// MEALIE IS REACHED ONLY THROUGH THE REVERSE PROXY AND TOLD ONLY BY BRIARD. Private, with nothing
+// published: the reverse proxy is what signs the user in. Its data is one area at /app/data. And
+// its manifest sets none of the settings agent/mealie writes as files: Mealie lets an environment
+// variable win over its settings file, so an entry that set one -- the password form, the sign-in,
+// the address
+// -- would quietly overrule the product.
 func TestMealieEntryMatchesWhatTheProductAssumes(t *testing.T) {
 	m, _, err := manifest.Parse(current(t, mealie.Name))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if m.HostNetwork() || len(m.Ports) != 0 {
-		t.Errorf("Mealie is reachable other than through the door: network %q, ports %v", m.Network, m.Ports)
+		t.Errorf("Mealie is reachable other than through the reverse proxy: network %q, ports %v", m.Network, m.Ports)
 	}
 	p := m.Primary()
 	if p.Name != mealie.Container {
@@ -264,7 +265,7 @@ func TestEveryEntryDeclaresItsNetworking(t *testing.T) {
 // expressible -- and the one entry where getting it wrong is a security regression rather than an
 // outage. Its manifest `port` is the MANAGEMENT API, which must reach the guest and nothing else:
 // private keeps it off the LAN, publishing 1883 and only 1883 is what the household actually
-// reaches, and the front door is not involved because no reverse proxy can serve MQTT.
+// reaches, and the reverse proxy is not involved because no reverse proxy can serve MQTT.
 func TestTheBrokerIsPrivateAndPublishesOnlyMQTT(t *testing.T) {
 	m, _, err := manifest.Parse(current(t, mosquitto.Name))
 	if err != nil {

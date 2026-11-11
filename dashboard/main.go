@@ -1,7 +1,8 @@
 // Command dashboard is the HOUSEHOLD DASHBOARD: the page a home opens at its own name,
-// served from the guest at the VIP behind the front door, which forwards to it every name it does
-// not route. It is the first-open slice of the household auth design -- the one-time code, a trusted device, and
-// "Open Home Assistant" landing on Home Assistant's own onboarding page, logged in.
+// served from the guest at the VIP behind the reverse proxy, which forwards to it every name it
+// does not route. It is the first-open slice of the household auth design -- the one-time code, a
+// trusted device, and "Open Home Assistant" landing on Home Assistant's own onboarding page, logged
+// in.
 //
 // WHAT AUTHENTICATES A BROWSER IS THE CODE THE HOST MINTED, and nothing else. Proof of identity is
 // proof of access to the `briard` CLI (whoever can drive it owns the node), so the CLI has the
@@ -14,10 +15,10 @@
 // login. Unauthenticated, that is a LAN race -- whoever reaches the URL first during the install
 // window owns the household's Home Assistant. The code closes it.
 //
-// It is promoter-owned and a chain member like the door, because the registry lives on the
+// It is promoter-owned and a chain member like the reverse proxy, because the registry lives on the
 // volume and only the primary has it. It reads the routing table the guest's converge writes,
-// which is how it finds Home Assistant -- the same way the door does, so the two cannot disagree
-// about where an app is.
+// which is how it finds Home Assistant -- the same way the reverse proxy does, so the two cannot
+// disagree about where an app is.
 //
 // DELIBERATELY PLAIN: templates, one stylesheet and one script (htmx, which polls a card while
 // it moves), built ahead of time (static/build.sh) and embedded, nothing fetched from anywhere
@@ -121,7 +122,7 @@ func shellOf(section string, refresh bool) shellView {
 }
 
 func main() {
-	listen := flag.String("listen", "127.0.0.1:8087", "listen address (loopback: the front door forwards to it)")
+	listen := flag.String("listen", "127.0.0.1:8087", "listen address (loopback: the reverse proxy forwards to it)")
 	routesPath := flag.String("routes", routes.Path, "the routing table written by the guest's converge")
 	handoffPath := flag.String("handoff", dashboard.HandoffPath, "the one-time code the host handed over")
 	statePath := flag.String("state", dashboard.StateDir, "device registry + the user's record (on the volume)")
@@ -280,8 +281,8 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		a.openHomeAssistant(w, r)
 	case strings.HasPrefix(r.URL.Path, "/open/") && r.Method == http.MethodGet:
-		// A gated app (gate.go). A GET because the door sends a browser here: a page another
-		// site makes a browser load opens the household's own app, signed in as itself.
+		// A gated app (gate.go). A GET because the reverse proxy sends a browser here: a page
+		// another site makes a browser load opens the household's own app, signed in as itself.
 		if _, ok := a.session(r); !ok {
 			a.refuse(w, r)
 			return
@@ -479,8 +480,8 @@ func (a *app) redeem(w http.ResponseWriter, r *http.Request, code string) {
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: tok, Path: "/",
 		HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		// The door terminates TLS and says so on this one path; a cookie marked Secure over
-		// plain http would never come back.
+		// The reverse proxy terminates TLS and says so on this one path; a cookie marked Secure
+		// over plain http would never come back.
 		Secure:  scheme(r) == "https",
 		Expires: a.now().Add(365 * 24 * time.Hour),
 	})
@@ -804,7 +805,7 @@ func (a *app) writeState(name string, v any) error {
 type homeAssistant struct {
 	base string // in-guest, e.g. http://127.0.0.1:8123
 	port int
-	host string // the bare mDNS name the door routes and the page links, e.g. briard-home-assistant.local
+	host string // the bare mDNS name the reverse proxy routes and the page links, e.g. briard-home-assistant.local
 	// casaHost is its name under the household's (home-assistant.<flock>.briard.casa), which
 	// a page served on that name links instead; "" when the table lists none.
 	casaHost string
@@ -819,8 +820,8 @@ func (h *homeAssistant) hostFor(onName bool) string {
 	return h.host
 }
 
-// findHomeAssistant reads the table the way the door does. nil means not installed (or not yet
-// converged), which is a state the page shows rather than an error.
+// findHomeAssistant reads the table the way the reverse proxy does. nil means not installed (or not
+// yet converged), which is a state the page shows rather than an error.
 func (a *app) findHomeAssistant() *homeAssistant {
 	raw, err := os.ReadFile(a.routesPath)
 	if err != nil {
@@ -1013,7 +1014,7 @@ type appView struct {
 	// household asked for it while it had none.
 	Available, Wished bool
 	Installed         bool    // the routes table lists it
-	Gated             bool    // the door signs the household into it: it opens from here (gate.go)
+	Gated             bool    // the reverse proxy signs the household into it: it opens from here (gate.go)
 	Preselected       bool    // the first run's chooser ticks it: the apps most homes start with
 	HA                *haView // Home Assistant's own states, on its card alone
 	// Running is the version this machine runs (the host's word, "" when it has none), and
@@ -1296,8 +1297,8 @@ func (a *app) openAsOwner(ctx context.Context, w http.ResponseWriter, r *http.Re
 	http.Redirect(w, r, hass.OnboardingURL(origin, code), http.StatusSeeOther)
 }
 
-// scheme is how the BROWSER reached us: the door terminates TLS and says so on its forward to
-// the dashboard, and to the dashboard alone.
+// scheme is how the BROWSER reached us: the reverse proxy terminates TLS and says so on its forward
+// to the dashboard, and to the dashboard alone.
 func scheme(r *http.Request) string {
 	if r.Header.Get("X-Forwarded-Proto") == "https" {
 		return "https"

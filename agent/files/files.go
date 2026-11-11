@@ -34,10 +34,10 @@ import (
 // Name is Files' catalog slug. Everything in this package is keyed on it.
 const Name = "files"
 
-// User is the one account Files has, the name the door signs the household in as. FIXED, NOT THE
-// RECORD'S: Files matches its account on the name alone and makes one for a name it does not
-// know, and all an account holds -- preferences, share links -- lives in its cache area, which no
-// undo or restore brings back. A name that never changes is one Files never loses the user by,
+// User is the one account Files has, the name the reverse proxy signs the household in as. FIXED,
+// NOT THE RECORD'S: Files matches its account on the name alone and makes one for a name it does
+// not know, and all an account holds -- preferences, share links -- lives in its cache area, which
+// no undo or restore brings back. A name that never changes is one Files never loses the user by,
 // whatever record a restore brings.
 const User = "owner"
 

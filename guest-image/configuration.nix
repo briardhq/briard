@@ -1,6 +1,6 @@
-    # NOTHING TO POKE FOR THE NAME: the door re-reads the live file on its own tick and the
-    # records follow the address within seconds. A unit to restart here was what the
-    # name cost when a separate publisher held it.
+    # NOTHING TO POKE FOR THE NAME: the reverse proxy re-reads the live file on its own tick and
+    # the records follow the address within seconds. A unit to restart here was what the name cost
+    # when a separate publisher held it.
 # Briard VM unit image.
 #
 # The workload + DRBD 9 + drbd-reactor run *inside* this VM; the host agent runs
@@ -37,7 +37,7 @@ let
   # agent's now (agent/guestagent's dataFormatMarker and snapshotsDir), because the unit that
   # reads one and makes the other is Go rather than shell.
   # ⚠️ THE TLS DIRECTORY AND THE VIP's ENV FILE ARE NOT NAMED HERE ANY MORE. Both were
-  # read only by units -- the front door's `-cert`/`-key`, briard-vip's EnvironmentFile -- and
+  # read only by units -- the reverse proxy's `-cert`/`-key`, briard-vip's EnvironmentFile -- and
   # those are the pushed agent's now, which already had its own spellings of both
   # (guestagent's tlsCertPath/tlsKeyPath and vipEnvPath). The SCRIPTS below still write and read
   # the VIP's live/stored addresses, which is why vipLivePath and vipAddrFile stay.
@@ -103,7 +103,7 @@ let
       config.virtualisation.podman.package
       # And the NAMED TOOLS a unit's ExecStart points at directly, because systemd wants an
       # absolute path for the first word and the agent can only know a fixed one.
-      config.briard.pivot.exec # briard-bin-exec, the frozen picker the doors go through
+      config.briard.pivot.exec # briard-bin-exec, the frozen picker the web units go through
       vipArping
       vipDown
       vipRenew
@@ -188,7 +188,7 @@ let
   # started from its ExecStart), so restarting that unit KILLS THE PROCESS ASKING FOR THE
   # RESTART, mid-flight. (2) It would put an ordinary address change through the drbd-reactor
   # promoter chain -- a member whose failure trips OnFailure=drbd-demote-or-escalate -- which is
-  # a failover-shaped risk taken for a job that needs no chain at all. The front door binds :80
+  # a failover-shaped risk taken for a job that needs no chain at all. The reverse proxy binds :80
   # on every interface, so it does not care what the address is; the only things that do are the
   # live file, the flock's store, the ARP announcement, and the name. All four are done HERE.
   #
@@ -311,9 +311,9 @@ let
     # it has already yielded. (vipLivePath above is /run -- tmpfs, nothing to sync.)
     { printf '%s\n' "$addr" >${vipAddrFile} && ${pkgs.coreutils}/bin/sync -f ${vipAddrFile}; } 2>/dev/null || true
     VIP_DEV="''${interface}" ${vipArping}/bin/briard-vip-arping || true
-    # THE NAME NEEDS NOTHING FROM HERE. The door publishes it and re-reads this file on its own
-    # tick, so the records follow the address within seconds with no unit to poke and no ordering
-    # between the two to get wrong.
+    # THE NAME NEEDS NOTHING FROM HERE. The reverse proxy publishes it and re-reads this file on
+    # its own tick, so the records follow the address within seconds with no unit to poke and no
+    # ordering between the two to get wrong.
     exit 0
   '';
 

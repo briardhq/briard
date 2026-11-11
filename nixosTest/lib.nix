@@ -17,12 +17,13 @@ let
 
   # The promoter's ordered unit: the same units everywhere, on every node, whatever is installed.
   # `briard-apps` is what converges this node to the manifests on the volume
-  # once the mount exists, which is why the apps themselves are not members. The front door and
+  # once the mount exists, which is why the apps themselves are not members. The reverse proxy and
   # the two mDNS publishers ARE members: on a node with no `.casa` domain those names
-  # are the ONLY way to reach an app and the door is the only thing that answers them, so a node
-  # that cannot publish or cannot serve should hand the resource on rather than look healthy while
-  # reaching nobody. This mirrors what the host agent writes in production (host.promoterUnits),
-  # which also takes no arguments any more, and the two lists are kept in step BY HAND.
+  # are the ONLY way to reach an app and the reverse proxy is the only thing that answers them, so a
+  # node that cannot publish or cannot serve should hand the resource on rather than look healthy
+  # while reaching nobody. This mirrors what the host agent writes in production
+  # (host.promoterUnits), which also takes no arguments any more, and the two lists are kept in
+  # step BY HAND.
   promoterSnippet =
     let
       units = [
@@ -236,13 +237,13 @@ let
         """Give the node a flock name the way the AGENT does -- net.mdnsname writes exactly this
         file, and converge composes the per-app names from it. Without it a node has
         no name to route on: the app is installed and reachable on its port, but nothing
-        answers for it at the front door, which is the honest state of a node whose flock has
+        answers for it at the reverse proxy, which is the honest state of a node whose flock has
         never been named."""
         m.succeed("mkdir -p /run/briard")
         m.succeed(f"printf 'FLOCK_NAME={name}\\n' >/run/briard/mdns.env")
 
     def routed_host(m, app):
-        """The name the front door routes `app` on, read from the table the PRODUCT wrote --
+        """The name the reverse proxy routes `app` on, read from the table the PRODUCT wrote --
         never a name restated here, which would assert our own arithmetic rather than the node's."""
         import json
         table = json.loads(m.succeed("cat /run/briard/routes.json"))
@@ -607,8 +608,8 @@ in
     # Exported because two rigs write their OWN reactor snippet -- runtime-join needs
     # no baked r0.res, app-install installs one from the testScript -- and both restated the
     # chain by hand. That was survivable while every non-member rode briard-vip on wantedBy; it is
-    # not now that the door and the publishers are MEMBERS, because a rig whose list is short does
-    # not merely differ, it never starts them. One definition, three consumers.
+    # not now that the reverse proxy and the publishers are MEMBERS, because a rig whose list is
+    # short does not merely differ, it never starts them. One definition, three consumers.
     promoterSnippet
     ;
 }

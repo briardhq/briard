@@ -11,7 +11,7 @@ import (
 	"briard.io/shared/routes"
 )
 
-// table is the shape converge writes: a flock with a name, one app the door fronts and one
+// table is the shape converge writes: a flock with a name, one app the reverse proxy fronts and one
 // that announces itself to appliances. Built here the way the node builds it -- names through
 // routes.HostName -- so a change to the naming rule fails these tests rather than being restated.
 func table(flock string) routes.Table {
@@ -161,9 +161,9 @@ func TestBothNodesOfAFlockPublishTheSameRecords(t *testing.T) {
 	}
 }
 
-// The three runtime files are read, never inherited from the environment: the door is long-lived
-// and the values move under it -- a lease renewed, a flock renamed -- where a process that read
-// its environment once would answer with yesterday's name until someone restarted it.
+// The three runtime files are read, never inherited from the environment: the reverse proxy is
+// long-lived and the values move under it -- a lease renewed, a flock renamed -- where a process
+// that read its environment once would answer with yesterday's name until someone restarted it.
 func TestTheVIPIsWhatWasCLAIMEDNotWhatWasConfigured(t *testing.T) {
 	dir := t.TempDir()
 	cfg, live := dir+"/vip.env", dir+"/vip.live"

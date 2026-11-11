@@ -59,7 +59,7 @@ pkgs.testers.runNixOSTest {
         m.succeed("systemctl start drbd-reactor.service")
 
     # drbd-reactor elects a primary and the VIP comes up there -- with nothing installed yet,
-    # which is the shipped state and answers its own /healthz at the front door.
+    # which is the shipped state and answers its own /healthz at the reverse proxy.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 
     def role(m):

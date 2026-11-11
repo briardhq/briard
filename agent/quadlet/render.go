@@ -118,7 +118,7 @@ type Rendered struct {
 	ImageRefs map[string]string
 	// Address is the host this app's pod answers on — a bare host, no port. An app is ONE
 	// pod and a pod is ONE network namespace, so one address covers every port it listens on, and
-	// the consumers (the front door's routes, the health probe) carry only the port.
+	// the consumers (the reverse proxy's routes, the health probe) carry only the port.
 	//
 	// IT COMES FROM THE RENDERER BECAUSE THE ADDRESS IS THE RENDERER'S DECISION. The
 	// manifest names a port; what host that port answers on is decided by the networking this file
@@ -126,8 +126,8 @@ type Rendered struct {
 	// every caller could get away with assembling `127.0.0.1:<port>` for itself — and why they all
 	// break the moment an app asks for a private pod network, where the port is not
 	// on the guest's loopback at all. Returning it from the one place that chose it is what makes
-	// that a one-file change: the pod's address reaches the probe and the door together, with no
-	// caller left to update.
+	// that a one-file change: the pod's address reaches the probe and the reverse proxy together,
+	// with no caller left to update.
 	//
 	// It never reaches the catalog. A published, signed, node-independent document cannot carry a
 	// fact that differs per node and per render — and since the manifest's content hash IS the
@@ -191,8 +191,8 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	// The address is the caller's, because allocation needs to see every app on the node and
 	// this function sees one manifest. Under host networking it is the guest's own loopback and
 	// nothing is written into the pod; under a private network it is this pod's address on the
-	// node's pod pool, and both podman and the front door are told the same value from here — the
-	// property that keeps "where it answers" a single fact rather than an agreement.
+	// node's pod pool, and both podman and the reverse proxy are told the same value from here —
+	// the property that keeps "where it answers" a single fact rather than an agreement.
 	// ⚠️ ExitPolicy=continue IS WHAT MAKES A CRASHED CONTAINER COME BACK. Quadlet's
 	// default is `stop`: when the pod's last container exits, podman stops the pod, systemd stops
 	// the container unit as the pod's dependent, and a dependency stop suppresses the container's
@@ -213,7 +213,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		pod = append(pod, "Network="+PodNetwork, "IP="+addr)
 		for _, p := range m.Ports {
 			// Published as itself on every interface the guest holds, which is what puts a
-			// non-HTTP app on the household's service address. The front door is not involved
+			// non-HTTP app on the household's service address. The reverse proxy is not involved
 			// and cannot be: it speaks HTTP, and this exists for the apps that do not.
 			pod = append(pod, fmt.Sprintf("PublishPort=%d:%d", p, p))
 		}
@@ -426,8 +426,8 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	// Where the pod above can be reached. HOST NETWORKING IS WHY IT IS LOOPBACK: the containers
 	// share the guest's network namespace, so the primary's port is the guest's own port. This is
 	// the one line that changes when an app asks for a private network — and it is
-	// deliberately the ONLY place that knows, so that changing it moves the front door's route and
-	// the health probe's target together rather than leaving callers to agree.
+	// deliberately the ONLY place that knows, so that changing it moves the reverse proxy's route
+	// and the health probe's target together rather than leaving callers to agree.
 	out.Address = addr
 	return out, nil
 }

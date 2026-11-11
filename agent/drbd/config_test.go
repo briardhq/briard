@@ -183,7 +183,7 @@ func TestReactorConfigStartOrder(t *testing.T) {
 	//
 	// target-as: the default `Requires` makes the target react to a member being restarted --
 	// including the auto-restart `Restart=` schedules -- which demoted the node on one crash of the
-	// front door and handed the resource to a peer in 2 of 5 tries. `Wants` keeps the
+	// reverse proxy and handed the resource to a peer in 2 of 5 tries. `Wants` keeps the
 	// target STARTING every member and stops it reacting to them; giving up is signalled by each
 	// member's OnFailure= instead.
 	const want = `[[promoter]]

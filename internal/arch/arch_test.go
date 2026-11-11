@@ -289,7 +289,7 @@ func TestGuestInputsCoverTheFirmware(t *testing.T) {
 // in step BY HAND" is exactly the kind of promise nothing enforces.
 //
 // A rig whose list is SHORT does not merely differ, it never starts the missing members: the
-// door and the dashboard are members too, and a stale snippet would promote a node
+// reverse proxy and the dashboard are members too, and a stale snippet would promote a node
 // that serves nothing while every assertion about the mount and the VIP still passes. That is
 // the failure this guard exists for, and it is invisible to every other test.
 //

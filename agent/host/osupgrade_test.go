@@ -101,8 +101,8 @@ func (e *recExec) Run(_ context.Context, name string, args ...string) ([]byte, e
 	case name == "readlink":
 		return []byte(e.current + "\n"), nil
 	case name == "systemctl" && len(args) > 0 && args[0] == "is-active":
-		// Any unit asked about is reported DOWN, deliberately. The OS gate must ask the front
-		// door alone (and deletion 5), so a gate that consults a unit cannot pass
+		// Any unit asked about is reported DOWN, deliberately. The OS gate must ask the reverse
+		// proxy alone (and deletion 5), so a gate that consults a unit cannot pass
 		// here -- which is what stops this from being a test that would survive the regression.
 		return []byte("inactive\n"), nil
 	}
@@ -208,7 +208,7 @@ func (q *fakeQMP) got() []string {
 }
 
 // newSwitchUpgrade wires a whole node: a permissive guest over a real control channel, a real
-// QMP endpoint, and a front door that answers healthy or does not.
+// QMP endpoint, and a reverse proxy that answers healthy or does not.
 func newSwitchUpgrade(t *testing.T, healthy bool) (*osUpgrade, *recExec, *fakeQMP) {
 	t.Helper()
 	x := &recExec{current: "/nix/store/prev"}

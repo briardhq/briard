@@ -422,10 +422,10 @@ func User(m manifest.Manifest, c manifest.Container) string {
 }
 
 // Gate is where the secret lives that the reverse proxy signs the user into this app with, ""
-// for an app the door forwards to unsigned.
+// for an app the reverse proxy forwards to unsigned.
 //
-// GATED means the door lets a browser through only with the household dashboard's session, and
-// then tells the app who it is in a way the app checks against the secret. Files and Mealie are
+// GATED means the reverse proxy lets a browser through only with the household dashboard's session,
+// and then tells the app who it is in a way the app checks against the secret. Files and Mealie are
 // gated: Files holds every app's data, and Mealie has no sign-in of its own briard would not have
 // to tell the user a password for. Home Assistant keeps its own login because its companion app
 // has no browser session to bring.
@@ -456,13 +456,13 @@ func GateHeader(m manifest.Manifest) string {
 // the failure this function exists to end. No published name (a witness, or FLOCK_NAME unset) means no
 // URL to promise: say the port and stop.
 //
-// THE NAME IS THE APP'S OWN: `briard-<flock>-<app>.local`, on the front
-// door's :80, rather than the flock name and the app's port. That is the whole user-facing
+// THE NAME IS THE APP'S OWN: `briard-<flock>-<app>.local`, on the reverse
+// proxy's :80, rather than the flock name and the app's port. That is the whole user-facing
 // payoff of the routing table -- a port in the address was the shape of a node that could only
-// reach an app by going around its front door.
+// reach an app by going around the reverse proxy.
 //
-// The default assumes the manifest's port is an HTTP front door, which is true of every app
-// whose front door IS its HTTP endpoint. mosquitto is the first entry where it is not: what it
+// The default assumes the manifest's port is the app's HTTP entry point, which is true of every
+// app whose entry point IS its HTTP endpoint. mosquitto is the first entry where it is not: what it
 // publishes for the household is MQTT on 1883, while the manifest's port is the management
 // endpoint the liveness floor probes, bound to the guest's loopback. Telling a user to open that
 // in a browser would hand them a dead link for an app that is working perfectly -- and no
@@ -474,8 +474,8 @@ func Reach(m manifest.Manifest, flock string) string {
 	if routes.HostName(flock, m.Name) != "" {
 		host = routes.BareHostName(m.Name)
 	}
-	// An app the door does not front is reached at a PUBLISHED PORT, and saying which one is
-	// the whole of its address. mosquitto is the case: the manifest's port is the management
+	// An app the reverse proxy does not front is reached at a PUBLISHED PORT, and saying which one
+	// is the whole of its address. mosquitto is the case: the manifest's port is the management
 	// endpoint the liveness floor probes, and what the household points clients at is MQTT.
 	if !Fronted(m) {
 		port := 0
@@ -518,20 +518,20 @@ func protocol(m manifest.Manifest) string {
 	return ""
 }
 
-// Fronted reports whether the front door may serve this app under its own name.
+// Fronted reports whether the reverse proxy may serve this app under its own name.
 //
-// It decides whether converge emits a ROUTE for the app, not a flag the door then has to
-// honour: an app this returns false for is named and probed, and the door is handed no way to
-// reach it at all. Absence rather than a checked condition, for the same reason shared/manifest
+// It decides whether converge emits a ROUTE for the app, not a flag the reverse proxy then has to
+// honour: an app this returns false for is named and probed, and the reverse proxy is handed no way
+// to reach it at all. Absence rather than a checked condition, for the same reason shared/manifest
 // grants capability by omission.
 //
-// TRUE BY DEFAULT, because a catalogued app's primary port is normally the HTTP front door a
+// TRUE BY DEFAULT, because a catalogued app's primary port is normally the HTTP entry point a
 // household is meant to open — Home Assistant's :8123 is the whole example.
 //
 // FALSE FOR mosquitto, and this is a security property rather than a nicety. Its manifest `port`
 // is the broker's **management API**, which `mosquitto.conf` binds inside the container on
 // purpose, with the reason written at the listener: "it is still not exposed, because nothing
-// outside the guest has any business reading it". The front door runs INSIDE that guest, so
+// outside the guest has any business reading it". The reverse proxy runs INSIDE that guest, so
 // routing to it by name would republish that endpoint on the LAN — undoing a deliberate bind
 // through a mechanism that never mentions it. What a household actually reaches on the broker is
 // MQTT on 1883, which no reverse proxy can serve anyway.
@@ -539,11 +539,11 @@ func protocol(m manifest.Manifest) string {
 // SO THIS IS NOT THE SAME QUESTION AS HEALTH. A not-fronted app still has an address and is
 // still probed there every cycle: mosquitto's management endpoint is exactly what the liveness
 // floor GETs, and the guest can reach it because the guest is where the bind is. This decides what
-// the DOOR may serve, never what the node may ask.
+// the REVERSE PROXY may serve, never what the node may ask.
 //
 // The keying is the same as everything else in this package — the catalog name, product-side, code
 // we ship and review. A manifest cannot say it, which is the point: a publisher must not be able to
-// hand itself the front door. That changes when a manifest can declare its own networking and
+// hand itself the reverse proxy. That changes when a manifest can declare its own networking and
 // exposure, and this becomes the fallback for entries that say nothing.
 func Fronted(m manifest.Manifest) bool {
 	return m.Name != mosquitto.Name
@@ -553,8 +553,8 @@ func Fronted(m manifest.Manifest) bool {
 // service records converge writes into the routing table for the guest's publisher to claim.
 //
 // THE DEFAULT IS SILENCE, like everything else here. An app that answers HTTP is already
-// reachable by the name the door serves it under, and browsing types it into a category it may
-// not belong in; the announcement exists for the apps a household's OTHER DEVICES go looking
+// reachable by the name the reverse proxy serves it under, and browsing types it into a category it
+// may not belong in; the announcement exists for the apps a household's OTHER DEVICES go looking
 // for, which today is one.
 //
 // mosquitto is that one, and it is not a nicety: a broker is the rare app whose clients are

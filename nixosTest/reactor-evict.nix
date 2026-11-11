@@ -59,7 +59,7 @@ pkgs.testers.runNixOSTest {
     for m in machines:
         m.succeed("systemctl start drbd-reactor.service")
 
-    # The front door answers before anything is installed -- the shipped state -- and the app
+    # The reverse proxy answers before anything is installed -- the shipped state -- and the app
     # then goes onto the volume from whichever node promoted. Every later handover renders it
     # again from there, which is what an eviction is really moving.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
@@ -80,11 +80,11 @@ pkgs.testers.runNixOSTest {
     t1 = int(json.loads(first.succeed("curl -fsS http://192.168.1.100:8080/state"))["ticks"])
     print(f"### primary before the eviction: {first.name} (tick {t1})")
 
-    # ---- ACT 1: the eviction moves the work, and the front door follows -------------------
+    # ---- ACT 1: the eviction moves the work, and the address follows ----------------------
     #
     # Timed from the far side: the useful number is not how long the command takes to return
-    # but how long the HOUSE is without a front door, which is what a household notices and
-    # what (c2-iv-6) has to size a roll against.
+    # but how long the HOUSE is without an answer at its address, which is what a household notices
+    # and what (c2-iv-6) has to size a roll against.
     others = [m for m in machines if m != first]
     t_start = time.monotonic()
     first.succeed("drbd-reactorctl evict")

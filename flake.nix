@@ -136,8 +136,8 @@
         });
         drbd-reactor = final.callPackage ./guest-image/pkgs/drbd-reactor { };
         dummy-app = final.callPackage ./nixosTest/dummy-app/package.nix { };
-        reverse-proxy = final.callPackage ./reverse-proxy/package.nix { }; # front door at the VIP
-        dashboard = final.callPackage ./dashboard/package.nix { }; # the household dashboard behind the door
+        reverse-proxy = final.callPackage ./reverse-proxy/package.nix { }; # reverse proxy at the VIP
+        dashboard = final.callPackage ./dashboard/package.nix { }; # the household dashboard behind the reverse proxy
         # The upgrade-pair fixture: {from = 2025.11.0 (schema 51); to =
         # 2025.12.0 (schema 53)}, straddling the recorder v52 `unit_class` migration.
         home-assistant-upgrade-pair = final.callPackage ./guest-image/pkgs/home-assistant-image-pair { };

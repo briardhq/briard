@@ -92,7 +92,7 @@ var _ control = (*guestagent.Client)(nil)
 
 // Config carries Manager policy not derivable from a AppSpec.
 type Config struct {
-	// HealthURL is the CONFIGURED probe target (the front door's /healthz at the VIP). It is no
+	// HealthURL is the CONFIGURED probe target (the reverse proxy's /healthz at the VIP). It is no
 	// longer the last word: when the VIP is acquired by DHCP inside the guest, only the guest
 	// knows the address, so ResolveHealthURL asks it every cycle and this demotes to the
 	// fallback for a node whose address we did set. "" is NOT "no probe" — see Diskless.
@@ -166,19 +166,19 @@ func NewManager(ctl control, cfg Config) *Manager {
 func unitOf(spec model.AppSpec) string { return spec.ServingUnit() }
 
 // hasApp reports whether this node runs a workload at all. ZERO APPS IS THE SHIPPED
-// STATE -- a fresh node serves the front door's own landing page and nothing else --
+// STATE -- a fresh node serves the reverse proxy's own landing page and nothing else --
 // so every app-shaped step in an upgrade has to be a no-op there rather than an error.
 //
 // It exists because the opposite assumption was left behind: unitOf on an empty spec
 // yields the nonexistent `podman-.service`, and asking systemd about it answered "inactive",
 // which the health gate read as "not ready" forever. The node was simultaneously reporting
-// Healthy: true to the cloud (cfg.snapshot probes the front door and takes its answer, with
+// Healthy: true to the cloud (cfg.snapshot probes the reverse proxy and takes its answer, with
 // no such conjunct) and refusing every OS upgrade to itself.
 func hasApp(spec model.AppSpec) bool { return spec.Name != "" || spec.Unit != "" }
 
 func (m *Manager) Start(ctx context.Context, spec model.AppSpec) error {
 	if !hasApp(spec) {
-		return nil // nothing to raise; the front door rides briard-vip, not this call
+		return nil // nothing to raise; the reverse proxy rides briard-vip, not this call
 	}
 	return m.ctl.AppStart(ctx, unitOf(spec))
 }
@@ -192,7 +192,7 @@ func (m *Manager) Stop(ctx context.Context, spec model.AppSpec) error {
 
 // Health is the upgrade gate's floor. With an app it means what it always did: the app
 // unit is active AND the probe passes. With NO app the probe alone decides, because the
-// front door answers /healthz itself in that state -- 200, "no backend configured" -- which is
+// reverse proxy answers /healthz itself in that state -- 200, "no backend configured" -- which is
 // exactly what reverse-proxy was widened to do so that "a node with nothing installed
 // is ready, not sick". Running is vacuously true there: there is no app that could be down.
 func (m *Manager) Health(ctx context.Context, spec model.AppSpec) (Health, error) {
@@ -256,7 +256,7 @@ func ResolveHealthURL(ctx context.Context, v VIPReader, diskless bool, vipDev, c
 }
 
 // healthURLAt builds the probe target from an address in CIDR form. The port and path are
-// fixed on purpose: the target is the FRONT DOOR (:80 /healthz), which is what makes the probe
+// fixed on purpose: the target is the REVERSE PROXY (:80 /healthz), which is what makes the probe
 // stable across zero and one app — see the HealthURL default in agent/host/config.go.
 func healthURLAt(cidr string) string {
 	addr, _, _ := strings.Cut(cidr, "/")
@@ -427,7 +427,7 @@ func (m *Manager) await(ctx context.Context, ready func(context.Context) bool) e
 //
 // WHY IT IS NOT AwaitReady's QUESTION. The old OS gate probed HealthURL — the VIP — which a
 // SECONDARY does not own: its peer answers. So a Secondary health-gated its own upgrade against
-// another machine's front door and committed a broken generation (measured; the front door is
+// another machine's reverse proxy and committed a broken generation (measured; the reverse proxy is
 // `wantedBy`/`partOf` briard-vip, so the node still promotes and then serves nothing). The fix is
 // not a better probe, it is a node-local question: a Secondary's job is to be a viable failover
 // target, so that is what its gate measures.
@@ -445,7 +445,7 @@ func (m *Manager) await(ctx context.Context, ready func(context.Context) bool) e
 // itself a guest restart. A trigger should name something reverting repairs.
 func (m *Manager) OSReady(ctx context.Context) (bool, error) {
 	if m.cfg.Resource == "" {
-		// No cluster to consult: nothing node-local to certify, so the front door alone
+		// No cluster to consult: nothing node-local to certify, so the reverse proxy alone
 		// answers. This is the standalone/test shape, not a field one.
 		return m.probeReady(ctx), nil
 	}
@@ -469,12 +469,12 @@ func (m *Manager) OSReady(ctx context.Context) (bool, error) {
 // Readiness carries the pre-upgrade baseline from capture (before quiesce) to the
 // post-floor assessment. The zero value (no assessor, or a baseline that couldn't be
 // captured) makes assess a no-op — the floor + rollback window stand alone.
-// OSReadyServing is OSReady with the vacuous half closed: the node must be PRIMARY and its front
-// door must answer. For the lone holder of the house -- the only serving node an OS upgrade is
+// OSReadyServing is OSReady with the vacuous half closed: the node must be PRIMARY and its reverse
+// proxy must answer. For the lone holder of the house -- the only serving node an OS upgrade is
 // allowed to reboot (with a takeover-capable peer it refuses) -- "if I am serving, I am
 // serving" is not enough, because the node's own failure handling can make it stop serving
-// before the gate looks. Measured 2026-09-07 (lab os-rollback, a front door that fails
-// outright): the release booted, promoted, the front door hit its start limit at 14 s, OnFailure
+// before the gate looks. Measured 2026-09-07 (lab os-rollback, a reverse proxy that fails
+// outright): the release booted, promoted, the reverse proxy hit its start limit at 14 s, OnFailure
 // demoted the node under a promotion hold -- and the gate, polling at that moment, saw a
 // Secondary with nothing to fail and COMMITTED a release that left the house dark. Nobody else
 // could have been serving, which is exactly why the reboot was allowed; so here not-Primary is

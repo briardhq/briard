@@ -1244,10 +1244,10 @@ func TestReplacingKeepsTheWeakerConsistency(t *testing.T) {
 	}
 }
 
-// Every start tells the front door to ask again whether the app accepts X-Forwarded-For --
+// Every start tells the reverse proxy to ask again whether the app accepts X-Forwarded-For --
 // both boundaries, since an app reads its proxy trust at start and Home Assistant's own restarts
 // are starts the container never sees.
-func TestEveryStartSignalsTheDoor(t *testing.T) {
+func TestEveryStartSignalsTheReverseProxy(t *testing.T) {
 	signalled := func(f *fakeExec) bool {
 		for _, r := range f.runs {
 			if strings.Join(r, " ") == "systemctl kill --kill-whom=main --signal=SIGHUP "+reverseProxyUnit {
@@ -1261,11 +1261,11 @@ func TestEveryStartSignalsTheDoor(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !signalled(f) {
-		t.Errorf("a container start did not signal the door: %v", f.runs)
+		t.Errorf("a container start did not signal the reverse proxy: %v", f.runs)
 	}
 	f = ringExec()
 	serve(t, f, `{"verb":"app.starting","token":"`+haToken+`"}`)
 	if !signalled(f) {
-		t.Errorf("a restart inside the container did not signal the door: %v", f.runs)
+		t.Errorf("a restart inside the container did not signal the reverse proxy: %v", f.runs)
 	}
 }

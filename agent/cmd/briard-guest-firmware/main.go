@@ -76,7 +76,7 @@ func runGuest(ctx context.Context) error {
 	// THE PUSH PROTOCOL'S START-TIME DUTY, before the port. Reaching this binary at all
 	// means the picker found no pushed agent, so this start is never a trial -- but it IS the
 	// start that follows a first dress whose trial failed, and the aftermath rule is what
-	// discards the staged set and puts the doors back on what they ran before.
+	// discards the staged set and puts the web units back on what they ran before.
 	x := guestfirmware.NewOSExecutor()
 	if err := guestfirmware.BinStartup(ctx, x, log.Printf); err != nil {
 		return err
@@ -90,7 +90,7 @@ func runGuest(ctx context.Context) error {
 	// The same call the pushed agent makes, and for the flags rather than the commit:
 	// reaching this binary means the picker found no trial to run, so there is nothing to
 	// commit -- but the markers an earlier start left in the tmpfs must still be cleared here,
-	// or the next trial's verdict would read a door's stale `trial` as its own.
+	// or the next trial's verdict would read a web unit's stale `trial` as its own.
 	guestfirmware.BinCommit(ctx, x, log.Printf)
 
 	go func() {

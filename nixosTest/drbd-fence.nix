@@ -60,7 +60,7 @@ pkgs.testers.runNixOSTest {
     for m in machines:
         m.succeed("systemctl start drbd-reactor.service")
 
-    # Nothing is installed yet, so the front door answers for itself -- the shipped state.
+    # Nothing is installed yet, so the reverse proxy answers for itself -- the shipped state.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 
     def role(m):

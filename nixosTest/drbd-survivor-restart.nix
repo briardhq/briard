@@ -70,7 +70,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
-    # Nothing is installed yet, so the front door answers for itself; then the promoted node puts
+    # Nothing is installed yet, so the reverse proxy answers for itself; then the promoted node puts
     # the app on the volume, which is what the restarted survivor later converges from.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
     install_fixture(next(m for m in disk_nodes if m.execute("drbdadm role r0")[1].strip() == "Primary"))

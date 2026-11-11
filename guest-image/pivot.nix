@@ -7,8 +7,8 @@
 # first push. The host dresses the guest with the release's set over the control channel
 # (`bin.stage` / `bin.test` / `bin.activate`, agent/guestfirmware/bin.go) at every bring-up: the
 # pushed set lands in the boot's scratch on the state disk, emptied at every boot, so every boot
-# starts as firmware and nothing pushed survives a restart. The guest AGENT, the front door and
-# the dashboard have no baked copy at all; before the first dress the doors' units have nothing
+# starts as firmware and nothing pushed survives a restart. The guest AGENT, the reverse proxy and
+# the dashboard have no baked copy at all; before the first dress the web units have nothing
 # to exec and say so, and the host dresses before rejoin, so nothing can promote a node that has
 # not been dressed.
 #
@@ -28,12 +28,12 @@
 #                        saying the first; two files carrying one fact are two files that can
 #                        disagree, so the marker absorbed it (owner, 2026-09-08)
 #   <bin>/<name>         the PUSHED, committed binary; absent on a fresh boot
-#   <baked>              the firmware, for the agent's unit alone; `-` for the doors (none)
+#   <baked>              the firmware, for the agent's unit alone; `-` for the web units (none)
 #   <bin>/RELEASE        the host release id the committed set came from (the handshake's Bundle)
 #
 # ExecStart is the picker: trial -> pushed -> baked. bin.activate arms EVERY name's flag and
 # restarts ONLY the agent's unit; the trial agent's start is the verdict on the set: it
-# try-restarts each door that is running (their pickers, flags consumed, exec the staged files;
+# try-restarts each web unit that is running (their pickers, flags consumed, exec the staged files;
 # Type=notify with a short start timeout, so systemctl's return IS the outcome), and only a
 # passing verdict opens the port. It then COMMITS -- every staged name plus RELEASE, together --
 # and only after that says READY and serves its first verb.
@@ -48,14 +48,14 @@
 # 34576181211, lost by 12 ms), rolling back a healthy OS upgrade. agent/guestfirmware/bin.go
 # BinCommit carries the full account and what the move gives up.
 #
-# A door whose staged file fails has already reverted by then: its auto-restart (2 s, direct
+# A web unit whose staged file fails has already reverted by then: its auto-restart (2 s, direct
 # mode) finds the flag consumed and execs the committed file. One failed start out of the unit's
 # budget -- the promotion hold fires on start-limit exhaustion only (configuration.nix,
 # chainMemberFailure), so a failed upgrade NEVER demotes. The trial agent exits 1, its own picker
 # brings the committed agent back -- or, when the FIRST dress is what failed and there is no
-# committed agent yet, the firmware -- and that start discards the staged set and puts both doors
-# on the committed files (agent/guestfirmware/bin.go BinStartup), whichever of the three actually
-# failed. No channel, no timer, no memory of what to undo beyond "staged files present".
+# committed agent yet, the firmware -- and that start discards the staged set and puts both web
+# units on the committed files (agent/guestfirmware/bin.go BinStartup), whichever of the three
+# actually failed. No channel, no timer, no memory of what to undo beyond "staged files present".
 #
 # Frozen in the sense that matters: a pushed binary can change everything about itself except the
 # picker it is started by, --test-launch, and the verbs it is reached through -- those are the
@@ -89,7 +89,7 @@ let
     # enough -- a staged copy that exits 1 fails its start, systemd's own auto-restart brings the
     # unit back on the COMMITTED binary seconds later, and the restart JOB then succeeds, so
     # systemctl reports nothing wrong; measured on the first install-macvtap run of this item, where
-    # the verdict passed and committed a door that had already reverted). Overwriting it IS the
+    # the verdict passed and committed a web unit that had already reverted). Overwriting it IS the
     # revert: a failed trial's auto-restart lands below and the marker stops saying trial.
     if [ -e ${runDir}/$name.update ]; then
       rm -f ${runDir}/$name.update                       # consume SINGLE-USE: a crashing candidate cannot re-trial

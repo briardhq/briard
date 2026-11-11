@@ -66,8 +66,8 @@ pkgs.testers.runNixOSTest {
     host.succeed("truncate -s 512M /tmp/data.img")
 
     # The host holds a guest bundle tree, as install.sh lays on every install: the image
-    # bakes no door, so a guest is dressed by its host or it cannot serve. Copied out of the store
-    # because the host writes `guest.good` beside the tree.
+    # bakes no reverse proxy, so a guest is dressed by its host or it cannot serve. Copied out of
+    # the store because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     host.succeed(
@@ -259,7 +259,7 @@ pkgs.testers.runNixOSTest {
 
     # And it is a node again, not merely a running process: bring-up re-drove the whole
     # sequence on the persisted data disk (idempotent by the same rule as the guest-side rung -- attach, never
-    # re-seed) and the front door answers.
+    # re-seed) and the reverse proxy answers.
     host.wait_until_succeeds(
         "journalctl -u briard-agent | grep -q 'guest-recovery: guest restarted and converged'",
         timeout=600,

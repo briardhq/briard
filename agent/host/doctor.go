@@ -65,7 +65,7 @@ type doctorFacts struct {
 
 	GuestErr  error // the snapshot could not ask the guest
 	Cluster   model.Cluster
-	Probe     string // the front door the snapshot probed; "" when it had no address to probe
+	Probe     string // the reverse proxy the snapshot probed; "" when it had no address to probe
 	Healthy   bool
 	HeldVIP   string // what the VIP device holds, read on a node that is NOT serving
 	FlockName string
@@ -239,9 +239,9 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		add("address", reportcard.Refuse, "serving, but holding no address, so nothing in your home can reach it",
 			"if your router hands out the address, check it has free addresses; `briard logs` shows the attempt")
 	case serving && !f.Healthy:
-		add("address", reportcard.Refuse, fmt.Sprintf("the front door at %s does not answer", f.Probe), "`briard logs` shows why")
+		add("address", reportcard.Refuse, fmt.Sprintf("the reverse proxy at %s does not answer", f.Probe), "`briard logs` shows why")
 	case serving:
-		add("address", reportcard.Pass, fmt.Sprintf("the front door answers at %s", f.Probe), "")
+		add("address", reportcard.Pass, fmt.Sprintf("the reverse proxy answers at %s", f.Probe), "")
 	case f.HeldVIP != "":
 		add("address", reportcard.Refuse, fmt.Sprintf("not serving, yet holding the home's address %s", f.HeldVIP),
 			"two machines may be answering for one address; `briard logs` on both")
@@ -252,7 +252,7 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		return cs
 	}
 
-	// THE NAME THE DOOR REPORTS IS THE ONE IT WAS GIVEN: the responder probes nothing and renames
+	// THE NAME THE REVERSE PROXY REPORTS IS THE ONE IT WAS GIVEN: the responder probes nothing and renames
 	// nothing, so Published is either the flock name or empty, and "published as some other name"
 	// is not a state it can be in. A second flock answering the bare `briard.local` is a
 	// different fact: that name is ambiguous by design (routes.BareHostName), nothing is wrong
@@ -261,7 +261,7 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		want := routes.FlockHostName(f.FlockName)
 		switch {
 		case f.Published == "":
-			add("name", reportcard.Warn, want+" is not published", "`briard logs` shows the front door's side")
+			add("name", reportcard.Warn, want+" is not published", "`briard logs` shows the reverse proxy's side")
 		case f.Other != "":
 			add("name", reportcard.Warn, fmt.Sprintf("another briard at %s also answers %s, so that name may open either one", f.Other, routes.BareFlockHostName),
 				"this one is always "+want+"; use that name when it matters which")

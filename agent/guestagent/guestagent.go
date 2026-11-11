@@ -97,7 +97,7 @@ const verbNetVIPForget = "net.vip.forget"
 // dataMountRoot is.
 const vipAddrFile = dataMountRoot + "/.vip-address"
 
-// verbNetMDNSName records the flock's human-visible name, which the front door publishes as
+// verbNetMDNSName records the flock's human-visible name, which the reverse proxy publishes as
 // `briard-<name>.local` pointing at the VIP.
 //
 // It is its OWN verb rather than another field on net.configure, and the reason is the design it
@@ -117,9 +117,9 @@ const verbNetMDNSName = "net.mdnsname"
 // failure precisely, in the item that exists to end it.
 const verbNetMDNSPublished = "net.mdnspublished"
 
-// verbNetMDNSOther reads back the address of ANOTHER briard the door heard answering the bare
-// `briard.local` when this node came up -- "" when none was heard or nothing is published. The
-// bare name is shared by design; this is the one fact that lets the doctor say so.
+// verbNetMDNSOther reads back the address of ANOTHER briard the reverse proxy heard answering the
+// bare `briard.local` when this node came up -- "" when none was heard or nothing is published.
+// The bare name is shared by design; this is the one fact that lets the doctor say so.
 const verbNetMDNSOther = "net.mdnsother"
 
 // Sys.hostname sets the guest's hostname to this node's name. DRBD matches the
@@ -2031,17 +2031,17 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if err := x.WriteFile(mdnsEnvPath, []byte("FLOCK_NAME="+req.Name+"\n")); err != nil {
 				return nil, err
 			}
-			// NOTHING IS RESTARTED, and nothing needs to be: the door publishes the names and
-			// re-reads this file on its own tick, so a rename reaches the wire by
-			// itself — on a Primary, which is the only node whose door is running, and therefore
-			// the only node that could publish a name for an address it holds.
+			// NOTHING IS RESTARTED, and nothing needs to be: the reverse proxy publishes the
+			// names and re-reads this file on its own tick, so a rename reaches the wire by
+			// itself — on a Primary, which is the only node whose reverse proxy is running, and
+			// therefore the only node that could publish a name for an address it holds.
 			//
 			// The rename applies WITHOUT touching addressing -- no VIP re-assert, no MAC, no DHCP
 			// client-id, no DRBD state. That is the property the three-way identifier split was
 			// for, and these two writes are where it is cashed in.
 			//
 			// The per-app names are derived from this one, so they move with it --
-			// in the routing table the front door matches on AND in the records it answers,
+			// in the routing table the reverse proxy matches on AND in the records it answers,
 			// which are now the same list read once, so a rename cannot leave a name published
 			// that nothing routes.
 			renameRoutes(x, req.Name)
@@ -2222,19 +2222,20 @@ const reactorPath = "/run/briard/drbd-reactor.d/briard.toml"
 const vipEnvPath = "/run/briard/vip.env"
 
 const (
-	// mdnsEnvPath carries the flock's visible name to the front door, which publishes it.
+	// mdnsEnvPath carries the flock's visible name to the reverse proxy, which publishes it.
 	// Written by net.mdnsname, never baked: it is PET identity reaching a CATTLE image, and baking
 	// identity into a shared image is the mistake the baked name was.
 	//
 	// ⚠️ PAIRED with reverse-proxy/mdns.go's const of the same path, which re-reads it on a tick,
 	// so a rename needs no unit restarted and no ordering between the two.
 	mdnsEnvPath = "/run/briard/mdns.env"
-	// mdnsPublishedPath is where the door records the name it is REALLY answering for, bare.
+	// mdnsPublishedPath is where the reverse proxy records the name it is REALLY answering for,
+	// bare.
 	// Absent means nothing is published -- the normal state of a Secondary, which holds no VIP,
-	// runs no door, and therefore publishes no name.
+	// runs no reverse proxy, and therefore publishes no name.
 	mdnsPublishedPath = "/run/briard/mdns.published"
-	// mdnsOtherPath is where the door records another briard heard answering the bare name at
-	// bring-up. PAIRED with reverse-proxy/mdns.go's const of the same path.
+	// mdnsOtherPath is where the reverse proxy records another briard heard answering the bare
+	// name at bring-up. PAIRED with reverse-proxy/mdns.go's const of the same path.
 	mdnsOtherPath = "/run/briard/mdns.other"
 )
 
@@ -2952,7 +2953,7 @@ func (g *Client) MDNSPublished(ctx context.Context) (string, error) {
 	return name, nil
 }
 
-// MDNSOther reports the address of another briard the door heard answering the bare
+// MDNSOther reports the address of another briard the reverse proxy heard answering the bare
 // `briard.local` when this node came up, or "" when none was heard. See verbNetMDNSOther.
 func (g *Client) MDNSOther(ctx context.Context) (string, error) {
 	var addr string
@@ -3480,7 +3481,7 @@ func (g *Client) AppHealth(ctx context.Context, url string) (bool, error) {
 // It replaces callers that built `http://127.0.0.1:<port>` from the manifest. That URL is correct
 // only while every pod shares the guest's network namespace: the manifest names a port, and which
 // host answers on it is decided by the renderer. Asking by name is what keeps the install gate and
-// the steady-state probe pointed wherever the front door is pointed.
+// the steady-state probe pointed wherever the reverse proxy is pointed.
 //
 // An unresolvable app returns an ERROR, never a verdict: "I cannot find it" must not be read as
 // "it is broken" by a gate that reverts installs.

@@ -79,7 +79,7 @@ pkgs.testers.runNixOSTest {
     assert anchor1.succeed("cat /run/briard/topology.env").strip() == "BRIARD_TOPOLOGY=alone"
     no_resource(anchor1)
     anchor1.succeed("systemctl start briard-chain.target")
-    # The front door first, with nothing installed: that is what a node coming up single-handed
+    # The reverse proxy first, with nothing installed: that is what a node coming up single-handed
     # actually looks like. Then the app is installed onto the volume it now holds, which is
     # what the joining anchor later replicates and converges from.
     anchor1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)

@@ -18,7 +18,7 @@ ships with the agent.
         │                      ▼                       │
         │   ┌──────────────────────────────────────┐   │
         │   │ guest VM (NixOS)                     │   │
-        │   │   front door (answers the VIP)       │   │
+        │   │   reverse proxy (answers the VIP)    │   │
         │   │   your apps — or none yet            │   │
         │   │   DRBD + drbd-reactor, over LUKS     │   │
         │   │   a small guest agent                │   │
@@ -102,7 +102,7 @@ the failure mode. Two architecture tests hold the line, one at the API surface a
 the exec surface.
 
 What promotion starts is the **promoter chain**: five units, in order — the data mount, the
-apps, the VIP, the front door and the dashboard. The list is defined once, in
+apps, the VIP, the reverse proxy and the dashboard. The list is defined once, in
 [`shared/chain`](shared/chain), and read by both the product and the test rigs. On a node with
 peers, drbd-reactor starts the chain on whichever node wins promotion; on a lone node a static
 target starts it. Apps are rendered *at promotion* from the manifests on the volume, so a
@@ -283,7 +283,7 @@ it. What can run is the **catalog** — signed manifests, served beside a detach
 over their exact bytes and checked in here (`catalog/`) so a change to what the fleet installs
 is reviewable before it is live. A manifest names the image by digest; the node keeps the raw
 manifest on its replicated volume, renders it into Podman units on whichever node is primary,
-and the front door routes to it by name. Nothing about an app is baked into the guest
+and the reverse proxy routes to it by name. Nothing about an app is baked into the guest
 image, which is why the OS and the apps update on independent schedules.
 
 ## The protocols
@@ -432,14 +432,14 @@ agent/            the host daemon: orchestration, and the provider seams
 shared/           wire types (api), domain types (model), the manifest schema, the casa contract, the notify seam
 catalog/          the signed app manifests, exactly as published
 guest-image/      the NixOS guest: DRBD, drbd-reactor, storage (ships running nothing)
-reverse-proxy/    the front door: answers the VIP, routes by name, terminates TLS, hot-reloads both
+reverse-proxy/    the reverse proxy: answers the VIP, routes by name, terminates TLS, hot-reloads both
 dashboard/        the household dashboard, served from the guest at the VIP
 internal/arch     the architecture guards, as failing tests
 nixosTest/        real-VM tests of the mechanisms above
 scripts/          the installer, and the units and frozen scripts it ships
 ```
 
-The front door, the dashboard and the guest agent are not baked into the image: the host pushes
+The reverse proxy, the dashboard and the guest agent are not baked into the image: the host pushes
 them into the guest at every bring-up, from the release it holds. Provider integrations (the
 overlay, the cloud) sit behind **interfaces**, each with a real implementation and a stub, and
 the per-OS guest backend behind a build-tag seam. The orchestrator only ever sees the interface,

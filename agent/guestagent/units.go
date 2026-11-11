@@ -111,7 +111,7 @@ func tool(name string) string { return filepath.Join(toolsBin(), name) }
 // `Requires=` on its members demoted this node on EVERY crash: `Restart=` enqueues its
 // auto-restart with job mode JOB_RESTART_DEPENDENCIES, which propagates a TRY_RESTART up to the
 // target, which stops drbd-promote@ (PartOf) -- measured, and it took the resource away from a
-// live peer in 2 of 5 door crashes. With `target-as = Wants` (agent/drbd/config.go) nothing
+// live peer in 2 of 5 reverse-proxy crashes. With `target-as = Wants` (agent/drbd/config.go) nothing
 // upstream reacts to a member at all, which is right for a crash and wrong for a member that has
 // genuinely given up.
 //
@@ -128,8 +128,8 @@ func tool(name string) string { return filepath.Join(toolsBin(), name) }
 // THE BUDGET IS UNIFORM ACROSS THE CHAIN: five starts in five minutes, after which
 // the member gives up and the resource moves. A judgement rather than a measurement, and it
 // matters more than the shape suggests -- with no StartLimit at all systemd's 5-in-10s default
-// applies, and at RestartSec=2 that IS reachable, so a door would hand the resource on after
-// ~10s of trying.
+// applies, and at RestartSec=2 that IS reachable, so the reverse proxy would hand the resource on
+// after ~10s of trying.
 const chainMemberFailure = `OnFailure=` + holdUnit + `
 OnFailureJobMode=replace-irreversibly
 StartLimitIntervalSec=300
@@ -309,10 +309,11 @@ ExecStop=` + agent + ` --primary-storage-stop
 	// ITS FAILURE IS LOUD, BECAUSE IT IS A MEMBER. A member that gives up fires the hold
 	// (chainMemberFailure), which stops the whole chain -- the VIP with it -- and hands the
 	// resource on, so a node that cannot converge does not keep the service address. While it
-	// is still retrying, the address is up with no door behind it (the door Requires= this
-	// unit), and a primary that answers nothing on the VIP is already reported unhealthy. Built
-	// as a side-effect that shrugs, converge would put fallible work on the promotion path and
-	// leave the silent-healthy hole exactly as dangerous: a gate that shrugs is not a gate.
+	// is still retrying, the address is up with no reverse proxy behind it (the reverse
+	// proxy Requires= this unit), and a primary that answers nothing on the VIP is already
+	// reported unhealthy. Built as a side-effect that shrugs, converge would put fallible work on
+	// the promotion path and leave the silent-healthy hole exactly as dangerous: a gate that
+	// shrugs is not a gate.
 	//
 	// THE APP UNITS THEMSELVES ARE NOT MEMBERS, which is what makes "an app error alerts
 	// but never demotes" mechanically true -- drbd-reactor never sees them, so a crashed
@@ -393,7 +394,7 @@ EnvironmentFile=` + vipEnvPath + `
 ExecStart=` + tool("briard-vip-renew") + `
 `
 
-	// 4. THE FRONT DOOR -- answer the VIP on :80 and terminate HTTPS on :443, and publish the
+	// 4. THE REVERSE PROXY -- answer the VIP on :80 and terminate HTTPS on :443, and publish the
 	// household's mDNS names.
 	//
 	// Cert/key live on the DRBD volume so they replicate and survive failover; the proxy
@@ -403,17 +404,18 @@ ExecStart=` + tool("briard-vip-renew") + `
 	//
 	// NO -routes: the table has a compiled-in default (shared/routes.Path) this unit deliberately
 	// does not restate. Ordered AFTER briard-apps, which is what makes the table exist before
-	// the door reads it.
+	// the reverse proxy reads it.
 	//
 	// THROUGH THE PIVOT: the picker runs the copy the host pushed, and nothing
-	// else -- the image bakes no door. READY means "listening", which is what a trial agent reads
-	// as its verdict on the pushed copy.
+	// else -- the image bakes no reverse proxy. READY means "listening", which is what a trial
+	// agent reads as its verdict on the pushed copy.
 	//
-	// ⚠️ THE PICKER IS THE REASON THIS UNIT HAS A PATH AT ALL. The door is a self-contained Go
-	// binary and needed none while it was a NixOS unit -- but `briard-bin-exec` is shell, and it
-	// `rm`s the trial flag as it execs. Under NixOS that resolved through the default systemd service
-	// PATH nixpkgs hands every unit; a runtime unit gets no such gift, and a picker that cannot
-	// consume its own single-use flag would let a crashing candidate re-trial forever.
+	// ⚠️ THE PICKER IS THE REASON THIS UNIT HAS A PATH AT ALL. The reverse proxy is a
+	// self-contained Go binary and needed none while it was a NixOS unit -- but `briard-bin-exec`
+	// is shell, and it `rm`s the trial flag as it execs. Under NixOS that resolved through the
+	// default systemd service PATH nixpkgs hands every unit; a runtime unit gets no such gift, and
+	// a picker that cannot consume its own single-use flag would let a crashing candidate re-trial
+	// forever.
 	//
 	// A TRANSIENT CRASH MUST NOT MOVE THE RESOURCE. Without RestartMode=direct the
 	// auto-restart's stop job deactivates drbd-reactor's target -- which unmounts the data volume
@@ -423,7 +425,7 @@ ExecStart=` + tool("briard-vip-renew") + `
 	// accumulate. NOT on primary-storage/apps/vip: for those, failure really does mean this
 	// node must not hold the volume.
 	u[reverseProxyUnit] = `[Unit]
-Description=Briard front door (serves the VIP on :80/:443)
+Description=Briard reverse proxy (serves the VIP on :80/:443)
 After=` + appsUnit + `
 ` + chainEdges(3, members) + chainMemberFailure + `
 [Service]
@@ -436,13 +438,13 @@ RestartSec=2
 TimeoutStartSec=10
 `
 
-	// 5. THE HOUSEHOLD DASHBOARD: loopback only, behind the door, which forwards
-	// every name it does not route here. A chain member for the reason the door is one -- its
-	// device registry lives on the volume, and only the primary has it -- under the same
+	// 5. THE HOUSEHOLD DASHBOARD: loopback only, behind the reverse proxy, which forwards
+	// every name it does not route here. A chain member for the reason the reverse proxy is one --
+	// its device registry lives on the volume, and only the primary has it -- under the same
 	// hold settings. It reads the routing table converge wrote and Home Assistant's
 	// control token, both on /run; it writes only under /var/lib/briard/dashboard.
 	u[dashboardUnit] = `[Unit]
-Description=Briard household dashboard (behind the front door)
+Description=Briard household dashboard (behind the reverse proxy)
 After=` + primaryStorageUnit + ` ` + appsUnit + `
 ` + chainEdges(4, members) + chainMemberFailure + `
 [Service]

@@ -437,7 +437,7 @@ func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 // means "resolve it from the address the guest actually holds", which is the only source that can
 // be right on a LAN we have never seen.
 //
-// The probe target is still the front door rather than an app's own port; that part was never
+// The probe target is still the reverse proxy rather than an app's own port; that part was never
 // the defect, and healthURLAt is what keeps it true once the address is dynamic.
 func TestConfigFromEnv_NoBakedHealthTarget(t *testing.T) {
 	t.Setenv("HEALTH_URL", "")
@@ -458,7 +458,7 @@ func TestConfigFromEnv_NoBakedHealthTarget(t *testing.T) {
 }
 
 // An explicitly set HEALTH_URL still pins the probe, which is what makes the resolution an
-// override rather than a replacement — and is how a node with an unusual front door stays
+// override rather than a replacement — and is how a node with an unusual reverse proxy stays
 // configurable without reintroducing a default for everyone.
 func TestConfigFromEnv_ExplicitHealthURLIsKept(t *testing.T) {
 	t.Setenv("ROLE", string(model.RoleAnchor))
@@ -629,7 +629,7 @@ func TestMDNSNames_ReportsThePublishedNameNotTheConfiguredOne(t *testing.T) {
 	st := api.NodeStatus{NodeName: cfg.Node}
 	mdnsNames(context.Background(), r, &st)
 	if st.OtherBriard != "192.168.9.60" {
-		t.Errorf("OtherBriard = %q, want the other briard the door heard", st.OtherBriard)
+		t.Errorf("OtherBriard = %q, want the other briard the reverse proxy heard", st.OtherBriard)
 	}
 	if st.PublishedName != "brave-elf-2" {
 		t.Errorf("PublishedName = %q, want the established brave-elf-2 (configured: %q)",
@@ -884,7 +884,7 @@ func TestSnapshot_HealthProbesTheAddressTheGuestReports(t *testing.T) {
 
 	st, _, _, _ := snap(cfg, r, "")
 	if want := "http://192.168.9.50/healthz"; probed != want {
-		t.Errorf("probed %q, want the front door at the REPORTED lease %q", probed, want)
+		t.Errorf("probed %q, want the reverse proxy at the REPORTED lease %q", probed, want)
 	}
 	if !st.Healthy {
 		t.Error("a node answering at its acquired address is healthy")
@@ -1210,7 +1210,7 @@ func TestCurrentSystem(t *testing.T) {
 
 // A not-Primary anchor with nobody to stand by for is not a standby, it is a house nobody holds.
 // Measured 2026-09-07 (lab os-rollback): a lone anchor beside a diskless witness booted a release
-// whose front door failed, was demoted by its own OnFailure, and then reported healthy=true every
+// whose reverse proxy failed, was demoted by its own OnFailure, and then reported healthy=true every
 // five seconds by the participation rule -- the free-tier owner's whole picture, and wrong.
 func TestSnapshot_LoneAnchorThatIsNotPrimaryIsUnhealthy(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}

@@ -386,7 +386,7 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	// manifest identity per app, the volume's `.apps/<name>.json` says which app a
 	// manifest belongs to, and `telemetry.NodeResources.Payloads` measures each app's own
 	// footprint and restart count. `Healthy` and `System` deliberately stayed node-scoped — a
-	// closure is a property of the node, and the front door is what "is this node serving" means.
+	// closure is a property of the node, and the reverse proxy is what "is this node serving" means.
 
 	// What is installed NOW — the rollback target. nil on a fresh install (the shipped
 	// zero-app node) or an idempotent re-install of the same manifest: the manifest whose data
@@ -595,7 +595,7 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	}
 	logf("app install %s: converged from the volume; waiting for health", m.Name)
 
-	// Gate on the APP's own endpoint (in-guest), not the front door — see awaitHealthy. BY
+	// Gate on the APP's own endpoint (in-guest), not the reverse proxy — see awaitHealthy. BY
 	// NAME: the converge above wrote the routing table, so the guest already knows where this
 	// app listens, and the host no longer assembles an address it can only guess stays true.
 	if err := cfg.awaitHealthy(ctx, g, m.Name, logf); err != nil {
@@ -662,7 +662,7 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	// WHERE TO REACH IT, carried back as the outcome Detail. The node holds both halves and the
 	// operator holds neither: the port is the manifest's (never typed by a human) and the name is
 	// the one the guest publishes over mDNS. Without it the verb reports success and leaves the
-	// address to be guessed, which walks the user to the front door's "nothing is routed here"
+	// address to be guessed, which walks the user to the reverse proxy's "nothing is routed here"
 	// page and reads a working install as a broken one.
 	//
 	// The sentence itself is the registry's (agent/apps), because it is not the same sentence
@@ -1200,14 +1200,14 @@ func containerUnits(raw string) []string {
 // IT ASKS BY NAME, and the guest resolves where that is. It used to assemble
 // `http://127.0.0.1:<port>` from the manifest, which is correct only while every pod shares the
 // guest's network namespace — the manifest names a port, and which host answers on it is the
-// renderer's decision. Handing the guest a name means the gate probes wherever the front door
+// renderer's decision. Handing the guest a name means the gate probes wherever the reverse proxy
 // routes, by construction, instead of two places agreeing by coincidence.
 //
-// It does NOT gate on the front door. That /healthz reports NODE readiness — on a node with
+// It does NOT gate on the reverse proxy. That /healthz reports NODE readiness — on a node with
 // nothing routed it answers 200 because a node with no apps is ready, not sick — so gating on
 // it would pass a broken install. The distinction is not a workaround: node health and app
 // health have different consequences (one can cost a failover, the other must only alert), and the
-// front door answering for the node is what keeps them separable.
+// reverse proxy answering for the node is what keeps them separable.
 //
 // An ERROR IS NOT AN UNHEALTHY VERDICT here: an app the guest cannot resolve yet is retried
 // until the deadline, exactly like one that is not answering yet, because the two are

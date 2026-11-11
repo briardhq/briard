@@ -62,7 +62,7 @@ pkgs.testers.runNixOSTest {
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
 
-    # The front door first, with nothing installed -- the shipped state -- then the app goes
+    # The reverse proxy first, with nothing installed -- the shipped state -- then the app goes
     # onto the volume from whichever node promoted.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 

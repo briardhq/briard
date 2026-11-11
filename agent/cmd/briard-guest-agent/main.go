@@ -353,7 +353,7 @@ func runGuest(ctx context.Context) error {
 	// the reason above.
 	go guestagent.EvaluateStarts(ctx, x)
 	// THE PUSH PROTOCOL'S START-TIME DUTY, before the port: a trial start is the
-	// verdict on the whole pushed set (the doors' real launch, where they run), and a refused
+	// verdict on the whole pushed set (the web units' real launch, where they run), and a refused
 	// verdict exits here, port never opened, so the host's reconnect meets the committed agent
 	// and reads the old release. A non-trial start with a staged set left behind discards it.
 	// A failed trial's own restart lands back at WriteUnits above, so the committed agent's

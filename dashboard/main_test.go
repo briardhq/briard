@@ -430,9 +430,9 @@ func TestOpenRefusesWhileHomeAssistantIsStarting(t *testing.T) {
 	}
 }
 
-// The door says https on this one path, and only the door: the cookie goes Secure and Home
-// Assistant's origin follows the scheme the browser actually used.
-func TestSchemeFollowsTheDoor(t *testing.T) {
+// The reverse proxy says https on this one path, and only the reverse proxy: the cookie goes Secure
+// and Home Assistant's origin follows the scheme the browser actually used.
+func TestSchemeFollowsTheProxy(t *testing.T) {
 	r := newRig(t)
 	resp := r.do("GET", "/?code="+r.code, nil, map[string]string{"X-Forwarded-Proto": "https"})
 	var c *http.Cookie

@@ -19,8 +19,8 @@ import (
 // guest-<release>/bin/{briard-dashboard,briard-reverse-proxy,briard-guest-agent}. The image bakes
 // ONE binary, briard-guest-firmware -- the push protocol alone, which is what receives the first
 // push; the guest AGENT has no baked copy either. The guest's scratch is emptied at every boot, so
-// every launch starts as firmware with no door and no agent at all; the host compares the bundle the
-// guest reports in its handshake with the tree it holds and pushes when they differ -- at
+// every launch starts as firmware with no web unit and no agent at all; the host compares the bundle
+// the guest reports in its handshake with the tree it holds and pushes when they differ -- at
 // bring-up (BEFORE rejoin, so nothing can promote an undressed node), after a host commit, after
 // any guest relaunch. A convergence
 // the committed HOST agent performs, the same way it pushes the hostname and the addresses: not a
@@ -31,14 +31,14 @@ import (
 // cheap gate; a failure names the binary, the guest discards the whole staged set, nothing is
 // armed, and the dress is REFUSED here and now -- then `bin.activate` arms every name and
 // restarts the guest agent's unit alone. That agent's start is the verdict on the rest: where a
-// door is running (the primary; a single node is always the primary, which is where there is no
+// web unit is running (the primary; a single node is always the primary, which is where there is no
 // peer to fall back on) it try-restarts it onto the staged copy and reads READY or failure; on a
-// secondary the doors are not running and the cheap gate was the only one. Only a passing
+// secondary the web units are not running and the cheap gate was the only one. Only a passing
 // verdict opens the port, and it commits the set plus the release id together before it serves
 // the reconnect below -- so a handshake this host can read is a handshake taken after the commit.
-// A failed door has already reverted itself by its own auto-restart (flag consumed), one start
+// A failed web unit has already reverted itself by its own auto-restart (flag consumed), one start
 // out of its budget -- a failed upgrade never demotes; the refused agent exits without opening
-// the port, the committed agent comes back, discards the staged set and puts both doors on the
+// the port, the committed agent comes back, discards the staged set and puts both web units on the
 // committed files. (guest-image/pivot.nix, agent/guestfirmware/bin.go.)
 //
 // The host's own trial gate stays "the agent started"; a host update never waits for its guest
@@ -174,7 +174,7 @@ func orFirmware(bundle string) string {
 
 // judgeDress reads the handshake AFTER a push of `pushed`: that release means the guest took it
 // -- recorded as the good tree, so a later refusal has something to fall back to -- and anything
-// else means the trial was refused: a door failed its real launch or the agent never reached
+// else means the trial was refused: a web unit failed its real launch or the agent never reached
 // READY, and the guest's own pivot fell back on the whole set. The refusal is recorded durably so
 // the release is never pushed again, and said once here; the observe loop raises the alert, which
 // is where a notifier is in scope.
@@ -190,7 +190,7 @@ func (cfg Config) judgeDress(g dresser, pushed string, logf func(string, ...any)
 		return true
 	}
 	cfg.recordRefusal(pushed, logf)
-	logf("guest bundle: PUSH REVERTED -- the guest came back on %s, not %s: the trial did not pass (a door failed its real launch, or the pushed agent never reached READY) and the guest's own pivot fell back on the whole set; %s will not be pushed again, and the guest is dressed with the last good bundle from here on", orFirmware(have), pushed, pushed)
+	logf("guest bundle: PUSH REVERTED -- the guest came back on %s, not %s: the trial did not pass (a web unit failed its real launch, or the pushed agent never reached READY) and the guest's own pivot fell back on the whole set; %s will not be pushed again, and the guest is dressed with the last good bundle from here on", orFirmware(have), pushed, pushed)
 	return false
 }
 

@@ -145,7 +145,7 @@ pkgs.testers.runNixOSTest {
     assert broker_version(primary) == "2.1.1", "the pair did not start on its `from` version"
 
 
-    # ---- (1b) TWO APPS, TWO NAMES, ONE DOOR -- AND THE BROKER IS NOT BEHIND IT ----
+    # ---- (1b) TWO APPS, TWO NAMES, ONE REVERSE PROXY -- AND THE BROKER IS NOT BEHIND IT ----
     # N=1 could not test any of this. The properties that only exist at N=2 are that each name
     # reaches its OWN app, and that "fronted" is a per-app decision rather than a property
     # of there being exactly one thing to forward to.
@@ -158,14 +158,14 @@ pkgs.testers.runNixOSTest {
     assert routed["${fixture.name}"]["hosts"] != routed["${mosquitto.name}"]["hosts"], \
         f"the two apps share a name: {table}"
 
-    # The ordinary app: reachable through the door, on :80, by its own name.
+    # The ordinary app: reachable through the reverse proxy, on :80, by its own name.
     app_host = routed["${fixture.name}"]["hosts"][0]
     body = primary.succeed(f"curl -fsS -H 'Host: {app_host}' http://{VIP}${fixture.healthPath}")
-    assert "ok" in body and "front door" not in body, f"the fixture through the door answered {body!r}"
+    assert "ok" in body and "reverse proxy" not in body, f"the fixture through the reverse proxy answered {body!r}"
 
     # THE BROKER IS NAMED BUT NOT FRONTED, and this is a security property rather than a nicety.
     # Its manifest port is the MANAGEMENT API, which mosquitto.conf binds to 127.0.0.1 on purpose
-    # ("nothing outside the guest has any business reading it") -- and the front door runs inside
+    # ("nothing outside the guest has any business reading it") -- and the reverse proxy runs inside
     # that guest, so a table that fronted it would republish a loopback-only endpoint on the LAN
     # through a mechanism that never mentions the bind.
     mq_host = routed["${mosquitto.name}"]["hosts"][0]
@@ -180,11 +180,12 @@ pkgs.testers.runNixOSTest {
     denied = client.succeed(
         f"curl -sS -m 5 -H 'Host: {mq_host}' http://{VIP}/api/v1/listeners || true"
     )
-    assert "listeners" not in denied, f"the front door served the broker's management API: {denied!r}"
-    assert "${mosquitto.name}" in denied, f"the door did not name the app it declined to serve: {denied!r}"
+    assert "listeners" not in denied, f"the reverse proxy served the broker's management API: {denied!r}"
+    assert "${mosquitto.name}" in denied, f"the reverse proxy did not name the app it declined to serve: {denied!r}"
     # NOT asserted by NAME from off the box: resolving `.local` needs nss-mdns on the client, which
     # is avahi's property and not this item's -- install-macvtap owns the does-a-stranger's-machine
-    # resolve-it question. What is asserted here is the door's decision, which is what changed.
+    # resolve-it question. What is asserted here is the reverse proxy's decision, which is
+    # what changed.
 
     # ---- (2) UPGRADE ONE, LEAVE THE OTHER ALONE -----------------------------------------------
     dummy_unit = container_unit(primary)

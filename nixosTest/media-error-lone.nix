@@ -8,7 +8,7 @@
 # other half of the argument, on the product's own stack: LVM on a dm-dust device, btrfs on the
 # data LV, the chain started from its target, a fixture serving -- then one sector under a data
 # file goes bad. The verdict is that EXACTLY ONE file becomes unreadable, every other file still
-# reads, the front door still answers, the chain stays up and nothing was held or rebooted.
+# reads, the reverse proxy still answers, the chain stays up and nothing was held or rebooted.
 #
 # THE INJECTOR IS dm-dust, as in the flock rig: `addbadblock` fails reads of one sector, in place, with
 # the filesystem mounted. The tier is built on the dust device (mkNode's tierDevice), not on
@@ -111,7 +111,7 @@ pkgs.testers.runNixOSTest {
     assert len(unreadable) == 1, (
         f"one bad sector cost {len(unreadable)} file(s) ({unreadable}); the claim is exactly one"
     )
-    # Everything else still serves: the mount, the chain, the front door, the fixture -- and
+    # Everything else still serves: the mount, the chain, the reverse proxy, the fixture -- and
     # nothing held or rebooted, because a damaged file is not a failed member.
     node1.succeed("mountpoint -q /var/lib/briard")
     node1.succeed("systemctl is-active briard-chain.target briard-primary-storage.service briard-apps.service")

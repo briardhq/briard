@@ -18,7 +18,7 @@
 //
 // It installs NO APP. A node is a node first: ready, replicating, able to fail over -- then
 // you choose what runs on it. So the VIP answers with Briard's own page, and the health probe
-// watches that front door, the one address that answers whether or not anything is installed.
+// watches the reverse proxy there, the one address that answers whether or not anything is installed.
 //
 // Cattle/pet FHS:
 //
@@ -454,7 +454,7 @@ func run(ctx context.Context, name string, args ...string) error {
 }
 
 // installWaitBound is how long the closing waits for the node to answer. Past it the closing says
-// how to get a link instead: one printed before the door is up would 503 in the household's face.
+// how to get a link instead: one printed before the reverse proxy is up would 503 in the household's face.
 const installWaitBound = 180 * time.Second
 
 // installLink picks the coded dashboard link out of what `briard open` printed; installHealthy is
@@ -465,7 +465,7 @@ var (
 )
 
 // InstallWait is `briard-agent install -wait`, the installer's hand-over once the agent's
-// systemd or Windows service runs: wait, bounded, for the agent's OWN word that the node is primary and its chain (the front door,
+// systemd or Windows service runs: wait, bounded, for the agent's OWN word that the node is primary and its chain (the reverse proxy,
 // the dashboard) passed its health gate -- the status line it logs, the same signal the tier-4 rig
 // waits on, and local (no name to resolve, no address to know under DHCP) -- then print what
 // `briard open` says, its one-time link included, and hand that link to a desktop browser.

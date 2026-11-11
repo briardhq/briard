@@ -1,7 +1,7 @@
 # The CHAIN MEMBER contract: what a unit in drbd-reactor's promoter start-list may and may not do
 # to the promotion.
 #
-# The rules, one assertion each. A is the front door -- a real member, and the one that actually
+# The rules, one assertion each. A is the reverse proxy -- a real member, and the one that actually
 # fails in the field -- driven by SIGKILL, `systemctl restart` and `daemon-reload`, never by
 # editing a unit file (a fault injection that WRITES can trigger the outcome by a path you did not
 # intend, which is how the first cut of this investigation misattributed a teardown).

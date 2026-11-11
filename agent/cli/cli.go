@@ -412,7 +412,7 @@ func runApp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch o.State {
 	case api.OutcomeDone:
 		// Say what actually happened, not what the product will eventually do. The gate probes the
-		// APP's own endpoint in-guest (awaitHealthy); the front door does not route to a
+		// APP's own endpoint in-guest (awaitHealthy); the reverse proxy does not route to a
 		// runtime-installed app yet -- its backend is baked at guest-build time and per-domain
 		// routing is deferred with the routing work. "serving" reads as "reachable at the VIP",
 		// which walks the user to http://<vip>/ and shows them the "nothing is routed here" page.
@@ -428,7 +428,7 @@ func runApp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if o.Detail != "" {
 			fmt.Fprintf(stdout, "  %s\n", o.Detail)
 		}
-		fmt.Fprintf(stdout, "  the front door at / does not route to it yet\n")
+		fmt.Fprintf(stdout, "  the reverse proxy does not route / to it yet\n")
 		return 0
 	case api.OutcomeRolledBack:
 		// The distinction an operator most needs: the machine is back as it was, so this is a
@@ -609,7 +609,7 @@ func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	if *unmask {
 		fmt.Fprint(stdout, "releasing this machine to hold the resource again\n")
 	} else {
-		fmt.Fprint(stdout, "handing this machine's work to the other machine (the front door moves; connections drop)\n")
+		fmt.Fprint(stdout, "handing this machine's work to the other machine (the address moves with it; connections drop)\n")
 	}
 	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveHandover, Payload: mode})
 	if err != nil {

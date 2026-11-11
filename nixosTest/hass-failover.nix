@@ -86,7 +86,7 @@ pkgs.testers.runNixOSTest {
     def role(m):
         return m.execute("drbdadm role r0")[1].strip()
 
-    # The front door comes up on the elected primary with nothing installed, then HA is installed
+    # The reverse proxy comes up on the elected primary with nothing installed, then HA is installed
     # onto the volume that node holds. The SURVIVOR never runs an install: it renders HA from the
     # same volume when it promotes, which is the half this test is about.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)

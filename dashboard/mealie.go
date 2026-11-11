@@ -1,21 +1,22 @@
 package main
 
-// MEALIE'S USER IS FOUND BY ROLE, NEVER KEPT. The door signs the user into Mealie by a username
-// in a header (agent/mealie), and the name it sends is read off Mealie itself at every session
-// check (gate.go): the oldest admin account that is not briard's own. Nothing about it is stored
-// on briard's side, so whatever Mealie's data says is what the door does -- a rename inside
-// Mealie, an undo or a restore from briard's history or backup, a Mealie backup the user imported
-// from a Mealie they ran before, each is followed at the next check, within the half minute the
-// door keeps an answer.
+// MEALIE'S USER IS FOUND BY ROLE, NEVER KEPT. The reverse proxy signs the user into Mealie by a
+// username in a header (agent/mealie), and the name it sends is read off Mealie itself at every
+// session check (gate.go): the oldest admin account that is not briard's own. Nothing about it is
+// stored on briard's side, so whatever Mealie's data says is what the reverse proxy does -- a
+// rename inside Mealie, an undo or a restore from briard's history or backup, a Mealie backup the
+// user imported from a Mealie they ran before, each is followed at the next check, within the half
+// minute the reverse proxy keeps an answer.
 //
 // BRIARD'S OWN ACCOUNT IS HOW IT READS THAT, AND IT IS MADE AGAIN WHENEVER IT IS GONE. Only an
-// admin lists Mealie's accounts. The door's secret signs in any username, and Mealie makes an
-// ordinary account for a name it does not know, so the dashboard signs in as `briard-admin` -- a
+// admin lists Mealie's accounts. The reverse proxy's secret signs in any username, and Mealie makes
+// an ordinary account for a name it does not know, so the dashboard signs in as `briard-admin` -- a
 // name no OS account the record comes from is likely to carry -- which makes it on a Mealie that
 // lacks it (a fresh one, one the user deleted it from, one restored from a backup that predates
 // it), and makes it an admin, when it is not, with Mealie's own tool for that, inside its
 // container. A header makes no other account but one: a name the user changed inside Mealie in
-// the half minute the door still sends the old one, which is an ordinary account, never chosen.
+// the half minute the reverse proxy still sends the old one, which is an ordinary account, never
+// chosen.
 //
 // MEALIE'S FIRST ACCOUNT IS TAKEN OVER, NOT ADOPTED BY NAME. Mealie makes an admin whenever it
 // starts with no users, `admin` with a password and an email every copy of Mealie ships with, and
@@ -54,7 +55,8 @@ const (
 )
 
 // mealieOwnUser is briard's own account in Mealie, the one the dashboard reads Mealie's accounts
-// as; mealieUserHeader is where Mealie reads a header sign-in's username, as the door sends it.
+// as; mealieUserHeader is where Mealie reads a header sign-in's username, as the reverse proxy
+// sends it.
 const (
 	mealieOwnUser    = "briard-admin"
 	mealieUserHeader = "X-Forwarded-User"
@@ -74,7 +76,7 @@ type mealieAccount struct {
 	raw      map[string]any
 }
 
-// mealieUser is the username the door signs the user into Mealie as.
+// mealieUser is the username the reverse proxy signs the user into Mealie as.
 func (a *app) mealieUser(ctx context.Context, s routes.App) (string, error) {
 	acct, err := a.account()
 	if err != nil {
@@ -90,13 +92,13 @@ func (a *app) mealieUser(ctx context.Context, s routes.App) (string, error) {
 	}
 	key, err := os.ReadFile(s.Gate)
 	if err != nil {
-		return "", fmt.Errorf("read the door's secret for Mealie: %w", err)
+		return "", fmt.Errorf("read the reverse proxy's secret for Mealie: %w", err)
 	}
 	a.mealieMu.Lock()
 	defer a.mealieMu.Unlock()
-	// The check runs to its end even when the door stops waiting: the first one makes briard's own
-	// account an admin, which takes seconds, and a check abandoned partway would leave the next to
-	// start over, or Mealie mid-change with the lock already released.
+	// The check runs to its end even when the reverse proxy stops waiting: the first one makes
+	// briard's own account an admin, which takes seconds, and a check abandoned partway would leave
+	// the next to start over, or Mealie mid-change with the lock already released.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
 	m := mealieAPI{base: base.String(), client: &http.Client{Timeout: 10 * time.Second}}
@@ -147,8 +149,8 @@ func (a *app) mealieUser(ctx context.Context, s routes.App) (string, error) {
 // answers it -- the open door, so first -- then its name and email the record's.
 //
 // ITS USERNAME STAYS MEALIE'S `admin`. Nothing matches on it any more, and a name that never
-// changes is one the door's half-minute answer cannot outlive: a Mealie back at its first account
-// is `admin` again, so a sign-in in that half minute lands on it rather than making a stray
+// changes is one the reverse proxy's half-minute answer cannot outlive: a Mealie back at its first
+// account is `admin` again, so a sign-in in that half minute lands on it rather than making a stray
 // account of a name it no longer has.
 //
 // A PASSWORD THAT NO LONGER ANSWERS IS NO HOLE: a takeover cut short after it, or a user who
@@ -166,9 +168,10 @@ func (m mealieAPI) takeOver(ctx context.Context, own string, first mealieAccount
 		}
 		if err := m.do(ctx, http.MethodPut, "/api/users/password", tok.AccessToken, nil,
 			map[string]string{"currentPassword": mealieFirstPassword, "newPassword": pw}, nil); err != nil {
-			// A change that lost a race to an earlier check's -- one the door stopped waiting for,
-			// which Mealie finished all the same -- is refused for the password it was given: the
-			// shipped one, refused at sign-in now, is that same end. Only that refusal says so.
+			// A change that lost a race to an earlier check's -- one the reverse proxy stopped
+			// waiting for, which Mealie finished all the same -- is refused for the password it was
+			// given: the shipped one, refused at sign-in now, is that same end. Only that refusal
+			// says so.
 			var st mealieStatus
 			if again := m.do(ctx, http.MethodPost, "/api/auth/token", "", nil, form, nil); !errors.As(again, &st) || st.code != http.StatusUnauthorized {
 				return fmt.Errorf("change the password of Mealie's first account: %w", err)

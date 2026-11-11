@@ -1,7 +1,7 @@
 package main
 
-// The household's mDNS responder, which lives in the door for the reason the door
-// exists: a `.local` name means "this app is reachable here", and the door is what "here"
+// The household's mDNS responder, which lives in the reverse proxy for the reason the reverse proxy
+// exists: a `.local` name means "this app is reachable here", and the reverse proxy is what "here"
 // is. It answers off the SAME routing table the router reads, so a name that is published but
 // not routed is not expressible, where a separate publisher could only assert it, because it
 // is a second reader of the same file.
@@ -69,7 +69,7 @@ type mdnsWorld struct {
 // routes.BareFlockHostName), so the naming rule stays in one package.
 //
 // AN EMPTY WORLD IS A REAL STATE, not a failure: a node whose flock has no minted name, or that
-// has converged to nothing, publishes nothing. The door serves HTTP either way.
+// has converged to nothing, publishes nothing. The reverse proxy serves HTTP either way.
 func mdnsWorldFor(addr, flock string, t routes.Table) mdnsWorld {
 	w := mdnsWorld{addr: addr}
 	if addr == "" {
@@ -441,9 +441,9 @@ func mdnsVIP(livePath, cfgPath string) string {
 
 // serveMDNS keeps the wire matching the node's state until ctx ends.
 //
-// ⚠️ THE FIRST PASS IS SYNCHRONOUS AND ITS ERROR IS THE CALLER'S TO ESCALATE. A door that cannot
-// publish is a node a `.local`-only household cannot reach at all, so the failure belongs in the
-// promoter chain rather than in a log line -- which is the whole lesson of the daemon this
+// ⚠️ THE FIRST PASS IS SYNCHRONOUS AND ITS ERROR IS THE CALLER'S TO ESCALATE. A reverse proxy that
+// cannot publish is a node a `.local`-only household cannot reach at all, so the failure belongs in
+// the promoter chain rather than in a log line -- which is the whole lesson of the daemon this
 // replaces (avahi died, said nothing, and the name was gone for days). Having NOTHING to
 // publish is not that failure and never fails: a node with no minted flock name serves HTTP and
 // says nothing on the LAN.
@@ -471,7 +471,7 @@ func serveMDNS(ctx context.Context, resp *mdnsResponder, tbl *routeReloader) err
 			case <-t.C:
 				// AFTER the first pass, a failure is logged and retried rather than fatal: the
 				// inputs move under us (converge rewrites the table, a lease is renewed), and
-				// tearing the front door down over a transient read would trade a name for the
+				// tearing the reverse proxy down over a transient read would trade a name for the
 				// whole household's HTTP.
 				if err := tick(); err != nil {
 					log.Printf("reverse-proxy: mdns: %v", err)
@@ -510,7 +510,7 @@ func writePublished(path, flock string, names []string) error {
 	return nil
 }
 
-// world is what is currently on the wire, for the one line the door logs at startup.
+// world is what is currently on the wire, for the one line the reverse proxy logs at startup.
 func (r *mdnsResponder) world() mdnsWorld {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -47,8 +47,9 @@ func TestAnUnknownAppGetsNothing(t *testing.T) {
 	if x.runs != 0 {
 		t.Errorf("an unknown app ran %d command(s) on the node", x.runs)
 	}
-	// The app's OWN name on the front door's :80, not the flock name and a port: the
-	// port in this sentence was the shape of a node that could only be reached around its door.
+	// The app's OWN name on the reverse proxy's :80, not the flock name and a port: the
+	// port in this sentence was the shape of a node that could only be reached around the reverse
+	// proxy.
 	if got := Reach(m, "home"); got != "reach it at http://briard-something-else.local/" {
 		t.Errorf("Reach = %q", got)
 	}
@@ -199,16 +200,16 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 	}
 }
 
-// TestOnlyTheBrokerIsNotFronted — the front door's exposure decision, keyed on the catalog name
+// TestOnlyTheBrokerIsNotFronted — the reverse proxy's exposure decision, keyed on the catalog name
 // like everything else here. It is a security property: mosquitto's manifest port is its
-// management API, which mosquitto.conf binds to 127.0.0.1 deliberately, and the door runs inside
-// that same guest — so fronting it would republish a loopback-only endpoint on the LAN through a
-// mechanism that never mentions the bind.
+// management API, which mosquitto.conf binds to 127.0.0.1 deliberately, and the reverse proxy runs
+// inside that same guest — so fronting it would republish a loopback-only endpoint on the LAN
+// through a mechanism that never mentions the bind.
 func TestOnlyTheBrokerIsNotFronted(t *testing.T) {
 	if Fronted(svc(mosquitto.Name, mosquitto.HealthPort)) {
 		t.Error("the broker is fronted; its loopback-bound management API would reach the LAN")
 	}
-	// The default is the front door: an ordinary app's primary port IS what a household opens.
+	// The default is the reverse proxy: an ordinary app's primary port IS what a household opens.
 	for _, m := range []manifest.Manifest{svc(hass.Name, 8123), svc("something-else", 8080)} {
 		if !Fronted(m) {
 			t.Errorf("%s is not fronted; the default must be that an app is reachable by name", m.Name)
@@ -219,10 +220,10 @@ func TestOnlyTheBrokerIsNotFronted(t *testing.T) {
 // TestOnlyTheBrokerAnnouncesItself — the registry's third exposure decision, keyed on the catalog
 // name like Fronted and Reach.
 //
-// It is the inverse of Fronted's question rather than the same one: Fronted asks what the DOOR may
-// serve, this asks what the household's other DEVICES may find. mosquitto is false for one and
-// true for the other, which is the whole point -- a broker's clients are appliances that browse,
-// and its image advertises nothing on its own (agent/mosquitto).
+// It is the inverse of Fronted's question rather than the same one: Fronted asks what the REVERSE
+// PROXY may serve, this asks what the household's other DEVICES may find. mosquitto is false for
+// one and true for the other, which is the whole point -- a broker's clients are appliances that
+// browse, and its image advertises nothing on its own (agent/mosquitto).
 func TestOnlyTheBrokerAnnouncesItself(t *testing.T) {
 	mq := svc(mosquitto.Name, mosquitto.HealthPort)
 	mq.Network = manifest.NetworkPrivate
@@ -243,8 +244,8 @@ func TestOnlyTheBrokerAnnouncesItself(t *testing.T) {
 	if got[0].Name != "briard-brave-elf-mosquitto" {
 		t.Errorf("the instance label %q is not the flock-scoped name", got[0].Name)
 	}
-	// The default is silence: an ordinary HTTP app is reached by the name the door serves it
-	// under, and browsing types it into a category it may not belong in.
+	// The default is silence: an ordinary HTTP app is reached by the name the reverse proxy serves
+	// it under, and browsing types it into a category it may not belong in.
 	for _, m := range []manifest.Manifest{svc(hass.Name, 8123), svc("something-else", 8080)} {
 		if a := Announce(m, "brave-elf"); len(a) != 0 {
 			t.Errorf("%s announced %+v; the default must be nothing", m.Name, a)

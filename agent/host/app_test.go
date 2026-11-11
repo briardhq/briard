@@ -302,7 +302,7 @@ func (f *fakeInstaller) AppWarm(_ context.Context, unit, ref string) error {
 }
 func (f *fakeInstaller) AppHealth(_ context.Context, url string) (bool, error) {
 	f.steps = append(f.steps, "health")
-	f.healthURL = url // the gate must probe the APP, not the front door
+	f.healthURL = url // the gate must probe the APP, not the reverse proxy
 	if !f.healthy {
 		return false, errors.New("not ready")
 	}
@@ -430,12 +430,12 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 		t.Fatalf("steps = %v\nwant   %v", f.steps, want)
 	}
 	// The gate probes the APP's own endpoint (manifest port + healthPath, in-guest), NOT the
-	// VIP front door — the front door doesn't reflect a runtime-installed app.
+	// reverse proxy at the VIP — the reverse proxy doesn't reflect a runtime-installed app.
 	if f.healthOf != "home-assistant" {
 		t.Fatalf("health probe asked about %q, want the installed app by name", f.healthOf)
 	}
 	// THE CHAIN IS NOT TOUCHED, and that is the whole shape change. It is static
-	// (data -> vip -> apps -> door; the door carries the household's names)
+	// (data -> vip -> apps -> reverse-proxy; the reverse proxy carries the household's names)
 	// and the installed app is not a member of it, which is what makes an app crash unable
 	// to demote the node.
 	if !slices.Equal(cfg.Promoter, []string{
@@ -587,7 +587,7 @@ func priorManifest(t *testing.T) (map[string]string, string) {
 // UPGRADE must put back the prior app's DATA and IDENTITY, not merely take the new one out of
 // the chain. So the path snapshots before the switch, and on a tripped gate it restores the
 // subvolume and re-records the prior manifest — the app-level twin of the {code+data} OS
-// rollback. (The real btrfs/quadlet/front-door mechanics are the job of app-install-broken.nix;
+// rollback. (The real btrfs/quadlet/reverse-proxy mechanics are the job of app-install-broken.nix;
 // this asserts the host drives them in the right order.)
 func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 	prior, priorRaw := priorManifest(t)
@@ -890,7 +890,7 @@ func TestAdoptInstalledAppRefreshesLiveConfig(t *testing.T) {
 // TestInstallSaysWhereToReachIt: a successful install hands back the address. The node holds both
 // halves -- the manifest's port and the name its own guest publishes -- and the operator holds
 // neither, so an install that reports success without them leaves the address to be guessed. A
-// stranger guessing it landed on the front door's "nothing is routed here" page and
+// stranger guessing it landed on the reverse proxy's "nothing is routed here" page and
 // read a working install as a broken one.
 func TestInstallSaysWhereToReachIt(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
@@ -899,8 +899,8 @@ func TestInstallSaysWhereToReachIt(t *testing.T) {
 	if o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
-	// The APP's own name, on the door's :80. The port that used to be in this
-	// sentence was the address of an app reached around the front door rather than through it.
+	// The APP's own name, on the reverse proxy's :80. The port that used to be in this
+	// sentence was the address of an app reached around the reverse proxy rather than through it.
 	if want := "reach it at http://briard-home-assistant.local/"; o.Detail != want {
 		t.Fatalf("Detail = %q, want %q", o.Detail, want)
 	}
@@ -1701,7 +1701,7 @@ func TestInstallIgnoresAnotherAppBeingSkipped(t *testing.T) {
 
 // PER-APP HEALTH, the by-name half, and the hole it closes is the one State could not: a
 // container that is UP while the application inside it does not serve. State says `running`, the
-// node-level Healthy is the front door answering for the NODE, and before this nothing in the
+// node-level Healthy is the reverse proxy answering for the NODE, and before this nothing in the
 // system could see the difference.
 //
 // It is only asked of a RUNNING app, and an unresolvable one leaves the field empty rather

@@ -181,9 +181,9 @@ let
   # THE GUEST BUNDLE: every briard binary the guest runs, built with the HOST release's
   # version because it ships in the briard chain and is pushed by the host at every bring-up. The
   # image bakes ONE binary, briard-guest-firmware (the push protocol alone, which is what
-  # receives the first push); the AGENT, the door and the dashboard exist in the guest only once
-  # pushed. One directory, `bin/<name>`, the names the guest's pivot and the push verbs agree on
-  # (agent/guestfirmware/bin.go BinNames).
+  # receives the first push); the AGENT, the reverse proxy and the dashboard exist in the guest only
+  # once pushed. One directory, `bin/<name>`, the names the guest's pivot and the push verbs
+  # agree on (agent/guestfirmware/bin.go BinNames).
   guestAgentPkg = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-agent"; version = agentVersion; };
   guestBundle = pkgs.runCommand "briard-guest-bundle-${agentVersion}" { } ''
     mkdir -p $out/bin
@@ -193,12 +193,12 @@ let
   '';
 
   # THE LAYOUT A RIG'S HOST DRESSES FROM. install.sh lays this on every install, so a
-  # host without it is not a product state -- and since the image bakes no door, a guest launched
-  # by a host that holds no bundle tree can never serve. The five rigs that launch a REAL guest
-  # (agent-bringup/readopt/recover/watchdog, guest-rescue) copy this to UPDATE_BASE and let the
-  # host dress the guest exactly as the product does; before the layout existed they leaned on the image's
-  # baked door instead, which is why they needed nothing. Copied, not linked: the host writes
-  # `guest.good` beside the tree.
+  # host without it is not a product state -- and since the image bakes no reverse proxy, a guest
+  # launched by a host that holds no bundle tree can never serve. The five rigs that launch a REAL
+  # guest (agent-bringup/readopt/recover/watchdog, guest-rescue) copy this to UPDATE_BASE and let
+  # the host dress the guest exactly as the product does; before the layout existed they leaned on
+  # the image's baked reverse proxy instead, which is why they needed nothing. Copied, not linked:
+  # the host writes `guest.good` beside the tree.
   rigGuestRelease = "v3.20260908.rig00000";
   dressBase = pkgs.runCommand "briard-rig-dress-base" { } ''
     mkdir -p $out/guest-${rigGuestRelease}
@@ -347,13 +347,13 @@ let
 
   # A whole cluster running NOTHING -- the state every node is in until something is installed.
   # Every other test here now boots the same guest, so what this one still owns is the assertion
-  # that a node with no apps is a WORKING node: volume mounted, chain complete, VIP up, front
-  # door answering for itself.
+  # that a node with no apps is a WORKING node: volume mounted, chain complete, VIP up, reverse
+  # proxy answering for itself.
   zeroApp = import ./zero-app.nix { inherit pkgs guestModule; };
 
   # Put an app ONTO the shipped (zero-app) node at runtime — a real digest-pinned
   # TLS pull from a registry the test runs, our real renderer's quadlet output, and the promoter
-  # chain it emits driving the pod up behind the front door.
+  # chain it emits driving the pod up behind the reverse proxy.
   quadletRenderPkg = pkgs.callPackage ./quadlet-render-pkg.nix { };
   appInstall = import ./app-install.nix {
     inherit pkgs;
@@ -471,8 +471,8 @@ in
     apps = {
       mosquitto = mosquittoTest; # the broker: its config in effect, its data on the volume
       apps-pair = appsPair; # two apps: upgrade one, the other keeps serving
-      files = filesTest; # every app's directories, through the door, signed in by the dashboard
-      mealie = mealieTest; # recipes, signed in by the door by header, never locked in
+      files = filesTest; # every app's directories, through the reverse proxy, signed in by the dashboard
+      mealie = mealieTest; # recipes, signed in by the reverse proxy by header, never locked in
     };
     # EACH APP'S CONTRACT: the tests of Briard's own code for one catalogued app (agent/hass,
     # agent/mosquitto, its agent/apps entry), on the entry the catalog ships. The tier runs them

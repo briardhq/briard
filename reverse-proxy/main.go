@@ -1,4 +1,4 @@
-// Command reverse-proxy is Briard's front door at the service VIP. It answers plain HTTP
+// Command reverse-proxy is the reverse proxy at Briard's service VIP. It answers plain HTTP
 // on :80, terminates TLS on :443, and forwards each request to the app the request's
 // HOSTNAME names — completing v0's deferred half of "reachable by name with TLS" (proved
 // issuance; nothing served it).
@@ -23,13 +23,13 @@
 //
 // It has NO PAGE OF ITS OWN: a name it does not route — the bare IP, the node's own
 // `briard-<flock>.local`, a typo — is forwarded to the household dashboard (`-fallback`), which is a
-// separate guest unit precisely so that nothing of ours lives inside the door and the door itself
-// stays replaceable. /healthz is ALWAYS its own: a node with nothing routed to it is *ready*, not sick, which is
-// what keeps the host agent's health probe honest. That stays true with N apps routed, and it
-// is a deliberate reversal of what one backend used to do (forward /healthz to it): with N
-// apps there is no single answer to forward, and an app that is down must alert without
-// making the node it runs on look broken enough to fail over (converge-at-promotion: an app error
-// reports, it never demotes). Per-app health is a separate question, asked per app,
+// separate guest unit precisely so that nothing of ours lives inside the reverse proxy and the
+// reverse proxy itself stays replaceable. /healthz is ALWAYS its own: a node with nothing routed to
+// it is *ready*, not sick, which is what keeps the host agent's health probe honest. That stays
+// true with N apps routed, and it is a deliberate reversal of what one backend used to do (forward
+// /healthz to it): with N apps there is no single answer to forward, and an app that is down must
+// alert without making the node it runs on look broken enough to fail over (converge-at-promotion:
+// an app error reports, it never demotes). Per-app health is a separate question, asked per app,
 // through this same table.
 package main
 
@@ -58,7 +58,7 @@ import (
 func main() {
 	// FIRST, before anything can block: SIGHUP's default action is to terminate, and the guest
 	// agent sends one at every app start (forwardTrust) -- including starts that race this
-	// door's own.
+	// proxy's own.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	httpAddr := flag.String("http", ":80", "plain-HTTP listen address (on the VIP)")
@@ -102,13 +102,13 @@ func main() {
 	// Not fatal either, and for a stronger reason than the cert's: this unit starts after
 	// briard-apps on the promoter chain, so a missing table means a node that converged to
 	// nothing — the shipped state — and refusing to start would replace "no app routed" with
-	// "no front door at all", which is the same node with nothing to tell the household.
+	// "no reverse proxy at all", which is the same node with nothing to tell the household.
 	if _, err := tbl.load(); err != nil {
 		log.Printf("reverse-proxy: no routing table yet (%v); forwarding to the dashboard until one appears", err)
 	}
 
-	h := newFrontDoor(tbl.current, fallback)
-	// Whether each app accepts X-Forwarded-For from this door: asked now, and again at every
+	h := newRouter(tbl.current, fallback)
+	// Whether each app accepts X-Forwarded-For from this proxy: asked now, and again at every
 	// app start, which is when an app re-reads its proxy trust.
 	h.trust.recheck(tbl.current())
 	go func() {
@@ -126,13 +126,13 @@ func main() {
 	}
 	log.Printf("reverse-proxy: serving %s (plain) + %s (TLS, cert %s); routes from %s: %s",
 		*httpAddr, *listen, *certPath, *routesPath, tbl.current().describe())
-	// Either listener dying is fatal: the front door is promoter-owned, so systemd restarts
-	// it on the primary rather than leaving half a door open.
-	// Bind BEFORE saying READY: the front door runs under the guest's pivot, and this
-	// unit's READY is an INPUT TO THE TRIAL -- the trial agent try-restarts this door and blocks
+	// Either listener dying is fatal: the reverse proxy is promoter-owned, so systemd restarts
+	// it on the primary rather than leaving it half open.
+	// Bind BEFORE saying READY: the reverse proxy runs under the guest's pivot, and this
+	// unit's READY is an INPUT TO THE TRIAL -- the trial agent try-restarts this proxy and blocks
 	// on the result, so READY must mean "listening", not "started", or a pushed binary that
 	// cannot bind would pass the verdict and be committed. (The commit is the agent's, never this
-	// unit's: no door has an ExecStartPost, and neither does the agent.)
+	// unit's: neither it nor the dashboard has an ExecStartPost, and neither does the agent.)
 	plainLn, err := net.Listen("tcp", *httpAddr)
 	if err != nil {
 		log.Fatalf("reverse-proxy: listen %s: %v", *httpAddr, err)
@@ -141,8 +141,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("reverse-proxy: listen %s: %v", *listen, err)
 	}
-	// THE HOUSEHOLD NAME, BOUND BEFORE READY for the same reason the listeners are. A door that
-	// cannot answer `.local` is a node a household without a `*.casa` name cannot reach at
+	// THE HOUSEHOLD NAME, BOUND BEFORE READY for the same reason the listeners are. A reverse proxy
+	// that cannot answer `.local` is a node a household without a `*.casa` name cannot reach at
 	// all, so the failure belongs in the promoter chain rather than in a log line nobody reads --
 	// which is exactly how the daemon this replaces went missing for two days.
 	// HAVING NOTHING TO PUBLISH IS NOT THAT FAILURE: a node whose flock has no minted name binds
@@ -167,7 +167,7 @@ func main() {
 	log.Fatalf("reverse-proxy: %v", plain.Serve(plainLn))
 }
 
-// frontDoor routes the VIP: /healthz is always Briard's own answer, a request whose Host names a
+// router routes the VIP: /healthz is always Briard's own answer, a request whose Host names a
 // routed app goes to that app, and everything else is forwarded to the dashboard.
 //
 // Owning /healthz (rather than passing it through) is what kills the zombie state a fresh
@@ -175,7 +175,7 @@ func main() {
 // installed reported unhealthy forever, and no reflex could tell that apart from a broken
 // app. The probe target is stable across zero, one and N apps — which is the whole
 // point of it not being an app's answer.
-type frontDoor struct {
+type router struct {
 	routes   func() *routing
 	proxy    http.Handler
 	fallback *url.URL // the dashboard; nil answers 503 for a name nobody routes
@@ -188,9 +188,9 @@ type frontDoor struct {
 // the header doctrine below is written once); the per-request route rides the context.
 type backendKey struct{}
 
-func newFrontDoor(current func() *routing, fallback *url.URL) *frontDoor {
-	f := &frontDoor{routes: current, fallback: fallback, gate: newGate(fallback)}
-	f.proxy = &httputil.ReverseProxy{
+func newRouter(current func() *routing, fallback *url.URL) *router {
+	p := &router{routes: current, fallback: fallback, gate: newGate(fallback)}
+	p.proxy = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			rt := r.In.Context().Value(backendKey{}).(route)
 			r.SetURL(rt.to)
@@ -202,20 +202,20 @@ func newFrontDoor(current func() *routing, fallback *url.URL) *frontDoor {
 			// not own the app's configuration, and an app that is not expecting a proxy
 			// must keep working when put behind one: Home Assistant answers 400 to the header from
 			// a proxy it has not been told to trust. Rewrite (not Director) is what strips every
-			// inbound X-Forwarded-* first, so the value is always the peer this door saw -- the
-			// door is the edge, and a client's own claim is never passed on.
-			if rt.name != "" && f.trust.allows(rt.name) {
+			// inbound X-Forwarded-* first, so the value is always the peer this proxy saw -- the
+			// reverse proxy is the edge, and a client's own claim is never passed on.
+			if rt.name != "" && p.trust.allows(rt.name) {
 				if ip, _, err := net.SplitHostPort(r.In.RemoteAddr); err == nil {
 					r.Out.Header.Set("X-Forwarded-For", ip)
 				}
 			}
 			//
 			// THE DASHBOARD IS OURS: it is not an app that never asked for a
-			// proxy, it is built for this door, and it needs the scheme the browser used -- a
+			// proxy, it is built for this one, and it needs the scheme the browser used -- a
 			// Secure cookie set over plain http would never come back, and the Home Assistant
-			// origin it hands the browser must match. So the door says https to the dashboard
-			// alone, on the forward the table did not choose.
-			if f.fallback != nil && r.Out.URL.Host == f.fallback.Host {
+			// origin it hands the browser must match. So the reverse proxy says https to the
+			// dashboard alone, on the forward the table did not choose.
+			if p.fallback != nil && r.Out.URL.Host == p.fallback.Host {
 				proto := "http"
 				if r.In.TLS != nil {
 					proto = "https"
@@ -224,11 +224,11 @@ func newFrontDoor(current func() *routing, fallback *url.URL) *frontDoor {
 			}
 		},
 	}
-	return f
+	return p
 }
 
-func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	t := f.routes()
+func (p *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	t := p.routes()
 	// THE NAME IS ASKED FIRST, AND /healthz IS NOT AN EXCEPTION TO IT. Under a name we route,
 	// every path belongs to that app — /healthz included, because that is the app's own
 	// readiness endpoint and the thing its install gate reads. Answering it ourselves would tell a
@@ -238,36 +238,36 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r, ok := t.lookup(req.Host)
 	if !ok {
 		if req.URL.Path == "/healthz" {
-			f.health(w, t)
+			p.health(w, t)
 			return
 		}
 		// Nobody's name — the bare IP, the node's own name, a stale name, a typo. The dashboard,
 		// which is where the household finds out what this node runs and gets into it.
-		if f.fallback == nil {
+		if p.fallback == nil {
 			http.Error(w, "nothing answers at this name on this machine\n", http.StatusServiceUnavailable)
 			return
 		}
-		// The dashboard's answers to the gate are the door's to ask, over loopback, and never a
-		// browser's: they trade a code for a session and say whether a session stands.
+		// The dashboard's answers to the gate are the reverse proxy's to ask, over loopback, and
+		// never a browser's: they trade a code for a session and say whether a session stands.
 		if strings.HasPrefix(req.URL.Path, "/gate/") {
 			http.NotFound(w, req)
 			return
 		}
-		f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, route{to: f.fallback})))
+		p.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, route{to: p.fallback})))
 		return
 	}
 	if r.to == nil {
 		// Ours, and nothing here answers HTTP. mosquitto is the live case: what a household
 		// reaches on the broker is MQTT, which no reverse proxy can serve, and its manifest port
-		// is a management API the door is deliberately given no way to reach. Saying so beats a
-		// 404 that reads as "you typed the name wrong".
+		// is a management API the reverse proxy is deliberately given no way to reach. Saying so
+		// beats a 404 that reads as "you typed the name wrong".
 		http.Error(w, fmt.Sprintf("%s does not answer HTTP; reach it on its own port\n", r.name), http.StatusNotImplemented)
 		return
 	}
-	if r.gate != "" && !f.gate.admit(w, req, r) {
+	if r.gate != "" && !p.gate.admit(w, req, r) {
 		return
 	}
-	f.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, r)))
+	p.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, r)))
 }
 
 // health answers the NODE's readiness, and only ever its own.
@@ -275,8 +275,8 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // It says what it can see — how many apps are routed — and never whether they are well. Those
 // are different questions with different consequences: this one is read by the OS health gate and
 // the rollback reflex, where a wrong answer costs a failover, while "is home-assistant serving" is
-// read by a household and an alert. The front door used to conflate them by forwarding /healthz to
-// its single backend, and with N apps there is no single answer to forward. Per-app health
+// read by a household and an alert. The reverse proxy used to conflate them by forwarding /healthz
+// to its single backend, and with N apps there is no single answer to forward. Per-app health
 // is asked per app, against this same table, by the guest's own probe.
 //
 // A NODE WITH NOTHING ROUTED IS READY. That is the shipped state of a fresh install — running,
@@ -287,8 +287,8 @@ func (f *frontDoor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // It earns its place by making the one question a human asks here answerable in one curl — "does
 // this node know about my app?" — which was previously only visible by reading a file inside
 // the guest.
-func (f *frontDoor) health(w http.ResponseWriter, t *routing) {
-	fmt.Fprintf(w, "ok: front door up, %s\n", t.describe())
+func (p *router) health(w http.ResponseWriter, t *routing) {
+	fmt.Fprintf(w, "ok: reverse proxy up, %s\n", t.describe())
 }
 
 // routing is one loaded routing table, prepared for lookup: each name resolved to its destination
@@ -299,7 +299,7 @@ type routing struct {
 }
 
 // route is one resolved destination. A nil `to` is an app that is named but has no route on
-// this listener — see frontDoor.ServeHTTP.
+// this listener — see router.ServeHTTP.
 type route struct {
 	name string
 	to   *url.URL
@@ -314,8 +314,8 @@ func newRouting(t routes.Table) *routing {
 	for _, s := range t.Apps {
 		e := route{name: s.Name, gate: s.Gate, gateHeader: s.GateHeader}
 		// An app with no route on this listener keeps its name and gets no destination here.
-		// The door is never handed an address it must be trusted not to use: with nothing to
-		// forward to, there is nothing to get wrong. mosquitto is the live case — its address is
+		// The reverse proxy is never handed an address it must be trusted not to use: with nothing
+		// to forward to, there is nothing to get wrong. mosquitto is the live case — its address is
 		// the broker's management API, probed by the guest and relayed to nobody.
 		if rt, ok := s.Route(routes.ListenName); ok {
 			u, err := s.Resolve(rt.To)

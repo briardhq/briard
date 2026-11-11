@@ -208,7 +208,7 @@ func (c *clockAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 
 // appAlerter tells the owner when an installed app has stopped working on the node that
 // runs it, and again when it works. Nothing else does: an app is not a promoter-chain member,
-// so a crashed one demotes nothing, and the front door answers for the node, so the node reads
+// so a crashed one demotes nothing, and the reverse proxy answers for the node, so the node reads
 // healthy while the app behind it is down.
 //
 // DOWN IS "STOPPED" OR "RUNNING AND UNHEALTHY", one condition under one title -- a crash-loop

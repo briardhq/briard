@@ -264,7 +264,7 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 	}
 	// A serving node past that refusal is the LONE holder of the house: nobody could take the
 	// work, so after the reboot nobody else can be serving it. That node's gate therefore has
-	// to see it SERVING again -- Primary with its front door answering -- where a standby's
+	// to see it SERVING again -- Primary with its reverse proxy answering -- where a standby's
 	// gate is satisfied by the job it has (guest.OSReadyServing says what this closes).
 	mustServe := cl.Serving()
 	backing := u.cfg.GuestImage

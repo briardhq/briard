@@ -602,9 +602,9 @@ func TestSetMDNSNameWritesNameAndRepublishes(t *testing.T) {
 	if got := f.files[mdnsEnvPath]; got != "FLOCK_NAME=brave-elf\n" {
 		t.Errorf("%s = %q, want FLOCK_NAME=brave-elf", mdnsEnvPath, got)
 	}
-	// A RENAME RUNS NOTHING. The door re-reads this file on its own tick, so shelling
+	// A RENAME RUNS NOTHING. The reverse proxy re-reads this file on its own tick, so shelling
 	// out to make the rename take effect would be a second way to do it -- and the one that can
-	// fire on a Secondary, which runs no door and holds no address to publish a name for.
+	// fire on a Secondary, which runs no reverse proxy and holds no address to publish a name for.
 	if len(f.runs) != 0 {
 		t.Errorf("a rename ran %v; renaming writes two files and does nothing else", f.runs)
 	}
@@ -2146,9 +2146,9 @@ func TestImageRemoveKeepsAnImageTheOSCarries(t *testing.T) {
 	}
 }
 
-// MDNSOther reads the door's record of another briard heard at bring-up; absent is "" -- none
-// heard is the common case and must not read as a fault.
-func TestMDNSOtherReadsTheDoorsRecordAndIsEmptyWhenNoneWasHeard(t *testing.T) {
+// MDNSOther reads the reverse proxy's record of another briard heard at bring-up; absent is "" --
+// none heard is the common case and must not read as a fault.
+func TestMDNSOtherReadsTheProxyRecordAndIsEmptyWhenNoneWasHeard(t *testing.T) {
 	g := dial(t, &fakeExec{files: map[string]string{mdnsOtherPath: "192.168.1.50\n"}})
 	got, err := g.MDNSOther(context.Background())
 	if err != nil {

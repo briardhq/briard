@@ -23,7 +23,7 @@ import (
 // THE PROBLEM IT SOLVES, measured on a real fleet 2026-08-27: an install renders and chains on
 // the node that ran it, and a peer that was Secondary at the time (or absent, or joined later)
 // promoted onto whatever it had last rendered — nothing. The survivor served the zero-app
-// landing page and reported healthy, because the front door answers its own /healthz. So what a
+// landing page and reported healthy, because the reverse proxy answers its own /healthz. So what a
 // node was TOLD decided what the household got after a failover.
 //
 // THE SHAPE, and the chicken-and-egg it has to solve. The promoter chain is what drbd-reactor
@@ -176,9 +176,10 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 	if err := x.WriteFile(unitsFile, []byte(strings.Join(all.Units, "\n")+"\n")); err != nil {
 		return nil, fmt.Errorf("converge: record started units: %w", err)
 	}
-	// The front door's routing table, from the same rendering. Before the start for the
+	// The reverse proxy's routing table, from the same rendering. Before the start for the
 	// same reason as the unit record: an app that is coming up must never be running behind a
-	// door that does not know about it, and the door 502s harmlessly for the seconds in between.
+	// reverse proxy that does not know about it, and the reverse proxy 502s harmlessly for the
+	// seconds in between.
 	if err := writeRoutes(x, svcs); err != nil {
 		return nil, err
 	}
@@ -708,22 +709,23 @@ func writeStarted(x Executor, r quadlet.Rendered) error {
 	return x.WriteFile(startedFile, []byte(b.String()))
 }
 
-// writeRoutes materialises the front door's routing table from what this converge rendered — the
-// names included, so the mDNS publisher and the door read one list.
+// writeRoutes materialises the reverse proxy's routing table from what this converge rendered —
+// the names included, so the mDNS publisher and the reverse proxy read one list.
 //
 // IT IS WRITTEN EVEN WHEN THERE ARE NO APPS, as an empty table rather than an absent file:
-// "this node routes nothing" and "nobody has told me anything" are different states, and the door
-// reading a stale table left over from before an uninstall is exactly the failure the file exists
-// to make impossible. Converge is the whole truth here for the same reason it is for the units.
+// "this node routes nothing" and "nobody has told me anything" are different states, and the
+// reverse proxy reading a stale table left over from before an uninstall is exactly the failure
+// the file exists to make impossible. Converge is the whole truth here for the same reason it is
+// for the units.
 //
 // SKIPPED APPS ARE INCLUDED, unlike the started-record. The volume says the node serves them,
-// so the door should say so too: a name that resolves and gives a 502 tells a household its
-// app is down, while a name that resolves to nothing tells them they typed it wrong. The
+// so the reverse proxy should say so too: a name that resolves and gives a 502 tells a household
+// its app is down, while a name that resolves to nothing tells them they typed it wrong. The
 // per-app health probe reads the same table and reports the same truth.
 //
 // A FAILURE HERE FAILS THE CONVERGE, and that is the harsher of the two options on purpose. This
 // runs as a promoter chain member ahead of briard-vip, so a node that cannot write its routing
-// table takes no address and is reported unhealthy, rather than promoting into a front door
+// table takes no address and is reported unhealthy, rather than promoting into a reverse proxy
 // serving the landing page over a household's running app — the silent-degradation shape
 // converge-at-promotion was built to end, one layer up.
 func writeRoutes(x Executor, svcs []convergedApp) error {
@@ -731,7 +733,7 @@ func writeRoutes(x Executor, svcs []convergedApp) error {
 	return putRoutes(x, t)
 }
 
-// putRoutes writes the table. ONE FILE: the front door reloads it on mtime and the mDNS publisher
+// putRoutes writes the table. ONE FILE: the reverse proxy reloads it on mtime and the mDNS publisher
 // watches the same file and reads it with jq, so writing it IS the notification to both. No
 // `systemctl restart` of either, and neither can be left stale by a restart that was skipped
 // because the unit happened to be inactive. On a Secondary, where both are stopped, the write is
@@ -751,14 +753,15 @@ func putRoutes(x Executor, t routes.Table) error {
 // them could supply the others: the MANIFEST's port and health path, the RENDERER's address, and
 // the node's own flock name for the hostnames.
 //
-// An app gets a NAME whether or not the door serves it. The name resolves to the VIP, which is
-// where a non-HTTP app is listening anyway, and it is the anchor any future route hangs off —
-// so `briard-<flock>-mosquitto.local` is worth having even while nothing is fronted under it.
+// An app gets a NAME whether or not the reverse proxy serves it. The name resolves to the VIP,
+// which is where a non-HTTP app is listening anyway, and it is the anchor any future route hangs
+// off — so `briard-<flock>-mosquitto.local` is worth having even while nothing is fronted under
+// it.
 //
-// It gets a ROUTE only if the product says the door may front it (agent/apps.Fronted). No
-// route is how "do not expose this" is said: the door is then never handed a way to reach the
-// app at all, rather than being handed one and trusted not to use it. mosquitto is the live
-// case — its manifest port is the broker's management API, bound inside the pod on purpose.
+// It gets a ROUTE only if the product says the reverse proxy may front it (agent/apps.Fronted).
+// No route is how "do not expose this" is said: the reverse proxy is then never handed a way to
+// reach the app at all, rather than being handed one and trusted not to use it. mosquitto is the
+// live case — its manifest port is the broker's management API, bound inside the pod on purpose.
 //
 // It gets an ANNOUNCEMENT only if the product says the household's other devices go looking for
 // it (agent/apps.Announce), and only alongside a name, because that name is what the record
@@ -778,7 +781,7 @@ func routesFor(flock string, svcs []convergedApp) routes.Table {
 		}
 		if hosts := routes.HostNames(flock, s.name); hosts != nil {
 			// The flock-scoped label first (announcements point at Hosts[0]), the bare alias and
-			// the casa name beside it: the door answers all three, the publisher claims the
+			// the casa name beside it: the reverse proxy answers all three, the publisher claims the
 			// `.local` ones.
 			e.Hosts = hosts
 			// Only alongside a name, because an announcement's SRV target is that name. The
@@ -791,7 +794,7 @@ func routesFor(flock string, svcs []convergedApp) routes.Table {
 				Listen: routes.ListenName,
 				To:     fmt.Sprintf("http://:%d", p.Port),
 			}}
-			// Gated: the door admits the household's dashboard session and signs it in.
+			// Gated: the reverse proxy admits the household's dashboard session and signs it in.
 			e.Gate, e.GateHeader = apps.Gate(s.m), apps.GateHeader(s.m)
 		}
 		t.Apps = append(t.Apps, e)
@@ -810,7 +813,7 @@ func routesFor(flock string, svcs []convergedApp) routes.Table {
 //
 // An unreadable or nameless file yields "", which routes.HostName turns into an app with no
 // hostname — installed and reachable on its port, simply not yet named. That is the same rule
-// the front door already applies to the flock's own name, and it is the state of a node between
+// the reverse proxy already applies to the flock's own name, and it is the state of a node between
 // install and its first name.
 func flockName(x Executor) string {
 	raw, err := x.ReadFile(mdnsEnvPath)
@@ -856,10 +859,11 @@ func renameRoutes(x Executor, flock string) {
 // appHealthURL resolves where to ask one app whether it is serving, from the routing table
 // this node last converged.
 //
-// It reads the SAME table the front door routes on, so "is it healthy" and "where do requests go"
-// can never be answered about two different addresses — which a caller-supplied URL allows by
-// construction. It does NOT go through the door: the probe is a direct GET from inside the guest,
-// which is why an app the door may not front is still probed here every cycle.
+// It reads the SAME table the reverse proxy routes on, so "is it healthy" and "where do requests
+// go" can never be answered about two different addresses — which a caller-supplied URL allows
+// by construction. It does NOT go through the reverse proxy: the probe is a direct GET from
+// inside the guest, which is why an app the reverse proxy may not front is still probed here
+// every cycle.
 //
 // An app that is not in the table, or that has no health endpoint, yields an error rather than
 // an unhealthy verdict — see the verb for why that distinction is load-bearing.

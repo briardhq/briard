@@ -128,7 +128,7 @@ type Manifest struct {
 	// HOST NETWORKING IS FOR THE DISCOVERY-DEPENDENT FEW. Home Assistant needs mDNS/SSDP to find
 	// devices on the household LAN, and the HASS periphery skews the same way (ESPHome, Music
 	// Assistant). A broker, a media server or a photo app wants a private pod and to be reached
-	// through the front door or a published port — which is why the default is the one that does
+	// through the reverse proxy or a published port — which is why the default is the one that does
 	// not hand a container the household's LAN.
 	//
 	// ⚠️ THE FIELD IS WHY THIS SCHEMA'S SECOND PROPERTY IS TRUE AGAIN. The package doc has always
@@ -149,7 +149,7 @@ type Manifest struct {
 	//
 	// It is how an app that CANNOT be fronted reaches anyone. A reverse proxy can serve HTTP and
 	// nothing else, so mosquitto's MQTT on 1883 has no route and never will; publishing is the
-	// whole of its reachability, and the front door is not involved.
+	// whole of its reachability, and the reverse proxy is not involved.
 	//
 	// ⚠️ MEANINGLESS UNDER HOST NETWORKING, and refused there rather than ignored: a host-networked
 	// pod already holds the guest's ports, so there is nothing to publish, and podman rejects the
@@ -173,7 +173,7 @@ type Container struct {
 	Mounts []Mount `json:"mounts,omitempty"`
 	// Env is the container's environment. Values are opaque; only newlines are forbidden.
 	Env map[string]string `json:"env,omitempty"`
-	// Primary marks the container the front door forwards to and the health gate probes.
+	// Primary marks the container the reverse proxy forwards to and the health gate probes.
 	// Exactly one container carries it, because "is the app serving?" must have one answer.
 	Primary bool `json:"primary,omitempty"`
 	// Port is the primary container's listening port, and HealthPath its readiness path. Both
@@ -235,7 +235,7 @@ func (c Container) UsesTier(tier string) bool {
 // signed document.
 type Identity string
 
-// Primary returns the container the front door forwards to. Validate guarantees exactly one.
+// Primary returns the container the reverse proxy forwards to. Validate guarantees exactly one.
 func (m Manifest) Primary() Container {
 	for _, c := range m.Containers {
 		if c.Primary {
@@ -382,7 +382,7 @@ func (m Manifest) Validate() error {
 		}
 	}
 	if primaries != 1 {
-		// Not a style rule: the front door has one backend and the health gate one verdict, so
+		// Not a style rule: the reverse proxy has one backend and the health gate one verdict, so
 		// zero primaries leaves both undefined and two makes them ambiguous.
 		return fmt.Errorf("%w: app %q must mark exactly one primary container, found %d", ErrInvalid, m.Name, primaries)
 	}

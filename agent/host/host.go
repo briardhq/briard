@@ -284,7 +284,7 @@ type Config struct {
 	VIPAddr string
 
 	// Observability + north-bound control.
-	HealthURL       string        // the front door's /healthz at the VIP; "" -> health follows quorum
+	HealthURL       string        // the reverse proxy's /healthz at the VIP; "" -> health follows quorum
 	StatusEvery     time.Duration // observe cadence
 	BringUpBudget   time.Duration // bounds the launch -> converge phase
 	ControllerURL   string        // fleet controller base URL; "" -> don't report up (standalone)
@@ -517,7 +517,7 @@ type statusReader interface {
 	AppHealth(ctx context.Context, url string) (bool, error)
 	// AppHealthOf probes ONE named app, the guest resolving its address from the routing
 	// table it converged. It answers a different question from AppHealth above: that
-	// one is the NODE's front door, this one is an app's own endpoint, and the observe loop
+	// one is the NODE's reverse proxy, this one is an app's own endpoint, and the observe loop
 	// needs both because a node can be up while an app on it is not.
 	AppHealthOf(ctx context.Context, app string) (apps.Health, error)
 	// VIP reads the address the service NIC actually holds, so the loop can probe an address
@@ -527,14 +527,14 @@ type statusReader interface {
 	guest.VIPReader
 	// AppActive answers "is this unit up?" for ONE app, which is what per-app health
 	// rides on. It is here rather than derived from Healthy because Healthy is the
-	// front door at the VIP -- which answers 200 on a node running no apps at all.
+	// reverse proxy at the VIP -- which answers 200 on a node running no apps at all.
 	AppActive(ctx context.Context, unit string) (bool, error)
 	// MDNSPublished reads the name avahi ACTUALLY published, for exactly the reason VIP reads the
 	// address off the interface: the value we asked for is not evidence of the value in force.
 	// avahi conflict-renames on a collision silently, so two flocks in one house can even SWAP
 	// names across a reboot with nothing telling anyone. "" when this node publishes none.
 	MDNSPublished(ctx context.Context) (string, error)
-	// MDNSOther reads the address of another briard the door heard answering the shared
+	// MDNSOther reads the address of another briard the reverse proxy heard answering the shared
 	// `briard.local` at bring-up; "" when none. The one fact behind the doctor's two-households
 	// line, and it is read rather than probed from here: the LAN is the guest's to ask.
 	MDNSOther(ctx context.Context) (string, error)
@@ -2349,11 +2349,11 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, vip guest.VIPRea
 		//     whole promoter chain down). It stays unhealthy, and must: a primary that reads
 		//     healthy because it is quorate is the zombie unbaking the VIP was written to abolish.
 		//
-		// Nor does the front door offer a way out of the distinction: it is partOf
+		// Nor does the reverse proxy offer a way out of the distinction: it is partOf
 		// briard-vip.service, so on a secondary it is not running to answer a /healthz at all.
 		//
 		// ...AND A SECONDARY IS ONLY STANDING BY IF THERE IS SOMEONE TO STAND BY FOR. Measured
-		// 2026-09-07 (lab os-rollback, a release whose front door fails outright, on a lone
+		// 2026-09-07 (lab os-rollback, a release whose reverse proxy fails outright, on a lone
 		// anchor beside a diskless witness): the node's own OnFailure demoted it under a
 		// promotion hold, and from then on it reported healthy=true every five seconds, by this
 		// rule, while the house was dark -- nobody else could hold it. The fact that separates
@@ -2524,7 +2524,7 @@ type appStateReader interface {
 // The mark is here rather than only on the cloud wire because a signal that reaches only the cloud
 // is a signal the free tier never gets, and this is the one state nothing else on the node makes
 // visible: the unit is up, the promoter is deliberately not watching it, and the
-// front door answers for the node. Empty means not asked or not applicable and prints nothing --
+// reverse proxy answers for the node. Empty means not asked or not applicable and prints nothing --
 // a standby would otherwise look like a node full of broken apps.
 func appLog(svcs []api.AppStatus) string {
 	parts := make([]string, 0, len(svcs))

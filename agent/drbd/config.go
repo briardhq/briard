@@ -216,7 +216,7 @@ func (r Resource) witnessSplit() (witness Peer, anchors []Peer, ok bool) {
 // member. `Requires=` is a JOB-level dependency: systemd consults it when a stop or restart job is
 // enqueued on a member, never against a member's state. And `Restart=` enqueues its auto-restart
 // with job mode JOB_RESTART_DEPENDENCIES, which propagates a TRY_RESTART up to the target, which
-// stops drbd-promote@ (PartOf) -- so ONE crash of the front door unmounted the data volume and
+// stops drbd-promote@ (PartOf) -- so ONE crash of the reverse proxy unmounted the data volume and
 // demoted the node, taking the resource away from a live peer in 2 of 5 tries. Nothing about that
 // was the maintenance bracket's doing, and no bracket could have covered it.
 //

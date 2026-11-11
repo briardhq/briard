@@ -249,7 +249,7 @@ func ConfigFromEnv() Config {
 		// A diskless node has no VIP to probe (nor a service NIC to reach it), so
 		// its health follows quorum ("" -> healthy == quorate); data nodes probe the VIP.
 		//
-		// The probe target is the FRONT DOOR (:80), not an app's own port. That is what makes
+		// The probe target is the REVERSE PROXY (:80), not an app's own port. That is what makes
 		// it stable across zero and one app: the proxy answers for itself when nothing is
 		// installed and forwards the question to the app when something is. Probing an
 		// app port directly is what left a freshly installed node reporting unhealthy

@@ -68,9 +68,9 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("multi-user.target")
         m.wait_for_unit("briard-test-fixture-install.service", timeout=600)
         # Named BEFORE the reactor promotes, which is the order a real node runs in: the agent mints
-        # the flock name at bring-up and the door publishes it on promotion. Naming afterwards still
-        # reaches the wire -- the door re-reads the name on its tick -- but it would be
-        # testing a path a real node does not take.
+        # the flock name at bring-up and the reverse proxy publishes it on promotion. Naming
+        # afterwards still reaches the wire -- the reverse proxy re-reads the name on its tick --
+        # but it would be testing a path a real node does not take.
         name_the_flock(m)
         m.succeed("modprobe drbd")
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
@@ -166,7 +166,7 @@ pkgs.testers.runNixOSTest {
     assert got == "before-restart", f"the broker did not recover its state after a crash: {got!r}"
 
     # The node did NOT demote for it: a crashed app alerts, it never fails the household over.
-    # The primary is still primary and the front door still answers.
+    # The primary is still primary and the reverse proxy still answers.
     assert role(primary) == "Primary", "a crashed container demoted the node"
     primary.succeed(f"curl -fsS -o /dev/null http://{VIP}/healthz")
 
@@ -174,8 +174,8 @@ pkgs.testers.runNixOSTest {
     # catalogued app whose clients are appliances rather than people: Tasmota- and
     # ESPHome-class firmware browses `_mqtt._tcp` and never types a name. mosquitto's own image
     # advertises nothing (measured -- there is no mDNS code in it at all), so the record comes from
-    # the FRONT DOOR, off the very table it routes on -- one map, so a record that points
-    # somewhere the door does not route is not expressible.
+    # the REVERSE PROXY, off the very table it routes on -- one map, so a record that points
+    # somewhere the reverse proxy does not route is not expressible.
     #
     # FROM THE OTHER MACHINE AGAIN, because that is the only place the claim means anything: a
     # record published to a LAN nobody hears is not an announcement.

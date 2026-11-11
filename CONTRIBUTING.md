@@ -65,7 +65,7 @@ sudo BRIARD_ARTIFACTS="$PWD/stage" ./scripts/install.sh
 
 The units and the three scripts under `scripts/agent/` are shipped artifacts, not something the
 installer renders: it refuses a staging directory without them. The guest bundle is what lets the
-guest serve at all — the image bakes no front door, dashboard or guest agent; the host pushes them
+guest serve at all — the image bakes no reverse proxy, dashboard or guest agent; the host pushes them
 in from that bundle at every bring-up.
 
 The last step runs as root: it sets up the guest's networking and boots the VM, the same thing the

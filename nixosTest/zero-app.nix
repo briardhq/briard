@@ -1,7 +1,7 @@
 # Zero apps is the SHIPPED state. This boots the guest exactly as the downloadable
 # artifact is built (guest-image/configuration.nix, no workload) and asserts that a node
 # with nothing installed is a working node: the volume mounts, the promoter chain completes,
-# the VIP comes up, and the front door answers there.
+# the VIP comes up, and the reverse proxy answers there.
 #
 # It is the counterpart to every other test in this directory, which INSTALL the dummy fixture as
 # a catalogued app after promoting. Nothing bakes a workload into a guest any more
@@ -85,14 +85,14 @@ pkgs.testers.runNixOSTest {
     assert "no apps routed" in health, f"/healthz on an empty node said: {health!r}"
 
     # And a human who opens the VIP gets an ANSWER, not a connection refused -- but an answer that
-    # tells them nothing until they are trusted. The bare address is a name the front door does not
-    # route, so it forwards to the household dashboard, which refuses a browser with no
+    # tells them nothing until they are trusted. The bare address is a name the reverse proxy does
+    # not route, so it forwards to the household dashboard, which refuses a browser with no
     # session: 401, one instruction, no inventory. Reaching the VIP is not authentication.
     #
     # This used to assert the node's own page here ("Nothing is installed"), and that page is gone
     # by design rather than by accident -- an unauthenticated reader learning what a node runs is
     # the thing the dashboard's session gate removed. `-f` is dropped because 401 is now the expected answer and would
-    # make curl itself fail; the code is asserted instead, so "the door is down" and "the door
+    # make curl itself fail; the code is asserted instead, so "the VIP is down" and "the VIP
     # refused me" stay distinguishable, which is the whole content of the original claim.
     refused = primary.succeed("curl -sS -o /tmp/vip.html -w '%{http_code}' http://192.168.1.100/").strip()
     page = primary.succeed("cat /tmp/vip.html")
@@ -104,7 +104,7 @@ pkgs.testers.runNixOSTest {
     # The routing table exists and is EMPTY, which is not the same as absent: converge
     # writes it on every promotion, so "this node routes nothing" is something the node has said
     # rather than something nobody has got around to writing. An absent file here would mean the
-    # door was reading whatever the last install left behind.
+    # reverse proxy was reading whatever the last install left behind.
     import json
     assert json.loads(primary.succeed("cat /run/briard/routes.json")) == {"apps": []}, \
         f"the routing table on an empty node: {primary.succeed('cat /run/briard/routes.json')!r}"
