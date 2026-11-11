@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"briard.io/agent/files"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
@@ -74,9 +75,9 @@ func TestOpeningAGatedAppCarriesTheSessionToItsName(t *testing.T) {
 	if status, _ := r.loopback("POST", "/gate/redeem", "", url.Values{"code": {code}}); status != http.StatusNotFound {
 		t.Fatalf("a spent code redeemed again: %d", status)
 	}
-	// The check names the user the door signs in: the record the open wrote, never "household".
-	if status, user := r.loopback("GET", "/gate/check", c.Value, nil); status != http.StatusOK || user != "kostas" {
-		t.Fatalf("check on a trusted device's token = %d %q, want 200 kostas", status, user)
+	// The check names the user the door signs in: Files' one fixed name, never the record's (kostas).
+	if status, user := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || user != files.User {
+		t.Fatalf("check on a trusted device's token = %d %q, want 200 %s", status, user, files.User)
 	}
 	// A trusted device with no record (one that could not be written) is a conflict, not a stranger.
 	if err := os.Remove(filepath.Join(r.dir, "state", accountFile)); err != nil {

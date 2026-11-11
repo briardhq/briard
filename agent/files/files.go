@@ -15,9 +15,9 @@
 // and Files never restarts for another app's sake.
 //
 // SIGNED-IN BY THE DASHBOARD. The reverse proxy lets a browser through to Files only with the
-// dashboard's own session, and then signs the user in -- by the username in the dashboard's
-// record -- with a short-lived token made with KeyPath's secret. Files verifies it on every
-// request; nothing without the key can make one, wherever on the network it sits.
+// dashboard's own session, and then signs the user in -- as User -- with a short-lived token made
+// with KeyPath's secret. Files verifies it on every request; nothing without the key can make one,
+// wherever on the network it sits.
 package files
 
 import (
@@ -33,6 +33,13 @@ import (
 
 // Name is Files' catalog slug. Everything in this package is keyed on it.
 const Name = "files"
+
+// User is the one account Files has, the name the door signs the household in as. FIXED, NOT THE
+// RECORD'S: Files matches its account on the name alone and makes one for a name it does not
+// know, and all an account holds -- preferences, share links -- lives in its cache area, which no
+// undo or restore brings back. A name that never changes is one Files never loses the user by,
+// whatever record a restore brings.
+const User = "owner"
 
 // Dir is Files' own directory on the guest, mounted read-only at /briard in its container: its
 // config, its mark, and the signing secret. /run, so every boot re-derives it.

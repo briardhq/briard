@@ -133,8 +133,8 @@ pkgs.testers.runNixOSTest {
     assert folders == ["Dummy"], f"Files shows {folders}"
     hd = curl(files_host, "/api/users?username=self", files_cookie)
     me = json.loads(browser.succeed("cat /tmp/body"))
-    # As the user the open's record names, an admin by the group the door signs.
-    assert me["username"] == "kostas" and me["permissions"]["admin"], me
+    # As Files' one fixed name, never the record's (kostas), an admin by the group the door signs.
+    assert me["username"] == "owner" and me["permissions"]["admin"], me
 
     # (2) THROUGH THE APP: an edit to the data lands on the volume; one to the files tier is refused.
     hd = curl(files_host, "/api/resources?source=Apps&path=/Dummy/app/hello.txt&override=true", files_cookie, "-X POST --data-binary edited")

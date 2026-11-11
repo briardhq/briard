@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strings"
 
+	"briard.io/agent/files"
 	"briard.io/agent/mealie"
 	"briard.io/shared/casa"
 	"briard.io/shared/routes"
@@ -126,9 +127,10 @@ func (a *app) gateRedeem(w http.ResponseWriter, r *http.Request) {
 }
 
 // gateCheck says whether a session token is still a trusted device's, and whose, for the app the
-// door names: 200 with the username the door signs into the app -- the record's (account.go), or
-// the one Mealie's accounts say (mealie.go); 401 not a trusted device; 409 a trusted device with
-// no record to name, which only an open writes; 503 an app with no account of the user's to open.
+// door names: 200 with the username the door signs into the app -- Files' one fixed name
+// (agent/files), or the one Mealie's accounts say (mealie.go); 401 not a trusted device; 409 a
+// trusted device with no record, which only an open writes and Mealie's first account takes its
+// name from; 503 an app with no account of the user's to open.
 func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 	if viaDoor(r) {
 		http.NotFound(w, r)
@@ -138,15 +140,15 @@ func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	acct, err := a.account()
-	if err != nil {
+	if _, err := a.account(); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	// Mealie's user is the one Mealie's own accounts say, read at every check (mealie.go).
-	user := acct.Username
+	user := files.User
 	if app := r.URL.Query().Get("app"); app == mealie.Name {
 		if s, ok := gatedApps(a.routesPath)[app]; ok {
+			var err error
 			if user, err = a.mealieUser(r.Context(), s); err != nil {
 				log.Printf("dashboard: find the user's account in Mealie: %v", err)
 				http.Error(w, err.Error(), http.StatusServiceUnavailable)

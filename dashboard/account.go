@@ -29,9 +29,9 @@ type account struct {
 	// only thing briard's own state names a user by. Never shown -- it is no one's name for
 	// themselves.
 	ID string `json:"id"`
-	// Username is fixed once written: Home Assistant's first user, and the subject the door signs
-	// into an app that matches its account on a name -- every gated app but Mealie, whose account
-	// is read off Mealie itself (mealie.go).
+	// Username is fixed once written: Home Assistant's first user. No gated app signs in by it --
+	// Files by one fixed name (agent/files), Mealie by the account read off Mealie itself
+	// (mealie.go) -- so a record a restore brings strands no app's account.
 	Username string `json:"username"`
 	// Name and Language are seeds: each app keeps its own copy from its first sign-in, and nothing
 	// is synced either way.

@@ -42,7 +42,7 @@ auth:
       algorithm: "HS256"
       secret: "@SECRET@"
       # The one user is the admin: the proxy puts whoever it signs in in this group, so the
-      # config never names the user (that is the dashboard's record, on the volume).
+      # config never names the user (agent/files, User, does).
       groupsClaim: "groups"
       adminGroup: "admin"
 frontend:
