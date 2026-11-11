@@ -220,6 +220,9 @@ func TestMealieEntryMatchesWhatTheProductAssumes(t *testing.T) {
 		t.Errorf("Mealie is reachable other than through the door: network %q, ports %v", m.Network, m.Ports)
 	}
 	p := m.Primary()
+	if p.Name != mealie.Container {
+		t.Errorf("Mealie's container is %q; the dashboard runs Mealie's admin tool in %q", p.Name, mealie.Container)
+	}
 	if want := []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/app/data"}}; !slices.Equal(p.Mounts, want) {
 		t.Errorf("Mealie mounts %v, want its data at /app/data", p.Mounts)
 	}

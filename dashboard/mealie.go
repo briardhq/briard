@@ -1,22 +1,33 @@
 package main
 
-// MEALIE'S FIRST ACCOUNT, TAKEN OVER BEFORE ANYONE IS LET IN. Mealie makes an admin whenever it
-// starts with no users, `admin` with a password every copy of Mealie ships with, and its API
-// answers that password even with the login form turned off. The door signs the user in by
-// username and makes nobody new, so before the door lets a browser through -- it asks at every
-// session check (gate.go), so a Mealie undone or reinstalled to its first account is taken over
-// again within the half minute the door keeps an answer -- that account becomes the user's: its
-// password changed to
-// one briard generates and forgets -- as Home Assistant's first is -- then its username, name and
-// email the record's (account.go). It stays an ordinary Mealie account, so the same data under a
-// Mealie anywhere else signs in with the tools Mealie gives everyone.
+// MEALIE'S USER IS FOUND BY ROLE, NEVER KEPT. The door signs the user into Mealie by a username
+// in a header (agent/mealie), and the name it sends is read off Mealie itself at every session
+// check (gate.go): the oldest admin account that is not briard's own. Nothing about it is stored
+// on briard's side, so whatever Mealie's data says is what the door does -- a rename inside
+// Mealie, an undo or a restore from briard's history or backup, a Mealie backup the user imported
+// from a Mealie they ran before, each is followed at the next check, within the half minute the
+// door keeps an answer.
 //
-// THE PASSWORD GOES FIRST. Mealie says it still holds its first account while one carries the
-// email it ships with, and the rename is what ends that. A rename that failed after the password
-// changed leaves an account nobody can sign in to, which the next check says; the other order could
-// leave the user's account answering the shipped password with nothing to notice.
+// BRIARD'S OWN ACCOUNT IS HOW IT READS THAT, AND IT IS MADE AGAIN WHENEVER IT IS GONE. Only an
+// admin lists Mealie's accounts. The door's secret signs in any username, and Mealie makes an
+// ordinary account for a name it does not know, so the dashboard signs in as `briard-admin` -- a
+// name no OS account the record comes from is likely to carry -- which makes it on a Mealie that
+// lacks it (a fresh one, one the user deleted it from, one restored from a backup that predates
+// it), and makes it an admin, when it is not, with Mealie's own tool for that, inside its
+// container. A header makes no other account but one: a name the user changed inside Mealie in
+// the half minute the door still sends the old one, which is an ordinary account, never chosen.
+//
+// MEALIE'S FIRST ACCOUNT IS TAKEN OVER, NOT ADOPTED BY NAME. Mealie makes an admin whenever it
+// starts with no users, `admin` with a password and an email every copy of Mealie ships with, and
+// its API answers that password even with the login form turned off. While that email is held,
+// the password, if it still answers, is changed to one briard generates and forgets -- as Home
+// Assistant's first account's is -- and then briard's own account gives the first one the
+// record's username, name and placeholder email (account.go), which is what ends Mealie's "first
+// login". It stays an ordinary Mealie account, so the same data under a Mealie anywhere else signs
+// in with the tools Mealie gives everyone.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,9 +35,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
+	"briard.io/agent/mealie"
+	"briard.io/agent/quadlet"
 	"briard.io/shared/routes"
 )
 
@@ -34,25 +49,47 @@ import (
 const (
 	mealieFirstUser     = "admin"
 	mealieFirstPassword = "MyPassword"
+	mealieFirstEmail    = "changeme@example.com"
+)
+
+// mealieOwnUser is briard's own account in Mealie, the one the dashboard reads Mealie's accounts
+// as; mealieUserHeader is where Mealie reads a header sign-in's username, as the door sends it.
+const (
+	mealieOwnUser    = "briard-admin"
+	mealieUserHeader = "X-Forwarded-User"
 )
 
 // emailDomain is the placeholder email's: undeliverable, so an app's mail to it never leaves the
 // house, and never a domain anyone owns. The user may replace it inside the app.
 const emailDomain = "briard.local"
 
-// takeOverMealie makes Mealie's first account the user's, unless that is done.
-func (a *app) takeOverMealie(ctx context.Context, s routes.App) error {
+// mealieAccount is one of Mealie's accounts, as its API says it; raw keeps every field, so a
+// rename sends back the account as Mealie gave it with three fields changed.
+type mealieAccount struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Admin    bool   `json:"admin"`
+	raw      map[string]any
+}
+
+// mealieUser is the username the door signs the user into Mealie as.
+func (a *app) mealieUser(ctx context.Context, s routes.App) (string, error) {
 	acct, err := a.account()
 	if err != nil {
-		return err
+		return "", err
 	}
 	rt, ok := s.Route(routes.ListenName)
 	if !ok {
-		return errors.New("Mealie has no address on this node")
+		return "", errors.New("Mealie has no address on this node")
 	}
 	base, err := s.Resolve(rt.To)
 	if err != nil {
-		return err
+		return "", err
+	}
+	key, err := os.ReadFile(s.Gate)
+	if err != nil {
+		return "", fmt.Errorf("read the door's secret for Mealie: %w", err)
 	}
 	a.mealieMu.Lock()
 	defer a.mealieMu.Unlock()
@@ -60,45 +97,105 @@ func (a *app) takeOverMealie(ctx context.Context, s routes.App) error {
 	var info struct {
 		IsFirstLogin bool `json:"isFirstLogin"`
 	}
-	if err := m.do(ctx, http.MethodGet, "/api/app/about/startup-info", "", nil, &info); err != nil {
-		return errMealieStarting
+	if err := m.do(ctx, http.MethodGet, "/api/app/about/startup-info", "", nil, nil, &info); err != nil {
+		return "", errMealieStarting
 	}
-	if !info.IsFirstLogin {
-		return nil
-	}
+	own := http.Header{mealieUserHeader: {mealieOwnUser}, s.GateHeader: {strings.TrimSpace(string(key))}}
 	var tok struct {
 		AccessToken string `json:"access_token"`
 	}
-	form := url.Values{"username": {mealieFirstUser}, "password": {mealieFirstPassword}}
-	if err := m.do(ctx, http.MethodPost, "/api/auth/token", "", form, &tok); err != nil || tok.AccessToken == "" {
-		return fmt.Errorf("Mealie's first account no longer answers the password it shipped with, so it cannot be made yours; reinstall Mealie (%v)", err)
+	if err := m.do(ctx, http.MethodGet, "/api/auth/reverse-proxy", "", own, nil, &tok); err != nil || tok.AccessToken == "" {
+		return "", fmt.Errorf("sign in to Mealie as briard's own account: %v", err)
 	}
-	var self map[string]any
-	if err := m.do(ctx, http.MethodGet, "/api/users/self", tok.AccessToken, nil, &self); err != nil {
-		return fmt.Errorf("read Mealie's first account: %w", err)
+	var self mealieAccount
+	if err := m.do(ctx, http.MethodGet, "/api/users/self", tok.AccessToken, nil, nil, &self); err != nil {
+		return "", fmt.Errorf("read briard's own account in Mealie: %w", err)
 	}
-	id, _ := self["id"].(string)
-	if id == "" {
-		return errors.New("Mealie's first account has no id")
+	if !self.Admin {
+		if out, err := a.inMealie(ctx, self.Email+"\n\n", "python", "-m", "mealie.scripts.make_admin"); err != nil {
+			return "", fmt.Errorf("make briard's own account in Mealie an admin: %w: %s", err, strings.TrimSpace(string(out)))
+		}
 	}
-	pw, err := newPassword()
+	accounts, err := m.accounts(ctx, tok.AccessToken)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if err := m.do(ctx, http.MethodPut, "/api/users/password", tok.AccessToken,
-		map[string]string{"currentPassword": mealieFirstPassword, "newPassword": pw}, nil); err != nil {
-		return fmt.Errorf("change the password of Mealie's first account: %w", err)
+	if info.IsFirstLogin {
+		for i, u := range accounts {
+			if u.Email == mealieFirstEmail && u.ID != self.ID {
+				if err := m.takeOver(ctx, tok.AccessToken, u, acct); err != nil {
+					return "", err
+				}
+				accounts[i].Username = acct.Username
+			}
+		}
 	}
-	// A password change voids every token issued in an earlier second, the one in hand among them.
-	form, tok.AccessToken = url.Values{"username": {mealieFirstUser}, "password": {pw}}, ""
-	if err := m.do(ctx, http.MethodPost, "/api/auth/token", "", form, &tok); err != nil || tok.AccessToken == "" {
-		return fmt.Errorf("sign in to Mealie's first account with its new password: %v", err)
+	for _, u := range accounts {
+		if u.Admin && u.ID != self.ID {
+			return u.Username, nil
+		}
 	}
-	self["username"], self["fullName"], self["email"] = acct.Username, acct.Name, acct.Username+"@"+emailDomain
-	if err := m.do(ctx, http.MethodPut, "/api/admin/users/"+url.PathEscape(id), tok.AccessToken, self, nil); err != nil {
+	return "", errors.New("Mealie has no admin account but briard's own, so there is no account of yours to open; undo Mealie to before it lost yours, or reinstall it")
+}
+
+// takeOver makes Mealie's first account the user's: its shipped password changed while it still
+// answers it -- the open door, so first -- then its username, name and email the record's.
+//
+// A PASSWORD THAT NO LONGER ANSWERS IS NO HOLE: a takeover cut short after it, or a user who
+// changed it, leaves an account nobody signs in to by the shipped password, and the rename, done
+// with briard's own account, needs none.
+func (m mealieAPI) takeOver(ctx context.Context, own string, first mealieAccount, acct account) error {
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	form := url.Values{"username": {first.Username}, "password": {mealieFirstPassword}}
+	if err := m.do(ctx, http.MethodPost, "/api/auth/token", "", nil, form, &tok); err == nil && tok.AccessToken != "" {
+		pw, err := newPassword()
+		if err != nil {
+			return err
+		}
+		if err := m.do(ctx, http.MethodPut, "/api/users/password", tok.AccessToken, nil,
+			map[string]string{"currentPassword": mealieFirstPassword, "newPassword": pw}, nil); err != nil {
+			return fmt.Errorf("change the password of Mealie's first account: %w", err)
+		}
+	}
+	first.raw["username"], first.raw["fullName"], first.raw["email"] = acct.Username, acct.Name, acct.Username+"@"+emailDomain
+	if err := m.do(ctx, http.MethodPut, "/api/admin/users/"+url.PathEscape(first.ID), own, nil, first.raw, nil); err != nil {
 		return fmt.Errorf("make Mealie's first account yours: %w", err)
 	}
 	return nil
+}
+
+// accounts is every account Mealie has, oldest first.
+func (m mealieAPI) accounts(ctx context.Context, token string) ([]mealieAccount, error) {
+	var page struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	q := url.Values{"perPage": {"-1"}, "orderBy": {"created_at"}, "orderDirection": {"asc"}}
+	if err := m.do(ctx, http.MethodGet, "/api/admin/users?"+q.Encode(), token, nil, nil, &page); err != nil {
+		return nil, fmt.Errorf("list Mealie's accounts: %w", err)
+	}
+	out := make([]mealieAccount, len(page.Items))
+	for i, raw := range page.Items {
+		if err := json.Unmarshal(raw, &out[i]); err != nil {
+			return nil, fmt.Errorf("read Mealie's accounts: %w", err)
+		}
+		if err := json.Unmarshal(raw, &out[i].raw); err != nil {
+			return nil, fmt.Errorf("read Mealie's accounts: %w", err)
+		}
+	}
+	return out, nil
+}
+
+// inMealie runs a command in Mealie's container with stdin, unless a test put another in its
+// place.
+func (a *app) inMealie(ctx context.Context, stdin string, args ...string) ([]byte, error) {
+	if a.mealieExec != nil {
+		return a.mealieExec(ctx, stdin, args...)
+	}
+	cmd := exec.CommandContext(ctx, "podman", append([]string{"exec", "-i", quadlet.ContainerName(mealie.Name, mealie.Container)}, args...)...)
+	cmd.Stdin = strings.NewReader(stdin)
+	return cmd.CombinedOutput()
 }
 
 var errMealieStarting = errors.New("Mealie is still starting; try again in a moment")
@@ -111,7 +208,7 @@ type mealieAPI struct {
 
 // do sends one request -- a form for url.Values, JSON otherwise -- and decodes a 2xx answer into
 // out; anything else is an error carrying the status.
-func (m mealieAPI) do(ctx context.Context, method, path, token string, body, out any) error {
+func (m mealieAPI) do(ctx context.Context, method, path, token string, header http.Header, body, out any) error {
 	var r io.Reader
 	ctype := ""
 	switch b := body.(type) {
@@ -123,11 +220,14 @@ func (m mealieAPI) do(ctx context.Context, method, path, token string, body, out
 		if err != nil {
 			return err
 		}
-		r, ctype = strings.NewReader(string(raw)), "application/json"
+		r, ctype = bytes.NewReader(raw), "application/json"
 	}
 	req, err := http.NewRequestWithContext(ctx, method, m.base+path, r)
 	if err != nil {
 		return err
+	}
+	for k, v := range header {
+		req.Header[http.CanonicalHeaderKey(k)] = v
 	}
 	if ctype != "" {
 		req.Header.Set("Content-Type", ctype)
@@ -142,7 +242,7 @@ func (m mealieAPI) do(ctx context.Context, method, path, token string, body, out
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("%s %s answered %d", method, path, resp.StatusCode)
+		return fmt.Errorf("%s %s answered %d", method, strings.SplitN(path, "?", 2)[0], resp.StatusCode)
 	}
 	if out == nil {
 		return nil

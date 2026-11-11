@@ -6,8 +6,10 @@
 // loads, so it opens with no dialog. The door lets a browser through only with the dashboard's
 // session, and then sends the user's username and the secret (shared/routes: Gate, GateHeader).
 // Nothing that reaches Mealie's address without the door holds the secret, which only root and
-// Mealie's own uid on this node can read. Signing up by header stays off: the one account is
-// Mealie's own first one, which the dashboard takes over at the first open.
+// Mealie's own uid on this node can read. Signing up by header is on, for one account: briard's
+// own, which the dashboard signs in as to find the user's (dashboard/mealie.go), and makes again
+// whenever it is gone. The door sends no other name than one the dashboard read off Mealie's own
+// list of accounts.
 //
 // ITS SETTINGS ARE FILES. Mealie reads any setting from a file of that name in /run/secrets, so
 // everything briard decides about it -- the sign-in, the password form, its address -- is written
@@ -45,6 +47,10 @@ const (
 	SecretHeader = "X-Mealie-Reverse-Proxy-Secret"
 )
 
+// Container is the catalog's name for Mealie's one container, which the dashboard runs Mealie's
+// own admin tool in.
+const Container = "app"
+
 // uid is the user Mealie's image drops to before it reads its settings (its PUID default).
 const uid = "911"
 
@@ -54,12 +60,12 @@ const uid = "911"
 const BaseURL = "http://briard-mealie.local"
 
 // settings is every setting briard gives Mealie, beside the secret: the password form gone (the API
-// it hides refuses the one account's forgotten password anyway), the door's sign-in on, and
-// nobody new made by a header.
+// it hides refuses the user's forgotten password anyway), the door's sign-in on, and briard's own
+// account made by a header whenever it is missing.
 var settings = map[string]string{
 	"ALLOW_PASSWORD_LOGIN":              "false",
 	"REVERSE_PROXY_AUTH_ENABLED":        "true",
-	"REVERSE_PROXY_AUTH_SIGNUP_ENABLED": "false",
+	"REVERSE_PROXY_AUTH_SIGNUP_ENABLED": "true",
 	"BASE_URL":                          BaseURL,
 }
 

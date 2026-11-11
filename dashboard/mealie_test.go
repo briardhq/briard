@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,116 +18,268 @@ import (
 	"briard.io/shared/routes"
 )
 
-// fakeMealie is Mealie's API as measured on v3.30.0: one first account, `admin` with the shipped
-// password and email, that says it is a first login while that email is held; a token for the
-// right password, which a password change makes worthless; and an admin's rename and a password
-// change.
+// fakeMealie is Mealie's API as measured on v3.30.0, with its accounts in the order they were
+// made: the first one, `admin` with the shipped password and email, which Mealie calls a first
+// login while that email is held; a password sign-in, whose token a password change makes
+// worthless; a header sign-in with the door's secret, by username then email, which makes an
+// ordinary account for a name it does not know; and what an admin may do -- list the accounts,
+// oldest first only when asked, and rename one.
 type fakeMealie struct {
-	mu                        sync.Mutex
-	username, email, fullName string
-	password                  string
-	logins                    int
-	since                     int // tokens issued before the last password change are refused, as Mealie does
-	failRename                bool
+	mu         sync.Mutex
+	users      []*fakeUser
+	tokens     []string // tok-<n> is issued to tokens[n]'s id
+	pwLogins   int      // password sign-ins tried, which Mealie counts toward locking an account
+	made       int
+	failRename bool
+	secret     string
+}
+
+type fakeUser struct {
+	id, username, email, fullName, password, authMethod string
+	admin                                               bool
+	since                                               int // tokens issued before the last password change are refused
 }
 
 func newFakeMealie() *fakeMealie {
-	return &fakeMealie{username: "admin", email: "changeme@example.com", fullName: "Change Me", password: mealieFirstPassword}
+	f := &fakeMealie{secret: "door-secret"}
+	f.add("admin", mealieFirstEmail, "Change Me", mealieFirstPassword, "Mealie", true)
+	return f
+}
+
+func (f *fakeMealie) add(username, email, fullName, password, method string, admin bool) *fakeUser {
+	f.made++
+	u := &fakeUser{id: fmt.Sprintf("u-%d", f.made), username: username, email: email, fullName: fullName, password: password, authMethod: method, admin: admin}
+	f.users = append(f.users, u)
+	return u
+}
+
+func (f *fakeMealie) find(by func(*fakeUser) string, v string) *fakeUser {
+	for _, u := range f.users {
+		if strings.EqualFold(by(u), v) {
+			return u
+		}
+	}
+	return nil
+}
+
+func (f *fakeMealie) user(name string) *fakeUser {
+	return f.find(func(u *fakeUser) string { return u.username }, name)
+}
+
+func (f *fakeMealie) issue(u *fakeUser) string {
+	f.tokens = append(f.tokens, u.id)
+	return fmt.Sprintf("tok-%d", len(f.tokens)-1)
+}
+
+func (u *fakeUser) out() map[string]any {
+	return map[string]any{"id": u.id, "username": u.username, "email": u.email, "fullName": u.fullName, "admin": u.admin, "authMethod": u.authMethod}
 }
 
 func (f *fakeMealie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	var me *fakeUser
 	var n int
-	_, err := fmt.Sscanf(r.Header.Get("Authorization"), "Bearer tok-%d", &n)
-	authed := err == nil && n >= f.since
+	if _, err := fmt.Sscanf(r.Header.Get("Authorization"), "Bearer tok-%d", &n); err == nil && n < len(f.tokens) {
+		if u := f.find(func(u *fakeUser) string { return u.id }, f.tokens[n]); u != nil && n >= u.since {
+			me = u
+		}
+	}
 	switch {
 	case r.URL.Path == "/api/app/about/startup-info":
-		_ = json.NewEncoder(w).Encode(map[string]bool{"isFirstLogin": f.email == "changeme@example.com", "isDemo": false})
+		_ = json.NewEncoder(w).Encode(map[string]bool{"isFirstLogin": f.find(func(u *fakeUser) string { return u.email }, mealieFirstEmail) != nil, "isDemo": false})
 	case r.URL.Path == "/api/auth/token" && r.Method == http.MethodPost:
-		f.logins++
-		if r.FormValue("username") != f.username || r.FormValue("password") != f.password {
+		f.pwLogins++
+		u := f.user(r.FormValue("username"))
+		if u == nil || u.password != r.FormValue("password") {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": fmt.Sprintf("tok-%d", f.logins)})
-	case r.URL.Path == "/api/users/self" && authed:
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "u-1", "username": f.username, "email": f.email, "fullName": f.fullName, "admin": true, "authMethod": "Mealie"})
-	case r.URL.Path == "/api/users/password" && r.Method == http.MethodPut && authed:
+		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": f.issue(u)})
+	case r.URL.Path == "/api/auth/reverse-proxy" && r.Method == http.MethodGet:
+		name := r.Header.Get("X-Forwarded-User")
+		if r.Header.Get("X-Mealie-Reverse-Proxy-Secret") != f.secret || name == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		u := f.user(name)
+		if u == nil {
+			u = f.find(func(u *fakeUser) string { return u.email }, name)
+		}
+		if u == nil {
+			u = f.add(name, name+"@reverse-proxy.local", name, "REVERSE_PROXY", "ReverseProxy", false)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": f.issue(u)})
+	case me == nil:
+		w.WriteHeader(http.StatusUnauthorized)
+	case r.URL.Path == "/api/users/self":
+		_ = json.NewEncoder(w).Encode(me.out())
+	case r.URL.Path == "/api/users/password" && r.Method == http.MethodPut:
 		var b struct{ CurrentPassword, NewPassword string }
 		_ = json.NewDecoder(r.Body).Decode(&b)
-		if b.CurrentPassword != f.password || len(b.NewPassword) < 8 {
+		if b.CurrentPassword != me.password || len(b.NewPassword) < 8 {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		f.password, f.since = b.NewPassword, f.logins+1
-	case r.URL.Path == "/api/admin/users/u-1" && r.Method == http.MethodPut && authed:
-		if f.failRename {
+		me.password, me.since = b.NewPassword, len(f.tokens)
+	case !me.admin:
+		w.WriteHeader(http.StatusForbidden)
+	case r.URL.Path == "/api/admin/users" && r.Method == http.MethodGet:
+		q := r.URL.Query()
+		order := slices.Clone(f.users)
+		if q.Get("orderBy") != "created_at" || q.Get("orderDirection") != "asc" {
+			slices.Reverse(order) // an order nobody asked for is not the age
+		}
+		if q.Get("perPage") != "-1" {
+			order = order[:min(len(order), 1)]
+		}
+		items := []map[string]any{}
+		for _, u := range order {
+			items = append(items, u.out())
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+	case strings.HasPrefix(r.URL.Path, "/api/admin/users/") && r.Method == http.MethodPut:
+		u := f.find(func(u *fakeUser) string { return u.id }, strings.TrimPrefix(r.URL.Path, "/api/admin/users/"))
+		if u == nil || f.failRename {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		var b map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&b)
-		if b["authMethod"] != "Mealie" || b["admin"] != true {
+		if b["authMethod"] != u.authMethod || b["admin"] != u.admin {
 			w.WriteHeader(http.StatusBadRequest) // the rename must keep the account what it was
 			return
 		}
-		f.username, f.email, f.fullName = b["username"].(string), b["email"].(string), b["fullName"].(string)
+		u.username, u.email, u.fullName = b["username"].(string), b["email"].(string), b["fullName"].(string)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
 }
 
+// makeAdmin is Mealie's make_admin tool, run in its container: an email on stdin, and that
+// account made an admin.
+func (f *fakeMealie) makeAdmin(_ context.Context, stdin string, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !slices.Equal(args, []string{"python", "-m", "mealie.scripts.make_admin"}) {
+		return nil, fmt.Errorf("ran %v in Mealie's container", args)
+	}
+	u := f.find(func(u *fakeUser) string { return u.email }, strings.TrimSpace(strings.SplitN(stdin, "\n", 2)[0]))
+	if u == nil {
+		return []byte("no user found"), errors.New("exit status 1")
+	}
+	u.admin = true
+	return nil, nil
+}
+
 // mealieRig is the dashboard rig with Mealie in its routing table, gated by header, answering at
-// a fake of its API.
+// a fake of its API, with its admin tool in its container.
 func mealieRig(t *testing.T) (*rig, *fakeMealie) {
 	r := newRig(t)
 	f := newFakeMealie()
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
+	r.app.mealieExec = f.makeAdmin
 	u, _ := url.Parse(srv.URL)
+	secret := filepath.Join(r.dir, "REVERSE_PROXY_AUTH_SECRET")
+	must(t, os.WriteFile(secret, []byte(f.secret), 0o400))
 	raw, _ := os.ReadFile(filepath.Join(r.dir, "routes.json"))
 	var tbl routes.Table
 	must(t, json.Unmarshal(raw, &tbl))
 	tbl.Apps = append(tbl.Apps, routes.App{
 		Name: "mealie", Hosts: routes.HostNames("brave-elf", "mealie"), Address: u.Hostname(),
 		Health: "http://:" + u.Port() + "/api/app/about", Routes: []routes.Route{{Listen: routes.ListenName, To: "http://:" + u.Port()}},
-		Gate: "/run/briard/mealie/settings/REVERSE_PROXY_AUTH_SECRET", GateHeader: "X-Mealie-Reverse-Proxy-Secret",
+		Gate: secret, GateHeader: "X-Mealie-Reverse-Proxy-Secret",
 	})
 	raw, _ = json.Marshal(tbl)
 	must(t, os.WriteFile(filepath.Join(r.dir, "routes.json"), raw, 0o644))
 	return r, f
 }
 
-// THE DOOR'S CHECK MAKES MEALIE'S FIRST ACCOUNT THE USER'S: the shipped password no longer works,
-// and the account carries the record's username, name and placeholder email before the answer is
-// yes. A later check asks Mealie nothing it could count as a failed login; a check for another app
-// asks Mealie nothing at all.
+// check is the door's check for Mealie, with a trusted device's session.
+func check(r *rig, c *http.Cookie) (int, string) {
+	return r.loopback("GET", "/gate/check?app=mealie", c.Value, nil)
+}
+
+// THE DOOR'S CHECK MAKES MEALIE'S FIRST ACCOUNT THE USER'S AND NAMES IT: the shipped password no
+// longer works, the account carries the record's username, name and placeholder email, and
+// briard's own account is an admin beside it. A later check asks Mealie nothing it could count as
+// a failed login; a check for another app asks Mealie nothing at all.
 func TestTheCheckTakesOverMealiesFirstAccount(t *testing.T) {
 	r, f := mealieRig(t)
 	c := r.trust()
-	if status, _ := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || f.username != "admin" {
-		t.Fatalf("a check for another app = %d and Mealie's first account is %q", status, f.username)
+	if status, _ := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || len(f.users) != 1 || f.users[0].username != "admin" {
+		t.Fatalf("a check for another app = %d and Mealie has %d accounts", status, len(f.users))
 	}
-	if status, user := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusOK || user != "kostas" {
+	if status, user := check(r, c); status != http.StatusOK || user != "kostas" {
 		t.Fatalf("check = %d %q", status, user)
 	}
-	if f.username != "kostas" || f.fullName != "Kostas" || f.email != "kostas@briard.local" {
-		t.Fatalf("Mealie's first account is %q %q %q, want the record's", f.username, f.fullName, f.email)
+	first := f.users[0]
+	if first.username != "kostas" || first.fullName != "Kostas" || first.email != "kostas@briard.local" || !first.admin || first.authMethod != "Mealie" {
+		t.Fatalf("Mealie's first account is %+v, want the record's", *first)
 	}
-	if f.password == mealieFirstPassword || len(f.password) < 20 {
-		t.Fatalf("the first account's password is %q, want a generated one", f.password)
+	if first.password == mealieFirstPassword || len(first.password) < 20 {
+		t.Fatalf("the first account's password is %q, want a generated one", first.password)
 	}
-	logins := f.logins
-	if status, _ := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusOK {
-		t.Fatalf("second check = %d", status)
+	if own := f.user(mealieOwnUser); own == nil || !own.admin || len(f.users) != 2 {
+		t.Fatalf("briard's own account is %+v among %d", own, len(f.users))
 	}
-	if f.logins != logins {
-		t.Fatal("a second check tried a login, which Mealie counts toward locking the account")
+	logins := f.pwLogins
+	if status, user := check(r, c); status != http.StatusOK || user != "kostas" || f.pwLogins != logins || len(f.users) != 2 {
+		t.Fatalf("second check = %d %q, password sign-ins %d -> %d, %d accounts", status, user, logins, f.pwLogins, len(f.users))
 	}
 	// A stranger's token never reaches Mealie.
-	if status, _ := r.loopback("GET", "/gate/check?app=mealie", "not-a-token", nil); status != http.StatusUnauthorized || f.logins != logins {
-		t.Fatalf("a stranger's check = %d, logins %d -> %d", status, logins, f.logins)
+	issued := len(f.tokens)
+	if status, _ := r.loopback("GET", "/gate/check?app=mealie", "not-a-token", nil); status != http.StatusUnauthorized || len(f.tokens) != issued {
+		t.Fatalf("a stranger's check = %d, tokens issued %d -> %d", status, issued, len(f.tokens))
+	}
+}
+
+// WHATEVER MEALIE'S ACCOUNTS SAY IS WHAT THE DOOR DOES: the user renamed inside Mealie, briard's
+// own account deleted or no longer an admin -- each is followed at the next check, with nothing
+// kept on briard's side to fall out of step.
+func TestTheCheckFollowsMealiesAccounts(t *testing.T) {
+	r, f := mealieRig(t)
+	c := r.trust()
+	if status, _ := check(r, c); status != http.StatusOK {
+		t.Fatalf("check = %d", status)
+	}
+	f.users[0].username = "kchatzi"
+	if status, user := check(r, c); status != http.StatusOK || user != "kchatzi" {
+		t.Fatalf("after a rename in Mealie, check = %d %q", status, user)
+	}
+	f.users = slices.DeleteFunc(f.users, func(u *fakeUser) bool { return u.username == mealieOwnUser })
+	if status, user := check(r, c); status != http.StatusOK || user != "kchatzi" {
+		t.Fatalf("after briard's own account was deleted, check = %d %q", status, user)
+	}
+	own := f.user(mealieOwnUser)
+	if own == nil || !own.admin {
+		t.Fatalf("briard's own account is %+v, want it made again, an admin", own)
+	}
+	own.admin = false
+	if status, user := check(r, c); status != http.StatusOK || user != "kchatzi" || !own.admin {
+		t.Fatalf("after briard's own account lost admin, check = %d %q, admin %v", status, user, own.admin)
+	}
+	if len(f.users) != 2 || f.users[0].username != "kchatzi" {
+		t.Fatalf("the user's account is %+v among %d; nothing but briard's own may be made or renamed", *f.users[0], len(f.users))
+	}
+}
+
+// A MEALIE THE USER BROUGHT -- a backup of a Mealie they ran before, imported or restored --
+// opens as its oldest admin, unrenamed: there is no first account to take over, and nothing is
+// signed in to by password.
+func TestABroughtMealieOpensAsItsOldestAdmin(t *testing.T) {
+	r, f := mealieRig(t)
+	f.users = nil
+	f.add("bob", "bob@example.org", "Bob", "x", "Mealie", false)
+	f.add("jane", "jane@example.org", "Jane", "y", "Mealie", true)
+	f.add("ann", "ann@example.org", "Ann", "z", "Mealie", true)
+	c := r.trust()
+	if status, user := check(r, c); status != http.StatusOK || user != "jane" {
+		t.Fatalf("check = %d %q, want the oldest admin", status, user)
+	}
+	if f.pwLogins != 0 || f.users[1].username != "jane" || f.users[1].email != "jane@example.org" {
+		t.Fatalf("a brought Mealie was signed in to by password (%d) or renamed (%+v)", f.pwLogins, *f.users[1])
 	}
 }
 
@@ -134,31 +289,52 @@ func TestTheCheckTakesOverMealiesFirstAccount(t *testing.T) {
 func TestAMealieBackAtItsFirstAccountIsTakenOverAgain(t *testing.T) {
 	r, f := mealieRig(t)
 	c := r.trust()
-	if status, _ := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusOK {
+	if status, _ := check(r, c); status != http.StatusOK {
 		t.Fatalf("check = %d", status)
 	}
-	f.mu.Lock()
-	f.username, f.email, f.fullName, f.password = "admin", "changeme@example.com", "Change Me", mealieFirstPassword
-	f.mu.Unlock()
-	if status, _ := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusOK || f.username != "kostas" || f.password == mealieFirstPassword {
-		t.Fatalf("check on a Mealie back at its first account = %d, account %q", status, f.username)
+	fresh := newFakeMealie()
+	f.users, f.made = fresh.users, 100
+	if status, user := check(r, c); status != http.StatusOK || user != "kostas" || f.users[0].password == mealieFirstPassword {
+		t.Fatalf("check on a Mealie back at its first account = %d %q", status, user)
 	}
 }
 
-// A takeover that stopped after the password changed leaves an account nobody can sign in to: the
-// next check says so and lets nobody through, never quietly carrying on.
-func TestATakeoverCutShortRefusesTheCheck(t *testing.T) {
+// A takeover cut short after the password changed refuses that check, and the next one finishes
+// it: the shipped password no longer answers, which is no hole, and the rename needs none.
+func TestATakeoverCutShortIsFinishedByTheNextCheck(t *testing.T) {
 	r, f := mealieRig(t)
 	f.failRename = true
 	c := r.trust()
-	if status, _ := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusServiceUnavailable {
+	if status, _ := check(r, c); status != http.StatusServiceUnavailable {
 		t.Fatalf("check with a failed rename = %d, want 503", status)
 	}
-	if f.password == mealieFirstPassword {
+	if f.users[0].password == mealieFirstPassword {
 		t.Fatal("the rename was tried before the password changed")
 	}
 	f.failRename = false
-	if status, body := r.loopback("GET", "/gate/check?app=mealie", c.Value, nil); status != http.StatusServiceUnavailable || !strings.Contains(body, "reinstall Mealie") {
-		t.Fatalf("the next check = %d %q, want a refusal that says what to do", status, body)
+	if status, user := check(r, c); status != http.StatusOK || user != "kostas" || f.users[0].email != "kostas@briard.local" {
+		t.Fatalf("the next check = %d %q", status, user)
+	}
+}
+
+// A Mealie with no admin but briard's own has no account of the user's to open, and says what
+// to do; one whose admin tool fails says that.
+func TestAMealieWithNoAccountOfTheUsersRefusesTheCheck(t *testing.T) {
+	r, f := mealieRig(t)
+	c := r.trust()
+	if status, _ := check(r, c); status != http.StatusOK {
+		t.Fatalf("check = %d", status)
+	}
+	f.users[0].admin = false
+	if status, body := check(r, c); status != http.StatusServiceUnavailable || !strings.Contains(body, "undo Mealie") {
+		t.Fatalf("check with no admin of the user's = %d %q", status, body)
+	}
+	f.users[0].admin = true
+	f.user(mealieOwnUser).admin = false
+	r.app.mealieExec = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("boom"), errors.New("exit status 1")
+	}
+	if status, body := check(r, c); status != http.StatusServiceUnavailable || !strings.Contains(body, "boom") {
+		t.Fatalf("check with a failing admin tool = %d %q", status, body)
 	}
 }

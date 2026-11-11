@@ -17,7 +17,10 @@
 #   5. NEVER LOCKED IN: the same data, under a plain Mealie with none of briard's settings, gives
 #      the user a working admin account with Mealie's own recovery script;
 #   6. A MEALIE BACK AT ITS FIRST ACCOUNT IS TAKEN OVER AGAIN without an open from the dashboard:
-#      a browser that kept its cookie is signed in, and the shipped password is shut again.
+#      a browser that kept its cookie is signed in, and the shipped password is shut again;
+#   7. A RENAME INSIDE MEALIE IS FOLLOWED: the door signs in whoever Mealie's accounts say;
+#   8. BRIARD'S OWN ACCOUNT IS MADE AGAIN WHENEVER IT IS GONE, an admin by Mealie's own tool run in
+#      its container -- the one thing here no fake can stand in for.
 { pkgs, guestModule, mealieFixture }:
 
 let
@@ -204,5 +207,46 @@ pkgs.testers.runNixOSTest {
     me = json.loads(body)
     assert (me["username"], me["admin"]) == ("kostas", True) and me["id"] != first_id, me
     assert seed_login() == 401, "the emptied Mealie's first account still answers the shipped password"
+
+    def accounts(tok):
+        """Every Mealie account, as its admin page lists them, through the door as the user."""
+        code, _, body = door(MEALIE, "/api/admin/users?perPage=-1", app_cookie, f"-H 'Authorization: Bearer {tok}'")
+        assert code == 200, f"listing Mealie's accounts answered {code}: {body}"
+        return {u["username"]: u for u in json.loads(body)["items"]}
+
+    def signed_in_as(want_id):
+        """The kept cookie signed in, past the half minute the door keeps an answer: the account."""
+        time.sleep(31)
+        deadline = time.monotonic() + 90
+        while True:
+            code, _, body = door(MEALIE, "/api/auth/reverse-proxy", app_cookie)
+            if code == 200:
+                t = json.loads(body)["access_token"]
+                _, _, body = door(MEALIE, "/api/users/self", app_cookie, f"-H 'Authorization: Bearer {t}'")
+                me = json.loads(body)
+                if me["id"] == want_id:
+                    return me, t
+            assert time.monotonic() < deadline, f"the kept cookie is not signed in to {want_id}: {code} {body}"
+            time.sleep(5)
+
+    # (7) A RENAME INSIDE MEALIE IS FOLLOWED: the door's next check reads the user's account off
+    # Mealie, so the kept cookie lands on the same account under its new name.
+    me["username"] = "kchatzi"
+    body = shlex.quote(json.dumps(me))
+    code, _, out = door(MEALIE, f"/api/users/{me['id']}", app_cookie, f"-X PUT -H 'Authorization: Bearer {tok}' -H 'Content-Type: application/json' -d {body}")
+    assert code == 200, f"the rename answered {code}: {out}"
+    me, tok = signed_in_as(me["id"])
+    assert me["username"] == "kchatzi" and me["admin"] is True, me
+
+    # (8) BRIARD'S OWN ACCOUNT IS MADE AGAIN WHENEVER IT IS GONE: deleted by the user, the next check
+    # signs in as it, which makes it an ordinary account, and Mealie's own admin tool, run in its
+    # container, makes it an admin again -- and the user is signed in throughout.
+    own = accounts(tok)["briard-admin"]
+    code, _, out = door(MEALIE, f"/api/admin/users/{own['id']}", app_cookie, f"-X DELETE -H 'Authorization: Bearer {tok}'")
+    assert code == 200, f"deleting briard's own account answered {code}: {out}"
+    assert "briard-admin" not in accounts(tok)
+    me, tok = signed_in_as(me["id"])
+    again = accounts(tok)["briard-admin"]
+    assert again["admin"] is True and again["id"] != own["id"], again
   '';
 }

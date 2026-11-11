@@ -66,7 +66,7 @@ func TestPrepareWritesEverySettingForMealiesUidAlone(t *testing.T) {
 	want := map[string]string{
 		"ALLOW_PASSWORD_LOGIN":              "false",
 		"REVERSE_PROXY_AUTH_ENABLED":        "true",
-		"REVERSE_PROXY_AUTH_SIGNUP_ENABLED": "false",
+		"REVERSE_PROXY_AUTH_SIGNUP_ENABLED": "true",
 		"BASE_URL":                          "http://briard-mealie.local",
 	}
 	for k, v := range want {
