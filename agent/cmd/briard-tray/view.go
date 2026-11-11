@@ -2,7 +2,7 @@
 // unelevated, at their logon, and everything it does goes through the agent's local admin door
 // -- the socket `briard` itself uses, which admits that one account (host.restrictDoor) -- so its
 // clicks never ask for elevation. It reads the node's state with the status directive, opens the
-// Briard page with a one-time link from the dashboard directive, and stops and starts briard the
+// dashboard with a one-time link from the dashboard directive, and stops and starts briard the
 // way `briard stop` and `briard start` do.
 //
 // This file is what the icon SHOWS for what it read, kept apart from the Windows calls that show
@@ -117,7 +117,7 @@ func toast(prev *host.LocalStatus, r reading) bool {
 	return r.err == nil && prev != nil && r.status.Open > prev.Open
 }
 
-// launchBound is how long a Start menu click waits for the Briard page before saying why it has
+// launchBound is how long a Start menu click waits for the dashboard before saying why it has
 // not opened: the first start downloads the guest image, which is minutes on a slow line.
 const launchBound = 10 * time.Minute
 

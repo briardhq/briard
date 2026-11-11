@@ -56,12 +56,12 @@ func ending(code int, tail []string, logPath string) page {
 		return page{
 			instruction: "Briard is installed",
 			content: "Windows must restart once to finish: the network bridge and the hypervisor start with it. " +
-				"After the restart, log on: Briard finishes starting and opens your Briard page in your browser.\n\n" +
+				"After the restart, log on: Briard finishes starting and opens in your browser.\n\n" +
 				"To restart later, choose Restart, not Shut down.",
 			restart: true,
 		}
 	case 0:
-		return page{instruction: "Briard is installed", content: "Briard is starting. Open your Briard page from Briard in the Start menu."}
+		return page{instruction: "Briard is installed", content: "Briard is starting. Open Briard from the Start menu."}
 	}
 	why := reason(tail)
 	if why == "" {

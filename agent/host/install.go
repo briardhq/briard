@@ -511,10 +511,10 @@ func InstallWait(ctx context.Context, say func(string, ...any)) error {
 		}
 	}
 	if report == "" {
-		say("briard is still starting. once it answers, get a one-time link to your Briard page with: %s", openHint)
+		say("briard is still starting. once it answers, get a one-time link to the Briard dashboard with: %s", openHint)
 		return nil
 	}
-	say("your Briard page is ready:")
+	say("your Briard dashboard is ready:")
 	say("")
 	fmt.Print(strings.TrimRight(report, "\n") + "\n")
 	say("another link, any time: %s", openHint)

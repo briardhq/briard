@@ -356,7 +356,7 @@ class AppUpdate(UpdateEntity):
             self._attr_installed_version = str(rec.get("running") or "") or None
             self._attr_latest_version = str(rec.get("latest") or "") or None
             self._attr_release_summary = (
-                f"Update {title} from the Briard page. Briard checks that it starts and works "
+                f"Update {title} from the Briard dashboard. Briard checks that it starts and works "
                 "afterwards and puts it back by itself if not; you can also undo the update "
                 "later from its History."
             )

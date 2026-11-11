@@ -194,7 +194,7 @@ var t *tray
 func main() {
 	runtime.LockOSThread()
 	// --open is the Start menu entry's, and the install's hand-over at the next logon (the RunOnce
-	// key): start briard if it is stopped and open the Briard page once it serves (launch).
+	// key): start briard if it is stopped and open the dashboard once it serves (launch).
 	// Without it -- the Run key at logon -- the icon only shows.
 	open := len(os.Args) > 1 && os.Args[1] == "--open"
 	// The Start menu shortcut's identity (host.AppID), declared before any window or icon: Windows
@@ -409,7 +409,7 @@ func (t *tray) menu() {
 	}
 }
 
-// openOr asks the agent for a one-time link to the Briard page and opens it in this person's
+// openOr asks the agent for a one-time link to the dashboard and opens it in this person's
 // browser -- the tray is what runs as them, which is why it opens the link `briard open` prints.
 func (t *tray) openOr(say func(string)) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -478,7 +478,7 @@ func (t *tray) launchStep(r reading) {
 	}
 	if !t.launchNoted {
 		t.launchNoted = true
-		t.note = "Briard is starting. Your Briard page opens when it is ready."
+		t.note = "Briard is starting and opens when it is ready."
 	}
 }
 

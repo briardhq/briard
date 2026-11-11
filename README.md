@@ -19,7 +19,7 @@ What it does, and why: **[briard.io](https://briard.io)**.
 curl -fsSL https://get.briard.io/install.sh | sudo sh
 ```
 
-When it finishes, it prints a one-time link to the machine's Briard page. Open it and pick
+When it finishes, it prints a one-time link to the machine's Briard dashboard. Open it and pick
 your apps. If the link has expired, `sudo briard open` prints a new one.
 
 ## More

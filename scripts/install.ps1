@@ -16,7 +16,7 @@
 # install_windows.go): the machine report card, the signed fetch, the %ProgramData%\briard layout,
 # config.env, the tree's ACL, the service and its recovery, the firewall hole, `briard` on PATH,
 # the network bridge, and the notification-area icon, which at the installing account's next logon
-# opens the Briard page once the node serves. Adding something back here means showing it has to
+# opens the dashboard once the node serves. Adding something back here means showing it has to
 # happen before an agent can run.
 #
 # BRIARD_ARTIFACTS=<dir> installs from a local, already-verified staging dir (the rig, and the
@@ -229,7 +229,7 @@ if ($rc -ne 0 -and $rc -ne 3010) { Die 'the install did not finish (the agent sa
 # ---- 4. the hand-over, after the restart ----------------------------------------------
 # The service starts by itself at boot, with no window. The hand-over is the agent's, laid down
 # above: at the installing account's next logon its notification-area icon starts once with
-# --open, says Briard is starting, and opens the Briard page in that person's browser once the
+# --open, says Briard is starting, and opens the dashboard in that person's browser once the
 # node serves. Nothing is left to arrange here but removing an earlier installer's console task.
 $exe = "$Prefix\agent\briard-agent.exe"
 Unregister-ScheduledTask -TaskName $ResumeTask -Confirm:$false -ErrorAction SilentlyContinue
@@ -243,7 +243,7 @@ Unlock # installed: what follows is the ending, and a retry no longer races anyt
 if ($NoRestart) {
 	if ($rc -eq 3010) {
 		Say 'installed. Restart Windows to finish (Restart, not Shut down): Briard starts by itself afterwards.'
-		Say 'when you log on again, your Briard page opens in your browser once it is ready.'
+		Say 'when you log on again, Briard opens in your browser once it is ready.'
 		exit 3010
 	}
 	$rc = Run $exe start
@@ -255,7 +255,7 @@ if ($NoRestart) {
 # only after a restart: one restart, asked for, never a shutdown (Fast Startup's resume is not a
 # start). Briard finishes on its own afterwards; the link appears when an administrator logs on.
 Say 'installed. Windows must restart once for the network bridge and the hypervisor.'
-Say 'after the restart, log on: Briard finishes starting and opens your Briard page in your browser.'
+Say 'after the restart, log on: Briard finishes starting and opens in your browser.'
 if ([Environment]::UserInteractive -and $Host.Name -eq 'ConsoleHost') {
 	Read-Host 'press Enter to restart now (Ctrl-C to restart later yourself)' | Out-Null
 }

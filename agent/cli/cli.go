@@ -129,8 +129,8 @@ var commands = []command{
 	},
 	{
 		name: "open", group: groupEveryday,
-		synopsis: "print a one-time link that opens this home's Briard page, trusted",
-		detail: "The link is the Briard page's only door: the browser that opens it becomes a trusted\n" +
+		synopsis: "print a one-time link that opens this home's Briard dashboard, trusted",
+		detail: "The link is the Briard dashboard's only door: the browser that opens it becomes a trusted\n" +
 			"device, and the code in it works once, for ten minutes. Run it again for a fresh link --\n" +
 			"that is also how a browser that lost its session gets back in. Home Assistant's first\n" +
 			"user is named after the account this runs under (-name, -user, -lang override).",
@@ -143,8 +143,8 @@ var commands = []command{
 			"folder, as the 02:00 run does -- and wait for it to finish (a first one copies everything).\n" +
 			"It does not replace that night's run.\n\n" +
 			"restore <app> -- put that app's data back to the newest backup in the backup folder, or to\n" +
-			"the one -at names (a snapshot id as the Briard page's Backup section lists them, or as\n" +
-			"`restic snapshots` prints them; backups from an earlier install of this folder work too).\n" +
+			"the one -at names (a snapshot id as the Backup page lists them, or as `restic snapshots`\n" +
+			"prints them; backups from an earlier install of this folder work too).\n" +
 			"An app this machine does not have is installed at that backup's version. The backup is\n" +
 			"read into the app's history first, then restored like any point of it: the app stops,\n" +
 			"starts again afterwards, and the restore is a row in its history that `briard app undo`\n" +
@@ -800,7 +800,7 @@ func sayTo(w io.Writer) func(string, ...any) {
 	return func(format string, a ...any) { fmt.Fprintf(w, format+"\n", a...) }
 }
 
-// runDashboard is `briard open`: it asks the agent for a one-time link to the Briard page
+// runDashboard is `briard open`: it asks the agent for a one-time link to the dashboard
 // (the verb a user types is `open`, and *dashboard* stays the engineering name of the
 // guest unit and the directive). The account details ride along because THIS is where
 // the OS account is visible: the agent runs as a systemd or Windows service with no SUDO_USER, and the guest knows

@@ -161,7 +161,7 @@ func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupSc
 	}
 	night := dashboard.BackupRun{At: started, Snapshot: rep.Snapshot, BytesAdded: rep.BytesAdded, Size: folderSize(cfg.backupFolder()), WrongKey: rep.WrongKey}
 	if rep.WrongKey {
-		night.Error = "the folder holds a backup made with another key -- an earlier install's? Enter that key on the Briard page to continue it, or choose another folder"
+		night.Error = "the folder holds a backup made with another key -- an earlier install's? Enter that key on the Backup page to continue it, or choose another folder"
 	} else if rep.Error != "" {
 		night.Error = cfg.backupFailure(rep.Error)
 	}
@@ -1031,7 +1031,7 @@ func (cfg Config) applyBackupNow(ctx context.Context, d api.Directive) api.Direc
 		return failed("this agent has no backup scheduler")
 	}
 	if cfg.backupFolder() == "" {
-		return failed("the nightly backup is turned off on this machine; turn it on from the Briard page first")
+		return failed("the nightly backup is turned off on this machine; turn it on from the Backup page first")
 	}
 	asked := time.Now()
 	cfg.backupKick.Store(true)
@@ -1045,7 +1045,7 @@ func (cfg Config) applyBackupNow(ctx context.Context, d api.Directive) api.Direc
 	for {
 		select {
 		case <-ctx.Done():
-			return failed("the backup has not ended yet; the Briard page's Backup section, or `briard logs`, says how it ends")
+			return failed("the backup has not ended yet; the Backup page, or `briard logs`, says how it ends")
 		case <-tick.C:
 			if e := cfg.backupEnded.Load(); e != nil && !e.Started.Before(asked) {
 				if e.Failed {

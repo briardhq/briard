@@ -138,5 +138,5 @@ fi
 
 # ---- 4. the hand-over ----------------------------------------------------------------
 # The installed agent waits for its own node to answer and prints the one-time link to the
-# household's Briard page -- the last thing the installer prints -- or says how to get one.
+# household's dashboard -- the last thing the installer prints -- or says how to get one.
 exec "$PREFIX/agent/briard-agent" install -wait

@@ -166,7 +166,7 @@ household's files, into a
 folder on the host (`Briard Backup` in the installing user's home by default, or any folder you
 point it at: a USB disk, a NAS mount, a synced drive). It is on from install, asks nothing, and
 ships inside each night everything a fresh install needs to come back as *this* household. The
-archive's key lives on the replicated volume and stays on the Briard page until you say you
+archive's key lives on the replicated volume and stays on the Briard dashboard until you say you
 have saved it, with a README beside the
 archive telling you to copy it; the node warns after two failed nights and never gates an
 update on the copy. Restoring a night is an ordinary undo (below): the night is materialised as
@@ -233,7 +233,7 @@ sync, updates that stopped, an app down for ten minutes, the guest not answering
 that failed two nights running, a disk reporting media errors. Each is raised by the thing that
 observes it and cleared by the same thing when the condition ends; an alert the code does not
 list does not exist. They land where you already look: `sudo briard alerts` on the host, the
-Briard page's banner, Home Assistant's Repairs panel, and — if you set an `ntfy` topic — your
+Briard dashboard's banner, Home Assistant's Repairs panel, and — if you set an `ntfy` topic — your
 phone. Nothing is sent anywhere else.
 
 ## Local-first, and cloudless by default
@@ -412,8 +412,7 @@ The words the code and its comments use, briefly:
   undone to.
 - **Report card** — the verdict on whether a machine can be a node, at install and on demand
   with `briard doctor`. It refuses with a reason rather than half-installing.
-- **Dashboard / Briard page** — the household page at `briard-<name>.local`. The code calls it
-  the dashboard.
+- **Dashboard** — the Briard dashboard, the household page at `briard-<name>.local`.
 
 ## Code map
 

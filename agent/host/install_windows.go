@@ -121,7 +121,7 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	// browser it opens. A SYSTEM install has no such account, and no tray.
 	//
 	// THE HAND-OVER is the same tray, once: that logon also runs it with --open, which says Briard
-	// is starting and opens the Briard page in the person's browser once it serves -- the install's
+	// is starting and opens the dashboard in the person's browser once it serves -- the install's
 	// closing, with no console window.
 	say("installing the notification-area icon")
 	tray := filepath.Join(agentDir, trayExe)
@@ -132,7 +132,7 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 		return fmt.Errorf("starting the icon at logon: %w", err)
 	}
 	// THE START MENU ENTRY, every account's: "Briard" runs the tray with --open, which starts
-	// briard if it is stopped and opens the Briard page once it serves (or says why not). The
+	// briard if it is stopped and opens the dashboard once it serves (or says why not). The
 	// tray is the program a person runs; the service never is.
 	say("adding Briard to the Start menu")
 	if err := startMenuEntry(tray); err != nil {
