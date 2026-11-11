@@ -269,8 +269,8 @@ func (a *app) asked(o api.DirectiveOutcome, err error) {
 }
 
 // requestBackupNow is Back up now: the run 02:00 starts, asked for now. The host answers at once
-// (api.BackupNowStart) and the Schedule card follows the run in the host's view, because the
-// admin port answers in order and a first run may take an hour.
+// (api.BackupNowStart) and the Schedule card follows the run in the host's view: a first run may
+// take an hour, and what the page shows is the host's record, which outlives any one request.
 func (a *app) requestBackupNow(w http.ResponseWriter, r *http.Request) {
 	var before time.Time
 	if raw, err := os.ReadFile(a.backupPath); err == nil {
