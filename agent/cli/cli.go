@@ -411,15 +411,9 @@ func runApp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	switch o.State {
 	case api.OutcomeDone:
-		// Say what actually happened, not what the product will eventually do. The gate probes the
-		// APP's own endpoint in-guest (awaitHealthy); the reverse proxy does not route to a
-		// runtime-installed app yet -- its backend is baked at guest-build time and per-domain
-		// routing is deferred with the routing work. "serving" reads as "reachable at the VIP",
-		// which walks the user to http://<vip>/ and shows them the "nothing is routed here" page.
-		//
-		// The address leads because it is the operator's next action. The agent composes it (it
-		// owns the manifest's port and the node's published name) and hands back the whole phrase;
-		// the CLI does not re-derive it, so there is one place the address can be wrong.
+		// Where to reach it follows, because it is the operator's next action. The agent composes
+		// it (it owns the manifest's port and the node's published name) and hands back the whole
+		// phrase; the CLI does not re-derive it, so there is one place the address can be wrong.
 		if to != "" {
 			fmt.Fprintf(stdout, "%s updated%s and healthy; `briard app history %s` can undo it\n", name, to, name)
 			return 0
@@ -428,7 +422,6 @@ func runApp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if o.Detail != "" {
 			fmt.Fprintf(stdout, "  %s\n", o.Detail)
 		}
-		fmt.Fprintf(stdout, "  the reverse proxy does not route / to it yet\n")
 		return 0
 	case api.OutcomeRolledBack:
 		// The distinction an operator most needs: the machine is back as it was, so this is a
