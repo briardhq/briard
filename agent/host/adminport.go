@@ -103,10 +103,13 @@ func serveAdminPort(ctx context.Context, sock string, reqs chan<- localRequest, 
 	}
 }
 
-// serveAdminPortConn is one life of the wire: a directive per line, its outcome per line, in
-// order. A line that does not parse gets a failed outcome with no ID, which the dashboard ignores
-// -- it waits for the ID it sent -- so a stale half-line from a dashboard that died mid-write
-// cannot be mistaken for the answer to the next request. Returns when the wire ends.
+// serveAdminPortConn is one life of the wire: a directive per line, its outcome per line as it
+// ends, MULTIPLEXED BY ID -- an install runs minutes, and the app page's History and Storage are
+// pulls the loop answers beside it, so a request never waits on the answer to an earlier one.
+// Each outcome is one write, which a net.Conn keeps whole among concurrent writers. A line that
+// does not parse gets a failed outcome with no ID, which the dashboard ignores -- it waits for
+// the ID it sent -- so a stale half-line from a dashboard that died mid-write cannot be mistaken
+// for the answer to a request. Returns when the wire ends.
 func serveAdminPortConn(ctx context.Context, conn net.Conn, reqs chan<- localRequest, logf func(string, ...any)) error {
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
@@ -126,20 +129,21 @@ func serveAdminPortConn(ctx context.Context, conn net.Conn, reqs chan<- localReq
 			continue
 		}
 		logf("admin port: directive kind=%s submitted by the guest's dashboard", d.Kind)
-		resp := make(chan api.DirectiveOutcome, 1)
-		select {
-		case reqs <- localRequest{d: d, resp: resp}:
-		case <-ctx.Done():
-			writeOutcome(conn, api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "agent is shutting down"})
-			return ctx.Err()
-		}
-		select {
-		case o := <-resp:
-			writeOutcome(conn, o)
-		case <-ctx.Done():
-			writeOutcome(conn, api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "agent shut down before the directive was applied"})
-			return ctx.Err()
-		}
+		go func() {
+			resp := make(chan api.DirectiveOutcome, 1)
+			select {
+			case reqs <- localRequest{d: d, resp: resp}:
+			case <-ctx.Done():
+				writeOutcome(conn, api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "agent is shutting down"})
+				return
+			}
+			select {
+			case o := <-resp:
+				writeOutcome(conn, o)
+			case <-ctx.Done():
+				writeOutcome(conn, api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "agent shut down before the directive was applied"})
+			}
+		}()
 	}
 	if err := sc.Err(); err != nil && !errors.Is(err, net.ErrClosed) {
 		return err

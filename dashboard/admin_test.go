@@ -293,3 +293,97 @@ func TestSerialPortSubmitMatchesTheOutcomeByID(t *testing.T) {
 		t.Errorf("Submit on an absent port = %v; want errNoAdminPort", err)
 	}
 }
+
+// THE WIRE IS MULTIPLEXED: an install's request is open for minutes, and the app page's reads
+// go out beside it on the same wire and come back first; the install's answer still finds its
+// request. A host that drops the wire fails every request waiting on it, and the next one
+// opens the wire again.
+func TestSerialPortCarriesAReadBesideAnInstall(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "port")
+	ln, err := net.Listen("unix", sock)
+	must(t, err)
+	defer ln.Close()
+	accepted := make(chan net.Conn, 2)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- conn
+		}
+	}()
+	p := &serialPort{open: func() (io.ReadWriteCloser, error) { return net.Dial("unix", sock) }}
+	install := make(chan api.DirectiveOutcome, 1)
+	go func() {
+		o, _ := p.Submit(context.Background(), api.Directive{ID: "inst", Kind: api.DirectiveAppInstall, Payload: "files"})
+		install <- o
+	}()
+	conn := <-accepted
+	rd := bufio.NewReader(conn)
+	readID := func() string {
+		for {
+			line, err := rd.ReadBytes('\n')
+			if err != nil {
+				t.Errorf("host read: %v", err)
+				return ""
+			}
+			var d api.Directive
+			if json.Unmarshal(line, &d) == nil && d.ID != "" {
+				return d.ID
+			}
+		}
+	}
+	if id := readID(); id != "inst" {
+		t.Fatalf("first request on the wire = %q", id)
+	}
+	read := make(chan api.DirectiveOutcome, 1)
+	go func() {
+		o, _ := p.Submit(context.Background(), api.Directive{ID: "hist", Kind: api.DirectiveAppMembers, Payload: "mosquitto"})
+		read <- o
+	}()
+	if id := readID(); id != "hist" {
+		t.Fatalf("the read did not reach the wire while the install was open: %q", id)
+	}
+	json.NewEncoder(conn).Encode(api.DirectiveOutcome{ID: "hist", State: api.OutcomeDone, Detail: "rows"})
+	select {
+	case o := <-read:
+		if o.Detail != "rows" {
+			t.Errorf("read outcome = %+v", o)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read waited on the install")
+	}
+	json.NewEncoder(conn).Encode(api.DirectiveOutcome{ID: "inst", State: api.OutcomeDone, Detail: "installed"})
+	if o := <-install; o.Detail != "installed" {
+		t.Errorf("install outcome = %+v", o)
+	}
+	// The host drops the wire under a waiting request: it fails, and the next request reopens.
+	gone := make(chan error, 1)
+	go func() {
+		_, err := p.Submit(context.Background(), api.Directive{ID: "lost", Kind: api.DirectiveAppMembers})
+		gone <- err
+	}()
+	if id := readID(); id != "lost" {
+		t.Fatalf("request on the wire = %q", id)
+	}
+	conn.Close()
+	if err := <-gone; err == nil {
+		t.Error("a request on a dropped wire did not fail")
+	}
+	again := make(chan api.DirectiveOutcome, 1)
+	go func() {
+		o, _ := p.Submit(context.Background(), api.Directive{ID: "again", Kind: api.DirectiveAppMembers})
+		again <- o
+	}()
+	conn2 := <-accepted
+	defer conn2.Close()
+	rd = bufio.NewReader(conn2)
+	if id := readID(); id != "again" {
+		t.Fatalf("request after the drop = %q", id)
+	}
+	json.NewEncoder(conn2).Encode(api.DirectiveOutcome{ID: "again", State: api.OutcomeDone})
+	if o := <-again; o.ID != "again" {
+		t.Errorf("outcome after reopening = %+v", o)
+	}
+}

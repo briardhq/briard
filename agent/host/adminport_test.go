@@ -106,3 +106,58 @@ func TestAdminPortDisabledWhenUnset(t *testing.T) {
 		t.Fatal("serveAdminPort with no socket did not return")
 	}
 }
+
+// An install the loop is still working on does not hold the wire: the app page's History, asked
+// after it, is answered first, and the install's outcome follows on the same wire when it ends.
+func TestAdminPortAnswersAReadBesideAnInstall(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "admin.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reqs := make(chan localRequest)
+	go serveAdminPort(ctx, sock, reqs, func(string, ...any) {})
+	release := make(chan struct{})
+	go func() {
+		for rq := range reqs {
+			go func(rq localRequest) {
+				if rq.d.Kind == api.DirectiveAppInstall {
+					<-release
+				}
+				rq.resp <- api.DirectiveOutcome{ID: rq.d.ID, State: api.OutcomeDone}
+			}(rq)
+		}
+	}()
+	guest, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guest.Close()
+	rd := bufio.NewReader(guest)
+	next := func() string {
+		t.Helper()
+		_ = guest.SetReadDeadline(time.Now().Add(5 * time.Second))
+		raw, err := rd.ReadBytes('\n')
+		if err != nil {
+			t.Fatalf("no outcome: %v", err)
+		}
+		var o api.DirectiveOutcome
+		if err := json.Unmarshal(raw, &o); err != nil {
+			t.Fatal(err)
+		}
+		return o.ID
+	}
+	if _, err := guest.Write([]byte(`{"id":"inst","kind":"app-install","payload":"files"}` + "\n" + `{"id":"hist","kind":"app-members","payload":"mosquitto"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if id := next(); id != "hist" {
+		t.Fatalf("first answer = %q; want the read, answered while the install runs", id)
+	}
+	close(release)
+	if id := next(); id != "inst" {
+		t.Fatalf("second answer = %q; want the install's outcome", id)
+	}
+}

@@ -44,6 +44,10 @@ type progressView struct {
 	Percent     int
 	DoneGB      string
 	TotalGB     string
+	// Received: every byte is in. The pull goes on unpacking the last layers -- a layer's file
+	// stays in the unit's tmp, counted, until it is unpacked -- so the card stops showing a
+	// fraction here rather than holding at its last percent.
+	Received bool
 }
 
 // layer is the slice of podman's layer record this reads.
@@ -71,7 +75,7 @@ func (a *app) pullProgress(app string) *progressView {
 	if pct > 99 {
 		pct = 99 // the last percent is the manifest landing and the routes table, not bytes
 	}
-	return &progressView{Done: done, Total: p.Size, Percent: pct, DoneGB: gb(done), TotalGB: gb(p.Size)}
+	return &progressView{Done: done, Total: p.Size, Percent: pct, DoneGB: gb(done), TotalGB: gb(p.Size), Received: pct >= 99}
 }
 
 // finishedSince sums the compressed size of every layer podman committed at or after t.

@@ -63,12 +63,13 @@ func TestPullProgressAddsFinishedLayersAndTheOneInFlight(t *testing.T) {
 	if body = r.page(c); !strings.Contains(body, `value="40"`) {
 		t.Errorf("progress fell when a layer moved from tmp to the store: %s", body)
 	}
-	// Never 100 from bytes alone: the last percent is the routes table.
+	// Every byte in: the last layers are unpacking, so the row says installing and its bar only
+	// moves -- never 100 from bytes alone, and never a fraction held at its last percent.
 	layers = append(layers, map[string]any{"id": "f", "compressed-size": 400e6, "created": started.Add(40 * time.Second).Format(time.RFC3339Nano)})
 	raw, _ = json.Marshal(layers)
 	must(t, os.WriteFile(r.app.pulls.layers, raw, 0o644))
-	if body = r.page(c); !strings.Contains(body, `value="99"`) {
-		t.Errorf("bytes alone reached 100%%: %s", body)
+	if body = r.page(c); !strings.Contains(body, ">Installing</span>") || !strings.Contains(body, "<progress></progress>") || strings.Contains(body, "<progress max=") {
+		t.Errorf("with every byte in, the row still shows a fraction: %s", body)
 	}
 	// No record -- the host cleared it with the images in, and the app is starting: the row
 	// says installing, and its bar only moves.

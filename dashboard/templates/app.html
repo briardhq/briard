@@ -21,7 +21,7 @@
 {{end}}
 
 {{/* THE INSTALL BAR: the download's fraction, or a bar that only moves while the app starts. */}}
-{{define "install-bar"}}{{if not .Waiting}}{{with .Progress}}<progress max="100" value="{{.Percent}}" title="{{.DoneGB}} of {{.TotalGB}}"></progress>{{else}}<progress></progress>{{end}}{{end}}{{end}}
+{{define "install-bar"}}{{if not .Waiting}}{{if and .Progress (not .Progress.Received)}}{{with .Progress}}<progress max="100" value="{{.Percent}}" title="{{.DoneGB}} of {{.TotalGB}}"></progress>{{end}}{{else}}<progress></progress>{{end}}{{end}}{{end}}
 
 {{/* THE APP CARD: an installed app, its one button, and the way to its page -- unless it is on it.
      An update the catalog offers is a badge, one line and an Update button; on the app's own page

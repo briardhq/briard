@@ -33,15 +33,20 @@ type adminPort interface {
 	Submit(ctx context.Context, d api.Directive) (api.DirectiveOutcome, error)
 }
 
-// serialPort is the real port: opened per request, one request at a time (a serial line has no
-// framing beyond the newline, and the host answers in order). Each request carries a fresh ID
-// and the reader skips any line that is not its answer -- the host answers a stale half-line
-// from a dashboard that died mid-write with an ID-less failure, on purpose.
+// serialPort is the real port: the character device, opened once and kept open, MULTIPLEXED
+// BY ID -- a virtio-serial port has one opener, and an install's request is open for minutes,
+// while the app page's History and Storage are reads the host answers beside it. Each request
+// carries a fresh ID; one reader hands every answer to the request that sent its ID and skips
+// any other line -- the host answers a stale half-line from a dashboard that died mid-write
+// with an ID-less failure, on purpose. When the wire ends, every request waiting on it hears
+// so, and the next request opens it again.
 type serialPort struct {
 	path string
 	// open is how the wire is reached: the character device by default; a test dials a socket.
 	open func() (io.ReadWriteCloser, error)
 	mu   sync.Mutex
+	f    io.ReadWriteCloser                   // the open wire, nil until a request opens it
+	wait map[string]chan api.DirectiveOutcome // the requests on it, by ID
 }
 
 // errNoAdminPort is a host that offers no port: an older host agent, or a guest not launched by
@@ -60,17 +65,6 @@ func (p *serialPort) openDevice() (io.ReadWriteCloser, error) {
 }
 
 func (p *serialPort) Submit(ctx context.Context, d api.Directive) (api.DirectiveOutcome, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	open := p.open
-	if open == nil {
-		open = p.openDevice
-	}
-	f, err := open()
-	if err != nil {
-		return api.DirectiveOutcome{}, err
-	}
-	defer f.Close()
 	if d.ID == "" {
 		id, err := newSecret()
 		if err != nil {
@@ -82,32 +76,75 @@ func (p *serialPort) Submit(ctx context.Context, d api.Directive) (api.Directive
 	if err != nil {
 		return api.DirectiveOutcome{}, err
 	}
+	answer := make(chan api.DirectiveOutcome, 1)
+	p.mu.Lock()
+	if p.f == nil {
+		open := p.open
+		if open == nil {
+			open = p.openDevice
+		}
+		f, err := open()
+		if err != nil {
+			p.mu.Unlock()
+			return api.DirectiveOutcome{}, err
+		}
+		p.f, p.wait = f, map[string]chan api.DirectiveOutcome{}
+		go p.read(f)
+	}
+	p.wait[d.ID] = answer
 	// A leading newline ends whatever a previous writer left unfinished on the line.
-	if _, err := f.Write(append(append([]byte{'\n'}, raw...), '\n')); err != nil {
+	_, err = p.f.Write(append(append([]byte{'\n'}, raw...), '\n'))
+	if err != nil {
+		delete(p.wait, d.ID)
+	}
+	p.mu.Unlock()
+	if err != nil {
 		return api.DirectiveOutcome{}, fmt.Errorf("write to the admin port: %w", err)
 	}
-	// The port is pollable, so the context can cut a read short; where it is not, the deadline
-	// is refused and the read simply waits, as the CLI does.
-	if dl, ok := f.(interface{ SetReadDeadline(time.Time) error }); ok {
-		stop := context.AfterFunc(ctx, func() { _ = dl.SetReadDeadline(time.Now()) })
-		defer stop()
+	select {
+	case o, ok := <-answer:
+		if !ok {
+			return api.DirectiveOutcome{}, errors.New("the admin port closed before the host answered")
+		}
+		return o, nil
+	case <-ctx.Done():
+		// The host's late answer finds no one waiting and is skipped.
+		p.mu.Lock()
+		if p.wait != nil {
+			delete(p.wait, d.ID)
+		}
+		p.mu.Unlock()
+		return api.DirectiveOutcome{}, ctx.Err()
 	}
+}
+
+// read is the wire's one reader: every answer to the request that sent its ID, until the wire
+// ends -- then every request still waiting is told, and the next request opens it again.
+func (p *serialPort) read(f io.ReadWriteCloser) {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	for sc.Scan() {
 		var o api.DirectiveOutcome
-		if err := json.Unmarshal(sc.Bytes(), &o); err != nil || o.ID != d.ID {
+		if err := json.Unmarshal(sc.Bytes(), &o); err != nil || o.ID == "" {
 			continue
 		}
-		return o, nil
-	}
-	if err := sc.Err(); err != nil {
-		if ctx.Err() != nil {
-			return api.DirectiveOutcome{}, ctx.Err()
+		p.mu.Lock()
+		answer := p.wait[o.ID]
+		delete(p.wait, o.ID)
+		p.mu.Unlock()
+		if answer != nil {
+			answer <- o
 		}
-		return api.DirectiveOutcome{}, fmt.Errorf("read from the admin port: %w", err)
 	}
-	return api.DirectiveOutcome{}, errors.New("the admin port closed before the host answered")
+	p.mu.Lock()
+	if p.f == f {
+		for _, answer := range p.wait {
+			close(answer)
+		}
+		p.f, p.wait = nil, nil
+	}
+	p.mu.Unlock()
+	_ = f.Close()
 }
 
 // install is one app install the dashboard asked the host for, from the click until the
@@ -144,13 +181,13 @@ type installView struct {
 }
 
 // Phase is the install's one word: waiting behind another app of its set, downloading while
-// the host's record says bytes are moving, and installing for the rest -- the app starting
-// and being checked, which has no fraction to show.
+// bytes are still arriving, and installing for the rest -- the last layers unpacked, the app
+// started and checked, none of which has a fraction to show.
 func (v installView) Phase() string {
 	switch {
 	case v.Waiting:
 		return "Waiting"
-	case v.Progress != nil:
+	case v.Progress != nil && !v.Progress.Received:
 		return "Downloading"
 	}
 	return "Installing"
