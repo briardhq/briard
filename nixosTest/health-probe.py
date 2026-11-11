@@ -150,7 +150,7 @@ def unit(prop):
 def observe():
     s = {"t": None}
     st, _, lat = get("/manifest.json")
-    s["door"], s["door_ms"] = st, round(lat * 1000)
+    s["http"], s["http_ms"] = st, round(lat * 1000)
     tok = access()
     s["auth"] = tok is not None
     if tok:
@@ -202,11 +202,11 @@ def main():
             samples.append(s)
             log(json.dumps(s))
             time.sleep(EVERY)
-        up = [s["t"] for s in samples if s["door"] == 200]
+        up = [s["t"] for s in samples if s["http"] == 200]
         tail = [s for s in samples if s["t"] >= WINDOW - 60]
         matrix[fault] = {
-            "door_first_200_s": up[0] if up else None,
-            "door_200_share_last_60s": round(sum(s["door"] == 200 for s in tail) / len(tail), 2),
+            "http_first_200_s": up[0] if up else None,
+            "http_200_share_last_60s": round(sum(s["http"] == 200 for s in tail) / len(tail), 2),
             "restarts": samples[-1]["restarts"],
             "last": samples[-1],
         }

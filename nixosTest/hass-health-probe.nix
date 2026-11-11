@@ -5,7 +5,7 @@
 # mode keeps its frontend serving. This rig does not decide; it breaks Home Assistant one way at a
 # time and records what every candidate signal says, so the signal is chosen from evidence:
 #
-#   - the door, `/manifest.json` (today's healthPath): status and latency;
+#   - the HTTP endpoint, `/manifest.json` (today's healthPath): status and latency;
 #   - `/api/config`: `state`, `recovery_mode`, `safe_mode`;
 #   - config entries by state (`loaded`, `setup_error`, `setup_retry`, ...);
 #   - ERROR lines in `/api/error_log`;
@@ -66,7 +66,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_until_succeeds("curl -fsS -o /dev/null ${ha}${fixture.healthPath}", timeout=300)
 
     # Up means the briard integration is set up too -- its view exists only then, which is later
-    # than the door answering (hass-payload records the trap).
+    # than the HTTP endpoint answering (hass-payload records the trap).
     token = node1.succeed("cat /run/briard/home-assistant/token").strip()
     node1.wait_until_succeeds(
         "curl -fsS -X POST ${ha}/auth/token "
@@ -87,18 +87,18 @@ pkgs.testers.runNixOSTest {
     print(node1.succeed("cat /tmp/health-probe.log"))
     matrix = json.loads(out.strip().splitlines()[-1])
 
-    print("fault                      door 1st200  door%60s  restarts  unit        auth  api  state     recovery safe  errors  corrupt  entries")
+    print("fault                      http 1st200  http%60s  restarts  unit        auth  api  state     recovery safe  errors  corrupt  entries")
     for fault, r in matrix.items():
         last = r["last"]
         print(
-            f"{fault:<26} {str(r['door_first_200_s']):>9}  {r['door_200_share_last_60s']:>8}  {r['restarts']:>8}  "
+            f"{fault:<26} {str(r['http_first_200_s']):>9}  {r['http_200_share_last_60s']:>8}  {r['restarts']:>8}  "
             f"{last.get('unit', '?'):<10}  {str(last.get('auth')):<5} {str(last.get('api_status')):<4} {str(last.get('state')):<9} "
             f"{str(last.get('recovery')):<8} {str(last.get('safe')):<5} {str(last.get('errors')):>6}  {len(last.get('corrupt') or []):>7}  "
             f"{last.get('entries')}"
         )
 
     base = matrix["baseline"]["last"]
-    assert matrix["baseline"]["door_200_share_last_60s"] == 1 and base.get("auth") and str(base.get("state")).upper() == "RUNNING" \
+    assert matrix["baseline"]["http_200_share_last_60s"] == 1 and base.get("auth") and str(base.get("state")).upper() == "RUNNING" \
         and not base.get("recovery"), f"the control is not healthy, so nothing above means anything: {matrix['baseline']}"
 
     # A CRASHED HOME ASSISTANT IS RESTARTED, the one product claim this probe carries. Under
