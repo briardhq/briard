@@ -127,7 +127,8 @@ func newRig(t *testing.T) *rig {
 	raw, _ = json.Marshal(h)
 	must(t, os.WriteFile(filepath.Join(dir, "handoff.json"), raw, 0o600))
 	a := newApp(filepath.Join(dir, "routes.json"), filepath.Join(dir, "handoff.json"), filepath.Join(dir, "state"), filepath.Join(dir, "token"))
-	a.viewWait = 0 // the fake host pushes nothing unless a test says so; the wait has its own test
+	a.viewWait = 0                                    // the fake host pushes nothing unless a test says so; the wait has its own test
+	a.snapshotsPath = filepath.Join(dir, "snapshots") // the volume's History directory; uninstalled() fills it
 	srv := httptest.NewServer(a)
 	t.Cleanup(srv.Close)
 	r := &rig{t: t, ha: ha, app: a, srv: srv, dir: dir, code: code, haURL: u}

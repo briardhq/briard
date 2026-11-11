@@ -503,6 +503,23 @@ var galleryStates = []galleryState{
 			must(t, os.Remove(r.app.catalogPath))
 			return apps(t, r, c, port)
 		}},
+	{"apps-kept", "Mosquitto uninstalled yesterday: its card says its data is kept and until when, with Delete now.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			r.uninstalled(t, "mosquitto", galleryClock.Add(-24*time.Hour))
+			return apps(t, r, c, port)
+		}},
+	{"uninstall", "The step between pressing Uninstall on an app's page and the uninstall: what is kept, until when, and what goes now.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			answerUsage(port, "[]").set(dashboard.AppUsage{Data: &dashboard.TierUsage{Total: 1.84e9, Measured: true, Current: 1.21e9}})
+			return "/uninstall?" + url.Values{"app": {"home-assistant"}}.Encode(), c
+		}},
+	{"uninstall-kept", "The step before Delete now deletes what an uninstall kept.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			r.uninstalled(t, "mosquitto", galleryClock.Add(-24*time.Hour))
+			return "/uninstall?" + url.Values{"app": {"mosquitto"}, "now": {"yes"}}.Encode(), c
+		}},
 	{"home-first-run-no-index", "The first screen on a machine whose host has not read the catalog: nothing to choose from yet.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			notInstalled(t, r)
@@ -677,11 +694,10 @@ func TestGallery(t *testing.T) {
 			path, cookie := s.render(t, r, c, port)
 			method := "GET"
 			var body io.Reader
-			if strings.HasPrefix(path, "/undo?") {
-				// The confirm page answers a POST; the form is carried in the query here only
+			if p, form, ok := strings.Cut(path, "?"); ok && (p == "/undo" || p == "/uninstall") {
+				// A confirm page answers a POST; the form is carried in the query here only
 				// to keep the table's shape.
-				method, body = "POST", strings.NewReader(strings.TrimPrefix(path, "/undo?"))
-				path = "/undo"
+				method, body, path = "POST", strings.NewReader(form), p
 			}
 			req, _ := http.NewRequest(method, r.srv.URL+path, body)
 			req.Host = routes.BareFlockHostName // the gallery is seen as a browser on the alias sees it

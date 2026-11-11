@@ -112,7 +112,7 @@ func (a *app) showUninstall(w http.ResponseWriter, r *http.Request, v uninstallV
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if v.Installed {
-		v.Until = keptUntil(time.Now())
+		v.Until = keptUntil(a.now())
 		if o, err := a.port.Submit(ctx, api.Directive{Kind: api.DirectiveAppUsage, Payload: v.App}); err == nil && o.State == api.OutcomeDone {
 			var u dashboard.AppUsage
 			if json.Unmarshal([]byte(o.Detail), &u) == nil {
