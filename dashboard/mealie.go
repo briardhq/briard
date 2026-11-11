@@ -94,6 +94,11 @@ func (a *app) mealieUser(ctx context.Context, s routes.App) (string, error) {
 	}
 	a.mealieMu.Lock()
 	defer a.mealieMu.Unlock()
+	// The check runs to its end even when the door stops waiting: the first one makes briard's own
+	// account an admin, which takes seconds, and a check abandoned partway would leave the next to
+	// start over, or Mealie mid-change with the lock already released.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
 	m := mealieAPI{base: base.String(), client: &http.Client{Timeout: 10 * time.Second}}
 	var info struct {
 		IsFirstLogin bool `json:"isFirstLogin"`
@@ -161,7 +166,13 @@ func (m mealieAPI) takeOver(ctx context.Context, own string, first mealieAccount
 		}
 		if err := m.do(ctx, http.MethodPut, "/api/users/password", tok.AccessToken, nil,
 			map[string]string{"currentPassword": mealieFirstPassword, "newPassword": pw}, nil); err != nil {
-			return fmt.Errorf("change the password of Mealie's first account: %w", err)
+			// A change that lost a race to an earlier check's -- one the door stopped waiting for,
+			// which Mealie finished all the same -- is refused for the password it was given: the
+			// shipped one, refused at sign-in now, is that same end. Only that refusal says so.
+			var st mealieStatus
+			if again := m.do(ctx, http.MethodPost, "/api/auth/token", "", nil, form, nil); !errors.As(again, &st) || st.code != http.StatusUnauthorized {
+				return fmt.Errorf("change the password of Mealie's first account: %w", err)
+			}
 		}
 	}
 	first.raw["fullName"], first.raw["email"] = acct.Name, acct.Username+"@"+emailDomain
@@ -201,6 +212,16 @@ func (a *app) inMealie(ctx context.Context, stdin string, args ...string) ([]byt
 	cmd := exec.CommandContext(ctx, "podman", append([]string{"exec", "-i", quadlet.ContainerName(mealie.Name, mealie.Container)}, args...)...)
 	cmd.Stdin = strings.NewReader(stdin)
 	return cmd.CombinedOutput()
+}
+
+// mealieStatus is an answer from Mealie's API other than a 2xx.
+type mealieStatus struct {
+	method, path string
+	code         int
+}
+
+func (e mealieStatus) Error() string {
+	return fmt.Sprintf("%s %s answered %d", e.method, e.path, e.code)
 }
 
 var errMealieStarting = errors.New("Mealie is still starting; try again in a moment")
@@ -247,7 +268,7 @@ func (m mealieAPI) do(ctx context.Context, method, path, token string, header ht
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("%s %s answered %d", method, strings.SplitN(path, "?", 2)[0], resp.StatusCode)
+		return mealieStatus{method, strings.SplitN(path, "?", 2)[0], resp.StatusCode}
 	}
 	if out == nil {
 		return nil

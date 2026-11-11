@@ -31,6 +31,8 @@ type fakeMealie struct {
 	pwLogins   int      // password sign-ins tried, which Mealie counts toward locking an account
 	made       int
 	failRename bool
+	beatenTo   bool // another check's password change lands just before the next one
+	failChange bool // a password change fails with the password unchanged (Mealie's "Failed to update")
 	secret     string
 }
 
@@ -117,7 +119,10 @@ func (f *fakeMealie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/api/users/password" && r.Method == http.MethodPut:
 		var b struct{ CurrentPassword, NewPassword string }
 		_ = json.NewDecoder(r.Body).Decode(&b)
-		if b.CurrentPassword != me.password || len(b.NewPassword) < 8 {
+		if f.beatenTo {
+			me.password, me.since = "set-by-the-check-before", len(f.tokens)
+		}
+		if f.failChange || b.CurrentPassword != me.password || len(b.NewPassword) < 8 {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -314,6 +319,44 @@ func TestATakeoverCutShortIsFinishedByTheNextCheck(t *testing.T) {
 	f.failRename = false
 	if status, user := check(r, c); status != http.StatusOK || user != "admin" || f.users[0].email != "kostas@briard.local" {
 		t.Fatalf("the next check = %d %q", status, user)
+	}
+}
+
+// A PASSWORD CHANGE BEATEN TO IT BY AN EARLIER CHECK'S -- one the door stopped waiting for, which
+// Mealie finished all the same -- is that same end: the takeover goes on to the rename. A change
+// that failed with the shipped password still answering refuses the check.
+func TestAPasswordChangeBeatenToItFinishesTheTakeover(t *testing.T) {
+	r, f := mealieRig(t)
+	f.beatenTo = true
+	c := r.trust()
+	if status, user := check(r, c); status != http.StatusOK || user != "admin" || f.users[0].email != "kostas@briard.local" {
+		t.Fatalf("check beaten to the password change = %d %q", status, user)
+	}
+
+	r, f = mealieRig(t)
+	f.failChange = true
+	c = r.trust()
+	if status, body := check(r, c); status != http.StatusServiceUnavailable || !strings.Contains(body, "change the password") {
+		t.Fatalf("check whose password change failed = %d %q, want 503", status, body)
+	}
+	if f.users[0].password != mealieFirstPassword || f.users[0].email != mealieFirstEmail {
+		t.Fatalf("a failed password change went on to the rename: %+v", *f.users[0])
+	}
+}
+
+// A CHECK THE DOOR STOPPED WAITING FOR RUNS TO ITS END: the door gives up while Mealie's admin
+// tool runs, and the takeover is finished all the same.
+func TestACheckTheDoorStoppedWaitingForStillFinishes(t *testing.T) {
+	r, f := mealieRig(t)
+	r.trust()
+	ctx, cancel := context.WithCancel(context.Background())
+	r.app.mealieExec = func(c context.Context, stdin string, args ...string) ([]byte, error) {
+		cancel()
+		return f.makeAdmin(c, stdin, args...)
+	}
+	user, err := r.app.mealieUser(ctx, gatedApps(r.app.routesPath)["mealie"])
+	if err != nil || user != "admin" || f.users[0].password == mealieFirstPassword || f.users[0].email != "kostas@briard.local" {
+		t.Fatalf("a check the door stopped waiting for = %q, %v; first account %+v", user, err, *f.users[0])
 	}
 }
 
