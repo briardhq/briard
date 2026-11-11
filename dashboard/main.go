@@ -900,14 +900,28 @@ func (v view) Installable() []*appView {
 }
 func (v view) Soon() []*appView { return v.pick(func(a *appView) bool { return !a.Available }) }
 
-// RunningApps are the home page's list: every installed app, one row each.
-func (v view) RunningApps() []*appView { return v.pick(func(a *appView) bool { return a.Installed }) }
+// HomeApps are the home page's list: every installed app and every app on its way in, one row
+// each -- an install is a row that turns into a running app, never a card of its own.
+func (v view) HomeApps() []*appView {
+	return v.pick(func(a *appView) bool { return a.Installed || a.Install != nil && a.Install.Running })
+}
 
-// AppsMoving says a row of the list is changing on its own -- an update on its way, Home
-// Assistant starting -- so the list refreshes itself until it is not.
+// AppsTitle names the list for what is in it.
+func (v view) AppsTitle() string {
+	switch {
+	case v.Installing == nil:
+		return "Apps running"
+	case v.InstalledCount == 0:
+		return "Installing apps"
+	}
+	return "Apps running and installing"
+}
+
+// AppsMoving says a row of the list is changing on its own -- an install or an update on its
+// way, Home Assistant starting -- so the list refreshes itself until it is not.
 func (v view) AppsMoving() bool {
 	return len(v.pick(func(a *appView) bool {
-		return a.Installed && (a.Install != nil && a.Install.Running || a.HA != nil && !a.HA.Running)
+		return a.Install != nil && a.Install.Running || a.Installed && a.HA != nil && !a.HA.Running
 	})) > 0
 }
 
@@ -961,7 +975,7 @@ func (v view) Status() string {
 	case v.Stage == "choose":
 		return "Briard is installed and running. Nothing else is, yet."
 	case v.Stage == "installing":
-		return v.Installing.Title + " is installing in the background. This page follows along."
+		return "Your apps are on their way."
 	case v.Alerts != nil && len(v.Alerts.Open) == 1:
 		return "One thing needs your attention."
 	case v.Alerts != nil && len(v.Alerts.Open) > 1:

@@ -1802,6 +1802,10 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 	if pulling < 0 || warm < 0 || pulled < 0 || !(pulling < warm && warm < pulled) {
 		t.Fatalf("the pull record does not bracket the warm: %v", f.steps)
 	}
+	// ...and goes before the app starts, so the dashboard's bar is not held through the start.
+	if conv := strings.Index(joined, "converge"); conv < 0 || pulled > conv {
+		t.Fatalf("the pull record outlives the warm into the start: %v", f.steps)
+	}
 	// Cannot measure: installs, unmeasured.
 	f = &fakeInstaller{primary: true, active: true, healthy: true, freeErr: errors.New("df: no such file")}
 	if o := installApp(catalogFor(t, m), f); o.State != api.OutcomeDone {

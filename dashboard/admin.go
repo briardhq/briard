@@ -136,10 +136,24 @@ type installView struct {
 	Waiting bool
 	Detail  string
 	Since   string
-	// Progress is the pull so far; nil when the host left no total to measure against.
+	// Progress is the pull so far; nil when no download is on: the host clears its record once
+	// the images are in, and an image already here is never downloaded.
 	Progress *progressView
 	// Next names the apps waiting behind this one, for the card of the one on its way.
 	Next string
+}
+
+// Phase is the install's one word: waiting behind another app of its set, downloading while
+// the host's record says bytes are moving, and installing for the rest -- the app starting
+// and being checked, which has no fraction to show.
+func (v installView) Phase() string {
+	switch {
+	case v.Waiting:
+		return "Waiting"
+	case v.Progress != nil:
+		return "Downloading"
+	}
+	return "Installing"
 }
 
 // requestInstall is the Install button, and with update the Update button: one install in

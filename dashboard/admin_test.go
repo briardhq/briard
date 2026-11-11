@@ -203,8 +203,10 @@ func TestTheChooserInstallsASetAsOneAct(t *testing.T) {
 		t.Fatalf("the host was asked %+v; want one install of files then home-assistant, and nothing it cannot install", asked)
 	}
 	_, home = get(t, r, "/", c)
-	if !strings.Contains(home, `hx-get="/f/install?app=files"`) || !strings.Contains(home, "Then Home Assistant, one after another.") {
-		t.Errorf("the page does not show Files on its way and Home Assistant behind it:\n%s", home)
+	// One list: Files on its way, Home Assistant waiting behind it, and no card of their own.
+	fileRow, waitRow := strings.Index(home, "Files <span"), strings.Index(home, `Home Assistant <span class="badge" data-variant="secondary">Waiting</span>`)
+	if !strings.Contains(home, "<h2>Installing apps</h2>") || fileRow < 0 || waitRow < 0 || strings.Contains(home, `hx-get="/f/install`) || !strings.Contains(home, `hx-get="/f/apps-running"`) {
+		t.Errorf("the page does not list Files on its way and Home Assistant waiting behind it:\n%s", home)
 	}
 	port.answer <- api.DirectiveOutcome{ID: asked[0].ID, State: api.OutcomeFailed, Detail: "installed files; home-assistant: did not start"}
 	deadline := time.Now().Add(5 * time.Second)

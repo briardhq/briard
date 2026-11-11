@@ -422,6 +422,14 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 			return failed(fmt.Sprintf("warm image (%s): %v", u, err))
 		}
 	}
+	// The images are in: the record goes now, not at the end, so the dashboard says the app is
+	// installing rather than holding a download bar at its last percent while it starts. The
+	// deferred clear above stays for the exits before this line.
+	if m.Size > 0 && g.SupportsAppPulling() {
+		if err := g.AppPulled(ctx, m.Name); err != nil {
+			logf("app install %s: clear pull record: %v", m.Name, err)
+		}
+	}
 
 	// The subvolume and the manifest live on the replicated volume, which only the Primary has
 	// mounted. A secondary legitimately stops here: it has its units and will get the data by

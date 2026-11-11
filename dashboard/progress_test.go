@@ -52,7 +52,7 @@ func TestPullProgressAddsFinishedLayersAndTheOneInFlight(t *testing.T) {
 	<-port.waiting
 	body := r.page(c)
 	// 120 + 80 finished + 40 in flight = 240 of 600 -> 40 %.
-	if !strings.Contains(body, "240 MB of 600 MB downloaded (40%)") || !strings.Contains(body, `<progress max="100" value="40">`) {
+	if !strings.Contains(body, ">Downloading</span>") || !strings.Contains(body, `<progress max="100" value="40" title="240 MB of 600 MB">`) {
 		t.Errorf("the Installing card does not show the pull's progress: %s", body)
 	}
 	// The in-flight layer completes: tmp empties, the store gains it, the number does not fall.
@@ -60,21 +60,22 @@ func TestPullProgressAddsFinishedLayersAndTheOneInFlight(t *testing.T) {
 	layers = append(layers, map[string]any{"id": "e", "compressed-size": 40e6, "created": started.Add(30 * time.Second).Format(time.RFC3339Nano)})
 	raw, _ = json.Marshal(layers)
 	must(t, os.WriteFile(r.app.pulls.layers, raw, 0o644))
-	if body = r.page(c); !strings.Contains(body, "(40%)") {
+	if body = r.page(c); !strings.Contains(body, `value="40"`) {
 		t.Errorf("progress fell when a layer moved from tmp to the store: %s", body)
 	}
 	// Never 100 from bytes alone: the last percent is the routes table.
 	layers = append(layers, map[string]any{"id": "f", "compressed-size": 400e6, "created": started.Add(40 * time.Second).Format(time.RFC3339Nano)})
 	raw, _ = json.Marshal(layers)
 	must(t, os.WriteFile(r.app.pulls.layers, raw, 0o644))
-	if body = r.page(c); !strings.Contains(body, "(99%)") {
+	if body = r.page(c); !strings.Contains(body, `value="99"`) {
 		t.Errorf("bytes alone reached 100%%: %s", body)
 	}
-	// No record (an older host): the card says installing, with no number and no bar.
+	// No record -- the host cleared it with the images in, and the app is starting: the row
+	// says installing, and its bar only moves.
 	must(t, os.Remove(filepath.Join(pullDir, "pull-home-assistant.json")))
 	body = r.page(c)
-	if !strings.Contains(body, "Installing") || strings.Contains(body, "<progress") || strings.Contains(body, "downloaded") {
-		t.Errorf("without a pull record the card still draws a bar: %s", body)
+	if !strings.Contains(body, ">Installing</span>") || !strings.Contains(body, "<progress></progress>") || strings.Contains(body, "<progress max=") {
+		t.Errorf("without a pull record the row does not say installing with a moving bar: %s", body)
 	}
 	port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "x"}
 }

@@ -53,10 +53,18 @@
 .item-group > .item { @apply px-3 py-2; }
 .when { @apply text-xs text-muted-foreground whitespace-nowrap; }
 code { @apply font-mono text-[.95em]; }
-progress { @apply w-full h-2 rounded-full overflow-hidden; }
+progress { @apply w-full h-2 rounded-full overflow-hidden appearance-none border-0; background: var(--muted); }
 progress::-webkit-progress-bar { background: var(--muted); }
 progress::-webkit-progress-value { background: var(--primary); }
 progress::-moz-progress-bar { background: var(--primary); }
+/* A bar with no value -- work with no fraction to show -- is a short stretch of the colour
+   sliding to and fro, so it reads as moving, never as stuck at a number. */
+progress:indeterminate { background: linear-gradient(var(--primary), var(--primary)) var(--muted) no-repeat; background-size: 30% 100%; animation: sliding 1.2s ease-in-out infinite alternate; }
+progress:indeterminate::-webkit-progress-bar { background: transparent; }
+progress:indeterminate::-moz-progress-bar { background: transparent; }
+@keyframes sliding { from { background-position: 0 0; } to { background-position: 100% 0; } }
+/* In a row the bar is under the line that says what the app does. */
+.item progress { @apply mt-2; }
 /* THE KEY: one click selects the whole of it -- the page is plain http, where the clipboard
    API is not offered. The join code is the same shape, larger. */
 .key { @apply font-mono text-base tracking-wide select-all break-all; }

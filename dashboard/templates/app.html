@@ -12,12 +12,16 @@
 {{/* THE TITLE LINE of every card: the app's mark, its name, and in brand-less words what it does. */}}
 {{define "app-title"}}{{with .Icon}}<img class="app-icon" src="{{.}}" alt="">{{end}}{{.Title}}{{end}}
 
-{{/* INSTALLING: the app on its way, with the pull's progress when the host left a record. */}}
+{{/* INSTALLING: the app on its way -- its phase in a word, and a bar: the download's fraction,
+     then, while it starts, a bar that only moves. */}}
 {{define "installing"}}
-  <div class="card" hx-get="/f/install?app={{.Name}}" hx-trigger="every 5s" hx-swap="outerHTML"><header><h2>{{template "app-title" .}}</h2><p>{{with .Install}}{{with .Progress}}Installing · {{.DoneGB}} of {{.TotalGB}} downloaded ({{.Percent}}%){{else}}Installing · downloading it, which takes a minute or two{{end}}{{end}}</p></header><section>
-    {{with .Install}}{{with .Progress}}<progress max="100" value="{{.Percent}}"></progress>{{end}}{{with .Next}}<p>Then {{.}}, one after another.</p>{{end}}<p class="note">Started at {{.Since}}. You can close this page; Briard carries on, and this page follows along while it is open.</p>{{end}}
+  <div class="card" hx-get="/f/install?app={{.Name}}" hx-trigger="every 5s" hx-swap="outerHTML"><header><h2>{{template "app-title" .}} <span class="badge" data-variant="secondary">{{.Install.Phase}}</span></h2>{{with .Functionality}}<p>{{.}}</p>{{end}}</header><section>
+    {{with .Install}}{{template "install-bar" .}}{{with .Next}}<p class="note">Then {{.}}.</p>{{end}}{{end}}
   </section></div>
 {{end}}
+
+{{/* THE INSTALL BAR: the download's fraction, or a bar that only moves while the app starts. */}}
+{{define "install-bar"}}{{if not .Waiting}}{{with .Progress}}<progress max="100" value="{{.Percent}}" title="{{.DoneGB}} of {{.TotalGB}}"></progress>{{else}}<progress></progress>{{end}}{{end}}{{end}}
 
 {{/* THE APP CARD: an installed app, its one button, and the way to its page -- unless it is on it.
      An update the catalog offers is a badge, one line and an Update button; on the app's own page
@@ -41,15 +45,16 @@
   </footer></div>
 {{end}}
 
-{{/* APPS RUNNING: the home page's list, one row per installed app -- its mark, a badge when
-     something is happening to it, Open for an app with a page of its own, and Details, where its
-     card says the rest. The list refreshes itself while a row is moving. */}}
+{{/* THE APPS: the home page's list, one row per app installed or on its way in -- its mark, a badge
+     when something is happening to it, Open for an app with a page of its own, and Details, where
+     its card says the rest. An app on its way has its phase for a badge and the install's bar
+     under its line. The list refreshes itself while a row is moving. */}}
 {{define "apps-running"}}
-  <div class="card"{{if .AppsMoving}} hx-get="/f/apps-running" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>Apps running</h2></header><section><div class="item-group">
-    {{range $i, $a := .RunningApps}}{{if $i}}<hr>{{end}}<div class="item"><section><h3>{{template "app-title" .}}{{if and .Install .Install.Running}} <span class="badge" data-variant="secondary">Updating</span>{{else if and .Install .Install.Failed .Install.Update}} <span class="badge" data-variant="destructive">Update did not finish</span>{{else if .Offering}} <span class="badge" data-variant="secondary">Update available</span>{{else if and .HA (not .HA.Running)}} <span class="badge" data-variant="secondary">Starting</span>{{end}}</h3>{{with .Functionality}}<p>{{.}}</p>{{end}}</section><aside>
+  <div class="card"{{if .AppsMoving}} hx-get="/f/apps-running" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>{{.AppsTitle}}</h2></header><section><div class="item-group">
+    {{range $i, $a := .HomeApps}}{{if $i}}<hr>{{end}}{{if and .Install .Install.Running (not .Install.Update)}}<div class="item"><section><h3>{{template "app-title" .}} <span class="badge" data-variant="secondary">{{.Install.Phase}}</span></h3>{{with .Functionality}}<p>{{.}}</p>{{end}}{{template "install-bar" .Install}}</section></div>{{else}}<div class="item"><section><h3>{{template "app-title" .}}{{if and .Install .Install.Running}} <span class="badge" data-variant="secondary">Updating</span>{{else if and .Install .Install.Failed .Install.Update}} <span class="badge" data-variant="destructive">Update did not finish</span>{{else if .Offering}} <span class="badge" data-variant="secondary">Update available</span>{{else if and .HA (not .HA.Running)}} <span class="badge" data-variant="secondary">Starting</span>{{end}}</h3>{{with .Functionality}}<p>{{.}}</p>{{end}}</section><aside>
       {{with .HA}}{{if .Reachable}}<form method="post" action="/open/home-assistant" target="_blank"><button type="submit" class="btn" aria-label="Open Home Assistant" title="Open Home Assistant"{{if not .Running}} disabled{{end}}>Open</button></form>{{end}}{{end}}
       {{if and .Gated (not (and .Install .Install.Running))}}<a class="btn" href="/open/{{.Name}}" target="_blank" rel="noopener" aria-label="Open {{.Title}}" title="Open {{.Title}}">Open</a>{{end}}
-      <a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a></aside></div>{{end}}
+      <a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a></aside></div>{{end}}{{end}}
   </div></section></div>
 {{end}}
 
