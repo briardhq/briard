@@ -10,8 +10,9 @@
 #      Mealie ships with works on its API before, and neither it nor anything else does after;
 #   3. THE USER GETS IN WITH THE DASHBOARD'S SESSION AND NOTHING ELSE: a stranger is sent to the
 #      dashboard, a request at the pod without the door's secret is refused, and a trusted browser
-#      is signed in as the record's user -- an admin, with the placeholder email -- on the `.local`
-#      name and on the casa name, into the same account;
+#      is signed in as Mealie's first account -- an admin, keeping its username, with the record's
+#      name and placeholder email -- on the `.local` name and on the casa name, into the same
+#      account;
 #   4. THE EMAIL IS THE USER'S TO CHANGE: changed inside Mealie, the next sign-in lands on the same
 #      account;
 #   5. NEVER LOCKED IN: the same data, under a plain Mealie with none of briard's settings, gives
@@ -148,12 +149,12 @@ pkgs.testers.runNixOSTest {
         return json.loads(body), tok, app_cookie
 
     me, tok, app_cookie = sign_in("briard.local", MEALIE, session)
-    assert (me["username"], me["fullName"], me["email"], me["admin"], me["authMethod"]) == ("kostas", "Kostas", "kostas@briard.local", True, "Mealie"), me
+    assert (me["username"], me["fullName"], me["email"], me["admin"], me["authMethod"]) == ("admin", "Kostas", "kostas@briard.local", True, "Mealie"), me
     first_id = me["id"]
 
     # (2) AFTER IT: the shipped password opens nothing, under either name, and the first-login
     # wizard is over.
-    assert seed_login() == 401 and seed_login("kostas") == 401, "the first account still answers the shipped password"
+    assert seed_login() == 401, "the first account still answers the shipped password"
     assert json.loads(at_pod("/api/app/about/startup-info")[1])["isFirstLogin"] is False
 
     # (4) THE EMAIL IS A FIELD: changed inside Mealie, the next sign-in is the same account.
@@ -170,7 +171,7 @@ pkgs.testers.runNixOSTest {
     casa_session = header(hd, "Set-Cookie").split(";")[0]
     assert code == 303 and casa_session.startswith("briard_session="), hd
     casa_me, _, _ = sign_in(CASA, MEALIE_CASA, casa_session, https=True)
-    assert casa_me["id"] == first_id and casa_me["username"] == "kostas", casa_me
+    assert casa_me["id"] == first_id and casa_me["username"] == "admin", casa_me
 
     # (5) NEVER LOCKED IN: briard's Mealie stopped, the same image on the same data with nothing of
     # briard's, and Mealie's own recovery script gives the account a password.
@@ -182,7 +183,7 @@ pkgs.testers.runNixOSTest {
     plain = json.loads(node1.succeed("curl -fsS http://127.0.0.1:9000/api/app/about"))
     assert plain["allowPasswordLogin"] is True and plain["enableReverseProxyAuth"] is False, plain
     node1.succeed("printf 'kostas@example.org\\nnew-password-1\\nnew-password-1\\n\\n' | podman exec -i plain /opt/mealie/bin/python -m mealie.scripts.change_password")
-    out = node1.succeed("curl -fsS -X POST -d username=kostas -d password=new-password-1 http://127.0.0.1:9000/api/auth/token")
+    out = node1.succeed("curl -fsS -X POST -d username=admin -d password=new-password-1 http://127.0.0.1:9000/api/auth/token")
     tok = json.loads(out)["access_token"]
     me = json.loads(node1.succeed(f"curl -fsS -H 'Authorization: Bearer {tok}' http://127.0.0.1:9000/api/users/self"))
     assert me["id"] == first_id and me["admin"] is True, me
@@ -195,18 +196,20 @@ pkgs.testers.runNixOSTest {
         node1.succeed(f"systemctl start {unit}")
     node1.wait_until_succeeds(f"curl -fsS http://{pod}/api/app/about", timeout=300)
     assert json.loads(at_pod("/api/app/about/startup-info")[1])["isFirstLogin"] is True, "the emptied Mealie is not at its first account"
-    deadline = time.monotonic() + 120  # the door keeps its last answer for half a minute
+    # The door may still hold its last answer, `admin`, for half a minute, and that name is the new
+    # first account's too: a sign-in in that window lands on it before the takeover, which the next
+    # check makes. So: signed in, and taken over, by requests the browser keeps making.
+    deadline = time.monotonic() + 120
     while True:
         code, _, body = door(MEALIE, "/api/auth/reverse-proxy", app_cookie)
-        if code == 200 or time.monotonic() > deadline:
+        if code == 200 and seed_login() == 401:
             break
+        assert time.monotonic() < deadline, f"the emptied Mealie was not taken over under the kept cookie: {code} {body}"
         time.sleep(5)
-    assert code == 200, f"the kept cookie was not signed in to the emptied Mealie: {code} {body}"
     tok = json.loads(body)["access_token"]
     code, _, body = door(MEALIE, "/api/users/self", app_cookie, f"-H 'Authorization: Bearer {tok}'")
     me = json.loads(body)
-    assert (me["username"], me["admin"]) == ("kostas", True) and me["id"] != first_id, me
-    assert seed_login() == 401, "the emptied Mealie's first account still answers the shipped password"
+    assert (me["username"], me["fullName"], me["admin"]) == ("admin", "Kostas", True) and me["id"] != first_id, me
 
     def accounts(tok):
         """Every Mealie account, as its admin page lists them, through the door as the user."""
@@ -228,6 +231,9 @@ pkgs.testers.runNixOSTest {
                     return me, t
             assert time.monotonic() < deadline, f"the kept cookie is not signed in to {want_id}: {code} {body}"
             time.sleep(5)
+
+    # (6) and nothing else was made on the way: the first account and briard's own.
+    assert sorted(accounts(tok)) == ["admin", "briard-admin"], sorted(accounts(tok))
 
     # (7) A RENAME INSIDE MEALIE IS FOLLOWED: the door's next check reads the user's account off
     # Mealie, so the kept cookie lands on the same account under its new name.

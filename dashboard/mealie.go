@@ -22,9 +22,10 @@ package main
 // its API answers that password even with the login form turned off. While that email is held,
 // the password, if it still answers, is changed to one briard generates and forgets -- as Home
 // Assistant's first account's is -- and then briard's own account gives the first one the
-// record's username, name and placeholder email (account.go), which is what ends Mealie's "first
-// login". It stays an ordinary Mealie account, so the same data under a Mealie anywhere else signs
-// in with the tools Mealie gives everyone.
+// record's name and a placeholder email from its username (account.go), which is what ends
+// Mealie's "first login"; its username stays `admin` (takeOver says why). It stays an ordinary
+// Mealie account, so the same data under a Mealie anywhere else signs in with the tools Mealie
+// gives everyone.
 
 import (
 	"bytes"
@@ -121,12 +122,11 @@ func (a *app) mealieUser(ctx context.Context, s routes.App) (string, error) {
 		return "", err
 	}
 	if info.IsFirstLogin {
-		for i, u := range accounts {
+		for _, u := range accounts {
 			if u.Email == mealieFirstEmail && u.ID != self.ID {
 				if err := m.takeOver(ctx, tok.AccessToken, u, acct); err != nil {
 					return "", err
 				}
-				accounts[i].Username = acct.Username
 			}
 		}
 	}
@@ -139,11 +139,16 @@ func (a *app) mealieUser(ctx context.Context, s routes.App) (string, error) {
 }
 
 // takeOver makes Mealie's first account the user's: its shipped password changed while it still
-// answers it -- the open door, so first -- then its username, name and email the record's.
+// answers it -- the open door, so first -- then its name and email the record's.
+//
+// ITS USERNAME STAYS MEALIE'S `admin`. Nothing matches on it any more, and a name that never
+// changes is one the door's half-minute answer cannot outlive: a Mealie back at its first account
+// is `admin` again, so a sign-in in that half minute lands on it rather than making a stray
+// account of a name it no longer has.
 //
 // A PASSWORD THAT NO LONGER ANSWERS IS NO HOLE: a takeover cut short after it, or a user who
-// changed it, leaves an account nobody signs in to by the shipped password, and the rename, done
-// with briard's own account, needs none.
+// changed it, leaves an account nobody signs in to by the shipped password, and the change of name
+// and email, made with briard's own account, needs none.
 func (m mealieAPI) takeOver(ctx context.Context, own string, first mealieAccount, acct account) error {
 	var tok struct {
 		AccessToken string `json:"access_token"`
@@ -159,7 +164,7 @@ func (m mealieAPI) takeOver(ctx context.Context, own string, first mealieAccount
 			return fmt.Errorf("change the password of Mealie's first account: %w", err)
 		}
 	}
-	first.raw["username"], first.raw["fullName"], first.raw["email"] = acct.Username, acct.Name, acct.Username+"@"+emailDomain
+	first.raw["fullName"], first.raw["email"] = acct.Name, acct.Username+"@"+emailDomain
 	if err := m.do(ctx, http.MethodPut, "/api/admin/users/"+url.PathEscape(first.ID), own, nil, first.raw, nil); err != nil {
 		return fmt.Errorf("make Mealie's first account yours: %w", err)
 	}

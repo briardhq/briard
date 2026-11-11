@@ -202,8 +202,8 @@ func check(r *rig, c *http.Cookie) (int, string) {
 }
 
 // THE DOOR'S CHECK MAKES MEALIE'S FIRST ACCOUNT THE USER'S AND NAMES IT: the shipped password no
-// longer works, the account carries the record's username, name and placeholder email, and
-// briard's own account is an admin beside it. A later check asks Mealie nothing it could count as
+// longer works, the account keeps its username and carries the record's name and placeholder
+// email, and briard's own account is an admin beside it. A later check asks Mealie nothing it could count as
 // a failed login; a check for another app asks Mealie nothing at all.
 func TestTheCheckTakesOverMealiesFirstAccount(t *testing.T) {
 	r, f := mealieRig(t)
@@ -211,11 +211,11 @@ func TestTheCheckTakesOverMealiesFirstAccount(t *testing.T) {
 	if status, _ := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || len(f.users) != 1 || f.users[0].username != "admin" {
 		t.Fatalf("a check for another app = %d and Mealie has %d accounts", status, len(f.users))
 	}
-	if status, user := check(r, c); status != http.StatusOK || user != "kostas" {
+	if status, user := check(r, c); status != http.StatusOK || user != "admin" {
 		t.Fatalf("check = %d %q", status, user)
 	}
 	first := f.users[0]
-	if first.username != "kostas" || first.fullName != "Kostas" || first.email != "kostas@briard.local" || !first.admin || first.authMethod != "Mealie" {
+	if first.username != "admin" || first.fullName != "Kostas" || first.email != "kostas@briard.local" || !first.admin || first.authMethod != "Mealie" {
 		t.Fatalf("Mealie's first account is %+v, want the record's", *first)
 	}
 	if first.password == mealieFirstPassword || len(first.password) < 20 {
@@ -225,7 +225,7 @@ func TestTheCheckTakesOverMealiesFirstAccount(t *testing.T) {
 		t.Fatalf("briard's own account is %+v among %d", own, len(f.users))
 	}
 	logins := f.pwLogins
-	if status, user := check(r, c); status != http.StatusOK || user != "kostas" || f.pwLogins != logins || len(f.users) != 2 {
+	if status, user := check(r, c); status != http.StatusOK || user != "admin" || f.pwLogins != logins || len(f.users) != 2 {
 		t.Fatalf("second check = %d %q, password sign-ins %d -> %d, %d accounts", status, user, logins, f.pwLogins, len(f.users))
 	}
 	// A stranger's token never reaches Mealie.
@@ -294,7 +294,7 @@ func TestAMealieBackAtItsFirstAccountIsTakenOverAgain(t *testing.T) {
 	}
 	fresh := newFakeMealie()
 	f.users, f.made = fresh.users, 100
-	if status, user := check(r, c); status != http.StatusOK || user != "kostas" || f.users[0].password == mealieFirstPassword {
+	if status, user := check(r, c); status != http.StatusOK || user != "admin" || f.users[0].password == mealieFirstPassword {
 		t.Fatalf("check on a Mealie back at its first account = %d %q", status, user)
 	}
 }
@@ -312,7 +312,7 @@ func TestATakeoverCutShortIsFinishedByTheNextCheck(t *testing.T) {
 		t.Fatal("the rename was tried before the password changed")
 	}
 	f.failRename = false
-	if status, user := check(r, c); status != http.StatusOK || user != "kostas" || f.users[0].email != "kostas@briard.local" {
+	if status, user := check(r, c); status != http.StatusOK || user != "admin" || f.users[0].email != "kostas@briard.local" {
 		t.Fatalf("the next check = %d %q", status, user)
 	}
 }
