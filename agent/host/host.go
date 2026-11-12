@@ -432,6 +432,9 @@ type Config struct {
 	// lease holds the flock's address lease on a single-anchor substrate, and the refusal when
 	// the router leases nothing distinct (lease.go). Machinery like beat; nil-safe. Set by Run.
 	lease *vipLeaser
+	// moved says, once, that the service address changed (addressmoved.go). Machinery like beat;
+	// nil-safe. Set by Run.
+	moved *addressWatch
 	// acts runs the directives that leave the loop (acts.go). Machinery like beat; nil-safe, and
 	// nil means everything runs on the loop (tests). Set by Run.
 	acts *actLane
@@ -753,6 +756,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// The flock's lease, on a substrate where the host holds it (lease.go): before bring-up, which
 	// asks it for the address to push.
 	cfg.lease = cfg.newVIPLeaser()
+	cfg.moved = newAddressWatch(cfg.stateDir())
 	// A NODE THAT SPENT TIME DEGRADED RE-RESOLVES ITS IDENTITY, in place. The first
 	// Resolve above ran while this node may have had no path to the cloud at all, so it fell back
 	// to the cache -- possibly an empty one on a first boot. Re-asking now that a network exists
@@ -1580,6 +1584,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cfg.lease.tick(ctx, cfg.acts, up, n, logf)
 		cfg.beat.Beat()
 		vr.reconcile(ctx, vip, logf)
+		cfg.moved.tick(ctx, cfg, vip, n, logf) // a changed address, said once
 		cfg.beat.Beat()
 		cs.tick(ctx, r, vip, logf) // the household's name -- claim poll, address, certificate, the page's view
 		cfg.beat.Beat()
