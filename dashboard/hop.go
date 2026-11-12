@@ -99,7 +99,7 @@ func (a *app) serveHop(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(to, "/") || strings.HasPrefix(to, "//") {
 		to = "/"
 	}
-	u, err := url.Parse("https://" + name + to)
+	u, err := url.Parse(a.casaScheme() + "://" + name + to)
 	if err != nil {
 		http.Error(w, "that is not a path\n", http.StatusBadRequest)
 		return

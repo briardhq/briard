@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"briard.io/agent/files"
 	"briard.io/shared/casa"
@@ -95,15 +96,22 @@ func TestOpeningAGatedAppCarriesTheSessionToItsName(t *testing.T) {
 
 // Opening from the household's name lands on Files' household name, over HTTPS; a host that is
 // not one of the app's is never a destination, and a scheme-relative path is the app's home.
+// With no certificate behind the name (nothing claimed, reached through a private network's own
+// DNS records) it lands there over HTTP.
 func TestOpeningFollowsTheNameAndGoesNowhereElse(t *testing.T) {
 	r := gateRig(t)
 	r.app.casaPath = r.dir + "/casa.json"
-	r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: hopName, Resolves: dashboard.CasaResolves})
+	r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: hopName, Resolves: dashboard.CasaResolves, CertUntil: time.Now().Add(time.Hour)})
 	c := r.trust()
 	resp := r.on(hopName, "/open/files?host=evil.example&to=//evil.example/x", c)
 	loc, _ := url.Parse(resp.Header.Get("Location"))
 	if resp.StatusCode != http.StatusSeeOther || loc.Scheme != "https" || loc.Host != "files.brave-elf.briard.casa" || loc.Path != "/" {
 		t.Fatalf("open on the name = %d %q, want https://files.brave-elf.briard.casa/", resp.StatusCode, loc)
+	}
+	r.hostSays(t, dashboard.Casa{Name: hopName})
+	resp = r.on(hopName, "/open/files?host=files.brave-elf.briard.casa&to=/", c)
+	if loc, _ := url.Parse(resp.Header.Get("Location")); resp.StatusCode != http.StatusSeeOther || loc.Scheme != "http" || loc.Host != "files.brave-elf.briard.casa" {
+		t.Fatalf("open on a name with no certificate = %d %q, want http://files.brave-elf.briard.casa/", resp.StatusCode, loc)
 	}
 }
 

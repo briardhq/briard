@@ -73,6 +73,10 @@ const (
 // gate holds what admitting a request needs: the dashboard to ask, and what it last said.
 type gate struct {
 	dashboard *url.URL // nil: there is no dashboard to ask, so nothing is admitted
+	// certified says whether this proxy holds a certificate to serve the household's name with
+	// (nil: it does not). The sign-in goes over HTTPS whenever it can, and over HTTP only on a
+	// name with no certificate behind it.
+	certified func() bool
 	client    *http.Client
 	now       func() time.Time
 
@@ -150,7 +154,7 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 			http.Error(w, "open this app again from the Briard dashboard\n", http.StatusUnauthorized)
 			return false
 		}
-		http.Redirect(w, req, openURL(req, r.name), http.StatusSeeOther)
+		http.Redirect(w, req, openURL(req, r.name, g.certified != nil && g.certified()), http.StatusSeeOther)
 		return false
 	}
 	key, err := g.key(r.gate)
@@ -176,13 +180,20 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 }
 
 // openURL is where a browser without a session for an app is sent: the dashboard under the name
-// it trusts for this kind of address -- the household's own name for its HTTPS name, the alias
-// for every .local one -- asking to open the app where the browser was going.
-func openURL(req *http.Request, app string) string {
+// it trusts for this kind of address -- the household's own name for its casa name, the alias
+// for every .local one -- asking to open the app where the browser was going. The casa name goes
+// over HTTPS when the proxy holds a certificate (certified), whatever scheme the browser came
+// on, and over HTTP when it does not: a name reached through a private network's own DNS
+// records, with nothing claimed, has no certificate to serve.
+func openURL(req *http.Request, app string, certified bool) string {
 	host := routes.Normalise(req.Host)
 	base := "http://" + routes.BareFlockHostName
 	if strings.HasSuffix(host, "."+casa.Zone) && strings.HasPrefix(host, app+".") {
-		base = "https://" + strings.TrimPrefix(host, app+".")
+		scheme := "http://"
+		if certified {
+			scheme = "https://"
+		}
+		base = scheme + strings.TrimPrefix(host, app+".")
 	}
 	return base + "/open/" + app + "?" + url.Values{"host": {host}, "to": {req.URL.RequestURI()}}.Encode()
 }

@@ -186,8 +186,32 @@ func TestTheGateSendsTheHouseholdsNameToItsDashboard(t *testing.T) {
 	req := httptest.NewRequest("GET", "/x", nil)
 	req.Host = "files.brave-elf.briard.casa"
 	req.TLS = &tls.ConnectionState{}
-	if got := openURL(req, "files"); !strings.HasPrefix(got, "https://brave-elf.briard.casa/open/files?") {
+	if got := openURL(req, "files", true); !strings.HasPrefix(got, "https://brave-elf.briard.casa/open/files?") {
 		t.Fatalf("openURL = %s", got)
+	}
+}
+
+// The scheme follows the certificate, never the request: a name with a certificate is sent to
+// HTTPS even from plain HTTP, so a link cannot walk a claimed home's sign-in onto HTTP; a name
+// with none -- reached through a private network's own DNS records, nothing claimed -- stays on
+// HTTP, where the dashboard can answer.
+func TestTheGatesSchemeFollowsTheCertificate(t *testing.T) {
+	for _, c := range []struct {
+		tls, certified bool
+		want           string
+	}{
+		{false, true, "https://brave-elf.briard.casa/open/files?"},
+		{true, true, "https://brave-elf.briard.casa/open/files?"},
+		{false, false, "http://brave-elf.briard.casa/open/files?"},
+	} {
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.Host = "files.brave-elf.briard.casa"
+		if c.tls {
+			req.TLS = &tls.ConnectionState{}
+		}
+		if got := openURL(req, "files", c.certified); !strings.HasPrefix(got, c.want) {
+			t.Errorf("tls=%v certified=%v: openURL = %s, want %s…", c.tls, c.certified, got, c.want)
+		}
 	}
 }
 

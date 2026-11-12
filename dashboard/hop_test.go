@@ -45,7 +45,7 @@ func cookieNamed(resp *http.Response, name string) *http.Cookie {
 func TestTrustHopsFromTheAliasToTheName(t *testing.T) {
 	r := newRig(t)
 	r.app.casaPath = r.dir + "/casa.json"
-	r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: hopName, Resolves: dashboard.CasaResolves})
+	r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: hopName, Resolves: dashboard.CasaResolves, CertUntil: time.Now().Add(60 * 24 * time.Hour)})
 	c := r.trust() // on the alias, as `briard open` leaves it
 
 	// 1. The name, untrusted: bounced to the alias's /hop, the path kept, the attempt marked.
@@ -118,6 +118,25 @@ func TestTrustHopsFromTheAliasToTheName(t *testing.T) {
 	r.app.now = func() time.Time { return time.Now().Add(2 * hopTTL) }
 	if resp := r.on(hopName, back.RequestURI()); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("a code past its minute opened something: %d", resp.StatusCode)
+	}
+}
+
+// A NAME WITH NO CERTIFICATE IS SENT BACK ON HTTP: the casa name reached through a private
+// network's own DNS records, nothing claimed, has no certificate, so the hop -- and a gated
+// app's open -- must not send the browser to HTTPS it cannot load.
+func TestANameWithNoCertificateIsReachedOverHTTP(t *testing.T) {
+	r := newRig(t)
+	r.app.casaPath = r.dir + "/casa.json"
+	r.hostSays(t, dashboard.Casa{Name: hopName})
+	c := r.trust()
+	resp := r.on(routes.BareFlockHostName, "/hop?name="+hopName+"&to=/apps", c)
+	if back, _ := url.Parse(resp.Header.Get("Location")); back == nil || back.Scheme != "http" || back.Host != hopName {
+		t.Errorf("the hop with no certificate = %q, want http://%s/…", resp.Header.Get("Location"), hopName)
+	}
+	r.hostSays(t, dashboard.Casa{Name: hopName, CertUntil: time.Now().Add(time.Hour)})
+	resp = r.on(routes.BareFlockHostName, "/hop?name="+hopName+"&to=/apps", c)
+	if back, _ := url.Parse(resp.Header.Get("Location")); back == nil || back.Scheme != "https" {
+		t.Errorf("the hop with a certificate = %q, want https", resp.Header.Get("Location"))
 	}
 }
 

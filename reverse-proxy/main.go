@@ -108,6 +108,7 @@ func main() {
 	}
 
 	h := newRouter(tbl.current, fallback)
+	h.gate.certified = r.held
 	// Whether each app accepts X-Forwarded-For from this proxy: asked now, and again at every
 	// app start, which is when an app re-reads its proxy trust.
 	h.trust.recheck(tbl.current())
@@ -458,6 +459,13 @@ func (r *certReloader) getCertificate(*tls.ClientHelloInfo) (*tls.Certificate, e
 		return nil, err
 	}
 	return c, nil
+}
+
+// held reports whether a cert can be served now, loading one that appeared since the last
+// handshake: a first certificate is issued while the proxy runs.
+func (r *certReloader) held() bool {
+	_, err := r.getCertificate(nil)
+	return err == nil
 }
 
 // Changed reports whether the cert or key file mtime differs from the cached load (or

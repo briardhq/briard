@@ -82,12 +82,26 @@ func (v *casaView) Refresh() bool {
 
 // casaName is the household's name as the host last said it, "" for a host that never did. The
 // one host the hop carries trust to (hop.go), read off the same file as the view.
-func (a *app) casaName() string {
+func (a *app) casaName() string { return a.hostCasa().Name }
+
+// casaScheme is the scheme the household's casa names are sent to: HTTPS once the host says a
+// certificate is in place, HTTP before -- a name reached through a private network's own DNS
+// records, with nothing claimed, has no certificate to serve. Never the scheme a request came on,
+// so a link cannot walk a claimed home's sign-in onto HTTP.
+func (a *app) casaScheme() string {
+	if a.hostCasa().CertUntil.IsZero() {
+		return "http"
+	}
+	return "https"
+}
+
+// hostCasa is the host's last word on the name; zero for a host that never said.
+func (a *app) hostCasa() dashboard.Casa {
 	var h dashboard.Casa
 	if raw, err := os.ReadFile(a.casaPath); err == nil {
 		_ = json.Unmarshal(raw, &h)
 	}
-	return h.Name
+	return h
 }
 
 // casaState reads the host's view, the household's skip, and this page's last ask. Nil until

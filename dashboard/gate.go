@@ -81,7 +81,7 @@ func (a *app) openGated(w http.ResponseWriter, r *http.Request, name string) {
 	}
 	scheme := "http"
 	if strings.HasSuffix(host, "."+casa.Zone) {
-		scheme = "https"
+		scheme = a.casaScheme()
 	}
 	u, err := url.Parse(scheme + "://" + host + to)
 	if err != nil {
