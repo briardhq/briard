@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/mail"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 // assert the address that actually went on the wire, not just "no error").
 type smtpSink struct {
 	ln   net.Listener
+	from string
 	rcpt string
 	data string
 	done chan struct{}
@@ -64,6 +66,11 @@ func (s *smtpSink) serve() {
 		switch {
 		case strings.HasPrefix(cmd, "EHLO"), strings.HasPrefix(cmd, "HELO"):
 			reply("250 sink") // single-line 250 = no extensions (no STARTTLS/AUTH to negotiate)
+		case strings.HasPrefix(cmd, "MAIL FROM"):
+			if _, addr, ok := strings.Cut(line, ":"); ok {
+				s.from = strings.TrimSpace(addr)
+			}
+			reply("250 OK")
 		case strings.HasPrefix(cmd, "RCPT TO"):
 			if _, addr, ok := strings.Cut(line, ":"); ok {
 				s.rcpt = strings.Trim(strings.TrimSpace(addr), "<>")
@@ -75,7 +82,7 @@ func (s *smtpSink) serve() {
 		case cmd == "QUIT":
 			reply("221 bye")
 			return
-		default: // MAIL FROM, RSET, NOOP, …
+		default: // RSET, NOOP, …
 			reply("250 OK")
 		}
 	}
@@ -97,11 +104,34 @@ func TestSMTPDeliversToRecipient(t *testing.T) {
 	if sink.rcpt != "owner@home.example" {
 		t.Errorf("envelope recipient = %q, want owner@home.example", sink.rcpt)
 	}
+	if sink.from != "<briard@cloud>" {
+		t.Errorf("envelope sender = %q, want <briard@cloud>", sink.from)
+	}
 	if !strings.Contains(sink.data, "Subject: Briard fleet: DEGRADED\r\n") {
 		t.Errorf("message missing Subject header; got:\n%s", sink.data)
 	}
 	if !strings.Contains(sink.data, "one node down") {
 		t.Errorf("message missing body; got:\n%s", sink.data)
+	}
+}
+
+// A display-name sender: the envelope carries the bare address (a relay refuses
+// "MAIL FROM:<Briard <...>>"), the From header the name.
+func TestSMTPDisplayNameSender(t *testing.T) {
+	sink := newSMTPSink(t)
+	defer sink.ln.Close()
+
+	cfg := SMTPConfig{Addr: sink.ln.Addr().String(), From: "Briard <noreply@briard.io>"}
+	if err := Send(context.Background(), cfg, "owner@home.example", "T", "B"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	<-sink.done
+
+	if sink.from != "<noreply@briard.io>" {
+		t.Errorf("envelope sender = %q, want <noreply@briard.io>", sink.from)
+	}
+	if !strings.Contains(sink.data, "From: \"Briard\" <noreply@briard.io>\r\n") {
+		t.Errorf("message missing display-name From header; got:\n%s", sink.data)
 	}
 }
 
@@ -117,8 +147,8 @@ func TestSMTPOffWhenUnconfigured(t *testing.T) {
 
 // The rendered message is a well-formed RFC 5322 mail: From/To/Subject headers, blank line, body.
 func TestSMTPMessageFormat(t *testing.T) {
-	msg := string(message(SMTPConfig{From: "a@b"}, "c@d", "T", "B", time.Unix(0, 0).UTC()))
-	for _, want := range []string{"From: a@b\r\n", "To: c@d\r\n", "Subject: T\r\n", "\r\nB\r\n"} {
+	msg := string(message(&mail.Address{Address: "a@b"}, "c@d", "T", "B", time.Unix(0, 0).UTC()))
+	for _, want := range []string{"From: <a@b>\r\n", "To: c@d\r\n", "Subject: T\r\n", "\r\nB\r\n"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message missing %q; got:\n%s", want, msg)
 		}

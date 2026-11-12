@@ -4,13 +4,15 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strings"
 	"time"
 )
 
-// SMTPConfig configures outbound email delivery. Addr is host:port; From is the envelope
-// + header sender. Username/Password enable PLAIN auth against the relay; leave them empty for an
+// SMTPConfig configures outbound email delivery. Addr is host:port; From is the sender, a bare
+// address or one with a display name ("Briard <noreply@briard.io>") -- the header carries it
+// whole, the envelope only its address. Username/Password enable PLAIN auth against the relay; leave them empty for an
 // unauthenticated relay (a trusted internal MTA, or the tests' local sink). Stdlib net/smtp only
 // (CONTRIBUTING.md: no SDK) -- no mail-provider SDK.
 type SMTPConfig struct {
@@ -45,6 +47,10 @@ func (s smtpNotifier) Notify(ctx context.Context, a Alert) error {
 // it, and so does anything else the cloud has to put in front of a person (the casa signup's
 // verification link) -- so there is exactly one place that knows how to talk to the relay.
 func Send(ctx context.Context, cfg SMTPConfig, to, subject, body string) error {
+	from, err := mail.ParseAddress(cfg.From)
+	if err != nil {
+		return fmt.Errorf("smtp from %q: %w", cfg.From, err)
+	}
 	var auth smtp.Auth
 	if cfg.Username != "" {
 		host, _, err := net.SplitHostPort(cfg.Addr)
@@ -53,12 +59,12 @@ func Send(ctx context.Context, cfg SMTPConfig, to, subject, body string) error {
 		}
 		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, host)
 	}
-	msg := message(cfg, to, subject, body, time.Now())
+	msg := message(from, to, subject, body, time.Now())
 	// Smtp.SendMail is blocking and not context-aware; run it off the loop so the caller's
 	// timeout ctx bounds the alert path (a slow MTA must not wedge the per-tenant alert tick).
 	// The buffered channel lets a late send drain without leaking the goroutine forever.
 	errc := make(chan error, 1)
-	go func() { errc <- smtp.SendMail(cfg.Addr, auth, cfg.From, []string{to}, msg) }()
+	go func() { errc <- smtp.SendMail(cfg.Addr, auth, from.Address, []string{to}, msg) }()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -72,9 +78,9 @@ func Send(ctx context.Context, cfg SMTPConfig, to, subject, body string) error {
 
 // message renders an RFC 5322 message (CRLF line endings). now stamps the Date header
 // (injected so a test is stable).
-func message(cfg SMTPConfig, to, subject, body string, now time.Time) []byte {
+func message(from *mail.Address, to, subject, body string, now time.Time) []byte {
 	var b strings.Builder
-	fmt.Fprintf(&b, "From: %s\r\n", cfg.From)
+	fmt.Fprintf(&b, "From: %s\r\n", from)
 	fmt.Fprintf(&b, "To: %s\r\n", to)
 	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
 	fmt.Fprintf(&b, "Date: %s\r\n", now.Format(time.RFC1123Z))
