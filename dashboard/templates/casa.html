@@ -33,7 +33,10 @@
   {{if eq .State "registered"}}{{if eq .Resolves "blocked"}}{{template "address-step" .}}{{else}}{{template "address-card" $}}{{end}}
   {{else}}{{template "address-step" .}}{{end}}
   {{end}}
-  <div class="card"><header><h2>From outside your home</h2><p>Nothing is opened to the internet.</p></header><section class="note">Your apps are reachable only on your home network. To reach them while you are away, the usual ways are Tailscale, WireGuard, or a port on your router; each one is a choice about your privacy that Briard leaves to you.</section></div>
+  <div class="card"><header><h2>From outside your home</h2><p>Nothing is opened to the internet.</p></header><section>
+    <p class="note">Your apps answer only on your home network. To reach them while you are away, link your phone to your home with Tailscale or NetBird: both are free, and connect only your own devices.</p>
+    {{with .Casa}}{{with .Address}}<div class="item-group"><div class="item"><section><h3>Briard's address on your home network</h3><p><code>{{.}}</code></p></section></div></div>{{end}}{{end}}
+  </section><footer><a class="btn" data-variant="outline" href="https://briard.io/docs/remote-access/" target="_blank" rel="noopener">How to set it up</a></footer></div>
 </div>
 {{template "foot" (shell "address" false)}}{{end}}
 

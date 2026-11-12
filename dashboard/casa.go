@@ -64,6 +64,7 @@ type casaView struct {
 	CertUntil  string
 	Skipped    bool
 	Resolves   string // dashboard.Casa.Resolves: the name is linked only on "yes"
+	Address    string // the service address on the home network, for reaching Briard from away
 	RecheckErr string // why the last "check again" was not taken
 	Asked      *casaAsk
 	OnHome     bool   // the step is on the home page, the one place "Not now" exists (main.go, view)
@@ -116,7 +117,7 @@ func (a *app) casaState() *casaView {
 		return nil
 	}
 	v := &casaView{}
-	v.State, v.Name, v.Email, v.Reason, v.Resolves = h.State, h.Name, h.Email, h.Reason, h.Resolves
+	v.State, v.Name, v.Email, v.Reason, v.Resolves, v.Address = h.State, h.Name, h.Email, h.Reason, h.Resolves, h.Address
 	if !h.CertUntil.IsZero() {
 		v.CertUntil = h.CertUntil.In(zone()).Format("2 Jan 2006")
 	}

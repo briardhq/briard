@@ -106,6 +106,7 @@ type casaRunner struct {
 	key ed25519.PrivateKey // nil until minted or loaded
 
 	// Per-session, re-derived: nothing below survives a restart, and nothing needs to.
+	held      string    // the address the guest holds, from the cycle's one read; for the page
 	lastA     string    // the address last written at the Worker
 	nextA     time.Time // no address write before this (after a failure)
 	nextPoll  time.Time
@@ -281,6 +282,11 @@ func (c *casaRunner) tick(ctx context.Context, r any, vip guest.VIPReader, logf 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
+	// The page shows the address claimed or not. vip is the cycle's one read, already taken; a
+	// failed read keeps the last answer rather than blanking the page.
+	if cidr, err := vip.VIP(ctx, c.cfg.VIPDev); err == nil {
+		c.held, _, _ = strings.Cut(cidr, "/")
+	}
 	if c.st.Claim != "" && !now.Before(c.nextPoll) {
 		c.poll(ctx, now, logf)
 	}
@@ -620,7 +626,7 @@ func casaCertExpiry(pemText, flock string) time.Time {
 
 // view is what the page is told.
 func (c *casaRunner) view() dashboard.Casa {
-	v := dashboard.Casa{Name: casa.Names(c.cfg.FlockName)[0], Email: c.st.Email, CertUntil: c.certUntil}
+	v := dashboard.Casa{Name: casa.Names(c.cfg.FlockName)[0], Email: c.st.Email, CertUntil: c.certUntil, Address: c.held}
 	switch {
 	case c.st.Claim != "":
 		v.State = casa.ClaimPending

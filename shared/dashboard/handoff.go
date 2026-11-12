@@ -186,6 +186,9 @@ type Casa struct {
 	// positively answered, then CasaResolves or CasaBlocked. The page links the name only on
 	// CasaResolves, because a name the house cannot resolve opens nothing.
 	Resolves string `json:"resolves,omitempty"`
+	// Address is the service address the guest holds on the home network, claimed or not: what
+	// a household types to reach Briard from away. "" while this node holds none.
+	Address string `json:"address,omitempty"`
 }
 
 // Casa.Resolves values. Not yet known (the public answer still on its way, or the household's

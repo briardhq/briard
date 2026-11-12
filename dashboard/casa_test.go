@@ -93,6 +93,28 @@ func TestCasaClaimIsOfferedRelayedAndFollowed(t *testing.T) {
 	}
 }
 
+// FROM OUTSIDE YOUR HOME: the tile names the two apps the setup page covers, shows the address
+// a household types into them -- claimed or not -- and links the page; no router port is offered.
+func TestSecureAccessShowsTheAddressForAway(t *testing.T) {
+	r := newRig(t)
+	r.app.casaPath = filepath.Join(r.dir, "casa.json")
+	c := r.trust()
+	r.hostSays(t, dashboard.Casa{Name: "brave-elf.briard.casa", Address: "192.168.1.77"})
+	_, body := get(t, r, "/secure", c)
+	for _, want := range []string{"Tailscale or NetBird", "<code>192.168.1.77</code>", `href="https://briard.io/docs/remote-access/"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the Secure access page lacks %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "port on your router") {
+		t.Errorf("the Secure access page still offers a router port")
+	}
+	r.hostSays(t, dashboard.Casa{Name: "brave-elf.briard.casa"})
+	if _, body := get(t, r, "/secure", c); strings.Contains(body, "address on your home network") {
+		t.Errorf("an address row with no address: %s", body)
+	}
+}
+
 // The host's refusals reach the person in the host's words, with the form kept for another try.
 func TestCasaRefusalIsShownWithTheForm(t *testing.T) {
 	r := newRig(t)

@@ -413,6 +413,27 @@ func TestCasaViewIsPushedAgainEachSession(t *testing.T) {
 	}
 }
 
+// THE PAGE IS TOLD THE ADDRESS, CLAIMED OR NOT: it is what a household types to reach Briard
+// from away. A failed read keeps the last one; a moved address is pushed again.
+func TestCasaViewCarriesTheAddressUnclaimed(t *testing.T) {
+	r := newCasaRig(t)
+	r.guest.vip = "192.168.1.77/24"
+	r.tick(t)
+	if n := len(r.guest.views); n != 1 || r.guest.views[0].Address != "192.168.1.77" || r.guest.views[0].State != "" {
+		t.Fatalf("unclaimed views = %+v, want one with the address 192.168.1.77", r.guest.views)
+	}
+	r.guest.vipErr = errors.New("channel down")
+	r.tick(t)
+	if len(r.guest.views) != 1 {
+		t.Fatalf("a failed read changed the view: %+v", r.guest.views)
+	}
+	r.guest.vip, r.guest.vipErr = "192.168.1.80/24", nil
+	r.tick(t)
+	if n := len(r.guest.views); n != 2 || r.guest.views[1].Address != "192.168.1.80" {
+		t.Fatalf("after a move the views are %+v, want the new address pushed", r.guest.views)
+	}
+}
+
 // A SLOW WORKER NEVER HOLDS THE TICK. The poll and the address write run off the loop and
 // answer on a later tick, so a tick with a Worker that takes half a second returns at once --
 // and the answers still land: the claim registers and the address is written once they do.
