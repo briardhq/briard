@@ -48,5 +48,5 @@
     <div class="item"><section><h3>Certificate</h3><p>{{if .CertUntil}}It is valid until {{.CertUntil}}; Briard renews it on its own.{{else}}On its way, which takes a minute or two.{{end}}</p></section><aside><span class="badge" data-variant="secondary">{{if .CertUntil}}valid{{else}}pending{{end}}</span></aside></div>
     {{if eq .Resolves "yes"}}{{range $.Apps}}{{if .Installed}}<hr><div class="item"><section><h3>{{.Title}}</h3><p>{{.Name}}.{{$.Casa.Name}}</p></section><aside><span class="badge" data-variant="secondary">ready</span></aside></div>{{end}}{{end}}{{end}}
     </div><p class="note">{{if eq .Resolves "yes"}}Each app gets a name under yours. They work on your home network, from any device, with no browser warnings.{{else}}Checking that your home network finds the name — this takes up to a minute or two.{{end}}</p></section>
-    {{if eq .Resolves "yes"}}<footer><a class="btn" data-variant="outline" href="https://{{.Name}}/">Open https://{{.Name}}</a></footer>{{end}}</div>
+    {{if eq .Resolves "yes"}}<footer><a class="btn" data-variant="outline" href="/hop?name={{.Name}}">Open https://{{.Name}}</a></footer>{{end}}</div>
 {{end}}{{end}}

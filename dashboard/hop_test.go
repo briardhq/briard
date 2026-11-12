@@ -39,31 +39,24 @@ func cookieNamed(resp *http.Response, name string) *http.Cookie {
 	return nil
 }
 
-// THE HOP: a browser trusted on the alias arrives at the name a stranger, is bounced to the
-// alias, comes back with a code, and is trusted on the name as the SAME device -- one row,
-// nothing typed. A browser trusted nowhere comes back with an empty code and sees quick-connect.
+// THE HOP: a browser trusted on the alias follows the dashboard's own link to the name through
+// the alias's /hop, arrives with a code, and is trusted on the name as the SAME device -- one
+// row, nothing typed. A browser that opens the name by itself is never sent to the alias (one
+// that cannot resolve `.local` would be stranded there): it is refused, and sees quick-connect.
 func TestTrustHopsFromTheAliasToTheName(t *testing.T) {
 	r := newRig(t)
 	r.app.casaPath = r.dir + "/casa.json"
 	r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: hopName, Resolves: dashboard.CasaResolves, CertUntil: time.Now().Add(60 * 24 * time.Hour)})
 	c := r.trust() // on the alias, as `briard open` leaves it
 
-	// 1. The name, untrusted: bounced to the alias's /hop, the path kept, the attempt marked.
+	// 1. The name, untrusted, opened by itself: the refusal, no redirect anywhere.
 	resp := r.on(hopName, "/apps")
-	loc := resp.Header.Get("Location")
-	if resp.StatusCode != http.StatusSeeOther || !strings.HasPrefix(loc, "http://"+routes.BareFlockHostName+"/hop?") {
-		t.Fatalf("the name's refusal = %d %q, want a bounce to the alias", resp.StatusCode, loc)
+	if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("Location") != "" {
+		t.Fatalf("the name's refusal = %d %q, want 401 and no redirect", resp.StatusCode, resp.Header.Get("Location"))
 	}
-	u, _ := url.Parse(loc)
-	if u.Query().Get("name") != hopName || u.Query().Get("to") != "/apps" {
-		t.Errorf("the bounce carries %q, want the name and the path", u.RawQuery)
-	}
-	mark := cookieNamed(resp, hopCookie)
-	if mark == nil || mark.MaxAge != int(hopTTL/time.Second) {
-		t.Errorf("the bounce left no minute-long mark: %+v", mark)
-	}
+	u, _ := url.Parse("/hop?" + url.Values{"name": {hopName}, "to": {"/apps"}}.Encode())
 
-	// 2. The alias's /hop, in the browser that holds the alias's cookie: back with a code.
+	// 2. The alias's /hop, in the browser that holds the alias's cookie: on with a code.
 	resp = r.on(routes.BareFlockHostName, "/hop?"+u.RawQuery, c)
 	back, _ := url.Parse(resp.Header.Get("Location"))
 	if resp.StatusCode != http.StatusSeeOther || back.Scheme != "https" || back.Host != hopName || back.Path != "/apps" || back.Query().Get("hop") == "" {
@@ -87,23 +80,15 @@ func TestTrustHopsFromTheAliasToTheName(t *testing.T) {
 		t.Errorf("a spent code opened something: %d", resp.StatusCode)
 	}
 
-	// 4. A browser trusted nowhere: the alias answers with an empty code, and the name then
-	// refuses without bouncing again; so does a browser carrying the mark; so does the alias
-	// itself, and a fragment's fetch, which could not follow a bounce.
+	// 4. A browser trusted nowhere: /hop answers with an empty code, and every host refuses it.
 	resp = r.on(routes.BareFlockHostName, "/hop?"+u.RawQuery)
 	if l := resp.Header.Get("Location"); resp.StatusCode != http.StatusSeeOther || l != "https://"+hopName+"/apps?hop=" {
-		t.Errorf("the alias with no session = %d %q, want back with an empty hop", resp.StatusCode, l)
+		t.Errorf("the alias with no session = %d %q, want on with an empty hop", resp.StatusCode, l)
 	}
 	for host, path := range map[string]string{hopName: "/apps?hop=", routes.BareFlockHostName: "/apps", "192.168.1.20": "/"} {
 		if resp := r.on(host, path); resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("%s%s untrusted = %d, want the refusal", host, path, resp.StatusCode)
 		}
-	}
-	if resp := r.on(hopName, "/apps", mark); resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("the name bounced a browser that already tried: %d", resp.StatusCode)
-	}
-	if resp := r.on(hopName, "/f/address-step"); resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("the name bounced a fragment: %d", resp.StatusCode)
 	}
 
 	// 5. Another household's name is not this alias's to answer for: no redirect anywhere.
@@ -160,8 +145,13 @@ func TestAppsAreNamedTheWayThePageWasReached(t *testing.T) {
 	// Registered, resolving, with a certificate: the name is offered on the alias, not on the
 	// name; the app's address (its page's About card) follows the host the page came in on.
 	r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: hopName, Resolves: dashboard.CasaResolves, CertUntil: time.Now().Add(60 * 24 * time.Hour)})
-	if body := page(routes.BareFlockHostName, "/"); !strings.Contains(body, `href="https://`+hopName+`">Open https://`+hopName+`</a>`) {
-		t.Errorf("the alias's home does not offer the name: %s", body)
+	// Both links to the name go through /hop, which carries the trust; a bare link would arrive
+	// at the name a stranger.
+	if body := page(routes.BareFlockHostName, "/"); !strings.Contains(body, `href="/hop?name=`+hopName+`">Open https://`+hopName+`</a>`) {
+		t.Errorf("the alias's home does not offer the name through /hop: %s", body)
+	}
+	if body := page(routes.BareFlockHostName, "/secure"); !strings.Contains(body, `href="/hop?name=`+hopName+`">Open https://`+hopName+`</a>`) || strings.Contains(body, `href="https://`+hopName) {
+		t.Errorf("the Secure access page links the name without the hop: %s", body)
 	}
 	if body := page(hopName, "/"); strings.Contains(body, "Open Briard securely") {
 		t.Errorf("the name's home offers itself: %s", body)

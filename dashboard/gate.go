@@ -6,7 +6,7 @@ package main
 //
 //   - GET /open/<app>, on a browser this dashboard trusts, mints a one-time code for the device's
 //     OWN token and sends the browser to the app's name with it. A browser it does not trust gets
-//     the ordinary refusal (and on the household's name, the bounce), with the address kept.
+//     the ordinary refusal, with the address kept.
 //   - The reverse proxy redeems the code at /gate/redeem and sets the token as the app name's
 //     cookie, then asks /gate/check whether a token still stands for the app before it signs
 //     anyone in.

@@ -3,31 +3,28 @@ package main
 // THE HOP: trust earned on one of the dashboard's names reaches the others.
 //
 // A session is a cookie, and a cookie is per host: a browser trusted on `briard.local` (the
-// address `briard open` prints) arrives at `<flock>.briard.casa` as a stranger, and the name --
-// the one address with a real certificate -- would ask the household to approve the device a
-// second time. Nothing a page runs can cross that line: a script on the https name may not
-// fetch the http alias (mixed content), and a cross-site fetch carries no cookie anyway. A
-// top-level navigation does both, so that is the whole mechanism:
+// address `briard open` prints second) arrives at `<flock>.briard.casa` -- the one address with a
+// real certificate -- as a stranger. Nothing a page runs can cross that line: a script on the
+// https name may not fetch the http alias (mixed content), and a cross-site fetch carries no
+// cookie anyway. A top-level navigation does both, and the household makes one whenever it
+// follows the dashboard's own link to the name, so that is the whole mechanism:
 //
-//   - A browser the NAME does not trust is sent to the alias's /hop, with the path it wanted.
-//   - The alias's /hop, in the browser that holds the alias's cookie, mints a one-time code
-//     bound to that device's own session token and sends the browser back to the name with it;
-//     in a browser that holds nothing, it sends it back with an empty one.
+//   - Every link the dashboard draws to the name goes through its own /hop, on the host the page
+//     is already on -- a link the browser can always follow. /hop mints a one-time code bound to
+//     that device's own session token and sends the browser on to the name with it; in a browser
+//     that holds nothing, with an empty one. The code is minted at the click, not when the page
+//     is drawn, so a page left open longer than a code lives still carries its trust.
 //   - The name redeems the code as its own cookie -- the SAME token, so Trusted devices keeps
 //     one row and revoking it revokes every name -- and shows the page that was asked for. An
-//     empty code is the honest answer "no other trust to carry", and the name then asks a
-//     trusted device as before.
+//     empty or spent code is the ordinary refusal, and the name asks a trusted device.
 //
-// THE DEAD END, GUARDED. A browser that cannot resolve `.local` at all never comes back from the
-// bounce: it sees its own "server not found" page, and the back button lands here again. So the
-// name marks the attempt in a cookie that lives a minute, and a browser carrying that mark gets
-// the ordinary quick-connect page instead of a second bounce. The mark is never read on the way
-// that works.
+// NEVER A BOUNCE. The name does not send a browser it does not trust to the alias to find out
+// whether the alias trusts it: a browser that cannot resolve `.local` -- every one reaching home
+// over a private network, and some at home -- would be left on its own "server not found" page.
+// A browser that opens the name by itself is asked the ordinary way.
 //
-// WHOSE ALIAS. `briard.local` is the alias every flock answers, so on a LAN with two households
-// the bounce may reach the other one. The alias's /hop therefore answers only for its own name
-// and refuses any other: a browser arriving there from a foreign name is sent nowhere (no open
-// redirect through this host), and its own name's guard shows it quick-connect on the way back.
+// WHOSE NAME. /hop answers only for this home's own name and refuses any other, so there is no
+// open redirect through this host.
 
 import (
 	"net"
@@ -35,16 +32,11 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"briard.io/shared/routes"
 )
 
-const (
-	hopCookie = "briard_hop" // the name's mark of a bounce tried, a minute long
-	hopTTL    = time.Minute  // a code's life, and the mark's
-)
+const hopTTL = time.Minute // a code's life
 
-// hop is one minted code, from the alias's mint until the name redeems it.
+// hop is one minted code, from /hop's mint until the name redeems it.
 type hop struct {
 	token string
 	at    time.Time
@@ -67,29 +59,8 @@ func onName(r *http.Request, c *casaView) bool {
 	return c != nil && hostOf(r) == c.Name
 }
 
-// bounce is the first half: an untrusted GET for a page on the name, with no hop answered and
-// none tried, goes to the alias's /hop. Reports whether it did; the caller refuses otherwise.
-// Only a page a person navigates to is bounced -- a fragment's fetch could not follow.
-func (a *app) bounce(w http.ResponseWriter, r *http.Request) bool {
-	name := a.casaName()
-	if r.Method != http.MethodGet || strings.HasPrefix(r.URL.Path, "/f/") || name == "" || hostOf(r) != name {
-		return false
-	}
-	if _, answered := r.URL.Query()["hop"]; answered {
-		return false
-	}
-	if _, tried := r.Cookie(hopCookie); tried == nil {
-		return false
-	}
-	http.SetCookie(w, &http.Cookie{Name: hopCookie, Value: "1", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		Secure: scheme(r) == "https", MaxAge: int(hopTTL / time.Second)})
-	q := url.Values{"name": {name}, "to": {r.URL.RequestURI()}}
-	http.Redirect(w, r, "http://"+routes.BareFlockHostName+"/hop?"+q.Encode(), http.StatusSeeOther)
-	return true
-}
-
-// serveHop is the alias's half: back to the name with a code for this browser's session, or
-// with an empty one. The name must be this home's, and the path a path.
+// serveHop is the first half: on to the name with a code for this browser's session, or with
+// an empty one. The name must be this home's, and the path a path.
 func (a *app) serveHop(w http.ResponseWriter, r *http.Request) {
 	name, to := r.URL.Query().Get("name"), r.URL.Query().Get("to")
 	if own := a.casaName(); own == "" || name != own {

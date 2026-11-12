@@ -238,7 +238,7 @@ const (
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", csp)
 	// A hop answered with a code (hop.go): the code becomes this host's cookie, whatever the
-	// page. An empty or spent one falls through to the page, which refuses without bouncing.
+	// page. An empty or spent one falls through to the page, which refuses an untrusted browser.
 	if code := r.URL.Query().Get("hop"); code != "" && r.Method == http.MethodGet && a.redeemHop(w, r, code) {
 		return
 	}
@@ -406,12 +406,9 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // refuse is what a browser with no trusted session gets: no information, one instruction. The
 // page says where a code comes from and nothing about what is installed, because reaching this
-// port is not authentication. On the household's name, a browser that may be trusted on the
-// alias is first sent there to find out (hop.go).
+// port is not authentication. The household's name refuses the same way: it never sends a
+// browser to the alias to find out whether it is trusted there (hop.go).
 func (a *app) refuse(w http.ResponseWriter, r *http.Request) {
-	if a.bounce(w, r) {
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusUnauthorized)
 	_ = page.ExecuteTemplate(w, "refused", nil)

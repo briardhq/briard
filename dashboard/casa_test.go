@@ -88,7 +88,7 @@ func TestCasaClaimIsOfferedRelayedAndFollowed(t *testing.T) {
 	reg.Resolves = dashboard.CasaResolves
 	r.hostSays(t, reg)
 	body = r.page(c)
-	if !strings.Contains(body, `href="https://brave-elf.briard.casa/"`) || !strings.Contains(body, "valid until 2 Jan 2027") || strings.Contains(body, `hx-get=`) || strings.Contains(body, `action="/casa/claim"`) {
+	if !strings.Contains(body, `href="/hop?name=brave-elf.briard.casa"`) || !strings.Contains(body, "valid until 2 Jan 2027") || strings.Contains(body, `hx-get=`) || strings.Contains(body, `action="/casa/claim"`) {
 		t.Errorf("the registered page: %s", body)
 	}
 }
