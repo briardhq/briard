@@ -1394,7 +1394,7 @@ func TestBringUpRendersAppUnitsBeforeStartingThePromoter(t *testing.T) {
 	}
 	// A present image must NOT be pulled. This is the whole of app.warm: bring-up runs after
 	// every guest reboot, and the doctrine is that running never needs network.
-	if got := idx("systemctl", "start", "briard-app-img.service"); got >= 0 {
+	if got := idx("systemctl", "restart", "briard-app-img.service"); got >= 0 {
 		t.Errorf("bring-up started the .image unit for an image already present (step %d) — that is a registry pull on the reboot path: %v", got, f.runs)
 	}
 }
@@ -1423,7 +1423,7 @@ func TestBringUpPullsOnlyAnImageThatIsMissing(t *testing.T) {
 	}
 	var pulled bool
 	for _, r := range f.runs {
-		if len(r) >= 3 && r[0] == "systemctl" && r[1] == "start" && r[2] == "briard-app-img.service" {
+		if len(r) >= 3 && r[0] == "systemctl" && r[1] == "restart" && r[2] == "briard-app-img.service" {
 			pulled = true
 		}
 	}

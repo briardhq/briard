@@ -3,7 +3,7 @@
 #
 # WHY THIS EXISTS. Converging at promotion put a fetch on the promotion path. `briard-apps` is a chain
 # member, its failure fails the promotion, and `warmImage` (agent/guestagent/converge.go) answers a
-# missing image with `systemctl start <unit>-image.service` -- a blocking `podman image pull`.
+# missing image with `systemctl restart <unit>-image.service` -- a blocking `podman image pull`.
 # The comment there argues the case and is right about the design: a node that was down when the
 # install ran promotes into an app it was never told about, and fetching what it can name beats
 # a cluster-wide negotiation nothing arbitrates. What it does NOT say is how long that fetch may

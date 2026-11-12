@@ -608,7 +608,7 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 	return changed, nil
 }
 
-// warmImage ensures one image is present, starting its .image unit ONLY when it is missing.
+// warmImage ensures one image is present, running its .image unit ONLY when it is missing.
 //
 // PRESENT => DONE, without touching the network. Starting the unit is a `podman image pull`:
 // quadlet generates `Wants=network-online.target` + `ExecStart=podman image pull <ref>` with no
@@ -636,6 +636,13 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 // identity survives either outcome. One rule, two answers: refuse when you cannot verify what you
 // would get, fetch when the digest pins it.
 //
+// RESTART, NEVER START: the unit is `Type=oneshot` + `RemainAfterExit=yes` (podman's generator
+// says so), so once it has pulled it stays active until the guest reboots, and a `start` of an
+// active unit succeeds having run nothing. Reaching this line means the image is gone, so what the
+// unit says about it is stale -- an uninstall or a superseded version removed the image under it,
+// and the same unit name carries the next version's pull. A start there sent an app installed
+// again, or upgraded twice since boot, to Pull=never with no image.
+//
 // Shared by the app.warm verb and by converge, which is the point: a converging survivor and
 // an installing Primary must not disagree about what "the image is here" means.
 func warmImage(ctx context.Context, x Executor, unit, ref string) error {
@@ -645,7 +652,7 @@ func warmImage(ctx context.Context, x Executor, unit, ref string) error {
 	if _, err := x.Run(ctx, "podman", "image", "exists", ref); err == nil {
 		return nil
 	}
-	if out, err := x.Run(ctx, "systemctl", "start", unit); err != nil {
+	if out, err := x.Run(ctx, "systemctl", "restart", unit); err != nil {
 		return fmt.Errorf("warm image (%s): %w: %s", unit, err, strings.TrimSpace(string(out)))
 	}
 	return nil

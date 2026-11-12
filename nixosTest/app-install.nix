@@ -329,6 +329,23 @@ pkgs.testers.runNixOSTest {
     print("app state is on the DRBD subvolume — install -> promote -> serve, on the shipped node")
 
     ${pkgs.lib.optionalString (!broken) ''
+    # --- AN IMAGE REMOVED UNDER AN ACTIVE PULL UNIT IS PULLED AGAIN.
+    #
+    #     The shape an uninstall leaves for the next install of the same app, and an upgrade for
+    #     the one after it: the image is removed while its `.image` unit -- a oneshot with
+    #     RemainAfterExit -- still reads active from the pull in step 3. A `start` of that unit
+    #     succeeds and runs nothing, and the container then fails on Pull=never. Only a real
+    #     systemd can say so. The premise is asserted, so this cannot pass on a node whose unit
+    #     happened to be inactive.
+    primary.succeed("systemctl stop briard-fixture-app.service")
+    primary.succeed(f"podman rmi ${registryHost}/briard-fixture@{digest}")
+    for unit in node1.succeed("cat /tmp/rendered/images").split():
+        primary.succeed(f"test $(systemctl is-active {unit}) = active")
+    primary.succeed("briard-guest-agent --converge")
+    primary.succeed(f"podman image exists ${registryHost}/briard-fixture@{digest}")
+    primary.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=90)
+    print("an image removed under its still-active pull unit was pulled again, and the app serves")
+
     # --- THE RENDERED UNITS ARE VOLATILE, AND CONVERGE PUTS THEM BACK BY ITSELF.
     #
     #     Happy-path run only: this reboots the node, so it cannot precede the broken-upgrade half,

@@ -90,7 +90,7 @@ func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]
 			return nil, nil
 		}
 		return nil, errors.New("exit status 125")
-	case name == "systemctl" && len(args) == 2 && args[0] == "start" && c.failStart[args[1]]:
+	case name == "systemctl" && len(args) == 2 && (args[0] == "start" || args[0] == "restart") && c.failStart[args[1]]:
 		return []byte("Job failed"), errors.New("exit status 1")
 	case name == "podman" && len(args) == 3 && args[0] == "cp":
 		// The per-app preparation extracts a script out of the image, and converge now
@@ -192,7 +192,7 @@ func TestConvergeDoesNotPullAPresentImage(t *testing.T) {
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
-	if x.ran("systemctl", "start", "briard-dummy-app-image.service") {
+	if x.ran("systemctl", "start", "briard-dummy-app-image.service") || x.ran("systemctl", "restart", "briard-dummy-app-image.service") {
 		t.Fatal("converge started the .image unit for an image already in local storage — that is a registry pull on the promotion path")
 	}
 }
@@ -208,7 +208,9 @@ func TestConvergePullsAMissingImage(t *testing.T) {
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
-	if !x.ran("systemctl", "start", "briard-dummy-app-image.service") {
+	// RESTART: the oneshot unit that pulled once stays active, and a start of it runs nothing.
+	// Only a real systemd shows that; app-install.nix removes an image under an active unit.
+	if !x.ran("systemctl", "restart", "briard-dummy-app-image.service") {
 		t.Fatalf("converge did not fetch an absent image; ran %v", x.fakeExec.runs)
 	}
 }
