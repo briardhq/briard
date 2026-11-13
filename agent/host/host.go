@@ -348,8 +348,8 @@ type Config struct {
 	// MeshCache is where a runtime pairing's MeshSpec is kept NODE-LOCALLY, for the same reason
 	// AppCache exists and to close the same hole one step further out.
 	//
-	// The mesh arrives as a cloud directive and is applied to the guest, which writes it into the
-	// guest's /etc. But bring-up REWRITES the guest's .res from cfg.Resource on every pass, and
+	// The mesh arrives as a cloud directive and is applied to the guest, which writes it under
+	// /run/briard/drbd.d (tmpfs; /etc/drbd.conf only includes it). But bring-up REWRITES the guest's .res from cfg.Resource on every pass, and
 	// cfg.Resource comes from the PEERS env — which an install never sets. So without this a
 	// runtime-paired anchor whose guest rebooted would come back rewritten to the single-node
 	// self-peer, against on-disk DRBD metadata recording real peers, silently. The host must
