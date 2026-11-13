@@ -237,7 +237,7 @@ func TestStatusAnswersFromTheLastTick(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := status(cfg, s); !reflect.DeepEqual(got, LocalStatus{Serving: true, Open: 1}) {
+	if got := status(cfg, s); !reflect.DeepEqual(got, LocalStatus{Serving: true, Attention: 1}) {
 		t.Errorf("degraded = %+v, want one open", got)
 	}
 	for kind, updating := range map[string]bool{api.DirectiveAgentUpdate: true, api.DirectiveUpgradeSystem: true,

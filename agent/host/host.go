@@ -1736,8 +1736,8 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			cfg.collectDeadmanEpisode(ctx, r, n, logf)
 		}
 		cycle++
-		ca.observe(ctx, n, cfg.Node, time.Now(), logf) // one 5s-bounded read every clockReadEvery
-		cfg.sleep.observe(ctx, n, cfg.Node, logf)      // two power reads: a sleep since the last tick is an event
+		ca.observe(ctx, n, cfg.Node, time.Now(), logf)        // one 5s-bounded read every clockReadEvery
+		cfg.sleep.observe(ctx, n, cfg.Node, time.Now(), logf) // two power reads: a sleep since the last tick is an event
 		// Each installed app, from this cycle's report: no read of its own.
 		sa.observe(ctx, n, cfg.Node, st.Apps, known, cl.Serving(), time.Now(), logf)
 
@@ -1884,6 +1884,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveConfigSet:     true, // ...and changes its own address
 	api.DirectiveStop:          true, // ...and brings its own node down
 	api.DirectiveStatus:        true, // ...and asks how it is, as doctor does
+	api.DirectiveAlertDismiss:  true, // ...and says it has seen an alert
 }
 
 // Dispatch routes one directive to the subsystem that can act on it, and is the single place
@@ -1903,6 +1904,9 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectiveStatus {
 		return cfg.applyStatus(d, n)
+	}
+	if d.Kind == api.DirectiveAlertDismiss {
+		return applyAlertDismiss(d, n)
 	}
 	if d.Kind == api.DirectiveDoctor {
 		return cfg.applyDoctor(ctx, d, r, cs)

@@ -1,12 +1,14 @@
-{{/* NEEDS ATTENTION: the one tile that comes before everything, only while something does.
-     The host agent away is its own case -- then the alert list is stale and is not shown. */}}
+{{/* NEEDS ATTENTION: the one tile that comes before everything, only while something does --
+     notify.Attention: warning and above, not dismissed. Each row has its Dismiss, which takes it
+     off this tile and leaves it in the history. The host agent away is its own case -- then the
+     alert list is stale and is not shown. */}}
 {{define "alerts"}}
   {{with .Alerts}}
   {{if .Unreachable}}
   <div class="alert wide" data-variant="attention">{{template "icon-alert"}}<h2>Briard is not answering</h2><section><p>The Briard agent on this machine has not been heard from since {{.Unreachable}}. Your apps keep running, but nothing is watching over them until it is back.</p><p>Restarting the machine that runs Briard usually brings it back.</p></section></div>
-  {{else if .Open}}
+  {{else if .Attention}}
   <div class="alert wide" data-variant="attention">{{template "icon-alert"}}<h2>Needs attention</h2><section><div class="item-group">
-    {{range $i, $a := .Open}}{{if $i}}<hr>{{end}}<div class="item" id="alert-{{.Key}}"><section><h3>{{.Title}}</h3><p>{{.Body}}</p></section><aside class="when">since {{.When}}</aside></div>{{end}}
+    {{range $i, $a := .Attention}}{{if $i}}<hr>{{end}}<div class="item" id="alert-{{.Key}}"><section><h3>{{.Title}}</h3><p>{{.Body}}</p></section><aside class="when">{{if not .Event}}since {{end}}{{.When}}<form method="post" action="/alerts/dismiss"><input type="hidden" name="key" value="{{.Key}}"><input type="hidden" name="at" value="{{.At}}"><button type="submit" class="btn" data-variant="ghost" data-size="sm">Dismiss</button></form></aside></div>{{end}}
   </div></section></div>
   {{end}}
   {{end}}

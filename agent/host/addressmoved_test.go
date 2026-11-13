@@ -42,7 +42,7 @@ func TestAddressMovedIsSaidOnce(t *testing.T) {
 		t.Fatalf("a move said %d times, want once: %+v", len(n.alerts), n.alerts)
 	}
 	a := n.alerts[0]
-	if a.Key != "address-moved" || a.Kind != notify.Event || a.Severity != notify.Info ||
+	if a.Key != "address-moved" || a.Kind != notify.Event || a.Severity != notify.Warning ||
 		!strings.Contains(a.Body, "now 192.168.1.77") || !strings.Contains(a.Body, "was 192.168.1.50") {
 		t.Fatalf("the notice = %+v", a)
 	}
@@ -64,7 +64,7 @@ func TestAddressMovedIsSaidOnce(t *testing.T) {
 }
 
 // With Tailscale or NetBird running here, the notice names it, says the route must be set up
-// again, links the setup page, and is louder; the OS service is asked by its name on this system.
+// again and links the setup page; the OS service is asked by its name on this system.
 func TestAddressMovedNamesTheRemoteAccessApp(t *testing.T) {
 	for _, c := range []struct {
 		linux, windows, tool string

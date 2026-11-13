@@ -287,7 +287,7 @@ func TestCatalogWishNoticeIsAnEdge(t *testing.T) {
 			if got := levels(fn.alerts); got != "open" {
 				t.Fatalf("after the manifest appeared: %q (%+v); want one open", got, fn.alerts)
 			}
-			if a := fn.alerts[0]; a.Key != "catalog:paperless-ngx" || !strings.Contains(a.Title, "Paperless-ngx is now available") || a.Severity != notify.Info {
+			if a := fn.alerts[0]; a.Key != "catalog:paperless-ngx" || !strings.Contains(a.Title, "Paperless-ngx is now available") || a.Severity != notify.Warning {
 				t.Errorf("the notice: %+v", a)
 			}
 			if settle == "installed" {

@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"briard.io/shared/api"
 	"briard.io/shared/notify"
 )
 
@@ -84,5 +87,73 @@ func TestAlertsBannerWhenTheHostAgentIsAway(t *testing.T) {
 	body := r.page(c)
 	if !strings.Contains(body, "Briard is not answering") || strings.Contains(body, "Disk space low") {
 		t.Errorf("an agent silent for five minutes: want the banner alone, got %s", body)
+	}
+}
+
+// Needs attention is notify.Attention: a warning condition and a warning event are there, each
+// with its Dismiss naming the record by key and exact time; an info condition and a dismissed one
+// are not, and stay in the history. Dismiss relays exactly one alert-dismiss and goes back.
+func TestAlertsAttentionAndDismiss(t *testing.T) {
+	r := alertsRig(t)
+	c := r.trust()
+	r.contact(t, time.Now())
+	port := newFakePort()
+	r.app.port = port
+	t0 := time.Date(2026, 11, 13, 9, 0, 0, 123456789, time.UTC)
+	at := func(min int) time.Time { return t0.Add(time.Duration(min) * time.Minute) }
+	recs := []notify.Record{
+		{Alert: notify.Alert{Key: "disk", Kind: notify.Open, Severity: notify.Warning, Title: "Disk space low"}, At: at(1)},
+		{Alert: notify.Alert{Key: "fast-nic", Kind: notify.Open, Severity: notify.Info, Title: "Fast network card"}, At: at(2)},
+		{Alert: notify.Alert{Key: "reparent", Kind: notify.Event, Severity: notify.Warning, Title: "Moved to another device"}, At: at(3)},
+		{Alert: notify.Alert{Key: "backup", Kind: notify.Open, Severity: notify.Warning, Title: "Backup not working"}, At: at(4), Dismissed: true},
+	}
+	r.hostPushes(t, recs)
+
+	body := r.page(c)
+	open := body[strings.Index(body, "Needs attention"):strings.Index(body, "<h1>Activity</h1>")]
+	for _, want := range []string{"Disk space low", `value="` + at(1).Format(time.RFC3339Nano) + `"`, "Moved to another device", "since ", ">Dismiss<"} {
+		if !strings.Contains(open, want) {
+			t.Errorf("needs attention lacks %q: %s", want, open)
+		}
+	}
+	if strings.Contains(open, "Fast network card") || strings.Contains(open, "Backup not working") {
+		t.Errorf("an info or a dismissed alert asks for attention: %s", open)
+	}
+	if ev := open[strings.Index(open, "Moved to another device"):]; strings.Contains(ev[:strings.Index(ev, "Dismiss")], "since") {
+		t.Errorf("an event reads as holding since: %s", ev)
+	}
+	if !strings.Contains(body, "2 things need your attention.") {
+		t.Errorf("the status line does not count what needs attention")
+	}
+	history := body[strings.Index(body, "<h1>Activity</h1>"):]
+	if !strings.Contains(history, "Fast network card") || !strings.Contains(history, "Backup not working") {
+		t.Errorf("the history lost the info or the dismissed alert: %s", history)
+	}
+
+	form := url.Values{"key": {"disk"}, "at": {at(1).Format(time.RFC3339Nano)}}
+	if resp := r.form("/alerts/dismiss", nil, form); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("dismiss with no session = %d, want 401", resp.StatusCode)
+	}
+	if resp := r.form("/alerts/dismiss", c, url.Values{"key": {"disk"}, "at": {"yesterday"}}); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("dismiss with no time = %d, want 400", resp.StatusCode)
+	}
+	recs[0].Dismissed = true // the host's next copy
+	r.hostPushes(t, recs)
+	port.answer <- api.DirectiveOutcome{State: api.OutcomeDone}
+	if resp := r.form("/alerts/dismiss", c, form); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("dismiss = %d, want 303", resp.StatusCode)
+	}
+	port.mu.Lock()
+	asked := append([]api.Directive(nil), port.asked...)
+	port.mu.Unlock()
+	var got api.AlertDismiss
+	if len(asked) == 1 {
+		_ = json.Unmarshal([]byte(asked[0].Payload), &got)
+	}
+	if len(asked) != 1 || asked[0].Kind != api.DirectiveAlertDismiss || got.Key != "disk" || !got.At.Equal(at(1)) {
+		t.Fatalf("dismiss asked the host %+v, want one alert-dismiss of disk at %s", asked, at(1))
+	}
+	if body := r.page(c); strings.Contains(body[:strings.Index(body, "<h1>Activity</h1>")], "Disk space low") {
+		t.Errorf("the dismissed alert still asks for attention")
 	}
 }

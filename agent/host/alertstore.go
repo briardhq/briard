@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
 	"briard.io/shared/notify"
 )
@@ -98,6 +99,28 @@ func (s *alertStore) Notify(ctx context.Context, a notify.Alert) error {
 		return nil
 	}
 	return s.inner.Notify(ctx, a)
+}
+
+// dismiss marks the record of key written at `at` as seen (notify.Record.Dismissed) and reports
+// whether the store holds one. The household's act, not a transition: nothing is delivered and
+// a condition stays open. The generation moves, so the page's copy is pushed again.
+func (s *alertStore) dismiss(key string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.load()
+	for i := len(s.recs) - 1; i >= 0; i-- {
+		r := &s.recs[i]
+		if r.Key != key || !r.At.Equal(at) {
+			continue
+		}
+		if r.Dismissed {
+			return true, nil
+		}
+		r.Dismissed = true
+		s.gen++
+		return true, s.writeLocked()
+	}
+	return false, nil
 }
 
 // latest is the key's most recent record -- what an emitter's "prior state" is, when one needs
@@ -226,4 +249,28 @@ func pushAlerts(ctx context.Context, r any, n notify.Notifier, pushed *int, logf
 		return
 	}
 	*pushed = gen
+}
+
+// applyAlertDismiss is the household's Dismiss: one record leaves what needs attention. On the
+// loop, as status is -- one write to the store, and no act: it holds nothing and waits on nothing.
+func applyAlertDismiss(d api.Directive, n notify.Notifier) api.DirectiveOutcome {
+	fail := func(detail string) api.DirectiveOutcome {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
+	}
+	var p api.AlertDismiss
+	if err := json.Unmarshal([]byte(d.Payload), &p); err != nil || p.Key == "" {
+		return fail("alert-dismiss needs a key and the time of the alert")
+	}
+	s, ok := n.(*alertStore)
+	if !ok {
+		return fail("this machine keeps no alert store")
+	}
+	found, err := s.dismiss(p.Key, p.At)
+	switch {
+	case err != nil:
+		return fail(fmt.Sprintf("dismiss %s: %v", p.Key, err))
+	case !found:
+		return fail("no alert " + p.Key + " at " + p.At.Format(time.RFC3339))
+	}
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone}
 }

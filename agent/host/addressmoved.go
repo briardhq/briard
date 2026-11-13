@@ -105,19 +105,18 @@ func remoteTool(running func(string) bool) string {
 	return ""
 }
 
-// addressMoved is the notice: louder when a private network's route is known to point at the old
-// address, since reaching Briard from away has then stopped.
+// addressMoved is the notice -- a warning, since whatever was set to the old address is broken --
+// and, when a private network's route is known to point at the old address, how to set it again.
 func addressMoved(from, to, tool string) notify.Alert {
 	a := notify.Alert{
 		Key:      "address-moved",
 		Kind:     notify.Event,
-		Severity: notify.Info,
+		Severity: notify.Warning,
 		Title:    "Briard: its address on your home network changed",
 		Body: fmt.Sprintf("Briard's address is now %s; it was %s. Anything set to the old address, "+
 			"such as a bookmark, needs the new one.", to, from),
 	}
 	if tool != "" {
-		a.Severity = notify.Warning
 		a.Body += fmt.Sprintf(" To reach Briard from away, set up its route in %s again with the new address: %s",
 			tool, remoteAccessPage)
 	}

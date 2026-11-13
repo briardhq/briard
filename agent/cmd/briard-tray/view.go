@@ -24,7 +24,7 @@ type state int
 
 const (
 	serving  state = iota
-	degraded       // something is wrong: an open alert, or the node not serving
+	degraded       // something is wrong: an alert needs attention, or the node is not serving
 	stopped        // briard is stopped, or this account cannot reach it
 	working        // briard is updating, starting, or doing what was just asked of it
 )
@@ -45,7 +45,7 @@ type view struct {
 	state  state
 	tip    string
 	action string
-	open   int // alerts open, for the menu's count; 0 hides it
+	open   int // alerts needing attention, for the menu's count; 0 hides it
 	// updates is the menu's line for the apps' updates on offer, "" for none: an offer, not a
 	// fault, so it never touches the icon's state.
 	updates string
@@ -83,11 +83,11 @@ func look(r reading) view {
 		// The door is there and nothing answered in time: the agent is bringing its VM up.
 		return view{state: working, tip: "Briard is starting"}
 	case r.status.Updating:
-		return view{state: working, tip: "Briard is updating", action: "stop", open: r.status.Open}
+		return view{state: working, tip: "Briard is updating", action: "stop", open: r.status.Attention}
 	case r.status.Refused != "":
-		return view{state: degraded, tip: "Briard cannot take an address on your network", action: "stop", open: r.status.Open}
-	case r.status.Open > 0:
-		return view{state: degraded, tip: alerts(r.status.Open), action: "stop", open: r.status.Open}
+		return view{state: degraded, tip: "Briard cannot take an address on your network", action: "stop", open: r.status.Attention}
+	case r.status.Attention > 0:
+		return view{state: degraded, tip: alerts(r.status.Attention), action: "stop", open: r.status.Attention}
 	case !r.status.Serving:
 		return view{state: degraded, tip: "Briard is not serving right now", action: "stop"}
 	}
@@ -110,11 +110,11 @@ func alerts(n int) string {
 	return fmt.Sprintf("%d alerts need your attention", n)
 }
 
-// toast reports whether a reading after prev is news worth a notification: more alerts open than
-// the last answer said. The first answer is never news -- what was open at logon is on the icon --
-// and a poll that got no answer neither raises nor clears one.
+// toast reports whether a reading after prev is news worth a notification: more alerts needing
+// attention than the last answer said. The first answer is never news -- what needed it at logon
+// is on the icon -- and a poll that got no answer neither raises nor clears one.
 func toast(prev *host.LocalStatus, r reading) bool {
-	return r.err == nil && prev != nil && r.status.Open > prev.Open
+	return r.err == nil && prev != nil && r.status.Attention > prev.Attention
 }
 
 // launchBound is how long a Start menu click waits for the dashboard before saying why it has

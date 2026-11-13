@@ -2,12 +2,14 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"briard.io/shared/api"
 	"briard.io/shared/notify"
 )
 
@@ -208,5 +210,62 @@ func TestPushAlertsCopiesTheStoreWhenItMoves(t *testing.T) {
 	pushAlerts(ctx, old, s, &pushed, t.Logf)
 	if len(old.copies) != 0 || pushed != -1 {
 		t.Error("a guest without the verb was handed a copy")
+	}
+}
+
+// Dismiss, through the one dispatch: the named record leaves Attention and stays in the history,
+// the condition stays open, nothing is delivered, the page's copy moves, and the mark survives a
+// restart. The key's next record asks again. A record the store does not hold -- a time the page
+// read before the key moved on -- fails rather than dismissing the newer one.
+func TestAlertDismiss(t *testing.T) {
+	ctx := context.Background()
+	fn := &fakeNotifier{}
+	s := testStore(t, fn)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(s.Notify(ctx, open("disk", "low")))
+	recs, gen := s.snapshot()
+	dismiss := func(key string, at time.Time) api.DirectiveOutcome {
+		p, _ := json.Marshal(api.AlertDismiss{Key: key, At: at})
+		return Config{}.dispatch(ctx, api.Directive{ID: "x", Kind: api.DirectiveAlertDismiss, Payload: string(p)}, originLocal, nil, nil, s, nil, nil, nil, quiet)
+	}
+
+	if o := dismiss("disk", recs[0].At.Add(time.Second)); o.State != api.OutcomeFailed {
+		t.Fatalf("a record the store does not hold was dismissed: %+v", o)
+	}
+	if o := dismiss("disk", recs[0].At); o.State != api.OutcomeDone || o.ID != "x" {
+		t.Fatalf("dismiss = %+v", o)
+	}
+	after, gen2 := s.snapshot()
+	if len(notify.Attention(after)) != 0 || len(notify.OpenNow(after)) != 1 || len(after) != 1 || gen2 == gen || len(fn.alerts) != 1 {
+		t.Fatalf("want the condition open, out of Attention, kept, the copy moved, nothing delivered: %+v gen %d->%d, delivered %d", after, gen, gen2, len(fn.alerts))
+	}
+	if o := dismiss("disk", recs[0].At); o.State != api.OutcomeDone {
+		t.Fatalf("dismissing again = %+v, want done", o)
+	}
+
+	reread := newAlertStore(s.path, nil, t.Logf)
+	if got, _ := reread.snapshot(); len(got) != 1 || !got[0].Dismissed {
+		t.Fatalf("the dismissal did not survive a restart: %+v", got)
+	}
+
+	must(s.Notify(ctx, open("disk", "low"))) // the same condition asserted again: not news
+	if got, _ := s.snapshot(); len(notify.Attention(got)) != 0 {
+		t.Fatalf("re-asserting the open condition undid the dismissal: %+v", got)
+	}
+	must(s.Notify(ctx, open("disk", "nearly full"))) // changed within open: asks again
+	if got, _ := s.snapshot(); len(notify.Attention(got)) != 1 {
+		t.Fatalf("a changed condition did not ask again: %+v", got)
+	}
+}
+
+// The dashboard's Dismiss reaches the host through the guest's admin port.
+func TestTheGuestMayDismissAnAlert(t *testing.T) {
+	if !guestMayAsk(api.Directive{Kind: api.DirectiveAlertDismiss}) {
+		t.Fatal("the admin port refuses alert-dismiss: the page's Dismiss would fail")
 	}
 }

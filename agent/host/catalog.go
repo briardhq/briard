@@ -276,14 +276,15 @@ func (s *catalogState) notices(ctx context.Context, n notify.Notifier, installed
 }
 
 // wishAlert is what the household is told: the app by its title, and that it can be installed
-// from the Apps page -- the one thing a person can do about it.
+// from the Apps page -- the one thing a person can do about it. A warning, so it asks for attention:
+// the household asked to be told.
 func wishAlert(a manifest.App, met bool) notify.Alert {
 	key := "catalog:" + a.Name
 	if !met {
 		return notify.Alert{Key: key, Kind: notify.Resolved, Title: a.Title + ": the wish is settled",
 			Body: "It is installed now, or the wish was taken back."}
 	}
-	return notify.Alert{Key: key, Kind: notify.Open, Severity: notify.Info,
+	return notify.Alert{Key: key, Kind: notify.Open, Severity: notify.Warning,
 		Title: a.Title + " is now available on your Briard",
 		Body:  fmt.Sprintf("You asked for %s (%s). Briard can install it now: open the Apps page.", a.Title, a.Functionality)}
 }

@@ -105,3 +105,35 @@ func TestTeeFansOutAndJoinsErrors(t *testing.T) {
 		t.Errorf("all-success Tee err = %v, want nil", err)
 	}
 }
+
+// Attention is the latest record of each key that is an Open or an Event at Warning or above and
+// not dismissed. Each arm names what keeps a record out; the last two show a dismissal belongs to
+// one record: the key's next record asks again.
+func TestAttention(t *testing.T) {
+	rec := func(key string, kind Kind, sev Severity, dismissed bool) Record {
+		return Record{Alert: Alert{Key: key, Kind: kind, Severity: sev, Title: key}, Dismissed: dismissed}
+	}
+	recs := []Record{
+		rec("disk", Open, Warning, false),              // in
+		rec("guest", Open, Critical, false),            // in
+		rec("fast-nic", Open, Info, false),             // out: info is history only
+		rec("clock", Open, Warning, false),             // out: resolved below
+		rec("clock", Resolved, "", false),              //
+		rec("reparent", Event, Warning, false),         // in: an event at warning
+		rec("address-moved", Event, Info, false),       // out: an info event
+		rec("backup", Open, Warning, true),             // out: dismissed
+		rec("host-asleep", Event, Warning, true),       // out: dismissed...
+		rec("redundancy", Open, Warning, true),         // ...and this one changed state since:
+		rec("redundancy", Open, Critical, false),       // in, asking again
+		rec("host-unreachable", Event, Warning, true),  // ...and this one happened again:
+		rec("host-unreachable", Event, Warning, false), // in
+	}
+	var got []string
+	for _, r := range Attention(recs) {
+		got = append(got, r.Key+"/"+string(r.Severity))
+	}
+	want := "disk/warning guest/critical reparent/warning redundancy/critical host-unreachable/warning"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("Attention = %v, want %s", got, want)
+	}
+}

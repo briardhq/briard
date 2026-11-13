@@ -298,6 +298,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.revoke(w, r)
+	case r.URL.Path == "/alerts/dismiss" && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w, r)
+			return
+		}
+		a.dismissAlert(w, r)
 	case r.URL.Path == "/install" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
 			a.refuse(w, r)
@@ -984,10 +990,10 @@ func (v view) Status() string {
 		return "Briard is installed and running. Nothing else is, yet."
 	case v.Stage == "installing":
 		return "Your apps are on their way."
-	case v.Alerts != nil && len(v.Alerts.Open) == 1:
+	case v.Alerts != nil && len(v.Alerts.Attention) == 1:
 		return "One thing needs your attention."
-	case v.Alerts != nil && len(v.Alerts.Open) > 1:
-		return fmt.Sprintf("%d things need your attention.", len(v.Alerts.Open))
+	case v.Alerts != nil && len(v.Alerts.Attention) > 1:
+		return fmt.Sprintf("%d things need your attention.", len(v.Alerts.Attention))
 	}
 	for _, app := range v.Apps {
 		if app.HA != nil && !app.HA.Running {

@@ -58,6 +58,10 @@ import (
 // ciphertext -- checkBackupFolder refuses root's folders and any folder already holding files, so
 // the store never serves the guest a file it did not write. It cannot touch the address, whose
 // change restarts the guest onto the host's network.
+//
+// alert-dismiss joins them for the alert list's Dismiss: it marks one record seen. A guest taken
+// over can clear the tray's count of what needs attention -- the dashboard it serves could hide
+// those alerts anyway -- but it resolves nothing, deletes no record, and stops no delivery.
 func guestMayAsk(d api.Directive) bool {
 	switch d.Kind {
 	case api.DirectiveAppInstall, api.DirectiveAppPrewarm, api.DirectiveAppRestore,
@@ -65,9 +69,10 @@ func guestMayAsk(d api.Directive) bool {
 		api.DirectiveAppCacheEmpty, api.DirectiveAppUninstall, // and its Storage card's Clear, its Uninstall
 		api.DirectiveBackupRestore, api.DirectiveBackupList, // the Backup page's restore
 		api.DirectiveBackupNow, api.DirectiveBackupFolder, // its Back up now, and its Change
-		api.DirectiveCasaClaim,   // a name for this household, asked from its own page
-		api.DirectiveCasaRecheck, // and its network asked again about it
-		api.DirectiveWish:        // the Apps page's "I want this": a name on this node, counted with us
+		api.DirectiveCasaClaim,    // a name for this household, asked from its own page
+		api.DirectiveCasaRecheck,  // and its network asked again about it
+		api.DirectiveWish,         // the Apps page's "I want this": a name on this node, counted with us
+		api.DirectiveAlertDismiss: // an alert's Dismiss
 		return true
 	case api.DirectiveConfigSet:
 		return isBackupSetting(d.Payload)

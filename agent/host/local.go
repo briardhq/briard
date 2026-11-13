@@ -141,15 +141,15 @@ func writeOutcome(conn net.Conn, o api.DirectiveOutcome) {
 // the act lane, the lease's refusal, the catalog's view over the installed-app cache -- so
 // asking costs no read of the guest.
 type LocalStatus struct {
-	Serving  bool `json:"serving"`  // the last tick found the node healthy
-	Open     int  `json:"open"`     // alerts open now
-	Updating bool `json:"updating"` // an update of the agent, the guest's image or its OS is in flight
+	Serving   bool `json:"serving"`   // the last tick found the node healthy
+	Attention int  `json:"attention"` // alerts needing attention now (notify.Attention)
+	Updating  bool `json:"updating"`  // an update of the agent, the guest's image or its OS is in flight
 	// Refused is why the node cannot serve until the household acts, and what to do -- the
 	// network refusal's own line (lease.go) -- or "" when nothing refuses. Waiting does not end
 	// it, so a tray waiting for the page stops on it.
 	Refused string `json:"refused,omitempty"`
 	// Updates is every installed app the catalog offers an update for, in its order: an
-	// offer, not a fault, so it is counted apart from Open.
+	// offer, not a fault, so it is counted apart from Attention.
 	Updates []AppUpdate `json:"updates,omitempty"`
 }
 
@@ -186,7 +186,7 @@ func (cfg Config) applyStatus(d api.Directive, n notify.Notifier) api.DirectiveO
 	}
 	if s, ok := n.(*alertStore); ok {
 		recs, _ := s.snapshot()
-		st.Open = len(notify.OpenNow(recs))
+		st.Attention = len(notify.Attention(recs))
 	}
 	st.Updates = cfg.updates()
 	b, err := json.Marshal(st)

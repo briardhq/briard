@@ -31,11 +31,16 @@ const (
 
 // Severity is how loud an alert is -- on the alert rather than the key, because one key can
 // span two (reduced redundancy is a warning; no second copy is critical). A Resolved has none.
+//
+// It decides whether an alert asks for the household: Warning and above needs attention -- the
+// dashboard's tile, the tray's count -- until it resolves or is dismissed (Attention); Info is
+// history only and interrupts nobody. A warning here is one the household should see, as in any
+// alerting system, not a log line's warning that nobody reads.
 type Severity string
 
 const (
-	Info     Severity = "info"     // nothing to do; said so the household knows it happened
-	Warning  Severity = "warning"  // degraded or at risk; act soon
+	Info     Severity = "info"     // nothing to do; said so the household knows it happened; history only
+	Warning  Severity = "warning"  // the household should see it: degraded, at risk, or theirs to act on
 	Critical Severity = "critical" // not serving, or one step from losing data; act now
 )
 
@@ -53,9 +58,14 @@ type Alert struct {
 
 // Record is one alert as a node's alert store keeps it: the alert, and when it was written. The
 // host writes the store; `briard alerts` and the dashboard's pushed copy read the same shape.
+//
+// Dismissed is the household's "I have seen this": the record leaves Attention, stays in the
+// history, and a condition stays open. It belongs to the record, not the key, so the key's next
+// record -- the event again, the condition reopened or changed -- asks again.
 type Record struct {
 	Alert
-	At time.Time `json:"at"`
+	At        time.Time `json:"at"`
+	Dismissed bool      `json:"dismissed,omitempty"`
 }
 
 // OpenNow is what is wrong right now: the latest record of every key whose latest record is an
@@ -72,6 +82,24 @@ func OpenNow(recs []Record) []Record {
 		}
 	}
 	return open
+}
+
+// Attention is what the household is asked to look at: the latest record of every key that is
+// an Open or an Event at Warning or above and not dismissed, in the order they were written. An
+// Event stays until it is dismissed or its key records again: it has nothing to resolve.
+func Attention(recs []Record) []Record {
+	latest := map[string]int{}
+	for i, r := range recs {
+		latest[r.Key] = i
+	}
+	var out []Record
+	for i, r := range recs {
+		if latest[r.Key] == i && (r.Kind == Open || r.Kind == Event) &&
+			(r.Severity == Warning || r.Severity == Critical) && !r.Dismissed {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // Notifier delivers an Alert out of the home. Implementations: Ntfy (the v1 default,

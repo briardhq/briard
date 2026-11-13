@@ -567,7 +567,7 @@ func (t *tray) poll(exe string, self os.FileInfo) {
 			t.offer = s
 		}
 		if toast(t.prev, r) {
-			t.toastN = r.status.Open
+			t.toastN = r.status.Attention
 		}
 		if r.err == nil && r.refusal == "" {
 			s := r.status

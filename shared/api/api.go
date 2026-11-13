@@ -575,11 +575,23 @@ const (
 	//                        the guest powered off cleanly, the agent exited. `briard stop`.
 	//                        Local-only: the household's machine is the household's to stop.
 	DirectiveStatus = "status" // Payload empty. What the tray shows: whether the node served at its
-	//                        last tick, how many alerts are open, whether an update is in flight.
-	//                        Answered from the agent's last tick, never a guest round trip, so a
-	//                        poll costs the loop nothing. Outcome Detail = a JSON host.LocalStatus.
-	//                        Local-only: the answer is for the person at the machine, like doctor's.
+	//                        last tick, how many alerts need attention, whether an update is in
+	//                        flight. Answered from the agent's last tick, never a guest round trip,
+	//                        so a poll costs the loop nothing. Outcome Detail = a JSON
+	//                        host.LocalStatus. Local-only: the answer is for the person at the
+	//                        machine, like doctor's.
+	DirectiveAlertDismiss = "alert-dismiss" // Payload = a JSON AlertDismiss. The household has seen
+	//                        one alert: its record in the node's alert store is marked dismissed, so
+	//                        it no longer needs attention. Nothing resolves and nothing is
+	//                        delivered; the history keeps it. Local-only: the dashboard's Dismiss.
 )
+
+// AlertDismiss is a DirectiveAlertDismiss's payload: the record, by its key and the time it was
+// written -- never the key alone, which would dismiss a newer record the household has not seen.
+type AlertDismiss struct {
+	Key string    `json:"key"`
+	At  time.Time `json:"at"`
+}
 
 // BackupRestore is a DirectiveBackupRestore's payload: the app, and the night -- a restic
 // snapshot id as the dashboard's Backup section lists them, or "latest".

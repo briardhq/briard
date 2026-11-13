@@ -26,15 +26,15 @@ func TestShow(t *testing.T) {
 	}{
 		{"serving", reading{status: host.LocalStatus{Serving: true}},
 			view{state: serving, tip: "Briard is running", action: "stop"}},
-		{"an open alert", reading{status: host.LocalStatus{Serving: true, Open: 1}},
+		{"an alert needing attention", reading{status: host.LocalStatus{Serving: true, Attention: 1}},
 			view{state: degraded, tip: "1 alert needs your attention", action: "stop", open: 1}},
-		{"two", reading{status: host.LocalStatus{Open: 2}},
+		{"two", reading{status: host.LocalStatus{Attention: 2}},
 			view{state: degraded, tip: "2 alerts need your attention", action: "stop", open: 2}},
 		{"not serving", reading{status: host.LocalStatus{}},
 			view{state: degraded, tip: "Briard is not serving right now", action: "stop"}},
-		{"updating", reading{status: host.LocalStatus{Serving: true, Updating: true, Open: 1}},
+		{"updating", reading{status: host.LocalStatus{Serving: true, Updating: true, Attention: 1}},
 			view{state: working, tip: "Briard is updating", action: "stop", open: 1}},
-		{"no address", reading{status: host.LocalStatus{Open: 1, Refused: leaseRefused}},
+		{"no address", reading{status: host.LocalStatus{Attention: 1, Refused: leaseRefused}},
 			view{state: degraded, tip: "Briard cannot take an address on your network", action: "stop", open: 1}},
 		{"refused", reading{refusal: "this machine has no usable network device: no wired or wireless adapter is up"},
 			view{state: degraded, tip: "this machine has no usable network device: no wired or wireless adapter is up", action: "stop"}},
@@ -65,21 +65,21 @@ func TestShow(t *testing.T) {
 	}
 }
 
-// A toast is more alerts open than the last answer said -- never the first answer, never a poll
+// A toast is more alerts needing attention than the last answer said -- never the first answer, never a poll
 // that got none, never fewer.
 func TestToast(t *testing.T) {
-	one := &host.LocalStatus{Open: 1}
+	one := &host.LocalStatus{Attention: 1}
 	for _, tc := range []struct {
 		name string
 		prev *host.LocalStatus
 		r    reading
 		want bool
 	}{
-		{"first answer", nil, reading{status: host.LocalStatus{Open: 3}}, false},
-		{"a new one", one, reading{status: host.LocalStatus{Open: 2}}, true},
-		{"same", one, reading{status: host.LocalStatus{Open: 1}}, false},
+		{"first answer", nil, reading{status: host.LocalStatus{Attention: 3}}, false},
+		{"a new one", one, reading{status: host.LocalStatus{Attention: 2}}, true},
+		{"same", one, reading{status: host.LocalStatus{Attention: 1}}, false},
 		{"resolved", one, reading{status: host.LocalStatus{}}, false},
-		{"no answer", one, reading{err: host.ErrNoAgent, status: host.LocalStatus{Open: 5}}, false},
+		{"no answer", one, reading{err: host.ErrNoAgent, status: host.LocalStatus{Attention: 5}}, false},
 	} {
 		if got := toast(tc.prev, tc.r); got != tc.want {
 			t.Errorf("%s: toast = %t, want %t", tc.name, got, tc.want)
@@ -104,9 +104,9 @@ func TestLaunch(t *testing.T) {
 		says    string
 	}{
 		{"serving", reading{status: host.LocalStatus{Serving: true}}, false, 0, openPage, ""},
-		{"serving with an alert open", reading{status: host.LocalStatus{Serving: true, Open: 2}}, true, time.Minute, openPage, ""},
-		{"no address, at once", reading{status: host.LocalStatus{Open: 1, Refused: leaseRefused}}, true, 30 * time.Second, failWith, "cannot serve your home: your router leases Briard nothing"},
-		{"no address, with the fix", reading{status: host.LocalStatus{Open: 1, Refused: leaseRefused}}, false, 0, failWith, "config set vip"},
+		{"serving with an alert open", reading{status: host.LocalStatus{Serving: true, Attention: 2}}, true, time.Minute, openPage, ""},
+		{"no address, at once", reading{status: host.LocalStatus{Attention: 1, Refused: leaseRefused}}, true, 30 * time.Second, failWith, "cannot serve your home: your router leases Briard nothing"},
+		{"no address, with the fix", reading{status: host.LocalStatus{Attention: 1, Refused: leaseRefused}}, false, 0, failWith, "config set vip"},
 		{"stopped", stopped, false, 0, startIt, ""},
 		{"stopped again after this click's start", stopped, true, 5 * time.Second, failWith, "Restart Windows"},
 		{"another account's", reading{err: refused}, false, 0, failWith, "another account"},
@@ -135,7 +135,7 @@ func TestUpdatesLine(t *testing.T) {
 	}{
 		{"one", reading{status: host.LocalStatus{Serving: true, Updates: []host.AppUpdate{ha}}},
 			view{state: serving, tip: "Briard is running", action: "stop", updates: "Update available: Home Assistant 2026.10.1"}},
-		{"two, with an alert", reading{status: host.LocalStatus{Serving: true, Open: 1, Updates: []host.AppUpdate{ha, mq}}},
+		{"two, with an alert", reading{status: host.LocalStatus{Serving: true, Attention: 1, Updates: []host.AppUpdate{ha, mq}}},
 			view{state: degraded, tip: "1 alert needs your attention", action: "stop", open: 1, updates: "2 app updates available"}},
 		{"no answer", reading{err: host.ErrNoAgent, status: host.LocalStatus{Updates: []host.AppUpdate{ha}}},
 			view{state: working, tip: "Briard is starting"}},
