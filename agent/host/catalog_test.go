@@ -40,6 +40,8 @@ type fakeCatalog struct {
 	priv ed25519.PrivateKey
 	mu   sync.Mutex
 	idx  string
+	// fail is how many reads of the list are answered 503 before it is served; reads counts them all.
+	fail, reads int
 }
 
 // listedID is the identity the test list names for Home Assistant 2026.9.4.
@@ -61,6 +63,11 @@ func newFakeCatalog(t *testing.T) (*fakeCatalog, *manifest.Catalog) {
 	mux.HandleFunc("/catalog/latest.json", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if f.reads++; f.fail > 0 {
+			f.fail--
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.Write([]byte(f.idx))
 	})
 	mux.HandleFunc("/catalog/latest.json.sig", func(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +97,7 @@ func newTestCatalog(t *testing.T, cat *manifest.Catalog) (*catalogState, *time.T
 	now := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
 	s := newCatalogState(t.TempDir(), cat, func(f string, v ...any) { t.Logf(f, v...) })
 	s.now = func() time.Time { return now }
+	s.firstRetry = []time.Duration{0, 0, 0}
 	return s, &now
 }
 
@@ -137,6 +145,48 @@ func TestCatalogRefreshReadsTheIndexAndWhatIsInstallable(t *testing.T) {
 	off.refresh(ctx) // due, fails, keeps what it had
 	if v2 := off.view(nil); len(v2.Apps) != 2 {
 		t.Errorf("a failed read must keep the last index: %+v", v2)
+	}
+}
+
+// The first read is retried: a node that has never read the index tries again after each of its
+// waits, so the first page has a list, and gives up to the next tick after the last. A node that
+// has a list keeps it on a failed read and does not retry.
+func TestCatalogFirstReadIsRetried(t *testing.T) {
+	ctx := context.Background()
+	reads := func(f *fakeCatalog) int { f.mu.Lock(); defer f.mu.Unlock(); return f.reads }
+
+	f, cat := newFakeCatalog(t)
+	f.fail = 2
+	s, now := newTestCatalog(t, cat)
+	s.refresh(ctx)
+	if v := s.view(nil); len(v.Apps) != 2 {
+		t.Fatalf("two failed reads then a good one must land the list: %+v", v)
+	}
+	if got := reads(f); got != 3 {
+		t.Errorf("reads = %d, want 3 (two failures, one success)", got)
+	}
+
+	*now = now.Add(catalogRefreshEvery)
+	f.mu.Lock()
+	f.fail = 1
+	f.mu.Unlock()
+	s.refresh(ctx)
+	if got := reads(f); got != 4 {
+		t.Errorf("reads = %d, want 4: a node with a list must not retry a failed read", got)
+	}
+	if v := s.view(nil); len(v.Apps) != 2 {
+		t.Errorf("a failed read must keep the list: %+v", v)
+	}
+
+	g, cat2 := newFakeCatalog(t)
+	g.fail = 100
+	s2, _ := newTestCatalog(t, cat2)
+	s2.refresh(ctx)
+	if got := reads(g); got != 1+len(s2.firstRetry) {
+		t.Errorf("reads = %d, want %d: one try, then one after each wait", got, 1+len(s2.firstRetry))
+	}
+	if v := s2.view(nil); len(v.Apps) != 0 {
+		t.Errorf("no read landed, so the view must be empty: %+v", v)
 	}
 }
 

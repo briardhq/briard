@@ -50,9 +50,16 @@ const (
 	// the index: daily, the update check's own cadence. A failed read leaves the cache as it
 	// was, so it is retried at the next tick.
 	catalogRefreshEvery = 24 * time.Hour
+	// catalogCheckEvery is the watcher's tick: how often it asks whether the cache is due.
+	catalogCheckEvery = time.Hour
 	// catalogReadBudget bounds one refresh: the one read of the index.
 	catalogReadBudget = 3 * time.Minute
 )
+
+// catalogFirstRetry is the first read's patience: the waits between tries while this node has
+// never read the index. The household's first page lists what that read finds, so a failure
+// there is retried within minutes; once a list is cached, a failed read waits for the next tick.
+var catalogFirstRetry = []time.Duration{10 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute}
 
 // wishRetry is the count's patience: the waits between three tries, after which the count is
 // dropped and the wish stands on this node all the same.
@@ -74,6 +81,8 @@ type catalogState struct {
 	cat  *manifest.Catalog
 	logf func(string, ...any)
 	now  func() time.Time
+	// firstRetry is catalogFirstRetry, overridable in tests.
+	firstRetry []time.Duration
 	// tell counts a new wish with us, off the caller's goroutine; nil counts nothing.
 	tell func(app string)
 
@@ -88,7 +97,27 @@ type catalogState struct {
 }
 
 func newCatalogState(dir string, cat *manifest.Catalog, logf func(string, ...any)) *catalogState {
-	return &catalogState{dir: dir, cat: cat, logf: logf, now: time.Now}
+	return &catalogState{dir: dir, cat: cat, logf: logf, now: time.Now, firstRetry: catalogFirstRetry}
+}
+
+// watch reads the index at once and then at every tick, for the life of the agent. Started
+// before the install's finish and the guest's bring-up, on its own goroutine: the first read is
+// what the household's first page lists, so it runs beside a first start's image fetch rather
+// than after the guest is up, and its retries hold no other watcher's tick. Nil-safe.
+func (s *catalogState) watch(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	t := time.NewTicker(catalogCheckEvery)
+	defer t.Stop()
+	for {
+		s.refresh(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // load reads both files once. A file that is missing or does not parse is empty: the index is
@@ -118,36 +147,57 @@ func (s *catalogState) load() {
 
 // refresh re-reads the index when the cache is due. Nil-safe, for a node built without a
 // catalog. The network is touched off the loop, on the watcher's goroutine, and the lock is
-// held only around the state.
+// held only around the state. A node that has never read the index tries again after each of
+// firstRetry's waits; one with a list keeps it and waits for the next tick.
 func (s *catalogState) refresh(ctx context.Context) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	s.load()
-	due := s.c.Fetched.IsZero() || s.now().Sub(s.c.Fetched) >= catalogRefreshEvery
+	first := s.c.Fetched.IsZero()
+	due := first || s.now().Sub(s.c.Fetched) >= catalogRefreshEvery
 	s.mu.Unlock()
 	if !due {
 		return
 	}
+	var waits []time.Duration
+	if first {
+		waits = s.firstRetry
+	}
+	for i := 0; !s.read(ctx); i++ {
+		if i >= len(waits) {
+			return
+		}
+		s.logf("catalog: no list read yet; trying again in %s", waits[i])
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(waits[i]):
+		}
+	}
+}
+
+// read is one read of the index, kept on success; it reports whether the read landed.
+func (s *catalogState) read(ctx context.Context) bool {
 	rctx, cancel := context.WithTimeout(ctx, catalogReadBudget)
 	defer cancel()
 	idx, raw, err := s.cat.FetchIndex(rctx)
 	if err != nil {
 		s.logf("catalog: index: %v (keeping what was read before)", err)
-		return
+		return false
 	}
 	c := catalogCache{Fetched: s.now(), Index: raw}
 	out, err := json.Marshal(c)
 	if err != nil {
 		s.logf("catalog: %v", err)
-		return
+		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := atomicfile.Write(filepath.Join(s.dir, catalogCacheName), out, 0o600, 0o700); err != nil {
 		s.logf("catalog: cache: %v", err)
-		return
+		return false
 	}
 	s.c, s.idx = c, idx
 	installable := 0
@@ -157,6 +207,7 @@ func (s *catalogState) refresh(ctx context.Context) {
 		}
 	}
 	s.logf("catalog: index read: %d apps listed, %d installable", len(idx.Apps), installable)
+	return true
 }
 
 // toggle is the household's "I want this", and its second press: the wish recorded when

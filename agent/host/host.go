@@ -616,6 +616,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	}
 	cfg.refreshDocuments(userDocuments, logf)
 	cfg.catalog = cfg.newCatalog(ctx, logf)
+	// The catalog's index, read now and hourly after (catalog.go): it needs only the network, so
+	// a first start reads it beside the image fetch, and the first page has the list to show.
+	go cfg.catalog.watch(ctx)
 	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
 	// "the node is healthy", which is what this used to mean and what a supervisor's readiness
 	// must not mean; see the sdnotify package doc for the two costs of that coupling, the fatal
