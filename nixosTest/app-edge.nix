@@ -153,7 +153,8 @@ pkgs.testers.runNixOSTest {
                 f"tail -c +{mark + 1} /tmp/guest-serial.log | tr -d '\\r' "
                 "| grep -v -e 'GET /api/app/about' -e 'container health_status' -e 'status node=' | tail -1500"
             ))
-            print(guest(f"dmesg | tail -40; free -m; systemctl status briard-stage --no-pager | head -5; journalctl -b --no-pager -u briard-stage -u briard-{svc}-app-image | tail -30", wait=10))
+            # Cumulative since boot: steal tells a descheduled guest, PSI an I/O or CPU stall.
+            print(guest(f"nproc; head -1 /proc/stat; grep -H . /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory; dmesg | tail -40; free -m; systemctl status briard-stage --no-pager | head -5; journalctl -b --no-pager -u briard-stage -u briard-{svc}-app-image | tail -30", wait=10))
         return rc
 
     # BOTH VERSIONS' IMAGES ARE STAGED, loaded by the guest at boot beside everything else: an
