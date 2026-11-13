@@ -22,8 +22,8 @@ import (
 // still compares it with an hour ago -- a detected change lands within the hour it happened, and
 // quiet time still gets its restore points -- so undo's granularity is the interval, not the uptime.
 //
-// HOURLY, AND MEASURED CHEAP: the recorder lock costs 76 ms p95 at 100 writes/s and never broke
-// in the quiesce-cost measurement, and Home Assistant runs its automations with the recorder
+// HOURLY, AND MEASURED CHEAP: the recorder lock costs 76 ms p95 at 100 writes/s and did not
+// break under that load, and Home Assistant runs its automations with the recorder
 // down entirely -- only history waits. "Unless a recent one exists": any member counts, so an
 // app that restarts often is sampled by its starts and the clock adds nothing.
 //
@@ -60,9 +60,9 @@ type memberTaker interface {
 	SupportsMembers() bool
 }
 
-// clockSampler remembers each app's newest member. It lives for the observe loop, like the
-// reparenter and the VIP router: "is the newest member an hour old" is not a question one cycle
-// can answer cheaply.
+// clockSampler remembers each app's newest member. It lives for one observe() call (one channel
+// session), like the reparenter and the VIP router: "is the newest member an hour old" is not a
+// question one cycle can answer cheaply.
 type clockSampler struct {
 	newest map[string]time.Time // app -> the newest member this process knows of
 }
@@ -75,7 +75,7 @@ func newClockSampler() *clockSampler { return &clockSampler{newest: map[string]t
 // asking about data it does not hold.
 //
 // THE IN-MEMORY RECORD IS THE FAST PATH, NOT THE TRUTH. The guest takes members this process never
-// hears of (every start), and the agent restarts with an empty map. So an app whose record is
+// hears of (every start), and every observe() call starts with an empty map. So an app whose record is
 // an interval old is checked against the RING, which is the durable answer, and the map is what
 // keeps that check to about once per app per interval.
 func (cfg Config) consider(ctx context.Context, g memberTaker, c *clockSampler, apps []model.AppSpec, serving bool, now time.Time, logf func(string, ...any)) {
@@ -113,8 +113,8 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, c *clockSampler, 
 // whoever released it — so the claim is made by the only party that watched it, and every failure
 // in between leaves the member saying the weaker, true thing.
 //
-// A guest too old to ask gets the plain take, which is what this did before the quiesce existed:
-// a member that says crash-consistent, which is exactly what it is.
+// A guest too old to ask gets the plain take: a member that says crash-consistent, which is
+// exactly what it is.
 func (cfg Config) takeRunning(ctx context.Context, g memberTaker, app, member string, tr quadlet.Trigger, at time.Time, logf func(string, ...any)) error {
 	if !g.SupportsQuiescedSnapshot() {
 		return cfg.takeMember(ctx, g, app, member, tr, quadlet.Crash, nil, at, logf)
@@ -241,7 +241,7 @@ func (cfg Config) checkRecorder(ctx context.Context, g recorderChecker, d *dbChe
 	}
 	if !started {
 		// The guest is still running one, or holds a finished one's report nobody collected (this
-		// agent restarted): that report is as good as tonight's, and may name a restore.
+		// loop restarted): that report is as good as tonight's, and may name a restore.
 		logf("hass-db: the guest has a check running or a report waiting; collecting that one")
 	}
 	d.waiting = now

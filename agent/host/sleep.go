@@ -14,9 +14,9 @@ import (
 // holds idle sleep off, so a sleep that happens anyway was asked for -- a closed lid, the power
 // button, Sleep from the Start menu, a Fast Startup shut down -- and every one of them took the
 // household's apps down for its length. The last of them is a hibernate to the machine and a
-// Shut down to the household, and is told as the one they chose. When the machine has a lid that the power plan sleeps
-// on (plugged in), the alert says how to change that, since the lid is the one a person closes
-// without meaning to stop a server.
+// Shut down to the household, and is told as the one they chose. When the machine has a lid that
+// the power plan sleeps on (plugged in), the alert says how to change that, since the lid is the
+// one a person closes without meaning to stop a server.
 //
 // ONLY A SLEEP THIS AGENT SAW START TO END IS NEWS. The first reading primes: a sleep that ended
 // before the agent started was not one it was serving through. "No sleep since boot" is an answer

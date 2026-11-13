@@ -14,8 +14,8 @@ import (
 //
 // It is NOT KEYRING-GATED: the keyring gates the unit's fetch, on bytes this agent never holds.
 // That is what lets the timer path work on a node whose agent is wedged, which is the case the
-// whole design exists for. What the agent can still refuse is a directive naming a version it is
-// already running.
+// whole design exists for. What the agent still decides is to skip, as done, a directive naming
+// the version it already runs (Current).
 type hostSelfUpdater struct {
 	layout  selfupdate.Layout
 	update  string // the frozen update unit, started to run one

@@ -11,25 +11,16 @@ import (
 // single-node install nothing else can relaunch the guest, because `-no-reboot` means the guest's
 // own reflex needs the agent to finish it. A crashed agent self-heals; a hung one does not.
 //
-// WHY A BARE TIMER GOROUTINE WOULD BE VACUOUS, AND WHY THAT IS GO-SPECIFIC.
+// A BARE TIMER GOROUTINE WOULD BE VACUOUS, and that is Go-specific: goroutines are M:N over OS
+// threads, so a `time.Ticker` in its own goroutine keeps firing while the observe loop is blocked
+// forever on a mutex, a channel or a syscall — reporting "alive" through exactly the failure this
+// exists to catch. The ping has to come from the loop whose liveness is the question.
 //
-// Goroutines are M:N over real OS threads. A `time.Ticker` in its own goroutine keeps firing on
-// another thread while the observe loop is blocked forever on a mutex, a channel or a syscall —
-// so it would report "alive" through exactly the failure this exists to catch. (In an event-loop
-// runtime a wedged handler wedges the timer too, and a heartbeat timer WOULD be a real signal.
-// Here it is not.) The ping has to come from the loop whose liveness is the question.
-//
-// WHY THE LONG OPERATIONS DO NOT FORCE A LONG THRESHOLD.
-//
-// The obvious objection is that the observe goroutine legitimately blocks for minutes — recover()
-// waits guestRecoveryWindow, rebootGuest runs to BringUpBudget+3*shutdownGrace — so the threshold
-// would have to exceed the longest legitimate stall, which is long enough that the watchdog would
-// rarely be the thing that notices.
-//
-// It does not, because EVERY long operation here is already ctx-bounded. A legitimate operation
-// that overran would have had a deadline fire. So the wedge being hunted is never "too slow" — it
-// is a block that IGNORES its context — and the threshold is set by the longest gap between two
-// pings, which is chosen, rather than by the longest stall, which is not.
+// THE LONG OPERATIONS DO NOT FORCE A LONG THRESHOLD. The observe goroutine legitimately blocks for
+// minutes — recover() waits guestRecoveryWindow, rebootGuest runs to BringUpBudget+3*shutdownGrace
+// — but EVERY long operation is ctx-bounded, so the wedge being hunted is never "too slow"; it is
+// a block that IGNORES its context. The threshold is set by the longest gap between two pings,
+// which is chosen, not by the longest stall, which is not.
 //
 // ⚠️ ONE CAVEAT CARRIES THE WEIGHT: an enclosing ctx with a deadline does not make a step bounded.
 // rebootGuest builds a 6.5-minute ctx and then calls u.vm.Stop(), which takes no ctx at all; if
@@ -43,22 +34,17 @@ import (
 // cycle can run ~35s, and it gives nothing at all once observe returns into recover(), where
 // there is no top of loop to be at.
 //
-// Lease covers a single long operation with its OWN budget: ping until that context is done. It
-// is deliberately NOT a flag with an enable/disable pair. `defer Disable()` runs on return and on
-// panic — not on a goroutine that never returns — so a wedge inside the operation would leave the
-// pings running FOREVER, disabling the watchdog permanently, and the more completely the agent
-// wedged the longer it would stay off. A lease expires on its own, so releasing early is an
-// optimisation rather than a correctness requirement.
+// Lease covers a single long operation with its OWN budget ctx: ping until that context is done,
+// so no interval is ever chosen. It is deliberately NOT an enable/disable flag: `defer Disable()`
+// does not run on a goroutine that never returns, so a wedge inside the operation would leave the
+// pings running FOREVER — the more completely the agent wedged, the longer the watchdog stayed
+// off. A lease expires on its own: normal completion ends it through the caller's `defer
+// cancel()`, a wedge ends it at the deadline. Nesting and concurrency need no bookkeeping — the
+// watchdog is loose while any lease is alive and tight when the last one exits.
 //
-// It also means no interval is ever chosen: the lease IS the operation's existing budget ctx.
-// Normal completion ends it through the `defer cancel()` already there; a wedge ends it at the
-// deadline. Nesting and concurrency need no bookkeeping either — the goroutine's lifetime is the
-// lease, so the watchdog is loose while any is alive and tight when the last one exits.
-//
-// The predicate changes under a lease rather than disappearing. Steady state asserts THE LOOP IS
+// The predicate CHANGES under a lease rather than disappearing: steady state asserts THE LOOP IS
 // PROGRESSING; a lease asserts THIS OPERATION FINISHED WITHIN THE BUDGET IT DECLARED. Overrunning
-// a declared budget is itself the fault signal, which is why the second is an assertion and not a
-// blind spot.
+// a declared budget is itself the fault signal, not a blind spot.
 //
 // AND THE PAYOFF IS THE TRACEBACK, NOT THE RESTART. WatchdogSignal= defaults to SIGABRT, and Go's
 // runtime answers SIGABRT by dumping goroutine stacks and dying — so a trip leaves the stack of
@@ -92,9 +78,9 @@ func (b *beat) Beat() {
 // purpose. Leasing an unbounded context rebuilds the permanent-disable bug the lease exists to
 // avoid, and it would do it invisibly: context.WithoutCancel strips the deadline along with the
 // cancellation, and it is used on exactly these paths with a WithTimeout wrapped back around it.
-// Reorder those two and the bug is silent. Checking before the nil return is what makes it
-// surface in dev runs and tests, where there is no watchdog and the goroutine would never spawn —
-// i.e. everywhere the mistake would otherwise be invisible until production.
+// Reorder those two and the bug is silent. Checking before the nil return makes it surface in dev
+// runs and tests, where there is no watchdog and the mistake would otherwise be invisible until
+// production.
 //
 // A panic rather than a clamp, deliberately: a clamp ships a real bug as a slightly-wrong
 // threshold, and the one place this feature can afford to be loud is the one that would otherwise
@@ -121,24 +107,12 @@ func (b *beat) Lease(ctx context.Context) {
 	}()
 }
 
-// budget bounds an operation and puts it under the watchdog IN ONE CALL, and it exists because
-// those two facts must agree and nothing made them.
-//
-// This is what a disagreement cost. Every long operation here already declared a budget;
-// what none of the forward paths did was lease it, so `app install` — a verb measured at
-// 48.8 s — ran unpinged under WatchdogSec=20 and was SIGABRTed on every shipped node for a week.
-// The leases that DID exist were all on recovery and rollback paths (annotated where a
-// wedge was feared and not where work is merely long), and the two sets did not overlap at all.
-//
-// So the deadline and the lease are no longer two things a caller has to remember to write next
-// to each other. Forgetting the lease now means forgetting the budget, which is not a subtle
-// omission: an unbounded operation on the observe loop is visible, and Lease panics on a context
-// with no deadline rather than quietly covering for it.
-//
-// The predicate does not disappear under the lease, it CHANGES — steady state asserts the loop is
-// progressing, a budget asserts this operation finished inside the bound it declared. Nothing is
-// unwatched: normal completion ends the lease through the `defer cancel()` the caller already
-// writes, and an overrun ends it at the deadline, where the watchdog fires with the traceback.
+// budget bounds an operation and puts it under the watchdog IN ONE CALL, because those two facts
+// must agree and nothing else makes them. A budget without a lease is the trap: `app install`
+// (measured at 48.8 s) declared one but ran unpinged under WatchdogSec=20 and was SIGABRTed — a
+// lease gets written where a wedge is feared, not where work is merely long. Through
+// budget, forgetting the lease means forgetting the deadline, which is not subtle: an unbounded
+// operation on the observe loop is visible, and Lease panics on a context with no deadline.
 //
 // Nil-safe through Lease, so a dev run, the lab fleet and any harness with no WatchdogSec get the
 // deadline and no goroutine.
@@ -160,9 +134,9 @@ const (
 // misses is a watcher's count of its own ticks that saw no beat -- how the Windows watchers (the
 // in-process dumper and the warden) measure staleness, where systemd measures it on Linux.
 //
-// IN TICKS, NEVER ON THE WALL CLOCK, because Windows' monotonic clock runs through a sleep: every
-// resume found hours since the last beat and read the machine's sleep as a wedged loop. A
-// suspended watcher does not tick, so a sleep adds no miss.
+// IN TICKS, NEVER ON THE WALL CLOCK, because Windows' monotonic clock runs through a sleep: a
+// clock-based check finds hours since the last beat at every resume and reads the machine's sleep
+// as a wedged loop. A suspended watcher does not tick, so a sleep adds no miss.
 //
 // AND A LATE TICK RESETS THE COUNT. A tick arriving far later than its interval means the watcher
 // was paused itself -- the machine slept, or was too starved to run it -- and a paused watcher saw

@@ -1,8 +1,8 @@
 // The agent's half of `briard doctor`: the node judged live, from the agent's own view.
 //
-// The report card gates the install and nothing re-ran it afterwards, so a node a month later
-// had only its history (`briard alerts`, `briard logs`) to answer "what is wrong NOW". The CLI
-// reads what the host can see by itself (agent/reportcard, doctor.go); this half answers what
+// The report card gates the install; doctor answers "what is wrong NOW" on a node long after,
+// which its history (`briard alerts`, `briard logs`) cannot. The CLI reads what the host can see
+// by itself (agent/reportcard, agent/cli/doctor.go); this half answers what
 // only the agent can -- the network it built, the guest behind the channel it holds, and what
 // the guest says -- through the same snapshot the report loop sends upward, so the doctor and
 // the cloud judge one sample, never two readings that could disagree.
@@ -30,7 +30,7 @@ import (
 )
 
 // doctorBudget bounds the whole agent half. The snapshot's own reads are 5 s each; this is the
-// ceiling on the loop being held, since the directive runs inside it.
+// ceiling on the answer, which runs off the observe loop (offLoopPulls, acts.go).
 const doctorBudget = 20 * time.Second
 
 // certWarnBefore is when an expiring cert becomes a warning: renewal is the cloud's, and two

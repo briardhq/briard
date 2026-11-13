@@ -48,7 +48,7 @@ func (platformWitness) StartForwarder(ctx context.Context, s platform.ForwarderS
 	return platform.StartForwarder(ctx, s)
 }
 
-// ApplyPair handles a DirectivePair (runtime anchor pairing): parse the target mesh and
+// applyPair handles a DirectivePair (runtime anchor pairing): parse the target mesh and
 // reconcile this node's DRBD to it, returning the terminal outcome (announce-before-act).
 // The op is idempotent -- a re-delivered pair directive reconciles to the same mesh -- so a retry
 // re-reports done.
@@ -72,10 +72,11 @@ func (cfg Config) applyPair(ctx context.Context, g guestMesher, w witnessStarter
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone}
 }
 
-// ReconcileMesh makes this node's DRBD match the target mesh. Both sides first take a
-// routable replication-subnet address (a single node ran over loopback). Then:
+// reconcileMesh makes this node's DRBD match the target mesh. Both sides first take a
+// routable replication-subnet address (a lone node has none: it runs no DRBD). Then:
 //   - the existing serving primary (Join=false) ADJUSTS the running resource in place -- its disk
-//     stays attached and UpToDate, quorum just widens as the joiners connect;
+//     stays attached and UpToDate, quorum just widens as the joiners connect; a LONE primary has
+//     no resource to adjust and converts through a guest reboot instead (below);
 //   - a blank joiner (Join=true) BRINGS UP fresh as a NON-seed, so it attaches its fresh replica
 //     and resyncs from the primary as SyncTarget (never declares itself UpToDate -- no split-brain).
 //
@@ -96,9 +97,9 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 			// privDev(), not WitnessDev: under the bridge substrate there is no third NIC and naming
 			// one fails the call (see the helper). Same reason as bring-up's call site.
 			PrivDev: cfg.privDev(), PrivHostIP: cfg.hostNodeIP(),
-			// And the service identity, because THIS is the renumbering call: an adoption is where
-			// the joiner takes the adopter's flock, so it is where a guest-made eth2
-			// would otherwise keep presenting its old flock's MAC on the LAN.
+			// And the service identity, the same as bring-up's call: this call re-renders the
+			// guest's network, and the guest re-asserts the MAC on an eth2 that already exists.
+			// serviceMAC derives from THIS node's own FlockID -- a MeshSpec carries no flock id.
 			VIPParent: cfg.VIPParent, VIPMAC: cfg.serviceMAC(),
 		}); err != nil {
 			return fmt.Errorf("pair: configure %s: %w", spec.SystemDev, err)
@@ -167,7 +168,7 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 	return cfg.cacheMesh(spec, logf)
 }
 
-// ApplyUnpair handles a DirectiveUnpair: a member left, and this surviving anchor
+// applyUnpair handles a DirectiveUnpair: a member left, and this surviving anchor
 // reconciles to the mesh that remains. Two shapes, by what remains:
 //   - two or more diskful members: still a flock; the running resource is adjusted in place,
 //     exactly as the primary's side of a pairing is (drbdadm adjust drops the connection);
@@ -303,22 +304,18 @@ func meshTarget(spec api.MeshSpec, node string) (drbd.Resource, int, error) {
 	return target, self, nil
 }
 
-// CacheMesh records the mesh this node has just been reconciled to, node-locally and durably.
+// cacheMesh records the mesh this node has just been reconciled to, node-locally and durably.
 //
 // AFTER the apply, never before: the cache's meaning is "what this node IS in", so a pairing that
 // failed halfway must not leave a mesh the next bring-up would converge to. Same rule and the same
 // reason as cacheApp writing only past the health gate.
 //
-// A WRITE FAILURE FAILS THE PAIRING. This was a warning first, on the reasoning
-// that the guest had already applied the mesh so reporting failure would be a lie. That reads the
-// directive's promise too narrowly: **a pairing that is not persisted is not applied.** The guest's
-// copy lives until the next bring-up rewrites it from cfg.Resource, so an uncached pairing is not a
-// meshed node -- it is a node that will silently un-mesh itself on its next reboot, which is the
-// defect the host-held mesh cache exists to end rather than a smaller version of it to tolerate.
-//
-// So the outcome is FAILED, and it is honest: the cloud's own Pair is idempotent at the mechanism
-// layer, so a re-enqueue re-applies to the same target mesh and re-tries this write. A retry that
-// can fix it beats a success that hides it.
+// A WRITE FAILURE FAILS THE PAIRING. A warning looks right -- the guest has already applied the
+// mesh -- but **a pairing that is not persisted is not applied.** The guest's copy lives until
+// the next bring-up rewrites it from cfg.Resource, so an uncached pairing is a node that will
+// silently un-mesh itself on its next reboot: the defect the host-held mesh cache exists to end.
+// FAILED is honest: the pairing is idempotent, so a re-delivery re-applies to the same target
+// mesh and retries this write. A retry that can fix it beats a success that hides it.
 //
 // It does NOT try to undo the guest-side apply. There is no clean un-mesh, and a half-undone pairing
 // would be worse than either outcome; the node is meshed and serving while the directive says it did
@@ -346,13 +343,13 @@ func (cfg Config) cacheMesh(spec api.MeshSpec, logf func(string, ...any)) error 
 	return nil
 }
 
-// CachedMesh rebuilds this node's DRBD resource from the last pairing it applied. ok is false when
+// cachedMesh rebuilds this node's DRBD resource from the last pairing it applied. ok is false when
 // nothing has ever been paired -- the shipped single-node state, where PEERS (or its self-peer
 // default) is the right answer and this file is correctly absent.
 //
 // An unusable cache is reported and treated as absent, matching installedApps: bringing up on
-// the env mesh is what this node did before there was a cache at all, so it is the conservative
-// fallback rather than a new failure mode. A spec that no longer names this node is the same case
+// the env mesh is the conservative fallback, not a new failure mode (warnIfMeshForgotten alerts
+// if the guest is in a mesh after all). A spec that no longer names this node is the same case
 // (a rename, or a cache carried onto another node) and says so distinctly, because "your mesh does
 // not know you" is a different thing to go looking for than "your mesh will not parse".
 func (cfg Config) cachedMesh(logf func(string, ...any)) (api.MeshSpec, drbd.Resource, bool) {
@@ -376,26 +373,22 @@ func (cfg Config) cachedMesh(logf func(string, ...any)) (api.MeshSpec, drbd.Reso
 	return spec, target, true
 }
 
-// WarnIfMeshForgotten alerts when the GUEST is in a mesh the HOST cannot re-push.
+// warnIfMeshForgotten alerts when the GUEST is in a mesh the HOST cannot re-push.
 //
 // That combination is a node with a countdown on it: bring-up rewrites the guest's `.res` from
 // cfg.Resource every time, so this node replicates now and will come back a mesh-of-one on its next
 // guest reboot -- a deadman pass, a kernel panic, an OS upgrade. Nothing else notices. The peer
-// keeps a full mesh and its own redundancy alert fires, but on THIS node the redundancy alerter was
-// never even built: Run gates it on `len(cfg.Resource.Peers) - 1 > 0`, which is exactly the thing
-// that is wrong here. So the state is silent locally, and silence is the whole problem.
+// keeps a full mesh and its own redundancy alert fires, but on THIS node the redundancy alerter is
+// never built: Run gates it on `len(cfg.Resource.Peers) - 1 > 0`, which is exactly the thing that
+// is wrong here. So the state is silent locally, and silence is the whole problem. Checked once
+// at every agent start (Run).
 //
-// It replaced RescueGuest's paired-node refusal rather than being added beside it. That
-// refusal blocked one destructive verb; this is the same safety property checked where the defect
-// actually is -- at every bring-up, whether or not a human reaches for rescue.
+// A REAL ALERT AND NOT A LOG LINE: an alert is recorded in the node's store and, on a paid node,
+// pushed; a plain logf is findable by neither, which for a fault whose whole nature is "nobody
+// notices" is the wrong choice at any price.
 //
-// A REAL ALERT AND NOT A LOG LINE, which is a cheaper distinction than it sounds. An alert is
-// recorded in the node's store and, on a paid node, pushed; a plain logf is findable by neither,
-// which for a fault whose whole nature is "nobody notices" is the wrong choice at any price.
-// Rarity is an argument for alerting being cheap, not for staying quiet.
-//
-// Reachable two ways now: a corrupt cache, or a node paired before the cache existed. A failed
-// cache WRITE is no longer one of them -- that fails the pairing outright (cacheMesh).
+// Reachable through a corrupt cache, or a node paired before the cache existed -- not through a
+// failed cache WRITE, which fails the pairing outright (cacheMesh).
 //
 // An unreadable cluster says nothing. This runs at every start, including on a guest that is still
 // settling, and "I could not ask" must never be reported as "your mesh is gone".
@@ -434,15 +427,13 @@ func meshRecorded(node string) notify.Alert {
 	}
 }
 
-// RestoreWitnessHop re-establishes this anchor's host-side path to the cloud witness at bring-up.
-
+// restoreWitnessHop re-establishes this anchor's host-side path to the cloud witness at bring-up.
+//
 // THE FORWARDER IS A TRANSIENT UNIT ON PURPOSE (systemd-run, detached from the agent's cgroup so an
-// agent restart leaves the hop serving), and that is not what this changes. What was missing is the
-// other half of the rule the mesh needed: nothing RE-CREATED it. applyPair was the only caller of
-// StartForwarder, and the cloud sends a pair directive on demand rather than on registration -- so a
-// HOST reboot ended the hop permanently and the restored `.res` named a witness address nothing was
-// listening on. A GUEST reboot was never affected: the guest's eth3 is baked
-// (disk-image.nix), so its side of the private link comes back on its own.
+// agent restart leaves the hop serving), so a HOST reboot ends it, and the cloud sends a pair
+// directive on demand rather than on registration. Without this, the restored `.res` would name a
+// witness address nothing is listening on. It also re-addresses the guest's eth3 (bringUpWitness),
+// which is the agent's to address, not baked into the image.
 //
 // BEFORE WaitQuorate, which is why this is a step in bring-up rather than a call after it. With the
 // peer anchor up the node reaches 2/3 without the witness and the placement would not matter; it
@@ -450,12 +441,11 @@ func meshRecorded(node string) notify.Alert {
 // after bring-up returns is one started after WaitQuorate has already burned the whole
 // BringUpBudget waiting for the quorum this hop was going to supply.
 //
-// LOUD BUT NEVER FATAL, and that trade is deliberately the opposite of the promoter gate's. A node that
-// cannot start its forwarder can still serve on 2/3 with its peer, and failing bring-up would take
-// down a node that works -- with the promoter gated, it would not serve at all. Nor is the failure
-// silent, which is what the promoter gate actually refused to accept: DRBD reports the witness connection
-// down, so it lands in NodeStatus's connected count and the redundancy alerter fires on the channel
-// that already exists.
+// LOUD BUT NEVER FATAL, deliberately the opposite of the promoter gate's "absence of configuration
+// is an error". A node that cannot start its forwarder can still serve on 2/3 with its peer, and
+// failing bring-up would take down a node that works. Nor is the failure silent: DRBD reports the
+// witness connection down, so it lands in NodeStatus's connected count and the redundancy alerter
+// fires on the channel that already exists.
 //
 // Idempotent: StartForwarder probes is-active first, so a hop already serving is left alone and this
 // costs nothing on an agent restart or a re-adopted guest.
@@ -471,7 +461,7 @@ func (cfg Config) restoreWitnessHop(ctx context.Context, g guestMesher, w witnes
 	}
 }
 
-// BringUpWitness stands up this anchor's host-side path to the cloud witness: address the
+// bringUpWitness stands up this anchor's host-side path to the cloud witness: address the
 // guest's private witness NIC (eth3) so its DRBD can bind the witness-side local address, then start
 // the host witness-forwarder that tunnels that private link to the cloud witness-proxy over mTLS.
 // The forwarder listens at the witness peer's mesh Address (what the guest's DRBD dials); its mTLS

@@ -14,19 +14,17 @@ import (
 	"briard.io/shared/notify"
 )
 
-// DRESSING THE GUEST. Every briard binary the guest runs
-// rides the HOST bundle: the committed tree at <base>/guest ->
-// guest-<release>/bin/{briard-dashboard,briard-reverse-proxy,briard-guest-agent}. The image bakes
-// ONE binary, briard-guest-firmware -- the push protocol alone, which is what receives the first
-// push; the guest AGENT has no baked copy either. The guest's scratch is emptied at every boot, so
-// every launch starts as firmware with no web unit and no agent at all; the host compares the bundle
-// the guest reports in its handshake with the tree it holds and pushes when they differ -- at
-// bring-up (BEFORE rejoin, so nothing can promote an undressed node), after a host commit, after
-// any guest relaunch. A convergence
-// the committed HOST agent performs, the same way it pushes the hostname and the addresses: not a
-// third update mechanism.
+// DRESSING THE GUEST. Every briard binary the guest runs rides the HOST bundle: the committed tree
+// at <base>/guest -> guest-<release>/bin/{briard-dashboard,briard-reverse-proxy,briard-guest-agent}.
+// The image bakes ONE binary, briard-guest-firmware -- the push protocol alone, which receives the
+// first push; the guest AGENT has no baked copy either. The guest's scratch is emptied at every
+// boot, so every launch starts as firmware with no web unit and no agent at all; the host compares
+// the bundle the guest reports in its handshake with the tree it holds and pushes when they differ
+// -- at every bring-up (BEFORE rejoin, so nothing can promote an undressed node), which covers a
+// host commit and any guest relaunch. A convergence the committed HOST agent performs, the same
+// way it pushes the hostname and the addresses: not a third update mechanism.
 //
-// THE SET COMMITS AS ONE, OR NOT AT ALL (owner, 2026-09-08). The push is stage, prove, arm:
+// THE SET COMMITS AS ONE, OR NOT AT ALL. The push is stage, prove, arm:
 // every file staged, then `bin.test` runs each staged copy's --test-launch in the guest -- the
 // cheap gate; a failure names the binary, the guest discards the whole staged set, nothing is
 // armed, and the dress is REFUSED here and now -- then `bin.activate` arms every name and
@@ -46,7 +44,7 @@ import (
 // from the next handshake: the new id means the set took, the old one means it was refused --
 // and because the port opens only after the verdict, there is no handshake in between.
 //
-// THE REVERT IS PERMANENT, and the host is what makes it so (owner, 2026-09-07). The guest's own
+// THE REVERT IS PERMANENT, and the host is what makes it so. The guest's own
 // fallback only lasts until its next launch -- a fresh scratch knows nothing, so the next boot
 // would trial the same bad bundle again. So the host keeps two facts beside the committed tree:
 // `guest.good`, the release id of the last tree a dress was JUDGED to have taken (the guest came back
@@ -55,10 +53,9 @@ import (
 // the good tree is pushed instead, on every launch, until a new host commit brings a new tree.
 // Host and guest are then on different releases, and the status line says so (GuestBundle names
 // the good tree) -- the ordinary transient every rollout passes through, held for one release
-// rather than papered over. No joint host+guest commit: that would have to answer what a host
-// does when its guest is down, and the answer is this: it commits its own bundle and converges
-// the guest when it can. Since the guest commits as a whole, a host tree and the guest's set
-// always correspond.
+// rather than papered over. No joint host+guest commit: a host whose guest is down commits its
+// own bundle and converges the guest when it can. Since the guest commits as a whole, a host tree
+// and the guest's set always correspond.
 
 // dresser is what dressGuest needs of a guest: the handshake facts and the three push verbs.
 type dresser interface {

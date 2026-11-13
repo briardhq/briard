@@ -41,7 +41,7 @@ import (
 // outlives a push: it renders what the host tells it (dashboard.Casa) and serves the certificate
 // the host writes to the volume. Identity and decisions on the host; the guest is disposable.
 //
-// Everything else here is re-derived: the address is re-written once per session (an
+// Everything else here is re-derived: the address is re-written once per agent run (an
 // idempotent upsert), the certificate's expiry is read back from the volume. A restart loses
 // nothing that matters.
 
@@ -81,8 +81,8 @@ type casaClient interface {
 	SetA(ctx context.Context, req casa.ARequest) error
 }
 
-// casaGuest is the slice of the guest binding the runner needs: where the VIP is, the
-// certificate on the volume, and the page's view. *guestagent.Client satisfies it.
+// casaGuest is the slice of the guest binding the runner needs: the certificate on the volume
+// and the page's view (the VIP comes in as tick's own argument). *guestagent.Client satisfies it.
 type casaGuest interface {
 	WriteCert(ctx context.Context, cert, key string) error
 	ReadCert(ctx context.Context) (string, error)
@@ -341,7 +341,7 @@ func (c *casaRunner) poll(ctx context.Context, now time.Time, logf func(string, 
 }
 
 // address points the name at the VIP, directly at the Worker, whenever the VIP the guest holds
-// differs from what was last written. Idempotent, so once per session is the floor and a moved
+// differs from what was last written. Idempotent, so once per agent run is the floor and a moved
 // address the trigger.
 func (c *casaRunner) address(ctx context.Context, vip guest.VIPReader, now time.Time, logf func(string, ...any)) {
 	vctx, cancel := context.WithTimeout(ctx, 3*time.Second)
