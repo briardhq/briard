@@ -216,7 +216,7 @@ async def async_setup(hass, config):
     # process, and `async_setup` has no unload counterpart to remove it in.
     hass.bus.async_listen(EVENT_RECONSIDER, _nudged)
 
-    # The node's open alerts, mirrored into Repairs: at start, then on a slow poll of the copy.
+    # What needs attention on the node, mirrored into Repairs: at start, then on a slow poll of the copy.
     async def _mirror(_now=None):
         try:
             await _mirror_alerts(hass)
@@ -243,11 +243,17 @@ async def async_setup(hass, config):
     return True
 
 # THE NODE'S ALERTS AS REPAIRS ISSUES. The node's host agent keeps the one record of every alert;
-# the guest holds a copy, bound into this container read-only at ALERTS_PATH. Each OPEN alert is
-# one issue, keyed by the alert's key; an alert that resolves deletes its issue; an event never
-# makes one. Nothing here acts: the issues are not fixable, "Learn more" leads to the Briard
-# dashboard, which stays the one place to act, and Ignore hides an issue in Home Assistant only --
-# Briard has no acknowledgement to send it to.
+# the guest holds a copy, bound into this container read-only at ALERTS_PATH. Repairs shows what
+# needs attention by the same rule as the dashboard's tile and the tray's count: the latest record
+# of each key that is an open condition or an event, at warning or above, and not dismissed on the
+# dashboard. Each is one issue; a record that stops needing attention -- resolved, dismissed, or
+# replaced by the key's next record -- deletes its issue. Nothing here acts: the issues are not
+# fixable, "Learn more" leads to the Briard dashboard, which stays the one place to act, and Ignore
+# hides an issue in Home Assistant only -- this container has no way to tell Briard anything.
+#
+# An issue is a RECORD, not a key (its id is the key and the record's time), as a dismissal is: an
+# Ignore holds for that record, and the key's next one -- the event again, the condition reopened
+# or changed -- is a new issue that asks again.
 #
 # Not persistent: Home Assistant drops them at a restart (keeping an Ignore) and this rebuilds
 # them from the copy at start, so an issue can never outlive the copy that justified it.
@@ -258,16 +264,17 @@ ALERTS_PATH = "@ALERTS_PATH@"
 DASHBOARD_URL = "@DASHBOARD_URL@"
 ALERTS_EVERY = timedelta(seconds=30)
 
-# Severity is the node's word for loudness; Repairs has no quieter level than a warning.
+# Severity is the node's word for loudness; only warning and critical ask for attention.
 _SEVERITY = {
     "critical": ir.IssueSeverity.CRITICAL,
     "warning": ir.IssueSeverity.WARNING,
-    "info": ir.IssueSeverity.WARNING,
 }
 
-def _open_alerts():
-    """The copy's open alerts by key -- the latest record per key, where that is an open one --
-    or None when there is no copy to read. Blocking; called in the executor."""
+def _attention():
+    """What needs attention, by issue id -- the latest record per key, where that is an open
+    condition or an event at warning or above and not dismissed -- or None when there is no copy
+    to read. The node's own rule (notify.Attention), read the same way. Blocking; called in the
+    executor."""
     try:
         with open(ALERTS_PATH, encoding="utf-8") as fh:
             records = json.load(fh)
@@ -279,29 +286,33 @@ def _open_alerts():
     for rec in records:
         if isinstance(rec, dict) and isinstance(rec.get("key"), str):
             latest[rec["key"]] = rec
-    return {key: rec for key, rec in latest.items() if rec.get("kind") == "open"}
+    return {
+        f"{key}@{rec.get('at', '')}": rec
+        for key, rec in latest.items()
+        if rec.get("kind") in ("open", "event") and rec.get("severity") in _SEVERITY and not rec.get("dismissed")
+    }
 
 async def _mirror_alerts(hass):
-    """Make Briard's issues exactly the copy's open alerts."""
-    open_now = await hass.async_add_executor_job(_open_alerts)
-    if open_now is None:
+    """Make Briard's issues exactly what the copy says needs attention."""
+    now = await hass.async_add_executor_job(_attention)
+    if now is None:
         return
-    for key, rec in open_now.items():
+    for issue_id, rec in now.items():
         # Create-or-replace; Home Assistant writes and announces only a change.
         ir.async_create_issue(
             hass,
             DOMAIN,
-            key,
+            issue_id,
             is_fixable=False,
             is_persistent=False,
-            severity=_SEVERITY.get(rec.get("severity"), ir.IssueSeverity.WARNING),
-            learn_more_url=DASHBOARD_URL + "#alert-" + quote(key, safe=":-"),
+            severity=_SEVERITY[rec["severity"]],
+            learn_more_url=DASHBOARD_URL + "#alert-" + quote(rec["key"], safe=":-"),
             translation_key="alert",
             translation_placeholders={"title": str(rec.get("title", "")), "body": str(rec.get("body", ""))},
         )
     registry = ir.async_get(hass)
     for domain, issue_id in list(registry.issues):
-        if domain == DOMAIN and issue_id not in open_now:
+        if domain == DOMAIN and issue_id not in now:
             ir.async_delete_issue(hass, DOMAIN, issue_id)
 
 # THE APPS' UPDATES AS UPDATE ENTITIES. The node offers an app's update when the catalog names a

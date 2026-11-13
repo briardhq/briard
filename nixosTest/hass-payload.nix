@@ -614,9 +614,12 @@ pkgs.testers.runNixOSTest {
 
     # THE NODE'S ALERTS AS REPAIRS ISSUES. No host agent runs here, so the copy the guest agent
     # writes for `dashboard.alerts` is written by hand, the same way: beside its name, then moved
-    # in. An open alert becomes one issue keyed by the alert's key; a resolved one and an event
-    # make none; resolving the open one removes its issue. HA's own websocket is the judge, and the
-    # strings HA loaded for the domain prove the planted translation reached it.
+    # in. Repairs shows what needs attention by the dashboard's and the tray's rule: the latest
+    # record of each key that is an open condition or an event, at warning or above, and not
+    # dismissed -- one issue per RECORD (key and time), so the key's next record is a new issue.
+    # A resolved, an info and a dismissed alert make none; dismissing or resolving removes the
+    # issue. HA's own websocket is the judge, and the strings HA loaded for the domain prove the
+    # planted translation reached it.
     node1.succeed(f"test -f {dataroot}/${fixture.dataDir}/custom_components/briard/translations/en.json")
     # Briard's mark, served by HA's own brands API from beside the planted stub -- the URL HA's
     # integration page and Repairs ask for. Compared with the staged copy, byte for byte.
@@ -630,36 +633,51 @@ pkgs.testers.runNixOSTest {
             f"echo {shlex.quote(_zj.dumps(records))} > /run/briard/alerts/alerts.json.new "
             "&& mv -f /run/briard/alerts/alerts.json.new /run/briard/alerts/alerts.json"
         )
-    def rec(key, kind, sev, title):
-        return {"key": key, "kind": kind, "severity": sev, "title": title, "body": f"body of {title}", "at": "2026-10-07T12:00:00Z"}
+    def rec(key, kind, sev, title, minute=0, dismissed=False):
+        r = {"key": key, "kind": kind, "severity": sev, "title": title, "body": f"body of {title}", "at": f"2026-10-07T12:{minute:02d}:00Z"}
+        if dismissed:
+            r["dismissed"] = True
+        return r
     def repairs():
         return _zj.loads(node1.succeed(
             f"podman exec -i -e TOKEN={wired} briard-home-assistant-app python3 - < ${repairsProbe}"
         ))
+    def await_issue(issue_id):
+        node1.wait_until_succeeds(
+            f"podman exec -i -e TOKEN={wired} briard-home-assistant-app python3 - < ${repairsProbe} | grep -qF '\"issue_id\": \"{issue_id}\"'",
+            timeout=120,
+        )
+        return sorted(i["issue_id"] for i in repairs()["issues"])
     disk_open = rec("disk", "open", "warning", "Disk space low")
+    unreachable = rec("host-unreachable", "event", "warning", "The host agent was unreachable", minute=2)
     push_alerts([
         disk_open,
         rec("clock", "open", "warning", "Clock not synchronised"),
-        rec("clock", "resolved", "", "Clock synchronised"),
+        rec("clock", "resolved", "", "Clock synchronised", minute=1),
         rec("upgrade-rolled-back:os", "event", "info", "Update rolled back"),
+        rec("fast-nic", "open", "info", "Fast network card"),
+        rec("backup", "open", "warning", "Backup not working", dismissed=True),
+        unreachable,
     ])
-    node1.wait_until_succeeds(
-        f"podman exec -i -e TOKEN={wired} briard-home-assistant-app python3 - < ${repairsProbe} | grep -q '\"issue_id\": \"disk\"'",
-        timeout=120,
-    )
+    got_ids = await_issue("disk@2026-10-07T12:00:00Z")
+    want_ids = ["disk@2026-10-07T12:00:00Z", "host-unreachable@2026-10-07T12:02:00Z"]
+    assert got_ids == want_ids, f"want exactly the warning condition and the warning event: {got_ids}"
     got = repairs()
-    assert [i["issue_id"] for i in got["issues"]] == ["disk"], f"want exactly the disk issue: {got['issues']}"
-    disk = got["issues"][0]
+    disk = [i for i in got["issues"] if i["issue_id"].startswith("disk@")][0]
     assert disk["severity"] == "warning" and not disk["is_fixable"], disk
     assert disk["translation_key"] == "alert" and disk["translation_placeholders"]["title"] == "Disk space low", disk
     assert disk["learn_more_url"] == "http://briard.local/#alert-disk", disk
     assert got["strings"].get("component.briard.issues.alert.title") == "{title}", f"HA did not load the issue strings: {got['strings']}"
-    push_alerts([disk_open, rec("disk", "resolved", "", "Disk space recovered")])
+    # Disk dismissed on the dashboard, and the event again: the first issue goes, the event's is a new one.
+    push_alerts([dict(disk_open, dismissed=True), unreachable, rec("host-unreachable", "event", "warning", "The host agent was unreachable", minute=3)])
+    got_ids = await_issue("host-unreachable@2026-10-07T12:03:00Z")
+    assert got_ids == ["host-unreachable@2026-10-07T12:03:00Z"], f"want only the event's new record: {got_ids}"
+    push_alerts([disk_open, rec("disk", "resolved", "", "Disk space recovered", minute=4)])
     node1.wait_until_succeeds(
         f"podman exec -i -e TOKEN={wired} briard-home-assistant-app python3 - < ${repairsProbe} | grep -q '\"issues\": \\[\\]'",
         timeout=120,
     )
-    print("the node's open alert became a Repairs issue, and its resolution removed it")
+    print("what needs attention became Repairs issues, one per record, and dismissal and resolution removed them")
 
     # THE APPS' UPDATES AS UPDATE ENTITIES, from the file the guest agent writes beside the alert
     # copy for `dashboard.catalog` (written by hand here, the same way). An offered update turns

@@ -2,7 +2,7 @@
   "issues": {
     "alert": {
       "title": "{title}",
-      "description": "{body}\n\nBriard raised this; it closes on its own when Briard sees the problem is over."
+      "description": "{body}\n\nBriard raised this. It goes when Briard sees the problem is over, or when you dismiss it on the Briard dashboard, which clears it everywhere. Ignore hides it in Home Assistant only."
     }
   }
 }
