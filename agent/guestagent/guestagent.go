@@ -2011,17 +2011,15 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, x Executor) error {
 
 // ContactStampPath is the last-seen-host-agent stamp: the guest agent bumps its mtime on every
 // served request, and the SEPARATE briard-deadman process (RunDeadman) reads that mtime to tell
-// how long the host has been silent. It lives on tmpfs (/run) so it re-baselines cleanly each
-// boot — the deadman disarms until the host talks once (StampMtime → zero → not armed). It is a
-// stamp file, NOT in-process state, precisely because the per-connection guest agent crash-loops
-// while the host is down (the reopened virtio-serial port EOFs), which would reset any in-process
-// timer before it could fire.
+// how long the host has been silent. On tmpfs (/run), so it re-baselines each boot: the deadman
+// stays disarmed until the host talks once (StampMtime → zero → not armed). A stamp file, NOT
+// in-process state, because the per-connection guest agent restarts in a loop while the host is
+// down (the reopened virtio-serial port EOFs), which would reset any in-process timer.
 const ContactStampPath = dashboard.ContactStampPath
 
 // ServeStamped serves the dispatch loop and bumps the contact stamp on every request (the
-// production runGuest entry). The deadman itself runs in its own process (RunDeadman) — decoupled
-// from this connection lifecycle, so a crash-looping agent can't reset it. Plain Serve stays for
-// tests (no stamp side effect).
+// production entry, briard-guest-agent's runGuest). The deadman reads the stamp from its own
+// process (RunDeadman). Plain Serve is for tests (no stamp side effect).
 func ServeStamped(ctx context.Context, conn io.ReadWriteCloser, x Executor) error {
 	d := dispatch(x)
 	hooked := func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
@@ -2057,9 +2055,9 @@ func StampMtime(path string) time.Time {
 	return fi.ModTime()
 }
 
-// deadmanStatePath holds the deadman's backoff episode — a NODE-LOCAL path (a sibling of the DRBD
-// mount at /var/lib/briard, NOT on the replicated volume), so it survives a reboot without being
-// shared/overwritten across nodes.
+// deadmanStatePath holds the deadman's backoff episode — NODE-LOCAL (the state disk's bind at
+// /var/lib/briard-deadman, NOT the replicated volume at /var/lib/briard), so it survives a reboot
+// without being shared or overwritten across nodes.
 const deadmanStatePath = "/var/lib/briard-deadman/episode.json"
 
 // deadmanLastEpisodePath is where the deadman leaves a finished episode for the host
@@ -2070,14 +2068,14 @@ var deadmanLastEpisodePath = deadman.FileState{Path: deadmanStatePath}.LastPath(
 // guest unit. It watches the contact stamp ServeStamped bumps and, once the host agent has
 // been silent past T_deadman, reboots the guest — gracefully (so the promoter teardown demotes
 // cleanly and the reboot IS the failover trigger), and ONLY when deadman.RebootAllowed says no
-// peer loses quorum over it. It is a separate process from the guest agent precisely so a
-// crash-looping agent (while the host is down) can't reset the timer.
-// BRIARD_DEADMAN[/_JITTER/_TICK] tune the threshold.
+// peer loses quorum over it. A separate process from the guest agent so the agent's restart loop
+// (while the host is down) can't reset the timer. BRIARD_DEADMAN[/_JITTER/_TICK] tune the
+// threshold.
 //
-// It also SERVES that same gate on the private host<->guest link, so the host's own rung can ask
-// the one question it cannot answer from outside (gate.go). The listener is started only when the
-// link has an address, and a bind failure is logged rather than fatal: losing the gate costs the
-// host its guard, while exiting here would cost the node its reflex entirely.
+// It also SERVES that same gate at BRIARD_GATE_ADDR (deadman/gate.go) -- the unit sets a bare port,
+// so it answers on the node IP -- so the host's own rung can ask the one question it cannot answer
+// from outside. No address, no listener; a bind failure is logged rather than fatal: losing the
+// gate costs the host its guard, while exiting here would cost the node its reflex entirely.
 func RunDeadman(ctx context.Context) error {
 	node, _ := os.Hostname()
 	x := guestfirmware.NewOSExecutor()
@@ -2100,10 +2098,9 @@ func RunDeadman(ctx context.Context) error {
 		Gate:        gate,
 		Fabric: func(ctx context.Context) (deadman.Fabric, error) {
 			// A lone node has no DRBD to read: one voter, quorum guaranteed, nobody
-			// to protect. The source is the spec the storage was built from -- the deadman
-			// learning that document is the price of knowing whether it is alone, and the
-			// owner took it (2026-09-10). No spec reads as a flock, and the read below then
-			// fails as it always did before bring-up: not knowing means holding.
+			// to protect. The source is the spec the storage was built from -- reading that
+			// document is the price of knowing whether it is alone. No spec reads as a flock,
+			// and the read below then fails, as it does before bring-up: not knowing means holding.
 			if alone(x) {
 				return deadman.Fabric{Quorate: true}, nil
 			}
@@ -2140,12 +2137,6 @@ func RunDeadman(ctx context.Context) error {
 // `snippets` at this directory. Different languages, so no shared import.
 const reactorPath = "/run/briard/drbd-reactor.d/briard.toml"
 
-// (The drop-in drbd-reactor writes over its own promoter target --
-// /run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf -- was named here while
-// reactor.pause removed it by hand. That defusal is drbd-reactor.service's ExecStop now
-// (guest-image/configuration.nix), so the path belongs to the unit that acts on it and
-// nothing in Go needs to know it.)
-
 // vipEnvPath is the REQUIRED EnvironmentFile briard-vip.service reads its VIP_DEV and VIP_ADDR
 // from; the agent writes it via net.configure at every bring-up. Nothing is baked behind it
 // -- which is safe only because the promoter that starts briard-vip is itself
@@ -2154,16 +2145,15 @@ const vipEnvPath = "/run/briard/vip.env"
 
 const (
 	// mdnsEnvPath carries the flock's visible name to the reverse proxy, which publishes it.
-	// Written by net.mdnsname, never baked: it is PET identity reaching a CATTLE image, and baking
-	// identity into a shared image is the mistake the baked name was.
+	// Written by net.mdnsname, never baked: it is PET identity reaching a CATTLE image, and a
+	// shared image must carry no identity.
 	//
 	// ⚠️ PAIRED with reverse-proxy/mdns.go's const of the same path, which re-reads it on a tick,
 	// so a rename needs no unit restarted and no ordering between the two.
 	mdnsEnvPath = "/run/briard/mdns.env"
 	// mdnsPublishedPath is where the reverse proxy records the name it is REALLY answering for,
-	// bare.
-	// Absent means nothing is published -- the normal state of a Secondary, which holds no VIP,
-	// runs no reverse proxy, and therefore publishes no name.
+	// bare. Absent means nothing is published -- the normal state of a Secondary, which holds no
+	// VIP, runs no reverse proxy, and therefore publishes no name.
 	mdnsPublishedPath = "/run/briard/mdns.published"
 	// mdnsOtherPath is where the reverse proxy records another briard heard answering the bare
 	// name at bring-up. PAIRED with reverse-proxy/mdns.go's const of the same path.
@@ -2175,16 +2165,11 @@ const (
 // it is re-sent at every bring-up, so nothing durable can go stale.
 const podSubnetPath = "/run/briard/pod.subnet"
 
-// resDir is where the agent drops the DRBD resource config. TMPFS, and it is the LAST of the four
-// node-scoped facts to get there because it was the only one the host could not
-// re-derive: applyPair used to apply the cloud's mesh and forget it, so an ephemeral `.res` would
-// have returned a runtime-paired node un-meshed on every reboot -- what RescueGuest refuses to do.
-// The mesh cache (agent/host's cacheMesh) is what earned this move: the host durably owns the mesh
-// it writes now, so the guest's copy can have the one lifetime everything else here has.
-//
-// With this there is nothing node-scoped left on the guest's disks, so a rebooted guest cannot
-// act on configuration nobody has just restated -- the promoter is gated and every
-// input is re-pushed at bring-up.
+// resDir is where the agent drops the DRBD resource config. TMPFS, like every node-scoped fact
+// here: the host re-derives the `.res` at every bring-up -- a runtime pairing from its durable
+// mesh cache (agent/host's cacheMesh) -- so the guest keeps nothing node-scoped on its disks, and
+// a rebooted guest cannot act on configuration nobody has just restated: the promoter is gated
+// and every input is re-pushed at bring-up.
 //
 // PAIRED with guest-image/disk-image.nix's `include` glob in /etc/drbd.conf: drbdadm looks for that
 // one file at a path we do not choose, and it is what points at this directory.
@@ -2212,11 +2197,10 @@ func safeUnitName(n string) error {
 }
 
 // renderApp materialises the host's quadlet source under quadletDir and reloads systemd —
-// the moment podman's generator turns those files into real units, which is what moves unit
-// generation from build time to run time.
+// the moment podman's generator turns those files into real units.
 //
-// Node-local by design: quadletDir is on /run, so this must run on EVERY node, not just the
-// Primary. A survivor can start the pod only because the units were rendered there too.
+// Node-local: quadletDir is on /run, so each node renders its own -- the host at install and at
+// every bring-up (BringUpSpec.AppUnits), and converge from the volume at promotion.
 func renderApp(ctx context.Context, x Executor, run func(string, ...string) error, req appRenderRequest) error {
 	if len(req.Files) == 0 {
 		return fmt.Errorf("app.render: no files to write")
@@ -2237,8 +2221,8 @@ func renderApp(ctx context.Context, x Executor, run func(string, ...string) erro
 	if err := run("mkdir", "-p", quadletDir); err != nil {
 		return err
 	}
-	// Remove the outgoing app's units first: swapping which app occupies the slot must
-	// not leave a stale .container behind for the promoter to trip over. Absent is fine.
+	// Remove the prior render's orphans first, so a re-render leaves nothing of the previous one
+	// behind. Absent is fine.
 	for _, n := range req.Stale {
 		_, _ = x.Run(ctx, "rm", "-f", quadletDir+"/"+n)
 	}
@@ -2271,17 +2255,17 @@ func provisionApp(ctx context.Context, x Executor, run func(string, ...string) e
 		return err
 	}
 	// THIS DATA IS EXACTLY WHAT WE JUST PUT THERE, so the next member may say so. Every
-	// caller of this verb has the app stopped: a fresh install creates the subvolume, an
-	// upgrade quiesced it before snapshotting, and a restore has just materialised a member over
-	// it. Without this, the first member after any of the three would read as crash-consistent —
-	// true of none of them, and loudest on the one path where a household is already anxious.
+	// caller of this verb has the app stopped: a restore, which has just made the app's empty
+	// place or materialised a member over it (app.stage records the same for an install or
+	// upgrade). Without this, the next member would read as crash-consistent -- untrue, and
+	// loudest on the one path where a household is already anxious.
 	if err := RecordAppStop(ctx, x, req.Name, "success"); err != nil {
 		log.Printf("app.provision %s: could not record the volume as flushed (%v); its next member will read as crash-consistent", req.Name, err)
 	}
 	// Flush to the DRBD backing so the identity actually replicates BEFORE a failover relies on
 	// it — protocol C acks a device write only once the peer holds it. Without this, a crash
 	// inside the btrfs writeback window loses the manifest and a survivor promotes with no idea
-	// what it is meant to be running. Same reasoning as app.provision's sync.
+	// what it is meant to be running.
 	_, err := x.Run(ctx, "sync", "-f", pin)
 	return err
 }
@@ -2400,8 +2384,8 @@ func cacheAtStart(ctx context.Context, x Executor, app string) (string, error) {
 // has less than a tenth of its limit left.
 func spaceShort(g qgroup) bool { return g.limit >= 0 && g.limit-g.referenced < g.limit/10 }
 
-// gatherResources measures the appliance's resource footprint for the soak trend oracle
-// . Every sub-metric is best-effort: a failed read leaves its field zero (the host
+// gatherResources measures the appliance's resource footprint for the soak trend oracle.
+// Every sub-metric is best-effort: a failed read leaves its field zero (the host
 // reads 0 as "unread this cycle"), so a hiccup in one probe never sinks the whole report or
 // the observe loop. It fills only the appliance (guest) fields; the host adds its own
 // Agent* footprint on top. Zero DataDir/Unit (a witness) simply skips the volume/app
@@ -2416,11 +2400,9 @@ func gatherResources(ctx context.Context, x Executor, req resourcesRequest) tele
 			continue
 		}
 		sr := telemetry.AppResources{Name: s.Name}
-		// The app's memory is the UNIT'S CGROUP, not its main process. An app runs as a
-		// container, so the unit's MainPID is podman's supervisor and the workload lives in a child
-		// cgroup: /proc/<MainPID>/status reported ~2.5 MB for a Home Assistant, a number that is
-		// stable, believable-looking and about a hundredfold wrong. cgroup v2 accounts
-		// hierarchically, so reading the unit's cgroup catches the container's processes too.
+		// The app's memory is the UNIT'S CGROUP, not its main process (cgroupAnonKB says why):
+		// /proc/<MainPID>/status reads ~2.5 MB for a Home Assistant -- stable, believable-looking
+		// and about a hundredfold wrong.
 		sr.RSSKB = cgroupAnonKB(ctx, x, s.Unit)
 		// MainPID=0 means the unit isn't running; skip rather than read /proc/0.
 		if out, err := x.Run(ctx, "systemctl", "show", "-p", "MainPID", "--value", s.Unit); err == nil {
@@ -2533,11 +2515,10 @@ func recentKernelErrors(ctx context.Context, x Executor) []string {
 // trailing "-- cursor: <c>" marker (absent when no entries were shown, e.g. nothing new).
 //
 // journalctl speaks in its OWN voice too -- "-- No entries --", "-- Reboot --", "-- Journal begins
-// at ... --" -- and none of those are log lines. Dropping only the cursor left "-- No entries --"
-// counted as one kernel error on every healthy poll, so kerr sat at a permanent 1: worse than
-// noise, because this is the signal the soak oracle scans and a constant 1 hides the step up to a
-// real error. A journal line is dated ("Aug 06 ... guest kernel: ..."); nothing real is bracketed
-// in "-- ... --".
+// at ... --" -- and none of those are log lines. Dropping only the cursor would count "-- No
+// entries --" as one kernel error on every healthy poll: a constant 1 in the signal the soak
+// oracle scans, which hides the step up to a real error. A journal line is dated ("Aug 06 ...
+// guest kernel: ..."); nothing real is bracketed in "-- ... --".
 func splitJournalCursor(out []byte) (lines []string, cursor string) {
 	for _, raw := range strings.Split(string(out), "\n") {
 		trimmed := strings.TrimSpace(raw)
@@ -2569,12 +2550,11 @@ func parseUint(b []byte) uint64 {
 // counts toward declaring the whole guest dead.
 const healthBudget = 3 * time.Second
 
-// probeHTTPOK does a minimal plaintext HTTP/1.0 GET of rawURL and reports whether the response
-// status is 200. It is deliberately net/http-free (raw net.Dial + a hand-written request) so the
-// guest binary stays clear of a TLS client of its own. Plaintext
-// is all the local /healthz needs. Any parse/dial/read error, non-http scheme, or non-200 status is
-// "not healthy" — the same fail-closed semantics as the old host-side probe. It gives up after
-// healthBudget, so an app slow to answer reads "not healthy" too.
+// probeHTTPOK does a minimal plaintext HTTP/1.0 GET of rawURL (raw net.Dial + a hand-written
+// request) and reports whether the response status is 200. Plaintext is all the local /healthz
+// needs. Any parse/dial/read error, non-http scheme, or non-200 status is "not healthy"
+// (fail-closed). It gives up after healthBudget, or at the caller's deadline if that is sooner,
+// so an app slow to answer reads "not healthy" too.
 func probeHTTPOK(ctx context.Context, rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "http" || u.Host == "" {
@@ -2612,8 +2592,8 @@ func probeHTTPOK(ctx context.Context, rawURL string) bool {
 // hierarchically, so the unit's own file sums its container children. And ANON rather than
 // memory.current, because memory.current includes the PAGE CACHE: an app writing a database
 // would show steadily climbing "memory" that is really just cache the kernel will drop under
-// pressure, and payload_rss_kb carries a SLOPE check in the trend oracle -- cache growth would
-// read as a leak and fail a soak run for a healthy node.
+// pressure, and the trend oracle checks this series' SLOPE -- cache growth would read as a leak
+// and fail a soak run for a healthy node.
 //
 // 0 on anything unreadable (no cgroup, cgroup v1, accounting off), which the host already treats
 // as "unread this cycle" -- never a fallback to a different quantity, because a series that
@@ -2853,10 +2833,9 @@ func (g *Client) SetHostname(ctx context.Context, name string) error {
 }
 
 // ConfigureNet sets a static CIDR on a guest NIC (the system/DRBD NIC) and brings
-// it up, so DRBD can use the private subnet. vipDev, when non-empty, records the NIC
-// the promoter should claim the VIP on (the two-subnet layout moves it to eth2);
-// "" leaves the guest's baked default. vipAddr does the same for the address itself, in
-// CIDR form -- the LAN decides it, so it cannot be baked. Idempotent.
+// it up, so DRBD can use the private subnet. VIPDev records the NIC the promoter claims the VIP
+// on ("" = this node claims none, a witness); VIPAddr the address itself, in CIDR form ("" = DHCP
+// decides). Nothing is baked behind either: the LAN decides them. Idempotent.
 func (g *Client) ConfigureNet(ctx context.Context, n NetConfig) error {
 	return g.c.Call(ctx, verbNetConfigure, netConfigureRequest{
 		Dev: n.Dev, CIDR: n.CIDR, VIPDev: n.VIPDev, VIPAddr: n.VIPAddr, VIPLease: n.VIPLease,
@@ -2868,19 +2847,19 @@ func (g *Client) ConfigureNet(ctx context.Context, n NetConfig) error {
 }
 
 // SetMDNSName records the flock's visible name and republishes it if this node is serving.
-// name is BARE ("brave-elf"); the guest builds `briard-<name>.local` from it. "" publishes
+// name is BARE ("brave-elf"); the reverse proxy builds `briard-<name>.local` from it. "" publishes
 // nothing. Idempotent, and deliberately independent of ConfigureNet -- a rename must never be an
 // addressing call.
 func (g *Client) SetMDNSName(ctx context.Context, name string) error {
 	return g.c.Call(ctx, verbNetMDNSName, mdnsNameRequest{Name: name}, nil)
 }
 
-// MDNSPublished reports the name avahi actually established, bare and without the `.local`
-// suffix, or "" when this node publishes none (a Secondary, or a publish still in flight).
+// MDNSPublished reports the flock name the reverse proxy's mDNS responder is actually answering
+// for, bare (no `briard-` prefix, no `.local`), or "" when this node publishes none (a Secondary,
+// or a publish still in flight).
 //
-// Read it rather than assume it: avahi conflict-renames on a collision without telling anyone, so
-// the requested name and the published name can differ, and which flock gets the plain name
-// depends on who probed first. See verbNetMDNSPublished.
+// Read it rather than assume it: the requested name is present and plausible, and not
+// necessarily the one being served. See verbNetMDNSPublished.
 func (g *Client) MDNSPublished(ctx context.Context) (string, error) {
 	var name string
 	if err := g.c.Call(ctx, verbNetMDNSPublished, struct{}{}, &name); err != nil {
@@ -2901,7 +2880,7 @@ func (g *Client) MDNSOther(ctx context.Context) (string, error) {
 
 // VIP reports the address dev actually holds, in CIDR form, or "" when it holds none -- this node
 // is Secondary, or its promotion has not claimed the address yet. Under DHCP this is how the host
-// learns an address it no longer chooses. An unaddressed device is "" rather than an error,
+// learns an address it does not choose. An unaddressed device is "" rather than an error,
 // because the host asks every cycle and a Secondary answering "" is the normal case, not a fault.
 func (g *Client) VIP(ctx context.Context, dev string) (string, error) {
 	var cidr string
@@ -2913,13 +2892,11 @@ func (g *Client) VIP(ctx context.Context, dev string) (string, error) {
 
 // NodeStorage hands the guest this node's storage spec and runs briard-node-storage.service:
 // every tier built or opened, the `.res` landed, metadata created if there is none, and the
-// resource attached. It ends at /dev/drbd0 attached and never promotes.
+// resource attached. It never promotes.
 //
-// ONE CALL WHERE THERE WERE THREE. drbd.provision / drbd.up / drbd.init-uptodate
-// split one act across three round trips, and the split is what made "is this volume brand new"
-// something to infer from an exit code -- an inference encryption broke, because a blank
-// dm-crypt device returns ciphertext. The unit runs `lvcreate` and `create-md` in one process,
-// so it knows.
+// ONE CALL, ONE PROCESS: whether the volume is brand new cannot be inferred from outside (a blank
+// dm-crypt device reads as ciphertext, not blankness), so the unit that runs `lvcreate` runs
+// `create-md` too, and knows.
 func (g *Client) NodeStorage(ctx context.Context, spec nodestorage.Spec) error {
 	if err := spec.Validate(); err != nil {
 		return err
@@ -2928,9 +2905,10 @@ func (g *Client) NodeStorage(ctx context.Context, spec nodestorage.Spec) error {
 }
 
 // Adjust rewrites the resource config and runs `drbdadm adjust` -- apply a peer-set change to the
-// already-running resource without a restart (runtime mesh growth). Called on the serving
-// primary to add a joining anchor/witness; the joining nodes come up via NodeStorage
-// (FreshInit=false) and resync. No create-md here, so the primary's disk is never touched.
+// already-running resource without a restart. Called on the serving primary to add a joining
+// anchor/witness (the joiners come up via BringUp, FreshInit=false, and resync), and on a
+// surviving anchor whose flock shrank but is still a flock. No create-md here, so the local disk
+// is never touched.
 func (g *Client) Adjust(ctx context.Context, req ProvisionRequest) error {
 	return g.c.Call(ctx, verbAdjust, req, nil)
 }
@@ -2943,7 +2921,8 @@ func (g *Client) ReactorStart(ctx context.Context, resource, snippet string) err
 }
 
 // ChainStart starts the lone node's chain target: what ReactorStart is on a node that runs no
-// DRBD. The members and their order are the image's, so there is no snippet to land.
+// DRBD. The target and its members are the guest agent's own render (units.go, shared/chain), so
+// there is no snippet to land.
 func (g *Client) ChainStart(ctx context.Context) error {
 	return g.c.Call(ctx, verbChainStart, struct{}{}, nil)
 }
@@ -2971,8 +2950,8 @@ func (g *Client) AppStart(ctx context.Context, unit string) error {
 }
 
 // AppRender writes the host-rendered quadlet source into the guest's /run and reloads
-// systemd, so the generated units exist. Node-local: run this on EVERY node, or a
-// survivor has nothing to start. Stale names the outgoing app's files, removed first.
+// systemd, so the generated units exist. Node-local (renderApp). stale names the prior render's
+// files this one drops, removed first.
 func (g *Client) AppRender(ctx context.Context, files map[string]string, stale []string) error {
 	return g.c.Call(ctx, verbAppRender, appRenderRequest{Files: files, Stale: stale}, nil)
 }
@@ -2999,8 +2978,8 @@ func (g *Client) AppWarm(ctx context.Context, unit, ref string) error {
 // but has not finished setting its integrations up has none yet. The gate handles that by
 // construction -- it only judges entries that were loaded BEFORE the change.
 //
-// Named for the app, like the verb: it works for exactly one, and a method that took a name
-// it then ignored would be the same lie the verb's old name told.
+// Named for the app, like the verb: it works for exactly one, so it takes no app name it would
+// only ignore.
 func (g *Client) HassReadiness(ctx context.Context, port int) ([]hass.Entry, error) {
 	var out []hass.Entry
 	err := g.c.Call(ctx, verbHassReadiness, hassReadinessRequest{Port: port}, &out)
@@ -3108,12 +3087,12 @@ type dbRestoreRequest struct {
 //
 // It answers whether there was a Home Assistant on this volume to tell. That is a fact and not a
 // verdict: `false` on a broker-only node is the ordinary case, because the caller fires this after
-// every install without first working out which apps the node runs -- deciding that here, from
-// the volume, is cheaper than a host-side check that could be stale.
+// every install and uninstall without first working out which apps the node runs -- deciding
+// that here, from the volume, is cheaper than a host-side check that could be stale.
 //
 // An ERROR means Home Assistant is installed and would not take the event. Best-effort by
-// contract: the caller logs it and carries on, because the fallback is the behaviour that existed
-// before this verb -- Home Assistant picks the change up at its next start.
+// contract: the caller logs it and carries on, because the fallback is Home Assistant picking the
+// change up at its next start.
 func (g *Client) HassNudge(ctx context.Context) (bool, error) {
 	var told bool
 	err := g.c.Call(ctx, verbHassNudge, nil, &told)
@@ -3195,13 +3174,6 @@ func (g *Client) AppConverge(ctx context.Context, live string) ([]string, error)
 // SupportsAppConverge reports whether the guest can converge itself to the volume.
 func (g *Client) SupportsAppConverge() bool { return g.Supports(verbAppConverge) }
 
-// AppInstalled reads the manifest recorded on the replicated volume for ONE app, or ""
-// when that app is not installed there. "" is a legitimate answer — the shipped zero-app
-// node, and equally a node running other apps — never an error.
-//
-// SupportsAppInstalled is the gate the install path checks first: a guest too old to
-// advertise this verb cannot tell one app's identity from another's, so it must be refused
-// rather than driven into overwriting the manifest of whatever it already runs.
 // storageRoot is podman's image store in the guest -- the filesystem a pull fills and the
 // free-space gate measures. Rootful podman's default; the guest image sets no other.
 const storageRoot = "/var/lib/containers/storage"
@@ -3323,6 +3295,13 @@ func (g *Client) StorageGrow(ctx context.Context, size int64) error {
 // SupportsStorageGrow reports whether the guest can fill a grown state disk.
 func (g *Client) SupportsStorageGrow() bool { return g.Supports(verbStorageGrow) }
 
+// AppInstalled reads the manifest recorded on the replicated volume for ONE app, or ""
+// when that app is not installed there. "" is a legitimate answer — the shipped zero-app
+// node, and equally a node running other apps — never an error.
+//
+// SupportsAppInstalled is the gate the install path checks first: a guest that does not
+// advertise this verb cannot tell one app's identity from another's, so it must be refused
+// rather than driven into overwriting the manifest of whatever it already runs.
 func (g *Client) AppInstalled(ctx context.Context, name string) (string, error) {
 	var s string
 	err := g.c.Call(ctx, verbAppInstalled, appInstalledRequest{Name: name}, &s)
@@ -3330,7 +3309,7 @@ func (g *Client) AppInstalled(ctx context.Context, name string) (string, error) 
 }
 
 // SupportsAppInstalled reports whether the guest can name an app when reading or recording
-// its identity on the volume — the per-app split of what used to be one file.
+// its identity on the volume (one manifest per app).
 func (g *Client) SupportsAppInstalled() bool { return g.Supports(verbAppInstalled) }
 
 // AppList names the apps recorded on the replicated volume. Empty is a legitimate answer
@@ -3372,9 +3351,9 @@ func (g *Client) Resources(ctx context.Context, apps map[string]string, dataDir 
 	return r, err
 }
 
-// WriteCert lands a renewed cert/key on the DRBD volume, where the TLS terminator
-// hot-reloads it -- so a cloud-scheduled renewal is applied with no restart. Replicated +
-// synced, so a failover serves the same cert.
+// WriteCert lands a renewed cert/key on the DRBD volume, where the reverse proxy
+// hot-reloads it -- so a renewal is applied with no restart. Replicated + synced, so a failover
+// serves the same cert.
 func (g *Client) WriteCert(ctx context.Context, cert, key string) error {
 	return g.c.Call(ctx, verbCertWrite, certWriteRequest{Cert: cert, Key: key}, nil)
 }
@@ -3393,7 +3372,7 @@ func (g *Client) AppStop(ctx context.Context, unit string) error {
 }
 
 // AppActive reports whether the app's unit is active (the Running half of the
-// health-gate; readiness is probed host-side against the app's health endpoint).
+// health-gate; AppHealth is the Ready half).
 func (g *Client) AppActive(ctx context.Context, unit string) (bool, error) {
 	var active bool
 	err := g.c.Call(ctx, verbAppActive, unitRequest{Unit: unit}, &active)
@@ -3403,8 +3382,8 @@ func (g *Client) AppActive(ctx context.Context, unit string) (bool, error) {
 // AppHealth asks the guest to GET the app's health URL from inside itself and report 200
 // (the Ready half of the health-gate). Probing in-guest — not host->VIP over the LAN — keeps the
 // readiness check working under a networking substrate where the host can't reach the guest's VIP
-// (macvtap). Callers that need the legacy host-side behaviour on an OLD guest fall back when this
-// returns an error (an unknown-verb error from a guest built before this verb existed).
+// (macvtap). On an error (a guest that does not serve the verb) callers fall back to a host-side
+// GET.
 func (g *Client) AppHealth(ctx context.Context, url string) (bool, error) {
 	var ok bool
 	err := g.c.Call(ctx, verbAppHealth, healthRequest{URL: url}, &ok)
@@ -3414,10 +3393,10 @@ func (g *Client) AppHealth(ctx context.Context, url string) (bool, error) {
 // AppHealthOf asks the guest for ONE NAMED APP's health, letting the guest resolve
 // the address from its own routing table.
 //
-// It replaces callers that built `http://127.0.0.1:<port>` from the manifest. That URL is correct
-// only while every pod shares the guest's network namespace: the manifest names a port, and which
-// host answers on it is decided by the renderer. Asking by name is what keeps the install gate and
-// the steady-state probe pointed wherever the reverse proxy is pointed.
+// Never build `http://127.0.0.1:<port>` from the manifest instead: that URL is correct only for a
+// pod sharing the guest's network namespace -- the manifest names a port, and which host answers
+// on it is decided by the renderer. Asking by name is what keeps the install gate and the
+// steady-state probe pointed wherever the reverse proxy is pointed.
 //
 // An unresolvable app returns an ERROR, never a verdict: "I cannot find it" must not be read as
 // "it is broken" by a gate that reverts installs.
@@ -3485,9 +3464,9 @@ func (g *Client) RestoreWithoutSweep(ctx context.Context, dataDir, src string) e
 // household's own restore leaves behind.
 func (g *Client) SupportsRestoreSweep() bool { return g.Supports(verbDataReplace) }
 
-// SystemPath reads the guest's current system closure store path -- the code identity
-// recorded on a snapshot (node-independent, unlike a generation number) so code and
-// data roll back together.
+// SystemPath reads the guest's current system closure store path (os.system) -- which image the
+// guest is running. The host compares it with a release manifest's System to decide a guest
+// image update and to confirm the image it booted is the one it asked for.
 func (g *Client) SystemPath(ctx context.Context) (string, error) {
 	var path string
 	err := g.c.Call(ctx, verbOSSystem, nil, &path)
@@ -3514,9 +3493,9 @@ func (g *Client) PowerOff(ctx context.Context) error {
 	return g.c.Call(ctx, guestfirmware.VerbOSPowerOff, nil, nil)
 }
 
-// ReactorPause suspends drbd-reactor's promoter for a snippet (maintenance mode):
-// the resource stays Primary and its apps keep running, but the promoter stops
-// reacting -- so a planned app stop isn't mistaken for a failure.
+// ReactorPause stops the drbd-reactor daemon (maintenance mode): the resource stays Primary and
+// its apps keep running, but the promoter stops reacting -- so a planned app stop isn't mistaken
+// for a failure. The guest does not read snippet.
 func (g *Client) ReactorPause(ctx context.Context, snippet string) error {
 	return g.c.Call(ctx, verbReactorPause, reactorRequest{Snippet: snippet}, nil)
 }
@@ -3531,9 +3510,10 @@ func (g *Client) ReactorEvict(ctx context.Context, keepMasked, unmask bool) erro
 }
 
 // ReactorActive reports whether the promoter daemon is running — false meaning someone has it
-// paused, i.e. a maintenance bracket is already open. The interim guard: a second bracket user
-// refuses to start rather than corrupting the first one's bracket from the middle. Advisory by
-// construction, since a pause can still land between this answer and the caller's own.
+// paused, i.e. a maintenance bracket is already open (a lone node, which runs none, answers
+// true). The guard: a second bracket user refuses to start rather than corrupting the first
+// one's bracket from the middle. Advisory by construction, since a pause can still land between
+// this answer and the caller's own.
 func (g *Client) ReactorActive(ctx context.Context) (bool, error) {
 	var active bool
 	err := g.c.Call(ctx, verbReactorActive, struct{}{}, &active)
@@ -3554,8 +3534,9 @@ func (g *Client) FsSync(ctx context.Context) (string, error) {
 	return detail, err
 }
 
-// ReactorResume re-adopts the promoter (drbd-reactor enable); it re-runs the initial
-// target start, which is a no-op on an already-Primary node with apps up.
+// ReactorResume starts the drbd-reactor daemon again (a no-op on a lone node); it re-runs the
+// initial target start, which is a no-op on an already-Primary node with apps up. The guest does
+// not read snippet.
 func (g *Client) ReactorResume(ctx context.Context, snippet string) error {
 	return g.c.Call(ctx, verbReactorResume, reactorRequest{Snippet: snippet}, nil)
 }
@@ -3563,63 +3544,56 @@ func (g *Client) ReactorResume(ctx context.Context, snippet string) error {
 // BringUpSpec is one DRBD resource to bring up on this node.
 type BringUpSpec struct {
 	// Storage is the node's whole block layout and the resource on top of it, rendered by the
-	// host (agent/host's storageSpec): the tiers to build, the `.res`, whether
-	// this node is diskless, and whether it is the seed of a new flock. It replaces the
-	// Resource/Diskless/FreshInit trio, which described the same three facts one verb at a time.
+	// host (agent/host's StorageSpec): the tiers to build, the `.res`, whether
+	// this node is diskless, and whether it is the seed of a new flock.
 	Storage  nodestorage.Spec
-	Promoter []string // drbd-reactor promoter units in start order; nil on a witness
-	// AppUnits re-materialises a runtime-installed app's quadlet files before the
-	// promoter is started. They live on tmpfs inside the guest, so a reboot erases them
-	// while the host's manifest cache survives — and Promoter above then names units that do not
-	// exist. Empty on a node with no runtime-installed app, which is the shipped state.
-	//
-	// It has to happen HERE rather than after BringUp returns, and that is the whole reason this
-	// field exists: ReactorStart is the last thing below, so by the time the caller has its
-	// channel back the promoter is already trying to start the chain. Units must exist before
-	// anything can be asked to start them.
+	Promoter []string // the promoter chain's units in start order (shared/chain); nil on a witness
+	// AppUnits re-materialises the installed apps' quadlet files before the chain starts. They
+	// live on tmpfs inside the guest, so a reboot erases them while the host's manifest cache
+	// survives. Written HERE, before ReactorStart/ChainStart, so a node -- a standby included --
+	// has its apps' units in place before it promotes; briard-apps (converge) starts the apps from
+	// the volume once the mount exists. Empty on a node with no installed app, the shipped state.
 	AppUnits map[string]string
 	// AppImages maps each .image warm unit to the image REF it obtains, for every installed
-	// app. NOTHING else starts these units -- their [Install] was removed 2026-08-29, so systemd
-	// never touches them -- and the containers' Pull=never would fail the chain at promotion
-	// instead of fetching. Warming here is what makes a reboot land on a running app.
+	// app. NOTHING else starts these units (they carry no [Install]), and the containers are
+	// Pull=never, so an image missing here is one converge must pull at promotion -- and a pull
+	// that cannot happen there fails converge and takes the VIP down.
 	//
-	// A MAP, not a unit list, because bring-up must not pull. This comment used to claim "on a
-	// reboot the images are still in local storage, so this is a no-op, not a pull" -- and that was
-	// simply false: quadlet generates `Wants=network-online.target` +
-	// `ExecStart=podman image pull <ref>` with no already-present short-circuit (measured with
-	// podman's own generator), so every guest reboot re-pulled from a registry and a node without
-	// WAN failed bring-up outright. That is the RUNNING half of the doctrine -- installing
-	// needs network, running and failover never do -- broken on the path that runs after every
-	// reboot. The ref is what lets the guest answer "is it already here?" before pulling.
+	// A MAP, not a unit list, because bring-up must not pull. The generated .image unit is
+	// `Wants=network-online.target` + `ExecStart=podman image pull <ref>` with no already-present
+	// short-circuit, so starting it unconditionally re-pulls from a registry on every reboot, and a
+	// node without WAN fails bring-up -- breaking "installing needs network, running and failover
+	// never do". The ref is what lets the guest answer "is it already here?" before pulling.
 	AppImages map[string]string
 }
 
-// BringUp performs the agent-owned bring-up: render + drop the DRBD
-// config and (on a data node) create-md, start drbd@<res>.target, then -- on a data
-// node -- start drbd-reactor. Promotion is drbd-reactor's, done asynchronously once
-// quorum forms; the caller observes convergence via Status. A witness (Diskless,
-// no Promoter) provisions the config and comes up, but creates no metadata and
-// runs no promoter.
+// BringUp performs the agent-owned bring-up: the node's storage (NodeStorage: tiers, `.res`,
+// create-md where needed, attach), the installed apps' units re-rendered and their images warmed,
+// then the chain armed -- drbd-reactor on a flock, the chain target on a lone node. Promotion is
+// drbd-reactor's, done asynchronously once quorum forms; the caller observes convergence via
+// Status. A witness (Diskless, no Promoter) builds its storage and comes up, but creates no
+// metadata and runs no promoter.
 //
 // THE ORDER IS THE GUARANTEE, not merely the sequence. Nothing else starts
-// drbd-reactor -- not boot, not a target -- so every step above happens-before any promotion can,
-// on a reboot exactly as on a first install. Quorum does not wait on the reactor either (storage.node
-// attaches DRBD itself), and the caller gates on QUORATE rather than Primary, so there is no
-// cycle: bring-up never waits for a promotion it is the precondition of.
+// drbd-reactor or the chain target -- not boot, not a target -- so every step above
+// happens-before any promotion can, on a reboot exactly as on a first install. Quorum does not
+// wait on the reactor either (storage.node attaches DRBD itself), and the caller gates on QUORATE
+// rather than Primary, so there is no cycle: bring-up never waits for a promotion it is the
+// precondition of.
 func (g *Client) BringUp(ctx context.Context, spec BringUpSpec) error {
 	res := spec.Storage.Resource.Name
 	// EVERY BLOCK-LEVEL STEP, IN ONE CALL: the tiers, the `.res`, create-md, the attach, and --
-	// on a true first init only -- new-current-uuid and the one-time format marker. What used to
-	// be three verbs and a host-side gate on `FreshInit && CreatedMetadata` is one unit that
-	// holds both facts itself, which is what let /run/briard/data.fresh go.
+	// on a true first init only -- new-current-uuid and the one-time format marker. One unit
+	// holds both "this run created the LVs" and "this node is the seed", so no host-side gate
+	// has to infer freshness.
 	if err := g.NodeStorage(ctx, spec.Storage); err != nil {
 		return err
 	}
-	// Put the app's units back before the promoter can look for them. A failure here
-	// fails bring-up, like every other step: the alternative is a node that comes up with a
-	// promoter chain naming units that do not exist, which fails later and less legibly. (The
-	// soft-failure rule lives one level up, in reading the cache at all — an unusable cache means
-	// "nothing installed", and this code never runs.)
+	// Put the apps' units back and warm their images before the chain can start. A failure here
+	// fails bring-up, like every other step: the alternative is a node that promotes and then
+	// fails converge, later and less legibly. (The soft-failure rule lives one level up, in
+	// reading the cache at all — an unusable cache means "nothing installed", and this code never
+	// runs.)
 	if len(spec.AppUnits) > 0 {
 		if err := g.AppRender(ctx, spec.AppUnits, nil); err != nil {
 			return fmt.Errorf("re-render installed app units: %w", err)
@@ -3677,7 +3651,7 @@ func systemState(ctx context.Context, x Executor) SystemState {
 
 // loneCluster is the node status of a node that runs no DRBD: the second branch of the
 // one predicate, and the ONLY place it lives. The node reads as "Primary, quorate" when its chain
-// target is active -- the owner's seam, taken literally -- so every reader of Serving(), and every
+// target is active, so every reader of Serving(), and every
 // narrower field read, keeps its meaning: Primary is "holds the volume" (the chain is up; a hold
 // takes it down), Quorate is "allowed to write" (always: there is no peer to lose a majority to),
 // Diskful and UpToDate are what the node carries (its only copy, current by definition), and
@@ -3708,7 +3682,7 @@ func (g *Client) WaitQuorate(ctx context.Context, resource string, interval time
 	})
 }
 
-// WaitStatus polls Status until ready(qs) or ctx expires; transient Status errors
+// waitStatus polls Status until ready(qs) or ctx expires; transient Status errors
 // (guest still coming up) are ignored until then.
 func (g *Client) waitStatus(ctx context.Context, resource string, interval time.Duration, ready func(model.QuorumState) bool) error {
 	for {
@@ -3726,9 +3700,10 @@ func (g *Client) waitStatus(ctx context.Context, resource string, interval time.
 // Close closes the underlying channel.
 func (g *Client) Close() error { return g.c.Close() }
 
-// BringUpGuest is the host-side entry point once the guest VM is running: dial its
-// control socket (the virtio-serial chardev's host end), bring the resource up, and
-// wait for the node to converge to quorate primary.
+// BringUpGuest dials the guest's control socket (the virtio-serial chardev's host end), brings
+// the resource up, and waits for the node to serve, then closes the connection. Only a test calls
+// it: agent/host and nixosTest/driver keep one connection for the session and call BringUp
+// themselves.
 func BringUpGuest(ctx context.Context, sock string, spec BringUpSpec) error {
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
