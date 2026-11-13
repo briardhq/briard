@@ -2,6 +2,18 @@ package reportcard
 
 import "testing"
 
+// Windows' time-sync type, as the clock check reads it: off is "no", a server type "yes", and
+// anything unrecognised is an unknown, never a pass.
+func TestW32timeSynced(t *testing.T) {
+	for typ, want := range map[string]string{
+		"NTP": "yes", "NT5DS": "yes", "AllSync": "yes", " NTP ": "yes", "NoSync": "no", "nosync": "no", "": "", "Other": "",
+	} {
+		if got := w32timeSynced(typ); got != want {
+			t.Errorf("w32timeSynced(%q) = %q, want %q", typ, got, want)
+		}
+	}
+}
+
 // The host half of `briard doctor`: an installed machine's own disk and clock.
 func TestAssessLive(t *testing.T) {
 	cases := []struct {

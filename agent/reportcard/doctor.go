@@ -3,9 +3,7 @@ package reportcard
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
-	"time"
 )
 
 // LiveFacts is what `briard doctor` reads off an INSTALLED host by itself -- the half
@@ -14,7 +12,8 @@ import (
 type LiveFacts struct {
 	// DiskFreeMB is free space where the install lives; 0 means "could not read".
 	DiskFreeMB int
-	// NTPSynced is timedatectl's NTPSynchronized: "yes", "no", or "" when it could not be read.
+	// NTPSynced is whether a time server keeps the clock (NTPSynced): "yes", "no", or "" when it
+	// could not be read.
 	NTPSynced string
 	// Disks is the health report of each disk under the node's data, read by smartctl.
 	Disks []SMART
@@ -44,9 +43,9 @@ func AssessLive(f LiveFacts) []Check {
 		cs = append(cs, Check{"clock", Pass, "synchronised with a time server", ""})
 	case "no":
 		cs = append(cs, Check{"clock", Warn, "not synchronised with a time server",
-			"turn it on with `timedatectl set-ntp true`; certificates, alerts and backups are dated by this clock"})
+			ClockRemedy + "; certificates, alerts and backups are dated by this clock"})
 	default:
-		cs = append(cs, Check{"clock", Warn, "could not read whether the clock is synchronised (timedatectl)", ""})
+		cs = append(cs, Check{"clock", Warn, "could not read whether the clock is synchronised", ""})
 	}
 	for _, d := range f.Disks {
 		cs = append(cs, SMARTCheck(d))
@@ -67,15 +66,15 @@ func GatherLive(ctx context.Context) LiveFacts {
 	return f
 }
 
-// NTPSynced is timedatectl's NTPSynchronized: "yes", "no", or "" when it could not be read (no
-// timedatectl, as on Windows, or no answer in 5 s). The doctor and the agent's clock alert
-// both read it here.
-func NTPSynced(ctx context.Context) string {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "timedatectl", "show", "-p", "NTPSynchronized", "--value").Output()
-	if err != nil {
-		return ""
+// w32timeSynced reads Windows' time-sync type (W32Time's Parameters\Type, the value Settings' "Set
+// the time automatically" switches) as NTPSynced answers: NoSync is "no", a server type "yes",
+// anything else "" -- an unknown is said as one, never passed.
+func w32timeSynced(typ string) string {
+	switch strings.ToUpper(strings.TrimSpace(typ)) {
+	case "NOSYNC":
+		return "no"
+	case "NTP", "NT5DS", "ALLSYNC":
+		return "yes"
 	}
-	return strings.TrimSpace(string(out))
+	return ""
 }

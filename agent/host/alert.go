@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"briard.io/agent/reportcard"
 	"briard.io/shared/api"
 	"briard.io/shared/model"
 	"briard.io/shared/notify"
@@ -161,8 +162,8 @@ func (a *redundancyAlerter) fire(ctx context.Context, al notify.Alert) {
 // both, and the host is the one we can read without a verb.
 //
 // THE GRACE IS THE PRIMING. A host that just booted reads "no" until its first sync, so only an
-// hour of continuous "no" opens the alert. AN UNKNOWN IS NOT AN ALARM: a host with no timedatectl
-// (Windows) or one that did not answer neither starts nor clears the hour.
+// hour of continuous "no" opens the alert. AN UNKNOWN IS NOT AN ALARM: a host whose answer could
+// not be read neither starts nor clears the hour.
 type clockAlerter struct {
 	read     func(context.Context) string // reportcard.NTPSynced in production
 	unsynced time.Time                    // start of the current run of "no"; zero otherwise
@@ -192,7 +193,7 @@ func (c *clockAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 				Title:    "Briard: clock not synchronised",
 				Body: fmt.Sprintf("machine %s has not synchronised its clock with a time server for over an hour. "+
 					"Certificates, alerts and backups are dated by this clock; check that the machine can "+
-					"reach the internet and that `timedatectl set-ntp true` is on.", node),
+					"reach the internet, and if synchronisation is off, %s.", node, reportcard.ClockRemedy),
 			})
 		}
 	case "yes":
