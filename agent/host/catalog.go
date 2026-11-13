@@ -66,8 +66,7 @@ var catalogFirstRetry = []time.Duration{10 * time.Second, 30 * time.Second, time
 var wishRetry = []time.Duration{30 * time.Second, 5 * time.Minute}
 
 // catalogCache is the file's shape: the verified bytes kept whole (parsed again on load, so a
-// corrupt cache is an empty one rather than a half-list), and which listed apps had a manifest
-// when they were read.
+// corrupt cache is an empty one rather than a half-list), and when they were read.
 type catalogCache struct {
 	Fetched time.Time       `json:"fetched"`
 	Index   json.RawMessage `json:"index"`
@@ -428,7 +427,7 @@ func tellWish(ctx context.Context, send func(context.Context) error, app string,
 
 // wishVoter is the household's name in the wish count: a one-way hash of the flock's id made
 // for this alone, so the count sees a household once and the value matches nothing else the id
-// feeds. Where there is no flock id it falls back to the node's name, as the service address does.
+// feeds. Where there is no flock id it falls back to the node's name, as serviceMAC does.
 func (cfg Config) wishVoter() string {
 	h := sha256.Sum256([]byte("briard-wish-voter:" + orNode(cfg.FlockID, cfg.Node)))
 	return hex.EncodeToString(h[:16])

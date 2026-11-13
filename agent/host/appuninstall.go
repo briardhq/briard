@@ -26,7 +26,7 @@ type appUninstaller interface {
 // applyAppUninstall removes one app: the household's Uninstall, and its Delete now
 // (DirectiveAppUninstall). The guest keeps the app's data and files areas as members named for the
 // uninstall and deletes the rest (agent/guestagent/uninstall.go); installing the app again within
-// quadlet.RetainUninstalled restores them (keptMember). This side stops the app first, so what is
+// quadlet.RetainUninstalled restores them (keptCopyOf). This side stops the app first, so what is
 // kept is consistent, and afterwards forgets it node-locally: its cached manifest, the images no
 // other app pins, its open alert -- and tells a Home Assistant that is running, as an install does.
 func (cfg Config) applyAppUninstall(ctx context.Context, g appInstaller, d api.Directive, n notify.Notifier, logf func(string, ...any)) api.DirectiveOutcome {
@@ -125,9 +125,9 @@ func (cfg Config) forgetApp(name string, logf func(string, ...any)) {
 }
 
 // keptCopyOf is the newest copy an uninstall kept of an app that is not installed: what installing
-// it again restores (applyOneAppInstall). none (zero) when there is nothing to restore -- the app is installed
-// (that copy is then its History), this node does not hold the volume, or the guest predates
-// uninstalling one app.
+// it again restores (applyOneAppInstall). Zero when there is nothing to restore -- the app is
+// installed (that copy is then its History), this node does not hold the volume, or the guest
+// predates uninstalling one app.
 func (cfg Config) keptCopyOf(ctx context.Context, g appInstaller, name string) (quadlet.SnapshotEntry, error) {
 	if u, ok := g.(appUninstaller); !ok || !u.SupportsAppUninstall() || !g.SupportsMembers() {
 		return quadlet.SnapshotEntry{}, nil
