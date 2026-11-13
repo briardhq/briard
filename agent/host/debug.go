@@ -4,18 +4,17 @@ package host
 // (ttyS1) onto a unix socket so the getty that has been sitting there since boot becomes
 // reachable; disarming puts it back on a null backend and QEMU unlinks the socket.
 //
-// THE AGENT OWNS THE ACT SO THAT IT OWNS THE RECORD. `briard debug shell` used to drive the
-// monitor itself and write its own audit line to syslog, because an interactive CLI's stderr is
-// the operator's terminal -- the one place the record will not be found afterwards. Here logf
-// reaches the journal the way every other action on this node does, which is also what took
-// log/syslog (and with it the GOOS seam it broke) out of the tree.
+// THE AGENT OWNS THE ACT SO THAT IT OWNS THE RECORD. An interactive CLI's stderr is the
+// operator's terminal -- the one place the record will not be found afterwards -- so the agent,
+// not `briard debug shell`, drives the monitor, and logf reaches the journal the way every other
+// action on this node does.
 //
 // WHAT THIS COSTS, ACCEPTED KNOWINGLY: routed through the observe loop, the console cannot be
 // opened while that loop is wedged -- and a wedged agent is one reason somebody reaches for a
-// shell. The owner's call was that this is closer to a feature than a defect: the user Briard is
-// built for should be deterred from working on an already-degraded node, and anyone who can
-// drive QMP by hand is not that user. A wedged host agent has its own answers (`briard logs`,
-// restarting the unit, `rescue`).
+// shell. That is closer to a feature than a defect: the user Briard is built for should be
+// deterred from working on an already-degraded node, and anyone who can drive QMP by hand is not
+// that user. A wedged host agent has its own answers (`briard logs`, restarting the unit,
+// `rescue`).
 
 import (
 	"context"
@@ -25,9 +24,9 @@ import (
 	"briard.io/shared/api"
 )
 
-// debugConsoleTimeout bounds one monitor round-trip. The same 15s the CLI used to apply from
-// outside: a live QEMU answers chardev-change in milliseconds, so this is the "the monitor is
-// not going to answer" deadline, not a budget anything is expected to spend.
+// debugConsoleTimeout bounds one monitor round-trip. A live QEMU answers chardev-change in
+// milliseconds, so this is the "the monitor is not going to answer" deadline, not a budget
+// anything is expected to spend.
 const debugConsoleTimeout = 15 * time.Second
 
 // applyDebugConsole handles both kinds. They share everything but the monitor call and the
@@ -57,9 +56,10 @@ func (cfg Config) applyDebugConsole(ctx context.Context, d api.Directive, logf f
 		logf("debug console arm failed on %s: %v", console, err)
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: err.Error()}
 	}
-	// No uid here, unlike the syslog line this replaces. The admin socket is chmod 0600 owned by
-	// the agent, so the peer is always root and the field was a constant wearing the look of
-	// evidence. What is worth recording is that the local door was used at all.
+	// No uid here. debug-arm is local-only and the guest's admin port may not ask for it, so it
+	// came through the admin socket, whose mode (root on Linux; SYSTEM, Administrators and the
+	// install user on Windows -- restrictDoor) already says who could. What is worth recording is
+	// that the local door was used at all.
 	logf("debug console ARMED on %s (via the local admin socket)", console)
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: console}
 }

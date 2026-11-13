@@ -11,10 +11,9 @@ import (
 // dashboardMetrics is the closed allowlist of resource fields that leave a node as cloud
 // aggregates: product-health signals fit for a cloud dashboard -- disk capacity used
 // and system load -- not the soak's internal leak instruments (agent/app RSS+FDs,
-// log/store sizes, guest kernel errors, restart counts), which stay home on shared/telemetry
-// . Expanding this set is a deliberate, visible act -- and a
-// cheap one: the cloud rollup is long-format (metric name as data), so a new metric is new
-// rows, not a schema change. A zero value means "unread this cycle" (the telemetry
+// log/store sizes, guest kernel errors, restart counts), which stay in shared/telemetry.
+// Expanding this set is a deliberate, visible act -- and a cheap one: the cloud rollup is
+// long-format (metric name as data), so a new metric is new rows, not a schema change. A zero value means "unread this cycle" (the telemetry
 // convention) and is skipped, so a transient read miss never poisons a bucket's min with a
 // spurious 0 (a node's formatted volume is never legitimately 0, and a running
 // node's load is virtually never exactly 0.00).
@@ -50,12 +49,12 @@ func (b *metricBucket) add(v float64) {
 // metricsAggregator rolls a node's per-cycle resource samples into per-window min/max/avg
 // aggregates (the window is one hour in production; a short window in the soak/tests
 // exercises rollover quickly). It is an online accumulator: it never stores raw samples, only
-// the running aggregate per (bucket, metric). The current bucket is re-uploaded each cycle so
-// a dashboard sees the in-flight hour live; a just-completed bucket rides along until an
-// upload acks it (prune), then drops out. Bounded: at most maxBuckets are retained, so a long
+// the running aggregate per (bucket, metric). The current bucket is re-uploaded with each fresh
+// sample so a dashboard sees the in-flight hour live; a just-completed bucket rides along until
+// an upload acks it (prune), then drops out. Bounded: at most maxBuckets are retained, so a long
 // cloud outage drops the oldest completed buckets with a log (an honest gap -- telemetry is a
-// signal, not a gate). Not restart-durable (in-memory, matching the best-effort telemetry
-// stance); a persisted node buffer with age-out is future work.
+// signal, not a gate). Not restart-durable: in-memory, matching the best-effort telemetry
+// stance.
 type metricsAggregator struct {
 	window     time.Duration
 	maxBuckets int
@@ -77,7 +76,7 @@ func newMetricsAggregator(window time.Duration, logf func(string, ...any)) *metr
 	}
 }
 
-// Add folds one cycle's sample into its time bucket (now truncated to the window). Only the
+// add folds one cycle's sample into its time bucket (now truncated to the window). Only the
 // allowlisted, present (non-zero) dashboard metrics are folded; a cycle with none is a no-op.
 func (a *metricsAggregator) add(now time.Time, r *telemetry.NodeResources) {
 	if r == nil {
@@ -104,8 +103,8 @@ func (a *metricsAggregator) add(now time.Time, r *telemetry.NodeResources) {
 	}
 }
 
-// Snapshot renders every retained bucket as wire aggregates (min/max/avg + sample count), in
-// bucket-then-metric order -- what the observe loop uploads each cycle.
+// snapshot renders every retained bucket as wire aggregates (min/max/avg + sample count), in
+// bucket-then-metric order -- what the observe loop uploads with each fresh sample.
 func (a *metricsAggregator) snapshot() []api.MetricAggregate {
 	starts := make([]time.Time, 0, len(a.buckets))
 	for start := range a.buckets {
@@ -131,7 +130,7 @@ func (a *metricsAggregator) snapshot() []api.MetricAggregate {
 	return out
 }
 
-// Prune drops every bucket before now's bucket: after a successful upload the completed
+// prune drops every bucket before now's bucket: after a successful upload the completed
 // buckets are durably in the cloud, so only the in-flight bucket stays resident to keep
 // accumulating and re-upserting. Called only on upload success -- an unacked bucket is kept
 // and retried next cycle.
@@ -144,8 +143,8 @@ func (a *metricsAggregator) prune(now time.Time) {
 	}
 }
 
-// EnforceBound caps retained buckets, dropping the oldest with a log when a sustained cloud
-// outage backs them up past maxBuckets -- an honest gap, never a silent truncation (CONTRIBUTING.md).
+// enforceBound caps retained buckets, dropping the oldest with a log when a sustained cloud
+// outage backs them up past maxBuckets -- an honest gap, never a silent truncation.
 func (a *metricsAggregator) enforceBound() {
 	for len(a.buckets) > a.maxBuckets {
 		var oldest time.Time

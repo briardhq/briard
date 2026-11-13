@@ -25,9 +25,8 @@ import (
 // is a document a publisher writes. A curated catalog is precisely the licence to encode this in
 // the product: a small set of apps we support, so we can know how each is operated.
 //
-// The default is the current behaviour. An unknown name gets no assessor, and no assessor is the
-// liveness floor alone — exactly what every app got before this existed, and what mosquitto
-// and every future entry get on the day they land.
+// An unknown name gets no assessor, and no assessor is the liveness floor alone: what every app
+// without an entry here gets, including a new one on the day it lands.
 //
 // The DECISION is here; how to obtain the sample is in the guest (agent/hass), because the token
 // and the app's loopback are both there. That is the same line the rest of the product draws:
@@ -38,15 +37,15 @@ import (
 // be able to name an app, and `upgrader` carries nothing that can.
 //
 // ONE METHOD PER APP THAT HAS A SIGNAL, named for it, because that is what they are: each
-// speaks one app's API and returns that app's own shape. The generic thing is the
-// ASSESSOR seam above (guest.ReadinessAssessor), which knows none of this.
+// speaks one app's API and returns that app's own shape. The generic thing is the assessor
+// interface (guest.ReadinessAssessor), which knows none of this.
 //
 // NO CAPABILITY CHECKS, deliberately. The agent and the guest closure are
 // published together and the alpha reinstalls rather than upgrading in place, so a guest that
 // does not know one of these verbs is a mismatched pair — a fault to see, not a configuration to
-// tolerate. What remains is the different rule it was once confused with: a sample that FAILS at
-// runtime leaves the install on the liveness floor, because S1 must never revert a household's
-// app on the strength of its own telemetry breaking.
+// tolerate. A different rule, not to be confused with it: a sample that FAILS at runtime leaves
+// the install on the liveness floor, because S1 must never revert a household's app on the
+// strength of its own telemetry breaking.
 type readinessProbe interface {
 	HassReadiness(ctx context.Context, port int) ([]hass.Entry, error)
 	MosquittoProbe(ctx context.Context, token string) (mosquitto.Sample, error)
@@ -74,7 +73,7 @@ func (p heldProbe) MosquittoProbe(ctx context.Context, token string) (mosquitto.
 //
 // A minute is the cost of the gate on every Home Assistant upgrade, and it is paid AFTER the
 // app is already serving — the household is not waiting on it, only the directive's outcome
-// is. It sits well inside installBudget, which the health gate has already spent most of.
+// is. It sits well inside installBudget.
 const settleWindow = 60 * time.Second
 
 // sampleBudget bounds one sample. The install window has to be able to finish or revert, and an
@@ -82,14 +81,9 @@ const settleWindow = 60 * time.Second
 // this bounds is precisely the one the gate exists to catch, so it must not become a hang.
 const sampleBudget = 30 * time.Second
 
-// assessorFor returns the differential readiness assessor for a catalogued app, or nil for
-// the liveness floor alone.
-//
-// nil for THREE distinct reasons, all of which mean the same thing to the caller and are worth
-// keeping distinct in the log: the product knows nothing about this app; the guest is too old
-// to sample one; or the change is a fresh install, which the caller decides (see below). The
-// first is the shipped default, the second degrades rather than refuses — an install must not
-// fail because the gate above its floor is unavailable.
+// assessorFor returns the differential readiness assessor for a catalogued app, or nil -- the
+// liveness floor alone -- for an app the product knows nothing about. A fresh install gets the
+// floor too, but that is the caller's decision: it captures no baseline (applyOneAppInstall).
 func (cfg Config) assessorFor(m manifest.Manifest, p readinessProbe, logf func(string, ...any)) guest.ReadinessAssessor {
 	settle := cfg.readinessSettle
 	switch m.Name {
@@ -200,7 +194,7 @@ const probeRetry = 2 * time.Second
 //     retained message the household had is gone — device availability, the last reading of a
 //     sensor that publishes daily, the discovery topics HA rebuilds its entities from.
 //
-// BOTH ARE ROLLBACK, and this is the item's one real judgement call. The alternative, Hold, keeps
+// BOTH ARE ROLLBACK, and that is a judgement call. The alternative, Hold, keeps
 // an app the household cannot use (or has silently lost data from) while it waits for someone
 // to notice — and the pre-upgrade snapshot is exactly the state that would fix it. The
 // false-positive path that would make Rollback dangerous is closed at the source rather than

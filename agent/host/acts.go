@@ -12,11 +12,11 @@ import (
 
 // THE OBSERVE LOOP KEEPS TICKING WHILE A DIRECTIVE RUNS.
 //
-// A directive used to run on the loop itself, so an app install held the tick -- and with it
-// the guest's liveness observation, the recovery ladder and every CLI or dashboard request -- for
-// its whole budget: a guest that froze four seconds into a pull was first noticed when the
-// budget expired, twenty-five minutes later. The control channel now serves reads beside an act
-// (guestfirmware.ServeFrames), so the directives that only talk to the guest leave the loop.
+// A directive run on the loop would hold the tick -- and with it the guest's liveness
+// observation, the recovery ladder and every CLI or dashboard request -- for its whole budget, so
+// a guest that froze early in an install would go unnoticed until the budget expired. The control
+// channel serves reads beside an act (guestfirmware.ServeFrames), so the directives that only
+// talk to the guest leave the loop.
 //
 // Two lanes off the loop, and the loop keeps only what holds nothing:
 //
@@ -25,20 +25,20 @@ import (
 //     guest and bring it back on a NEW channel. A second act while one runs is refused with
 //     "busy" -- not queued, because a queue holds a household's intent for minutes with nothing
 //     to tell it, and a refusal is honest at once.
-//   - PULLS run off the loop whenever asked, beside an act: doctor, an app's history, the
-//     dashboard code, the casa claim, the debug console. They are what the household reaches
-//     for DURING an install.
-//   - On the loop: noop, log, a cert request's keygen. Instant, and they touch nothing.
+//   - PULLS run off the loop whenever asked, beside an act: doctor, an app's history and storage,
+//     the backup's list and run, the dashboard code, the casa claim, the debug console. They are
+//     what the household reaches for DURING an install.
+//   - On the loop: noop, log, a cert request's keygen, status, alert-dismiss, stop, wish.
+//     Instant, and they hold nothing.
 //
 // A relauncher kills the channel the loop reads, on purpose. The loop sees it die, returns to
 // Run, and Run -- which owns what happens when a channel dies -- asks this lane before it does
 // anything: a relauncher in flight means wait for it and adopt the channel it re-established;
-// nothing in flight means the recovery ladder, as ever. Before this the two were kept from
-// fighting over the VM only by running on one goroutine (relaunching, Run).
+// nothing in flight means the recovery ladder.
 //
 // Outcomes come back through one channel the loop drains each cycle, so the bookkeeping a
 // directive ends with -- the cloud's pending outcome, the CLI's answer, adopting what was
-// installed -- stays on the loop, where it always was. The lane outlives any one observe() call
+// installed -- stays on the loop. The lane outlives any one observe() call
 // (it is Run's, like pendingOutcomes): an act that spans a channel bounce finishes on the client
 // it started with -- or, when that channel dies under it, on the one Run re-establishes
 // (follow) -- and still reports through here.
@@ -240,7 +240,7 @@ func (a *actLane) runInternal(kind string, f func()) bool {
 	return true
 }
 
-// results is the lane's channel for the loop's select; nil -- never ready -- without a lane.
+// ch is the lane's results channel for the loop's select; nil -- never ready -- without a lane.
 func (a *actLane) ch() <-chan actResult {
 	if a == nil {
 		return nil
@@ -350,7 +350,7 @@ func (a *actLane) channelAfter(ctx context.Context, old any) (any, bool) {
 // calling the dead client would fail the rest of its steps the same way -- a health gate read as
 // a failed install, then a revert that cannot reach the guest either -- so it waits for the
 // reconnect instead, bounded by its own ctx, and carries on there. An act on a guest that does
-// not come back ends with its ctx, exactly as before.
+// not come back ends with its ctx.
 func (cfg Config) follow(ctx context.Context, g *appInstaller, logf func(string, ...any)) bool {
 	next, ok := cfg.acts.channelAfter(ctx, *g)
 	if !ok {

@@ -1,12 +1,13 @@
 // The local admin door — the surface `briard` (the operator CLI) talks to.
 //
-// Nothing in the host agent listened before this. It dials OUT to the cloud (the long-poll) and
-// IN to the guest's virtio-serial socket, so an operator standing on the box had no way to ask it
-// for anything. And the CLI cannot simply do the work itself: the agent holds the guest control
-// channel, so a second process driving guest verbs would fight it for the wire.
+// The host agent otherwise only dials: OUT to the cloud (the report, whose answer carries the
+// directives) and IN to the guest's virtio-serial socket. The CLI cannot simply do the work
+// itself: the agent holds the guest control channel, so a second process driving guest verbs
+// would fight it for the wire.
 //
 // So the CLI is an INJECTOR. It hands the agent an api.Directive over this socket and the agent
-// applies it through the exact path the cloud's directives take (dispatch, in the observe loop).
+// applies it through the exact path the cloud's directives take (the observe loop's run, then
+// dispatch). The tray and the guest's admin port (adminport.go) inject the same way.
 // shared/api already names the cloud twin of this gesture — DirectivePath, "admin: enqueue a
 // directive for a node" — so this is that endpoint's LOCAL DOOR rather than a second way to drive
 // a node. The payoff is that a CLI which sees little production use cannot rot: it is a different
@@ -30,7 +31,8 @@ import (
 	"briard.io/shared/notify"
 )
 
-// localRequest is one CLI-submitted directive plus the channel its terminal outcome returns on.
+// localRequest is one locally submitted directive -- the admin socket's or the guest admin
+// port's -- plus the channel its terminal outcome returns on.
 // The observe loop is the only consumer: it decides the lane a directive runs on (acts.go), and
 // one place must own that decision.
 type localRequest struct {
@@ -90,7 +92,7 @@ func serveLocal(ctx context.Context, sock, owner string, reqs chan<- localReques
 // pair with no framing beyond JSON's own is the least machinery that carries an outcome home.
 //
 // There is deliberately NO read deadline on the wait. A locally-submitted upgrade legitimately
-// runs for minutes (applyDirective bounds it at 10), and a CLI that gave up early would report a
+// runs for minutes (bounded by UpgradeBudget, 15 by default), and a CLI that gave up early would report a
 // failure for an op that went on to succeed — the worst answer an admin tool can give.
 func handleLocal(ctx context.Context, conn net.Conn, reqs chan<- localRequest, logf func(string, ...any)) {
 	defer conn.Close()
@@ -197,8 +199,8 @@ func (cfg Config) applyStatus(d api.Directive, n notify.Notifier) api.DirectiveO
 }
 
 // holdDoor answers the local door until `until` fires or ctx ends, beating as it goes, for the
-// stretches when the loop is not there to: the install finishing (finish.go) and the recovery
-// ladder (guestrecover.go). A stop is the one directive taken, as in the network's wait
+// stretches when the loop is not there to: the install finishing (finish.go), the disks being
+// made (disks.go) and the recovery ladder (guestrecover.go). A stop is the one directive taken, as in the network's wait
 // (waitTick); anything else is refused at once with the reason, read afresh each time so a wait
 // that moves on can say so -- the alternative is what the channel does with no reader, a CLI
 // that blocks until the agent exits, which to the person at the machine is an agent that wedged.

@@ -30,7 +30,7 @@ type certRequester struct {
 	pendingCSR []byte // DER CSR to upload on the next report; cleared once uploaded
 }
 
-// Request generates a keypair + CSR for name, stashing the key and queuing the CSR upload.
+// request generates a keypair + CSR for name, stashing the key and queuing the CSR upload.
 func (cr *certRequester) request(name string) error {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -53,7 +53,7 @@ func (cr *certRequester) request(name string) error {
 	return nil
 }
 
-// KeyFor returns the stashed key paired with name (a cert just arrived), or "" when the node
+// keyFor returns the stashed key paired with name (a cert just arrived), or "" when the node
 // holds no matching key -- e.g. a restart lost the stash, so the cloud must re-request.
 func (cr *certRequester) keyFor(name string) string {
 	if cr != nil && cr.name == name {
@@ -65,19 +65,18 @@ func (cr *certRequester) keyFor(name string) string {
 // upgrader is the slice of the guest binding the upgrade directives drive -- narrow so the
 // dispatch is unit-testable without a live control channel.
 //
-// Upgrade and RebootUpgrade are the two methods of a whole-OS upgrade (decides which),
-// and neither is guest.Manager's: both roll back to a snapshot of the OS disk, which only the
-// host can take or restore, and the reboot one also outlives the channel a Manager is bound
-// to. They report rolledBack separately from err because a node healthy on its old code and a
-// node the host could not finish with are different news, and the cloud acts on them
-// differently.
+// ImageUpgrade is the whole-OS upgrade, and not guest.Manager's: it rolls back by putting the
+// previous OS image back, which only the host holds, and its reboot replaces the channel a
+// Manager is bound to. It reports rolledBack separately from err because a node healthy on its
+// old code and a node the host could not finish with are different news, and the cloud acts on
+// them differently.
 //
-// Neither takes a AppSpec, and that is load-bearing rather than tidy: an OS upgrade must
+// No method takes an AppSpec, and that is load-bearing rather than tidy: an OS upgrade must
 // not touch apps, and a signature with nothing to name an app with is a
 // separation the compiler keeps rather than one a reader has to.
 type upgrader interface {
 	ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error) // the guest chain's release, image already staged
-	WriteCert(ctx context.Context, cert, key string) error                               //: apply a renewed cert to the vol
+	WriteCert(ctx context.Context, cert, key string) error                               // apply a renewed cert to the volume
 	// RescueGuest restarts the guest on its verified, read-only image -- the one
 	// recovery rung that is never a reflex. It is on this interface rather than beside it because
 	// it performs the same VM+channel+Manager swap the upgrade legs do, and a second owner of that
@@ -96,18 +95,15 @@ type selfUpdater interface {
 	Current() string
 }
 
-// applyDirective acts on a directive from the controller (down-channel). Runs synchronously in
-// the observe loop: an upgrading node is legitimately "busy" and its status stalls until it
-// finishes (the controller then reads it degraded, which it is). Unknown kinds: logged.
-// applyDirective returns the op's terminal outcome: done, rolled-back (an upgrade the
-// health-gate reverted), or failed (couldn't apply / no clean revert). The caller reports it
-// back so the cloud moves the intent terminal -- the durable answer a post-outage reconcile
-// polls. Re-delivery of an already-applied directive is an idempotent no-op that re-reports done.
+// applyDirective is dispatch's fallthrough: noop, log, rescue, cert-request, cert and
+// agent-update, from the cloud or the local door; any other kind is logged and fails as
+// unhandled. Which lane each runs on is run's decision (acts.go). It returns the op's terminal
+// outcome, done or failed, which the caller reports back so the cloud moves the intent terminal
+// -- the durable answer a post-outage reconcile polls. A re-offer of the running agent version is
+// a no-op that reports done.
 //
-// IT TAKES NO APP, and that is deliberate: nothing here acts on one.
-// A version change is a app-install directive carrying a catalog name (applyAppInstall),
-// an OS upgrade must not touch apps at all, and the image re-pin that needed a single named
-// app died with the build-time payload slot.
+// IT TAKES NO APP, and that is deliberate: nothing here acts on one. A version change is an
+// app-install directive carrying a catalog name (applyAppInstall).
 func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any), upgradeBudget time.Duration, wd *beat) api.DirectiveOutcome {
 	done := api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone}
 	failed := func(detail string) api.DirectiveOutcome {
@@ -210,9 +206,10 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 	}
 }
 
-// escalate raises an alert when an upgrade fails: upgrades are rare, so this is not fatigue --
-// and a failure includes a revert that could not finish, which is exactly the case a bound exists
-// to surface instead of hanging silently. It goes through the alert store like every alert, so
+// escalate raises an alert when a change to what the node runs fails -- an app install or update, a guest
+// OS update or image stage, a guest bundle push, the agent's self-update, a cert renewal. These
+// are rare, so this is not fatigue -- and a failure includes a revert that could not finish,
+// which is exactly the case a bound exists to surface instead of hanging silently. It goes through the alert store like every alert, so
 // on the free tier -- where there is no endpoint to push to -- the record is still there for
 // the person who looks after "it stopped working".
 func escalate(

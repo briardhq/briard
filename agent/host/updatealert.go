@@ -9,17 +9,14 @@ import (
 	"briard.io/shared/notify"
 )
 
-// updateAlerter is the reader the timer path never had.
+// updateAlerter is the reader of the update timer's runs.
 //
-// EVERY OTHER TRIGGER OF THE FROZEN UPDATE UNIT HANDS ITS VERDICT TO SOMEBODY: `briard update`
-// prints the line to whoever typed it. The TIMER does not -- and the timer is the one that runs on
-// every node, nightly, and is the whole of updating on a standalone home. A run that fails ends in
-// that unit's journal and stops there, so a household that has silently stopped updating would
-// look exactly like one that is current.
-//
-// That is the failure the upgrade floor exists to prevent, arriving through the other door. A
-// node below the floor is refused BY DESIGN, keeps serving, and is supposed to be reinstalled --
-// and without this nobody is ever told to reinstall it.
+// `briard update` prints the frozen update unit's verdict to whoever typed it. The TIMER hands
+// its verdict to nobody -- and the timer is the one that runs on every node, nightly, and is the
+// whole of updating on a standalone home. A run that fails ends in that unit's journal and stops
+// there, so without this a household that has silently stopped updating would look exactly like
+// one that is current. Above all a node below the upgrade floor: it is refused BY DESIGN, keeps
+// serving, and must be reinstalled, and this is what tells the household so.
 //
 // ⚠️ THE READER IS THE AGENT, NOT THE UNIT. The frozen layer carries no product knowledge: the
 // update script leaves its run's verdict (selfupdate.Result), and what "this node has stopped
@@ -68,11 +65,11 @@ func (cfg Config) watchUpdates(ctx context.Context, n notify.Notifier, logf func
 
 // observe reads the last run's verdict and asserts it; the alert store turns that into the one
 // alert on entry and one on clearing. A failed run is failing; so is a verdict older than
-// updateStaleAfter, or none at all once this agent has watched that long (the run dir is tmpfs,
-// so a fresh boot has none until the timer's boot run). Otherwise no verdict yet holds.
+// updateStaleAfter, or none at all once this agent has watched that long (on Linux the run dir is
+// tmpfs, so a fresh boot has none until the timer's boot run). Otherwise no verdict yet holds.
 //
 // IT DOES NOT PRIME, and that is the opposite of the redundancy alerter's rule on purpose. The
-// startup reading is the case this whole thing was built for: a floored node's agent is the one
+// startup reading is the case this exists for: a floored node's agent is the one
 // agent that never gets replaced, so "already failing when I came up" is the steady state, not
 // a false positive, and a primed alerter would be silent about it forever. The store is what
 // keeps that first reading from being announced again at every restart while the state holds.

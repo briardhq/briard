@@ -12,10 +12,9 @@
 //
 // The guest runs no logic on it -- a person on a trusted device pressed a button, and the host
 // decides through the one dispatch every directive takes. What the port DOES restrict is what the
-// guest may ask for: only directives whose effect stays inside the guest (an app install or
-// prewarm). A guest that has been taken over can then at most install a catalogued app into
-// itself, which it could run anyway; it cannot roll the host's OS, hand the flock over, or touch
-// anything the guest does not already own.
+// guest may ask for: only the directives guestMayAsk lists, each with what a guest that has been
+// taken over gains from it. It cannot roll the host's OS, hand the flock over, change the
+// node's address, or open the debug console.
 package host
 
 import (
@@ -33,33 +32,30 @@ import (
 
 // guestMayAsk is the allowlist: the directives whose effect stays inside the guest.
 //
-// app-usage joins app-members for the app page's Storage card: a read of what one app
-// keeps on this node, whose walk the guest runs in its own background.
+// app-members and app-usage are the app page's History and Storage: reads of what one app keeps
+// on this node, whose walk the guest runs in its own background. app-restore's effect is one
+// app's data and code on this node, the same blast radius an install already has.
 //
-// app-restore joins them: its effect is one app's data and code on this node,
-// the same blast radius an install already has, and the picker that asks for it is the dashboard
-// behind the same door.
+// backup-restore and backup-list are the Backup page's restore: the restore is one app's data and
+// code put back from the household's own repository -- an app-restore, or on a node without the
+// app an install -- and the list only reads what that repository holds. Neither reaches past the
+// guest's own data: the repository is the folder the host already serves the guest, opened with
+// the key on the guest's own volume.
 //
-// backup-restore and backup-list join them for the Backup page's restore: the restore is one
-// app's data and code put back from the household's own repository -- a app-restore, or
-// on a node without the app an install -- and the list only reads what that repository
-// holds. Neither reaches past the guest's own data: the repository is the folder the host already
-// serves the guest, opened with the key on the guest's own volume.
+// backup-now starts the run 02:00 starts, into the folder the household chose; backup-folder
+// reads a folder the household names and moves the backup there once confirmed -- what the
+// backup-dir setting below already may, behind the same checkBackupFolder, and the read is
+// read-only and restic's paths alone.
 //
-// backup-now and backup-folder join them for the rest of the Backup page: the first starts the
-// run 02:00 starts, into the folder the household chose; the second reads a folder the household
-// names and moves the backup there once confirmed -- what the backup-dir setting below already
-// may, behind the same checkBackupFolder, and the read is read-only and restic's paths alone.
-//
-// config-set joins them for the BACKUP'S settings only, never the address: the page's Backup
+// config-set is allowed for the BACKUP'S settings only, never the address: the page's Backup
 // section turns the nightly backup off and on, moves it to another folder, and records that the
 // key is saved. What a guest taken over gains outside itself: it can stop tomorrow's backup of
-// data it already holds, or point it at an EMPTY folder a person owns and fill that with
-// ciphertext -- checkBackupFolder refuses root's folders and any folder already holding files, so
-// the store never serves the guest a file it did not write. It cannot touch the address, whose
-// change restarts the guest onto the host's network.
+// data it already holds, or point it at a folder that is EMPTY or already a backup repository
+// and fill it with ciphertext -- checkBackupFolder refuses any other folder (and, on Linux,
+// root's), so the store never serves the guest some other file. It cannot touch the address,
+// whose change restarts the guest onto the host's network.
 //
-// alert-dismiss joins them for the alert list's Dismiss: it marks one record seen. A guest taken
+// alert-dismiss is there for the alert list's Dismiss: it marks one record seen. A guest taken
 // over can clear the tray's count of what needs attention -- the dashboard it serves could hide
 // those alerts anyway -- but it resolves nothing, deletes no record, and stops no delivery.
 func guestMayAsk(d api.Directive) bool {
