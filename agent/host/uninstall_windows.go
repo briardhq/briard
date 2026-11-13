@@ -104,11 +104,11 @@ func stopNode(ctx context.Context, qmpSock string, logf func(string, ...any)) er
 	if _, err := stopApp(m, WardenName, logf); err != nil {
 		return err
 	}
-	agent, err := stopApp(m, ServiceName, logf)
+	running, err := stopApp(m, ServiceName, logf)
 	if err != nil {
 		return err
 	}
-	if agent {
+	if running {
 		logf("powering the guest off cleanly")
 	}
 	// What follows deletes or replaces files qemu holds, and PowerOffGuest returns once its
@@ -117,7 +117,7 @@ func stopNode(ctx context.Context, qmpSock string, logf func(string, ...any)) er
 }
 
 // stopApp stops the named service and waits, bounded, until it has; it reports whether the
-// service is registered at all.
+// service was running -- an absent or already-stopped one was not.
 func stopApp(m *mgr.Mgr, name string, logf func(string, ...any)) (bool, error) {
 	s, err := m.OpenService(name)
 	if err != nil {
@@ -129,7 +129,7 @@ func stopApp(m *mgr.Mgr, name string, logf func(string, ...any)) (bool, error) {
 		return true, fmt.Errorf("asking the %s service its state: %w", name, err)
 	}
 	if st.State == svc.Stopped {
-		return true, nil
+		return false, nil
 	}
 	logf("stopping the %s service", name)
 	if st.State != svc.StopPending {

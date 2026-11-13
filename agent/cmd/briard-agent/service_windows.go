@@ -312,6 +312,22 @@ func windowed() bool {
 	return n == 1
 }
 
+// noQuickEdit turns QuickEdit off in the console this process has to itself (windowed). With it
+// on, a click in the window starts a selection, and every write to the console blocks until the
+// selection ends -- a stray click stops the program at its next line of output, with nothing on
+// screen to say so. Best-effort: a console that refuses keeps its mode.
+func noQuickEdit() {
+	in, err := windows.GetStdHandle(windows.STD_INPUT_HANDLE)
+	if err != nil {
+		return
+	}
+	var mode uint32
+	if windows.GetConsoleMode(in, &mode) != nil {
+		return
+	}
+	_ = windows.SetConsoleMode(in, mode&^windows.ENABLE_QUICK_EDIT_MODE|windows.ENABLE_EXTENDED_FLAGS)
+}
+
 // idYes is what MessageBox returns for Yes.
 const idYes = 6
 

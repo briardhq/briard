@@ -31,10 +31,11 @@ const (
 )
 
 // windowed is false off Windows: a terminal is where `briard uninstall` runs, and its text stays
-// there. confirm and tell are never reached.
+// there. confirm, tell and noQuickEdit are never reached.
 func windowed() bool      { return false }
 func confirm(string) bool { return false }
 func tell(string, bool)   {}
+func noQuickEdit()        {}
 
 // runWarden refuses off Windows: systemd's own watchdog is the agent's outside watcher there.
 func runWarden() int {

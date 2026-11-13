@@ -226,6 +226,9 @@ func runUninstall(args []string) int {
 	// the question and the outcome are windows. Never with -yes: that is the quiet form a package
 	// manager or a script runs, with nobody there to close a window.
 	win := !*yes && windowed()
+	if win {
+		noQuickEdit()
+	}
 	if win && !elevated() {
 		tell("Briard was not uninstalled: "+uninstallElevate+".", true)
 		return 1
