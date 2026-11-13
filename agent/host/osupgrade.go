@@ -50,13 +50,11 @@ import (
 // was MEASURED powering itself off in 1.5 s, so 30 s is twenty times the observed cost and still
 // well inside a stop worth waiting for.
 //
-// IT WAS 90 s, WHICH IS SYSTEMD'S DefaultTimeoutStopSec, AND THE COLLISION HID A BUG FOR MONTHS
-// A unit inside the guest was deadlocking on stop and eating that exact timeout; this
-// grace expired in the same instant the guest's SIGKILL fired, so the ACPI fallback appeared to
-// power the machine off in 1.5 s when all it had done was arrive as the deadlock resolved
-// itself. Every clean stop paid 90 s and looked like it worked. A grace SHORTER than the guest's
-// own patience is what makes the next fault of that shape fail loudly instead of silently: the
-// fallback then genuinely does the work, and a fallback that fires every time is visible.
+// ⚠️ KEEP IT SHORTER THAN systemd's DefaultTimeoutStopSec (90 s) in the guest. At equal values a
+// guest unit deadlocking on stop is SIGKILLed in the same instant this grace expires, so the
+// ACPI fallback appears to power the machine off in 1.5 s and every clean stop silently pays
+// 90 s. Shorter, the fallback genuinely does the work, and a fallback that fires every time is
+// visible.
 const shutdownGrace = 30 * time.Second
 
 // reapGrace bounds the last question stopCleanly asks -- "is the machine gone?" -- after both
@@ -74,9 +72,10 @@ const reapGrace = 10 * time.Second
 //
 // Refusing is not conservatism, it is the only correct answer. Reboot here and a peer takes
 // over while the node is down, so it returns Secondary -- where the apps never run, since
-// drbd-reactor promotes exactly one node. The health-gate asks a Primary-shaped question
-// (AppActive && probe), which a Secondary can never satisfy, so every such upgrade would
-// false-roll-back. Demoting deliberately first is the right operation but the wrong owner:
+// drbd-reactor promotes exactly one node. A node that went down serving is gated on serving
+// again (AwaitOSReadyServing: Primary, reverse proxy answering), which a Secondary can never
+// satisfy, so every such upgrade would false-roll-back. Demoting deliberately first is the
+// right operation but the wrong owner:
 // that is a handover, it must be scheduled so both anchors do not go at once, and only the
 // cloud sees the whole flock.
 //
@@ -84,12 +83,13 @@ const reapGrace = 10 * time.Second
 var ErrHandoverRequired = errors.New("reboot needs a handover: a peer can take over, so this is a failover to schedule, not a local update")
 
 // osUpgrade is the host's binding to the guest, and the upgrade surface the directive path
-// drives: a guest.Manager plus the one operation only the host can perform. Everything the
-// Manager already does is promoted unchanged; ImageUpgrade is the addition.
+// drives: a guest.Manager plus the operations only the host can perform -- ImageUpgrade,
+// RescueGuest, RebootGuest and the recovery ladder. Everything the Manager already does is
+// promoted unchanged.
 //
 // It holds the binding rather than a snapshot of it because a reboot REPLACES all three parts
-// at once -- VM, channel and Manager -- and something has to own that swap. Run rebinds it on
-// an ordinary reconnect; the reboot path rebinds it from the inside.
+// at once -- VM, channel and Manager -- and something has to own that swap. The ladder (recover)
+// rebinds it on a reconnect; the reboot and upgrade paths rebind it from the inside.
 type osUpgrade struct {
 	*guest.Manager // over client, below; swapped whenever the channel is
 
@@ -106,15 +106,14 @@ func newOSUpgrade(cfg Config, vm *platform.Guest, client *guestagent.Client, gue
 	return u
 }
 
-// Rebind points this at a fresh control channel. The Manager is rebuilt rather than mutated
-// because it is a thin wrapper over the channel -- there is no state in it worth carrying
-// across, which is also why Run has always rebuilt it on reconnect.
+// rebind points this at a fresh control channel. The Manager is rebuilt rather than mutated
+// because it is a thin wrapper over the channel -- there is no state in it worth carrying across.
 func (u *osUpgrade) rebind(client *guestagent.Client) {
 	u.client = client
 	u.Manager = guest.NewManager(client, u.guestCfg)
 }
 
-// Channel reports the control channel this is currently bound to, so Run can notice when the
+// channel reports the control channel this is currently bound to, so Run can notice when the
 // reboot path has already re-established one and adopt it rather than dial a second. The guest
 // agent serves a single connection at a time, so a second dial would not merely be wasteful --
 // it would block until the first was dropped.
@@ -139,11 +138,9 @@ func describePeers(cl model.Cluster) string {
 	return strings.Join(parts, " ")
 }
 
-// Resume ends the maintenance bracket on a guest that is still up -- the commit leg of a
-// switch, and either path's failure BEFORE the guest went down. Nothing else needs undoing:
-// the image swap is a rename (the disk still boots what it booted before), there is no longer a
-// whole-OS pin to restore, and there is nothing to raise because neither path ever
-// stopped one.
+// resume ends the maintenance bracket on a guest that is still up: an image upgrade whose clean
+// stop failed, BEFORE the guest went down. Nothing else needs undoing: the image swap has not
+// happened, so the disk still boots what it booted before.
 //
 // It runs on the CURRENT binding rather than a passed-in Manager, because a caller that has
 // been through the rollback leg is holding a channel that no longer exists.
@@ -156,10 +153,9 @@ func (u *osUpgrade) resume(ctx context.Context) error {
 
 // guestStopper is the two-method slice of *platform.Guest that stopCleanly actually uses: ask
 // the machine to stop, and ask whether it has. Narrowed to an interface so the STOPPING window
-// -- a guest that is on its way down but not yet gone -- can be exercised without a live systemd
-// unit, which is the state the lost-reply bug hid in and which no test could reach while this took a
-// concrete *Guest. Both methods are nil-receiver-safe on the real type, so nothing changes for
-// a caller holding a nil guest.
+// -- a guest on its way down but not yet gone, where a lost reply hides -- can be exercised
+// without a live systemd unit. Both methods are nil-receiver-safe on the real type, so nothing
+// changes for a caller holding a nil guest.
 type guestStopper interface {
 	Shutdown(ctx context.Context, grace time.Duration) error
 	WaitStopped(ctx context.Context, grace time.Duration) error
@@ -171,14 +167,13 @@ type guestStopper interface {
 // agent itself being what died. Neither route's request means the machine stopped, so both
 // end in WaitStopped: the caller's next act is to touch a disk QEMU may still hold open.
 //
-// Every stop that is not a self-fence goes through here -- the reboot upgrade's, which needs
-// the guest's bootloader rewrite to survive; the rollback leg's, which needs DRBD to record its
-// quorum state; and the recovery ladder's, which needs the same DRBD record on a guest that is
-// wedged rather than upgrading. They differ in what they do when it fails: the reboot path
-// abandons the upgrade (a guest that will not go down keeps serving its old generation), while
-// the rollback leg and the recovery ladder force it (there is nothing left to preserve by
-// waiting). Hence the neutral log prefix below: by the time this runs, which of the three is
-// calling is not something the messages can assume.
+// Every stop of a guest that comes back goes through here -- the image upgrade's, the rollback
+// leg's, the recovery ladder's power cycle and the rescue -- because each needs DRBD to record
+// its quorum state on the way down. (A node shutting down powers the guest off through
+// platform.PowerOffGuest instead, stop.go.) They differ in what they do when it fails: the
+// upgrade is abandoned (a guest that will not go down keeps serving its current image), while
+// the others force it (there is nothing left to preserve by waiting). Hence the neutral log
+// prefix below: which caller this is, the messages cannot assume.
 func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client, logf func(string, ...any)) error {
 	// No channel at all -- the recovery ladder entered from a bring-up that never got one -- is
 	// the agent route known unavailable before it is tried: straight to the button.
@@ -195,32 +190,24 @@ func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client,
 	}
 	logf("guest-stop: guest agent did not stop the machine (%v); trying the power button", perr)
 	if err := g.Shutdown(ctx, shutdownGrace); err != nil {
-		// A FAILED REQUEST IS NOT A FAILED SHUTDOWN, and reading it as one is what defeated
-		// on its first instrumented run: os.poweroff is `systemctl poweroff --no-block`
-		// exactly so the reply is written before systemd tears the machine down -- a race the
-		// guest can lose. A lost reply then looks identical to a dead agent (both are EOF), so
-		// this escalated to a power button that had nothing left to press: the monitor socket
-		// was already gone (`dial ...: no such file or directory`), that error joined the first,
-		// and the caller force-killed a guest that had ALREADY stopped cleanly -- manufacturing
-		// the very act-2b restart the clean stop exists to avoid.
+		// A FAILED REQUEST IS NOT A FAILED SHUTDOWN. os.poweroff is `systemctl poweroff
+		// --no-block` exactly so the reply is written before systemd tears the machine down --
+		// a race the guest can lose. A lost reply looks identical to a dead agent (both are EOF),
+		// so this escalates to a power button with nothing left to press: the monitor socket is
+		// already gone (`dial ...: no such file or directory`), and reading THAT as failure
+		// force-kills a guest that has ALREADY stopped cleanly -- the very restart the clean stop
+		// exists to avoid. Both routes' errors are evidence about a REQUEST, never about the
+		// machine. Only one question settles it: is the VM still there?
 		//
-		// Both routes' errors are therefore evidence about a REQUEST, never about the machine.
-		// Only one question settles it: is the VM still there?
+		// A ZERO GRACE ANSWERS ONE INSTANT TOO EARLY. QEMU unlinks its monitor socket the moment
+		// it exits, while the unit stays active until systemd reaps it (measured: ~3 s apart), so
+		// a glance inside that gap says "still running" about a machine that has already stopped.
 		//
-		// A ZERO GRACE ANSWERS ONE INSTANT TOO EARLY. Stopping
-		// is not instantaneous and it is not one event: QEMU unlinks its monitor socket the
-		// moment it exits, while the unit stays active until systemd reaps it. Measured live on
-		// a standby, socket gone at :25 and unit inactive at :28 -- so a glance inside that gap
-		// says "still running" about a machine that has already stopped, and the reboot upgrade
-		// was abandoned on a guest that had done exactly as it was told.
-		//
-		// reapGrace, not shutdownGrace, and the difference is the whole reason this stays cheap:
-		// by here the machine has ALREADY had its chance to shut down -- either Shutdown could
-		// not reach QEMU at all (it is gone; only the unit is outstanding) or it pressed the
-		// button and waited a full grace. Neither leaves a guest shutdown still to run, so what
-		// remains is systemd finishing with a dead process, which is seconds. A short, named
-		// window keeps the worst case inside the budget rebootGuest was always sized for
-		// (BringUpBudget + 3*shutdownGrace) instead of spending a third grace here.
+		// reapGrace, not shutdownGrace: by here the machine has ALREADY had its chance to shut
+		// down -- either Shutdown could not reach QEMU at all (it is gone; only the unit is
+		// outstanding) or it pressed the button and waited a full grace. What remains is systemd
+		// finishing with a dead process, which is seconds, and a short window keeps the worst case
+		// inside the budget rebootGuest is sized for (BringUpBudget + 3*shutdownGrace).
 		if g.WaitStopped(ctx, reapGrace) == nil {
 			logf("guest-stop: the guest was already down — the request landed, its reply did not")
 			return nil
@@ -229,14 +216,6 @@ func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client,
 	}
 	return nil
 }
-
-// IMAGE-LEVEL OS UPGRADE. The guest chain's release is an IMAGE, and moving the node
-// to it is the reboot method with the file swap where the snapshot used to be: stop cleanly,
-// rename the image the guest boots (the old one kept beside it), bring the guest up on the new
-// one, prove the booted closure is the one the release's signed manifest names, health-gate,
-// then drop the old image or put it back. No generation, no boot selector, no in-guest step:
-// the guest is an appliance and the host holds the file.
-//
 
 // nextImage / prevImage name the staged and the superseded image beside the one in use. The
 // staged one is written by the update (decompressed, so the swap is a rename); the previous one

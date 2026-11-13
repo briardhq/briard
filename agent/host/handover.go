@@ -9,7 +9,7 @@ import (
 )
 
 // A PLANNED HANDOVER -- give this node's work to a peer while it is perfectly
-// healthy, which is what lets it reboot into a new generation without taking the house down.
+// healthy, which is what lets it reboot onto a new release without taking the house down.
 //
 // It is the deliberate counterpart to everything else in the failover story. A real failover is
 // something that happens TO a node; this is something a node does, on a schedule, in a window,
@@ -44,11 +44,10 @@ const fsSyncTimeout = 60 * time.Second
 // but "usually" is not a bound, and a write-heavy app on a slow device is exactly when a
 // handover matters most.
 //
-// It exists at all because it was MISSING, and that is the point worth keeping: this call ran on
-// the caller's unbounded context, on the observe loop, which is the one shape beat.budget cannot
-// paper over -- Lease refuses a context with no deadline, correctly, because an unbounded guest
-// RPC on that loop is the wedge the watchdog exists to catch rather than something to excuse
-// (the number is the owner's).
+// It must exist at all: without it this call runs on the caller's unbounded context, on the
+// observe loop, which is the one shape beat.budget cannot paper over -- Lease refuses a context
+// with no deadline, correctly, because an unbounded guest RPC on that loop is the wedge the
+// watchdog exists to catch rather than something to excuse.
 const evictBudget = 15 * time.Minute
 
 // Handover payload words. Deliberately three named states rather than a bool pair: "" is the
@@ -56,11 +55,11 @@ const evictBudget = 15 * time.Minute
 // without each other and easy to confuse if they arrive as flags.
 const (
 	handoverPlain      = ""            // evict; the node is immediately eligible again (a hand-back can follow)
-	handoverKeepMasked = "keep-masked" // evict and STAY out -- an unverified generation must not reclaim the house
+	handoverKeepMasked = "keep-masked" // evict and STAY out -- an unverified release must not reclaim the house
 	handoverUnmask     = "unmask"      // release a keep-masked node; evicts nothing
 )
 
-// ApplyHandover handles a DirectiveHandover. Idempotent in the way that matters: evicting a node
+// applyHandover handles a DirectiveHandover. Idempotent in the way that matters: evicting a node
 // that does not hold the resource is a no-op, so a re-delivered directive re-reports done rather
 // than shuffling the house a second time.
 func (cfg Config) applyHandover(ctx context.Context, g guestEvictor, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
@@ -114,7 +113,7 @@ func (cfg Config) applyHandover(ctx context.Context, g guestEvictor, d api.Direc
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone}
 }
 
-// ApplySync handles a DirectiveSync: flush the replicated volume now, on its own, so a handover
+// applySync handles a DirectiveSync: flush the replicated volume now, on its own, so a handover
 // sent moments later unmounts a volume that owes almost nothing (the sequencer's
 // sync → settle → evict ordering; applyHandover's own sync then moves only the settle window's
 // accumulation). Unlike the in-handover sync this one REPORTS failure: the caller asked for

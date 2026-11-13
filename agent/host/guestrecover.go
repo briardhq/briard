@@ -15,85 +15,69 @@ import (
 
 // THE HOST-SIDE RUNG OF THE UNRESPONSIVE-GUEST LADDER.
 //
-// The control channel was made to survive a drop: observe returns ErrChannelDown and Run
-// re-dials rather than going blind for the rest of the process's life. Re-dialling FOREVER is
+// The control channel survives a drop: observe returns ErrChannelDown and Run re-dials. That is
 // the right answer to every gap the guest closes by itself -- the in-guest agent serves one
-// connection then exits, an OS upgrade bounces the channel on its way through, a per-call
-// deadline closes it -- and those are almost all of them, which is why forever was a fine
-// first answer. It is the wrong answer to the one case none of them cover: a guest that is
-// not coming back. Against that, patience alone is a node that stays down while the host
-// writes a reconnect line every fifteen seconds and nobody is told anything.
+// connection then exits, an OS upgrade bounces the channel, a per-call deadline closes it -- and
+// the wrong one for a guest that is not coming back: patience alone is a node that stays down
+// while the host logs a reconnect line every few seconds and nobody is told.
 //
-// So the wait is bounded, and what follows it is the only lever the host holds over a guest
-// that will not talk: take the VM down and bring it back up. Then it waits the same steady
-// cadence and does it again, indefinitely -- it never gives up. An earlier version stopped after
-// K attempts, on the reasoning that a guest three reboots did not fix is not one a fourth will
-// fix. That reasoning is sound about the FOURTH attempt and wrong about the hundredth: at a
-// two-hour cadence a retry costs almost nothing, occasionally catches a condition that cleared
-// on its own, and is the visible sign of degradation a remote fix looks for. What the K-bound
-// actually bought was a node with no reflex left, which nobody chose (see rebootCadence).
+// So the wait is bounded, and what follows it is the only lever the host holds over a guest that
+// will not talk: take the VM down and bring it back up. Then it waits the same steady cadence and
+// does it again, indefinitely -- it never gives up. A K-attempt bound looks prudent and is wrong:
+// at a two-hour cadence a retry costs almost nothing, occasionally catches a condition that
+// cleared on its own, and is the visible sign of degradation a remote fix looks for; the bound
+// only buys a node with no reflex left (see guestRebootCadence).
 //
 // THE GATE, AND WHY IT IS THE GUEST'S ANSWER RATHER THAN THE HOST'S QUESTION.
 //
 // The guard anyone asks for first is "don't reboot a guest that is still serving". The host
-// cannot evaluate that itself: DRBD's quorum view lives in the guest, the app-health verb
-// rides the channel that just died, and under the default macvtap substrate the host cannot
-// reach the VIP either. Every question that would gate the decision is asked over the channel
-// whose death is the trigger.
-//
-// What was wrong with the previous version of this comment is that it concluded from this that
-// the host STRUCTURALLY cannot know -- which is true of the VIP and false of the guest. There is
-// a private point-to-point link (the guest's eth3), and since it is now created on every install
-// rather than only on a managed pairing, the deadman answers the gate on it: the same
-// RebootAllowed the guest applies to itself, published every tick and served over raw TCP
-// (deadman/gate.go). So this rung asks the one process that is still running, still reads DRBD,
-// and is not the thing that wedged.
+// cannot evaluate that itself: DRBD's quorum view lives in the guest, the app-health verb rides
+// the channel that just died, and under the default macvtap substrate the host cannot reach the
+// VIP either. But the guest's deadman still runs, still reads DRBD, and is not the thing that
+// wedged: it publishes the same RebootAllowed it applies to itself every tick and serves it over
+// raw TCP on the guest's node IP (deadman/gate.go), which the host dials from its own
+// system-subnet address (gateprobe.go).
 //
 // UNREACHABLE MEANS ALLOWED, deliberately, and it is the opposite default from the guest side
 // (which treats an unreadable cluster as NOT allowed). Both fail toward the safer answer from
 // where they stand. In the guest, not knowing the cluster means not knowing whether a peer
 // depends on you, so you hold. Out here, failing to reach a gate that answers from a healthy
-// guest in milliseconds means the guest is far past wedged -- which is the case this rung exists
-// for, and refusing to act on it would restore the wedged-forever outcome the whole ladder is
-// against. So the gate can only ever WITHHOLD a reboot, never authorise one that would not
-// otherwise have happened.
+// guest in milliseconds means the guest is far past wedged -- the case this rung exists for, and
+// refusing to act on it would restore the wedged-forever outcome the ladder is against. So the
+// gate can only ever WITHHOLD a reboot, never authorise one that would not otherwise have happened.
 //
-// THE GUEST GOES FIRST. recoveryWindow sits above the deadman's T_deadman on purpose, so the
+// THE GUEST GOES FIRST. guestRecoveryWindow sits above the deadman's T_deadman on purpose, so the
 // in-guest graceful reboot -- whose promoter teardown demotes cleanly and lets DRBD record its
 // quorum metadata on the way down -- gets its chance before the host resorts to a power cycle.
 // The host is the backstop for the case the guest side cannot cover: one where `systemctl
 // reboot` itself is what failed. Ordering it the other way would spend the clean demote on every
 // incident where the kernel was fine and only the agent had wedged.
 //
-// The residual risk is smaller than it was but not zero, and it is named rather than argued
-// away: a guest whose agent is wedged AND whose deadman is dead (so the gate is unreachable)
-// while its apps still serve gets rebooted, and on a node with no peer that is an outage the
-// host chose. That is the trade locked in here -- serving is not healthy; reboot
-// serving nodes, patiently -- and it is now confined to the case where two independent in-guest
-// processes are both gone.
+// The residual risk, named rather than argued away: a guest whose agent is wedged AND whose
+// deadman is dead (so the gate is unreachable) while its apps still serve gets rebooted, and on a
+// node with no peer that is an outage the host chose. That is the trade locked in here -- serving
+// is not healthy; reboot serving nodes, patiently -- confined to the case where two independent
+// in-guest processes are both gone.
 
 const (
 	// How long a dead control channel gets to heal itself before the host calls the guest wedged.
 	//
 	// It MUST exceed the guest deadman's own threshold (deadman.DefaultDeadman + its jitter
-	// window), and that ordering is the design rather than a safety margin: the guest's graceful
-	// `systemctl reboot` demotes cleanly and lets DRBD write its quorum metadata on the way down,
-	// where the host's only lever is a power cycle. Whoever fires first decides which of those
-	// the house gets, so the guest fires first and the host backstops the case where the guest's
-	// own reboot is what failed. guestrecover_test.go asserts the inequality, because a later
-	// tuning of either number could silently invert it and every test would still pass.
+	// window), and that ordering is the design rather than a safety margin: whoever fires first
+	// decides whether the house gets the guest's clean reboot or the host's power cycle (header).
+	// TestTheGuestDeadmanFiresBeforeTheHostActs asserts the inequality, because a later tuning of
+	// either number could silently invert it and every other test would still pass.
 	//
 	// Generous in absolute terms too: the reconnect that matters lands in about a second,
 	// so silence at this scale is not a slow guest, it is a stopped one.
 	//
-	// Unit tests set this through recover()'s arguments and need no knob. The one caller that
-	// cannot is the VM test, which drives the SHIPPED binary end to end -- see
-	// guestRecoveryWindowOverride below for why it may shorten this, and what that costs.
+	// Unit tests set this through guestRecovery.window and need no knob. The VM tests, which drive
+	// the SHIPPED binary end to end, cannot -- see guestRecoveryWindowOverride.
 	guestRecoveryWindow = 10 * time.Minute
 
 	// The interval between host-driven reboots of a guest that stays wedged. The SAME constant
 	// the guest deadman paces itself by -- one cadence for one ladder, so the two rungs cannot be
-	// tuned apart. It never runs out: see the header on why the old K-attempt bound was wrong.
+	// tuned apart. It never runs out (header).
 	guestRebootCadence = deadman.RebootCadence
 
 	// A channel that stayed up at least this long ends the incident: the next failure is a new
@@ -107,16 +91,15 @@ const (
 	// succession is a broken node, and hammering it helps nobody.
 	guestRelaunchBurst = 3
 
-	// The floor between a FAILED relaunch and the next one. The burst above is three lives, and
-	// three shots inside one second is not three tries: whatever the launch failed on -- a unit
-	// name that is still stopping, a device the kernel has not released -- cannot have cleared in
-	// the time it takes to ask systemd twice, so the budget is spent before the thing it is
-	// waiting for could possibly have happened (in the field all three landed in the same
-	// logged second and the node then sat out the two-hour cadence).
+	// The floor between a FAILED relaunch and the next one. Three shots inside one second are not
+	// three tries: whatever the launch failed on -- a unit name that is still stopping, a device
+	// the kernel has not released -- cannot have cleared in the time it takes to ask systemd
+	// twice, so without the floor the burst is spent in one second and the node sits out the
+	// two-hour cadence.
 	//
-	// It floors only the FAILING path. A relaunch that starts a VM leaves this function, and a
-	// guest that dies again afterwards is damped by the burst and then by the cadence -- so this
-	// costs an outage nothing in the case the ladder is normally in.
+	// It floors only the FAILING path. A relaunch that starts a VM leaves recover, and a guest
+	// that dies again afterwards is damped by the burst and then by the cadence -- so this costs
+	// an outage nothing in the case the ladder is normally in.
 	guestRelaunchFloor = 30 * time.Second
 
 	// A gate verdict older than this is treated as no verdict at all. It catches the deadman
@@ -128,12 +111,10 @@ const (
 
 // guestRecovery is the ladder's state across one agent lifetime.
 //
-// The two alert latches are BOTH incident-scoped, and only served() clears them. An earlier
-// version cleared `announced` when the all-clear went out, which quietly re-armed the trouble
-// alert: a guest that recovered and failed again inside the same incident produced a fresh
-// trouble/all-clear pair each time round, at whatever period it was flapping on. Bounded by the
-// window rather than by the incident -- so not the alert storm a first reading suggests, but
-// still a pair every ten minutes indefinitely for a node flapping on that period, which is the
+// The two alert latches are BOTH incident-scoped, and only served() clears them. Clearing
+// `announced` when the all-clear goes out looks tidy and re-arms the trouble alert: a guest that
+// recovers and fails again inside one incident would send a fresh trouble/all-clear pair each
+// time round -- every ten minutes, indefinitely, for a node flapping on that period, which is the
 // phone-flap this rung exists to avoid arriving by a different door.
 type guestRecovery struct {
 	window    time.Duration // wait-for-self-heal before judging the guest wedged; 0 -> guestRecoveryWindow
@@ -171,27 +152,22 @@ func at(t time.Time) string { return t.Format("15:04") }
 // guest off and a start is a fresh agent with a fresh ladder, which launches at once.
 const tryNow = "To try now: `briard stop`, then `briard start`."
 
-// guestRecoveryWindowOverride shortens the wait above, and exists for exactly one caller: the VM
-// test that drives this ladder end to end on a real frozen guest (nixosTest/agent-recover.nix).
+// guestRecoveryWindowOverride shortens the wait above, and exists only for the VM tests that
+// drive this ladder end to end on a real guest (nixosTest/agent-recover.nix,
+// nixosTest/agent-readopt.nix).
 //
-// WHY THE PRODUCT GROWS A KNOB IT PREVIOUSLY REFUSED. The window is ten minutes, and a test that
-// proves it by waiting costs ten minutes of every run that includes it -- 730s of an 800s tier,
-// 91% of the wall clock, for one idle wait. The principle it served (exercise the shipped
-// timing, not a stand-in) does not scale: nobody would wait out a two-day timer to watch it fire,
-// so the question was always where the line sits, and at ten minutes it sits on the wrong side.
-// With this the VM test still runs the shipped binary, still on a real wedged guest, and asserts
-// the host waited THE CONFIGURED WINDOW -- proving the timer is wired to the value rather than to
-// a number someone typed into the test.
+// WHY THE PRODUCT HAS THIS KNOB. A test that proves a ten-minute window by waiting it out spends
+// ~90% of its tier's wall clock on one idle wait. With the override the VM test still runs the
+// shipped binary on a real wedged guest, and asserts the host waited THE CONFIGURED WINDOW --
+// proving the timer is wired to the value rather than to a number typed into the test.
 //
-// ⚠️ WHAT IT NO LONGER PROVES, and where that moved: that the SHIPPED value outlasts the guest
+// ⚠️ WHAT THE VM TESTS THEREFORE DO NOT PROVE: that the SHIPPED value outlasts the guest
 // deadman, so the guest's graceful reboot always gets its chance and the host only backstops it.
-// TestTheGuestDeadmanFiresBeforeTheHostActs compares the two constants directly and is now the
-// only thing standing between a future tuning and a silent inversion of that design. It was
-// already the load-bearing guard -- the numbers live in different packages and are read by
-// different processes -- but it used to have company.
+// TestTheGuestDeadmanFiresBeforeTheHostActs compares the two constants directly and is the only
+// thing standing between a future tuning and a silent inversion of that design.
 //
-// Unset in production and meaningless if set: a shortened window makes a node power-cycle guests
-// that were healing themselves, which is a worse outage than the one it recovers from.
+// Never set in production: a shortened window makes a node power-cycle guests that were healing
+// themselves, which is a worse outage than the one it recovers from.
 var guestRecoveryWindowOverride = func() time.Duration {
 	d, err := time.ParseDuration(os.Getenv("BRIARD_GUEST_RECOVERY_WINDOW"))
 	if err != nil || d <= 0 {
@@ -290,7 +266,7 @@ const (
 // socket that could ever appear, so waiting the window is pure outage; there is nothing running to
 // consult a gate about; and a VM that is not running cannot outage a peer, so there is nothing the
 // gate could protect. Relaunch at once. This is also what closes the circularity the guest deadman
-// would otherwise have: its reboot needs the agent to finish, and the agent now finishes it in
+// would otherwise have: its reboot needs the agent to finish, and the agent finishes it in
 // seconds rather than after a ten-minute wait for a socket belonging to a dead process.
 //
 // The relaunch burst damps a crash loop without ever giving up: instant while attempts remain,
@@ -331,16 +307,14 @@ func (r *guestRecovery) next(g gateVerdict, sinceAction time.Duration, unitDown 
 // put all three back -- the same place the rollback leg uses. A second one would be a second
 // way to do it.
 //
-// IT IS ALSO THE ONLY DOOR FOR A GUEST THAT NEVER SPOKE. Bring-up used to have its own: a guest
-// that was launched or adopted and never answered ended the agent, on the reasoning that the
-// service manager would start it again "from scratch". Neither half held for a guest that is
-// alive and dead inside (a vCPU WHPX gave up on, a kernel halted in a panic): the next agent
-// adopted the same qemu, and a clean exit is a normal stop to systemd and the SCM alike, which
-// stays down. Measured on the first real desktop: two agent exits, then a dead qemu holding the
-// sockets and nobody told. So Run enters here with NO prior client (u.client nil), and the
+// IT IS ALSO THE ONLY DOOR FOR A GUEST THAT NEVER SPOKE at bring-up: Run enters here with NO
+// prior client (u.client nil). Ending the agent instead looks like a clean give-up and is not,
+// for a guest that is alive and dead inside (a vCPU WHPX gave up on, a kernel halted in a
+// panic): the next agent adopts the same qemu, and a clean exit is a normal stop to systemd and
+// the SCM alike, which stays down -- a dead qemu holding the sockets and nobody told. The
 // ladder's first question -- is the unit even there -- already splits that case the right way.
-// Nothing detects the death; silence past the window is the verdict, as it always was, and
-// the logs are read only to SAY why (announce).
+// Nothing detects the death; silence past the window is the verdict, and the logs are read only
+// to SAY why (announce).
 func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Notifier) (*guestagent.Client, error) {
 	var lastAction time.Time // zero -> "nothing done yet this incident"; sinceAction reads as huge
 	defer r.say("")
@@ -404,15 +378,14 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 		r.say("the VM is not answering; Briard waits until %s for it before restarting it", at(time.Now().Add(r.waitFor())))
 		client, err := u.awaitChannel(ctx, r.waitFor())
 		if err == nil {
-			// ANSWERING IS NOT CONVERGED, and telling the two apart is the point. The guest unit is
-			// Restart=always and qemu runs -no-reboot, so a guest kernel panic exits qemu and
-			// systemd relaunches it with NO agent involved. What comes back is the baked image:
-			// runtime identity -- hostname, addresses, the .res -- is applied by bring-up and is
-			// never baked, which is why bring-up is deliberately one call. The channel, though,
-			// comes back exactly as a bounced in-guest agent's does, so this branch used to
-			// re-attach and resume OBSERVING a guest it had not CONVERGED: no second CONVERGED
-			// line, connected=0 healthy=false for the rest of the run, the node dark on the wire
-			// while the peer served alone.
+			// ANSWERING IS NOT CONVERGED, and telling the two apart is the point. A channel can
+			// come back from a boot this agent never converged -- a guest started by anything but
+			// this ladder -- and what boots is the baked image: runtime identity -- hostname,
+			// addresses, the .res -- is applied by bring-up and never baked, which is why bring-up
+			// is deliberately one call. That channel looks exactly like a bounced in-guest agent's,
+			// and re-attaching to it resumes OBSERVING a guest nobody CONVERGED: no CONVERGED line,
+			// connected=0 healthy=false for the rest of the run, the node dark on the wire while
+			// the peer serves alone. So a new boot id re-converges.
 			//
 			// The same rule, one step more general, covers the ladder entered from bring-up: a
 			// channel THIS AGENT has never converged (u.client nil) is converged, whatever boot it
@@ -454,11 +427,9 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 		// header: the gate can withhold a reboot, never authorise one.
 		gate := readGate(ctx, deadman.GateAddr(u.cfg.guestNodeIP()), u.cfg.hostNodeIP(), u.logf)
 		if r.next(gate, sinceAction, false) == stepHold {
-			// Say it ONCE per incident, whichever branch we are in. The old ladder announced only
-			// when it gave up rebooting, so a node the gate keeps denying stayed silently down --
-			// the same defect the guest side had, where a held node alerted once and was never
-			// heard from again. Holding is a state the owner needs to know about too, because it
-			// is the one the house cannot leave without them.
+			// Say it ONCE per incident, whichever branch we are in: a node the gate keeps denying
+			// must not stay silently down. Holding is a state the owner needs to know about too,
+			// because it is the one the house cannot leave without them.
 			if !lastAction.IsZero() && sinceAction < r.cadenceFor() {
 				r.say("the VM is not answering after a restart; Briard restarts it again at %s", at(lastAction.Add(r.cadenceFor())))
 			} else {
@@ -523,19 +494,16 @@ func (u *osUpgrade) guestRebooted(fresh *guestagent.Client) (bool, string, strin
 }
 
 // resolved tells the owner the guest is answering again, on BOTH ways out of the ladder -- the
-// guest healing itself during a wait, and the host's restart working. Only the first was obvious;
-// the second is the common one, and omitting it would mean the owner is told a node is in trouble
-// by the mechanism that then fixes it and says nothing. An unannounced incident stays silent:
-// there is nothing to close.
+// guest healing itself during a wait, and the host's restart working. The second is the common
+// one, and omitting it would mean the owner is told a node is in trouble by the mechanism that
+// then fixes it and says nothing. An unannounced incident stays silent: there is nothing to close.
 //
 // ONCE per incident, and it does NOT re-arm the trouble alert -- only served() does, after a
-// healthy stretch long enough to call the incident over. Firing this and clearing `announced`
-// together is what let a flapping guest send a fresh pair every window.
+// healthy stretch long enough to call the incident over (see guestRecovery).
 //
-// It says the guest is answering NOW rather than promising the trouble is over, because at this
-// point that is all we know: the node converged seconds ago and a crash-looping one will falsify
-// anything stronger before the message is read. The previous wording ("No action is needed") was
-// the same class of over-claim as the degraded alert's fixed "no answer for <window>" lead.
+// It says the guest is answering NOW rather than promising the trouble is over ("no action is
+// needed"), because at this point that is all we know: the node converged seconds ago and a
+// crash-looping one will falsify anything stronger before the message is read.
 func (u *osUpgrade) resolved(ctx context.Context, n notify.Notifier, r *guestRecovery) {
 	if !r.takeClear() {
 		return
@@ -554,12 +522,12 @@ func (u *osUpgrade) resolved(ctx context.Context, n notify.Notifier, r *guestRec
 // prevent from the VM to the owner's phone.
 //
 // The caller supplies the WHOLE situation sentence rather than a fragment appended to a fixed
-// lead. The fixed lead used to be "no answer from the guest for <window>", which is true on the
-// wedged path and false on the crash-loop one -- there the guest was answering seconds ago and
-// nothing waited ten minutes for it. An owner-facing sentence that is sometimes untrue is worse
-// than a vaguer one that is always true.
+// lead. A fixed "no answer from the guest for <window>" is true on the wedged path and false on
+// the crash-loop one -- there the guest was answering seconds ago and nothing waited ten minutes
+// for it. An owner-facing sentence that is sometimes untrue is worse than a vaguer one that is
+// always true.
 //
-// THE CAUSE IS READ HERE, NEVER DECIDED ON. The ladder judged on silence; now that it has, the
+// THE CAUSE IS READ HERE, NEVER DECIDED ON. The ladder judges on silence; once it has, the
 // logs are asked what the guest and its VM said last (platform.LastLines) -- the WHPX exit code
 // or the kernel's panic line, where there is one -- so the household is told why, from what
 // the log already holds, instead of "stopped answering" alone. And the way out is named:
@@ -583,11 +551,11 @@ func (u *osUpgrade) announce(ctx context.Context, n notify.Notifier, r *guestRec
 }
 
 // recoverAnswering runs the ladder while the local door is answered (holdDoor): a stop is taken,
-// and anything else is refused with what the ladder is doing and when it next acts. Without a
-// reader the door had none for as long as the ladder ran -- `briard status` hung, the tray read a
-// healthy process that said nothing, and `briard stop` worked only through its fallback, the service manager,
-// after the door's timeout and blaming an agent that "does not answer". It is what
-// makes stop + start the ordinary way to cut a wait short rather than a fallback.
+// and anything else is refused with what the ladder is doing and when it next acts. Without it
+// the door has no reader for as long as the ladder runs -- `briard status` hangs, the tray reads
+// a healthy process that says nothing, and `briard stop` works only through its fallback, the
+// service manager, blaming an agent that "does not answer". It is what makes stop + start the ordinary
+// way to cut a wait short rather than a fallback.
 func (cfg Config) recoverAnswering(ctx context.Context, local <-chan localRequest, u *osUpgrade, r *guestRecovery, n notify.Notifier, logf func(string, ...any)) (*guestagent.Client, error) {
 	done := make(chan struct{})
 	var client *guestagent.Client
@@ -608,9 +576,8 @@ func (cfg Config) recoverAnswering(ctx context.Context, local <-chan localReques
 // THE UNIT IS ASKED AGAIN WHILE WE WAIT. The channel dies when the in-guest agent stops, which in
 // a clean poweroff is before qemu exits, so the check at the top of recover() can read "running"
 // about a guest that is seconds from gone -- and a stopped unit cannot produce a socket however
-// long we wait. A unit that stops during the wait ends it early, and the ladder relaunches at once
-// instead of after the window (measured on Windows: a resume's clean restart sat out the ten
-// minutes whenever the channel dropped first).
+// long we wait (a Windows resume's clean restart is this shape). A unit that stops during the wait
+// ends it early, and the ladder relaunches at once instead of after the window.
 func (u *osUpgrade) awaitChannel(ctx context.Context, window time.Duration) (*guestagent.Client, error) {
 	wctx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
@@ -650,11 +617,10 @@ func (u *osUpgrade) rebootGuest(ctx context.Context) (*guestagent.Client, error)
 	rb, cancel := context.WithTimeout(context.WithoutCancel(ctx), u.cfg.BringUpBudget+3*shutdownGrace)
 	defer cancel()
 	// Leased for the STOP phase in particular. bringUp below takes its own lease, but the stop
-	// ahead of it does not: stopCleanly spends up to a full shutdownGrace, and u.vm.Stop() takes no
-	// context at all -- so rb's deadline bounds this stretch on paper while nothing is watching it.
-	// That is precisely the shape the watchdog is for, and precisely why the lease must be here
-	// rather than only inside bringUp (the un-ctx'd Stop is why an enclosing deadline is not
-	// a bound).
+	// ahead of it does not: stopCleanly spends up to two shutdownGraces and a reapGrace, and
+	// u.vm.Stop() takes no context at all -- so rb's deadline bounds this stretch on paper while
+	// nothing is watching it. That is precisely the shape the watchdog is for, and why the lease
+	// must be here rather than only inside bringUp.
 	u.cfg.beat.Lease(rb)
 
 	qspec := u.cfg.guestSpec()
@@ -691,8 +657,8 @@ func (u *osUpgrade) rebootGuest(ctx context.Context) (*guestagent.Client, error)
 	return client, nil
 }
 
-// Fire writes the local trail and then attempts delivery, in that order and never the other
-// way round -- see fireAlert, which both alert emitters on this side share.
+// fire sends the ladder's alerts the way every host-side alert leaves (fireAlert): the store
+// writes the record first and only then attempts delivery.
 func (u *osUpgrade) fire(ctx context.Context, n notify.Notifier, al notify.Alert) {
 	fireAlert(ctx, n, u.logf, al)
 }
@@ -725,9 +691,10 @@ func (u *osUpgrade) RescueGuest(ctx context.Context) error {
 	return nil
 }
 
-// RebootGuest is a topology transition's one act: stop the guest cleanly and bring
-// it back up, so the bring-up re-reads the recorded membership and node-storage runs the spec ×
-// disk table. It is the recovery ladder's power cycle, called on purpose -- and on this type
+// RebootGuest stops the guest cleanly and brings it back up, so the bring-up re-reads what was
+// just recorded: a topology transition's membership (node-storage then runs the spec × disk
+// table), a `config set vip`, a newly leased address. It is the recovery ladder's power cycle,
+// called on purpose -- and on this type
 // rather than beside it for the reason RescueGuest is: a second owner of the VM+channel+Manager
 // swap would be a second way to do it.
 func (u *osUpgrade) RebootGuest(ctx context.Context) error {

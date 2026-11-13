@@ -22,25 +22,24 @@ import (
 // briard's `v3.<date>.<rev>` -- and its signed manifest names the CLOSURE the image boots
 // (Manifest.System) and the oldest briard that tolerates it (Manifest.MinBriard). Resolving a vm
 // release is therefore: fetch and verify the target's manifest, refuse it if the installed
-// briard is older than it needs, compare its closure with what the guest runs, and hand the
-// closure to the existing OS-upgrade path (stage from the cache, switch or reboot, health-gate,
-// commit or revert). Nothing below the manifest changes: the cloud still names closures in
-// `upgrade-system`, the guest's os.* verbs are untouched; what this adds is a node that can move
-// its own OS from a channel -- which an OSS install could not do at all until now.
+// briard is older than it needs, compare its closure with what the guest runs, stage the
+// release's image, and hand it to the image upgrade (osupgrade.go: swap, boot, prove the closure,
+// health-gate, commit or restore).
 //
-// Three triggers, mirroring the briard chain: the cloud (a closure, as before), `briard update
-// --vm` (this directive, over the admin socket, resolving `stable` by default) and a timer
-// INSIDE the agent (this directive with `stable`, nightly). The timer living inside the agent is
-// correct and not an inconsistency with the briard chain's frozen unit: the bootstrap problem is
-// agent-only. A broken agent that cannot upgrade the guest is not bricked, because the host
+// Three triggers, mirroring the briard chain: the cloud (`upgrade-system`, an exact vm release
+// id), `briard update --vm` (`update-vm`, over the admin socket, resolving `stable` by default)
+// and a timer INSIDE the agent (`update-vm` with `stable`, nightly). The timer living inside the
+// agent is correct and not an inconsistency with the briard chain's frozen unit: the bootstrap
+// problem is agent-only. A broken agent that cannot upgrade the guest is not bricked, because the host
 // timer fixes the agent and the agent then fixes the guest. Only the thing at the bottom needs
 // an updater beneath it.
 
 // guestReleaseCacheName is the node-local record of the guest release this node last applied
-// (the exact signed manifest bytes), seeded by install.sh from the release it installed. It is
-// what the stable path orders against: the guest itself knows only a closure path, not a
-// release id. NOT $PREFIX/guest-image/manifest.json -- that one describes the IMAGE on disk,
-// which lags the running OS until the new image is fetched after an upgrade commits.
+// (the exact signed manifest bytes), seeded by the install's image lay-down (layDownImage) from
+// the release it installed. It is what the stable path orders against: the guest itself knows
+// only a closure path, not a release id. NOT $PREFIX/guest-image/manifest.json -- that one is
+// written only by the lay-down and describes the image the install placed, which an image
+// upgrade does not rewrite.
 const guestReleaseCacheName = "guest-release.json"
 
 // systemReader is the one guest fact the resolver needs: which closure the guest runs. The
@@ -49,9 +48,9 @@ type systemReader interface {
 	SystemPath(ctx context.Context) (string, error)
 }
 
-// applyGuestUpdate is the update-vm directive: resolve d.Payload (a target:
-// `latest`, `stable`, or an exact vm id; "" is stable) on the vm chain and, if due, run
-// the OS upgrade to the closure it names. The outcome is the upgrade's own -- done, rolled back,
+// applyGuestUpdate is the update-vm directive, and the cloud's upgrade-system: resolve d.Payload
+// (a target: `latest`, `stable`, or an exact vm id; "" is stable) on the vm chain and, if due,
+// run the image upgrade to that release. The outcome is the upgrade's own -- done, rolled back,
 // failed -- and a refusal before anything moved (an unverifiable manifest, a briard too old, a pin
 // below the floor) is a failure that names its reason.
 func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r systemReader, up upgrader, n notify.Notifier, logf func(string, ...any)) api.DirectiveOutcome {
@@ -251,17 +250,14 @@ func (cfg Config) rememberGuestRelease(raw []byte, logf func(string, ...any)) {
 // same channel (so it serialises with the observe loop like every admin operation). It runs
 // ONLY on a standalone node:
 //
-//   - A managed node's OS is the cloud's to move (Rollout.System sequences a flock one node at
-//     a time, serving node last, inside the home's window); a second driver on the node would
-//     race it. So the presence of a controller switches this off, with no knob.
-//   - A node with peers and no orchestrator is the case the design names: each node deciding
-//     to reboot on its own is a CORRELATED outage. Automatic OS updates disable themselves and
-//     say so, derived from the mesh like every other statement about role.
+//   - A managed node's OS is the cloud's to move (it sequences a flock one node at a time,
+//     serving node last, inside the home's window); a second driver on the node would race it.
+//     So the presence of a controller switches this off, with no knob.
+//   - A node with peers and no orchestrator: each node deciding to reboot on its own is a
+//     CORRELATED outage. Automatic OS updates disable themselves and say so, derived from the
+//     mesh like every other statement about role.
 //
-// Both methods run inside the window. The design allowed a switch-method update at any hour;
-// the small hours are where the nightly tick already is, and a daily cadence for an OS is not
-// worth a second schedule. Failures are the upgrade path's own (escalated there); this only
-// logs the outcome.
+// Failures are the upgrade path's own (escalated there); this only logs the outcome.
 func (cfg Config) guestUpdateTimer(ctx context.Context, local chan<- localRequest, n notify.Notifier, logf func(string, ...any)) {
 	if cfg.ControllerURL == "" && len(cfg.Resource.Peers) > 1 {
 		fireAlert(ctx, n, logf, notify.Alert{
@@ -314,9 +310,9 @@ func (cfg Config) guestUpdateTimer(ctx context.Context, local chan<- localReques
 	}
 }
 
-// nextGuestUpdateTick is the next 03:00 local after now, plus up to two hours of jitter -- the
-// host chain's timer window, so one household's two nightly checks land in the same quiet hours
-// and a fleet does not hit the channel as one.
+// nextGuestUpdateTick is the next 03:00 local after now, plus up to two hours of jitter -- inside
+// the host chain's timer window (03:00 plus up to three hours), so one household's two nightly
+// checks land in the same quiet hours and a fleet does not hit the channel as one.
 func nextGuestUpdateTick(now time.Time, loc *time.Location) time.Time {
 	n := now.In(loc)
 	at := time.Date(n.Year(), n.Month(), n.Day(), 3, 0, 0, 0, loc)

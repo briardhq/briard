@@ -5,9 +5,9 @@
 // and the guest is never touched (acts.go, stopAfter). A SHUTDOWN brings the node down: the loop
 // and its act are cancelled at once -- the act is worthless, its guest is about to leave, and an
 // install keeps its stage and rollback point while a directive with no outcome is re-delivered --
-// then the guest is powered off cleanly, then the agent returns. Draining at a shutdown cost both
-// ways: the wait outlasted the time a machine gives its system services, so the halt power-cut the guest
-// the drain was keeping, and the still-running loop saw its guest leave and relaunched it.
+// then the guest is powered off cleanly, then the agent returns. Draining at a shutdown fails both
+// ways: the wait outlasts the time a machine gives its system services, so the halt power-cuts the
+// guest the drain was keeping, and the still-running loop sees its guest leave and relaunches it.
 //
 // One way down, three triggers, all a context cancelled with ErrShutdown as its cause: the Windows
 // PRESHUTDOWN, a SIGTERM while systemd reports the machine stopping (StopCause), and the local
