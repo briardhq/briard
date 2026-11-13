@@ -57,22 +57,18 @@ const (
 	verbChainStart  = "chain.start"        // start the lone node's chain target -- its promotion, with no DRBD
 )
 
-// nodeStorageUnit is the guest unit this verb starts: `wantedBy = [ ]`, so it runs when the host
-// says so and never at boot. Because the agent it execs is PUSHED, storage bring-up
-// provably cannot run before the host has dressed the guest -- which turns something that was
-// accidental into something stated.
+// nodeStorageUnit is the guest unit this verb starts. The agent renders it with no [Install]
+// section (units.go), so it runs when the host says so and never at boot, and because the agent
+// it execs is PUSHED, storage bring-up cannot run before the host has dressed the guest.
 //
-// ⚠️ "DRESSED" HAS TO MEAN COMMITTED, not staged, and for a while it did not. The unit
-// names <binDir>/briard-guest-agent directly (units.go says why it must not go through
-// the picker), so it can only start once the commit has moved the staged file onto that name.
-// The commit used to be the agent unit's ExecStartPost, which systemd runs AFTER the port is
-// open and answering -- so this verb could arrive, and did, in the window where the path did not
-// exist yet: 203/EXEC, a failed bring-up, an OS upgrade rolled back. The commit is now the last
-// thing the agent does before it serves anything (guestfirmware.BinCommit), so the sentence
-// above is true as written.
+// ⚠️ "DRESSED" HAS TO MEAN COMMITTED, not staged. The unit names <binDir>/briard-guest-agent
+// directly (units.go says why it must not go through the picker), so it can only start once the
+// commit has moved the staged file onto that name. The commit is the last thing the agent does
+// before it serves anything (guestfirmware.BinCommit); a commit after the port opens lets this
+// verb exec a path that does not exist yet (203/EXEC, a failed bring-up).
 const nodeStorageUnit = "briard-node-storage.service"
 
-// Net.configure sets a static address on a guest NIC -- the system/DRBD NIC on the
+// verbNetConfigure sets a static address on a guest NIC -- the system/DRBD NIC on the
 // private subnet, so DRBD can bind/connect there. Host-driven: the agent knows
 // the per-node address (it renders the same into the .res). Idempotent (addr replace),
 // since bring-up may retry.
@@ -100,21 +96,19 @@ const vipAddrFile = dataMountRoot + "/.vip-address"
 // verbNetMDNSName records the flock's human-visible name, which the reverse proxy publishes as
 // `briard-<name>.local` pointing at the VIP.
 //
-// It is its OWN verb rather than another field on net.configure, and the reason is the design it
-// belongs to: the name is a LABEL and the address is an IDENTITY, so a rename must be
-// possible without re-running network configuration. Folding it in would have made every rename an
-// addressing call -- re-asserting VIP_DEV/VIP_ADDR to change a string -- which is exactly the
-// coupling the three-way identifier split exists to remove.
+// It is its OWN verb rather than another field on net.configure: the name is a LABEL and the
+// address is an IDENTITY, so a rename must be possible without re-running network configuration.
+// Folded in, every rename would be an addressing call -- re-asserting VIP_DEV/VIP_ADDR to change
+// a string -- which is exactly the coupling the three-way identifier split exists to remove.
 //
 // The name is FLOCK-scoped, not node-scoped, because it resolves to the VIP: a node-scoped name
 // would change identity on failover while the address it points at did not.
 const verbNetMDNSName = "net.mdnsname"
 
-// verbNetMDNSPublished reads back the name avahi ACTUALLY published, which is not always the name
-// it was asked for: on a collision avahi conflict-renames to `<name>-2` and tells nobody. Same
-// doctrine as verbNetVIP, and for the same reason -- the baked name was one that was present, plausible,
-// and not what anyone thought it was. Reporting back the REQUESTED name would reproduce that
-// failure precisely, in the item that exists to end it.
+// verbNetMDNSPublished reads back the flock name the reverse proxy's mDNS responder is ACTUALLY
+// answering for, as it records it from what it serves (reverse-proxy's writePublished). Same
+// doctrine as verbNetVIP: reporting back the REQUESTED name would report a name that is present,
+// plausible, and not necessarily the one being served.
 const verbNetMDNSPublished = "net.mdnspublished"
 
 // verbNetMDNSOther reads back the address of ANOTHER briard the reverse proxy heard answering the
@@ -122,15 +116,15 @@ const verbNetMDNSPublished = "net.mdnspublished"
 // The bare name is shared by design; this is the one fact that lets the doctor say so.
 const verbNetMDNSOther = "net.mdnsother"
 
-// Sys.hostname sets the guest's hostname to this node's name. DRBD matches the
-// running hostname against the `on <name>` stanzas in the .res, so every fleet
+// verbSetHostname sets the guest's hostname to this node's name. DRBD matches the
+// running hostname against the `on <name>` stanzas in the .res, so every
 // guest (one baked image, hostname "guest") must be renamed to its node name
 // before create-md, or DRBD reports "not defined for this host". The agent sets it
-// uniformly at bring-up (a no-op rename to "guest" on the single-node/legacy path).
+// at every bring-up (a no-op on a node whose name is still the default "guest").
 //
 // NOTE this is the NODE id (`briard-node-3f9a2c`), which is hidden, and NOT the flock name a
-// household sees -- see verbNetMDNSName. They were the same string until the name became durable, which is why
-// nothing visible could be renamed without breaking DRBD's self-match.
+// household sees -- see verbNetMDNSName. Keeping the two apart is what lets the visible name
+// change without breaking DRBD's self-match.
 const verbSetHostname = "sys.hostname"
 
 // verbSetTimezone hands the guest the household's timezone, an IANA name the host read off its own
@@ -141,22 +135,18 @@ const verbSetHostname = "sys.hostname"
 // leaves /etc/localtime unmanaged and free to set at runtime.
 const verbSetTimezone = "sys.timezone"
 
-// Upgrade/rollback verbs, driven by the host's guest.Manager. Data
-// snapshot/restore cut at the app's btrfs subvolume (per-app scope, not the
-// whole volume). os.system reads the code identity (the closure store path, node-
-// independent -- NOT a generation number); the image the host boots is the whole-VM code half.
+// Upgrade/rollback verbs, driven by the host's guest.Manager. Data snapshot/restore cut at the
+// app's btrfs subvolume (per-app scope, not the whole volume). os.system reads the code
+// identity (the closure store path, node-independent -- NOT a generation number); the image the
+// host boots is the whole-VM code half.
 //
-// The five app.* verbs below were spelled `payload.*` until the build-time payload slot was
-// deleted and they were left naming a mechanism no node has. They act on whichever
-// unit the host names, which is always a runtime-installed app's.
+// The app.* verbs act on whichever unit the host names, which is always a runtime-installed app's.
 //
-// ⚠️ RENAMING THEM WAS THE ONE BREAK A VERB SET CANNOT ABSORB: the guest advertises names, so a
-// rolled host meeting an un-rolled guest finds none of these five at once, and Supports can only
-// route around a verb one path at a time. Taken on the owner's call under the alpha
-// reinstall-only policy — every node re-runs the installer, so
-// there is no fleet to strand and no compat path to build. That policy, not anything on the wire,
-// is what makes a family rename affordable, and it is the reason the channel carries no version
-// number to bump (guestfirmware, VerbHello).
+// ⚠️ RENAMING A VERB FAMILY IS THE ONE BREAK A VERB SET CANNOT ABSORB: the guest advertises names,
+// so a rolled host meeting an un-rolled guest finds the whole family missing at once, and Supports
+// can only route around a verb one path at a time. Only the alpha's reinstall-only policy makes
+// that affordable -- every node re-runs the installer, so there is no fleet to strand -- and it is
+// the reason the channel carries no version number to bump (guestfirmware, VerbHello).
 const (
 	verbAppStart  = "app.start"  // systemctl start <unit>
 	verbAppStop   = "app.stop"   // systemctl stop <unit> (quiesce before snapshot)
@@ -170,18 +160,17 @@ const (
 	// its three-valued answer, which a healthy-or-not verb could not give.
 	verbAppHealthOf = "app.health.state"
 	// verbDataMember takes one RING member: refuses a collision instead of replacing, and writes
-	// the sidecar beside it. A NEW NAME rather than a field on the verb it replaced, and that
-	// is the whole lesson of the floor raise gate 3 refused: an old guest does not advertise this,
-	// so Client.Supports refuses exactly the one path that needs it, while a version floor would
-	// have refused every path on every not-yet-rolled guest fleet-wide.
+	// the sidecar beside it. A NEW NAME rather than a field on an older verb: an old guest does not
+	// advertise it, so Client.Supports refuses exactly the one path that needs it, where a version
+	// floor would refuse every path on every not-yet-rolled guest.
 	verbDataMember = "data.member"
 	// verbDataMemberQuiesced takes a member of an app that is RUNNING, asking it to hold still
 	// across the snapshot — the clock sample. It reports back what
 	// it achieved, because "held still" is not something the host can observe from where it sits.
 	//
-	// A NAME OF ITS OWN rather than a flag on data.member, by the rule the refused floor raise
-	// taught: a guest that ignored the flag would take a live snapshot and report the success of
-	// a quiesced one, which is the class lying about the one member it exists for.
+	// A NAME OF ITS OWN rather than a flag on data.member, by the same rule: a guest that ignored
+	// the flag would take a live snapshot and report the success of a quiesced one, which is the
+	// class lying about the one member it exists for.
 	//
 	// ⚠️ THE WHOLE SEQUENCE RUNS IN THE GUEST — hold, snapshot, release — and that is deliberate.
 	// Driving the three steps from the host would put a released-lock guarantee on the far side of
@@ -192,21 +181,19 @@ const (
 	// verbDataReplace is that same swap with the SWEEP: the paths the host names are
 	// removed from the staged copy before it goes live, which is what stops a member taken around
 	// a household's own backup restore from replaying it. A name of its own rather than a field
-	// on data.restore, by the rule the floor raise taught: a field whose absence is silent is a
-	// guest reporting success for the old behaviour.
+	// on data.restore, by the same rule: a field whose absence is silent is a guest reporting
+	// success for the old behaviour.
 	verbDataReplace = "data.replace"
 	verbOSSystem    = "os.system" // readlink -f /run/current-system -> closure store path
 	verbOSState     = "os.state"  // systemctl is-system-running, + the failed units when degraded
 )
 
-// There is no `os.pin` / `os.reqsystem` verb and no `.code-system` file: the
-// whole-OS closure was never a property of the data. The data's identity is per-app — the
-// app manifest, here on the replicated volume — while a system
-// closure is a property of the NODE. Storing one per app volume did not survive the
-// multi-app shape (N volumes, one running OS => N assertions about one system), and the
-// compatibility case for keeping it does not hold either: a newer kernel makes btrfs features
-// available rather than enabled, and DRBD metadata version is fixed at create-md. Format
-// migrations, if one ever lands, are a manual procedure with their own gating.
+// There is no verb that pins an OS closure to the data: the whole-OS closure is not a property
+// of the data. The data's identity is per-app — the app manifest, here on the replicated volume —
+// while a system closure is a property of the NODE. One per app volume would be N assertions
+// about one running system, and there is no compatibility case for it either: a newer kernel
+// makes btrfs features available rather than enabled, and DRBD metadata version is fixed at
+// create-md. A format migration, if one ever lands, is a manual procedure with its own gating.
 
 // Runtime app install. Two verbs, not one, because the halves live in DIFFERENT
 // DURABILITY DOMAINS and folding them together would hide that:
@@ -224,14 +211,12 @@ const (
 const (
 	verbAppRender    = "app.render"    // write quadlet units to /run + daemon-reload (every node)
 	verbAppProvision = "app.provision" // create the app subvolume + record the manifest (Primary only)
-	// app.installed READS ONE NAMED APP's manifest off the volume, or "". It is a verb of
-	// its own rather than a widened unnamed one, because a verb whose meaning changes
-	// under an unchanged name is the one thing nothing on this channel can police: the guest
-	// advertises names, and a name that still resolves reports success from a guest doing the old
-	// thing. So the rule is that meaning moves with the name. A NEW verb is refused by exactly the
-	// one path that needs it (Supports), the instrument app.warm set the precedent for
-	// (no api.go change) -- and the same rule covers a new FIELD whose absence would
-	// be silent, which is why data.member is its own verb rather than a flag on its predecessor.
+	// app.installed READS ONE NAMED APP's manifest off the volume, or "". The NAME is in the
+	// request because a verb whose meaning changes under an unchanged name is the one thing
+	// nothing on this channel can police: the guest advertises names, and a name that still
+	// resolves reports success from a guest doing the old thing. So meaning moves with the
+	// name: a NEW verb is refused by exactly the one path that needs it (Supports), and the same
+	// rule covers a new FIELD whose absence would be silent (data.member, data.replace).
 	verbAppInstalled = "app.installed" // read one named app's manifest from the volume, or ""
 	// app.pulling records (or clears) an app install's pull for the dashboard:
 	// the manifest's sizes and the start time, on the dashboard's tmpfs -- written BEFORE the
@@ -251,11 +236,9 @@ const (
 	verbStorageGrow = "storage.grow"
 	// app.list NAMES the apps the volume carries. It is what makes a converged node able
 	// to say what it runs: converge-at-promotion renders from the volume, so a survivor that never
-	// installed anything runs apps the HOST was never told about -- and the host reports from
-	// its node-local cache, which only an install on a Primary writes. Measured on a fleet run
-	// 2026-08-28: the survivor served the upgraded fixture at the VIP (its tick counter moved)
-	// while reporting no apps at all, so the cloud saw a node running nothing and could not
-	// have confirmed any rollout on it. Names only, because the manifest for each is what
+	// installed anything runs apps the HOST was never told about -- and the host's node-local
+	// cache is written only by an install on a Primary, so without this the survivor serves
+	// apps while reporting none. Names only, because the manifest for each is what
 	// app.installed already returns; a verb that returned both would duplicate that one.
 	verbAppList = "app.list" // list the apps recorded on the volume
 	verbAppWarm = "app.warm" // ensure an image is present, starting its .image unit ONLY if it is missing
@@ -287,7 +270,8 @@ const (
 	// data.backup STARTS a backup of the newest member of every app into the repository the
 	// request names (backup.go) and answers whether it did; data.backup.result answers whether one
 	// is running and hands over a finished one's report once. The recorder check's two-verb shape:
-	// a run reads for minutes, and this channel serves one verb at a time.
+	// a run reads for minutes, so it runs in the background and the host collects the report on
+	// a later cycle rather than holding a call open for it.
 	verbDataBackup       = "data.backup"
 	verbDataBackupResult = "data.backup.result"
 	// files.tick STARTS the files tier's tick in the background (filestier.go) -- an hourly version
@@ -318,7 +302,7 @@ const (
 	verbAppConverge = "app.converge"
 	// ── APP-SPECIFIC VERBS: `app.<catalog name>.<action>` ────────────────────────────────
 	//
-	// The naming rule, and it is a property rather than a style (owner, 2026-08-30). Every other
+	// The naming rule, and it is a property rather than a style. Every other
 	// verb here works on ANY app: app.health probes whatever URL it is handed,
 	// app.converge renders whatever the volume says. These two do not — each knows one
 	// app's API, returns that app's own shape, and refuses every other name. A verb set is
@@ -397,23 +381,15 @@ const (
 )
 
 // manifestDir holds the installed apps' identities on the replicated volume — one file per
-// app, `<name>.json`, holding the manifest's own bytes, whose content hash IS that identity.
-// It superseded the payload slot's single OCI digest, which is now deleted: one
-// manifest transitively pins the whole container set. The VOLUME holds the manifests, never the rendered
-// units — a survivor re-renders rather than replaying units that a different podman version may
-// have produced.
+// app, `<name>.json`, holding the manifest's own bytes, whose content hash IS that identity: one
+// manifest transitively pins the whole container set. The VOLUME holds the manifests, never the
+// rendered units — a survivor re-renders rather than replaying units that a different podman
+// version may have produced.
 //
 // A DIRECTORY rather than one file, mirroring the host's node-local cache and for the same reason:
-// the volume must be able to say which app it means. With one file, installing
-// a SECOND app read the first as its own "prior" — so it snapshotted against the wrong
-// app, and `filesToRemove` deleted the first app's rendered units as a renamed prior's
-// orphans. That is the concrete defect the one-app-at-a-time gate stood in for.
-//
-// A node that installed an app BEFORE this split has its manifest at the old single path and
-// nothing reads it: priorApp then finds no prior, treats the next install as fresh, and skips
-// the rollback target. That is priorApp's own documented fresh-install case, its worst outcome
-// is a rollback to empty rather than to a broken new app, and the first install after the
-// upgrade writes the new location — so this carries no migration step (the alpha is reinstall-only).
+// the volume must be able to say which app it means. With one file, installing a SECOND app reads
+// the first as its own "prior" — it snapshots against the wrong app and deletes the first app's
+// rendered units as a renamed prior's orphans.
 const manifestDir = "/var/lib/briard/.apps"
 
 // quadletDir is where podman's generator reads unit source from. Mirrors agent/quadlet.Dir; the
@@ -422,7 +398,8 @@ const quadletDir = "/run/containers/systemd"
 
 const (
 	// TLS cert/key on the DRBD volume: replicated, so a failover serves the same
-	// cert; the terminator hot-reloads them. Pairs with the guest image's tlsDir.
+	// cert; the terminator hot-reloads them. The reverse proxy's unit (units.go) is rendered
+	// with these paths.
 	tlsDir      = "/var/lib/briard/tls"
 	tlsCertPath = tlsDir + "/fullchain.pem"
 	tlsKeyPath  = tlsDir + "/key.pem"
@@ -437,7 +414,7 @@ const (
 const (
 	verbReactorPause  = "reactor.pause"  // systemctl stop drbd-reactor.service
 	verbReactorResume = "reactor.resume" // systemctl start drbd-reactor.service
-	verbReactorActive = "reactor.active" // systemctl is-active drbd-reactor.service -> bool (interim guard)
+	verbReactorActive = "reactor.active" // systemctl is-active drbd-reactor.service -> bool (bracket guard)
 	verbReactorEvict  = "reactor.evict"  // drbd-reactorctl evict: hand the work to a peer
 	verbCertWrite     = "cert.write"     // write a renewed cert/key to the DRBD volume
 	verbCertRead      = "cert.read"      // read the cert (never the key) back: `briard doctor`'s expiry check
@@ -513,53 +490,43 @@ var besideActs = map[string]bool{
 func isAct(verb string) bool { return !besideActs[verb] }
 
 const (
-	// CurrentSystem resolves to the running system's closure store path (the code identity).
+	// currentSystem resolves to the running system's closure store path (the code identity).
 	currentSystem = "/run/current-system"
-	// BootedSystem is the generation this kernel actually booted -- NOT currentSystem, which a
-	// switch-only update moves out from under it. It is the honest reference for "would this
-	// take a reboot?": the kernel in the machine is the booted one.
+	// bootedSystem, systemProfile and the staging profile are read by nothing in this package:
+	// the guest runs no in-place OS upgrade (the host swaps the whole image), so there is no
+	// generation to compare or park.
 	bootedSystem = "/run/booted-system"
-	// SystemProfile is the system profile (one generation: the image the host boots).
+	// The system profile.
 	systemProfile = "/nix/var/nix/profiles/system"
-	// StagingProfile is where a REBOOT-path upgrade parks its target. It is a
-	// second system profile, NOT the system one: install-grub.pl globs
-	// /nix/var/nix/profiles/system-profiles/* at run time and gives each a submenu of its
-	// own, so registering here makes the closure bootable WITHOUT touching the default
-	// entry. The name is load-bearing -- it becomes the grub submenu title the SMBIOS
-	// selector names (guest-image/disk-image.nix) -- and must stay \w+ or install-grub.pl
-	// skips the profile entirely (it also globs the `staging-N-link` generations, which is
-	// what that filter exists to reject).
+	// The staging profile, a second system profile.
 	stagingProfileDir = "/nix/var/nix/profiles/system-profiles"
 	stagingProfile    = stagingProfileDir + "/staging"
-	// JournalDir + containerStore are the appliance growth surfaces the resource telemetry
+	// journalDir + containerStore are the appliance growth surfaces the resource telemetry
 	// measures: the systemd journal and the podman code/layer store. Both are the
 	// unmanaged-growth suspects the soak's disk trend names.
 	journalDir     = "/var/log/journal"
 	containerStore = "/var/lib/containers"
-	// KmsgCursorPath tracks how far the kernel-error report has read, so each poll returns only
+	// kmsgCursorPath tracks how far the kernel-error report has read, so each poll returns only
 	// NEW warning+ lines. In /run so a guest reboot re-baselines cleanly.
 	kmsgCursorPath = "/run/briard/.kmsg-cursor"
 )
 
-// ProvisionRequest carries the host-rendered configs (drbd.Resource.Config and
-// drbd.ReactorConfig) to drop in the guest, then create-md the resource.
-// ReactorConfig is empty on a witness (no promoter there).
+// ProvisionRequest is drbd.adjust's payload: the host-rendered .res (drbd.Resource.Config) and,
+// when set, the promoter snippet (drbd.ReactorConfig) to rewrite before `drbdadm adjust`.
 type ProvisionRequest struct {
 	Resource      string `json:"resource"`
 	ResConfig     string `json:"res_config"`
 	ReactorConfig string `json:"reactor_config,omitempty"`
-	Diskless      bool   `json:"diskless,omitempty"` // witness: no metadata, so no create-md
+	Diskless      bool   `json:"diskless,omitempty"` // read by nothing: drbd.adjust runs no create-md
 }
 
-// ProvisionResult reports whether Provision created fresh DRBD metadata. It is false
-// when the data disk already held a valid replica (a node returning from a reboot) -- so the
-// caller knows NOT to declare the node UpToDate (skip-initial-sync), which is only ever correct
-// on a true first init. False for a diskless witness too (it has no metadata).
+// ProvisionResult is returned by no verb: storage.node decides first init inside its own unit
+// (nodestorage.go), so created-metadata never crosses the channel.
 type ProvisionResult struct {
 	CreatedMetadata bool `json:"created_metadata"`
 }
 
-// resourceRequest names the resource for up/reactor/status.
+// resourceRequest names the resource for drbd.status.
 type resourceRequest struct {
 	Resource string `json:"resource"`
 }
@@ -589,7 +556,7 @@ type snapshotRequest struct {
 	// Sidecar is the member's metadata, rendered by the HOST (quadlet.SnapshotMeta) and written
 	// here verbatim beside the subvolume. Empty on data.restore, which addresses a member rather
 	// than making one. A guest that ignored this field would leave unlabelled members behind,
-	// which is why adding it bumped the protocol rather than riding along optionally.
+	// which is why it rides a verb of its own (data.member) rather than an optional field.
 	Sidecar string `json:"sidecar,omitempty"`
 	// Sweep is what data.replace removes from the staged copy before it goes live: paths relative
 	// to the subvolume root, named by the HOST out of the apps registry. Only
@@ -603,8 +570,8 @@ type snapshotRequest struct {
 }
 
 // appRenderRequest carries the quadlet source the host rendered: filename -> content, to be
-// written under quadletDir. Stale is the set of filenames to remove first, so swapping which
-// app occupies the slot leaves nothing of the previous one behind.
+// written under quadletDir. Stale is the set of filenames to remove first -- the outgoing
+// render's -- so a re-render leaves nothing of the previous one behind.
 type appRenderRequest struct {
 	Files map[string]string `json:"files"`
 	Stale []string          `json:"stale,omitempty"`
@@ -626,7 +593,7 @@ type appProvisionRequest struct {
 
 // appInstalledRequest names the app whose recorded manifest to read (app.installed).
 // The NAME is the whole request, and it is what makes the volume able to say which app it
-// means: with an unnamed read, installing a second app saw the first as its own prior.
+// means: with an unnamed read, installing a second app sees the first as its own prior.
 type appInstalledRequest struct {
 	Name string `json:"name"`
 }
@@ -703,15 +670,6 @@ type evictRequest struct {
 	Unmask     bool `json:"unmask,omitempty"`
 }
 
-// netConfigureRequest sets a static CIDR on a guest interface (net.configure) and,
-// optionally, records which NIC the promoter should claim the VIP on. VIPDev is set
-// only on a data node whose VIP is not on the baked-default NIC (the two-subnet
-// layout puts DRBD on eth1, so the VIP moves to eth2 --); "" leaves the baked
-// default (single-node/legacy: the lone NIC is eth1).
-//
-// VIPAddr is the service address itself, in CIDR form ("192.168.9.50/24"). Like VIPDev it is
-// RECORDED here, not applied -- the promoter chain claims it when this node wins the primary
-// role. "" leaves the guest's baked fallback, which the agent-less harnesses still run on.
 // mdnsNameRequest carries the flock's visible name (net.mdnsname). Name is the BARE flock name
 // ("brave-elf"); the `briard-` prefix and the `.local` suffix are the guest's to add, so the one
 // place that knows the published label's shape is the unit that publishes it.
@@ -719,6 +677,12 @@ type mdnsNameRequest struct {
 	Name string `json:"name"`
 }
 
+// netConfigureRequest sets a static CIDR on a guest interface (net.configure) and records
+// which NIC the promoter claims the VIP on. VIPDev "" = this node claims no VIP (a witness).
+//
+// VIPAddr is the service address itself, in CIDR form ("192.168.9.50/24"). Like VIPDev it is
+// RECORDED here, not applied -- the promoter chain claims it when this node wins the primary
+// role. "" = DHCP decides.
 type netConfigureRequest struct {
 	Dev     string `json:"dev"`
 	CIDR    string `json:"cidr"`
@@ -739,25 +703,26 @@ type netConfigureRequest struct {
 	PrivCIDR    string `json:"priv_cidr,omitempty"`
 	PrivHostIP  string `json:"priv_host_ip,omitempty"`
 	PrivHostMAC string `json:"priv_host_mac,omitempty"`
-	// THE SERVICE IDENTITY, WHEN THE GUEST HAS TO MAKE IT ITSELF. Under the bridge
-	// substrate the host gives us ONE tap -- all Windows can express -- so VIPDev is not a NIC
-	// anyone handed us; VIPParent names the NIC to build it on as a macvlan child, and VIPMAC is
-	// the flock-scoped MAC that child must carry, because failover moves a MAC and never just an
-	// address. Both empty = the host built the device (macvtap), and nothing here creates anything.
 	// PodSubnet is the pool this guest allocates its PRIVATE APP NETWORKS from, as the first
 	// three octets ("10.12.7"). Drawn on the host (agent/subnet) because the draw must see the
 	// household's address space, which only the host can; used only in here, because a pod network
 	// exists nowhere else. Empty = this node cannot render a private app, and converge says so
 	// rather than quietly handing it the guest's own namespace.
 	PodSubnet string `json:"pod_subnet,omitempty"`
+	// THE SERVICE IDENTITY, WHEN THE GUEST HAS TO MAKE IT ITSELF. Under the bridge
+	// substrate the host gives us ONE tap -- all Windows can express -- so VIPDev is not a NIC
+	// anyone handed us; VIPParent names the NIC to build it on as a macvlan child, and VIPMAC is
+	// the flock-scoped MAC that child must carry, because failover moves a MAC and never just an
+	// address. VIPParent empty = the host built the device (macvtap) and nothing here creates
+	// anything; VIPMAC is still the VIP's DHCP identity (VIP_MAC in vip.env).
 	VIPParent string `json:"vip_parent,omitempty"`
 	VIPMAC    string `json:"vip_mac,omitempty"`
 }
 
 // NetConfig is what the host tells the guest about its own networking, in one call. A struct
-// rather than a seventh positional argument: these are five independent facts about three
-// different NICs, and at that width a caller transposing two strings produces a node that
-// configures itself confidently and wrongly.
+// rather than positional arguments: these are independent facts about several NICs, and at
+// that width a caller transposing two strings produces a node that configures itself
+// confidently and wrongly.
 type NetConfig struct {
 	Dev         string // the system NIC -- this node's node IP lands here, and DRBD binds it
 	CIDR        string // that address, with prefix; "" leaves the NIC unaddressed
@@ -770,7 +735,7 @@ type NetConfig struct {
 	PrivHostMAC string // that end's link address, pinned as a permanent neighbour -- see the handler
 	PodSubnet   string // the pool private app networks are allocated from, "10.12.7"; "" = none drawn
 	VIPParent   string // the NIC to build VIPDev on as a macvlan child; "" = the host already built it
-	VIPMAC      string // the flock MAC that child carries; meaningless without VIPParent
+	VIPMAC      string // the flock MAC: the VIP's DHCP identity, and the MAC a VIPParent child carries
 }
 
 // netVIPRequest names the device to read the live VIP from (net.vip). Empty Dev = this node has
@@ -788,14 +753,13 @@ type netVIPRequest struct {
 //
 // IPv4LL (169.254.0.0/16) is SKIPPED, and that is not tidiness. A link-local address is one the
 // machine gave ITSELF when nobody answered, so it can never be the flock's service address -- yet
-// it reads as an address to everything downstream. Measured: with no DHCP server on the segment,
-// dhcpcd self-assigned 169.254.57.250, this reported it as the VIP, the health probe hit it from
-// INSIDE the guest and passed, and the node published HEALTHY while nothing on the LAN could reach
-// it. That is precisely the defect the LAN-owned address exists to end, arriving through its own replacement.
+// it reads as an address to everything downstream: with no DHCP server on the segment, a
+// self-assigned 169.254 address reported as the VIP passes the in-guest health probe, and the
+// node publishes HEALTHY while nothing on the LAN can reach it.
 //
 // The guest is separately told not to invent one (dhcpcd -L), so this is the second line of
 // defence rather than the first -- deliberately, because the cost of being wrong here is a node
-// that looks fine. Ground truth that reports an unreachable address is not ground truth.
+// that looks fine.
 func firstCIDR(out string) string {
 	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		f := strings.Fields(line)
@@ -847,10 +811,8 @@ type resourcesRequest struct {
 	DataDir string        `json:"data_dir,omitempty"` // the DRBD data volume mount
 	// Soak adds the reads that only the soak's oracle consumes and that cost real I/O: the two
 	// du walks and the snapshot listing (and the quota tree, which only the oracle reads). A
-	// shipped node never sets it, because this verb runs
-	// every tick on the one-call-at-a-time channel under the host's 5s deadline: a du over a
-	// freshly pulled multi-GB container store can outlast that, the deadline closes the
-	// channel, and the verb queued behind the read fails with it.
+	// shipped node never sets it: the host reads this verb under a 5 s deadline (agent/host's
+	// resources), and a du over a freshly pulled multi-GB container store can outlast that.
 	Soak bool `json:"soak,omitempty"`
 }
 
@@ -863,10 +825,9 @@ type resourceApp struct {
 // dispatch is the guest-side verb switch: verb -> Executor calls (+ ParseStatus).
 func dispatch(x Executor) guestfirmware.DispatchFunc {
 	return func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
-		// RunIn executes a guest command whose output is only wanted on failure, and
+		// runIn executes a guest command whose output is only wanted on failure, and
 		// wraps a non-zero exit with the command + its output -- otherwise the host
-		// sees a bare "exit status 1" and bring-up failures are undiagnosable. It takes its
-		// context explicitly because one verb does not want the dispatch one; see os.poweroff.
+		// sees a bare "exit status 1" and bring-up failures are undiagnosable.
 		runIn := func(ctx context.Context, name string, args ...string) error {
 			out, err := x.Run(ctx, name, args...)
 			if err == nil {
@@ -899,20 +860,13 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			// IN MEMORY AND NOWHERE ELSE, which is the whole of it now. This used to also persist
-			// the name to /etc/briard/node-id for briard-identity.service to restore at boot,
-			// because the `.res` it must match survived a reboot and syscall.Sethostname did not:
-			// the guest came back as the baked "guest" against a persistent `on briard-node-<id>`,
-			// the boot-started reactor promoted into the mismatch, and a failed promote is never
-			// retried -- quorate but never Primary, no VIP, no address (on the L0 runner;
-			// invisible before it because the two were the SAME LITERAL).
-			//
-			// Two facts that must agree need one LIFETIME, and the durable NAME gave them one by making it
-			// persistent. The ephemeral `.res` gives them one the other way -- the `.res` is ephemeral
-			// too, both are re-derived from the host at every bring-up, and the agent-armed promoter means nothing
-			// can promote before that bring-up. The file, the unit and its silent
-			// keep-the-baked-name fallback are all deleted: a third copy on disk is a third thing
-			// that can be wrong.
+			// IN MEMORY AND NOWHERE ELSE. The hostname and the `.res` it must match need one
+			// LIFETIME: a name that reverts to the baked "guest" under a persistent
+			// `on briard-node-<id>` lets the reactor promote into the mismatch, and a failed
+			// promote is never retried -- quorate but never Primary, no VIP. Both are ephemeral,
+			// both are re-derived from the host at every bring-up, and the agent-armed promoter
+			// means nothing can promote before that bring-up. A copy on disk would be a third
+			// thing that can be wrong.
 			return nil, x.Sethostname(req.Name)
 		case verbNodeStorage:
 			// THE HOST'S STORAGE SPEC, LANDED AND CARRIED OUT. Parsed here rather
@@ -945,7 +899,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// apply the delta to the ALREADY-RUNNING resource -- `drbdadm adjust` brings up the
 			// connection(s) to the joining node(s) with no restart and no create-md, so the serving
 			// primary's local disk stays attached and UpToDate. The joining anchor/witness themselves
-			// come up fresh via Provision+Up (FreshInit=false) and resync as SyncTarget; this side is
+			// come up via storage.node (FreshInit=false) and resync as SyncTarget; this side is
 			// the primary learning it now has peers. Idempotent: adjust to an unchanged config is a
 			// no-op, so a retried pair directive is safe.
 			if err := x.WriteFile(resPath(req.Resource), []byte(req.ResConfig)); err != nil {
@@ -962,11 +916,10 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			// THE PROMOTER SNIPPET LANDS HERE, one step before the daemon that reads it starts.
-			// It used to ride drbd.provision, which no longer exists; this is the
-			// verb it belongs to, and writing it beside the start keeps the chain a node will be
-			// promoted with and the moment it may be promoted one call apart. Empty on a witness,
-			// which runs no promoter and never reaches this verb.
+			// THE PROMOTER SNIPPET LANDS HERE, one step before the daemon that reads it starts:
+			// writing it beside the start keeps the chain a node will be promoted with and the
+			// moment it may be promoted one call apart. Empty on a witness, which runs no
+			// promoter and never reaches this verb.
 			if req.Snippet != "" {
 				if err := x.WriteFile(reactorPath, []byte(req.Snippet)); err != nil {
 					return nil, err
@@ -976,8 +929,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// guest unit is `wantedBy = [ ]`, so drbd-reactor does not start at boot. Everything
 			// bring-up does above -- hostname, NIC addressing, vip.env, the .res, the promoter
 			// snippet, a runtime app's units -- is therefore GUARANTEED to be in place before
-			// anything can promote, on a reboot as well as on a first install. It used to be
-			// guaranteed only on a first install, and losing that race is what the field once cost.
+			// anything can promote, on a reboot as well as on a first install.
 			//
 			// Idempotent, deliberately: `systemctl start` on a running daemon is a no-op, so
 			// re-converging a healthy node costs nothing, and an agent that died inside a
@@ -986,7 +938,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 		case verbChainStart:
 			// THE LONE NODE'S PROMOTION: the same five members in the same order,
 			// started by a static target instead of drbd-reactor's generated one. Nothing else
-			// starts it (`wantedBy = [ ]`), so every step of bring-up happens-before it exactly
+			// starts it (no [Install], units.go), so every step of bring-up happens-before it exactly
 			// as for the reactor -- and like the reactor start it is idempotent, so re-converging
 			// a healthy node costs nothing.
 			return nil, run("systemctl", "start", chainTarget)
@@ -1007,8 +959,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if err != nil {
 				return nil, err
 			}
-			// The fuller view. QuorumState is embedded, so a host that only knows
-			// the three summary fields reads this response unchanged.
+			// The fuller view. QuorumState is embedded, so a reader that wants only the
+			// summary reads this response unchanged.
 			return drbd.ParseCluster(out, req.Resource)
 		case verbCertWrite:
 			var req certWriteRequest
@@ -1075,19 +1027,17 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// The readiness probe, done from INSIDE the guest (not host->VIP over the LAN):
 			// the guest owns the VIP on its own NIC, so this works regardless of the host
 			// networking substrate (macvtap blocks host->guest, but not guest->itself). A raw
-			// net.Dial HTTP/1.0 GET keeps the guest binary free of net/http + the TLS stack the
-			// guest main deliberately keeps out of its own code. 200 == healthy; any error == not.
+			// net.Dial HTTP/1.0 GET; 200 == healthy; any error == not.
 			return probeHTTPOK(ctx, req.URL), nil
 		case verbAppHealthOf:
 			var req appRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			// THE ADDRESS COMES FROM THE ROUTING TABLE, not from the caller. The host used
-			// to build `http://127.0.0.1:<port>` out of the manifest, which is right only for as
-			// long as every pod is host-networked: the manifest names a port, and what host
-			// answers on it is the renderer's decision. Resolving here is what makes the install
-			// gate and the steady-state probe follow that decision instead of restating it.
+			// THE ADDRESS COMES FROM THE ROUTING TABLE, not from the caller. The manifest names a
+			// port, but what host answers on it is the renderer's decision (`127.0.0.1` is right
+			// only for a host-networked pod). Resolving here is what makes the install gate and
+			// the steady-state probe follow that decision instead of restating it.
 			//
 			// An unresolvable app is an ERROR rather than `false`. "I cannot find where this
 			// app listens" and "this app is not answering" have opposite consequences on
@@ -1133,19 +1083,15 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// sweep below, and it is a separate NAME because the sweep's absence is silent: an
 			// older guest handed a sweep list on data.restore would put the data back, ignore
 			// the field and report success, leaving a household's own restore to replay. The
-			// host calls data.replace and lets Supports refuse; data.restore stays for the
-			// direction we cannot control.
+			// host calls data.replace and lets Supports refuse; data.restore stays for the one
+			// caller that must put data back even on a guest too old to sweep (the failed-upgrade
+			// revert, RestoreWithoutSweep).
 			//
-			// ⚠️ VERIFY, MATERIALISE, THEN DESTROY -- in that order, and the order IS the fix.
-			// This used to `btrfs subvolume delete <live>` unconditionally and only
-			// then snapshot the restore point over it, so a restore point that was missing,
-			// unreadable, or a snapshot that failed left the household with the live data already
-			// gone and nothing in its place. On the APP ROLLBACK path, which is to say: after
-			// a failed upgrade, when their data is the only thing left worth having.
-			//
-			// It is not the `blkid` shape that started that audit -- there was no bad probe here,
-			// there was no probe at all -- but it is the same lesson from the other side: nothing
-			// irreversible happens until the thing meant to replace it exists on disk.
+			// ⚠️ VERIFY, MATERIALISE, THEN DESTROY -- in that order. Deleting the live subvolume
+			// first means a restore point that is missing or unreadable, or a snapshot that fails,
+			// leaves the household with the live data gone and nothing in its place -- on the APP
+			// ROLLBACK path, after a failed upgrade, when their data is the only thing left worth
+			// having. Nothing irreversible happens until its replacement exists on disk.
 			if _, err := x.Run(ctx, "btrfs", "subvolume", "show", req.Path); err != nil {
 				return nil, fmt.Errorf("restore point %s is not a usable subvolume (%w) -- refusing to delete %s",
 					req.Path, err, req.DataDir)
@@ -1352,8 +1298,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if err != nil {
 				// NOT AN ERROR, and this is the answer rather than the absence of one: a node with
 				// no Home Assistant is the ordinary case (a broker-only node, the shipped
-				// zero-app one), and its caller fires this at every install without knowing
-				// which. `false` says there was nobody to tell.
+				// zero-app one), and its callers fire this at every install and uninstall
+				// without knowing which. `false` says there was nobody to tell.
 				return false, nil
 			}
 			m, _, err := manifest.Parse(raw)
@@ -1489,7 +1435,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			return mosquitto.Probe(ctx, x, quadlet.ContainerName(m.Name, m.Primary().Name), req.Token)
 		case verbAppConverge:
 			// The input is the volume, which is the point -- a caller that could name what to
-			// converge TO would be the node-was-told model this replaces. The one thing a caller
+			// converge TO would put the node back on being told what it runs. The one thing a caller
 			// may name is the install it is running RIGHT NOW, whose staged manifest is then the
 			// one rendered for that app (staging.go); every other staged install is held
 			// back. It ANSWERS with the apps it could not prepare, having started every
@@ -1656,11 +1602,11 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			// Best-effort: telemetry is a signal, never a gate, so a failed sub-read leaves
-			// its field zero rather than failing the verb (which would break the host's
-			// observe loop). The struct always comes back; nil error.
+			// its field zero rather than failing the verb and losing every other field with it.
+			// The struct always comes back; nil error.
 			return gatherResources(ctx, x, req), nil
 		case verbReactorActive:
-			// Interim guard: lets a bracket user refuse to start when the promoter is ALREADY
+			// A guard: lets a bracket user refuse to start when the promoter is ALREADY
 			// paused — i.e. when someone else is mid-operation. It cannot prevent the race (a
 			// pause can still land between this check and ours) and is not claimed to; it turns
 			// the likely overlap from silent corruption of the bracket into a loud refusal.
@@ -1685,9 +1631,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// it so a peer promotes, and unmasks -- writing our own stop-and-hope against the
 			// promoter would reimplement that with less knowledge of its state machine.
 			//
-			// PROVEN, not assumed (nixosTest/reactor-evict.nix): the work moves in ~6s, the data
-			// comes with it, and the same CLI's `disable` was deferred in this file as flaky --
-			// which is why `evict` got a mechanism test before anything sequenced it.
+			// PROVEN, not assumed (nixosTest/reactor-evict.nix): the work moves in ~6s and the
+			// data comes with it.
 			//
 			// ⚠️ IT SAYS "NOT ME", NOT "YOU". The destination is drbd-reactor's election, not
 			// ours; on a flock with three diskful anchors the work may land on the third node.
@@ -1717,9 +1662,9 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// ⚠️ THE MASK AND THE UNIT FILE ARE THE SAME PATH, because the target
 			// is rendered by this agent into the directory `mask --runtime` writes its /dev/null
 			// symlink into. Both directions go through the renderer so there is one owner:
-			// masking clears the file first (systemctl refuses outright over an existing one --
-			// measured on install-macvtap), and unmasking re-renders, because dropping the
-			// symlink otherwise leaves no unit at all.
+			// masking clears the file first (systemctl refuses outright over an existing one),
+			// and unmasking re-renders, because dropping the symlink otherwise leaves no unit
+			// at all.
 			if alone(x) {
 				switch {
 				case req.Unmask:
@@ -1780,25 +1725,17 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 		case verbReactorPause:
 			// Pause the promoter by stopping the drbd-reactor daemon: stop-services-on-exit
 			// defaults false, so the promoted apps + DRBD Primary stay up while it is
-			// down -- deterministic maintenance mode. (v0 is single-resource; per-snippet
-			// `drbd-reactorctl disable` is deferred -- its systemctl reload proved flaky.
-			// The snippet arg is reserved for that future per-resource path.)
+			// down -- deterministic maintenance mode. The snippet arg is unread: the resource is
+			// single, and per-snippet `drbd-reactorctl disable` is not used (its systemctl
+			// reload proved flaky).
 			//
-			// A BARE STOP, and the promote-vs-stop deadlock it used to have to dodge is now
-			// defused by the unit itself. This verb once removed drbd-reactor's own
-			// `Before=drbd-reactor.service` override (reactor-50-before.conf) and reloaded
-			// first, because a stopping reactor fires one last `systemctl start
-			// drbd-services@r0.target` that the override sequences BEHIND this very stop ->
-			// neither completes -> 90s TimeoutStopSec SIGKILL. That defusal moved onto
-			// drbd-reactor.service's ExecStop (guest-image/configuration.nix), because
-			// the same deadlock hangs every OTHER stop too -- a shutdown, the deadman's reboot,
-			// a host reboot -- none of which come through here.
-			//
-			// So the steps are gone rather than kept as belt-and-braces: this verb and that unit
-			// ship in the same closure (the guest agent is built INTO the guest image,
-			// disk-image.nix), so there is no version in which one is present without the other,
-			// and duplicating it only buys a second place to have to keep correct. Measured
-			// after the move: a bare stop of a promoted reactor completes in 401ms.
+			// A BARE STOP. A stopping reactor fires one last `systemctl start
+			// drbd-services@r0.target` that its own `Before=` override (reactor-50-before.conf)
+			// sequences BEHIND the stop -> neither completes -> 90s TimeoutStopSec SIGKILL. That
+			// deadlock is defused by drbd-reactor.service's ExecStop (guest-image/configuration.nix),
+			// not here, because it hangs every OTHER stop too -- a shutdown, the deadman's reboot,
+			// a host reboot -- none of which come through this verb. A second copy here would be a
+			// second place to keep correct.
 			//
 			// A lone node has no promoter to pause: its chain is a static target that
 			// nothing re-promotes, so the bracket's "hold still" is already the steady state.
@@ -1831,14 +1768,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				// PRUNE any OTHER global v4 address on this NIC. `addr replace` adds and updates
 				// but never removes, so a RENUMBER would leave the old address alongside the new
 				// one -- and a renumber is exactly what an adoption does to the joiner, whose
-				// island subnet gives way to the adopter's. Two addresses on the
-				// DRBD NIC is two plausible sources for it to bind, which is the ambiguity
-				// that once cost a fork's worth of debugging at the ARP layer.
+				// island subnet gives way to the adopter's. Two addresses on the DRBD NIC is two
+				// plausible sources for it to bind.
 				//
 				// Add first, prune second, never flush-then-add: the flush form leaves the NIC
 				// momentarily addressless, and this call runs on a node that may have a peer
-				// connected. Nothing here could bite until a lone node got an
-				// install-time address; before that there was never an old one to leave behind.
+				// connected.
 				if out, err := x.Run(ctx, "ip", "-o", "-4", "addr", "show", "dev", req.Dev, "scope", "global"); err == nil {
 					for _, held := range allCIDRs(string(out)) {
 						if held == req.CIDR {
@@ -1850,6 +1785,20 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 					}
 				}
 				if err := run("ip", "link", "set", "dev", req.Dev, "up"); err != nil {
+					return nil, err
+				}
+			}
+			// THE POD POOL, recorded rather than configured. Nothing is created here: the pool is
+			// the range converge allocates each private app's network from, and those networks
+			// come into being when an app is rendered, not at bring-up. Writing it to /run is
+			// what makes it readable by converge, which runs later and in another process.
+			//
+			// Absent is a real state and stays absent -- a witness draws no pool. Converge refuses
+			// a private app then, which is the honest failure; the alternative is giving it the
+			// guest's own namespace, which is host networking under another name and would grant
+			// by accident exactly the capability the manifest field exists to make deliberate.
+			if req.PodSubnet != "" {
+				if err := x.WriteFile(podSubnetPath, []byte(req.PodSubnet+"\n")); err != nil {
 					return nil, err
 				}
 			}
@@ -1867,27 +1816,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// NIC. What it borrows is eth0's slirp address, 10.0.2.15, which is also what every
 			// other qemu user-net picks: the request goes out as "who-has <host> tell 10.0.2.15",
 			// the host sees an ARP request apparently from its own address, and never answers.
-			// Measured on the wire in agent-deadman. Pinning the MAC means we never ask.
+			// Pinning the MAC means we never ask.
 			//
 			// So the link is symmetric: neither end can ARP usefully across an unnumbered wire, so
 			// both ends pin. The host's mirror is platform.SetNodeRoute, and it pins for a
 			// different reason -- our node IP lives on eth1 while its request would arrive on this
 			// NIC, which arp_ignore=1 refuses.
-			// THE POD POOL, recorded rather than configured. Nothing is created here: the pool is
-			// the range converge allocates each private app's network from, and those networks
-			// come into being when an app is rendered, not at bring-up. Writing it to /run is
-			// what makes it readable by converge, which runs later and in another process.
-			//
-			// Absent is a real state and stays absent -- a witness draws no pool, and a node whose
-			// host predates the draw has none to send. Converge refuses a private app then,
-			// which is the honest failure; the alternative is giving it the guest's own namespace,
-			// which is host networking under another name and would grant by accident exactly the
-			// capability the manifest field exists to make deliberate.
-			if req.PodSubnet != "" {
-				if err := x.WriteFile(podSubnetPath, []byte(req.PodSubnet+"\n")); err != nil {
-					return nil, err
-				}
-			}
 			if req.PrivDev != "" && req.PrivHostIP != "" {
 				if err := run("ip", "link", "set", "dev", req.PrivDev, "up"); err != nil {
 					return nil, err
@@ -1949,10 +1883,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 						return nil, err
 					}
 				} else if req.VIPMAC != "" {
-					// It already exists -- re-assert the MAC rather than assume it. The flock MAC
-					// is FLOCK-scoped, so an adoption changes it under a device that outlives the
-					// change, and this call is the one that would otherwise leave the
-					// joiner presenting its old flock's identity.
+					// It already exists (a pairing re-runs this call on a running guest) --
+					// re-assert the MAC rather than assume the device still carries it.
 					if err := run("ip", "link", "set", "dev", req.VIPDev, "address", req.VIPMAC); err != nil {
 						return nil, err
 					}
@@ -1963,10 +1895,10 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// with nothing baked behind it. Idempotent (whole-file write).
 			//
 			// An unset VIP_ADDR is the ordinary DHCP case and the unit expects it. An unset
-			// VIP_DEV now means the node claims no VIP at all -- a witness, which has no promoter
+			// VIP_DEV means the node claims no VIP at all -- a witness, which has no promoter
 			// and never starts briard-vip. A data node reaching promotion without one is a broken
-			// configuration and fails loudly there, rather than guessing a NIC (the old guess took
-			// the replication NIC and took a second DHCP lease on it).
+			// configuration and fails loudly there, rather than guessing a NIC (a guess lands on
+			// the replication NIC and takes a second DHCP lease on it).
 			var env []byte
 			if req.VIPDev != "" {
 				env = append(env, "VIP_DEV="+req.VIPDev+"\n"...)
@@ -1976,8 +1908,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// a dedicated one DOWN -- the flock MAC is shared with the peer, and a Secondary
 			// emitting from it teaches the switch the wrong port -- while a
 			// link-down on the DRBD NIC would take replication with it. Only the agent knows which
-			// is which; the guest bakes no positional knowledge. See the ⚠️ on vipDown
-			// in guest-image/configuration.nix for the proxy this replaced and why it was false.
+			// is which; the guest bakes no positional knowledge. See briard-vip-down (vipDown)
+			// in guest-image/configuration.nix.
 			//
 			// Inside the VIPDev branch on purpose: a node with no VIP device is a WITNESS, which
 			// has no promoter and never starts briard-vip, and writing this file for it would
@@ -2042,15 +1974,14 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			//
 			// The per-app names are derived from this one, so they move with it --
 			// in the routing table the reverse proxy matches on AND in the records it answers,
-			// which are now the same list read once, so a rename cannot leave a name published
+			// which are the same list read once, so a rename cannot leave a name published
 			// that nothing routes.
 			renameRoutes(x, req.Name)
 			return nil, nil
 		case verbNetMDNSPublished:
-			// The name avahi ESTABLISHED, which is not always the name we asked for: on a
-			// collision it conflict-renames to `<name>-2` and tells nobody. Reporting the
-			// requested name here would rebuild the baked-name defect -- a name present, plausible, and not what
-			// anyone thinks it is -- inside the item that exists to end that.
+			// The name the reverse proxy is REALLY answering for, as it records it from what it
+			// serves -- never the requested name, which would report a name present, plausible,
+			// and not necessarily the one being served.
 			out, err := x.ReadFile(mdnsPublishedPath)
 			if err != nil {
 				// Absent is the normal answer on a Secondary (nothing published), so it is "" and
