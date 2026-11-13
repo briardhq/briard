@@ -164,6 +164,23 @@ func TestOnlyFilesSeesTheViewAsRootBehindTheGate(t *testing.T) {
 	}
 }
 
+// TestOnlyHomeAssistantGetsRawSockets: its primary container gets NET_RAW and nothing more, and no
+// other app or container inherits a capability from the name the registry keys on.
+func TestOnlyHomeAssistantGetsRawSockets(t *testing.T) {
+	ha := svc(hass.Name, 8123)
+	if cp := Capabilities(ha, ha.Containers[0]); cp != "NET_RAW" {
+		t.Errorf("Capabilities(home-assistant) = %q, want NET_RAW", cp)
+	}
+	if cp := Capabilities(ha, manifest.Container{Name: "sidecar", Image: image}); cp != "" {
+		t.Errorf("a non-primary container of Home Assistant gets %q", cp)
+	}
+	for _, m := range []manifest.Manifest{svc(files.Name, 80), svc(mealie.Name, 9000), svc(mosquitto.Name, mosquitto.HealthPort), svc("something-else", 8080)} {
+		if cp := Capabilities(m, m.Containers[0]); cp != "" {
+			t.Errorf("Capabilities(%s) = %q, want none", m.Name, cp)
+		}
+	}
+}
+
 // TestReachNamesMQTTForTheBroker, because the manifest's port is the broker's MANAGEMENT endpoint
 // and it is bound to the guest's loopback. Printing it would hand the household a dead link for an
 // app that is working perfectly — which is the failure the reach line exists to prevent.

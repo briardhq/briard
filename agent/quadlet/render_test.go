@@ -242,6 +242,7 @@ func TestControlChannelIsKeyedOnTheAppName(t *testing.T) {
 	binds := []string{
 		"Volume=/run/briard/home-assistant:/briard:ro",
 		"Volume=/run/briard/home-assistant/run:/etc/services.d/home-assistant/run:ro",
+		"AddCapability=NET_RAW",
 	}
 	got := mustRender(t, ha()).Files["briard-home-assistant-ha.container"]
 	for _, b := range binds {
@@ -255,6 +256,9 @@ func TestControlChannelIsKeyedOnTheAppName(t *testing.T) {
 	got = mustRender(t, other).Files["briard-sample-app-ha.container"]
 	if strings.Contains(got, "/run/briard/home-assistant") {
 		t.Fatalf("an app that is not home-assistant got the control channel:\n%s", got)
+	}
+	if strings.Contains(got, "AddCapability=") {
+		t.Fatalf("an app that is not home-assistant got a capability:\n%s", got)
 	}
 
 	// And only the PRIMARY container: the mint runs inside the one container that is Home

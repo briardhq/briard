@@ -260,6 +260,9 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		if u := apps.User(m, c); u != "" {
 			lines = append(lines, "User="+u)
 		}
+		if cp := apps.Capabilities(m, c); cp != "" {
+			lines = append(lines, "AddCapability="+cp)
+		}
 		for _, k := range sortedKeys(c.Env) {
 			lines = append(lines, "Environment="+k+"="+escape(c.Env[k]))
 		}
