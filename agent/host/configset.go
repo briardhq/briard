@@ -19,15 +19,15 @@ import (
 // `briard config set`: CHANGING A SETTING ON A RUNNING NODE.
 //
 // The installer writes the settings once, into config.env, and the agent reads them once. A
-// setting that the household has to change later -- the service address is the first, and the one
-// the lease refusal asks them to change -- would otherwise need an uninstall and a reinstall. This
-// writes the same key into the same file, so config.env stays the one place a setting lives
-// (a reinstall that names it overwrites it, as before), and applies it the one way a bring-up
-// fact is applied: restart the guest, so the next bring-up carries it.
+// setting the household has to change later -- the service address, which the lease refusal asks
+// them to change -- would otherwise need an uninstall and a reinstall. This writes the same key
+// into the same file, so config.env stays the one place a setting lives (a reinstall that names
+// it overwrites it).
 //
-// Four keys: `vip`, applied by a guest restart, and the backup's three (`backup-dir`,
-// `backup-key-saved`, `backup-adopt`, backup.go), applied in place -- the folder is read by the host alone, and
-// the acknowledgement is written where the key is, on the volume.
+// Four keys. `vip` is applied here, the way a bring-up fact is applied: restart the guest, so the
+// next bring-up carries it. The backup's three (`backup-dir`, `backup-key-saved`, `backup-adopt`)
+// are answered first, by applyBackupSetting (backup.go), and applied in place -- the folder is
+// read by the host alone, and the acknowledgement is written where the key is, on the volume.
 // The command is named for the general act, so a key joins without a second verb.
 
 // configSetBudget bounds the change: the address probe, the write, and a guest restart.
@@ -41,7 +41,8 @@ func (cfg Config) vipAddr() string {
 	return cfg.VIPAddr
 }
 
-// applyConfigSet handles a DirectiveConfigSet.
+// applyConfigSet handles a DirectiveConfigSet for `vip`, the one key the backup's settings did
+// not answer first (dispatch, host.go).
 func (cfg Config) applyConfigSet(ctx context.Context, d api.Directive, r guest.VIPReader, rb guestRebooter, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(format string, a ...any) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: fmt.Sprintf(format, a...)}

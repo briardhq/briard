@@ -83,7 +83,7 @@ func (cfg Config) removeServices(ctx context.Context, logf func(string, ...any))
 	if err := run(ctx, "schtasks", "/delete", "/tn", selfupdate.DefaultUpdateUnit, "/f"); err != nil {
 		logf("the update task: %v", err)
 	}
-	// Best-effort: absent is the common case, the closing having run and removed it.
+	// Best-effort: absent is the common case (resumeTask says why).
 	_ = run(ctx, "schtasks", "/delete", "/tn", resumeTask, "/f")
 	return nil
 }
@@ -373,9 +373,9 @@ func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)
 		}
 		return fmt.Errorf("reading %s: %w -- the TAP driver was kept", marker, err)
 	}
-	// The adapter list still shows ours for a moment after its device is removed (measured on the
-	// rig: the removal returns, the next read still lists it), so one that stays past the bound is
-	// another program's.
+	// The adapter list still shows ours for a moment after its device is removed (the removal
+	// returns, the next read still lists it), so one that stays past the bound is another
+	// program's.
 	for deadline := time.Now().Add(tapGoneBound); nic.TapInstalled(); {
 		if time.Now().After(deadline) {
 			logf("kept the TAP driver: another TAP adapter on this machine still uses it")
@@ -405,7 +405,7 @@ func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)
 	// _?=, which must come last and unquoted even with spaces in it -- so the command line is
 	// written by hand rather than escaped argument by argument. Run in place, it cannot delete
 	// itself: the folder goes after, retried -- the just-run Uninstall.exe can still be held a
-	// moment after its process exits (`Access is denied`, measured on Windows 11). A folder that
+	// moment after its process exits (`Access is denied`). A folder that
 	// outlasts the retry is reported, and the driver goes regardless: it, not the folder, is what
 	// another install would trip on.
 	c := exec.CommandContext(ctx, exe)
@@ -417,7 +417,7 @@ func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)
 	if err := removeRetried(dir, logf); err != nil {
 		left = fmt.Errorf("removing %s: %w (the folder is left; delete it by hand)", dir, err)
 	}
-	// What that uninstaller leaves (measured on the rig): the driver package in Windows' driver
+	// What that uninstaller leaves: the driver package in Windows' driver
 	// store, its .sys, and the driver's service entry. The package is found by its provider,
 	// which its INF names and no locale changes -- pnputil's own listing is translated.
 	out, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",

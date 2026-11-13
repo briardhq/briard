@@ -13,13 +13,13 @@ import (
 
 // What the Linux install made, and so what goes:
 //
-//   - the units: briard-agent, briard-update and its timer (install.sh), and the two transient
+//   - the units: briard-agent, briard-update and its timer (layDownOS), and the two transient
 //     units the agent starts, the guest and the witness forwarder;
 //   - the host's side of the guest's L2 (nic.Converge): the taps, and the address on a user's bridge;
 //   - the files: /opt/briard, the `briard` link on $PATH, the tmpfs under /run, the guest console log;
 //   - /var/lib/briard, the pet -- KEPT unless the operator asks for it to go.
 
-// cliLink is where install.sh puts `briard` on $PATH: a symlink to the agent binary.
+// cliLink is where the install puts `briard` on $PATH: a symlink to the agent binary.
 const cliLink = "/usr/local/bin/briard"
 
 // deleteHint finishes the kept-data line with how to delete it by hand.

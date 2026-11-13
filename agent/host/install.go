@@ -3,10 +3,10 @@
 // household its link.
 //
 // THE INSTALLER'S BODY, IN THE BINARY THE CHANNEL CAN FIX. install.sh is fetched from the channel
-// root and run once, so whatever it does in shell is frozen where no release can reach it. It now
-// does only what supervises the agent's own arrival -- root, the bootstrap fetch, this call,
-// enabling the systemd unit, the hand-over -- and everything that lays files down is here. A Windows
-// installer calls the same verb rather than re-implementing it.
+// root and run once, so whatever it does in shell is frozen where no release can reach it. It does
+// only what supervises the agent's own arrival -- root, the bootstrap fetch, this call, enabling
+// the systemd unit, the hand-over -- and everything that lays files down is here. The Windows
+// installer (install.ps1) calls the same verb rather than re-implementing it.
 //
 // Two tests decide what belongs in the layout at all, the second wider than the first:
 //
@@ -53,7 +53,7 @@ import (
 )
 
 // installRoots are the three directories an install lays down, as one value so a test can point
-// them at a temp dir. In a real install they are the constants (config.go's note on why the
+// them at a temp dir. In a real install they are the constants (config_linux.go's note on why the
 // prefix cannot move).
 type installRoots struct {
 	prefix, state, run string
@@ -63,8 +63,8 @@ type installRoots struct {
 
 // Install lays this node down: the verified artifact set (fetched over the channel, or the
 // caller's BRIARD_ARTIFACTS dir), the qemu and guest trees, the image, the manifests, the
-// agent's three frozen scripts, config.env and the units -- everything a node's first start
-// reads. It enables nothing and starts nothing; that is the installer's hand-over.
+// frozen update launcher, config.env and the systemd units or Windows services -- everything a
+// node's first start reads. It enables nothing and starts nothing; that is the installer's hand-over.
 //
 // The report card is NOT here: the caller runs it first, so a refusal means nothing was written.
 func Install(ctx context.Context, say, logf func(string, ...any)) error {
@@ -89,7 +89,7 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 		channel := env("BRIARD_CHANNEL_URL", "https://get.briard.io")
 		release := env("BRIARD_RELEASE", install.TargetStable)
 		// The release public key: the installer writes it before this runs (it travels inside
-		// install.sh, the one thing fetched before anything is on disk to trust).
+		// the installer script, the one thing fetched before anything is on disk to trust).
 		keyPath := env("BRIARD_UPDATE_KEYRING", filepath.Join(prefixDir, "keyring.pem"))
 		pemBytes, err := os.ReadFile(keyPath)
 		if err != nil {
@@ -138,9 +138,9 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 
 	// ---- the staging dir goes ----
 	// Every artifact has been copied out, so what is left there is a second copy of the largest
-	// thing we ship: the guest image byte for byte, a second qemu tree, a second agent -- 1.2 GB,
-	// measured on briard-test, 13% of a 9.5 GiB disk, on the same filesystem as the state disk
-	// that must grow to hold every app image the household installs.
+	// thing we ship: the guest image byte for byte, a second qemu tree, a second agent -- about
+	// 1.2 GB, on the same filesystem as the state disk that must grow to hold every app image the
+	// household installs.
 	//
 	// Never fatal: this is space reclaimed from a finished install, not a step whose failure means
 	// the install did not happen.
@@ -291,7 +291,7 @@ func (r installRoots) layDownImage(src string, say func(string, ...any)) error {
 // installEnvKey is an operator setting in the installer's environment: BRIARD_ + a config.env key.
 var installEnvKey = regexp.MustCompile(`^BRIARD_[A-Z0-9_]*$`)
 
-// installOnlyKeys configure THE INSTALL rather than the node: where to fetch from, which release,
+// installOnlyKeys configure THE INSTALL rather than the node: a local artifact dir, which release,
 // where the units go -- plus BRIARD_CONFIG, which names config.env itself, so copying it in would
 // be a node telling itself where it already is.
 var installOnlyKeys = map[string]bool{
@@ -303,10 +303,12 @@ var installOnlyKeys = map[string]bool{
 // The agent reads it with the environment layered ON TOP (loadConfigFile), so a rig that exports a
 // variable still wins. Plain and greppable at 2am; 0600 because it is root's business alone.
 //
-// ⚠️ TWO KINDS OF LINE, AND ONLY TWO. What this install LAID DOWN -- the files it created or
-// staged -- and what the OPERATOR said, copied verbatim from the environment. There is
-// deliberately no third kind: NO DEFAULTS. A key that is absent is answered from config.go's
-// shipped default, which a release can change and a line in this file could not.
+// ⚠️ THREE KINDS OF LINE, AND ONLY THREE. What this install LAID DOWN -- the paths of what it
+// created or staged, and where the agent's disks go -- who INSTALLED it (their backup folder,
+// and on Windows their SID: only a human at install knows whose machine it is), and what the
+// OPERATOR said, copied verbatim from the environment. Deliberately NO DEFAULTS: a key that is
+// absent is answered from config.go's shipped default, which a release can change and a line in
+// this file could not.
 //
 // ⚠️ AND NO IDENTIFIERS. The node id, the flock id and the flock name are minted once into pet
 // state at the agent's first start (identity.go), never written here.
@@ -402,9 +404,9 @@ func installFile(src, dst string, mode os.FileMode) error {
 }
 
 // freshDir makes dir empty: whatever an earlier install left under this release's name goes.
-// On a reinstall the node was running a moment ago (stopRunning), and the delete is retried
-// (removeRetried) -- seen as `Access is denied` on the qemu bundle's libffi-8.dll with nothing
-// left in the guest's job, while a killed qemu's own tree deletes at once.
+// On a reinstall the node was running a moment ago (stopRunning), and on Windows a file of the
+// qemu tree can still be held briefly after qemu has gone (`Access is denied`), so the delete is
+// retried (removeRetried).
 func freshDir(dir string) error {
 	if err := removeRetried(dir, func(f string, a ...any) { log.Printf("install: "+f, a...) }); err != nil {
 		return err
@@ -444,8 +446,8 @@ func relink(target, link string) error {
 	return os.Symlink(target, link)
 }
 
-// run executes one tool of the host's own -- tar, cp, chmod, sync: the same ones the update path
-// and every host we install on already reach -- and returns its output as the error.
+// run executes one tool every host we install on already has -- tar, cp, chmod, sync; on Windows
+// tar, icacls, netsh, schtasks -- and returns its output as the error.
 func run(ctx context.Context, name string, args ...string) error {
 	if out, err := exec.CommandContext(ctx, name, args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -464,11 +466,12 @@ var (
 	installHealthy = regexp.MustCompile(`primary=true.*healthy=true`)
 )
 
-// InstallWait is `briard-agent install -wait`, the installer's hand-over once the agent's
-// systemd or Windows service runs: wait, bounded, for the agent's OWN word that the node is primary and its chain (the reverse proxy,
-// the dashboard) passed its health gate -- the status line it logs, the same signal the tier-4 rig
-// waits on, and local (no name to resolve, no address to know under DHCP) -- then print what
-// `briard open` says, its one-time link included, and hand that link to a desktop browser.
+// InstallWait is `briard-agent install -wait`, install.sh's hand-over once the agent's unit runs
+// (on Windows the tray's --open is the hand-over): wait, bounded, for the agent's OWN word that
+// the node is primary and its chain (the reverse proxy, the dashboard) passed its health gate --
+// the status line it logs, the same signal the tier-4 rig waits on, and local (no name to
+// resolve, no address to know under DHCP) -- then print what `briard open` says, its one-time
+// link included, and hand that link to a desktop browser.
 //
 // ⚠️ THE AGENT'S OWN WORDS ARE PRINTED, not re-rendered here: `briard open` says what is on the
 // node, which is the same answer a household gets running it a month from now.
@@ -486,8 +489,9 @@ func InstallWait(ctx context.Context, say func(string, ...any)) error {
 			journal := agentLogSince(ctx, since)
 			// THE AGENT REFUSING ends the wait, in its own words: a node that cannot serve must not
 			// leave the household waiting out the bound for a sentence that says "still starting".
-			// Today that is a router that leases the flock nothing of its own on a single-anchor
-			// substrate (lease.go), and the remedy is `config set vip`, so it ends here as a failure.
+			// Two say so: a router that leases the flock nothing of its own on a single-anchor
+			// substrate (lease.go, remedied by `config set vip`), and a Windows restart still owed
+			// (restart.go). Either ends here as a failure.
 			//
 			// ⚠️ ASKED BEFORE HEALTHY: a refusal is final for this wait, and a status line logged
 			// in the same pass must not outvote it.

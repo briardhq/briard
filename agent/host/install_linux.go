@@ -20,8 +20,8 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	agentDir := filepath.Join(r.prefix, "agent")
 	// <prefix>/qemu is the PUBLIC path, a fixed link onto the moving agent/qemu: the Linux bundle
 	// bakes /opt/briard/qemu/lib/ld-linux... into its ELF interpreter, so that path must always
-	// resolve to the running tree, and the agent's QEMU / QEMU_DATADIR point through it. An install
-	// that predates the link laid a real directory here; a link cannot replace one.
+	// resolve to the running tree, and the agent's QEMU / QEMU_DATADIR point through it. A real
+	// directory left here by an older layout is removed first: a link cannot replace one.
 	if fi, err := os.Lstat(filepath.Join(r.prefix, "qemu")); err == nil && fi.IsDir() {
 		if err := os.RemoveAll(filepath.Join(r.prefix, "qemu")); err != nil {
 			return err
@@ -59,9 +59,10 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	}
 
 	// THE AGENT'S FROZEN SCRIPT, copied out of the verified set: briard-update launches the
-	// update, which must not be shipped by the thing it updates. Frozen means dumb,
-	// agent-INDEPENDENT shell, so a bug in the volatile agent cannot wedge the mechanism that
-	// replaces it; shipped means it is a signed artifact of the host chain, covered by the same
+	// update, which must not be shipped by the thing it updates. Frozen means dumb shell: it
+	// fetches the next agent, has the installed one verify it, and runs the FETCHED agent's
+	// --update, so the update logic is the release being installed, not the volatile one being
+	// replaced. Shipped means it is a signed artifact of the host chain, covered by the same
 	// manifest as the binary it fetches.
 	say("installing the agent's update script")
 	if !exists(filepath.Join(hostSrc, "briard-update")) {

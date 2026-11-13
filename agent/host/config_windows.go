@@ -3,13 +3,13 @@ package host
 import "briard.io/agent/nic"
 
 // The install roots on Windows: one tree under %ProgramData%, which is where a machine-wide
-// service keeps its files. Constants rather than read from the environment, for the reason the
-// Linux roots are -- every default below derives from them, and an agent that relocated itself on
-// a variable would be looking for its own state somewhere the installer never put it.
+// service keeps its files. Constants rather than read from the environment: every default below
+// derives from them, and an agent that relocated itself on a variable would be looking for its
+// own state somewhere the installer never put it.
 //
-// There is no tmpfs, so runDir survives a reboot. What lives there today is sockets, which every
-// listener removes before it binds. Anything that relies on the Linux runDir being emptied by a
-// boot (self-update's trial flags) has no Windows arm yet, and gets its clear when it gets one.
+// There is no tmpfs, so runDir survives a reboot, and nothing kept there may rely on a boot
+// emptying it: the sockets are removed by every listener before it binds, and self-update's
+// messages decide no swap (its state is the .prev entries under the agent dir).
 const (
 	prefixDir = `C:\ProgramData\briard`
 	stateDir  = prefixDir + `\state`

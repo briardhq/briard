@@ -34,11 +34,12 @@ const (
 	qemuBundleTar = "qemu-bundle-windows.tar"
 )
 
-// layDownOS is the Windows tail of the layout. Everything here is something a systemd unit file or
-// the Linux installer does there, and a Windows install has no other place to do it: config.env,
-// the tree's ACL, the service and its recovery, the one firewall hole, `briard` on PATH -- and the
-// bridge, which only an install may build (nic.BuildBridge says why), and which carries the guest
-// only after the restart the installer then asks for.
+// layDownOS is the Windows tail of the layout, most of it what a systemd unit file or the Linux
+// installer does there: config.env, the tree's ACL, the agent's and the warden's services and
+// their recovery, the update task, the tray and its Start menu entry, the one firewall hole,
+// `briard` on PATH, the Installed apps entry -- and the bridge, which only an install may build
+// (nic/bridge_windows.go says why), and which carries the guest only after the restart the
+// installer then asks for.
 func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(string, ...any)) error {
 	agentDir := filepath.Join(r.prefix, "agent")
 	exe := filepath.Join(agentDir, agentExe)
@@ -50,13 +51,12 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	// of the agent and the VM. The Linux 0700/0600 modes say this there; on Windows only an ACL
 	// can: the ROOT stops inheriting and grants the two by SID (names are localized), and
 	// everything beneath INHERITS that. Never `/inheritance:r /T`: on a file it strips the inherited
-	// entries and the (OI)(CI) grants cannot attach to a file, which left every file with an empty
-	// ACL -- measured, an agent even SYSTEM could not start. So the root alone is restricted, and
-	// then everything BENEATH it is reset to inheriting from it. Root first, and the reset never
-	// names the root: a reset of the root re-inherits %ProgramData%'s Users entries, and a reset
-	// that fails partway (a reinstall's walk meeting an entry it cannot open) then left the whole
-	// tree readable by Users. In this order a failure leaves the tree restricted, only some files
-	// not yet inheriting.
+	// entries and the (OI)(CI) grants cannot attach to a file, leaving every file with an empty ACL
+	// -- an agent even SYSTEM cannot start. So the root alone is restricted, and then everything
+	// BENEATH it is reset to inheriting from it. Root first, and the reset never names the root: a
+	// reset of the root re-inherits %ProgramData%'s Users entries, and a reset that fails partway (a
+	// reinstall's walk meeting an entry it cannot open) would leave the whole tree readable by
+	// Users. In this order a failure leaves the tree restricted, only some files not yet inheriting.
 	say("restricting %s to SYSTEM and Administrators", r.prefix)
 	if err := run(ctx, "icacls", r.prefix, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "/Q"); err != nil {
 		return err
@@ -570,8 +570,8 @@ func (r installRoots) bundleLines(string) string {
 func (r installRoots) osRoots() installRoots { return r }
 
 // stopRunning stops a node already installed here before the lay-down replaces its files: Windows
-// refuses to replace an executable or a library that is running (measured on a reinstall: the
-// agent's own .exe, then a DLL of the qemu still running from the same release's tree). The guest
+// refuses to replace an executable or a library that is running (the agent's own .exe, a DLL of
+// the qemu still running from the same release's tree). The guest
 // is powered off cleanly, never killed. The restart the installer ends in starts it all again.
 func stopRunning(ctx context.Context, say func(string, ...any)) error {
 	endTrays()
