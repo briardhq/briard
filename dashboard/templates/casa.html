@@ -15,7 +15,7 @@
     {{if .RecheckErr}}<div class="alert" data-variant="destructive"><section>{{.RecheckErr}}</section></div>{{end}}
   </section><footer><form method="post" action="/casa/recheck"><button type="submit" class="btn" data-variant="outline">Check again</button></form></footer></div>
   {{else}}
-  <div class="card"{{with .Asked}}{{if not .Failed}} hx-get="/f/address-step{{if $.OnHome}}?home{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>Secure access</h2><p>Your browser marks <code>{{.Host}}</code> as <strong>{{template "icon-alert"}}Not secure</strong>. Enable encryption with a free address and a real certificate, used automatically by every Briard app:</p></header><section>
+  <div class="card"{{with .Asked}}{{if not .Failed}} hx-get="/f/address-step{{if $.OnHome}}?home{{end}}" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}{{end}}><header><h2>Secure access</h2><p>Your browser marks <code>{{.Host}}</code> as <strong>{{template "icon-alert"}}Not secure</strong>. Enable encryption: register a .casa address (it's free) and every Briard app gets a real certificate:</p></header><section>
     <p>{{template "icon-lock"}}<code>https://{{.Name}}</code></p>
     <p class="note">No account. Enter an email and open the confirmation link, and the address is yours. It points only inside your home network; nothing is opened to the internet.</p>
     {{if eq .State "refused"}}<div class="alert" data-variant="destructive"><section>{{.Reason}}</section></div>{{else if eq .State "expired"}}<div class="alert" data-variant="destructive"><section>The last link expired before it was opened. Try again.</section></div>{{end}}
@@ -27,7 +27,7 @@
 
 {{/* THE SECURE ACCESS PAGE: the name as it stands, and what reaches it from outside (nothing). */}}
 {{define "address"}}{{template "head" (shell "address" false)}}
-<header class="page-head"><h1>Secure access</h1><p>Enable encryption with a free address and a real certificate.</p></header>
+<header class="page-head"><h1>Secure access</h1><p>Enable encryption: register a .casa address (it's free) for a real certificate.</p></header>
 <div class="tiles">
   {{with .Casa}}
   {{if eq .State "registered"}}{{if eq .Resolves "blocked"}}{{template "address-step" .}}{{else}}{{template "address-card" $}}{{end}}

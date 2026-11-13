@@ -124,7 +124,7 @@ func TestCasaRefusalIsShownWithTheForm(t *testing.T) {
 	r.app.port = port
 	r.hostSays(t, dashboard.Casa{Name: "brave-elf.briard.casa"})
 
-	port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "this name belongs to another account; rename your flock and claim again"}
+	port.answer <- api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "this name belongs to another account; rename your flock and register again"}
 	if resp := r.form("/casa/claim", c, url.Values{"email": {"b@x.org"}}); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("claim = %d", resp.StatusCode)
 	}

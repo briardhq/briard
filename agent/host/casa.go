@@ -217,9 +217,9 @@ func (c *casaRunner) claim(ctx context.Context, d api.Directive, logf func(strin
 	case c.cl == nil:
 		return fail("this machine has no casa client")
 	case email == "":
-		return fail("an email address is needed to claim a name")
+		return fail("an email address is needed to register a name")
 	case c.cfg.FlockName == "":
-		return fail("this machine has no name yet, so there is nothing to claim")
+		return fail("this machine has no name yet, so there is nothing to register")
 	case c.dir == "":
 		return fail("this machine keeps no state, so it cannot hold a name's key")
 	}

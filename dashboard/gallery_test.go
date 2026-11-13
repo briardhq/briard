@@ -324,7 +324,7 @@ var galleryStates = []galleryState{
 		}},
 	{"home-casa-refused", "The host refused the claim: the reason above the form.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
-			r.hostSays(t, dashboard.Casa{State: casa.ClaimRefused, Name: galleryName, Reason: "brave-elf.briard.casa is registered to another email; rename this home and claim again"})
+			r.hostSays(t, dashboard.Casa{State: casa.ClaimRefused, Name: galleryName, Reason: "brave-elf.briard.casa is registered to another email; rename this home and register again"})
 			return home(t, r, c, port)
 		}},
 	{"home-casa-expired", "The link expired before it was opened.",

@@ -89,8 +89,8 @@ type ClaimStatus struct {
 const (
 	ClaimPending    = "pending"    // link not clicked yet
 	ClaimRegistered = "registered" // verified and bound: the node may write its address and ask for a cert
-	ClaimExpired    = "expired"    // the link's 20 minutes passed; claim again
-	ClaimRefused    = "refused"    // the name belongs to another email; rename and claim again
+	ClaimExpired    = "expired"    // the link's 20 minutes passed; register again
+	ClaimRefused    = "refused"    // the name belongs to another email; rename and register again
 )
 
 // CertRequest asks the cloud to sign a CSR for the flock's two names. Signed with the bound
