@@ -348,8 +348,9 @@ func (l *vipLeaser) setRetry(t time.Time) {
 	l.mu.Unlock()
 }
 
-// refuse records why, says it once per episode, and asks again later. THE LINE install.sh's
-// closing wait ends on, and prints (install.go's refusedLine): keep the prefix in step with it.
+// refuse records why, says it once per episode, and asks again later. THE LINE the install's
+// closing wait (`install -wait`) ends on, and prints (install.go's refusedLine): keep the prefix in
+// step with it.
 func (l *vipLeaser) refuse(cause string, logf func(string, ...any)) {
 	l.mu.Lock()
 	first := l.why == ""

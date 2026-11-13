@@ -22,7 +22,7 @@ const vipVerbTimeout = 5 * time.Second
 // actually holds the VIP.
 //
 // That is narrower than "this node is configured with a VIP", and the difference is the whole
-// reason this is a loop rather than a line in install.sh. On a two-node flock the VIP lives on
+// reason this is a loop rather than a one-time setup. On a two-node flock the VIP lives on
 // one node at a time, and the host of the OTHER node reaches it perfectly well over the LAN --
 // that traffic goes out the wire to a different machine and back, which macvtap does not
 // obstruct. Routing a configured-but-not-held VIP into our own guest would take a working path
@@ -75,7 +75,8 @@ func wantVIPRoute(cidr string, err error) string {
 }
 
 // reconcile brings the host's route into line with the guest's live VIP. It acts only on a
-// CHANGE, so the steady state costs one control-channel verb per cycle and no subprocess at all.
+// CHANGE, so the steady state costs no subprocess at all; r is the cycle's one answer to net.vip
+// (readVIP), shared with the cycle's other owners of the address.
 // Every failure is logged and retried next cycle: the route is a convenience for the household's
 // own machine, and nothing about the node's health, quorum or serving depends on it.
 func (v *vipRouter) reconcile(ctx context.Context, r guest.VIPReader, logf func(string, ...any)) {
@@ -90,14 +91,14 @@ func (v *vipRouter) reconcile(ctx context.Context, r guest.VIPReader, logf func(
 	// exactly what a self-update is. Reading a cancelled context as "the guest did not
 	// answer" would withdraw the route on the way out, so every restart would blip the
 	// household's reachability from its own machine for a node that never stopped serving.
-	// agent-readopt polls the VIP across a restart and asserts it never drops -- which is where
-	// this was caught. The failure the fail-open rule exists for is the opposite shape: a LIVE
+	// nixosTest/agent-readopt.nix polls the VIP across a restart and asserts it never drops. The
+	// failure the fail-open rule exists for is the opposite shape: a LIVE
 	// agent seeing a DEAD channel, i.e. a guest that has gone away while a peer may hold the VIP.
 	if ctx.Err() != nil {
 		return
 	}
-	// Bounded, like every other read in the observe loop: a guest that never answers must not hold
-	// the loop open past the watchdog threshold (the Beat rule in host.go).
+	// Bounded, like every other read in the observe loop: a reader that never answers must not hold
+	// the loop open past the watchdog threshold (beat.go).
 	rctx, rcancel := context.WithTimeout(ctx, vipVerbTimeout)
 	defer rcancel()
 	cidr, err := r.VIP(rctx, v.vipDev)

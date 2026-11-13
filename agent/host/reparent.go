@@ -20,8 +20,8 @@ import (
 //
 // ⚠️ QEMU WILL NOT TELL YOU. When a macvtap's parent disappears the child device vanishes with it,
 // and qemu keeps running with a dead NIC: the guest is alive, healthy by its own account, and
-// unreachable from the household. So the detector has to be the status tick. It cannot hang off
-// the guest's exit, because the guest does not exit.
+// unreachable from the household. So the detector has to be the observe loop's network check. It
+// cannot hang off the guest's exit, because the guest does not exit.
 //
 // ⚠️ THE TRIGGER IS THE PARENT BEING GONE — absent, or present without carrier — AND ANOTHER
 // CANDIDATE NAMED NOW. Gone alone moves nothing: a cold boot with the cable out, or a pulled cable
@@ -32,7 +32,7 @@ import (
 //
 // And re-parenting is EXPENSIVE in a way nothing else on the tick is: a macvtap cannot be
 // re-parented, so the devices must be deleted and recreated, which invalidates the fds qemu holds
-// — which means stopping and relaunching the guest. A healthy household loses its service for the
+// — which means stopping and relaunching the guest. A healthy household loses its apps for the
 // length of a boot. That is why the pacing below exists at all.
 
 // The tiers, and what each is paying for.
@@ -56,13 +56,12 @@ const (
 	reparentSameSubnet = 30 * time.Minute
 )
 
-// ⚠️ THERE IS NO "DIFFERENT SUBNET" DURATION, and that is the decision rather than an omission
-// A machine on a different subnet has MOVED, and a paired node that rebuilds
-// itself on a LAN its peer is not on is a split flock -- the one outcome this whole mechanism exists to
-// avoid. So it is not a longer wait: it is an explicit operator action, `NIC` in config.env, which is
-// already the escape hatch for every other way our selection can be wrong. (A cloud-side way out
-// for managed nodes may come later; it would arrive through the directive path, not through a
-// timer here.)
+// ⚠️ THERE IS NO "DIFFERENT SUBNET" DURATION, and that is the decision rather than an omission.
+// A machine on a different subnet has MOVED, and a paired node that rebuilds itself on a LAN its
+// peer is not on is a split flock -- the one outcome this whole mechanism exists to avoid. So it is
+// not a longer wait: it is an explicit operator action, `NIC` in config.env, which is already the
+// escape hatch for every other way our selection can be wrong. Any other way out belongs on the
+// directive path, never on a timer here.
 //
 // Unknown -- too little evidence to say -- takes the same answer, because "we could not tell"
 // must never be cheaper than "we could tell, and it was elsewhere".
@@ -110,11 +109,10 @@ func (cfg Config) recordNetwork(ctx context.Context, logf func(string, ...any)) 
 	// and Unknown refuses -- so a node that could have healed itself is stranded permanently by
 	// the very act meant to help it.
 	//
-	// It is a real race rather than a theoretical one. The parent is chosen at start-up and
-	// recorded after BRING-UP, which is seconds later; a NIC that goes away in between (unplugged
-	// while the guest boots, or renamed by a udev rule that lost a race) is read as nothing. The
-	// rig caught exactly this: the agent overwrote a complete fingerprint with `[eth1 mac=? addr=?
-	// gw=?/?]` and then refused to re-parent for the rest of its life.
+	// It is a real race: the parent is chosen at start-up and recorded after BRING-UP, seconds
+	// later, and a NIC that goes away in between (unplugged while the guest boots, or renamed by a
+	// udev rule that lost a race) reads as `[eth1 mac=? addr=? gw=?/?]` -- which, recorded, refuses
+	// every re-parent for the rest of the node's life.
 	if !fp.Usable() {
 		logf("network: not recording this LAN -- %s could not be read [%s]; keeping the previous record",
 			cfg.net.Parent, fp)
@@ -316,7 +314,7 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 	// branch: the remedy is the same (an operator names the device) but the cause is not, and a
 	// reader told "not demonstrably the same network" about a node that simply has nothing to
 	// compare against will go looking in the wrong place. It happens on a node whose pet state was
-	// lost, and on the first boot after this landed.
+	// lost.
 	if was == (nic.Fingerprint{}) {
 		r.say(logf, fmt.Sprintf(
 			"network: %s is gone and there is no record of the LAN this node last served on, so "+
@@ -333,8 +331,7 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 		//
 		// ⚠️ THE MESSAGE CARRIES BOTH FINGERPRINTS, and that is not decoration. `unknown` means a
 		// field could not be read on one side or the other, and which side it was is the entire
-		// diagnosis -- without it the reader (or the next engineer) can only guess. It cost a
-		// runner cycle to learn that the hard way.
+		// diagnosis -- without it the reader (or the next engineer) can only guess.
 		r.say(logf, fmt.Sprintf(
 			"network: %s is gone and %s is not demonstrably the same network (%s) -- NOT re-parenting "+
 				"on my own. Recorded: [%s]. Now: [%s]. Set NIC=%s in %s and restart "+
@@ -394,7 +391,8 @@ func (cfg Config) reparent(ctx context.Context, mgr upgrader, n notify.Notifier,
 		return err
 	}
 	if mgr == nil {
-		// A node with no guest to restart (a witness) is fully re-parented by the rebuild above.
+		// No guest binding: the rebuild above is the whole move. Run always passes one, so a
+		// shipped node takes the restart below.
 		cfg.recordNetwork(ctx, logf)
 		alertReparent(ctx, n, logf, from, dev, rel)
 		return nil
@@ -433,7 +431,7 @@ func (cfg Config) rebuildOn(ctx context.Context, dev string) error {
 }
 
 // say logs once per distinct message. A node waiting out a tier is a node that must not fill its
-// journal with the same line every ten seconds for half an hour.
+// journal with the same line at every check for half an hour.
 func (r *reparenter) say(logf func(string, ...any), msg string) {
 	if msg != r.said {
 		logf("%s", msg)

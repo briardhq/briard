@@ -21,9 +21,9 @@ import (
 // configured on the host at all. All three are drawn against the collision landscape this machine
 // can actually see (agent/subnet), rather than being constants somebody picked.
 //
-// THE DRAW IS PART OF CONVERGENCE, not part of the install. It has the same three reasons the rest
-// of the network does: it is a decision made from what this host can see, what a host can
-// see changes, and a decision frozen into a script at install time is one no release can reach. It
+// THE DRAW IS PART OF CONVERGENCE, not part of the install, like the rest of the network
+// (network.go): it is a decision made from what this host can see, what a host can see changes,
+// and a decision frozen into a script at install time is one no release can reach. It
 // also wants a LAN to look at -- the flock draw ARP-probes its candidate on the parent device -- so
 // it belongs after a usable device has been selected, which is a moment only the agent has.
 //
@@ -72,7 +72,7 @@ func (cfg Config) recordedSubnets() subnet.Draw {
 	}
 	rec := subnet.Parse(b)
 	// Field by field rather than wholesale, so an environment override tops up a record rather
-	// than replacing one -- and so a node that predates a pool gains only that pool.
+	// than replacing one -- and so a record missing a pool gains only that pool.
 	for _, f := range []struct{ dst, rec *string }{
 		{&d.System, &rec.System}, {&d.Priv, &rec.Priv}, {&d.Pod, &rec.Pod},
 	} {

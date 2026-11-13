@@ -13,11 +13,11 @@ import (
 
 // READING THE GUEST'S REBOOT GATE, from outside the VM.
 //
-// The guest deadman publishes RebootAllowed on every tick and serves it over the private
-// host<->guest link as one line of key=value text (deadman/gate.go). This is the client: dial,
-// read a line, parse, hang up. It is the only question this host asks the guest over anything
-// other than the virtio-serial control channel, and it exists precisely because that channel
-// being dead is what makes anyone ask.
+// The guest deadman publishes RebootAllowed on every tick and serves it on the guest's node IP as
+// one line of key=value text (deadman/gate.go). This is the client: dial, read a line, parse, hang
+// up. It is the only question this host asks the guest over anything other than the virtio-serial
+// control channel, and it exists precisely because that channel being dead is what makes anyone
+// ask.
 //
 // EVERY failure here -- no route, refused, timeout, garbage, an unknown protocol tag, a verdict
 // too old to mean anything -- lands on the same answer: not reached, or reached but not fresh.
@@ -27,11 +27,10 @@ import (
 
 // gateVerdict is what the host managed to learn about the guest's own view of rebooting itself.
 //
-// It carries no uptime, though an early version did, so the ladder could avoid power-cycling a
-// guest that had just rebooted itself. That is not a question worth asking the guest: `-no-reboot`
-// means every guest restart ends the VM's unit, so the host is the one that starts it and knows
-// exactly when. The ladder reads the unit's state directly instead, which is also true while the
-// deadman is dead.
+// It carries no uptime, though "did the guest just reboot itself?" looks like a question for the
+// guest: `-no-reboot` means every guest restart ends the VM's unit, so the host is the one that
+// starts it and knows exactly when. The ladder reads the unit's state instead, which is also true
+// while the deadman is dead.
 type gateVerdict struct {
 	reached bool // a well-formed reply arrived
 	fresh   bool // it carried a verdict, recent enough to mean anything
@@ -39,7 +38,7 @@ type gateVerdict struct {
 }
 
 // gateTimeout bounds the whole probe. The guest answers in microseconds when it answers at all --
-// it is one write on a point-to-point link -- so this is not a budget, it is the point at which
+// it is one short write to its own host -- so this is not a budget, it is the point at which
 // waiting longer stops telling us anything new. The ladder has already waited ten minutes.
 const gateTimeout = 5 * time.Second
 

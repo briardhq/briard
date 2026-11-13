@@ -11,27 +11,23 @@ import (
 	"briard.io/shared/api"
 )
 
-// THE AGENT OWNS THE NETWORK NOW.
+// THE AGENT OWNS THE NETWORK: the host's side of the guest's L2 is built and kept here, never by
+// an installer-generated script or a unit of its own. Each of those shapes has a failure:
 //
-// It used to be `net-up.sh`: a script the installer generated with this host's NIC, device names,
-// addresses and gateway baked into a heredoc, run inline once and again at every boot from
-// `briard-net.service`, which the agent unit `Requires=`d. Three things came with that and all
-// three are gone.
+// A SCRIPT THE INSTALLER WRITES IS FROZEN. A fix to it ships in a release and reaches no installed
+// node (accept_ra, ALLMULTI's expiring-cache trap).
 //
-// A FROZEN FILE NO RELEASE COULD REACH. Every bug in those lines shipped a fix that landed on no
-// installed node (accept_ra, ALLMULTI's expiring-cache trap).
+// A ONESHOT CANNOT ADAPT. A macvtap cannot be re-parented — you delete and recreate, invalidating
+// the fd handed to qemu, which means relaunching the guest. Only the thing that runs the guest can
+// sequence that.
 //
-// A ONESHOT THAT COULD NOT ADAPT. A macvtap cannot be re-parented — you delete and recreate,
-// invalidating the fd handed to qemu, which means relaunching the guest. Only the thing that runs
-// the guest can sequence that, which is why this could not stay a separate unit even in principle.
-//
-// AND A `Requires=` THAT TOOK THE NODE DARK. A failed network unit meant the agent never started:
-// nothing left to report, retry, or answer the admin door. A cable out at boot was a node you
-// could not diagnose. Now the agent starts, says what is wrong, and keeps converging.
+// A `Requires=` ON A NETWORK UNIT TAKES THE NODE DARK. A failed network unit means the agent never
+// starts: nothing left to report, retry, or answer the admin door, and a cable out at boot is a
+// node nobody can diagnose. The agent starts, says what is wrong, and keeps converging.
 
-// netTick is how often the wait loop re-asks while the node has no usable device. It is the
-// status tick's own cadence rather than a number of its own -- a node waiting for a cable is not
-// a node that should be busy.
+// netTick is how often the wait loop re-asks while the node has no usable device -- a node waiting
+// for a cable is not a node that should be busy -- and the bound on one network step (a choice, a
+// converge, a rebuild).
 const netTick = 10 * time.Second
 
 // netSettle bounds how long a cold start holds its choice for a NIC whose lease is still in
@@ -107,9 +103,9 @@ func (cfg Config) netSpec(dev string, bridge, wireless bool) nic.Spec {
 	return s
 }
 
-// applySubstrate narrows the config to what the derived substrate actually has. config.env carries
-// the MACVTAP shape -- the one every Linux node ships in -- and this is the one transformation
-// that makes a bridge parent's config true.
+// applySubstrate narrows the config to what the derived substrate actually has. The config's
+// default device names are the MACVTAP shape -- three taps, the one every Linux node ships in --
+// and this is the one transformation that makes a bridge parent's config true.
 //
 // ⚠️ It overrides what config said, which is the one place in the agent that does. The rule
 // everywhere else is that the environment wins, and it still does for the values
@@ -142,14 +138,14 @@ func (cfg Config) applySubstrate(bridge bool) Config {
 // is healthy" -- this is exactly the kind of work that distinction exists for.
 //
 // THE HOT PATH COSTS NOTHING. A device that is there and already converged returns on the first
-// pass, so an ordinary boot starts as fast as it did when a oneshot did this.
+// pass, so an ordinary boot or agent restart pays nothing for it.
 //
 // THE COLD PATH WAITS RATHER THAN FAILING. No default route yet and no default route at all are
 // the same reading (nic's sentinels say so), and only elapsed time tells them apart -- so the
 // agent waits, and while it waits it ANSWERS: the admin door is already listening, and every
 // directive submitted gets the same refusal the report card would have given, naming the device
 // it wanted and the override that fixes it. That is the whole difference from `Requires=`, which
-// left a node with nothing running to ask.
+// leaves a node with nothing running to ask.
 func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, dg *degraded, logf func(string, ...any)) (Config, error) {
 	// THIS AGENT WAS NOT GIVEN A NETWORK TO BUILD. No device names means no guest NICs to make,
 	// which is every agent-less harness and every unit test that constructs a Config by hand --
@@ -291,7 +287,8 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 }
 
 // netSwap bounds a member swap: the leaving member's exit and the arriving one's join are each
-// waited on for up to 30 s, and the re-pin restarts the bridge's driver.
+// waited on for up to 30 s, the re-pin restarts the bridge's driver, and the swap then waits for
+// the bridge to re-lease under the arriving member's MAC.
 const netSwap = 2 * time.Minute
 
 // swapBeforeLaunch swaps sel.SwapIn into the bridge the cold start chose. SWAP FIRST, THEN BOOT:
@@ -319,12 +316,11 @@ func (cfg Config) swapBeforeLaunch(ctx context.Context, sel nic.Selection, logf 
 	return nil
 }
 
-// degraded is what the wait loop needs to keep TALKING while it waits.
-//
-// A node whose host network is fine but whose selected device cannot carry the guest's L2 used to
-// go silent up-channel for as long as it stayed that way: the fleet saw nothing, and a managed
-// node could not be told anything. That is the one tier where being told matters most, because
-// the household cannot fix it themselves.
+// degraded is what the wait loop needs to keep TALKING while it waits. Without it, a node whose
+// host network is fine but whose selected device cannot carry the guest's L2 is silent up-channel
+// for as long as it stays that way: the fleet sees nothing, and a managed node -- the one tier
+// where being told matters most, because the household cannot fix it themselves -- cannot be told
+// anything.
 //
 // nil rep is the standalone node, which has nobody to tell; the whole thing is then a no-op.
 type degraded struct {
@@ -403,8 +399,7 @@ func (cfg Config) waitTick(ctx context.Context, local <-chan localRequest, why s
 			}
 			// REFUSED, IMMEDIATELY, WITH THE REASON. The alternative is what the channel does
 			// with no reader -- the CLI blocks until the agent exits, which is indistinguishable
-			// to the operator from the agent being wedged. The one moment they most need an
-			// answer is the one this used to have none for.
+			// to the operator from the agent being wedged.
 			logf("admin socket: refusing %s -- the node has no usable network device", req.d.Kind)
 			req.resp <- api.DirectiveOutcome{
 				ID: req.d.ID, State: api.OutcomeFailed,
@@ -414,17 +409,18 @@ func (cfg Config) waitTick(ctx context.Context, local <-chan localRequest, why s
 	}
 }
 
-// convergeNetwork re-asserts the host's side of the guest's L2 on the status tick. Check-first, so
-// the overwhelmingly common answer is "already right" and it reads a few sysfs files and stops.
+// convergeNetwork re-asserts the host's side of the guest's L2 at each network check
+// (netCheckTicks). Check-first, so the overwhelmingly common answer is "already right" and it reads
+// a few sysfs files and stops.
 //
 // It exists because the host's devices are not ours alone to keep: under the bridge substrate our
 // system-subnet address sits on a device NetworkManager manages, and NM reconciles addresses when
 // a connection reactivates -- an `nmcli con up`, a carrier bounce or an NM restart can flush ours.
 // Converging is the answer to that rather than being careful once.
 //
-// It does NOT re-select. Re-running the selector every tick would macvtap-probe the parent every
-// ten seconds forever, and re-parenting is a different act with its own trigger and its own cost
-// (it restarts the guest) -- that is re-parenting (reparent.go), not this.
+// It does NOT re-select. Re-running the selector on every check would macvtap-probe the parent
+// forever, and re-parenting is a different act with its own trigger and its own cost (it restarts
+// the guest) -- that is reparent.go, not this.
 func (cfg Config) convergeNetwork(ctx context.Context, logf func(string, ...any)) {
 	if cfg.net == nil || cfg.net.Parent == "" || nic.Converged(*cfg.net) {
 		return

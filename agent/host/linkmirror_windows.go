@@ -34,8 +34,7 @@ func (cfg Config) mirrorLink(ctx context.Context, m *linkMirror, logf func(strin
 // linkChanges wakes the observe loop for the mirror alone when Windows reports an interface
 // change, so a carrier edge is mirrored in milliseconds rather than at the next network check; the
 // check still runs the mirror, so a lost notification costs at most one check (netCheckTicks).
-// nil (never ready) without
-// a bridge, or when the notification cannot be registered.
+// nil (never ready) without a bridge, or when the notification cannot be registered.
 func (cfg Config) linkChanges(logf func(string, ...any)) <-chan struct{} {
 	if cfg.net == nil || !cfg.net.Bridge {
 		return nil
