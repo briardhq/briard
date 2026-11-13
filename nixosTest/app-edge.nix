@@ -71,6 +71,9 @@ pkgs.testers.runNixOSTest {
           WITNESS_CIDR = "10.11.9.2/24";
           SERVICE_TAP = "svc0";
           WITNESS_TAP = "briard-priv0";
+          # The rig pins its addresses rather than letting the agent draw them, so it pins the
+          # pod pool too: an app on a private network installs nowhere without one.
+          POD_SUBNET = "10.12.7";
           VIP_DEV = "eth2";
           VIP_ADDR = "192.168.1.100/24";
           NET_MODE = "macvtap";
