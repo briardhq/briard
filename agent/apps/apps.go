@@ -424,18 +424,20 @@ func User(m manifest.Manifest, c manifest.Container) string {
 // Capabilities are the Linux capabilities a container gets beyond podman's default set, "" for
 // none -- the value of quadlet's AddCapability=.
 //
-// HOME ASSISTANT GETS NET_RAW, which podman's default set leaves out. Without it the integrations
-// that read the network below TCP degrade without failing: DHCP discovery cannot open its packet
-// socket, so a new device is never offered as discovered, and the ping and nmap/ARP presence
-// trackers lose their raw sockets. Home Assistant OS runs Core fully privileged, so this is far
-// short of what it is tested under. Nothing more: NET_ADMIN serves Bluetooth, which the guest
-// kernel does not carry.
+// HOME ASSISTANT GETS NET_RAW AND NET_ADMIN, both of which podman's default set leaves out.
+// Without NET_RAW the integrations that read the network below TCP degrade without failing: DHCP
+// discovery cannot open its packet socket, so a new device is never offered as discovered, and the
+// ping and nmap/ARP presence trackers lose their raw sockets. NET_ADMIN is for the Bluetooth
+// integration, which loads by default and checks for both at every start: the guest has no
+// Bluetooth to manage, but without them it logs an ERROR each time, which reads to a household as
+// something broken. Home Assistant OS runs Core fully privileged, so this is far short of what it
+// is tested under.
 //
 // From the product, never the manifest: a catalog entry that could name a capability could name
 // all of them.
 func Capabilities(m manifest.Manifest, c manifest.Container) string {
 	if m.Name == hass.Name && c.Primary {
-		return "NET_RAW"
+		return "NET_RAW NET_ADMIN"
 	}
 	return ""
 }

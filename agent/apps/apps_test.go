@@ -164,12 +164,12 @@ func TestOnlyFilesSeesTheViewAsRootBehindTheGate(t *testing.T) {
 	}
 }
 
-// TestOnlyHomeAssistantGetsRawSockets: its primary container gets NET_RAW and nothing more, and no
-// other app or container inherits a capability from the name the registry keys on.
+// TestOnlyHomeAssistantGetsRawSockets: its primary container gets NET_RAW and NET_ADMIN and nothing
+// more, and no other app or container inherits a capability from the name the registry keys on.
 func TestOnlyHomeAssistantGetsRawSockets(t *testing.T) {
 	ha := svc(hass.Name, 8123)
-	if cp := Capabilities(ha, ha.Containers[0]); cp != "NET_RAW" {
-		t.Errorf("Capabilities(home-assistant) = %q, want NET_RAW", cp)
+	if cp := Capabilities(ha, ha.Containers[0]); cp != "NET_RAW NET_ADMIN" {
+		t.Errorf("Capabilities(home-assistant) = %q, want NET_RAW NET_ADMIN", cp)
 	}
 	if cp := Capabilities(ha, manifest.Container{Name: "sidecar", Image: image}); cp != "" {
 		t.Errorf("a non-primary container of Home Assistant gets %q", cp)

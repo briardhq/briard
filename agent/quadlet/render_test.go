@@ -242,7 +242,7 @@ func TestControlChannelIsKeyedOnTheAppName(t *testing.T) {
 	binds := []string{
 		"Volume=/run/briard/home-assistant:/briard:ro",
 		"Volume=/run/briard/home-assistant/run:/etc/services.d/home-assistant/run:ro",
-		"AddCapability=NET_RAW",
+		"AddCapability=NET_RAW NET_ADMIN",
 	}
 	got := mustRender(t, ha()).Files["briard-home-assistant-ha.container"]
 	for _, b := range binds {
