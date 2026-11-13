@@ -3,7 +3,7 @@
 // This is the SWAPPABLE layer of the three-part stack the manifest decision named: manifest
 // (published, signed, runtime-neutral) -> renderer (here, podman/quadlet-specific) -> systemd
 // units. shared/manifest deliberately knows nothing about podman; everything podman-shaped lives
-// in this package, so replacing the container runtime is replacing this file rather than
+// in this package, so replacing the container runtime is replacing the renderer rather than
 // re-cutting the published catalog.
 //
 // IT RUNS IN THE GUEST, and the host/guest line runs through the MANIFEST rather than through
@@ -49,10 +49,9 @@ import (
 const Dir = "/run/containers/systemd"
 
 // ImagePullTimeout bounds one `.image` unit's pull when the manifest does not say how big the
-// image is. See the emit site below for why it is this long and why tightening it is the wrong
-// instinct — in short: an expiry throws away the layer in flight (measured), so the bound
-// exists to make a hopeless pull loud, not to make failure prompt. Named here rather than
-// inlined because the acceptance test varies it.
+// image is. It is long on purpose: an expiry throws away the layer in flight, so the bound
+// exists to make a hopeless pull loud, not to make failure prompt. The .image emit site in
+// Render carries the measurements.
 const ImagePullTimeout = 45 * time.Minute
 
 // The bound a SIZED entry gets: a fixed allowance for everything that is not bytes
@@ -81,12 +80,13 @@ func PullTimeout(size int64) time.Duration {
 // guest's growth up to the host's ceiling. See the [Service] lines in Render.
 const MemoryLimitFactor = 4
 
-// Rendered is one app's quadlet source plus the promoter chain that drives it.
+// Rendered is one app's quadlet source plus the units that run it.
 type Rendered struct {
 	// Files maps a filename under Dir to its content.
 	Files map[string]string
-	// Units is the ordered list of generated systemd units the drbd-reactor promoter must start,
-	// between the data mount and the VIP. Order matters: the pod must exist before its members.
+	// Units is the ordered list of generated systemd units converge starts for this app (run by
+	// briard-apps, after the data mount and the VIP). Order matters: the pod must exist before its
+	// members.
 	Units []string
 	// ContainerUnits are the per-container .service units WITHOUT the pod. They are what holds the
 	// data Volume bind, and the ONLY units a maintenance op may stop to release it — never the pod.
@@ -97,15 +97,13 @@ type Rendered struct {
 	// (systemd → `podman stop` → clean exit), which is what leaves the data bind released and
 	// everything else undisturbed.
 	//
-	// A CRASHED CONTAINER NO LONGER DEMOTES THE NODE, and this comment used to say the opposite —
-	// that `Requires=`-propagates-failure "IS the failover trigger; a container that crashes
-	// SHOULD demote the node". Converge-at-promotion reverses that, for two reasons a pod stop's blast
-	// radius had obscured: a code fault is DETERMINISTIC, so the peer running the identical
-	// closure hits it identically and the failover only flaps; and one broken app must not
-	// take the other N-1 down with it. The mechanism is non-membership — these units are started
-	// by briard-apps, not by the promoter, so `Requires=` never sees them and there is no
-	// propagation left to fire. Recovery is the unit's own Restart= (see Render); the household
-	// hears about it through per-app health, which reports but never gates.
+	// ⚠️ A CRASHED CONTAINER DOES NOT DEMOTE THE NODE, and must not: a code fault is
+	// DETERMINISTIC, so the peer running the identical closure hits it identically and the
+	// failover only flaps; and one broken app must not take the other N-1 down with it. The
+	// mechanism is non-membership — these units are started by briard-apps, not by the promoter,
+	// so `Requires=` never sees them and there is no propagation to fire. Recovery is the unit's
+	// own Restart= (see Render); the household hears about it through per-app health, which
+	// reports but never gates.
 	ContainerUnits []string
 	// ImageUnits are the .image pre-warm units, which are NOT promoter members and NOT started
 	// by systemd either — every warm goes through a caller that guards the pull (see Render).
@@ -116,18 +114,17 @@ type Rendered struct {
 	// already-present short-circuit. A caller that must not touch the network (bring-up, which
 	// runs after every guest reboot) needs the ref to ask whether the pull is needed at all.
 	ImageRefs map[string]string
-	// Address is the host this app's pod answers on — a bare host, no port. An app is ONE
-	// pod and a pod is ONE network namespace, so one address covers every port it listens on, and
-	// the consumers (the reverse proxy's routes, the health probe) carry only the port.
+	// Address is the host this app's pod answers on — a bare host, no port: the guest's own
+	// loopback under host networking, the pod's address on the node's pod pool under a private
+	// network. An app is ONE pod and a pod is ONE network namespace, so one address covers every
+	// port it listens on, and the consumers (the reverse proxy's routes, the health probe) carry
+	// only the port.
 	//
-	// IT COMES FROM THE RENDERER BECAUSE THE ADDRESS IS THE RENDERER'S DECISION. The
-	// manifest names a port; what host that port answers on is decided by the networking this file
-	// writes into the .pod. Under host networking it is the guest's own loopback, which is why
-	// every caller could get away with assembling `127.0.0.1:<port>` for itself — and why they all
-	// break the moment an app asks for a private pod network, where the port is not
-	// on the guest's loopback at all. Returning it from the one place that chose it is what makes
-	// that a one-file change: the pod's address reaches the probe and the reverse proxy together,
-	// with no caller left to update.
+	// IT COMES BACK FROM THE RENDERER because it is the value the networking in the .pod was
+	// written with. The caller allocates it (Render's addr) and the probe and the reverse proxy
+	// read it from here, together, rather than each assembling `127.0.0.1:<port>` for itself —
+	// which breaks for a private pod network, where the port is not on the guest's loopback at
+	// all. Empty when the caller passed none.
 	//
 	// It never reaches the catalog. A published, signed, node-independent document cannot carry a
 	// fact that differs per node and per render — and since the manifest's content hash IS the
@@ -141,12 +138,12 @@ const prefix = "briard-"
 
 // Render turns a manifest into quadlet source files.
 //
-// Two traps are avoided here on purpose, both recorded before the build:
+// Two traps are avoided here on purpose:
 //
 //  1. The .container does NOT reference its image as `Image=foo.image`. That form gives the
 //     container an AUTOMATIC dependency on the pull unit, which turns PROMOTION INTO A PULL —
-//     the multi-GB cold load on the failover-critical path that warm-standby exists to prevent
-//     . The container names the digest directly and sets Pull=never, so a cold node
+//     the multi-GB cold load on the failover-critical path that warm-standby exists to prevent.
+//     The container names the digest directly and sets Pull=never, so a cold node
 //     FAILS FAST instead of fetching. Defer, don't pull, on the failover path: what a promoting
 //     node may do about a missing image is converge's decision (it pulls, by digest), never a
 //     side-effect of starting a unit.
@@ -154,25 +151,19 @@ const prefix = "briard-"
 //  2. AutoUpdate is never set. Podman would change image identity behind our back, breaking
 //     announce-before-act and the health gate. Our upgrade path owns image identity.
 //
-// NOTHING carries an [Install] section, the .image pre-warm units included. Warm standby is
-// still a node fact rather than a promoter one, but systemd is the wrong thing to entrust it to,
-// and that is what the 2026-08-29 nightly caught: starting an .image unit IS an unconditional
-// `podman image pull` (see ImageRefs), so a `WantedBy=multi-user.target` on one pulls even when
-// the image is already local.
-// MEASURED on a fleet node 2026-08-29, in the same millisecond: briard-dummy-app.service started
-// its container off localhost/briard-dummy@sha256:9c63… while briard-dummy-app-image.service was
-// failing to fetch that exact digest from a registry the node does not have. One failed unit is
-// all it takes for `switch-to-configuration switch` to exit 4, which the agent reads as a failed
-// commit — so this line turned every OS upgrade on a node with an installed app into a
-// rollback, and took os-reboot + os-upgrade down with it.
+// ⚠️ NOTHING carries an [Install] section, the .image pre-warm units included. Warm standby is a
+// node fact, but systemd is the wrong thing to entrust it to: starting an .image unit IS an
+// unconditional `podman image pull` (see ImageRefs), so a `WantedBy=multi-user.target` on one
+// pulls even when the image is already local, and fails on a node with no registry. One failed
+// unit is all it takes for `switch-to-configuration switch` to exit 4, which the agent reads as
+// a failed commit — so an [Install] here turns every OS upgrade on a node with an installed app
+// into a rollback.
 //
-// The warm itself is unaffected, because it never came from here. Install, prewarm, bring-up and
-// converge each ensure their images through AppWarm/warmImage, which asks `podman image
-// exists` before starting anything. [Install] was the one path that skipped that guard, and it
-// could not even do the job it claimed: these units live on tmpfs under /run/containers/systemd,
-// so at boot — the moment it was meant to fire — they do not exist yet. It only ever fired when
-// something re-ran the generators after converge had written them, which is precisely the
-// switch-to-configuration case above.
+// The warm never comes from here. Install, prewarm, bring-up and converge each ensure their
+// images through AppWarm/warmImage, which asks `podman image exists` before starting anything.
+// [Install] could not do that job anyway: these units live on tmpfs under Dir, so at boot they do
+// not exist yet. It fires only when something re-runs the generators after converge has written
+// them, which is precisely the switch-to-configuration case above.
 func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	if err := m.Validate(); err != nil {
 		// Rendering an unvalidated manifest is how an injected line reaches a unit file. The
@@ -184,7 +175,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 
 	// The pod, and the ONE decision this file makes that everything else derives from.
 	//
-	// HOST NETWORKING IS NOW ASKED FOR, not assumed. The manifest's silence means private
+	// HOST NETWORKING IS ASKED FOR, never assumed. The manifest's silence means private
 	// (shared/manifest property 2), so an app reaches nothing but itself unless a catalog entry
 	// deliberately says otherwise and carries that word in its identity hash.
 	//
@@ -193,11 +184,12 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	// nothing is written into the pod; under a private network it is this pod's address on the
 	// node's pod pool, and both podman and the reverse proxy are told the same value from here —
 	// the property that keeps "where it answers" a single fact rather than an agreement.
+	//
 	// ⚠️ ExitPolicy=continue IS WHAT MAKES A CRASHED CONTAINER COME BACK. Quadlet's
 	// default is `stop`: when the pod's last container exits, podman stops the pod, systemd stops
 	// the container unit as the pod's dependent, and a dependency stop suppresses the container's
-	// Restart=always -- so a crashed Home Assistant stayed down until something else started it
-	// (measured by hass-health-probe's custom-crash case). With `continue` the pod outlives its
+	// Restart=always -- so a crashed app stays down until something else starts it
+	// (nixosTest/hass-health-probe.nix, its custom-crash case). With `continue` the pod outlives its
 	// containers, the exit is an ordinary failure, and Restart= does its job. Stopping a pod on
 	// purpose is converge's (stopApp, and the stop of what it no longer renders).
 	pod := []string{"[Pod]", "PodName=" + base, "ExitPolicy=continue"}
@@ -218,11 +210,12 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 			pod = append(pod, fmt.Sprintf("PublishPort=%d:%d", p, p))
 		}
 	default:
-		// UNPINNED, and legitimately so: a caller with no address is one that needs unit names and
-		// image digests rather than something to start -- the host's prewarm and its node-local
-		// spec cache, neither of which is serving. The rendering is a true description of the
-		// app, just a less specific one, and nothing starts from it: converge re-renders with
-		// the allocated address before any pod is started, on every promotion and every install.
+		// UNPINNED, and legitimately so: a caller with no address is one that needs unit names,
+		// image refs or file contents rather than something to start -- the host's app paths and
+		// its node-local spec cache, and the guest's recorder check. The rendering is a true
+		// description of the app, just a less specific one, and nothing starts from it: converge
+		// re-renders with the allocated address before any pod is started, on every promotion and
+		// every install.
 		pod = append(pod, "Network="+PodNetwork)
 	}
 	out.Files[base+".pod"] = join(pod...)
@@ -274,8 +267,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// drbd-reactor neither starts, restarts nor watches them, so without a restart policy a
 		// container that dies stays dead with nothing to bring it back. That non-membership is
 		// what makes "an app error alerts but never demotes" mechanically true, and this line
-		// is the other half of it — the recovery the promoter used to provide, put where it
-		// belongs.
+		// is the other half of it — recovery, in the unit itself rather than in the promoter.
 		//
 		// `always` rather than `on-failure`: an app container has no legitimate exit. Its job
 		// is to keep serving, so exiting 0 is exactly as dead as exiting 1, and the pod unit's
@@ -342,76 +334,56 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// No [Install]: this unit exists to BE started by a guarded caller, never to start
 		// itself. See Render's doc comment.
 		//
-		// AND IT IS BOUNDED, because otherwise it is not. Quadlet generates a
+		// TimeoutStartSec BOUNDS THE PULL, because nothing else does. Quadlet generates a
 		// Type=oneshot unit (measured against podman 5.8.2's own generator), and systemd disables
-		// TimeoutStartSec= by default for oneshot — so an unbounded pull is the shipped behaviour.
-		// converge starts this unit on the PROMOTION path, so a registry that dribbles bytes holds
-		// the promotion open indefinitely: nixosTest/cold-converge-pull.nix measured a node sitting
-		// Primary with the volume mounted, no VIP, no apps, restarts=0 and nothing in `failed`
-		// for the full 420 s it was watched. Nothing was broken enough to alert on.
+		// TimeoutStartSec= by default for oneshot. converge starts this unit on the PROMOTION
+		// path, so an unbounded pull from a registry that dribbles bytes holds the promotion open
+		// indefinitely: nixosTest/cold-converge-pull.nix measured a node sitting Primary with the
+		// volume mounted, no VIP, no apps, restarts=0 and nothing in `failed` for its whole 420 s
+		// window. Nothing was broken enough to alert on.
 		//
-		// 45 MINUTES, AND DELIBERATELY NOT TIGHTER. The bound's job is to make a hopeless pull
-		// LOUD, not to make failure prompt, because a retry is expensive in a way that is easy to
-		// get wrong: nixosTest/image-pull-resume.nix measured that an interrupted pull does NOT
-		// resume — a SIGTERM at 43% of a 25 MiB image cost the full 25 MiB again on the next
-		// attempt (1.43x on the wire). Every expiry throws away all progress, so a bound near what
-		// a household's link actually needs would never converge; it would re-download the same
-		// blob until something gave up for good. Tighter is not safer here, it is worse.
+		// The bound is PullTimeout(m.Size): the fixed allowance plus the download at PullBitrate
+		// for an entry that says how many bytes it downloads, ImagePullTimeout (45 minutes) for
+		// one that does not. Size is the app's total, not this container's, so a multi-container
+		// app bounds each image by the whole: generous per image, and the only number the
+		// manifest carries.
 		//
-		// WHAT SURVIVES IS WHOLE LAYERS, and that is what makes 45 minutes enough rather than a
-		// guess about total image size. A layer that FINISHED before the interrupt is not fetched
-		// again: an image of 5x1 MiB plus one 20 MiB layer, interrupted with the small ones done
-		// and the big one at 8/20 MiB, re-requested none of the five on the next attempt — the
-		// registry never heard about them again (450 B of trivia aside). Only the layer in flight
-		// is lost, every time.
+		// ⚠️ DELIBERATELY NOT TIGHTER. The bound's job is to make a hopeless pull LOUD, not to
+		// make failure prompt, because an expiry throws away the layer in flight:
+		// nixosTest/image-pull-resume.nix measured that an interrupted layer does NOT resume — a
+		// SIGTERM (what the timeout sends) at 43% of a 25 MiB single-layer image cost the full
+		// 25 MiB again (1.43x on the wire). What survives is WHOLE LAYERS: an image of 5x1 MiB
+		// plus one 20 MiB layer, interrupted with the small ones done and the big one at 8/20 MiB,
+		// re-requested none of the five. So progress across attempts is MONOTONIC, and the bound
+		// has to clear the image's LARGEST SINGLE LAYER, not the whole image: 45 minutes covers a
+		// several-hundred-MB layer at well under 2 Mbit/s (PullAllowance has the sized case). A bound
+		// shorter than a household's link needs for one layer would never converge: it would
+		// re-download the same blob until something gave up for good. Tighter is not safer here,
+		// it is worse. (Equal layers hide this: podman copies layers CONCURRENTLY, so they advance
+		// in lockstep and none has finished at the interrupt.)
 		//
-		// So progress across attempts is MONOTONIC, and the bound does not have to clear the
-		// whole image on a household's worst link — it has to clear the image's LARGEST SINGLE
-		// LAYER. That is a far weaker requirement, and 45 minutes covers a several-hundred-MB
-		// layer at well under 2 Mbit/s.
+		// It also sits well clear of the faults that heal themselves: a 20 s outage mid-transfer
+		// was absorbed by TCP retransmission with no re-fetch at all (1.00x) — podman's own
+		// --retry never ran. A timeout firing during one would turn a self-healing blip into a
+		// re-download.
 		//
-		// This corrects an earlier reading of the same rig, recorded because the mistake is easy
-		// to repeat: a first cut used six EQUAL layers, saw a full re-fetch, and concluded that
-		// nothing is kept. podman copies layers CONCURRENTLY, so equal layers advance in lockstep
-		// and all of them were partial at the interrupt — there were no finished layers to keep,
-		// which is not the same fact at all. Uneven layers are the shape real images have, and
-		// the only shape in which the question has an observable answer.
-		//
-		// It also sits well clear of the faults that heal themselves. A 20 s outage mid-transfer
-		// was absorbed by TCP retransmission with no re-fetch at all (1.00x, a single
-		// `Copying blob` line spanning the break) — podman's own --retry never ran. A timeout that
-		// fired during one of those would convert a self-healing blip into a full re-download.
-		// PrivateTmp KEEPS THE BOUND FROM BECOMING A DISK LEAK, and without it the timeout above
-		// would be a slow-motion ENOSPC. A pull downloads every COMPRESSED layer into
-		// /var/tmp/container_images_storage<random>/, unpacks each into the graph root as it
-		// arrives, and deletes the downloads only when the whole pull COMPLETES — so a pull that is
-		// killed leaves its downloaded layers behind, and podman never comes back for them
-		// (measured: a successful pull cleans up, an interrupted one does not; three interrupted
-		// pulls left three directories). A 45-minute expiry on a slow link would abandon up to the
-		// whole download each time — 622 MB of Home Assistant — on the guest's OS disk, where
-		// /var/tmp lives (the graph root is on the state disk) — and the households that hit the
-		// timeout are exactly the ones that hit it repeatedly. A completed pull peaks at both at
-		// once: Home Assistant measured 622 MB in /var/tmp beside 2.28 GB already unpacked.
-		//
-		// systemd gives the unit its own /var/tmp and removes it when the unit stops, HOWEVER it
-		// stops — which an ExecStopPost cleanup would not, since a SIGKILL skips it. Measured
-		// both ways: an interrupted pull now leaves 0 KB behind, and a successful one still lands
-		// in the graph root untouched.
-		//
-		// AND IT IS DISK-BACKED, which was the thing worth checking rather than assuming: a
-		// tmpfs private /var/tmp would run the copy through RAM and trade this leak for an OOM on
-		// the first multi-GB image. Measured — the scratch appears as a real
-		// systemd-private-*-briard-…-image.service-* directory on the root filesystem (11 MB of a
-		// 25 MiB pull visible there mid-transfer), not in memory.
+		// PrivateTmp KEEPS THE BOUND FROM BECOMING A DISK LEAK. A pull downloads every COMPRESSED
+		// layer into /var/tmp/container_images_storage<random>/, unpacks each into the graph root
+		// as it arrives, and deletes the downloads only when the whole pull COMPLETES — a killed
+		// pull leaves them behind and podman never comes back for them (measured: three
+		// interrupted pulls left three directories). Each expiry would abandon up to the whole
+		// download — 622 MB for Home Assistant — on the guest's OS disk, where /var/tmp lives
+		// (the graph root is on the state disk), and the households that hit the timeout hit it
+		// repeatedly. (A completed pull peaks at both at once: 622 MB in /var/tmp beside 2.28 GB
+		// already unpacked, for Home Assistant.) systemd gives the unit its own /var/tmp and
+		// removes it when the unit stops, HOWEVER it stops — an ExecStopPost cleanup would not,
+		// since a SIGKILL skips it. Measured both ways: an interrupted pull leaves 0 KB behind,
+		// and a successful one lands in the graph root untouched. The private /var/tmp is
+		// DISK-BACKED — a systemd-private-*-briard-…-image.service-* directory on the root
+		// filesystem — so it does not trade the leak for an OOM on the first multi-GB image.
 		//
 		// Only on the .image unit: this one pulls and exits. The .container unit runs the app
 		// and is deliberately left alone.
-		//
-		// SIZED BY THE MANIFEST: an entry that says how many bytes it downloads
-		// gets PullTimeout(size) -- the fixed allowance plus the download at the floor bitrate --
-		// and the 45 minutes above stay for an entry that does not. The manifest's total is the
-		// app's, not this container's, so a multi-container app bounds each image by the
-		// whole: generous per image, and the only number the manifest carries.
 		out.Files[unit+".image"] = join(
 			"[Image]",
 			"Image="+c.Image,
@@ -426,11 +398,9 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		}
 		out.ImageRefs[unit+"-image.service"] = c.Image
 	}
-	// Where the pod above can be reached. HOST NETWORKING IS WHY IT IS LOOPBACK: the containers
-	// share the guest's network namespace, so the primary's port is the guest's own port. This is
-	// the one line that changes when an app asks for a private network — and it is
-	// deliberately the ONLY place that knows, so that changing it moves the reverse proxy's route
-	// and the health probe's target together rather than leaving callers to agree.
+	// Where the pod above can be reached: the address it was rendered with, returned so the
+	// reverse proxy's route and the health probe's target come from the value podman was given
+	// rather than from callers agreeing.
 	out.Address = addr
 	return out, nil
 }
@@ -447,8 +417,8 @@ func DataRoot(app string) string { return Area(manifest.TierData, app) }
 // mount), so they replicate with the volume.
 const SnapshotsDir = "/var/lib/briard/data/.snapshots/"
 
-// snapshotStamp is the member name's time format: fixed width, UTC, and chosen so that lexical
-// order over names IS chronological order. Every reader of the ring leans on that.
+// snapshotStamp is the member name's time format: fixed width and UTC, so lexical order over
+// STAMPS is chronological order. Over whole names it is not (SnapshotMember).
 const snapshotStamp = "20060102T150405Z"
 
 // A Trigger says what caused a member to be taken, and is the half of its name a human scans.
@@ -548,19 +518,15 @@ func ParseSnapshotMember(name string) (app string, trigger Trigger, at time.Time
 
 // SnapshotMember is one member's subvolume path: app, trigger and the moment it was taken.
 //
-// A SERIES, WHICH IS THE WHOLE OF THE RING. This replaced a single fixed `<app>-preupgrade`
-// name whose doc read "a rollback point is one replaceable fact, not a series" — true while the
-// only member was the one an in-flight upgrade needed, and the reason the old verb used to
-// DELETE an existing point before taking the new one. Both are retired together: members are
-// distinct by construction now, so nothing is replaced and the verb refuses a collision instead
-// of resolving it.
+// A SERIES, WHICH IS THE WHOLE OF THE RING: members are distinct by construction, so nothing is
+// replaced, and a take whose name already exists is refused rather than resolved.
 //
 // Second precision and UTC, so two members' TIMES compare correctly once parsed, and so two nodes
 // in different zones taking a member at the same instant agree on what it is called.
 //
 // ⚠️ THE NAME IS NOT A CHRONOLOGICAL SORT KEY, and reading it as one is a real bug this format
-// invites: the TRIGGER sits between the app and the stamp, so every `-start-` member sorts
-// before every `-clock-` one whatever their times. Readers order by SnapshotMemberTime.
+// invites: the TRIGGER sits between the app and the stamp, so every `-clock-` member sorts
+// before every `-start-` one whatever their times. Readers order by SnapshotMemberTime.
 // (Trigger-before-stamp is kept because it is what makes the directory readable to a human
 // scanning it, which is the other job the name has.)
 func SnapshotMember(app string, trigger Trigger, at time.Time) string {
@@ -590,25 +556,24 @@ func AppSidecar(member string) string { return member + ".app.json" }
 // (nixosTest/apps-pair.nix). Per-app, in other words — which is why a member carries the
 // answer rather than leaving every reader to infer one.
 //
-// IT IS THE TAKER'S OWN KNOWLEDGE and needs no crash detection: whoever takes a member knows
-// whether it created the stopped window. But ⚠️ A STOPPED CONTAINER IS NOT THE SAME FACT AS
-// FLUSHED DATA, which is why this is not derived from the Trigger. The member after a promotion
-// has nothing running either, yet the old primary never shut the app down, so its bytes are
-// crash-consistent under an ordinary `start` trigger. That case is also the one thing this field
-// can still get wrong: the failover trigger it would need does not exist yet, so a promotion start
-// is labelled like any other start.
+// IT IS THE TAKER'S TO STATE, never derived from the Trigger, because ⚠️ A STOPPED CONTAINER IS
+// NOT THE SAME FACT AS FLUSHED DATA. The member taken as an app starts after a promotion has
+// nothing running either, yet the old primary never shut the app down, so its bytes are
+// crash-consistent under an ordinary `start` trigger. A container start tells the two apart by
+// the clean-stop marker its unit's ExecStopPost leaves (see Render); a taker that stopped the app
+// itself knows.
 //
-// The empty value means UNRECORDED — a member taken before this field existed. A reader must treat
-// it as unknown and never as quiesced: the integrity check may trust only what says so.
+// The empty value means UNRECORDED — a member from an older briard. A reader must treat it as
+// unknown and never as quiesced: the integrity check may trust only what says so.
 type Consistency string
 
 const (
-	// Quiesced: every member taken with the container stopped — the pre-start hook and the
-	// *-before samples.
+	// Quiesced: the data was flushed — a container start after a clean stop, a *-before sample
+	// of an app briard stopped first, a clock sample whose quiesce held.
 	Quiesced Consistency = "quiesced"
-	// Crash: taken against a running app. Clock samples are the members meant to be this,
-	// and only until their quiesce (a truncating WAL checkpoint plus a held transaction) promotes
-	// them.
+	// Crash: not known to be flushed — a clock sample the app did not hold still for (its
+	// quiesce: a truncating WAL checkpoint plus a held transaction), or a container start with
+	// no clean stop before it.
 	Crash Consistency = "crash"
 )
 
@@ -754,8 +719,8 @@ func Images(m manifest.Manifest) (Rendered, error) {
 	return out, nil
 }
 
-// agentBin is the guest agent's absolute path, which a rendered ExecStartPre must name because
-// systemd requires an absolute path for the first word of an Exec line.
+// agentBin is the guest agent's absolute path, which the rendered ExecStartPre and ExecStopPost
+// must name because systemd requires an absolute path for the first word of an Exec line.
 //
 // It is the ONE node-local fact this renderer reads, and it is read rather than passed because
 // the alternative is worse: threading it through Render would put it in every caller and every
