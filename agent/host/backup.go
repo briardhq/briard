@@ -64,8 +64,9 @@ func newBackupScheduler() *backupScheduler {
 }
 
 // backup collects a run that is going, or starts tonight's if it is due: this node serves, and the
-// local time is inside tonight's window. Every night that should have run and did not is recorded
-// as a failed one, so the alert counts what the household would count.
+// local time is inside tonight's window. A night whose run could not start, or was lost, is
+// recorded as a failed one, so the alert counts what the household would count; a night the
+// agent missed altogether records nothing.
 func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler, serving bool, now time.Time, n notify.Notifier, logf func(string, ...any)) {
 	cfg.refreshDocuments(userDocuments, logf) // a registry read: where the backup folder is, if Documents moved
 	if cfg.stateDir() == "" || cfg.hostNodeIP() == "" || !serving {
@@ -238,8 +239,8 @@ func backupWorking(node, why string) notify.Alert {
 	}
 }
 
-// backupNightsKept is how many nights the page lists: a week, which is also as far back as the
-// repository keeps daily snapshots plus its one weekly.
+// backupNightsKept is how many nights the page lists: a week. The repository itself keeps two
+// daily snapshots and one weekly (the guest's forget).
 const backupNightsKept = 7
 
 // folderSize is what the folder holds, summed from what each file says it is -- never read, so a
@@ -421,8 +422,9 @@ type backupRecord struct {
 }
 
 // backupFolder is the backup folder as it stands NOW: `config set backup-dir` turns it off and on
-// at runtime, and the store and the nightly tick both read it. Atomic, because the store reads it
-// from its own goroutine. nil (every unit test that does not set it) reads BackupDir.
+// at runtime, and the store and the nightly tick both read it. backupLive is atomic because the
+// store reads it from its own goroutine; nil (every unit test that does not set it) reads
+// BackupDir.
 func (cfg Config) backupFolder() string {
 	return cfg.resolveBackupDir(cfg.backupDir())
 }
@@ -565,7 +567,7 @@ func (cfg Config) pushBackupView(ctx context.Context, r any, b *backupScheduler,
 	*pushed = string(raw)
 }
 
-// THE BACKUP'S TWO SETTINGS, through `config set` -- the one runtime writer -- so the page and the
+// THE BACKUP'S THREE SETTINGS, through `config set` -- the one runtime writer -- so the page and the
 // CLI change them the same way. Applied in place: the store and the tick read backupFolder() at
 // every use, so nothing restarts, and the guest is not involved.
 //
@@ -1020,9 +1022,9 @@ const backupNowBudget = 90 * time.Minute
 // the night's are never two runs at once (asked during one, it waits for that one, then runs).
 // Like an adoption's kick, it does not count as the night: the night still runs.
 //
-// THE PAGE ASKS AND DOES NOT WAIT (api.BackupNowStart): its one wire to the host answers in
-// order, so an hour's wait would hold every other button on it. It follows the run in the view
-// instead -- the run going, then how it ended (pushBackupView).
+// THE PAGE ASKS AND DOES NOT WAIT (api.BackupNowStart): a run may take an hour, far past any
+// page request's timeout. It follows the run in the view instead -- the run going, then how it
+// ended (pushBackupView).
 func (cfg Config) applyBackupNow(ctx context.Context, d api.Directive) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}

@@ -66,7 +66,7 @@ type stateGrower interface {
 // growStateDisk grows this node's state disk until the guest has need bytes free on it: the thick
 // file first (the host pays, or refuses with errHostDiskFull), then QEMU is told the new size,
 // then the guest grows its filesystem into it -- all while the guest runs. It never shrinks: the
-// disk is a cache, and shrinking it is recreating it at a relaunch.
+// disk is a cache, and shrinking it would mean recreating it, which nothing does.
 func (cfg Config) growStateDisk(ctx context.Context, g stateGrower, resize func(context.Context, int64) error, need int64, logf func(string, ...any)) error {
 	free, _, err := g.StorageFree(ctx)
 	if err != nil {
@@ -104,8 +104,8 @@ type diskFill struct {
 }
 
 // startFill starts the fill on this copy of cfg, so nothing the start goes on to set races it. A
-// node whose disks are all there -- every start but the first -- has nothing to write, and makes
-// them here, ended before the start goes on.
+// node whose disks are all there -- every start but the first -- has nothing to write, so it runs
+// provisionDisks here, ended before the start goes on.
 func (cfg Config) startFill(logf func(string, ...any)) *diskFill {
 	f := &diskFill{done: make(chan struct{}), by: time.Now().Add(provisionBudget)}
 	fresh := false
@@ -155,9 +155,10 @@ func (cfg Config) joinFill(ctx context.Context, local <-chan localRequest, f *di
 // provisionDisks makes this node's pet volumes exist, once, before the guest is launched.
 //
 // ⚠️ IT PROVISIONS ONLY WHAT IT WAS TOLD ABOUT, and that predicate is doing real work rather than
-// being defensive. An empty path is how a harness says "this node has no such disk", so a
-// path invented here would hand qemu a `-drive` for a file nobody made. Same rule as everywhere else in the install layout: the installer
-// decides the LAYOUT and writes the paths down; the agent makes what those paths name.
+// being defensive. An empty path is how a harness says "this node has no such disk", so a path
+// invented here would hand qemu a `-drive` for a file nobody made. Same rule as everywhere else
+// in the install layout: the installer decides the LAYOUT and writes the paths down; the agent
+// makes what those paths name.
 //
 // Both disks are THICK, and their directory is marked no-copy-on-write before either is made
 // (platform.SetNoCOW): on a btrfs host a reservation does not cover a later overwrite otherwise.
@@ -220,8 +221,8 @@ func parseSize(s string) (int64, error) {
 }
 
 // diskAlerter tells the household when the host disk holding this node's disks runs short --
-// BEFORE an operation is refused for it. Nothing the guest writes reaches the host any more (its
-// OS is read-only and its disks thick), so a full host disk no longer stops the guest; what it
+// BEFORE an operation is refused for it. Nothing the guest writes reaches the host's free space
+// (its OS is read-only and its disks thick), so a full host disk does not stop the guest; what it
 // stops is the next thing that needs room: an app install or upgrade (growStateDisk keeps
 // hostDiskReserve) and the next update, which stages beside the running one. Without this, the
 // first a household hears of it is that refusal.

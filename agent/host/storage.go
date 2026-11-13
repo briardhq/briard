@@ -10,11 +10,10 @@ import (
 
 // THE NODE'S STORAGE SPEC IS THE HOST'S TO RENDER.
 //
-// Storage policy is a node-scoped fact the host holds durably and pushes at bring-up, and until
-// this existed the guest decided it: the seam was first built in a BOOT unit whose only
-// inputs were facts it could read off the machine. That shape has no way to carry a decision --
-// which is exactly why Adiantum, specified as an install-time opt-in, could not be built. The
-// host renders the whole spec here and the guest carries it out.
+// Storage policy is a node-scoped fact the host holds durably and pushes at bring-up: the host
+// renders the whole spec here and the guest carries it out. A guest that decided it alone could
+// use only facts it reads off the machine, and so could never carry a decision such as the
+// install-time DATA_ENCRYPTION choice (Adiantum).
 
 // dataTier is the one tier every diskful node holds: the replicated volume, on the second virtio
 // disk, as the two-LV VG the seam invariant fences -- the data LV and, at the
@@ -38,9 +37,9 @@ func dataTier(mode nodestorage.Mode) nodestorage.Tier {
 // node builds, and the .res it attaches on top of it.
 //
 // It takes the resource and the two decisions rather than reading them off c, because the join
-// path brings up a DIFFERENT resource under different terms -- a joiner is hard-wired
+// path (pair.go) brings up a DIFFERENT resource under different terms -- a joiner is hard-wired
 // FreshInit=false, and a witness is diskless -- and a builder that read cfg.FreshInit would seed
-// a joiner (rendering on the host does not change that rule; it only moves where it is carried out).
+// a joiner.
 //
 // It returns an error rather than a spec-and-a-hope: the unit on the other side of this document
 // runs luksFormat and lvcreate, so a policy nobody can parse must stop bring-up here, loudly,
@@ -50,7 +49,7 @@ func dataTier(mode nodestorage.Mode) nodestorage.Tier {
 // EXPORTED FOR THE TEST DRIVER, the harness that stands in for this agent (nixosTest/driver): it
 // renders its spec through here rather than assembling one of its own, so a rig exercises the
 // product's composition -- the DATA_ENCRYPTION knob included -- instead of a second opinion about
-// it. That is the whole point of rendering the spec on the host.
+// it.
 func (c Config) StorageSpec(res drbd.Resource, diskless, freshInit bool) (nodestorage.Spec, error) {
 	// A RESOURCE IS WORTH RUNNING ONLY WITH TWO COPIES. With one diskful member DRBD
 	// protects nothing and turns any single bad block into a dead node, so a lone anchor runs

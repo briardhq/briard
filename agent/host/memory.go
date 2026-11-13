@@ -26,8 +26,8 @@ import (
 // restart, one window at a time, in zram meanwhile rather than out of memory.
 
 // hostMemoryReserveMB is what the guest may never grow into: the host's own OS, the agent and
-// QEMU's overhead. The report card refuses a host below 4 GB, so the smallest admitted host can
-// still give its guest half its RAM.
+// QEMU's overhead. The report card refuses a host below 4 GB (3584 MB as the OS reports it), so
+// the smallest admitted host can still grow its guest to ~1.5 GB.
 const hostMemoryReserveMB = 2048
 
 var errMemoryCeiling = errors.New("the guest is at its memory ceiling")
@@ -178,8 +178,9 @@ const memoryAlertFactor = 2.5
 // memoryAlert is what the guest's size says about it, asserted after each growth decision
 // (atCeiling when the guest needed a step and the host had none left): unusual at
 // memoryAlertFactor, critical at the ceiling, and fine below the threshold -- which a relaunch
-// brings about by handing the memory back (memoryReturned says so at the relaunch itself). The
-// alert store turns the assertions into one alert per change: growing, then out, then back.
+// brings about by handing the memory back (the observe loop asserts memoryReturned when it next
+// reads the VM's size, on the clock reader's cadence). The alert store turns the assertions into
+// one alert per change: growing, then out, then back.
 func memoryAlert(node string, sizeMB, bootMB, ceilingMB int, atCeiling bool) notify.Alert {
 	threshold := int(float64(bootMB) * memoryAlertFactor)
 	if !atCeiling && sizeMB < threshold {

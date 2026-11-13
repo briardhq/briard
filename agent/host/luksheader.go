@@ -19,13 +19,14 @@ import (
 //
 // WHY THE HOST DOES IT, rather than the guest running `cryptsetup luksHeaderBackup` and handing
 // the file over. A header backup IS the prefix of the volume from byte 0 to the data offset, and
-// the data offset is not something we inherit -- the guest's seam unit PINS it at luksFormat
+// the data offset is not something we inherit -- the guest's storage seam PINS it at luksFormat
 // (`--offset`), so it is a stated product constant, restated here the way /run/briard's paths
 // are. Copying it host-side needs no new channel verb, no cryptsetup on a Windows box, and no
 // guest that is up at the moment the copy is wanted.
 const (
 	// luksHeaderSize is the pinned data offset: everything before it is header + keyslots.
-	// It must equal the guest seam unit's `--offset` (guest-image/configuration.nix).
+	// It must equal luksDataOffset (32768 512-byte sectors) in agent/guestagent/nodestorage.go,
+	// the `--offset` its luksFormat passes.
 	luksHeaderSize = 16 << 20
 	// luksHeaderName is the backup's name, beside the data image it belongs to, because the two
 	// travel together: a data.img moved to another disk without its header is unopenable.
@@ -40,7 +41,7 @@ var luksMagic = []byte{'L', 'U', 'K', 'S', 0xba, 0xbe}
 // backupLUKSHeader copies the data image's LUKS header beside it, ONCE.
 //
 // ONCE, and deliberately never re-taken: the header changes only when a keyslot does, and a
-// keyslot changes only when a node is ARMED (v5, and arming owns re-taking it). Re-copying on
+// keyslot changes only when a node is ARMED, and arming owns re-taking it. Re-copying on
 // every bring-up would give a torn live header a route over a good backup, which is the one thing
 // a backup must not have.
 //
@@ -77,9 +78,9 @@ func backupLUKSHeader(dataDisk string, logf func(string, ...any)) {
 		logf("luks header backup: %s is shorter than its own header: %v", dataDisk, err)
 		return
 	}
-	// 0600: the header carries the keyslots. They are argon2-wrapped, and on an un-armed node the
-	// passphrase that opens them is in a token on the volume anyway -- but a file whose whole
-	// purpose is to be the last copy of a key store is not one to leave world-readable.
+	// 0600: the header carries the keyslots. They are argon2-wrapped, but on an un-armed node the
+	// passphrase that opens them sits in plaintext in a LUKS2 token in this same header: this
+	// file opens the volume, and is not one to leave world-readable.
 	if err := atomicfile.Write(dst, header, 0o600, 0o700); err != nil {
 		logf("luks header backup: could not write %s: %v", dst, err)
 		return
