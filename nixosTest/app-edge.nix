@@ -141,20 +141,27 @@ pkgs.testers.runNixOSTest {
         assert m, f"no answer from the guest:\n{out}"
         return m.group(1), m.group(2)
 
+    def counters(when):
+        """The guest's cumulative CPU and pressure counters, before and after every install, pass
+        or fail: steal tells a descheduled guest, PSI an I/O or CPU stall, and a passing install's
+        delta is the baseline a failing one's is read against."""
+        print(f"counters {when}:\n" + guest("cat /proc/uptime; head -1 /proc/stat; grep -H . /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory"))
+
     def install():
+        counters("before the install")
         # The guest's console from this install on: a guest that restarts mid-install takes its
         # journal with it, and the serial log is the one record that outlives the restart.
         mark = int(host.succeed("wc -c < /tmp/guest-serial.log").strip())
         rc, out = host.execute(f"briard-agent app install {svc} 2>&1")
         print(f"app install {svc}: rc={rc}\n{out}")
+        counters(f"after the install (rc={rc})")
         if rc != 0:
             # Less the health polls, which are most of it and say nothing a status line does not.
             print(host.succeed(
                 f"tail -c +{mark + 1} /tmp/guest-serial.log | tr -d '\\r' "
                 "| grep -v -e 'GET /api/app/about' -e 'container health_status' -e 'status node=' | tail -1500"
             ))
-            # Cumulative since boot: steal tells a descheduled guest, PSI an I/O or CPU stall.
-            print(guest(f"nproc; head -1 /proc/stat; grep -H . /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory; dmesg | tail -40; free -m; systemctl status briard-stage --no-pager | head -5; journalctl -b --no-pager -u briard-stage -u briard-{svc}-app-image | tail -30", wait=10))
+            print(guest(f"dmesg | tail -40; free -m; systemctl status briard-stage --no-pager | head -5; journalctl -b --no-pager -u briard-stage -u briard-{svc}-app-image | tail -30", wait=10))
         return rc
 
     # BOTH VERSIONS' IMAGES ARE STAGED, loaded by the guest at boot beside everything else: an
