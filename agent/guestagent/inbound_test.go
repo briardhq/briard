@@ -1269,3 +1269,16 @@ func TestEveryStartSignalsTheReverseProxy(t *testing.T) {
 		t.Errorf("a restart inside the container did not signal the reverse proxy: %v", f.runs)
 	}
 }
+
+// TestTheStopHookFindsItsTools: the rendered ExecStopPost runs with systemd's default PATH, which
+// on the guest holds no coreutils, so the hook puts the image's profile on it itself -- without
+// it `sync` was not found and no stop was ever recorded clean.
+func TestTheStopHookFindsItsTools(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin")
+	if err := RecordAppStop(context.Background(), restoreRig(""), "home-assistant", "success"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(os.Getenv("PATH"), ToolsBin()) {
+		t.Errorf("PATH = %q after the stop hook, want the tool profile %s on it", os.Getenv("PATH"), ToolsBin())
+	}
+}

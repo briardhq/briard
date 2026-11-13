@@ -185,6 +185,11 @@ pkgs.testers.runNixOSTest {
     publish("${fixture}/variants/next/catalog")
     assert install() == 0, "the upgrade to the candidate did not pass its health gate"
     running(next_id)
+    # The upgrade stopped the previous version cleanly, and the stop hook recorded it: the member
+    # taken as the candidate started reads quiesced. A hook that cannot run leaves it crash.
+    out = guest(f"echo C=$(ls -t /var/lib/briard/data/.snapshots/{svc}-start-*.json | head -1 | xargs grep -o \"consistency[^,]*\")")
+    m = re.search(r"C=consistency\W+(\w+)", out)
+    assert m and m.group(1) == "quiesced", f"the candidate's start member is not quiesced -- the stop hook did not record the clean stop:\n{out}"
     assert markers() == ("before", ""), f"the upgrade lost the previous version's data: {markers()}"
     guest(f"echo after > {data}/.briard-edge-after; sync -f /var/lib/briard; echo D\"\"ONE")
     assert markers() == ("before", "after"), f"the candidate's marker did not land: {markers()}"

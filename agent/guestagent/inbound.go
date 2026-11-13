@@ -638,6 +638,7 @@ func cleanStopPath(app string) string { return manifestDir + "/" + app + ".clean
 // RecordAppStop writes that marker, or removes it when the stop was not clean. It is what the
 // rendered unit's ExecStopPost calls, and systemd's own SERVICE_RESULT is the evidence.
 func RecordAppStop(ctx context.Context, x Executor, app, result string) error {
+	ensureToolsOnPath() // `sync` and `rm`: the rendered unit's ExecStopPost carries no tool profile
 	if err := safeUnitName(app); err != nil {
 		return err
 	}
