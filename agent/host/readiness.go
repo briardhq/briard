@@ -52,6 +52,18 @@ type readinessProbe interface {
 	MosquittoProbe(ctx context.Context, token string) (mosquitto.Sample, error)
 }
 
+// heldProbe asks whichever client the install holds when the sample is taken, not the one it
+// held when the gate was built: the health gate between the two may have followed a reconnect.
+type heldProbe struct{ g *appInstaller }
+
+func (p heldProbe) HassReadiness(ctx context.Context, port int) ([]hass.Entry, error) {
+	return (*p.g).HassReadiness(ctx, port)
+}
+
+func (p heldProbe) MosquittoProbe(ctx context.Context, token string) (mosquitto.Sample, error) {
+	return (*p.g).MosquittoProbe(ctx, token)
+}
+
 // settleWindow is how long the post-change sample waits before it is judged.
 //
 // It exists because the signal is a settling state machine, not a level. Home Assistant retries a

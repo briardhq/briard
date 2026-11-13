@@ -15,6 +15,7 @@ import (
 	apps "briard.io/agent/apps"
 	"briard.io/agent/guest"
 	"briard.io/agent/guestagent"
+	"briard.io/agent/guestfirmware"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/platform"
@@ -475,7 +476,8 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	// running, so there is no "was loaded" to regress from — and the floor is the honest gate
 	// there. Deliberate rather than incidental: it is also the case where a Baseline call would
 	// be asking an app that does not exist yet.
-	gate := guest.Gate{Assessor: cfg.assessorFor(m, g, logf), Logf: logf}
+	// Through &g, so a gate built here asks over the channel the health gate may have followed.
+	gate := guest.Gate{Assessor: cfg.assessorFor(m, heldProbe{&g}, logf), Logf: logf}
 	var readiness guest.Readiness
 	if prior != nil {
 		readiness = gate.Capture(ctx)
@@ -559,6 +561,11 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 		kind = "app update"
 	}
 	revert := func(cause error) api.DirectiveOutcome {
+		// A STEP THAT DIED WITH THE CHANNEL reverts over the one Run re-establishes: the dead
+		// client would fail the revert the same way, leaving the install half undone.
+		if errors.Is(cause, guestfirmware.ErrChannelDown) {
+			cfg.follow(ctx, &g, logf)
+		}
 		o := cfg.revert(ctx, g, d, m.Name, logf, cause)
 		// Not ctx: a gate that ran out of budget is the commonest cause, and its alert must still leave.
 		escalate(context.WithoutCancel(ctx), n, logf, m.Name, kind, m.Version, errors.New(o.Detail))
@@ -598,7 +605,7 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	// Gate on the APP's own endpoint (in-guest), not the reverse proxy — see awaitHealthy. BY
 	// NAME: the converge above wrote the routing table, so the guest already knows where this
 	// app listens, and the host no longer assembles an address it can only guess stays true.
-	if err := cfg.awaitHealthy(ctx, g, m.Name, logf); err != nil {
+	if err := cfg.awaitHealthy(ctx, &g, m.Name, logf); err != nil {
 		logf("app install %s failed its health gate (%v); reverting", m.Name, err)
 		return revert(err)
 	}
@@ -1218,15 +1225,29 @@ func containerUnits(raw string) []string {
 // install and says so. Unknown means the app has told us nothing — our login to it failing, which
 // is not the app — and reverting a working app over our own login would be the gate doing the
 // damage it exists to prevent.
-func (cfg Config) awaitHealthy(ctx context.Context, g appInstaller, app string, logf func(string, ...any)) error {
+//
+// NOR IS A DEAD CHANNEL, while the gate lasts. A guest that stalls long enough for the liveness
+// rule to close the channel and then serves again is the observe loop's to reconnect, in
+// seconds; the gate waits for that channel and asks over it (follow), and g is re-pointed so
+// every step after the gate -- the readiness verdict, the commit, a revert -- asks over it too.
+func (cfg Config) awaitHealthy(ctx context.Context, g *appInstaller, app string, logf func(string, ...any)) error {
 	if app == "" {
 		return nil // nothing to probe (a witness never installs)
 	}
 	deadline := time.Now().Add(healthGate)
 	for {
-		h, err := g.AppHealthOf(ctx, app)
+		h, err := (*g).AppHealthOf(ctx, app)
 		if err == nil && h == apps.Healthy {
 			return nil
+		}
+		if errors.Is(err, guestfirmware.ErrChannelDown) {
+			logf("app install %s: the control channel went down during the health gate; waiting for it", app)
+			wctx, cancel := context.WithDeadline(ctx, deadline)
+			followed := cfg.follow(wctx, g, logf)
+			cancel()
+			if followed {
+				continue
+			}
 		}
 		if time.Now().After(deadline) {
 			if err == nil && h == apps.HealthUnknown {

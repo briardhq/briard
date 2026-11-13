@@ -25,6 +25,7 @@ import (
 	"briard.io/agent/apps"
 	"briard.io/agent/drbd"
 	"briard.io/agent/guestagent"
+	"briard.io/agent/guestfirmware"
 	"briard.io/agent/hass"
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/quadlet"
@@ -68,6 +69,7 @@ type fakeInstaller struct {
 	manifests    []string
 	healthURL    string
 	healthOf     string
+	healthEr     error // AppHealthOf fails with this, before any verdict (a dead channel)
 	renderEr     error
 	provEr       error
 	convergeEr   error
@@ -315,6 +317,9 @@ func (f *fakeInstaller) AppHealth(_ context.Context, url string) (bool, error) {
 func (f *fakeInstaller) AppHealthOf(_ context.Context, app string) (apps.Health, error) {
 	f.steps = append(f.steps, "health")
 	f.healthOf = app
+	if f.healthEr != nil {
+		return apps.HealthUnknown, f.healthEr
+	}
 	if !f.healthy {
 		return apps.HealthUnknown, errors.New("not ready")
 	}
@@ -2510,5 +2515,51 @@ func TestClearingTheCacheStopsEmptiesAndStartsTheApp(t *testing.T) {
 		if o.State != api.OutcomeFailed || slices.ContainsFunc(steps, func(s string) bool { return strings.HasPrefix(s, "stop:") }) {
 			t.Errorf("%s: outcome %+v, steps %v; want refused with nothing stopped", name, o, steps)
 		}
+	}
+}
+
+// TestHealthGateFollowsAReconnect: a guest that stalled long enough for the liveness rule to close
+// the channel, and then served again, is asked over the channel Run re-established -- and the
+// install holds that one from then on, so the readiness verdict, the commit and a revert ask over
+// it too. Asking the dead client again read as a failed install, then a revert that could not
+// reach the guest either.
+func TestHealthGateFollowsAReconnect(t *testing.T) {
+	dead := &fakeInstaller{healthEr: fmt.Errorf("%w: use of closed network connection", guestfirmware.ErrChannelDown)}
+	back := &fakeInstaller{healthy: true}
+	cfg := Config{acts: newActLane()}
+	cfg.acts.holding(dead)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cfg.acts.holding(back) // Run's reconnect
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var g appInstaller = dead
+	if err := cfg.awaitHealthy(ctx, &g, "mealie", t.Logf); err != nil {
+		t.Fatalf("the gate failed across a reconnect: %v", err)
+	}
+	if g != appInstaller(back) {
+		t.Error("the install still holds the dead client; the steps after the gate would fail on it")
+	}
+	if back.healthOf != "mealie" {
+		t.Errorf("the re-established channel was never asked (healthOf %q)", back.healthOf)
+	}
+}
+
+// TestHealthGateWithNoReconnectEndsWithItsContext: a guest that does not come back is not waited
+// on past the act's own ctx -- following a reconnect never turns a dead guest into a hung act.
+func TestHealthGateWithNoReconnectEndsWithItsContext(t *testing.T) {
+	dead := &fakeInstaller{healthEr: fmt.Errorf("%w: use of closed network connection", guestfirmware.ErrChannelDown)}
+	cfg := Config{acts: newActLane()}
+	cfg.acts.holding(dead)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	var g appInstaller = dead
+	start := time.Now()
+	if err := cfg.awaitHealthy(ctx, &g, "mealie", t.Logf); err == nil {
+		t.Fatal("the gate passed with no channel to ask over")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("the gate outlived its context by %s", d)
 	}
 }

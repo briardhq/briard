@@ -960,6 +960,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	ctx = cfg.acts.stopAfter(ctx, logf)
 	cfg.sleep = &sleepAlerter{read: lastSleep, lid: lidAction, shutDown: fastStartup}
 	for {
+		cfg.acts.holding(client) // what an act whose channel died carries on over (follow)
 		served := time.Now()
 		err := cfg.observe(ctx, client, mgr, alerter, n, rep, cs, agg, assignment.Tenant, local, &pendingOutcomes, logf)
 		if ctx.Err() != nil {

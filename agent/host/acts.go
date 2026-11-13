@@ -40,7 +40,8 @@ import (
 // directive ends with -- the cloud's pending outcome, the CLI's answer, adopting what was
 // installed -- stays on the loop, where it always was. The lane outlives any one observe() call
 // (it is Run's, like pendingOutcomes): an act that spans a channel bounce finishes on the client
-// it started with and still reports through here.
+// it started with -- or, when that channel dies under it, on the one Run re-establishes
+// (follow) -- and still reports through here.
 type actLane struct {
 	mu       sync.Mutex
 	busy     string          // the kind of the act in flight, "" when none
@@ -48,6 +49,10 @@ type actLane struct {
 	done     chan struct{}   // closed when the act in flight ends; Run waits on it for a relauncher
 	results  chan actResult
 	stopping bool // the agent is stopping: no new act (stopAfter)
+	// The channel Run holds now, and a signal closed each time it is replaced: what an act whose
+	// own client died waits on (follow).
+	cur   any // a guestReader; held as any, since an act asserts the slice it drives (follow)
+	moved chan struct{}
 }
 
 // actResult is a directive's outcome on its way back to the loop, with what the loop needs to
@@ -62,7 +67,7 @@ func newActLane() *actLane {
 	// Buffered past anything in flight: one act plus a handful of pulls, and the loop drains it
 	// every cycle. A send never waits on the loop, so a directive's goroutine cannot be held
 	// by the loop it is reporting to.
-	return &actLane{results: make(chan actResult, 16), sent: map[string]bool{}}
+	return &actLane{results: make(chan actResult, 16), sent: map[string]bool{}, moved: make(chan struct{})}
 }
 
 // offLoopActs are the kinds that run off the loop one at a time; offLoopPulls the kinds that run
@@ -298,4 +303,64 @@ func (a *actLane) stopAfter(parent context.Context, logf func(string, ...any)) c
 		cancel()
 	}()
 	return ctx
+}
+
+// holding records the channel Run holds now. Run calls it each time round its loop, so a
+// channel it re-established -- dialled, recovered or adopted from an upgrade -- is what an act
+// whose own client died finds here. nil-safe like inFlight.
+func (a *actLane) holding(r any) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cur == r {
+		return
+	}
+	a.cur = r
+	close(a.moved)
+	a.moved = make(chan struct{})
+}
+
+// channelAfter waits until Run holds a channel other than old, and returns it; false when ctx
+// ends first, or on a nil lane (a test's, or a node that dispatches on the loop).
+func (a *actLane) channelAfter(ctx context.Context, old any) (any, bool) {
+	if a == nil {
+		return nil, false
+	}
+	for {
+		a.mu.Lock()
+		cur, moved := a.cur, a.moved
+		a.mu.Unlock()
+		if cur != nil && cur != old {
+			return cur, true
+		}
+		select {
+		case <-moved:
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
+}
+
+// follow points an act whose channel died under it at the one Run re-establishes, and reports
+// whether it did. The channel can die mid-act for a reason that is no fault of the act: a guest
+// that stalls long enough for the liveness rule to close the channel (guestfirmware.Conn) and
+// then carries on, which the observe loop's reconnect recovers in seconds. An act that kept
+// calling the dead client would fail the rest of its steps the same way -- a health gate read as
+// a failed install, then a revert that cannot reach the guest either -- so it waits for the
+// reconnect instead, bounded by its own ctx, and carries on there. An act on a guest that does
+// not come back ends with its ctx, exactly as before.
+func (cfg Config) follow(ctx context.Context, g *appInstaller, logf func(string, ...any)) bool {
+	next, ok := cfg.acts.channelAfter(ctx, *g)
+	if !ok {
+		return false
+	}
+	i, ok := next.(appInstaller)
+	if !ok {
+		return false
+	}
+	logf("the control channel was re-established; the act carries on over it")
+	*g = i
+	return true
 }
