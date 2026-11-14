@@ -74,10 +74,9 @@ func TestDirectiveRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDirectiveExitsNonZeroWhenRefused is the assertion that makes the CLI automatable: a node
-// that refused or reverted an op must be distinguishable from one that applied it, WITHOUT
-// parsing prose. A tool that always exits 0 cannot be scripted against, and this is the seam the
-// UI will drive.
+// TestDirectiveExitsNonZeroWhenRefused makes the CLI automatable: a node that refused or
+// reverted an op must be distinguishable from one that applied it without parsing prose. A tool
+// that always exits 0 cannot be scripted against, and this is the seam the UI will drive.
 func TestDirectiveExitsNonZeroWhenRefused(t *testing.T) {
 	for _, state := range []string{api.OutcomeFailed, api.OutcomeRolledBack} {
 		t.Run(state, func(t *testing.T) {
@@ -155,7 +154,7 @@ func TestSockDefaultFollowsEnv(t *testing.T) {
 	}
 }
 
-// `briard handover` sends the right mode and, crucially, does NOT claim who took over: the node
+// `briard handover` sends the right mode and does not claim who took over: the node
 // cannot see that (drbd-reactorctl evict says "not me", never "you"), so a CLI that named a
 // successor would be inventing the one fact the operator ran the command for.
 func TestHandoverModes(t *testing.T) {
@@ -208,11 +207,10 @@ func TestHandoverExitsNonZeroWhenRefused(t *testing.T) {
 	}
 }
 
-// `briard rescue` WITHOUT -yes must not reach the agent. This is the only destructive verb Main
-// dispatches -- everything else it runs is reversible or health-gated; `uninstall` is main()'s,
-// not Main's -- so the guard is asserted on the
-// wire, not on the exit code: a version that printed the warning and submitted anyway would still
-// exit non-zero on a refusing fake and look correct.
+// `briard rescue` without -yes must not reach the agent. It is the only destructive verb Main
+// dispatches (everything else it runs is reversible or health-gated; `uninstall` is main()'s), so
+// the guard is asserted on the wire, not on the exit code: a version that printed the warning and
+// submitted anyway would still exit non-zero on a refusing fake and look correct.
 func TestRescueWithoutConfirmationSubmitsNothing(t *testing.T) {
 	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone})
 	var out, errOut bytes.Buffer
@@ -223,9 +221,8 @@ func TestRescueWithoutConfirmationSubmitsNothing(t *testing.T) {
 	if ds := seen(); len(ds) != 0 {
 		t.Fatalf("agent saw %+v -- an unconfirmed rescue reached the node", ds)
 	}
-	// The refusal has to answer the question an operator actually has before running this, which
-	// is whether they are about to lose their data. If that sentence goes, the guard is still
-	// there but the reason to trust it is not.
+	// The refusal must answer the operator's real question -- am I about to lose my data? Without
+	// that sentence the guard is still there but the reason to trust it is not.
 	if !strings.Contains(errOut.String(), "DATA IS NOT TOUCHED") {
 		t.Errorf("refusal did not say the data survives; got:\n%s", errOut.String())
 	}
@@ -260,10 +257,10 @@ func TestRescueRefusedExitsNonZero(t *testing.T) {
 	}
 }
 
-// TestNoArgsIsHelp: `briard` alone prints the help and SUCCEEDS. It must never start the
-// privileged host agent — a bare word away from the CLI, and the one invocation a curious user is
-// most likely to try first. The daemon is `briard run`, and nothing reaches this path
-// expecting a process to stay up.
+// TestNoArgsIsHelp: `briard` alone prints the help and succeeds. It must never start the
+// privileged host agent, a bare word away from the CLI and the invocation a curious user is most
+// likely to try first; the daemon is `briard run`, and nothing reaches this path expecting a
+// process to stay up.
 func TestNoArgsIsHelp(t *testing.T) {
 	var bare, explicit, errOut bytes.Buffer
 	if code := Main(context.Background(), nil, &bare, &errOut); code != 0 {
@@ -280,15 +277,11 @@ func TestNoArgsIsHelp(t *testing.T) {
 	}
 }
 
-// TestEveryCommandIsDocumented pins the user-visible surface to a list written HERE, not read
-// from `commands`. That distinction is the whole test: dispatch and the help are one table,
-// so they cannot disagree with each other — but they can both be wrong together, and a test that
-// iterates the table would pass while a verb quietly vanished from the product. Declaring the
-// expected set independently is the repo's own rule (CONTRIBUTING, "tests declare their own
-// values"): a test that inherits the product's list cannot see that list being wrong.
-//
-// Deleting the `logs` row from `commands` reds this test; a version that walked `commands` at
-// both ends would stay green through exactly that deletion.
+// TestEveryCommandIsDocumented pins the user-visible surface to a list written here, not read
+// from `commands`. Dispatch and the help are one table, so they cannot disagree, but they can be
+// wrong together: a test that iterated the table would pass while a verb quietly vanished
+// (CONTRIBUTING, "tests declare their own values"). Deleting the `logs` row from `commands` reds
+// this test; a version that walked `commands` at both ends would stay green through it.
 func TestEveryCommandIsDocumented(t *testing.T) {
 	want := map[string]string{
 		"alerts":    groupEveryday,
@@ -359,9 +352,9 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 	}
 }
 
-// TestHelpForACommandPrintsItsOwnOptions: `help <cmd>` must show the flags the verb ACTUALLY
-// parses. It gets them by running the verb's own flag set rather than restating them, so this
-// asserts the delegation works — a hand-written option list is the drift this guards against.
+// TestHelpForACommandPrintsItsOwnOptions: `help <cmd>` must show the flags the verb actually
+// parses, by running the verb's own flag set; this asserts the delegation works, since a
+// hand-written option list is the drift it guards against.
 func TestHelpForACommandPrintsItsOwnOptions(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if code := Main(context.Background(), []string{"help", "rescue"}, &out, &errOut); code != 0 {
@@ -377,11 +370,10 @@ func TestHelpForACommandPrintsItsOwnOptions(t *testing.T) {
 	}
 }
 
-// TestAppInstallPrintsWhereToReachIt: the CLI relays the agent's address line verbatim. It
-// does NOT re-derive the URL -- the agent owns the manifest's port and the node's published name,
-// so there is exactly one place the address can be wrong. The empty-Detail case is the contract
-// with an agent that sends no address line: print the outcome, skip the line, never print a bare
-// "reach it at".
+// TestAppInstallPrintsWhereToReachIt: the CLI relays the agent's address line verbatim and never
+// re-derives the URL -- the agent owns the manifest's port and the node's published name, so
+// there is exactly one place the address can be wrong. With an agent that sends no address line
+// (empty Detail): print the outcome, skip the line, never print a bare "reach it at".
 func TestAppInstallPrintsWhereToReachIt(t *testing.T) {
 	for _, tc := range []struct {
 		name, detail, want, absent string
@@ -407,7 +399,7 @@ func TestAppInstallPrintsWhereToReachIt(t *testing.T) {
 	}
 }
 
-// Several names are ONE directive, in the order typed -- the agent installs them as one act --
+// Several names are one directive, in the order typed -- the agent installs them as one act --
 // and each app's own line comes back under the headline.
 func TestAppInstallOfSeveralIsOneAct(t *testing.T) {
 	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone,
@@ -492,13 +484,12 @@ func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
 	}
 }
 
-// THE DEFAULT IS `stable`, AND THE OLD VERBS ARE GONE. Both halves are
-// asserted here rather than read off the flag declaration. The default is the only thing between
-// an admin typing three words and a release nothing has promoted -- `latest` exists to be proven
-// by a canary that names it on purpose. And the alpha ships no aliases (it is
-// reinstall-only), so the positional words -- `host`, `guest`, `self`, `vm` -- have to fail
-// loudly rather than quietly keep working: a rename nobody can observe is a rename that did not
-// happen. The chain is the FLAG, and a positional word is refused whatever it spells.
+// The default is `stable`, and the old verbs are gone -- both asserted here, not read off the flag
+// declaration. The default is the only thing between an admin typing three words and a release
+// nothing has promoted; `latest` exists to be proven by a canary that names it on purpose. The
+// alpha ships no aliases (it is reinstall-only), so the positional words `host`, `guest`, `self`,
+// `vm` must fail loudly rather than quietly keep working: a rename nobody can observe did not
+// happen. The chain is the flag, and a positional word is refused whatever it spells.
 func TestUpdateDefaultsToStableAndTheOldVerbsAreGone(t *testing.T) {
 	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "already running vm.20260910.n"})
 	var out, errOut bytes.Buffer
@@ -519,12 +510,10 @@ func TestUpdateDefaultsToStableAndTheOldVerbsAreGone(t *testing.T) {
 	}
 }
 
-// TestAppUndoNamesThePointExactly: `undo` takes the point as history printed it, never an
-// index into that listing.
-//
-// An index is stale the moment anything takes a member, and members are taken on every app
-// start -- so "undo 3" would act on a different point than the one the operator read. This is
-// the assertion that keeps the safe shape: what the CLI sends is what the operator saw.
+// TestAppUndoNamesThePointExactly: `undo` takes the point as history printed it, never an index
+// into that listing. An index is stale the moment anything takes a member, and members are taken
+// on every app start, so "undo 3" would act on a different point than the one the operator read:
+// what the CLI sends must be what the operator saw.
 func TestAppUndoNamesThePointExactly(t *testing.T) {
 	const point = "/var/lib/briard/data/.snapshots/home-assistant-upgrade-20260920T101500Z"
 	sock, sent := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: `restored "x", data only`})
@@ -571,7 +560,7 @@ func TestAppHistoryRendersTheMachinesAnswer(t *testing.T) {
 }
 
 // TestAppHistoryTellsTheTwoKindsOfPointApart: a point taken while the app was running is
-// one the app has to recover from on the way back up, and the household chooses BEFORE that
+// one the app has to recover from on the way back up, and the household chooses before that
 // happens. A clean point says nothing extra — a note on every line is a note nobody reads.
 func TestAppHistoryTellsTheTwoKindsOfPointApart(t *testing.T) {
 	at := time.Date(2026, 9, 20, 10, 15, 0, 0, time.UTC)
@@ -603,7 +592,7 @@ func TestAppHistoryTellsTheTwoKindsOfPointApart(t *testing.T) {
 }
 
 // TestAppHistoryOnAnAppWithNoPoints: an app installed a minute ago has no history yet, and
-// that is an ANSWER rather than an error -- the difference an operator acts on.
+// that is an answer rather than an error -- the difference an operator acts on.
 func TestAppHistoryOnAnAppWithNoPoints(t *testing.T) {
 	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "[]"})
 	var out, errb bytes.Buffer

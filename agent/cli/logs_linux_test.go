@@ -76,10 +76,8 @@ func fakeSources(t *testing.T, journal string, journalErr error, consoleBody str
 			t.Fatal(err)
 		}
 	}
-	// A node's console path lives in ITS CONFIG FILE, not on its unit -- so the fake
-	// is shaped the way a shipped node is: the unit names the config file, the config file names
-	// the console. A fake that put GUEST_SERIAL on the unit would hide a consolePath that reads
-	// the unit.
+	// Shaped like a shipped node: the unit names the config file, the config file names the
+	// console. A fake with GUEST_SERIAL on the unit would hide a consolePath that reads the unit.
 	conf := filepath.Join(dir, "config.env")
 	if err := os.WriteFile(conf, []byte("NODE=n1\nGUEST_SERIAL="+path+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -96,10 +94,9 @@ func fakeSources(t *testing.T, journal string, journalErr error, consoleBody str
 	}
 }
 
-// An unreadable surface must never render as "nothing logged". This is the failure mode the
-// command is most likely to have in the field -- a journal it cannot read (not root) while the
-// guest console is fine, or the reverse -- and the one that would quietly teach a user that
-// their node is healthy.
+// An unreadable surface must never render as "nothing logged": the command's likeliest field
+// failure (a journal it cannot read without root while the guest console is fine, or the
+// reverse), and the one that would quietly teach a user their node is healthy.
 func TestLogsNeverClaimsCleanWithASurfaceDown(t *testing.T) {
 	src := fakeSources(t, "", errors.New("exit status 1"), "")
 	src.unitProps = func(context.Context, string, ...string) (map[string]string, error) {
@@ -137,7 +134,7 @@ func TestLogsQualifiesTheAllClearWhenPartiallyBlind(t *testing.T) {
 	}
 }
 
-// A node that never captured the console is told so, and is NOT confused with a machine that has
+// A node that never captured the console is told so, and is not confused with a machine that has
 // no briard on it at all -- different facts, different fixes.
 func TestConsolePathDistinguishesNotInstalledFromNotCaptured(t *testing.T) {
 	base := fakeSources(t, "", nil, "")
@@ -236,7 +233,7 @@ func TestSurfaceSelection(t *testing.T) {
 	}
 }
 
-// The tail bound applies per surface, keeping the MOST RECENT lines -- the end of a log is the
+// The tail bound applies per surface, keeping the most recent lines -- the end of a log is the
 // part a reader wants.
 func TestTailKeepsTheNewest(t *testing.T) {
 	var j strings.Builder
@@ -263,12 +260,10 @@ func TestReadVerbsRejectArguments(t *testing.T) {
 	}
 }
 
-// noConsole writes a config.env that switches the capture OFF -- GUEST_SERIAL named, and named
-// EMPTY, which is the only thing that means off (the reader's `declared`).
-//
-// ⚠️ NOT an absent file and NOT a missing key: both of those mean "take the shipped default", which
-// is what an ordinary node has. A fixture written the other way says "no console" where a real
-// node says "the default one".
+// noConsole writes a config.env that switches the capture off: GUEST_SERIAL named empty, the only
+// thing that means off (the reader's `declared`). ⚠️ Not an absent file or a missing key: both
+// mean "take the shipped default", what an ordinary node has, so a fixture written that way says
+// "no console" where a real node says "the default one".
 func noConsole(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "config.env")
@@ -278,13 +273,11 @@ func noConsole(t *testing.T) string {
 	return p
 }
 
-// ⚠️ THE REGRESSION THIS FILE EXISTS FOR. The node's values live in config.env, not on the
+// ⚠️ The regression this file exists for. The node's values live in config.env, not on the
 // frozen unit, so `systemctl show` reports no GUEST_SERIAL: a consolePath that asked systemd for
-// it would tell every installed node it captured no console while the capture sat on disk -- and
-// a test that stubbed unitProps with a GUEST_SERIAL it had written itself would stay green.
-//
-// So the stub here carries what a SHIPPED unit carries: BRIARD_CONFIG and no GUEST_SERIAL. A
-// consolePath that reads GUEST_SERIAL from the unit fails this.
+// it would tell every installed node it captured no console while the capture sat on disk, and a
+// stub with a GUEST_SERIAL of its own would stay green. So the stub carries what a shipped unit
+// carries -- BRIARD_CONFIG and no GUEST_SERIAL -- and a consolePath reading the unit fails this.
 func TestConsolePathReadsTheNodesConfigFileNotTheUnit(t *testing.T) {
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "config.env")
@@ -308,10 +301,10 @@ func TestConsolePathReadsTheNodesConfigFileNotTheUnit(t *testing.T) {
 	}
 }
 
-// configValue is a SECOND reader of the format agent/host's loadConfigFile owns, and the four
-// rules are the whole contract: blank lines and `#` comments ignored, first `=` splits, both
-// halves trimmed, nothing else parsed. This table is the contract written down -- change either
-// implementation and change this, or the two drift where nothing would notice.
+// configValue is a second reader of the format agent/host's loadConfigFile owns, and four rules
+// are the whole contract: blank lines and `#` comments ignored, first `=` splits, both halves
+// trimmed, nothing else parsed. This table is that contract: change either implementation and
+// change this, or the two drift where nothing would notice.
 func TestConfigValueFollowsTheFormatsFourRules(t *testing.T) {
 	conf := filepath.Join(t.TempDir(), "config.env")
 	if err := os.WriteFile(conf, []byte(strings.Join([]string{
@@ -329,18 +322,17 @@ func TestConfigValueFollowsTheFormatsFourRules(t *testing.T) {
 	}, "\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// ⚠️ THE THIRD COLUMN IS THE ONE THAT MATTERS. "named, and named empty" and "not named at all"
-	// are different answers -- the first is a decision to switch a thing off, the second means take
-	// the shipped default -- and collapsing them is the bug this guards against.
+	// ⚠️ The third column is the one that matters: "named empty" is a decision to switch a thing
+	// off, "not named at all" means take the shipped default; collapsing them is the bug guarded.
 	for _, c := range []struct {
 		key, want string
 		named     bool
 	}{
 		{"SPACED", "/var/log/spaced.log", true}, // both halves trimmed
-		{"EMPTY", "", true},                     // NAMED empty: a decision, not an absence
+		{"EMPTY", "", true},                     // named empty: a decision, not an absence
 		{"NOEQUALS", "", false},                 // a line with no `=` is skipped, not a key
 		{"VIP_ADDR", "192.168.1.50/24", true},   // a `/` in a value is just a value
-		{"URL", "http://host:8099/x=y", true},   // only the FIRST `=` splits
+		{"URL", "http://host:8099/x=y", true},   // only the first `=` splits
 		{"DUPLICATE", "first", true},            // first wins, as the agent's env layering does
 		{"GUEST_SERIAL", "", false},             // a comment is not a setting
 		{"MISSING", "", false},                  // absent
@@ -355,9 +347,9 @@ func TestConfigValueFollowsTheFormatsFourRules(t *testing.T) {
 	}
 }
 
-// The CLI's fallback config path must be the one the SHIPPED unit names, and the unit file is the
-// thing an installed node actually gets -- so it is the pin, not a second literal in a comment.
-// The test reads the unit file from the source tree, which the shipped binary cannot.
+// The CLI's fallback config path must be the one the shipped unit names. The unit file is what an
+// installed node actually gets, so it is the pin, read from the source tree (which the shipped
+// binary cannot), not a second literal in a comment.
 func TestDefaultConfigFileMatchesTheShippedUnit(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "units", "briard-agent.service"))
 	if err != nil {
@@ -370,15 +362,13 @@ func TestDefaultConfigFileMatchesTheShippedUnit(t *testing.T) {
 	}
 }
 
-// ⚠️ THE PIN, and the reason it is worth a test rather than a comment.
-//
-// `briard logs` resolves the console path from config.env, falling back to a literal copied here.
-// The agent resolves the SAME question with its own default (config.go). config.env carries
-// GUEST_SERIAL only when the install was given one, so the fallback is the answer for every
-// ordinary node -- and a stale copy would tell a user their console is somewhere it is not, on
-// the one verb they reach for when things are wrong.
+// ⚠️ The pin, worth a test rather than a comment: `briard logs` resolves the console path from
+// config.env, falling back to a literal copied here, while the agent answers the same question
+// with its own default (config.go). config.env carries GUEST_SERIAL only when the install was
+// given one, so the fallback is the answer on every ordinary node, and a stale copy would send a
+// user to the wrong console on the one verb they reach for when things are wrong.
 func TestDefaultConsoleMatchesTheAgents(t *testing.T) {
-	// Cleared, so what is compared is the AGENT'S DEFAULT and not this process's environment.
+	// Cleared, so what is compared is the agent's default and not this process's environment.
 	os.Unsetenv("GUEST_SERIAL")
 	t.Setenv("BRIARD_CONFIG", filepath.Join(t.TempDir(), "no-such-config.env"))
 	if got := host.ConfigFromEnv().SerialLog; got != defaultConsole {
@@ -386,15 +376,12 @@ func TestDefaultConsoleMatchesTheAgents(t *testing.T) {
 	}
 }
 
-// ⚠️ THE ORDINARY NODE.
-//
-// config.env carries GUEST_SERIAL only when an operator named one, so on every normal
-// install the key is simply ABSENT and the AGENT's default decides where the console goes. A reader
-// that treats absent as "capture is off" contradicts the file sitting on disk: the console is
-// there, non-empty, correctly moded, and the verb says the node does not capture one
-// (install-macvtap asserts the same on a real install).
-//
-// The fixture is therefore a REAL node's config.env: identifiers, no GUEST_SERIAL line.
+// ⚠️ The ordinary node: config.env carries GUEST_SERIAL only when an operator named one, so on
+// every normal install the key is absent and the agent's default decides where the console goes. A
+// reader that treats absent as "capture is off" contradicts the file on disk: the console is
+// there, non-empty, correctly moded, and the verb says the node captures none (install-macvtap
+// asserts the same on a real install). Hence a real node's config.env: identifiers, no
+// GUEST_SERIAL line.
 func TestConsolePathDefaultsWhenTheConfigNamesNoConsole(t *testing.T) {
 	conf := filepath.Join(t.TempDir(), "config.env")
 	if err := os.WriteFile(conf, []byte("NODE=briard-node-abc123\nFLOCK_NAME=brave-elf\n"), 0o600); err != nil {

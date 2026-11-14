@@ -13,10 +13,10 @@ func home() Fingerprint {
 	}
 }
 
-// THE GATEWAY MAC IS THE STRONG SIGNAL, and these cases are the reason the fingerprint carries
-// more than a subnet. 192.168.1.0/24 is the most common home subnet on earth, so "same subnet" is
-// also exactly what carrying the box to a friend's house looks like -- and a replaced router
-// renumbers what is unquestionably the same LAN. Neither direction survives on addressing alone.
+// The gateway MAC is the strong signal, and these cases are why the fingerprint carries more than
+// a subnet: 192.168.1.0/24 is the most common home subnet on earth, so "same subnet" is also what
+// carrying the box to a friend's house looks like, and a replaced router renumbers what is
+// unquestionably the same LAN. Neither direction survives on addressing alone.
 func TestCompare(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -32,15 +32,14 @@ func TestCompare(t *testing.T) {
 			SameWire,
 		},
 		{
-			// Compare matches MACs case-insensitively, because iproute2 and sysfs do not agree on
-			// how to spell a MAC and a fingerprint that missed a match here would wait thirty
-			// minutes for no reason. This case is a DIFFERENT MAC in upper case, which stays
-			// different; the next case spells the same MAC in lower case, as home does, so no case
-			// here exercises the case-insensitive match itself.
+			// Compare matches MACs case-insensitively (iproute2 and sysfs spell them differently,
+			// and a missed match would wait thirty minutes for no reason). This case is a
+			// different MAC in upper case, which stays different; the next spells the same MAC in
+			// lower case, as home does, so no case here exercises the case-insensitive match.
 			"the same gateway, spelled in upper case",
 			Fingerprint{Parent: "eth1", HostCIDR: "192.168.1.77/24", GatewayMAC: "11:22:33:44:55:AA",
 				GatewayIP: "192.168.1.1"},
-			SameSubnet, // a DIFFERENT mac in upper case is still different
+			SameSubnet, // a different mac in upper case is still different
 		},
 		{
 			"the same gateway MAC in upper case",
@@ -64,7 +63,7 @@ func TestCompare(t *testing.T) {
 			Elsewhere,
 		},
 		{
-			// A DIFFERENT-SIZED CLAIM ABOUT THE SAME STREET is not the same network: comparing
+			// A different-sized claim about the same street is not the same network: comparing
 			// masked bases alone would call these one place and re-parent across a subnet change.
 			"the same base address on a different prefix",
 			Fingerprint{Parent: "eth0", HostCIDR: "192.168.1.50/16", GatewayIP: "192.168.1.1",
@@ -72,7 +71,7 @@ func TestCompare(t *testing.T) {
 			Elsewhere,
 		},
 		{
-			// MISSING EVIDENCE IS NEVER A MATCH. An unreadable address must send this to the
+			// Missing evidence is never a match: an unreadable address must send this to the
 			// cautious answer, which refuses, rather than to a tier that acts.
 			"nothing could be read",
 			Fingerprint{Parent: "eth1"},
@@ -87,7 +86,7 @@ func TestCompare(t *testing.T) {
 	}
 }
 
-// A node with NO record -- a first boot, or a lost pet file -- must reach
+// A node with no record -- a first boot, or a lost pet file -- must reach
 // the cautious answer rather than match anything. The record is the thing a tier is measured
 // against, so its absence cannot be permission.
 func TestCompareWithNoRecordIsUnknown(t *testing.T) {
@@ -96,10 +95,10 @@ func TestCompareWithNoRecordIsUnknown(t *testing.T) {
 	}
 }
 
-// THE HOST'S ADDRESS IS THE ONE ON THE GATEWAY'S SUBNET. On a bridge the agent's own
-// system-subnet /32 sits beside the LAN address, and which one the OS lists first is not ours to
-// choose: the case this catches is the /32 listed first, which a first-address read would record
-// as the LAN and then compare as `elsewhere` against every real one.
+// The host's address is the one on the gateway's subnet. On a bridge the agent's own
+// system-subnet /32 sits beside the LAN address in an order the OS chooses; the case caught is
+// the /32 listed first, which a first-address read would record as the LAN and compare as
+// `elsewhere` against every real one.
 func TestPickHostCIDR(t *testing.T) {
 	lan, own, apipa := netip.MustParsePrefix("192.168.1.50/24"), netip.MustParsePrefix("10.77.0.1/32"), netip.MustParsePrefix("169.254.3.4/16")
 	cases := []struct {
@@ -122,10 +121,10 @@ func TestPickHostCIDR(t *testing.T) {
 	}
 }
 
-// THE ADDRESS ON THE GATEWAY'S SUBNET OR NOTHING -- LANAddr's rule, which a DHCP request sent for
-// the flock binds to. The shapes of a bridge coming back from another network: the system /32
-// alone and no default route yet is NOTHING, never the /32; the LAN back beside it is the LAN,
-// whichever is listed first.
+// The address on the gateway's subnet or nothing -- LANAddr's rule, which a DHCP request sent for
+// the flock binds to. For a bridge coming back from another network: the system /32 alone with no
+// default route yet is nothing, never the /32; the LAN back beside it is the LAN, whichever is
+// listed first.
 func TestOnGatewaySubnet(t *testing.T) {
 	sys := netip.MustParsePrefix("10.226.52.129/32")
 	lan := netip.MustParsePrefix("192.168.10.112/24")

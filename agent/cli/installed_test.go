@@ -8,8 +8,8 @@ import (
 	"briard.io/agent/host"
 )
 
-// ⚠️ THE PIN, same discipline as the console and config-file pins in logs_linux_test.go: the CLI
-// reads the app cache the AGENT writes, so the two must name the same directory.
+// ⚠️ The pin, like the console and config-file pins in logs_linux_test.go: the CLI reads the app
+// cache the agent writes, so the two must name the same directory.
 func TestAppCacheDirMatchesTheAgents(t *testing.T) {
 	os.Unsetenv("APP_CACHE")
 	t.Setenv("BRIARD_CONFIG", filepath.Join(t.TempDir(), "no-such-config.env"))
@@ -18,7 +18,7 @@ func TestAppCacheDirMatchesTheAgents(t *testing.T) {
 	}
 }
 
-// The cache holds each app's manifest VERBATIM, so the name comes from the manifest's own
+// The cache holds each app's manifest verbatim, so the name comes from the manifest's own
 // parser rather than from a second reader of the format: a `grep -o` for `"name":"..."` taking the
 // first match would be a different implementation of a format whose identity is its content hash.
 func TestInstalledAppsReadsTheManifests(t *testing.T) {
@@ -31,9 +31,9 @@ func TestInstalledAppsReadsTheManifests(t *testing.T) {
 	}
 	write("home-assistant.json", `{"schema":1,"name":"home-assistant","containers":[{"name":"ha","image":"x","primary":true}]}`)
 	write("mosquitto.json", `{"schema":1,"name":"mosquitto","containers":[{"name":"m","image":"y","primary":true}]}`)
-	// ⚠️ A manifest that will not parse is STILL an installed app, under a vaguer name: it is
-	// on the node, and staying silent about it because we could not read its title is the one
-	// answer that is certainly wrong.
+	// ⚠️ A manifest that will not parse is still an installed app, under a vaguer name: it is on
+	// the node, and staying silent about it because we could not read its title is the one answer
+	// that is certainly wrong.
 	write("broken.json", `{not json at all`)
 	write("notes.txt", `ignored: not a manifest`)
 
@@ -53,7 +53,7 @@ func TestInstalledAppsReadsTheManifests(t *testing.T) {
 	}
 }
 
-// The sentence, including the empty case -- which is empty ON PURPOSE: with no apps
+// The sentence, including the empty case -- empty on purpose: with no apps
 // `briard open` prints only the link.
 func TestInstalledLine(t *testing.T) {
 	for _, c := range []struct {

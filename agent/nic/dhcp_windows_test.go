@@ -25,7 +25,7 @@ func (f fakeConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	return len(b), nil
 }
 
-// THE TWO FRAMES: the decoy from the port-68 socket first -- the message with type 255, nothing
+// The two frames: the decoy from the port-68 socket first -- the message with type 255, nothing
 // else changed -- then the message itself from the sender, both broadcast to 67.
 func TestSendTwoFrames(t *testing.T) {
 	c := DHCPClient{Chaddr: flockMAC, Hostname: "briard-d30401"}

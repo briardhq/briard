@@ -50,7 +50,7 @@ func (f *fakeExec) Sethostname(name string) error {
 	return nil
 }
 
-// dial wires a caller's Conn to the FIRMWARE's Serve over an in-memory pipe: the verbs go over
+// dial wires a caller's Conn to the firmware's Serve over an in-memory pipe: the verbs go over
 // the real framing, so a test proves the dispatch and not just the handler.
 func dial(t *testing.T, x Executor) *Conn {
 	t.Helper()
@@ -61,10 +61,9 @@ func dial(t *testing.T, x Executor) *Conn {
 	return c
 }
 
-// THE FIRMWARE SERVES THE PROTOCOL AND NOTHING ELSE. A guest running it has not been
-// dressed, so a verb belonging to the pushed agent is refused with what is actually wrong -- and
-// the handshake says the same thing in advance, which is what makes the host dress it rather
-// than drive it.
+// The firmware serves the protocol and nothing else. A guest running it has not been dressed, so
+// a verb of the pushed agent is refused with what is actually wrong -- and the handshake says so
+// in advance, which is what makes the host dress it rather than drive it.
 func TestFirmwareRefusesEveryVerbOutsideTheProtocol(t *testing.T) {
 	binDirs(t)
 	c := dial(t, &fakeExec{})

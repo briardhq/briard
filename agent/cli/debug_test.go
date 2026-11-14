@@ -7,11 +7,10 @@ import (
 	"testing"
 )
 
-// THE VERB MUST STAY INVISIBLE. `debug` is deliberately not a row in `commands`, and the value
-// of that is only real if nothing prints it: a listing that mentions it turns "not part of the
-// product" into "an option we did not explain". This asserts the absence from every surface a
-// user can reach, so re-adding it to the table -- the natural thing for someone tidying up --
-// fails here rather than shipping.
+// The verb must stay invisible: `debug` is deliberately not a row in `commands`, and that only
+// holds if nothing prints it -- a listing that mentions it turns "not part of the product" into
+// "an option we did not explain". Asserted on every surface a user can reach, so re-adding it to
+// the table (the natural tidy-up) fails here rather than shipping.
 func TestDebugVerbIsUndocumented(t *testing.T) {
 	var help bytes.Buffer
 	usage(&help)
@@ -52,11 +51,11 @@ func TestDebugVerbIsReachable(t *testing.T) {
 	}
 }
 
-// THE CLIENT CANNOT NAME A MONITOR. The console socket is derived by the AGENT from
-// its own QMP path, which is what keeps it inside the 0700 root directory Launch creates. A
-// `-qmp` flag here would hand that choice back to the caller, and a console socket somewhere
-// world-reachable is the one way this feature becomes the vulnerability it currently is not.
-// The derivation itself is asserted in agent/platform (TestDebugConsolePathIsBesideTheMonitor).
+// The client cannot name a monitor. The agent derives the console socket from its own QMP path,
+// which keeps it inside the 0700 root directory Launch creates; a `-qmp` flag would hand that
+// choice back to the caller, and a world-reachable console socket is the one way this feature
+// becomes a vulnerability. The derivation is asserted in agent/platform
+// (TestDebugConsolePathIsBesideTheMonitor).
 func TestDebugShellCannotBePointedAtAMonitor(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := Main(context.Background(), []string{"debug", "shell", "-qmp", "/tmp/anywhere.sock"}, &out, &errb)

@@ -5,13 +5,11 @@ import (
 	"testing"
 )
 
-// THE FORMAT HANDLING, AGAINST REAL OUTPUT.
-//
-// The kernel fixtures below (procNetRoute, procNetARP, the interface flags) are verbatim captures
-// from a running kernel rather than something written to match the parser -- which is the point
-// of the split these tests exist to pay for. The readers in link_linux.go do one file read (or
-// readlink) each and nothing else, so what is left to be wrong is here, where a test can reach
-// it: the hex encodings, the completeness flag, and the depth of a symlink.
+// The format handling, against real output. The kernel fixtures (procNetRoute, procNetARP, the
+// interface flags) are verbatim captures, not text written to match the parser -- the point of
+// the split these tests pay for. The readers in link_linux.go do one file read (or readlink) each
+// and nothing else, so what can be wrong is here, where a test reaches it: the hex encodings, the
+// completeness flag, and the depth of a symlink.
 
 // procNetRoute as the kernel renders it: the machine's default is on eno1, and three other
 // devices hold connected routes. Note the trailing whitespace the kernel pads each row with.
@@ -44,20 +42,20 @@ func TestParseDefaultRouteDev(t *testing.T) {
 		want       string
 	}{
 		{"the default route's device", procNetRoute, all, "", "eno1"},
-		// The selector's ErrNoDefaultRoute case: devices exist, none holds a default. This is the
-		// reading that must NOT fall through to a second heuristic (see Select).
+		// The selector's ErrNoDefaultRoute case: devices exist, none holds a default. This
+		// reading must not fall through to a second heuristic (see Select).
 		{"no default route at all", "Iface\tDestination\tGateway\n" +
 			"eno2\t0008A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n", all, "", ""},
 		{"header only", "Iface\tDestination\tGateway\n", all, "", ""},
 		{"nothing at all", "", all, "", ""},
-		// THE METRIC, NOT THE ROW ORDER: the radio's row is first and loses.
+		// The metric, not the row order: the radio's row is first and loses.
 		{"two defaults, the lower metric wins", wired, all, "", "enp3s0"},
 		{"two defaults, the standing parent does not outrank a lower metric", wired, all, "wlp2s0", "enp3s0"},
-		// THE CARRIER IS READ: networkd keeps a dead wire's route, and a dead wire is no candidate.
+		// The carrier is read: networkd keeps a dead wire's route, and a dead wire is no candidate.
 		{"the lower metric has no carrier", wired, func(d string) bool { return d != "enp3s0" }, "enp3s0", "wlp2s0"},
 		{"one default, without carrier", routeHeader + defaultRow("enp3s0", "100"),
 			func(string) bool { return false }, "enp3s0", ""},
-		// A TIE IS NOT A BETTER ANSWER: the parent last served on keeps it, whichever row is first.
+		// A tie is not a better answer: the parent last served on keeps it, whichever row is first.
 		{"a tie, the standing parent second", tied, all, "enp3s0", "enp3s0"},
 		{"a tie, the standing parent first", tied, all, "wlp2s0", "wlp2s0"},
 		{"a tie, no parent standing: the first row", tied, all, "", "wlp2s0"},
@@ -73,7 +71,7 @@ func TestParseDefaultRouteDev(t *testing.T) {
 	}
 }
 
-// THE SETTLE WAIT'S QUESTION: a device with a link and no default route yet holds the choice. A
+// The settle wait's question: a device with a link and no default route yet holds the choice. A
 // device holding a default does not, and neither does one without carrier.
 func TestParseSettling(t *testing.T) {
 	text := routeHeader + defaultRow("wlp2s0", "600")
@@ -94,10 +92,9 @@ func TestParseSettling(t *testing.T) {
 	}
 }
 
-// THE LITTLE-ENDIAN DECODE, which is the whole reason this parser is worth testing. 0154C558 is
+// The little-endian decode, the whole reason this parser is worth testing: 0154C558 is
 // 88.197.84.1 read back-to-front, and `ip route` on the same box agrees. A big-endian read would
-// say 1.84.197.88 -- a plausible-looking address, which is exactly why reading the code cannot
-// settle it.
+// say 1.84.197.88, a plausible-looking address -- which is why reading the code cannot settle it.
 func TestParseDefaultGateway(t *testing.T) {
 	for _, tc := range []struct{ name, dev, want string }{
 		{"the gateway, little-endian", "eno1", "88.197.84.1"},
@@ -114,7 +111,7 @@ func TestParseDefaultGateway(t *testing.T) {
 }
 
 // procNetARP as the kernel renders it, with one row edited to the shape the flag exists to catch:
-// 192.168.8.9 is an INCOMPLETE entry (flags 0x0), which is what an unanswered probe leaves behind.
+// 192.168.8.9 is an incomplete entry (flags 0x0), which is what an unanswered probe leaves behind.
 const procNetARP = `IP address       HW type     Flags       HW address            Mask     Device
 88.197.86.127    0x1         0x2         34:17:eb:d1:15:60     *        eno1
 192.168.8.3      0x1         0x2         74:19:f8:16:60:c5     *        eno2
@@ -126,10 +123,10 @@ func TestParseARPMAC(t *testing.T) {
 	for _, tc := range []struct{ name, dev, ip, want string }{
 		{"a resolved neighbour", "eno1", "88.197.84.1", "e8:d3:22:5a:a4:bc"},
 		{"another, on the other device", "eno2", "192.168.8.3", "74:19:f8:16:60:c5"},
-		// ATF_COM IS THE EVIDENCE, NOT THE ROW. An unanswered probe leaves the row present, and a
-		// parser that read the HW address column alone would hand back all-zeroes as a gateway
-		// MAC -- which Compare would then match against another all-zeroes reading and call
-		// SameWire, the one relation that says "rebuild now".
+		// ATF_COM is the evidence, not the row. An unanswered probe leaves the row present, and a
+		// parser reading the HW address column alone would return all-zeroes as a gateway MAC,
+		// which Compare would match against another all-zeroes reading and call SameWire -- the
+		// one relation that says "rebuild now".
 		{"an incomplete entry is not an answer", "eno2", "192.168.8.9", ""},
 		// The device is part of the question: the same address reachable on two segments is two
 		// different neighbours.
@@ -170,11 +167,10 @@ func TestParseIfFlags(t *testing.T) {
 	}
 }
 
-// THE SYMLINK'S DEPTH VARIES, and that is the bug this test is here for: a port whose
-// own sysfs node is virtual sits one level from its bridge, a physical NIC several. A prefix trim
-// of a single `../` answers the first shape and silently mangles the second, so Converged would
-// answer false forever on a bridge parented by a real card -- and the tick would re-converge on
-// every pass.
+// The symlink's depth varies -- the bug this test is for: a port whose own sysfs node is virtual
+// sits one level from its bridge, a physical NIC several. Trimming a single `../` answers the
+// first shape and silently mangles the second, so Converged would answer false forever on a
+// bridge parented by a real card, and the tick would re-converge on every pass.
 func TestParseMaster(t *testing.T) {
 	for _, tc := range []struct{ name, link, want string }{
 		{"a virtual port, one level", "../b153br", "b153br"},
@@ -187,7 +183,7 @@ func TestParseMaster(t *testing.T) {
 	}
 }
 
-// THE ARGV, PINNED. Each of these carries a detail that cannot be inferred by reading the call
+// The argv, pinned: each of these carries a detail that cannot be inferred by reading the call
 // site, and without this only a 12-minute rig would notice one change.
 func TestIPArgv(t *testing.T) {
 	// `mode bridge` is the macvtap mode that lets the guest's two children talk to each other. It
@@ -196,7 +192,7 @@ func TestIPArgv(t *testing.T) {
 	if got := macvtapAddArgs("sys-n1", "eno1"); !slices.Equal(got, want) {
 		t.Errorf("macvtapAddArgs = %q, want %q", got, want)
 	}
-	// The probe's whole claim is that it creates THE VERY THING the install creates, so it must
+	// The probe's whole claim is that it creates the very thing the install creates, so it must
 	// render the same argv but for the device name.
 	probe := macvtapAddArgs(probeDev, "eno1")
 	install := macvtapAddArgs("sys-n1", "eno1")
@@ -208,7 +204,7 @@ func TestIPArgv(t *testing.T) {
 	if w := []string{"tuntap", "add", "priv-n1", "mode", "tap"}; !slices.Equal(tapAddArgs("priv-n1"), w) {
 		t.Errorf("tapAddArgs = %q, want %q", tapAddArgs("priv-n1"), w)
 	}
-	// MULTICAST, deliberately not promiscuous: `allmulticast on`, never `promisc on`, which would
+	// Multicast, deliberately not promiscuous: `allmulticast on`, never `promisc on`, which would
 	// pull every unicast frame on the segment off the wire for nothing.
 	if w := []string{"link", "set", "sys-n1", "allmulticast", "on"}; !slices.Equal(allmulticastOnArgs("sys-n1"), w) {
 		t.Errorf("allmulticastOnArgs = %q, want %q", allmulticastOnArgs("sys-n1"), w)
@@ -223,7 +219,7 @@ func TestIPArgv(t *testing.T) {
 }
 
 // The holding namespace is read through `ip -n … -o link show`, whose lines name a child's
-// parent by an index in ANOTHER namespace. The flags are where ALLMULTI is visible.
+// parent by an index in another namespace. The flags are where ALLMULTI is visible.
 func TestParseLinks(t *testing.T) {
 	text := "1: lo: <LOOPBACK> mtu 65536 qdisc noop state DOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n" +
 		"7: briard0@if3: <BROADCAST,MULTICAST,ALLMULTI,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT\\    link/ether 02:00:00:00:00:01 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n" +
@@ -285,7 +281,7 @@ func TestParseHostRoute(t *testing.T) {
 	}
 }
 
-// THE RANKING BOTH OSES SHARE, over the Windows shape: briard's bridge (its carrier the
+// The ranking both OSes share, over the Windows shape: briard's bridge (its carrier the
 // member's, as DefaultRoute reads it) beside a standalone adapter that keeps its default route
 // with its cable out. The cases a two-uplink desktop shows: a pulled standalone outranking
 // the bridge on metric, and a 25/25 tie read in either row order.
@@ -314,7 +310,7 @@ func TestRankDefaults(t *testing.T) {
 	}
 }
 
-// THE STANDING PARENT OF A HELD CHILD: its line's `@ifN` is the parent's index in the host's
+// The standing parent of a held child: its line's `@ifN` is the parent's index in the host's
 // namespace. A child with no @ifN, and a name not held, read as no parent.
 func TestParseHeld(t *testing.T) {
 	text := "7: briard0@if3: <BROADCAST,MULTICAST,ALLMULTI,UP,LOWER_UP> mtu 1500 state UP\n" +

@@ -47,7 +47,7 @@ func stageSet(t *testing.T, dir string) {
 }
 
 // Activation arms a trial flag per binary, records the release for the commit, and restarts
-// ONE unit: the guest agent's own, whose start is the verdict on the rest. Nothing is
+// one unit: the guest agent's own, whose start is the verdict on the rest. Nothing is
 // armed or restarted when any named binary is not staged, or when the set leaves the agent out.
 func TestBinActivateArmsTheSetAndRestartsTheAgentAlone(t *testing.T) {
 	dir, run := binDirs(t)
@@ -88,8 +88,8 @@ func TestBinActivateArmsTheSetAndRestartsTheAgentAlone(t *testing.T) {
 	}
 }
 
-// THE CHEAP GATE: bin.test runs every staged copy's --test-launch in order; the first
-// failure names the binary and discards the WHOLE staged set, so nothing half-proven is ever
+// The cheap gate: bin.test runs every staged copy's --test-launch in order; the first
+// failure names the binary and discards the whole staged set, so nothing half-proven is ever
 // armed and a later non-trial start finds nothing to clean up.
 func TestBinTestProvesTheSetOrDiscardsIt(t *testing.T) {
 	dir, _ := binDirs(t)
@@ -142,7 +142,7 @@ func TestBinTestProvesTheSetOrDiscardsIt(t *testing.T) {
 type systemctlFake struct {
 	active  map[string]bool
 	fail    string // a unit whose staged copy fails its start and whose restart job reports it
-	reverts string // a unit whose staged copy fails and whose AUTO-RESTART repairs it: the job succeeds
+	reverts string // a unit whose staged copy fails and whose auto-restart repairs it: the job succeeds
 	run_    string // where the picker's markers go
 	runs    [][]string
 }
@@ -170,7 +170,7 @@ func (s *systemctlFake) run(name string, args []string) ([]byte, error) {
 			return []byte("Job for " + unit + " failed because the control process exited with error code."), errors.New("exit status 1")
 		}
 		if unit == s.reverts {
-			// THE TRAP: the staged copy failed, systemd's auto-restart put the unit back on the
+			// The trap: the staged copy failed, systemd's auto-restart put the unit back on the
 			// committed binary, and the restart job reports success. Only the picker's marker
 			// says what is actually running.
 			s.mark(bin, "pushed")
@@ -181,11 +181,10 @@ func (s *systemctlFake) run(name string, args []string) ([]byte, error) {
 	return nil, nil
 }
 
-// mark models what restarting a promoter chain member actually does: that member AND everything
-// ordered after it go down and come back in the same transaction, each through its own picker.
-// A fake without this cannot tell a loop that restarts every web unit from one that restarts the
-// earliest and verifies what it carried -- and the second restart is the one that cancels a start
-// job and demotes the node.
+// mark models restarting a promoter chain member: that member and everything ordered after it
+// come back in one transaction, each through its own picker. Without it the fake cannot tell a
+// loop that restarts every web unit from one that restarts the earliest and verifies what it
+// carried -- and the second restart is the one that cancels a start job and demotes the node.
 func (s *systemctlFake) mark(bin, what string) {
 	if s.run_ == "" {
 		return
@@ -198,7 +197,7 @@ func (s *systemctlFake) mark(bin, what string) {
 			continue
 		}
 		if carried {
-			// A member carried by the restart goes through its OWN picker, which chooses by the
+			// A member carried by the restart goes through its own picker, which chooses by the
 			// arm flag: staged while one is there (consuming it), committed once it is gone.
 			s.write(n, s.pick(n))
 		}
@@ -228,7 +227,7 @@ func clearMarkers(t *testing.T, run string) {
 	}
 }
 
-// THE VERDICT: a trial start try-restarts the earliest running web unit (which carries the rest)
+// The verdict: a trial start try-restarts the earliest running web unit (which carries the rest)
 // and passes only if every running one comes back active on its staged copy; on a secondary
 // (nothing running) it passes at once. A web unit that fails refuses the trial -- and the trial
 // agent restarts nothing itself: the failed web unit's own auto-restart is the revert.
@@ -267,12 +266,11 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 		t.Errorf("a passing verdict discarded the set: %v", got)
 	}
 
-	// THE PRIMARY, both web units running and both taking the staged copy. ONE restart, at the
-	// EARLIEST member of the chain: restarting it carries everything ordered after it in the same
-	// transaction, so the dashboard is verified where it stands rather than restarted again. Two
-	// restarts across an ordered chain are how a start job gets cancelled, and a cancelled start
-	// job fires OnFailure= -- a loop that runs dashboard-first demotes a node mid-upgrade this way
-	// (install-macvtap). And the budget reset must precede the restart it pays for.
+	// The primary, both web units running and taking the staged copy: one restart, at the earliest
+	// chain member, which carries everything after it in the same transaction, so the dashboard is
+	// verified where it stands. A second restart across an ordered chain cancels a start job, which
+	// fires OnFailure= -- a dashboard-first loop demotes a node mid-upgrade this way
+	// (install-macvtap). The budget reset must precede the restart it pays for.
 	clearMarkers(t, run)
 	arm()
 	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}}
@@ -312,10 +310,10 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 		t.Errorf("the trial agent discarded the set itself: %v", got)
 	}
 
-	// THE TRAP: the staged reverse proxy fails, systemd's own auto-restart
-	// puts the unit back on the committed binary, and the restart job reports SUCCESS -- active,
-	// exit 0. Only the picker's marker says the reverse proxy is running what it ran before, and
-	// the verdict must refuse on it, or the set commits a reverse proxy that has already reverted.
+	// The trap: the staged reverse proxy fails, systemd's own auto-restart puts the unit back on
+	// the committed binary, and the restart job reports success -- active, exit 0. Only the
+	// picker's marker says it runs what it ran before; the verdict must refuse on it, or the set
+	// commits a reverse proxy that has already reverted.
 	clearMarkers(t, run)
 	arm()
 	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}, reverts: "briard-reverse-proxy.service"}
@@ -325,16 +323,16 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 	}
 }
 
-// THE HANDSHAKE REPORTS THE COMMITTED RELEASE, and that is the whole rule: the
-// commit runs before the port is served, so every handshake a host can read is taken after it.
-// A staged id is never reported: what has not been committed is not what this guest runs.
+// The handshake reports the committed release, and that is the whole rule: the commit runs before
+// the port is served, so every handshake a host can read is taken after it. A staged id is never
+// reported: what is not committed is not what this guest runs.
 func TestRunningBundleReportsTheCommittedRelease(t *testing.T) {
 	_, run := binDirs(t)
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// runningBundle only speaks for a process running FROM the pushed directory.
+	// runningBundle only speaks for a process running from the pushed directory.
 	t.Setenv("BRIARD_BIN_DIR", filepath.Dir(exe))
 	dir := filepath.Dir(exe)
 	t.Cleanup(func() {
@@ -358,7 +356,7 @@ func TestRunningBundleReportsTheCommittedRelease(t *testing.T) {
 	if got := runningBundle(); got != "v3.20260901.old00000" {
 		t.Errorf("a start with a staged id reports %q, want the committed release", got)
 	}
-	// ...and once the commit has moved it, that IS the committed release.
+	// ...and once the commit has moved it, that is the committed release.
 	if err := os.Rename(filepath.Join(dir, "RELEASE.next"), filepath.Join(dir, "RELEASE")); err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +365,7 @@ func TestRunningBundleReportsTheCommittedRelease(t *testing.T) {
 	}
 }
 
-// THE COMMIT: only a trial start moves the set, it moves every staged name plus
+// The commit: only a trial start moves the set, it moves every staged name plus
 // RELEASE together, it gives the web units their start budget back, and it clears every flag --
 // on a non-trial start too, where the markers are all it touches.
 func TestBinCommitMovesTheWholeSetAndClearsTheFlags(t *testing.T) {
@@ -388,7 +386,7 @@ func TestBinCommitMovesTheWholeSetAndClearsTheFlags(t *testing.T) {
 		}
 	}
 
-	// A NON-TRIAL start commits nothing: the staged set is still staged and RELEASE is untouched.
+	// A non-trial start commits nothing: the staged set is still staged and RELEASE is untouched.
 	// (Discarding it is the aftermath rule's job, not this one's.)
 	fx := &fakeExec{}
 	BinCommit(context.Background(), fx, func(string, ...any) {})
@@ -414,7 +412,7 @@ func TestBinCommitMovesTheWholeSetAndClearsTheFlags(t *testing.T) {
 		}
 	}
 
-	// A TRIAL start commits the whole set at once.
+	// A trial start commits the whole set at once.
 	if err := os.WriteFile(filepath.Join(run, "briard-guest-agent.ran"), []byte("trial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +447,7 @@ func TestBinCommitMovesTheWholeSetAndClearsTheFlags(t *testing.T) {
 	}
 }
 
-// THE AFTERMATH: a non-trial start that finds a staged set discards it and puts both
+// The aftermath: a non-trial start that finds a staged set discards it and puts both
 // web units back on the committed files -- whichever of the three failed, because it cannot know.
 // A non-trial start with nothing staged does nothing at all.
 func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
@@ -470,7 +468,7 @@ func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Both web units are running the STAGED copies the dead trial left them on, which is what the
+	// Both web units are running the staged copies the dead trial left them on, which is what the
 	// aftermath has to undo.
 	s = &systemctlFake{run_: run, active: map[string]bool{"briard-dashboard.service": true, "briard-reverse-proxy.service": true}}
 	s.mark("briard-reverse-proxy", "trial")
@@ -478,9 +476,9 @@ func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
 	if err := BinStartup(context.Background(), &fakeExec{runFn: s.run}, logf); err != nil {
 		t.Fatalf("aftermath: %v", err)
 	}
-	// ONE restart, at the earliest chain member. It carries the dashboard with it, and the loop
-	// stops there rather than restarting the dashboard too -- a second restart across an ordered
-	// chain is what cancels a start job and demotes a node mid-upgrade.
+	// One restart, at the earliest chain member, which carries the dashboard; the loop does not
+	// restart the dashboard too -- a second restart across an ordered chain cancels a start job
+	// and demotes a node mid-upgrade.
 	want := [][]string{
 		{"systemctl", "is-active", "briard-reverse-proxy.service"},
 		{"systemctl", "reset-failed", "briard-reverse-proxy.service"},
@@ -495,7 +493,7 @@ func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
 	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
 		t.Errorf("the staged set survived the aftermath: %v", ents)
 	}
-	// Nothing is armed any more, and BOTH web units are back on their committed binaries -- the
+	// Nothing is armed any more, and both web units are back on their committed binaries -- the
 	// dashboard because the reverse proxy's restart carried it.
 	for _, n := range webNames {
 		if _, err := os.Stat(filepath.Join(run, n+".update")); !os.IsNotExist(err) {

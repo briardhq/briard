@@ -9,7 +9,7 @@ import (
 	"briard.io/agent/host"
 )
 
-// THE PIN: `version` reads the VM record the AGENT writes, so the two must name the same file.
+// The pin: `version` reads the VM record the agent writes, so the two must name the same file.
 func TestGuestReleaseRecordMatchesTheAgents(t *testing.T) {
 	os.Unsetenv("GUEST_RELEASE_CACHE")
 	t.Setenv("BRIARD_CONFIG", filepath.Join(t.TempDir(), "no-such-config.env"))
@@ -31,7 +31,7 @@ func TestVersionLines(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 
-	// An unstamped binary and a missing record each SAY so -- never a blank a reporter would drop.
+	// An unstamped binary and a missing record each say so -- never a blank a reporter would drop.
 	Version = ""
 	got := versionLines(filepath.Join(dir, "absent.json"))
 	for _, want := range []string{"development build", "vm     unknown (", "absent.json"} {

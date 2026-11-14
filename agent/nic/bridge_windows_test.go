@@ -7,12 +7,12 @@ import (
 	"time"
 )
 
-// DESTRUCTIVE: these bridge a real NIC and take the machine's link down while they do. They run
-// only when BRIARD_TEST_BRIDGE names the NIC to bridge, on a machine built to be broken
-// (lab/vanilla-windows), as an administrator: TestBuildBridge before a restart, then
-// TestBridgeAfterRestart after one -- because a Windows bridge shows its TAP as a member, and
-// carries it, only once the machine has restarted. TestDestroyBridge runs alone on a machine with
-// no bridge and a TAP adapter present, and leaves it with neither.
+// Destructive: these bridge a real NIC and take the machine's link down while they do. They run
+// only when BRIARD_TEST_BRIDGE names the NIC, on a machine built to be broken
+// (lab/vanilla-windows), as an administrator: TestBuildBridge, a restart, then
+// TestBridgeAfterRestart -- a Windows bridge shows its TAP as a member, and carries it, only after
+// a restart. TestDestroyBridge runs alone on a machine with no bridge and a TAP adapter present,
+// and leaves it with neither.
 
 func bridgeMember(t *testing.T) string {
 	member := os.Getenv("BRIARD_TEST_BRIDGE")

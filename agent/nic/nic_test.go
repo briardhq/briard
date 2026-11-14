@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// The message IS the safety margin: every way the selection goes wrong ends with a
+// The message is the safety margin: every way the selection goes wrong ends with a
 // guest that boots and is unreachable, and the only thing standing between a user and that is
 // what this line tells them. So each failing shape must carry the override and the devices to
 // choose from -- and no example naming one of them, since the selection could not vouch for it.
@@ -29,7 +29,7 @@ func TestFixCarriesTheOverrideAndTheCandidates(t *testing.T) {
 				"Device does not support macvlan", "BRIARD_NIC"},
 		},
 		{
-			// A user who NAMED a device is not told how we would have guessed -- they already
+			// A user who named a device is not told how we would have guessed -- they already
 			// disagreed with the guess.
 			"BRIARD_NIC names something that cannot carry it",
 			Selection{Dev: "docker0", Override: true, Candidates: []string{"enp3s0", "docker0"},

@@ -60,7 +60,7 @@ func TestWireHandlerErrorPropagates(t *testing.T) {
 	if err == nil || err.Error() != "kaboom" {
 		t.Errorf("err = %v, want kaboom", err)
 	}
-	// A verb error is NOT a dead channel — the round-trip completed, so the host must
+	// A verb error is not a dead channel — the round-trip completed, so the host must
 	// keep the connection (not reconnect).
 	if errors.Is(err, ErrChannelDown) {
 		t.Error("a verb error must not be ErrChannelDown")
@@ -110,14 +110,13 @@ func TestServeEndsOnClose(t *testing.T) {
 	}
 }
 
-// A guest that reads the request but never replies must not hang the host: the
-// call returns when its context deadline fires (turning a wedged verb into a
-// timeout the caller can act on), not block forever. Two cases, by whether the connection
-// ever answered: one that did and stopped is DEAD once it has left missLimit calls unanswered
-// (the liveness rule closes it, ErrChannelDown too, so the observe loop re-dials) and merely
-// late before that; one that never answered at all is UNANSWERED however often it is asked --
-// the handshake's case, where the hello may have been lost in the guest agent's own restart
-// and the right move is to send it again on this same connection, not to close.
+// A guest that reads the request but never replies must not hang the host: the call returns at
+// its context deadline, a timeout the caller can act on. A connection that answered and then
+// stopped is merely late until it has left missLimit calls unanswered, then dead (the liveness
+// rule closes it, ErrChannelDown too, so the observe loop re-dials). One that never answered is
+// only unanswered however often it is asked -- the handshake's case, where the hello may have
+// been lost in the guest agent's own restart and the right move is to resend on this same
+// connection, not to close.
 func TestCallHonorsContextOnStuckGuest(t *testing.T) {
 	t.Run("never answered: the caller's own deadline, the connection kept", func(t *testing.T) {
 		cconn, sconn := net.Pipe()
@@ -189,11 +188,10 @@ func TestCallHonorsContextOnStuckGuest(t *testing.T) {
 	})
 }
 
-// A SLOW HANDLER IS NOT A DEAD GUEST. Every call in flight waits on the same slow thing -- here
-// a serial guest whose one handler is stuck, the shape of an in-guest HTTP probe of an app that
-// is slow to answer -- so nothing at all answers before the call behind it gives up. One such
-// call leaves the channel up: the timeout is the call's own, and once the handler returns the
-// next call is served on the same connection.
+// A slow handler is not a dead guest. Here a serial guest's one handler is stuck (the shape of an
+// in-guest HTTP probe of a slow app), so nothing answers before the call behind it gives up. One
+// such call leaves the channel up: the timeout is the call's own, and once the handler returns
+// the next call is served on the same connection.
 func TestOneUnansweredCallLeavesTheChannelUp(t *testing.T) {
 	cc, sc := net.Pipe()
 	release := make(chan struct{})
@@ -226,7 +224,7 @@ func TestOneUnansweredCallLeavesTheChannelUp(t *testing.T) {
 	}
 }
 
-// WHAT THE RULE COUNTS. A caller's own cancel is not the guest failing to answer, and a call
+// What the rule counts. A caller's own cancel is not the guest failing to answer, and a call
 // whose deadline had passed before it was sent never reached the guest: neither is a miss, so
 // any number of them leave the channel up, and the misses that follow start from zero.
 func TestCancelsAndUnsentCallsAreNotMisses(t *testing.T) {
@@ -270,7 +268,7 @@ func TestCancelsAndUnsentCallsAreNotMisses(t *testing.T) {
 	}
 }
 
-// THE WINDOW. Misses spread wider than missWindow never add up to missLimit: only the ones
+// The window: misses spread wider than missWindow never add up to missLimit: only the ones
 // inside the window count, and the call that brings the window to missLimit is the verdict.
 func TestMissesCountOnlyInsideTheWindow(t *testing.T) {
 	c := NewConn(nil)
@@ -290,14 +288,12 @@ func TestMissesCountOnlyInsideTheWindow(t *testing.T) {
 	}
 }
 
-// A REPLY ALREADY BEING WRITTEN SURVIVES CANCELLATION, which is what makes EOF mean "the agent
-// died" rather than "the agent answered and we threw the answer away".
-//
-// The verb that needs this is `os.poweroff`: the shutdown it starts is what SIGTERMs the guest
-// agent, so its reply is ALWAYS the one in flight when the context is cancelled. Lost, it would
-// look exactly like a crashed agent, and the host would escalate to the ACPI power button on a
-// guest that is shutting itself down as asked. Here the handler blocks until the context is
-// cancelled and only then returns, so the close and the reply are in the order that would lose it.
+// A reply already being written survives cancellation, which is what makes EOF mean "the agent
+// died" rather than "the agent answered and we threw the answer away". `os.poweroff` needs it:
+// its shutdown SIGTERMs the guest agent, so its reply is always the one in flight at cancel, and
+// lost it would look like a crashed agent -- the host would escalate to the ACPI power button on
+// a guest shutting itself down as asked. The handler returns only after the cancel, the order
+// that would lose it.
 func TestServeFinishesInFlightReplyOnCancel(t *testing.T) {
 	cconn, sconn := net.Pipe()
 	defer cconn.Close()
@@ -332,10 +328,9 @@ func TestServeFinishesInFlightReplyOnCancel(t *testing.T) {
 }
 
 // On a reconnect the still-open virtio-serial stream can carry a stale in-flight reply from the
-// *dropped* session ahead of the handshake reply (QEMU keeps the guest port open across a host
-// re-dial). A reply whose id nothing waits on is dropped, never a failure -- otherwise a
-// reconnect never recovers. The handshake is where it shows, being the first call after a
-// (re)connect.
+// dropped session ahead of the handshake reply (QEMU keeps the guest port open across a host
+// re-dial). A reply whose id nothing waits on is dropped, never a failure, or a reconnect never
+// recovers; the handshake, the first call after a (re)connect, is where it shows.
 func TestCallDropsAStaleFrame(t *testing.T) {
 	cc, sc := net.Pipe()
 	c := NewConn(cc)
@@ -345,7 +340,7 @@ func TestCallDropsAStaleFrame(t *testing.T) {
 		if err := readFrame(sc, &req); err != nil { // read the hello request
 			return
 		}
-		// A leftover reply from the previous session (an unrelated id), THEN the real
+		// A leftover reply from the previous session (an unrelated id), then the real
 		// handshake reply. The caller must skip the first and match the second.
 		hello, _ := json.Marshal(Hello{Capabilities: []string{VerbHello}, BootID: "the-real-reply"})
 		_ = writeFrame(sc, response{ID: req.ID + 42, Payload: json.RawMessage(`"stale reply from a dropped session"`)})
@@ -378,10 +373,10 @@ func slowDispatch(release <-chan struct{}, started chan<- struct{}) DispatchFunc
 	}
 }
 
-// A SLOW VERB HOLDS NOTHING BUT ITSELF. While one call waits on a long act, another call on the
-// same channel is answered, and the act's own deadline abandons the act alone: the channel stays
-// up, the next call still works, and the act's late reply is dropped when it comes. The guest
-// here runs "slow" in the act lane and "echo" beside it -- the two lanes ServeFrames serves.
+// A slow verb holds nothing but itself. While one call waits on a long act, another call on the
+// same channel is answered, and the act's deadline abandons only the act: the channel stays up,
+// the next call works, and the late reply is dropped. The guest runs "slow" in the act lane and
+// "echo" beside it -- the two lanes ServeFrames serves.
 func TestCallsMultiplexAndADeadlineAbandonsOnlyItsCall(t *testing.T) {
 	cc, sc := net.Pipe()
 	release := make(chan struct{})
@@ -404,7 +399,7 @@ func TestCallsMultiplexAndADeadlineAbandonsOnlyItsCall(t *testing.T) {
 		t.Fatalf("echo beside a slow verb = (%q, %v), want it answered", out, err)
 	}
 
-	// The slow call's deadline: its own error, NOT a dead channel -- the echo proved the guest alive.
+	// The slow call's deadline: its own error, not a dead channel -- the echo proved the guest alive.
 	err := <-slow
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("slow call = %v, want its own DeadlineExceeded", err)
@@ -419,11 +414,11 @@ func TestCallsMultiplexAndADeadlineAbandonsOnlyItsCall(t *testing.T) {
 	}
 }
 
-// AN ABANDONED ACT IS STOPPED IN THE GUEST. A "slow" act hangs; the host's deadline abandons it;
-// the host sends cancel; the handler sees its context cancelled and returns; the act mutex is
-// free, so the next act is served instead of queueing behind a hung one forever. The echo
-// beside it proves the guest was alive throughout (so this is the abandon path, not the
-// liveness close), and the cancelled handler is observed directly.
+// An abandoned act is stopped in the guest: the host's deadline abandons a hung "slow" act and
+// sends cancel, the handler sees its context cancelled and returns, and the freed act mutex
+// serves the next act instead of queueing it behind a hung one forever. The echo beside it proves
+// the guest alive throughout (the abandon path, not the liveness close); the cancelled handler is
+// observed directly.
 func TestAnAbandonedActIsCancelledInTheGuest(t *testing.T) {
 	cc, sc := net.Pipe()
 	cancelled := make(chan struct{}, 1)

@@ -48,7 +48,7 @@ func TestDHCPMessages(t *testing.T) {
 			if p[0] != 1 || p[2] != 6 || binary.BigEndian.Uint32(p[4:8]) != 0xdeadbeef {
 				t.Fatalf("header: op=%d hlen=%d xid=%x", p[0], p[2], p[4:8])
 			}
-			// THE RULES: broadcast reply, no ciaddr, chaddr and client-id both the flock's.
+			// The rules: broadcast reply, no ciaddr, chaddr and client-id both the flock's.
 			if p[10] != 0x80 {
 				t.Errorf("broadcast flag not set: %x", p[10:12])
 			}

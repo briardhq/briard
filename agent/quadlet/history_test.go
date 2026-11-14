@@ -92,7 +92,7 @@ func TestRetentionKeepsTheNewestEvenWhenOld(t *testing.T) {
 }
 
 // TestRetentionKeepsEventsForFiveDays: every event stays undoable for five days, measured from
-// the EVENT's creation time rather than its point's.
+// the event's creation time rather than its point's.
 func TestRetentionKeepsEventsForFiveDays(t *testing.T) {
 	young := anchor(TriggerStart, 4*day, ReasonChanged, time.Hour, "Changed automations")
 	old := anchor(TriggerStart, 6*day, ReasonChanged, time.Hour, "Changed automations")
@@ -149,7 +149,7 @@ func TestRetentionHasNoCount(t *testing.T) {
 }
 
 // TestRetentionOrdersByTimeNotName: the trigger sits between the app and the stamp, so by
-// NAME every `-start-` member sorts after every `-clock-` one. An old start member with no event
+// name every `-start-` member sorts after every `-clock-` one. An old start member with no event
 // must not be kept as though it were the newest.
 func TestRetentionOrdersByTimeNotName(t *testing.T) {
 	ev := anchor(TriggerClock, 3*day, ReasonChanged, time.Hour, "Changed automations")
@@ -206,7 +206,7 @@ func TestQuietPointAtTheStartOfTheStretch(t *testing.T) {
 }
 
 // TestQuietPointEveryDay: after the stretch's first quiet point, one more a QuietEvery later, on
-// the sample BEFORE the one evaluated, so a finding at the next sample never lands on it.
+// the sample before the one evaluated, so a finding at the next sample never lands on it.
 func TestQuietPointEveryDay(t *testing.T) {
 	q := anchor(TriggerClock, 30*time.Hour, ReasonQuiet, 5*time.Hour, "")
 	prev := sample(TriggerClock, time.Hour)
@@ -400,11 +400,10 @@ func TestAMemberFromTheBackupIsABeforeSampleAndTheNewest(t *testing.T) {
 	}
 }
 
-// TestRetentionKeepsANightFromTheBackupThroughItsRestore: a restore from the backup puts the night
-// in the ring, then takes its undo point -- a take, which prunes -- and only then swaps the night
-// in. The night is no longer the newest by then and anchors no event, so it needs a rule of its
-// own, or the prune takes it out from under its own swap. Kept as long as an event, from when it
-// was put there.
+// TestRetentionKeepsANightFromTheBackupThroughItsRestore: a restore puts the night in the ring,
+// takes its undo point (a take, which prunes), and only then swaps the night in. By then the
+// night is not the newest and anchors no event, so it needs its own rule -- kept as long as an
+// event, from when it was put there -- or the prune takes it out from under its own swap.
 func TestRetentionKeepsANightFromTheBackupThroughItsRestore(t *testing.T) {
 	night := sample(TriggerFromBackup, 2*time.Second)
 	undo := anchor(TriggerAppUndoBefore, time.Second, ReasonAppUndo, 0, "Restored the backup from Thu 29 Oct, 01:34")
