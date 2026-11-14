@@ -1,24 +1,20 @@
-# Mosquitto as a hermetically-pinned OCI image, in the two versions the upgrade tests need.
+# Mosquitto as a hermetically-pinned OCI image, in the two versions the upgrade tests need. Same
+# discipline as ./home-assistant-image-pair: the official container by per-arch content digest,
+# never a mutable tag, so Nix reproduces it bit-for-bit. A pair, because an upgrade test needs a
+# real version change: a node upgrades to the manifest content hash, and a manifest naming the
+# same image is not an upgrade at all.
 #
-# Same discipline as ./home-assistant-image-pair: pull the official container by per-arch content
-# digest, never a mutable tag, so Nix reproduces it bit-for-bit. A pair rather than a single pin
-# because an upgrade test needs a real version change on both sides of the switch — the identity
-# a node upgrades to is the manifest's content hash, and a manifest naming the same image is not
-# an upgrade at all.
-#
-# ── Why THIS pair (measured, not reasoned) ───────────────────────────────────────────────
+# ── Why this pair (measured, not reasoned) ───────────────────────────────────────────────
 #   from = 2.1.1
 #   to   = 2.1.2   (the pair is frozen; the catalog moves)
 #
-# Both were run under Briard's own config, and both answer
-# `/api/v1/listeners` on the loopback management listener. That matters: the health floor probes
-# the same endpoint on both sides of the switch, so an upgrade test that failed would be reporting
-# on the PIPELINE rather than on a broker that changed its API mid-pair.
-#
-# Nothing about the broker's storage format changes across it, and that is deliberate too. The
-# recorder-schema straddle the HA pair exists for (./home-assistant-image-pair) is HA's problem;
-# what the broker's upgrade has to prove is that retained state written before the switch is still
-# there after it, and rolls back with the snapshot if the switch is reverted.
+# Both were run under Briard's own config and both answer `/api/v1/listeners` on the loopback
+# management listener, the endpoint the health floor probes on both sides of the switch, so a
+# failed upgrade test reports on the pipeline, not on a broker that changed its API mid-pair.
+# Deliberately, nothing about the broker storage format changes across it: the recorder-schema
+# straddle is the HA pair's job; the broker upgrade has to prove that retained state written
+# before the switch is still there after it, and rolls back with the snapshot if the switch is
+# reverted.
 #
 # ── Pin provenance / refresh procedure ───────────────────────────────────────────────────
 # Per-arch amd64 manifest digests under each release's multi-arch index, resolved from

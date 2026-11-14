@@ -1,11 +1,10 @@
-# `nix build .#catalog-test`: catalog/catalog_test.go over the published catalog. The catalog is
-# its own repository, the `catalog` flake input; this lays its catalog/ directory and its image
-# hashes (catalog-images.json) here, beside the test, and runs it -- so pointing the input
-# elsewhere (`--override-input catalog path:.` in the catalog's own checkout, or its `main`)
-# checks that catalog with this code. The test is behind a `catalog` build tag, which keeps a
-# plain `go test ./...` on a checkout without the files from compiling it: no files is no
-# verdict, never a pass. A Go test, not a VM: it builds on any machine with nix, and the per-push
-# CI runs it.
+# `nix build .#catalog-test`: catalog/catalog_test.go over the published catalog (its own
+# repository, the `catalog` flake input). This lays the catalog/ directory and its image hashes
+# (catalog-images.json) beside the test and runs it, so overriding the input
+# (`--override-input catalog path:.` in the catalog checkout, or its `main`) checks that catalog
+# with this code. The `catalog` build tag keeps a plain `go test ./...` without the files from
+# compiling it: no files is no verdict, never a pass. A Go test, not a VM: it builds on any
+# machine with nix, and the per-push CI runs it.
 { buildGoModule, catalog }:
 buildGoModule {
   pname = "catalog-test";

@@ -21,44 +21,41 @@
         system = "x86_64-linux";
         overlays = [ self.overlays.default ];
       };
-      # The release id, DERIVED FROM THE TREE. Shape `<epoch>.<commit-hour>.<short-rev>`,
-      # e.g. `v3.26080614.92d4eee`: the epoch carries the only high-level semantics we have (this
-      # is an epoch scheme, not semver); the commit hour is YYMMDDHH in UTC, quasi-incremental and
-      # readable at a glance (two commits in one hour share it, which is fine); the short rev makes
-      # it unique AND survives a history rewrite, which a commit *count* would not.
+      # The release id, derived from the tree: `<epoch>.<commit-hour>.<short-rev>`, e.g.
+      # `v3.26080614.92d4eee`. The epoch carries the only high-level semantics we have (an epoch
+      # scheme, not semver); the commit hour, YYMMDDHH in UTC, is quasi-incremental and readable
+      # at a glance (two commits in one hour share it, which is fine); the short rev makes it
+      # unique and, unlike a commit count, survives a history rewrite.
       #
-      # YYMMDDHH, NOT YYYYMMDD. Installed nodes order releases on this field alone, as a number, so
-      # with a date alone two releases in one day would be one release to them, and a same-day fix
-      # would wait for midnight. Dropping the century keeps the field eight digits, which every
-      # shipped agent parses, and every YYMMDDHH id (26xxxxxx) is above every YYYYMMDD one
-      # (20xxxxxx), so an agent stamped with a date-only id takes it as newer. It wraps in 2100.
+      # YYMMDDHH, not YYYYMMDD: installed nodes order releases on this field alone, as a number,
+      # so with a date alone two releases in one day would be one release and a same-day fix would
+      # wait for midnight. Without the century the field stays eight digits, which every shipped
+      # agent parses, and every YYMMDDHH id (26xxxxxx) is above every YYYYMMDD one (20xxxxxx), so
+      # an agent stamped with a date-only id takes it as newer. It wraps in 2100.
       #
-      # Deliberately NOT a build counter: the same commit must yield the same version, hence the
-      # same store path, or a released artifact could never be re-derived from its tag — which is
-      # exactly the release pipeline's acceptance test.
-      #
-      # A DIRTY TREE HAS NO REV, so it stamps `v3.dirty`, which the publish script refuses: a build
-      # nobody can reproduce must not be publishable. Dev builds keep working — they are just
-      # labelled as what they are, which is what the startup banner then reports.
+      # Deliberately not a build counter: the same commit must yield the same version and store
+      # path, or a released artifact could never be re-derived from its tag, which is exactly the
+      # release pipeline's acceptance test. A dirty tree has no rev, so it stamps `v3.dirty`, which
+      # the publish script refuses (a build nobody can reproduce must not be publishable); dev
+      # builds still work, labelled as what they are, which the startup banner reports.
       agentVersion =
         if self ? shortRev
         then "v3.${builtins.substring 2 8 self.lastModifiedDate}.${self.shortRev}"
         else "v3.dirty";
-      # THE GUEST IMAGE'S VERSION IS A FUNCTION OF ITS INPUTS, NOT OF THE COMMIT, AND
-      # ITS INPUTS ARE THE PUSH PROTOCOL. `publish-release.sh stage` asks whether the
-      # live channel already serves an image with THESE inputs and re-stages the 400 MB guest
-      # chain only when they changed; what makes that condition honest is that the image bakes
-      # ONE binary, briard-guest-firmware, whose graph is the protocol and nothing else. An edit
-      # to the pushed agent -- DRBD, apps, converge, telemetry, the deadman -- does not reach
-      # this list, because it does not reach the image.
+      # The guest image version is a function of its inputs, not of the commit, and its inputs are
+      # the push protocol. `publish-release.sh stage` re-stages the 400 MB guest chain only when
+      # the live channel serves no image with these inputs; that is honest because the image bakes
+      # one binary, briard-guest-firmware, whose graph is the protocol and nothing else. An edit to
+      # the pushed agent (DRBD, apps, converge, telemetry, the deadman) does not reach the image,
+      # so it does not reach this list.
       #
       # The inputs are the paths that reach the image: the image recipe, the packages built into
-      # it, the Go packages the FIRMWARE links (listed by name; internal/arch asserts the list
+      # it, the Go packages the firmware links (listed by name; internal/arch asserts the list
       # against `go list -deps ./agent/cmd/briard-guest-firmware`, so a new import cannot silently
-      # fall outside the hash), the module files and the nixpkgs pin. A toolchain bump still
-      # counts, correctly: go.mod/go.sum/vendor-hash and nixpkgs can change the bytes the
-      # firmware runs. `builtins.path` copies each into the store, and a store path's name IS its
-      # content hash -- test files excluded, since they never reach the image.
+      # fall outside the hash), the module files and the nixpkgs pin, so a toolchain bump counts,
+      # correctly (it can change the bytes the firmware runs). `builtins.path` copies each into the
+      # store, whose path name is its content hash; test files are excluded, since they never
+      # reach the image.
       guestInputPackages = [
         "agent/cmd/briard-guest-firmware" "agent/guestfirmware" "shared/sdnotify"
       ];
@@ -76,10 +73,10 @@
         pkgs = pkgsX;
         overlay = self.overlays.default;
       };
-      # The cloud-coupled tests + the cloud operator apps, layered in ONLY when the private
-      # half's outputs file (the path below) is present. This tree never carries it: the private
-      # sibling imports it from its own flake, with this flake as an input, so here `private` is
-      # always the empty set and the private tests and apps do not exist rather than break.
+      # The cloud-coupled tests + the cloud operator apps, layered in only when the private half's
+      # outputs file (the path below) is present. This tree never carries it (the private sibling
+      # imports it from its own flake, with this flake as an input), so here `private` is always
+      # empty and the private tests and apps do not exist rather than break.
       private =
         if builtins.pathExists ./nixosTest/outputs-private.nix
         then import ./nixosTest/outputs-private.nix { pkgs = pkgsX; }
@@ -88,11 +85,11 @@
       # Tags merge member-wise, not attr-wise: a tag on both sides must gain members rather than
       # be replaced, while a tag on only one side is kept as it is.
       #
-      # Wrapped in `run-here` at the point the merged set is formed, which matters: `allTests`,
-      # `.#tests.<name>` and `.#test-manifest` all derive from `tags`, so marking the tests here
-      # is what makes every name for a test the derivation a build produces. Marking a later copy
-      # would leave one name pointing at derivations nothing builds -- an invalidation that
-      # deletes the wrong paths, which is the exact shape of stale green the tier exists to refuse.
+      # Wrapped in `run-here` where the merged set is formed: `allTests`, `.#tests.<name>` and
+      # `.#test-manifest` all derive from `tags`, so marking here makes every name for a test the
+      # derivation a build produces. Marking a later copy would leave a name pointing at
+      # derivations nothing builds, an invalidation that deletes the wrong paths: the stale green
+      # the tier exists to refuse.
       tags = import ./nixosTest/run-here.nix { inherit lib; } (tests.tags // lib.mapAttrs
         (n: g: (tests.tags.${n} or { }) // g)
         private.tags);
@@ -100,12 +97,11 @@
       # rather than hand-listed so a tag appearing or vanishing with the private half needs no
       # edit here, and a new tag cannot be silently forgotten.
       allTests = lib.foldl' (a: b: a // b) { } (lib.attrValues (removeAttrs tags [ "debug" "edge" ]));
-      # The lab rig's flake outputs (fleet module + containers, the demo/soak guest
-      # disks, the self-hosted runner), layered in ONLY when the lab outputs file (the path below)
-      # is present. The lab runs on our own box and never in a user's home, so the whole of it is
-      # private: this tree never carries it (the private sibling imports it from its own flake),
-      # so here `labOutputs` is empty and this flake has no lab outputs rather than a broken
-      # reference.
+      # The lab rig's flake outputs (fleet module + containers, the demo/soak guest disks, the
+      # self-hosted runner), layered in only when the lab outputs file (the path below) is present.
+      # The lab runs on our own box, never in a user's home, so all of it is private and this tree
+      # never carries it (the private sibling imports it from its own flake): here `labOutputs` is
+      # empty, and this flake has no lab outputs rather than a broken reference.
       labOutputs =
         if builtins.pathExists ./lab/outputs.nix
         then import ./lab/outputs.nix {
@@ -122,13 +118,12 @@
       # In-repo packages not in nixpkgs, surfaced as an overlay so
       # the unit image can reference them as pkgs.<name>.
       overlays.default = final: prev: {
-        # nixpkgs builds drbd-utils but installs none of its systemd units
-        # (systemd isn't a real build input, so configure can't detect the unit
-        # dir). Enable them so drbd-reactor's promoter drives the *stock*
-        # drbd-promote@ / drbd-services@ + bring-up (drbd@.target) units. The installed units
-        # call the drbd-service-shim by its store path; drbd-reactor bakes the FHS
-        # /lib/drbd/scripts path, which its package (guest-image/pkgs/drbd-reactor) rewrites
-        # to the store path, so no /lib/drbd symlink exists or is needed.
+        # nixpkgs builds drbd-utils but installs none of its systemd units (systemd is not a real
+        # build input, so configure cannot detect the unit dir). Enable them so drbd-reactor's
+        # promoter drives the stock drbd-promote@ / drbd-services@ + bring-up (drbd@.target)
+        # units. They call drbd-service-shim by its store path; drbd-reactor bakes the FHS
+        # /lib/drbd/scripts path, which its package (guest-image/pkgs/drbd-reactor) rewrites to
+        # the store path, so no /lib/drbd symlink exists or is needed.
         drbd = prev.drbd.overrideAttrs (old: {
           configureFlags = (old.configureFlags or [ ]) ++ [ "--with-initscripttype=systemd" ];
           installFlags = (old.installFlags or [ ]) ++ [
@@ -150,18 +145,18 @@
       packages = forAllSystems (pkgs: {
         drbd-reactor = pkgs.callPackage ./guest-image/pkgs/drbd-reactor { };
         dummy-app = pkgs.callPackage ./nixosTest/dummy-app/package.nix { };
-        # The upgrade-pair, surfaced flat + by name so the FOD sha256 can be
-        # filled with `nix build .#home-assistant-image-2025_11` (see the pair's
-        # refresh procedure) and each end can be built directly.
+        # The upgrade-pair, surfaced by name so each end builds directly and its FOD sha256 can be
+        # filled with `nix build .#home-assistant-image-2025_11` (see each pair's pin refresh
+        # procedure, in its default.nix).
         home-assistant-image-2025_11 = (pkgs.callPackage ./guest-image/pkgs/home-assistant-image-pair { }).from;
         home-assistant-image-2025_12 = (pkgs.callPackage ./guest-image/pkgs/home-assistant-image-pair { }).to;
-        # The mosquitto pair, surfaced by name for the same reason: each end builds directly so
-        # its FOD sha256 can be filled in (see the pin refresh procedure).
+        # The mosquitto pair, surfaced by name for the same reason (see each pair's pin refresh
+        # procedure, in its default.nix).
         mosquitto-image-2_1_1 = (pkgs.callPackage ./guest-image/pkgs/mosquitto-image { }).from;
         mosquitto-image-2_1_2 = (pkgs.callPackage ./guest-image/pkgs/mosquitto-image { }).to;
         # The nixpkgs-pinned Postgres, surfaced by name so the private sibling's soak (a host
-        # script — not a nixosTest) provisions an ephemeral PG from the SAME pin its cloud-store
-        # tests use (real PG in the soak).
+        # script, not a nixosTest) runs a real, ephemeral PG from the same pin its cloud-store
+        # tests use.
         postgresql = pkgs.postgresql;
         # The release pipeline's Authenticode signer (scripts/ssign.nix).
         ssign = pkgs.callPackage ./scripts/ssign.nix { };
@@ -169,11 +164,11 @@
         catalog-test = pkgs.callPackage ./catalog/package.nix { inherit catalog; };
       });
 
-      # The guest VM image: NixOS + DRBD 9 + drbd-reactor, and NO workload -- an app is
-      # installed at runtime from a signed manifest, so there is nothing to select here. This is
+      # The guest VM image: NixOS + DRBD 9 + drbd-reactor and no workload (an app is installed at
+      # runtime from a signed manifest, so there is nothing to select here). This is
       # configuration.nix alone, the framework-boot guest (no bootloader); the shipped disk is
-      # guest-image/disk-image.nix. The lab hosts join these when the lab outputs file is
-      # present (never in this tree).
+      # guest-image/disk-image.nix. The lab hosts join these when the lab outputs file is present
+      # (never in this tree).
       nixosConfigurations = {
         guest = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
@@ -184,27 +179,25 @@
         };
       } // (labOutputs.nixosConfigurations or { });
 
-      # Hermetic nixosTest mechanism tests (nixosTest/outputs.nix). ONE test is a build:
+      # Hermetic Tier-1 nixosTest mechanism tests (nixosTest/outputs.nix), not the private
+      # sibling's soak fleet (never `nix build`). One test is one build:
       #   nix build .#tests.drbd-fence -L
-      # `nix flake check` stays light: it evaluates the flake and the config closures, but
-      # boots no VM test. These are Tier-1 hermetic tests, NOT the private sibling's soak fleet
-      # (never `nix build`).
+      # `nix flake check` stays light: it evaluates the flake and the config closures but boots no
+      # VM test.
       #
-      # ⚠️ THERE IS DELIBERATELY NO `.#all`, AND NO `.#drbd`. An aggregate (a linkFarm) would
-      # start every member at nix's default `--max-jobs` — ~40 nixosTests × 2–3
-      # nested QEMU nodes at once, which does not fail slowly, it takes the machine down. The
-      # aggregate cannot guard itself (its builder runs after its members are realised) and a
-      # flake cannot read the machine at eval time, so the answer is that a group is not
-      # something you can type at nix. A GROUP IS STILL A THING YOU CAN RUN — see `test-manifest`
-      # below and CONTRIBUTING's "run a whole tag" recipe, which spells the cap out loud instead
-      # of hiding it behind an attribute that looks free.
+      # ⚠️ Deliberately no `.#all` and no `.#drbd`. An aggregate (a linkFarm) would start every
+      # member at nix's default `--max-jobs`: ~40 nixosTests × 2–3 nested QEMU nodes at once,
+      # which does not fail slowly, it takes the machine down. It cannot guard itself (its builder
+      # runs after its members are realised) and a flake cannot read the machine at eval time, so
+      # a group is not something you can type at nix. A group is still something you can run: see
+      # `test-manifest` below and CONTRIBUTING's "run a whole tag" recipe, which spells the cap out
+      # instead of hiding it behind an attribute that looks free.
       tests = allTests // (tags.debug or { }) // (tags.edge or { });
 
-      # What the tier IS, as data: `tests.tsv` (name, tags, curated, nodes, memory) and
-      # `tags/<name>` member lists, including `tags/all` — the curated set.
-      # Cheap to build (text files; it takes no test as an input, and names no test's path),
-      # which is the whole point. The private sibling's tier scheduler reads it to enumerate and
-      # cost the suite.
+      # The tier as data: `tests.tsv` (name, tags, curated, nodes, memory) and `tags/<name>`
+      # member lists, including `tags/all`, the curated set. The whole point is that it is cheap
+      # to build (text files; it takes no test as an input and names no test path). The private
+      # sibling's tier scheduler reads it to enumerate and cost the suite.
       test-manifest = import ./nixosTest/manifest.nix { pkgs = pkgsX; inherit tags; };
 
       # The cloud operator apps — they drive the cloud datastore, so they arrive with the private
