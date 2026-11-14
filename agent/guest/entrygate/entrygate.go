@@ -2,7 +2,7 @@
 // app upgrade. It turns two samples of HA's per-config-entry setup
 // state — one taken pre-upgrade at steady state, one taken post-upgrade after the
 // retry backoff has settled — into a Verdict: keep the upgrade, hold for a human, or
-// auto-roll-back the {code+data} snapshot.
+// auto-roll-back to the {code+data} rollback point.
 //
 // The signal is deliberately *differential* and rides HA's own state machine rather
 // than a single snapshot's raw shape. The pre sample is the confounder control: an
@@ -11,14 +11,13 @@
 // And HA's transient-vs-terminal split does the denoising for us — a network/WAN flap
 // during the settle window lands in setup_retry (HA retries it), while a genuine
 // incompatibility lands in the terminal setup_error / migration_error. So the gate can
-// trust a terminal regression without the fleet cross-check that S3 will later add.
+// trust a terminal regression without a fleet cross-check.
 //
-// This package is pure: no I/O, no HA client, no clock. Fetching the samples and the
-// settle poll live at the Manager seam (guest.ReadinessAssessor); the denoising
-// *doctrine* lives here, unit-tested in isolation. S2 (a cross-boot reliability prior)
-// and S3 (fleet correlation) layer on top later — they strengthen "was loaded
-// once" into "reliably loaded" and rule out environmental confounders across homes;
-// neither changes this function's contract.
+// This package is pure: no I/O, no HA client, no clock. The samples are taken in the guest
+// (agent/hass); the settle wait and the mapping onto guest.ReadinessAssessor are
+// agent/host/readiness.go's; the denoising *doctrine* lives here, unit-tested in isolation.
+// A cross-boot reliability prior (S2) or fleet correlation (S3) would layer on top without
+// changing this function's contract.
 package entrygate
 
 import (
@@ -61,9 +60,9 @@ type Entry struct {
 }
 
 // Verdict is the gate's decision. Ordered by consequence: Pass keeps the upgrade,
-// Rollback restores the pre-upgrade snapshot, Hold is the ambiguous middle — freeze,
-// alert, one-tap rollback (delivery lands with the notify channel; until then a
-// Hold leans on the rollback window + user-as-sensor and is surfaced, not acted on).
+// Rollback restores the pre-upgrade snapshot, Hold is the ambiguous middle — the upgrade
+// is kept and the hold is surfaced (logged), not acted on; the rollback window and the user
+// are the backstop.
 type Verdict string
 
 const (
@@ -89,7 +88,7 @@ type Result struct {
 // *cluster* (high-confidence auto-rollback) versus a single ambiguous one (hold).
 type Policy struct {
 	// ClusterThreshold is the count of was-loaded→setup_error regressions at or above
-	// which the gate auto-rolls-back instead of holding. Biased by consequence
+	// which the gate auto-rolls-back instead of holding. Biased by consequence toward
 	// Hold: a single terminal regression is the ambiguous middle — it might be a
 	// genuinely-removed/changed integration, so hold and let the user or the rollback
 	// window decide; two or more independent integrations going terminal at once is
@@ -152,7 +151,7 @@ func (p Policy) Assess(pre, post []Entry) Result {
 			// transient/environmental (setup_retry) — hold, don't auto-roll-back.
 			nonSettled = append(nonSettled, finding(e, was, "was loaded, did not settle back"))
 
-			// E.State == StateLoaded (or any other) → still healthy → Pass contributor.
+			// e.State == StateLoaded (or any other) → still healthy → Pass contributor.
 		}
 	}
 

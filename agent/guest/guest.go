@@ -16,14 +16,12 @@ import (
 // closure).
 //
 // Scope is asymmetric on purpose: app lifecycle and health are per-app (contain the data
-// blast radius); the code half (SystemPath/Switch) is whole-VM. The OS upgrade moves neither
+// blast radius); the code half (SystemPath) is whole-VM. The OS upgrade moves neither
 // app nor data: it is a property of the node, and it leaves the workload alone.
 //
-// NO SNAPSHOT/RESTORE HERE ANY MORE. They were the {data} half of an OS
-// upgrade that no longer touches apps, and the app-install sequence
-// (agent/host/app.go) owns moving manifest and data back together —
-// driving the guest agent's data.member/data.restore verbs directly, pinned to the manifest
-// rather than to a system closure.
+// NO SNAPSHOT/RESTORE HERE. The app-install sequence (agent/host/app.go) moves manifest and
+// data back together, driving the guest agent's data.member/data.restore verbs directly, pinned
+// to the manifest rather than to a system closure.
 type GuestManager interface {
 	Start(ctx context.Context, spec model.AppSpec) error
 	Stop(ctx context.Context, spec model.AppSpec) error
@@ -38,19 +36,18 @@ type Health struct {
 }
 
 // ReadinessAssessor is an optional *differential* health signal layered above the
-// HTTP-200 liveness floor. The floor answers "is the app
-// answering?"; an assessor answers "did the upgrade break something that worked before?"
-// — app-specific (HA config-entry state), so it stays behind this seam and
-// the generic Manager keeps no app knowledge. nil = the floor alone (v0/dummy/
-// non-HA payloads are unaffected).
+// HTTP-200 liveness floor. The floor answers "is the app answering?"; an assessor answers
+// "did the upgrade break something that worked before?" — app-specific (HA config-entry
+// state), so it stays behind this interface and this package keeps no app knowledge. nil =
+// the floor alone, which is what every app without an assessor gets (agent/host/readiness.go
+// picks them).
 //
 // The Gate captures a Baseline before the change (old version still serving), then after
 // the floor reports ready calls Assess to settle and judge the post-upgrade signal. A
 // Rollback verdict trips the {code+data} rollback; Hold keeps the upgrade but surfaces
-// it (Hold leans on the rollback window +
-// user-as-sensor); Pass keeps it silently. A failure to capture or assess degrades to
-// the floor alone — S1 never blocks or reverts an upgrade because its own telemetry
-// failed (the safe direction).
+// it (the rollback window and the user are the backstop); Pass keeps it silently. A failure
+// to capture or assess degrades to the floor alone — S1 never blocks or reverts an upgrade
+// because its own telemetry failed (the safe direction).
 type ReadinessAssessor interface {
 	// Baseline captures the pre-upgrade steady-state signal, returning an opaque token
 	// handed back to Assess. Called while the old version still serves.
@@ -92,22 +89,21 @@ var _ control = (*guestagent.Client)(nil)
 
 // Config carries Manager policy not derivable from a AppSpec.
 type Config struct {
-	// HealthURL is the CONFIGURED probe target (the reverse proxy's /healthz at the VIP). It is no
-	// longer the last word: when the VIP is acquired by DHCP inside the guest, only the guest
-	// knows the address, so ResolveHealthURL asks it every cycle and this demotes to the
-	// fallback for a node whose address we did set. "" is NOT "no probe" — see Diskless.
+	// HealthURL is the CONFIGURED probe target (the reverse proxy's /healthz at the VIP). Set,
+	// it is what is probed; unset, the VIP is acquired by DHCP inside the guest, only the guest
+	// knows the address, and ResolveHealthURL asks it every cycle. "" is NOT "no probe" — see
+	// Diskless.
 	HealthURL string
 	// VIPDev is the guest NIC the VIP lives on, when the agent named it (VIP_DEV). Only a
 	// device WE named is safe to read an address back from, and unset means this node claims no
-	// VIP at all -- so there is no address to resolve and nothing to probe. (It used to mean the
-	// guest fell back to a baked eth1, which in the agent-less harnesses also carries the DRBD
-	// address: "the first address on eth1" was then the replication link rather than the VIP.
-	// Deleting that fallback is what it cost in the field to learn.)
+	// VIP at all -- so there is no address to resolve and nothing to probe. Never guess a
+	// device: in the agent-less harnesses eth1 also carries the DRBD address, so "the first
+	// address on eth1" would be the replication link rather than the VIP.
 	VIPDev string
 	// Diskless marks a witness: no apps, no VIP, nothing to probe — its health follows
 	// quorum. This is the ONLY thing that means "never probe". Emptiness cannot carry that
-	// meaning any more, because a data node acquiring its address by DHCP has no configured
-	// URL either, and the two must not answer alike: a witness with no probe is healthy when
+	// meaning, because a data node acquiring its address by DHCP has no configured URL
+	// either, and the two must not answer alike: a witness with no probe is healthy when
 	// quorate, a data node with no address is not ready.
 	Diskless bool
 	// Resource is the DRBD resource this node serves — what OSReady reads its own role and
@@ -116,22 +112,21 @@ type Config struct {
 	Resource string
 	// HTTPClient probes HealthURL; nil defaults to a short-timeout client.
 	HTTPClient *http.Client
-	// GateInterval is how often Upgrade re-checks health while waiting for ready;
-	// the caller bounds the total wait via the Upgrade context. Zero defaults.
+	// gateInterval is how often await re-checks while waiting for ready; the caller bounds
+	// the total wait via its context. Zero defaults.
 	gateInterval time.Duration
-	// HealthPollTimeout bounds each individual health poll in awaitReady. The poll runs
-	// on a context *detached* from the upgrade deadline so that deadline can never
-	// fire inside a control-channel call and close the channel mid-call — which would
-	// break the rollback that reuses it. This caps the detached poll so a wedged guest
-	// can't stall it. Zero defaults.
+	// healthPollTimeout bounds each individual poll in await. The poll runs on a context
+	// *detached* from the caller's deadline so that deadline can never fire inside a
+	// control-channel call and close the channel mid-call — which would break the rollback
+	// that reuses it. This caps the detached poll so a wedged guest can't stall it. Zero
+	// defaults.
 	healthPollTimeout time.Duration
-	// ReactorSnippet enables promoter-coordinated quiesce: the app is
-	// drbd-reactor-managed, so Upgrade pauses the promoter for this snippet around the
-	// swap and resumes after. Quiesce is a surgical stop (ignore-dependencies), so the
-	// VIP/data stay up and no target re-raise is needed. Empty = no promoter
-	// coordination (unit tests / non-promoter payloads).
+	// ReactorSnippet enables the maintenance bracket: EnterMaintenance pauses the promoter and
+	// ExitMaintenance resumes it, around an OS upgrade (agent/host/osupgrade.go). The guest
+	// stops the whole drbd-reactor daemon and does not read the snippet, so only set vs empty
+	// matters. Empty = no promoter coordination (unit tests / non-promoter payloads).
 	ReactorSnippet string
-	// Logf, if set, receives one line per upgrade step (progress/observability).
+	// Logf is defaulted to a no-op by NewManager; nothing in Manager logs through it.
 	Logf func(format string, args ...any)
 }
 
@@ -159,21 +154,15 @@ func NewManager(ctl control, cfg Config) *Manager {
 	return &Manager{ctl: ctl, cfg: cfg}
 }
 
-// unitOf is the systemd unit that answers "is this app up?" — now one definition, on the
-// spec itself (model.AppSpec.ServingUnit), because the host's resource telemetry had rebuilt
-// the same derivation inline and got the runtime-installed case wrong. Kept as a name because it
-// reads better at the eight call sites below than the method does.
+// unitOf is the systemd unit that answers "is this app up?". The one definition is on the spec
+// (model.AppSpec.ServingUnit); this name only reads better at the call sites below.
 func unitOf(spec model.AppSpec) string { return spec.ServingUnit() }
 
 // hasApp reports whether this node runs a workload at all. ZERO APPS IS THE SHIPPED
 // STATE -- a fresh node serves the reverse proxy's own landing page and nothing else --
-// so every app-shaped step in an upgrade has to be a no-op there rather than an error.
-//
-// It exists because the opposite assumption was left behind: unitOf on an empty spec
-// yields the nonexistent `podman-.service`, and asking systemd about it answered "inactive",
-// which the health gate read as "not ready" forever. The node was simultaneously reporting
-// Healthy: true to the cloud (cfg.snapshot probes the reverse proxy and takes its answer, with
-// no such conjunct) and refusing every OS upgrade to itself.
+// so every app-shaped step has to be a no-op there rather than an error. The zero spec names
+// no unit, and asking systemd about one anyway reads "inactive": a health gate stuck on "not
+// ready" forever on a node whose own Healthy (cfg.snapshot, the reverse proxy alone) is true.
 func hasApp(spec model.AppSpec) bool { return spec.Name != "" || spec.Unit != "" }
 
 func (m *Manager) Start(ctx context.Context, spec model.AppSpec) error {
@@ -190,11 +179,11 @@ func (m *Manager) Stop(ctx context.Context, spec model.AppSpec) error {
 	return m.ctl.AppStop(ctx, unitOf(spec))
 }
 
-// Health is the upgrade gate's floor. With an app it means what it always did: the app
-// unit is active AND the probe passes. With NO app the probe alone decides, because the
-// reverse proxy answers /healthz itself in that state -- 200, "no backend configured" -- which is
-// exactly what reverse-proxy was widened to do so that "a node with nothing installed
-// is ready, not sick". Running is vacuously true there: there is no app that could be down.
+// Health is the upgrade gate's floor. With an app: the app unit is active AND the probe
+// passes. With NO app the probe alone decides, because the reverse proxy answers /healthz
+// itself in that state -- 200, "ok: reverse proxy up, no apps routed" -- so a node with
+// nothing installed is ready, not sick. Running is vacuously true there: there is no app that
+// could be down.
 func (m *Manager) Health(ctx context.Context, spec model.AppSpec) (Health, error) {
 	if !hasApp(spec) {
 		return Health{Running: true, Ready: m.probeReady(ctx)}, nil
@@ -209,7 +198,7 @@ func (m *Manager) Health(ctx context.Context, spec model.AppSpec) (Health, error
 
 func (m *Manager) SystemPath(ctx context.Context) (string, error) { return m.ctl.SystemPath(ctx) }
 
-// WriteCert lands a renewed cert/key on the guest's DRBD volume: the terminator
+// WriteCert lands a renewed cert/key on the guest's DRBD volume: the reverse proxy
 // hot-reloads it, so a cloud-scheduled renewal applies with no restart, and it replicates
 // so a failover serves the same cert.
 func (m *Manager) WriteCert(ctx context.Context, cert, key string) error {
@@ -232,15 +221,14 @@ type VIPReader interface {
 //   - an address we configured is the address we probe. We set it on the guest, so reading it
 //     back would tell us nothing new — but it would tell us something WRONG whenever the
 //     device also holds a lease (dhcpcd still serves the service NIC), and the failure that
-//     hides behind is the one the LAN-owned address exists to end: probing a node-local address that answers
-//     after the VIP has moved away, i.e. healthy-while-not-serving.
+//     hides behind is the one the LAN-owned address exists to end: probing a node-local
+//     address that answers after the VIP has moved away, i.e. healthy-while-not-serving.
 //   - no configured address means the VIP came from DHCP inside the guest, so the guest is the
 //     only one who knows it. Ask, every cycle — the lease can change and the VIP moves on
 //     failover. "" (a Secondary, or a promotion in flight) is "nothing to probe yet", which
-//     reads as not-ready rather than as healthy.
+//     reads as not-ready rather than as healthy. A verb error answers the same "".
 //
-// A verb error falls back to the configured URL, the same compatibility posture probeReady
-// takes: an old guest predating net.vip is one that still has a baked address to fall back to.
+// No configured address and no VIPDev means this node claims no VIP: "" again.
 func ResolveHealthURL(ctx context.Context, v VIPReader, diskless bool, vipDev, configured string) string {
 	if diskless {
 		return ""
@@ -257,7 +245,7 @@ func ResolveHealthURL(ctx context.Context, v VIPReader, diskless bool, vipDev, c
 
 // healthURLAt builds the probe target from an address in CIDR form. The port and path are
 // fixed on purpose: the target is the REVERSE PROXY (:80 /healthz), which is what makes the probe
-// stable across zero and one app — see the HealthURL default in agent/host/config.go.
+// stable across zero and one app — see HealthURL in agent/host/config.go.
 func healthURLAt(cidr string) string {
 	addr, _, _ := strings.Cut(cidr, "/")
 	return "http://" + addr + "/healthz"
@@ -268,10 +256,10 @@ func (m *Manager) healthURL(ctx context.Context) string {
 	return ResolveHealthURL(ctx, m.ctl, m.cfg.Diskless, m.cfg.VIPDev, m.cfg.HealthURL)
 }
 
-// ProbeReady reports whether the health endpoint answers 200. It prefers the in-guest
+// probeReady reports whether the health endpoint answers 200. It prefers the in-guest
 // probe (the app.health verb over the control channel) so the readiness gate survives a networking
 // substrate where the host can't reach the VIP (macvtap); it falls back to a direct host-side GET
-// only when that verb errors — an old guest built before it existed, which is always tap-based, so
+// only when that verb errors — a guest built before the verb, which is always tap-based, so
 // the LAN GET still works there. Any error/non-200 is "not ready" — the health-gate treats a
 // non-answering app as a rollback trigger.
 //
@@ -289,8 +277,8 @@ func (m *Manager) probeReady(ctx context.Context) bool {
 	return m.hostProbeReady(ctx, url)
 }
 
-// HostProbeReady is the legacy host-side GET of the VIP, kept as the fallback for a guest that
-// predates the app.health verb.
+// hostProbeReady is the host-side GET of the VIP, the fallback for a guest that predates the
+// app.health verb.
 func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -304,36 +292,12 @@ func (m *Manager) hostProbeReady(ctx context.Context, url string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// THE APP SNAPSHOT USED TO LIVE HERE, and it had been dead since the day the OS upgrade left.
-// Manager.Snapshot/Restore and their SnapshotRef named
-// `<app>-<id>` members under .snapshots — a SERIES, which is exactly what the ring is —
-// each pinned to the OS closure, because what they served was the whole-VM {code+data} rollback.
-// That sequence moved to the host (it owns the OS disk) and stopped touching apps at all; the
-// app half moved to agent/host/app.go and pins the MANIFEST. Nothing called these
-// afterwards but their own tests.
-//
-// Deleted rather than reused, deliberately: the ring's identity is the manifest and its primitive
-// is the guest agent's data.member verb, so keeping a second naming scheme alive here would have
-// left the ring picking between two and the next reader inventing a third.
+// The OS upgrade sequence is the host's (agent/host/osupgrade.go): the point it rolls back to is
+// the OS image, which only the host holds. This package keeps the phases the guest owns --
+// EnterMaintenance/ExitMaintenance and the health gates -- which the host calls in order rather
+// than composing a second sequence.
 
-// THE OS UPGRADE USED TO LIVE HERE, and where it went is worth a sentence.
-//
-// Manager.Upgrade ran the whole switch-only sequence in the guest: quiesce the app,
-// snapshot its data, switch, restart it, gate, and on failure switch back and restore the
-// data. Two things retired it.: an OS upgrade must not touch apps, which removes
-// the app stop/start and the data snapshot/restore -- everything that made the sequence
-// app-shaped. And (c2)'s one-rollback-for-both-methods: the point an OS upgrade rolls
-// back to is the OS DISK, which only the host can snapshot or restore, so the sequence has to
-// be owned by the side that owns the disk (agent/host/osupgrade.go).
-//
-// What is left here is what the guest genuinely owns -- Switch, StageBoot, AwaitReady,
-// EnterMaintenance/ExitMaintenance -- called by the host in order, on
-// both paths, rather than composed into a second sequence. The app half went the other way
-// entirely: {manifest + data} rolling back together is still the whole point, but an app is
-// installed from a runtime manifest now, so that sequence lives host-side with the manifest
-// and this package's payload upgrade is gone.
-
-// EnterMaintenance holds the promoter for the app's resource, if configured.
+// EnterMaintenance pauses the promoter (the guest stops drbd-reactor), if ReactorSnippet is set.
 func (m *Manager) EnterMaintenance(ctx context.Context) error {
 	if m.cfg.ReactorSnippet == "" {
 		return nil
@@ -350,15 +314,14 @@ func (m *Manager) ExitMaintenance(ctx context.Context) error {
 	return m.ctl.ReactorResume(context.WithoutCancel(ctx), m.cfg.ReactorSnippet)
 }
 
-// AwaitReady polls health until Ready, or returns when ctx expires (the health-gate
+// AwaitReady polls Health until Ready, or returns when ctx expires (the health-gate
 // trip). Transient control errors are treated as not-ready until the deadline.
 //
-// The health poll runs on a context *detached* from ctx: were it on the upgrade
-// ctx, a deadline landing *inside* a control-channel call would close the channel
-// mid-call, and the rollback that reuses that channel would then fail to restore. By
-// detaching, the upgrade deadline is observed only in the select below — between polls,
-// never during one — so the channel handed to rollback is always live. The detached
-// poll is itself bounded (healthPollTimeout) so a wedged guest can't stall it.
+// Each poll runs on a context *detached* from ctx (await): were it on ctx, a deadline landing
+// *inside* a control-channel call would close the channel mid-call, and the rollback that
+// reuses that channel would then fail to restore. Detached, the deadline is observed only
+// between polls, never during one, so the channel handed to rollback is always live. The
+// detached poll is itself bounded (healthPollTimeout) so a wedged guest can't stall it.
 func (m *Manager) AwaitReady(ctx context.Context, spec model.AppSpec) error {
 	return m.await(ctx, func(c context.Context) bool {
 		h, err := m.Health(c, spec)
@@ -377,9 +340,9 @@ func (m *Manager) AwaitOSReady(ctx context.Context) error {
 
 // AwaitOSReadyServing is AwaitOSReady for a node that HELD THE HOUSE when it went down and had
 // nobody to hand it to. The fact that let its reboot through -- no takeover-capable peer -- is
-// the same fact that makes "not Primary" a failure here rather than a vacuous pass: nobody else
+// the same fact that makes "not serving" a failure here rather than a vacuous pass: nobody else
 // can be serving, so a node that does not come back serving has left the house dark. See
-// OSReadyServing for the case that found this.
+// OSReadyServing.
 func (m *Manager) AwaitOSReadyServing(ctx context.Context) error {
 	return m.await(ctx, func(c context.Context) bool {
 		ok, err := m.OSReadyServing(c)
@@ -387,7 +350,7 @@ func (m *Manager) AwaitOSReadyServing(ctx context.Context) error {
 	})
 }
 
-// Await is the shared poll loop. Both gates use it so the detachment above is stated and
+// await is the shared poll loop. Every gate uses it so the detachment above is stated and
 // enforced once; the only thing that varies is the question being asked.
 func (m *Manager) await(ctx context.Context, ready func(context.Context) bool) error {
 	for {
@@ -410,27 +373,22 @@ func (m *Manager) await(ctx context.Context, ready func(context.Context) bool) e
 //
 //	DRBD ANSWERS AT ALL              (the replication layer came back)
 //	diskful ∧ quorate ⇒ UpToDate     (…and I am a viable failover target)
-//	Primary           ⇒ /healthz     (…and if I am serving, I am serving)
+//	serving           ⇒ /healthz     (…and if I am serving, I am serving)
 //
-// The precondition was always enforced — an unreadable cluster has never been a pass — but only
-// incidentally, as an error propagating out of a read the implications happened to need. It is
-// stated as a condition now because it is the one that catches the heaviest regression an OS
-// update can ship: a generation whose DRBD does not load at all. Nothing below can see
-// that, since both antecedents are read FROM DRBD — no module, no `drbdsetup`, no antecedent,
-// and a gate made only of implications would pass a node with no replication whatsoever.
+// The precondition catches the heaviest regression an OS update can ship: a release whose DRBD
+// does not load at all. The implications cannot see that, since both antecedents are read FROM
+// DRBD — no module, no `drbdsetup`, no antecedent — and a gate made only of implications would
+// pass a node with no replication whatsoever.
 //
-// ~~configured-anchor ⇒ Diskful~~ was tried and REMOVED (owner's call, and it was right): the
-// realistic way to lose Diskful on a configured anchor is a device that fails to attach, i.e. a
-// DISK failure — a different failure mode from an upgrade regression, not repaired by reverting
-// the closure, so a rollback trigger it has no business being. What it was reaching for is the
-// precondition above, which catches the software case directly and cheaply.
+// NOT "configured anchor ⇒ Diskful": the realistic way to lose Diskful on a configured anchor
+// is a device that fails to attach, i.e. a DISK failure — not an upgrade regression and not
+// repaired by reverting the image, so no rollback trigger. The software case is the
+// precondition's.
 //
-// WHY IT IS NOT AwaitReady's QUESTION. The old OS gate probed HealthURL — the VIP — which a
-// SECONDARY does not own: its peer answers. So a Secondary health-gated its own upgrade against
-// another machine's reverse proxy and committed a broken generation (measured; the reverse proxy is
-// `wantedBy`/`partOf` briard-vip, so the node still promotes and then serves nothing). The fix is
-// not a better probe, it is a node-local question: a Secondary's job is to be a viable failover
-// target, so that is what its gate measures.
+// WHY IT IS NOT AwaitReady's QUESTION. AwaitReady probes HealthURL — the VIP — which a
+// SECONDARY does not own: its peer answers. A Secondary gated that way certifies its own upgrade
+// against another machine's reverse proxy and commits a broken release. A Secondary's job is to
+// be a viable failover target, so that node-local question is what its gate measures.
 //
 // WHY IMPLICATIONS, AND WHY VACUITY IS CORRECT HERE. A node that is neither serving nor a viable
 // failover target has no PRESENT obligation it can fail, so it passes — deliberately. OS updates
@@ -441,7 +399,7 @@ func (m *Manager) await(ctx context.Context, ready func(context.Context) bool) e
 // until it has served, so a rolling HA upgrade must END with handover-and-verify.
 //
 // Quorum is deliberately NOT a rollback trigger, even differentially. Reverting does not restore
-// quorum — after a reboot the node is stranded on either generation — and a rollback is
+// quorum — after a reboot the node is stranded on either release — and a rollback is
 // itself a guest restart. A trigger should name something reverting repairs.
 func (m *Manager) OSReady(ctx context.Context) (bool, error) {
 	if m.cfg.Resource == "" {
@@ -450,7 +408,7 @@ func (m *Manager) OSReady(ctx context.Context) (bool, error) {
 		return m.probeReady(ctx), nil
 	}
 	// DRBD answers at all. A failure here is the module not loaded, `drbdsetup` gone, or the
-	// resource absent from its output — the shapes a generation that broke replication takes.
+	// resource absent from its output — the shapes a release that broke replication takes.
 	// Not-ready rather than an exception: the caller polls, so a transient is retried and only
 	// a persistent one spends the gate's budget and reverts.
 	cl, err := m.ctl.Cluster(ctx, m.cfg.Resource)
@@ -466,20 +424,17 @@ func (m *Manager) OSReady(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// Readiness carries the pre-upgrade baseline from capture (before quiesce) to the
-// post-floor assessment. The zero value (no assessor, or a baseline that couldn't be
-// captured) makes assess a no-op — the floor + rollback window stand alone.
-// OSReadyServing is OSReady with the vacuous half closed: the node must be PRIMARY and its reverse
-// proxy must answer. For the lone holder of the house -- the only serving node an OS upgrade is
-// allowed to reboot (with a takeover-capable peer it refuses) -- "if I am serving, I am
-// serving" is not enough, because the node's own failure handling can make it stop serving
-// before the gate looks. Measured 2026-09-07 (lab os-rollback, a reverse proxy that fails
-// outright): the release booted, promoted, the reverse proxy hit its start limit at 14 s, OnFailure
-// demoted the node under a promotion hold -- and the gate, polling at that moment, saw a
-// Secondary with nothing to fail and COMMITTED a release that left the house dark. Nobody else
-// could have been serving, which is exactly why the reboot was allowed; so here not-Primary is
-// the failure, not a pass. The vacuous rows of OSReady stay right for every node that did NOT
-// hold the house: a standby is still certified only by the job it has.
+// OSReadyServing is OSReady with the vacuous half closed: the node must be serving and its
+// reverse proxy must answer. For the lone holder of the house -- the only serving node an OS
+// upgrade is allowed to reboot (with a takeover-capable peer it refuses) -- "if I am serving, I
+// am serving" is not enough, because the node's own failure handling can make it stop serving
+// before the gate looks: a release whose reverse proxy fails outright boots, promotes, the
+// proxy hits its start limit, OnFailure demotes the node under a promotion hold -- and OSReady,
+// polling at that moment, sees a Secondary with nothing to fail and commits a release that left
+// the house dark. Nobody else could have been serving, which is exactly why the reboot was
+// allowed; so here not serving is the failure, not a pass. The vacuous rows of OSReady stay
+// right for every node that did NOT hold the house: a standby is certified only by the job it
+// has.
 func (m *Manager) OSReadyServing(ctx context.Context) (bool, error) {
 	if m.cfg.Resource == "" {
 		return m.probeReady(ctx), nil
@@ -494,6 +449,9 @@ func (m *Manager) OSReadyServing(ctx context.Context) (bool, error) {
 	return m.probeReady(ctx), nil
 }
 
+// Readiness carries the pre-upgrade baseline from Capture (taken before the app is stopped) to
+// Judge after the floor. The zero value (no assessor, or a baseline that couldn't be captured)
+// makes Judge a no-op — the floor + rollback window stand alone.
 type Readiness struct {
 	base Baseline
 	on   bool
@@ -504,9 +462,9 @@ type Readiness struct {
 // what a failed sample means, and which verdict is worth undoing an upgrade for — and holds it
 // exactly once.
 //
-// Its one caller is the APP-install path, which has no Manager — it is handed a narrow guest
-// interface. The OS-upgrade path runs no assessor: an OS gate asks only generic questions of the
-// guest, never an app-specific one (agent/host/osupgrade.go).
+// Its one caller is the APP-install path (agent/host/app.go), which has no Manager — it is
+// handed a narrow guest interface. The OS-upgrade path runs no assessor: an OS gate asks only
+// generic questions of the guest, never an app-specific one (agent/host/osupgrade.go).
 type Gate struct {
 	// Assessor is the app-specific differential signal. nil = the liveness floor alone,
 	// which is the shipped default for every app the product holds no knowledge about.
@@ -561,7 +519,7 @@ func (g Gate) Judge(ctx context.Context, r Readiness) error {
 	return nil
 }
 
-// Stub is a no-op GuestManager for core tests and v0 wiring.
+// Stub is a no-op GuestManager.
 type Stub struct{}
 
 func (Stub) Start(context.Context, model.AppSpec) error { return nil }

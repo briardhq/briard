@@ -1,22 +1,21 @@
 // Command entrygate-eval runs the S1 health-gate verdict (agent/guest/entrygate)
 // over two config-entry-state samples and prints the result. It exists so a nixosTest
-// can exercise the *real* gate logic against the
-// *real* config-entry states HA computed — read from the two JSON files the
-// briard_canary fixture dumps (pre-upgrade and settled post-upgrade) — rather than
-// re-implementing the verdict in the test's Python.
+// (nixosTest/hass-upgrade-rollback.nix) can exercise the *real* gate logic against the
+// *real* config-entry states HA computed rather than re-implementing the verdict in the
+// test's Python.
 //
 // Usage: entrygate-eval <pre.json> <post.json>
 // Each file is a JSON array of {entry_id, domain, state} (HA's config-entry shape).
 // Prints one line: `VERDICT=<pass|hold|rollback> <reason>`, exit 0.
 //
-// It also TAKES a sample, the half added when the gate grew a sampler:
+// It also TAKES the samples:
 //
 //	entrygate-eval -sample <port>   # print this node's live config-entry states as JSON
 //
 // That runs the product's own sampler (agent/hass) — read the control token off tmpfs, exchange
-// it, present the Bearer, trim the answer — so a test that samples this way is exercising the
-// path an install actually takes rather than a fixture's private dump of the same facts. The
-// dump remains useful for WAITING on a state; it is no longer what the verdict is computed from.
+// it, present the Bearer, trim the answer — so the test exercises the path an install actually
+// takes rather than a fixture's private dump of the same facts. The briard_canary fixture's
+// dump is for WAITING on a state, not what the verdict is computed from.
 package main
 
 import (
