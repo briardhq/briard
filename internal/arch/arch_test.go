@@ -151,8 +151,9 @@ func TestNoForcePromote(t *testing.T) {
 // `primary`/`secondary` verb as *separate* string arguments (force or not — any
 // direct promote/demote is drbd-reactor's job). Parse every non-test .go file and
 // flag any single call that passes both a command literal and a role-verb literal.
-// It passes today (guestagent only ever calls create-md / new-current-uuid /
-// status) and fails the day someone adds a direct promotion at the exec surface.
+// It passes while no call does (guestagent calls drbdadm adjust / create-md / up /
+// disconnect / new-current-uuid and drbdsetup status) and fails the day someone
+// adds a direct promotion at the exec surface.
 func TestNoDirectPromoteDemote(t *testing.T) {
 	cmds := map[string]bool{"drbdadm": true, "drbdsetup": true}
 	roles := map[string]bool{"primary": true, "secondary": true}
@@ -283,10 +284,10 @@ func TestGuestInputsCoverTheFirmware(t *testing.T) {
 
 // THE RIG'S COPY OF THE PROMOTER CHAIN, HELD TO THE PRODUCT'S.
 //
-// nixosTest/lib.nix writes its own drbd-reactor snippet, because two rigs supply a reactor
-// config the harness did not bake and both used to restate the member list by hand. Nix cannot
-// import Go, so the list is genuinely duplicated there -- and the comment that used to say "kept
-// in step BY HAND" is exactly the kind of promise nothing enforces.
+// nixosTest/lib.nix writes its own drbd-reactor snippet: the harness bakes it, and the rigs that
+// supply their own reactor config take it from there rather than restate the member list. Nix
+// cannot import Go, so the list is genuinely duplicated there -- and a copy "kept in step BY
+// HAND" is exactly the kind of promise nothing enforces.
 //
 // A rig whose list is SHORT does not merely differ, it never starts the missing members: the
 // reverse proxy and the dashboard are members too, and a stale snippet would promote a node

@@ -84,7 +84,8 @@ func TestTheKeyIsShownToATrustedDeviceOnly(t *testing.T) {
 }
 
 // An act returns to the page it was pressed on -- the section's page, read from the Referer --
-// and to the home when there is none or it is not one of ours.
+// and to the home when there is none or its path is not a section's page. Only the path is read,
+// so another site's /backup still returns to /backup.
 func TestActsReturnToThePageTheyWerePressedOn(t *testing.T) {
 	r, c, port := backupRig(t)
 	answerHistory(port, "") // the host says yes to each; the answer is not the question here

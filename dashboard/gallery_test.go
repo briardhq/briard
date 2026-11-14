@@ -188,7 +188,7 @@ func answerHistory(port *fakePort, ring string) {
 	}()
 }
 
-// home and section are the renders of the sidebar.s pages with the page.s own cookie: a state is
+// home and section are the renders of the sidebar's pages with the rig's trusted cookie: a state is
 // listed under the page its section lives on.
 func home(_ *testing.T, _ *rig, c *http.Cookie, _ *fakePort) (string, *http.Cookie) { return "/", c }
 func section(path string) func(*testing.T, *rig, *http.Cookie, *fakePort) (string, *http.Cookie) {

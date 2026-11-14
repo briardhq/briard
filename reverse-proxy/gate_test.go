@@ -316,7 +316,7 @@ func TestASessionIsCheckedForEachAppByName(t *testing.T) {
 	}
 }
 
-// An app without a gate is forwarded exactly as before, and the dashboard's gate answers are
+// An app without a gate is forwarded with no signed token, and the dashboard's gate answers are
 // never served to a browser through the reverse proxy.
 func TestUngatedAppsAndTheDashboardsGateAnswers(t *testing.T) {
 	plain := newGatedApp(t, nil)

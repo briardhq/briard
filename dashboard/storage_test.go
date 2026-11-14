@@ -57,8 +57,8 @@ func answerUsage(port *fakePort, members string) *usageAnswers {
 
 // THE STORAGE CARD loads itself: the page asks nothing of it, and offers a way without a script.
 // While the guest measures, the card has the totals and the counts and asks again; once it has
-// the numbers it says the data on disk with the files' size beside it where compression shrank
-// them, the history's size and count, and the room -- and stops asking. An app
+// the numbers it says each area on disk with its size before compression beside it where
+// compression shrank it, the history's size and count, and the room -- and stops asking. An app
 // keeping nothing in its files area has no files rows.
 func TestTheStorageCardLoadsItselfAndStopsAskingOnceMeasured(t *testing.T) {
 	r := newRig(t)

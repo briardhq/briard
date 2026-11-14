@@ -15,7 +15,7 @@ import (
 // only on plans and repo visibilities we may not always be on, and it does not run
 // on a laptop before the push -- this does, as part of `go test ./...`.
 //
-// The tree was clean when this was written, so the guard is purely prospective.
+// The tree holds none of these, so the guard is purely prospective.
 //
 // It guards secrets only. A pointer at the maintainers' private docs is a
 // readability defect, not a leak; TestNoPrivateReferences owns those.

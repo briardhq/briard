@@ -31,10 +31,10 @@ func table(flock string) routes.Table {
 	}}
 }
 
-// What a household gets: the flock's own name, one per app, all at the VIP -- and the SRV
-// record pointed at the APP's own name, never at the flock's and never at a hostname. The
-// last part is the one that cost a measurement: a node-scoped target sends every device on the
-// LAN to the machine that has just stopped being Primary.
+// What a household gets: the flock's own name and the bare alias, one per app, all at the VIP --
+// and the SRV record pointed at the APP's own name, never at the flock's and never at a
+// hostname. The last part matters most: a node-scoped target sends every device on the LAN to
+// the machine that has just stopped being Primary.
 func TestTheWorldIsTheFlockNameEveryAppNameAndTheDeclaredRecords(t *testing.T) {
 	w := mdnsWorldFor("192.168.1.100", "brave-elf", table("brave-elf"))
 
@@ -211,7 +211,8 @@ func TestEnvValueReadsTheUnitsFileShape(t *testing.T) {
 	}
 }
 
-// What the host reads back every observe cycle. It is derived from what is really being served, so
+// What the host reads back when something asks (its controller report, `briard doctor`). It is
+// derived from what is really being served, so
 // a node that publishes nothing says so by the file's ABSENCE -- the answer a Secondary gives.
 func TestThePublishedNameIsWhatIsServedNotWhatWasAsked(t *testing.T) {
 	p := t.TempDir() + "/mdns.published"

@@ -13,8 +13,8 @@ import (
 // TestAppIsTheWord fails on "service" where an app is meant. What a household installs from
 // the catalog is an APP everywhere in this repo: in identifiers, wire and file names, messages,
 // comments and docs. The word "service" keeps only its other meanings, each spelled out below,
-// so a new use reads as one of them or fails here -- the word drifted back once already, which
-// is why this is a test and not a convention.
+// so a new use reads as one of them or fails here -- a convention alone lets the word drift
+// back, which is why this is a test.
 //
 // The check removes every allowed use from a line and refuses what is left. To use the word in
 // one of its other meanings, write it the way the list below recognises (`systemd service`,

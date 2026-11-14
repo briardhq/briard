@@ -74,7 +74,8 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 	if !strings.Contains(body, `action="/install/home-assistant"`) || !strings.Contains(body, "Install Home Assistant") || strings.Contains(body, `http-equiv="refresh"`) {
 		t.Fatalf("the not-installed card offers no button, or the idle page polls: %s", body)
 	}
-	// Untrusted cannot press it, and pressing for anything but HA is refused.
+	// Untrusted cannot press it, and pressing for an app the catalog has no manifest for is
+	// refused.
 	if resp := r.do("POST", "/install/home-assistant", nil, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("install with no session = %d, want 401", resp.StatusCode)
 	}
@@ -168,9 +169,9 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 }
 
 // THE FIRST RUN PICKS SEVERAL: the chooser ticks Files and Home Assistant, the household's
-// choice goes to the host as ONE install in the host's order (Files first, being small), the
-// app on its way names the one behind it, and a failure on the second leaves the first
-// installed and the second saying why.
+// choice goes to the host as ONE install, Files first (being small) and nothing the catalog
+// cannot install, the app on its way names the one behind it, and a failure on the second leaves
+// the first installed and the second saying why.
 func TestTheChooserInstallsASetAsOneAct(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()

@@ -36,11 +36,6 @@ func get(t *testing.T, base, path string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
-// The shipped state of a fresh node: nothing installed. The VIP must still ANSWER — Briard's
-// own page at the root — and /healthz must say the node is ready rather than sick.
-// A node reporting unhealthy forever because no app was ever installed is the zombie
-// state this replaces.
-
 // getHost is the same GET with a chosen Host header — which is the whole input to routing, so
 // nearly every assertion below is one of these.
 func getHost(t *testing.T, base, path, host string) (int, string) {
@@ -80,7 +75,6 @@ func named(name, host, server string) routes.App {
 	return s
 }
 
-// fixed is a routing table that never reloads — the shape most tests want.
 // bareRouter is a router with no dashboard behind it: the routing under test, nothing else.
 func bareRouter(current func() *routing) *router { return newRouter(current, nil) }
 
@@ -108,6 +102,7 @@ func (d *dashboard) url() *url.URL {
 	return u
 }
 
+// fixed is a routing table that never reloads — the shape most tests want.
 func fixed(t routes.Table) func() *routing {
 	r := newRouting(t)
 	return func() *routing { return r }
@@ -116,7 +111,7 @@ func fixed(t routes.Table) func() *routing {
 // The shipped state of a fresh node: nothing installed. The VIP must still ANSWER -- every name
 // the node does not route goes to the dashboard, which is where the household gets in -- and
 // /healthz must say the node is ready rather than sick. A node reporting unhealthy forever
-// because no app was ever installed is the zombie state this replaces.
+// because no app was ever installed is the zombie state this guards against.
 func TestZeroAppReverseProxy(t *testing.T) {
 	dash := newDashboard(t)
 	srv := httptest.NewServer(newRouter(fixed(routes.Table{}), dash.url()))
@@ -147,11 +142,10 @@ func TestZeroAppReverseProxy(t *testing.T) {
 	}
 }
 
-// THE ASSERTION hass-payload.nix LOST, at unit scale: a request whose Host names a
-// runtime-installed app reaches that app through the reverse proxy. Before the
-// routing table the reverse proxy had ONE backend baked at guest-build time, so no
-// runtime-installed app was ever reachable on :80/:443; this is the property that replaces it, and
-// it is keyed on the name rather than on there being exactly one thing to forward to.
+// At unit scale: a request whose Host names a runtime-installed app reaches that app through the
+// reverse proxy. A reverse proxy with ONE backend baked at guest-build time would leave every
+// runtime-installed app unreachable on :80/:443; this property is keyed on the name rather than
+// on there being exactly one thing to forward to.
 func TestRoutesByHostToTheNamedApp(t *testing.T) {
 	ha := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, "home-assistant-ok")
@@ -169,7 +163,7 @@ func TestRoutesByHostToTheNamedApp(t *testing.T) {
 	defer srv.Close()
 
 	// Each name reaches ITS OWN app. Two apps behind one address is the whole reason the reverse
-	// proxy needed a table rather than a backend.
+	// proxy needs a table rather than a backend.
 	for host, want := range map[string]string{
 		"briard-brave-elf-home-assistant.local": "home-assistant-ok",
 		"briard-brave-elf-mosquitto.local":      "mosquitto-ok",
@@ -191,8 +185,8 @@ func TestRoutesByHostToTheNamedApp(t *testing.T) {
 	}
 }
 
-// /healthz IS THE NODE'S, ALWAYS, and this is the reversal that N apps forces. One backend
-// could forward the question to itself; N cannot, and an app that is down must not make the
+// /healthz IS THE NODE'S, ALWAYS, which N apps force: one backend could forward the question
+// to itself; N cannot, and an app that is down must not make the
 // node it runs on read as broken — the OS health gate and the rollback reflex read this, and
 // converge-at-promotion puts app failures deliberately outside the promoter's reach.
 func TestHealthIsTheNodesOwnAnswerNotAApps(t *testing.T) {
@@ -220,8 +214,9 @@ func TestHealthIsTheNodesOwnAnswerNotAApps(t *testing.T) {
 
 // An app routed by name whose backend the reverse proxy must NOT expose. mosquitto is the live
 // case, and it is a security property, not a nicety: its manifest port is the broker's management
-// API, which mosquitto.conf binds to 127.0.0.1 on purpose — and the reverse proxy runs inside that
-// same guest, so forwarding to it by name would republish a loopback-only endpoint on the LAN. The
+// API, which mosquitto.conf binds where only this guest reaches it (the private pod's own
+// namespace; loopback under host networking) — and the reverse proxy runs inside that same
+// guest, so forwarding to it by name would republish a guest-only endpoint on the LAN. The
 // name is still ours (it resolves to the VIP, where MQTT is listening), so the answer says so
 // instead of 404ing.
 func TestRoutedButNotFronted(t *testing.T) {
@@ -338,7 +333,7 @@ func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 // to an X-Forwarded-For header from a proxy it has not been told to trust, so adding one to an
 // app that has not said it accepts it (forwardTrust; nothing has, here) silently breaks
 // the flagship app behind the reverse proxy. And the client's Host has to survive: an app
-// builds its absolute URLs from it, and it is now also the thing that CHOSE this backend.
+// builds its absolute URLs from it, and it is also the thing that CHOSE this backend.
 func TestProxyPassesTheClientHostAndNoForwardedHeaders(t *testing.T) {
 	var gotHost string
 	var gotXFF []string

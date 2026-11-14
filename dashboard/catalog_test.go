@@ -213,8 +213,8 @@ func TestANewlyAvailableWishedAppSaysSo(t *testing.T) {
 }
 
 func init() {
-	// Every rig has the host's view of the index unless a test takes it away: the product's
-	// two apps were on every page before the index existed, and still are.
+	// Every rig has the host's view of the index unless a test takes it away, so the two apps
+	// with manifests are on every page.
 	rigCatalog = func(t *testing.T, r *rig) {
 		r.app.catalogPath = filepath.Join(r.dir, "catalog.json")
 		r.hostLists(t, testCatalog())

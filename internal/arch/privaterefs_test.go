@@ -28,7 +28,7 @@ import (
 // file suffix or possessive, so "by design" and "THE ORDER IS THE DESIGN" pass.
 //
 // The check runs on `go test ./...`, so it fires on the laptop before a push and
-// again in CI. It reads every tracked text file, not only Go: the same comments
+// again in CI. It reads every text file under the module root, not only Go: the same comments
 // live in the nix tests, the installer, the guest image and the HA integration.
 func TestNoPrivateReferences(t *testing.T) {
 	patterns := map[string]*regexp.Regexp{

@@ -241,9 +241,8 @@ func TestMealieEntryMatchesWhatTheProductAssumes(t *testing.T) {
 // The schema's default is a SAFETY property -- an unknown manifest gets the least capable shape --
 // while this is a CURATION rule, and they are not in tension: in a document a human reviews before
 // it reaches every household, the deployment shape should be visible rather than inferred from an
-// absence. It also catches the failure that produced this test: the field was added, the renderer
-// was taught to honour it, and both published entries kept saying nothing -- which would have moved
-// Home Assistant onto a private network and taken the mDNS/SSDP discovery it exists for with it.
+// absence. It also catches an entry that means host networking and says nothing: silence moves
+// Home Assistant onto a private network and takes the mDNS/SSDP discovery it exists for with it.
 func TestEveryEntryDeclaresItsNetworking(t *testing.T) {
 	for _, path := range versionFiles(t) {
 		raw, err := os.ReadFile(path)
@@ -298,7 +297,7 @@ func read(t *testing.T, name string) []byte {
 // layers) and the bytes the image store holds afterwards (`installedSize`, uncompressed). The
 // first is a progress bar's denominator, the second the free-space gate's operand; a node can
 // learn neither until the pull is over. Measured with skopeo (copy, then sum the manifest's
-// layer sizes and the decompressed layers), 2026-09-04.
+// layer sizes and the decompressed layers).
 func TestEveryEntryDeclaresItsSizes(t *testing.T) {
 	for _, path := range versionFiles(t) {
 		m, _, err := manifest.Parse(read(t, path))

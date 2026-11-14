@@ -96,7 +96,7 @@ func (f *fakeHA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// rig is a dashboard wired to a fake HA through a routes table, with a fresh handoff on tmpfs.
+// rig is a dashboard wired to a fake HA through a routes table, with a fresh handoff in a temp dir.
 type rig struct {
 	t     *testing.T
 	ha    *fakeHA
@@ -240,8 +240,8 @@ func TestExpiredCodeIsRefusedAndDropped(t *testing.T) {
 
 // A SPENT CODE DOES NOT STRAND THE BROWSER THAT SPENT IT: the terminal prints one link
 // and a person clicks it twice, so a code that opens nothing falls back to the session the
-// browser is already carrying. A browser carrying none is refused exactly as before -- reaching
-// this port still teaches nothing.
+// browser is already carrying. A browser carrying none, or a cookie that is not a session, is
+// refused -- reaching this port teaches nothing.
 func TestASpentCodeFallsBackToTheSession(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
@@ -483,7 +483,7 @@ func (r *rig) reissue(agent string, as *http.Cookie) *http.Cookie {
 	return nil
 }
 
-// page is what a trusted device can see: the home page and the settings page, together. The
+// page is what a trusted device can see: the home page and every section's page, together. The
 // tests here ask what is said; which page says it is the gallery's question.
 func (r *rig) page(c *http.Cookie) string {
 	r.t.Helper()
