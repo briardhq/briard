@@ -12,7 +12,7 @@ import (
 
 // diskExec is fakeExec with a REAL WriteFile. The thing under test is a file systemd can load,
 // so a fake that keeps writes in a map would let every assertion below pass over a renderer that
-// wrote nothing at all -- which is exactly the vacuity this item was created by.
+// wrote nothing at all.
 type diskExec struct {
 	fakeExec
 	wrote []string // every path WriteFile was CALLED with, mask or not
@@ -55,10 +55,10 @@ func guestWithTools(t *testing.T) (unitDir, tools string) {
 	return unitDir, tools
 }
 
-// THE UNIT EXISTS, AND IT IS THE ONE THE HOST IS ABOUT TO START. The whole item is
+// THE UNIT EXISTS, AND IT IS THE ONE THE HOST IS ABOUT TO START. The property is
 // "the unit can never be older than the binary that wrote it", so what is asserted is that this
-// binary's start produces a loadable briard-node-storage.service naming this binary's committed
-// path and this image's tool profile -- the two halves the crash-loop had disagree.
+// binary's start produces a briard-node-storage.service naming this binary's committed
+// path and this image's tool profile -- the two halves that, out of step, crash-loop the node.
 func TestWriteUnitsRendersNodeStorage(t *testing.T) {
 	dir, tools := guestWithTools(t)
 	f := &diskExec{}
@@ -81,7 +81,7 @@ func TestWriteUnitsRendersNodeStorage(t *testing.T) {
 			t.Errorf("rendered unit is missing %q:\n%s", want, got)
 		}
 	}
-	// NO [Install], which is the old `wantedBy = [ ]`: this unit runs when the host says so and
+	// NO [Install]: this unit runs when the host says so and
 	// never at boot. A rendered [Install] would be silently inert here (nothing enables it) and
 	// wrong the moment anything did.
 	if strings.Contains(got, "[Install]") {
@@ -90,7 +90,7 @@ func TestWriteUnitsRendersNodeStorage(t *testing.T) {
 }
 
 // A UNIT WRITTEN AND NOT RELOADED IS A UNIT systemctl SAYS DOES NOT EXIST -- the same symptom
-// the crash-loop measured, reached by a different route. systemd reads unit files at load, so the
+// as a unit nobody wrote, reached by a different route. systemd reads unit files at load, so the
 // reload is not housekeeping and its absence would pass every content assertion above.
 func TestWriteUnitsReloadsSystemd(t *testing.T) {
 	guestWithTools(t)
@@ -274,18 +274,18 @@ func TestWriteUnitsHoldStopsEveryMemberInReverse(t *testing.T) {
 	if !strings.Contains(hold, "reset-failed "+strings.Join(members, " ")) {
 		t.Errorf("the hold does not clear every member's start limit:\n%s", hold)
 	}
-	// AND THE LONE NODE'S RESTART IS HANDED THE TARGET IT MUST START. Measured on the
-	// first single-node-chain run: the step took `$1`, the unit passed nothing, and
-	// `set -u` made it "unbound variable" -- on an ExecStopPost the unit deliberately marks `-`,
-	// so systemd swallowed it and the lone node simply never came back. Hold-and-restart is the
+	// AND THE LONE NODE'S RESTART IS HANDED THE TARGET IT MUST START. The step takes `$1`;
+	// passed nothing, `set -u` fails it with "unbound variable" -- on an ExecStopPost the unit
+	// deliberately marks `-`, so systemd swallows it and the lone node simply never comes back.
+	// Hold-and-restart is the
 	// lone node's whole answer to a member giving up; a silent no-op there is a dead house.
 	if !strings.Contains(hold, "briard-hold-restart "+chain.Target+"\n") {
 		t.Errorf("the hold's restart is not told which target to start:\n%s", hold)
 	}
 }
 
-// THE HOLD LENGTH IS A CONSTANT WITH A TEST OVERRIDE, which is the whole reason the nix option
-// could go: the contract rigs drive the full lifecycle and cannot wait five minutes.
+// THE HOLD LENGTH IS A CONSTANT WITH A TEST OVERRIDE: the contract rigs drive the full lifecycle
+// and cannot wait five minutes.
 func TestWriteUnitsHoldSecs(t *testing.T) {
 	guestWithTools(t)
 	if !strings.Contains(units()[holdUnit], "/sleep 300\n") {
@@ -327,8 +327,8 @@ func TestWriteUnitsExecLinesAreAbsoluteAndPathed(t *testing.T) {
 // A DOWNGRADE INSIDE ONE BOOT MUST NOT LEAVE THE NEWER AGENT'S UNITS BEHIND. A
 // refused release is reverted by pushing the previous bundle and restarting the agent, which is
 // not a reboot -- so tmpfs does not clear it, and what would be left is a newer unit pointing at
-// an older binary: this item's own defect with the ages swapped, and the harder direction to
-// read, because the stale unit looks freshly written.
+// an older binary: the defect the render removes, with the ages swapped, and the harder
+// direction to read, because the stale unit looks freshly written.
 func TestWriteUnitsSweepsAPredecessorsUnits(t *testing.T) {
 	dir, _ := guestWithTools(t)
 	stale := filepath.Join(dir, "briard-from-the-future.service")
@@ -393,7 +393,7 @@ func TestWriteUnitsSweepSparesEverythingElse(t *testing.T) {
 // refusal would last exactly until the next agent start, which is precisely when it is needed.
 //
 // The mask and the unit are one path because systemd defines a mask as a symlink to /dev/null
-// at the unit's own location, and that location is now ours.
+// at the unit's own location, and the renderer writes that location too.
 func TestWriteUnitsLeavesAMaskAlone(t *testing.T) {
 	dir, _ := guestWithTools(t)
 	f := &diskExec{}
@@ -403,9 +403,9 @@ func TestWriteUnitsLeavesAMaskAlone(t *testing.T) {
 	if err := MaskRendered(context.Background(), f, chain.Target); err != nil {
 		t.Fatalf("MaskRendered: %v", err)
 	}
-	// MaskRendered clears the file so `systemctl mask` is not refused over it -- the failure
-	// measured on install-macvtap, "File '/run/systemd/system/briard-chain.target' already
-	// exists". The fake systemctl writes no symlink, so stand one in as systemd would.
+	// MaskRendered clears the file so `systemctl mask` is not refused over it ("File
+	// '/run/systemd/system/briard-chain.target' already exists"). The fake systemctl writes no
+	// symlink, so stand one in as systemd would.
 	p := filepath.Join(dir, chain.Target)
 	if _, err := os.Lstat(p); !os.IsNotExist(err) {
 		t.Fatalf("masking did not clear the rendered file first: %v", err)

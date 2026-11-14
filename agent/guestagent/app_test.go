@@ -246,9 +246,9 @@ func TestFsSyncSkipsAnUnmountedVolume(t *testing.T) {
 }
 
 // THE PER-APP SPLIT: the volume must be able to say WHICH app a manifest
-// belongs to. With one unnamed file, installing a second app recorded its identity over the
-// first's -- so the first's prior became unreadable, and on the host side filesToRemove then
-// deleted that app's rendered units as a renamed prior's orphans.
+// belongs to. With one unnamed file, installing a second app records its identity over the
+// first's -- so the first's prior becomes unreadable, and on the host side filesToRemove then
+// deletes that app's rendered units as a renamed prior's orphans.
 //
 // Asserted on the PATHS, because that is where the property lives: two provisions must write two
 // files, and each must be named for its own app.
@@ -291,7 +291,7 @@ func TestAppVerbsRefuseAnEscapingName(t *testing.T) {
 
 // app.list names what the VOLUME carries, with the `.json` the files wear on disk stripped:
 // it is how a node that promoted into somebody else's install can say what it runs at all
-// (measured: a survivor served the fixture while reporting no apps).
+// (without it, a survivor serves an app while reporting no apps).
 func TestAppListNamesTheVolumesApps(t *testing.T) {
 	f := &fakeExec{output: []byte("dummy.json\nhome-assistant.json\nnot-a-manifest\n")}
 	g := dial(t, f)

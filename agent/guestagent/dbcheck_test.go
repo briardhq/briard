@@ -167,7 +167,7 @@ func TestAQuiescedTakeIsHeldForTheRecorder(t *testing.T) {
 // TestTheNightlyCheckRestoresFromAHeldCleanCopy is check then restore, end to end in the guest: the
 // damaged newest member is found, the held clean one is put back through a staged copy swapped
 // in whole, and around it Home Assistant is stopped, an undo point carrying the event is taken
-// BEFORE anything is staged, and the app is started again.
+// once the staged copy is ready and BEFORE the swap, and the app is started again.
 func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -248,7 +248,7 @@ func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 	}
 }
 
-// TestTheVerbIsAdvertised: a verb absent from the handshake is one no host calls.
+// TestTheDBCheckVerbIsAdvertised: a verb absent from the handshake is one no host calls.
 func TestTheDBCheckVerbIsAdvertised(t *testing.T) {
 	if !slices.Contains(guestCapabilities, verbHassDBCheck) {
 		t.Fatal("the guest does not advertise the recorder check")
@@ -256,7 +256,7 @@ func TestTheDBCheckVerbIsAdvertised(t *testing.T) {
 }
 
 // TestTheCheckRunsInTheBackground: the verb answers at once, a second start is refused while one
-// runs, the report is handed over once, and a restore waits for the check to finish.
+// runs, the report is handed over once, and a restore is refused while the check runs.
 func TestTheCheckRunsInTheBackground(t *testing.T) {
 	ctx := context.Background()
 	release := make(chan struct{})

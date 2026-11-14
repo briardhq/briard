@@ -9,8 +9,9 @@ import (
 	"briard.io/shared/nodestorage"
 )
 
-// mountFake answers the one question PrimaryStorage asks the machine -- is the volume already
-// mounted -- and holds the spec it reads the device from.
+// mountFake answers the two questions PrimaryStorage asks the machine -- is the volume already
+// mounted, and what is its filesystem uuid -- and holds the spec it reads the device from and the
+// quota mode file it checks.
 type mountFake struct {
 	*fakeExec
 	mounted bool

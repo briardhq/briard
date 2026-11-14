@@ -55,8 +55,8 @@ func TestTheSlackIsWhatBtrfsKeepsAndOneChunk(t *testing.T) {
 	}
 }
 
-// THE APP'S CAP: a tenth of its size and the free space for a small app, the tier's keep for a big
-// one, and nothing under zero.
+// THE APP'S CAP leaves the others a tenth of its size and the free space for a small app, the
+// tier's keep for a big one, and is never under zero.
 func TestAnAppsCapLeavesTheOthersTheirShare(t *testing.T) {
 	keep := int64(300 * mb)
 	for _, tc := range []struct {

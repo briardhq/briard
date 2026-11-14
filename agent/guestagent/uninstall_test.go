@@ -224,7 +224,8 @@ func TestTheFilesAreKeptAndPutBack(t *testing.T) {
 	}
 }
 
-// A KEPT COPY ENDS AT THIRTY DAYS, at the files tick, whether or not any app has a files area.
+// A KEPT COPY ENDS AT THIRTY DAYS, at the files tick. (The tick expires it before it asks whether
+// any app has a files area; this rig has one, so that order is not exercised here.)
 func TestAKeptCopyEndsAtThirtyDays(t *testing.T) {
 	v := newUserVolume("immich")
 	old := filepath.Join(filesVersionsDir(), filepath.Base(memberAt("gone", quadlet.TriggerUninstall, tickNow.Add(-31*24*time.Hour))))

@@ -195,8 +195,8 @@ func TestTheWalkIsCachedUntilItIsStaleOrTheAreaIsSwapped(t *testing.T) {
 }
 
 // AN EMPTY AREA is zero bytes, measured; a WALK THAT FAILS is no numbers, and is not tried again
-// inside the window, so a page left open does not walk every time it asks. An app with no user
-// area has no files tier.
+// inside the window, so a page left open does not walk every time it asks. An app with no files
+// group has no files tier.
 func TestEmptyFailedAndAbsentAreas(t *testing.T) {
 	v := newUsageVolume()
 	v.set(func() {

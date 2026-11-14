@@ -27,7 +27,7 @@ func TestDecideRebootsWhenQuorumSafe(t *testing.T) {
 }
 
 // The load-bearing negative: deadman fired but rebooting would tip the cluster below quorum →
-// Hold, never Reboot. A deadman reboot must never be able to cause a serving outage.
+// Hold, never Reboot. A deadman reboot must never be what drops a cluster below quorum.
 func TestDecideHoldsWhenQuorumCritical(t *testing.T) {
 	got := Decide(Input{
 		SinceContact: 30 * time.Minute, Deadman: 6 * time.Minute,
@@ -71,8 +71,8 @@ func TestDecideSelfUpdateWindowDoesNotReboot(t *testing.T) {
 	}
 }
 
-// The cadence: one immediate attempt, then a flat RebootCadence forever. Flat rather than the
-// old 30s/1m/2m/4m ramp because a lone node now reboots itself (RebootAllowed), and there every
+// The cadence: one immediate attempt, then a flat RebootCadence forever. Flat rather than a
+// 30s/1m/2m/4m ramp because a lone node reboots itself (RebootAllowed), and there every
 // attempt is a real service interruption — the ramp would spend three of them in four minutes.
 func TestBackoffIsImmediateThenFlat(t *testing.T) {
 	if Backoff(0) != 0 {
@@ -137,9 +137,9 @@ func TestRebootAllowed(t *testing.T) {
 		f    Fabric
 		want bool
 	}{
-		// SINGLE NODE — allowed. This is the case the old gate got backwards, and getting it
-		// backwards left the reflex inert on the shape most briard installs actually have: the
-		// node held, alerted once, and then sat wedged and silent forever. There is no cluster to
+		// SINGLE NODE — allowed. Holding here would leave the reflex inert on the shape most
+		// briard installs actually have: the node would hold, alert once, and then sit wedged and
+		// silent forever. There is no cluster to
 		// disrupt, quorum is guaranteed on the way back, and the data is on its own disk.
 		{"single node, quorate", Fabric{Peers: 0, Connected: 0, Quorate: true}, true},
 		{"single node, not even quorate", Fabric{Peers: 0, Connected: 0, Quorate: false}, true},
@@ -149,7 +149,7 @@ func TestRebootAllowed(t *testing.T) {
 		// anchor: WAN out, peer and cloud witness both unreachable.
 		{"3-voter, fully partitioned and out of quorum", Fabric{Peers: 2, Connected: 0, Quorate: false}, true},
 
-		// SURVIVES WITHOUT ME — the original gate, and the case it was built for.
+		// SURVIVES WITHOUT ME — the case the gate was built for.
 		{"3-voter, all present, I leave → 2 remain (majority)", Fabric{Peers: 2, Connected: 2, Quorate: true}, true},
 		{"5-voter, 3 connected, I leave → 3 remain (majority)", Fabric{Peers: 4, Connected: 3, Quorate: true}, true},
 

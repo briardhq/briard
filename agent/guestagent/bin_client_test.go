@@ -56,8 +56,9 @@ func TestHandshakeAdvertisesBinPush(t *testing.T) {
 	}
 }
 
-// The firmware's own capability list is a STRICT SUBSET of the dressed agent's, and the push
-// verbs are in it: a host that meets a firmware must still be able to dress it.
+// The firmware's own capability list is a SUBSET of the dressed agent's: every verb a firmware
+// advertises, the dressed agent serves too. (The push verbs being in the firmware's list, so a
+// host that meets a firmware can still dress it, is not asserted here.)
 func TestFirmwareCapabilitiesAreASubsetOfTheAgents(t *testing.T) {
 	full := map[string]bool{}
 	for _, v := range guestCapabilities {

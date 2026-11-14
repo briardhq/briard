@@ -153,9 +153,9 @@ func TestTheBackupRefusesWhatIsNotARESTRepository(t *testing.T) {
 }
 
 // TestTheBackupCommandLines: the newest member of every app (whatever took it) at a stable
-// path, read-only; the volume's key in a 0600 file, never an argument; HA's own tarballs
-// excluded; the household's group on the backup and on the forget; the retention policy;
-// everything unmounted and removed after.
+// path, read-only; the volume's key in a 0600 file, never an argument; no exclude (an app's own
+// backups are never in a member); the household's group on the backup and on the forget; the
+// retention policy; a stale lock cleared first; everything unmounted and removed after.
 func TestTheBackupCommandLines(t *testing.T) {
 	f, newest := backupRig(map[string]func() ([]byte, error){
 		"backup": func() ([]byte, error) { return []byte(resticSummary), nil },
@@ -412,7 +412,7 @@ func TestTheKeyIsTheVolumes(t *testing.T) {
 }
 
 // TestASnapshotWithNoGroupIsTheGuestsOwn: a request that names no group (a rig with no host) is
-// taken under the one fixed name, so plain restic finds it where the README says.
+// taken under the one fixed name, backupHost, on the backup and on the forget alike.
 func TestASnapshotWithNoGroupIsTheGuestsOwn(t *testing.T) {
 	f, _ := backupRig(map[string]func() ([]byte, error){
 		"backup": func() ([]byte, error) { return []byte(resticSummary), nil },

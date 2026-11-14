@@ -12,7 +12,7 @@ import (
 )
 
 // withoutQgroups drops the quota tree's bookkeeping from a run list, so a test about the order
-// of a verb's other steps reads them as it always has.
+// of a verb's other steps reads only those.
 func withoutQgroups(runs [][]string) [][]string {
 	var out [][]string
 	for _, r := range runs {

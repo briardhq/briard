@@ -240,7 +240,7 @@ func TestResourcesVerbSkipsAStoppedApp(t *testing.T) {
 }
 
 // journalctl talks in its own voice, and none of it is a log line. "-- No entries --" is what a
-// HEALTHY node's poll returns, and counting it made kerr sit at a permanent 1 -- which hides the
+// HEALTHY node's poll returns, and counting it would make kerr sit at a permanent 1 -- hiding the
 // step up to a real kernel error, the one thing this signal exists to catch.
 func TestSplitJournalCursorDropsJournalctlMarkers(t *testing.T) {
 	t.Run("no entries yields no lines", func(t *testing.T) {
@@ -273,8 +273,8 @@ func TestSplitJournalCursorDropsJournalctlMarkers(t *testing.T) {
 	})
 }
 
-// N APPS, EACH MEASURED AND EACH NAMED. The alternative was summing them into
-// the three scalars this replaced, and summing is what loses the signal: NRestarts exists to make
+// N APPS, EACH MEASURED AND EACH NAMED. The alternative is summing them into
+// three scalars, and summing is what loses the signal: NRestarts exists to make
 // a crash-loop loud, and one app flapping inside a total reads as a small climb. So the
 // assertion is that a crash-looping app is attributable BY NAME while its quiet neighbour
 // stays at zero -- a sum could not tell those apart.

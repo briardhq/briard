@@ -61,7 +61,7 @@ func newHarness() *harness {
 func (h *harness) contactNow()             { h.mon.Contact() }
 func (h *harness) advance(d time.Duration) { h.now = h.now.Add(d) }
 
-// A single evaluate tick starting from a fresh (serving) state.
+// A single evaluate tick from the given episode and degraded flag.
 func (h *harness) tick(ep Episode, degraded bool) (Episode, bool) {
 	return h.mon.evaluate(context.Background(), h.now, ep, degraded)
 }
@@ -120,10 +120,10 @@ func TestMonitorHoldsWhenQuorumCritical(t *testing.T) {
 	}
 }
 
-// A lone node (solo/free) REBOOTS. It used to hold, on the reasoning that a single node is its
-// own quorum and departing loses it — which is true and irrelevant: there is no peer to outage,
-// quorum is guaranteed the moment it comes back, and the data is on its own disk. Holding meant
-// the reflex did nothing at all on the shape most briard installs have, leaving a wedged node
+// A lone node (solo/free) REBOOTS. Holding, on the reasoning that a single node is its own
+// quorum and departing loses it, is true and irrelevant: there is no peer to outage, quorum is
+// guaranteed the moment it comes back, and the data is on its own disk. Holding would mean the
+// reflex does nothing at all on the shape most briard installs have, leaving a wedged node
 // wedged forever behind a single alert.
 //
 // This is the assertion that would silently rot if the gate were ever re-derived from the
@@ -140,7 +140,7 @@ func TestMonitorSoloReboots(t *testing.T) {
 	}
 }
 
-// The other clause the old gate lacked: a node that has ALREADY lost quorum is serving nobody
+// The already-failed clause: a node that has ALREADY lost quorum is serving nobody
 // (DRBD refuses its writes), so there is nothing to preserve by staying up and a reboot is free.
 // The partitioned anchor — WAN out, peer and cloud witness both unreachable.
 func TestMonitorRebootsWhenAlreadyOutOfQuorum(t *testing.T) {
@@ -175,8 +175,8 @@ func TestMonitorHoldsTheCadenceBetweenReboots(t *testing.T) {
 	if h.reboots != 1 {
 		t.Fatalf("first reboot missing")
 	}
-	// Ticks across the whole cadence must not produce a second reboot. The old ramp let one
-	// through at 30s; on a lone node — which now reaches this path at all — that is a second
+	// Ticks across the whole cadence must not produce a second reboot. A ramp starting at 30s
+	// would let one through; on a lone node, which reaches this path too, that is a second
 	// service interruption half a minute after the first.
 	for _, d := range []time.Duration{10 * time.Second, time.Minute, 30 * time.Minute} {
 		h.advance(d)
@@ -234,7 +234,8 @@ func TestMonitorRecoversOnContact(t *testing.T) {
 }
 
 // A held episode (never rebooted) is still an episode: it ends with a record for the host too,
-// and across a deadman restart it is recognised as in progress from its persisted start.
+// dated from the hold. (Its recognition across a deadman restart, Run loading the persisted
+// start, is not exercised here.)
 func TestMonitorHeldEpisodeIsHandedOver(t *testing.T) {
 	h := newHarness()
 	h.contactNow()
