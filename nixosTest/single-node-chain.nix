@@ -4,7 +4,8 @@
 # block into a dead node (measured by the media-error rigs). So a lone anchor mounts its data LV
 # directly, and a static target starts the promoter chain (the same five members, same order)
 # instead of drbd-reactor. This rig proves that topology end to end on the guest:
-#   1 the seam builds the LVs and formats; DRBD is nowhere (no device, no module, no .res)
+#   1 the seam builds the LVs and formats; DRBD is nowhere (no device, no .res; the module
+#     may be loaded)
 #   2 the chain converges from the target: volume mounted, reverse proxy answering, a fixture
 #     installed, and no reactor running
 #   3 a daemon-reload (what switch-to-configuration does inside the OS upgrade bracket) does not

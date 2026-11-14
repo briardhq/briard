@@ -9,9 +9,9 @@
 # (nixosTest/fixtures/briard_canary) loads cleanly on 2025.11.0 and fails its config-entry
 # migration on 2025.12.0 (a version-conditional ConfigFlow.VERSION plus a refusing
 # async_migrate_entry), so the HA state machine marks its entry `migration_error`. The canary also
-# dumps the live state of every entry to a file, so the test reads the HA verdict without
-# authenticating, then feeds the pre/post samples to the real gate via entrygate-eval, asserting
-# VERDICT=rollback.
+# dumps the live state of every entry to a file, which the test waits on without authenticating;
+# the pre/post samples come from the product sampler (entrygate-eval -sample), and the real gate
+# judges them, asserting VERDICT=rollback.
 #
 # Harness scope matches hass-upgrade.nix: single-node lib.nix, primitives driven directly. The
 # live restore (the host agent install undo, agent/host/app.go, unit-tested there and run end to

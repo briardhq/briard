@@ -638,8 +638,9 @@ stage)
 	[ -x "$H/briard-agent" ] || die "no staged briard-agent to write the manifests with"
 	"$H/briard-agent" --stage-manifest "$H" --chain briard --platform "$LINUX_ARM" --release "$V" --vm "$GV" || die "writing the linux manifest failed"
 
-	# The windows arm. `FetchVerified` downloads every artifact a manifest names, so a Windows-only
-	# bundle in the Linux manifest would make every Linux install pull tens of MB it can never run.
+	# The windows arm. `install.FetchRelease` downloads every artifact a manifest names, so a
+	# Windows-only bundle in the Linux manifest would make every Linux install pull tens of MB it can
+	# never run.
 	# An arm of its own has the identical shape (a signed manifest, its signature, the artifacts it
 	# names, the pointers), named by the Windows installer as the Linux one names `linux-amd64`.
 	# One path, run twice: no second protocol, no platform field on the wire beyond the manifest's
