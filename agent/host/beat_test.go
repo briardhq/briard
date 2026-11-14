@@ -23,7 +23,7 @@ func countingBeat(every time.Duration) (*beat, *atomic.Int64) {
 	return &beat{every: every, send: func() error { n.Add(1); return nil }, logf: quietf}, &n
 }
 
-// Outside systemd there is no watchdog to feed, and the agent must run exactly as before --
+// Outside systemd there is no watchdog to feed, and the agent must run exactly as without a beat --
 // no goroutines, no sends, no caller needing to ask which kind of beat it holds.
 func TestNewBeatDisabledWithoutWatchdogEnv(t *testing.T) {
 	t.Setenv("WATCHDOG_USEC", "")
@@ -44,7 +44,7 @@ func TestNewBeatDisabledWithoutWatchdogEnv(t *testing.T) {
 }
 
 // The interval is derived from the unit rather than declared here, so WatchdogSec has one
-// definition. Asserted because a constant creeping back in would drift silently.
+// definition. Asserted because a constant here would drift silently.
 func TestNewBeatDerivesIntervalFromUnit(t *testing.T) {
 	t.Setenv("WATCHDOG_USEC", "30000000") // WatchdogSec=30
 	t.Setenv("WATCHDOG_PID", strconv.Itoa(os.Getpid()))
@@ -140,11 +140,11 @@ func TestLeaseReleasesOnCancel(t *testing.T) {
 // THE GUARD AGAINST THE NEXT UNLEASED BUDGET, and it is here rather than in report_test.go because
 // what it defends is a property of the BEAT: a directive that declares a budget must lease it.
 //
-// The defect it exists to catch is not subtle in hindsight and was invisible in practice.
-// dispatch runs synchronously on the observe loop, which is the only thing that pings systemd,
-// so nothing pings for as long as a directive runs. Every forward path declared a budget and
-// leased none of it, and an `app install` measured at 48.8 s was SIGABRTed at 20 s on every
-// shipped node for a week. Nothing failed except the product.
+// The defect it exists to catch is invisible everywhere but a node under systemd. The observe
+// loop is the only thing that beats, and it does not beat while a directive runs on it, nor while
+// Run waits for a relauncher (a rescue) that took the channel down (acts.go), so only the
+// directive's lease pings meanwhile. A path there that declares a budget and leases none of it
+// runs unpinged, and is SIGABRTed once it outlasts WatchdogSec=20.
 //
 // HOW THESE ASSERT IT, and why there is no sleep anywhere. A test that slept past a ping
 // interval and counted pings would be a timing race on a loaded runner. Instead the fake BLOCKS
@@ -153,12 +153,11 @@ func TestLeaseReleasesOnCancel(t *testing.T) {
 // failure surfaces as the directive's own outcome detail. The handler cannot finish without the
 // property being true, which is the strongest shape available here.
 //
-// WHAT IS NOT COVERED, so a green is not read as more than it is. `cert-request` (a 30 s budget)
-// and `agent-update` (10 m) go through the same beat.budget call and are NOT driven here: the
-// first needs a real keypair and guest, the second a real signed update, and neither earns that
-// setup for a property the other four already pin. And no test can force a SIXTH directive to be
-// added to this table -- what it does is make the pattern obvious enough to copy, and fail loudly
-// for the five paths that exist.
+// WHAT IS NOT COVERED, so a green is not read as more than it is. Two paths are driven: rescue
+// and app install. `cert` and `agent-update` (30 s each) go through the same beat.budget call in
+// applyDirective and are NOT driven here, nor is any other beat.budget caller. And no test can
+// force the next budgeted directive to be added to this table -- what it does is make the pattern
+// obvious enough to copy, and fail loudly for the paths it drives.
 // ============================================================================================
 
 // pingingBeat is a beat whose first ping closes the returned channel. Interval is a millisecond
@@ -207,7 +206,7 @@ func TestLongDirectivesKeepTheWatchdogFed(t *testing.T) {
 	}
 }
 
-// The verb the field report was written about, driven end to end against a real signed catalog.
+// The `app install` verb, driven end to end against a real signed catalog.
 func TestAppInstallKeepsTheWatchdogFed(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	b, pinged := pingingBeat()

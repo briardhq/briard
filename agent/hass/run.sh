@@ -33,7 +33,7 @@
 #
 # ⚠️ THE SHEBANG IS LOAD-BEARING AND ITS ABSENCE IS NOT SUBTLE: s6-supervise reports
 # `unable to spawn ./run (waiting 60 seconds): Exec format error` and retries forever,
-# so Home Assistant simply never starts. Measured, by losing it to a careless edit.
+# so Home Assistant simply never starts.
 # FIRST, AND IT BLOCKS. The guest agent is told this app is starting and gets
 # to act before Home Assistant opens a single file — which is what makes a member taken there
 # application-consistent by construction rather than crash-consistent by luck. Ahead of the

@@ -28,7 +28,7 @@
 set -eu
 
 # Run under systemd (the guest unit), whose PATH is minimal -- pin one that finds `ip`/`cat`
-# on a stock host (/usr/sbin, /sbin) AND on NixOS (/run/current-system/sw/bin), like net-up.sh.
+# on a stock host (/usr/sbin, /sbin) AND on NixOS (/run/current-system/sw/bin).
 export PATH="/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin"
 
 while [ "${1:-}" != "--" ]; do
@@ -39,8 +39,8 @@ while [ "${1:-}" != "--" ]; do
 	*/*)
 		ns=${dev%%/*} dev=${dev#*/}
 		ip -n "$ns" link set "$dev" up
-		# `7: briard0@if3: <...> ...` -- the index is the first field. A missing device makes
-		# idx empty, which the chardev check below refuses.
+		# `7: briard0@if3: <...> ...` -- the index is the first field. A missing device has
+		# already failed the link set above, which ends the script under set -e.
 		line=$(ip -n "$ns" -o link show dev "$dev")
 		idx=${line%%:*}
 		;;
