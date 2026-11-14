@@ -64,24 +64,17 @@ func dialQMP(ctx context.Context, path string) (*qmpConn, error) {
 	}
 	q := &qmpConn{c: c, dec: json.NewDecoder(c)}
 	// THE HANDSHAKE IS BOUNDED BY qmpTimeout, THE COMMAND BY THE CALLER'S CONTEXT, and the two
-	// must not share a deadline. This used to hand the caller's deadline to both, which read as
-	// "the caller decides how long it is willing to wait" and behaved as a hang: a frozen QEMU
-	// never sends the greeting, and a caller with a long budget then blocks on a Decode for the
-	// whole of it. The recovery ladder (host.rebootGuest) budgets ~6.5 minutes for stop +
-	// relaunch, so its ACPI attempt sat in this Decode for that whole budget before it could fall
-	// back to the forced stop -- found by nixosTest/agent-recover, which SIGSTOPs QEMU and is
-	// the first caller whose guest is frozen rather than merely unhealthy. The rollback leg
-	// (osUpgrade.restore) carries the identical budget and had the identical latent hang; it had
-	// simply never met a QEMU that was not answering, because a guest that fails a health gate
-	// still has a live monitor.
+	// must not share a deadline. A frozen QEMU never sends the greeting, so a caller's long
+	// budget handed to the handshake is a hang for the whole of it: the recovery ladder
+	// (host.rebootGuest) and the rollback leg (osUpgrade.restoreImage) budget ~6.5 minutes for
+	// stop + relaunch, and their ACPI attempt would sit in this Decode for all of it before
+	// falling back to the forced stop. nixosTest/agent-recover SIGSTOPs QEMU to prove it does not.
 	//
-	// The split is not a compromise between the two numbers, it is the honest bound for each.
-	// Connection setup on a local unix socket is sub-second on any QEMU that is alive at all, so
-	// no useful caller is served by waiting longer -- silence here means the process is gone or
-	// stopped, which more waiting cannot change. A COMMAND is different: SnapshotCreateLive can
-	// legitimately run for minutes, so capping the whole conversation at qmpTimeout would have
-	// traded this hang for a broken snapshot. Hence the deadline is tightened for the handshake
-	// and handed back to the caller's context before the command runs.
+	// The split is the honest bound for each. Connection setup on a local unix socket is
+	// sub-second on any QEMU that is alive at all -- silence here means the process is gone or
+	// stopped, which more waiting cannot change. A COMMAND keeps the budget its caller chose. Hence
+	// the deadline is tightened for the handshake and handed back to the caller's context before
+	// the command runs.
 	setupDeadline := time.Now().Add(qmpTimeout)
 	if deadline, ok := ctx.Deadline(); ok && deadline.Before(setupDeadline) {
 		setupDeadline = deadline // a caller in more of a hurry than we are still wins
@@ -101,10 +94,7 @@ func dialQMP(ctx context.Context, path string) (*qmpConn, error) {
 		q.close()
 		return nil, err
 	}
-	// Handshake done: restore exactly what the command would have got before -- the caller's
-	// deadline, or qmpTimeout when it set none. Only the setup phase above changes, so a
-	// long-running command keeps the budget its caller chose and a deadline-less caller keeps
-	// the bound it has always had.
+	// Handshake done: the command gets the caller's deadline, or qmpTimeout when it set none.
 	cmdDeadline := time.Now().Add(qmpTimeout)
 	if deadline, ok := ctx.Deadline(); ok {
 		cmdDeadline = deadline
@@ -161,16 +151,12 @@ func qmpExecute(ctx context.Context, path, cmd string, args any) (json.RawMessag
 // Shutdown asks the guest OS to power off cleanly (an ACPI power-button event) and waits
 // until the VM is actually gone.
 //
-// This is the missing counterpart to Stop, which stops the transient unit and so *kills*
-// QEMU -- a power cut, from the guest's point of view. That was the only host-side stop
-// there was, which made the reboot leg of an OS upgrade begin by inflicting the exact
-// failure the upgrade's snapshot exists to insure against. Measured cost of getting this
-// wrong: power-cutting a guest moments after it rewrote its own bootloader hung the next
-// boot about half the time.
+// It is the counterpart to Stop, which kills QEMU -- a power cut, from the guest's point of
+// view.
 //
 // It does NOT escalate on its own. A guest that ignores ACPI is a decision, not a detail --
-// the caller may want to snapshot, alert, or wait longer before resorting to Stop -- so this
-// reports the failure and leaves the choice upstream.
+// the caller may force it with Stop, or abandon what it was doing and leave the guest serving
+// -- so this reports the failure and leaves the choice upstream.
 func (g *Guest) Shutdown(ctx context.Context, grace time.Duration) error {
 	if g == nil || g.unit == "" {
 		return nil
@@ -183,22 +169,19 @@ func (g *Guest) Shutdown(ctx context.Context, grace time.Duration) error {
 
 // GuestShutdownGrace bounds the clean powerdown ShutdownVM waits for. A NixOS guest's own
 // shutdown was measured at ~25s, so this is generous rather than tight; the unit's
-// TimeoutStopSec is set above it so systemd's SIGKILL arrives after we have given up, never
-// through the middle of a shutdown that was working.
+// TimeoutStopSec (guestStopTimeout) is set above it so systemd's SIGKILL arrives after we have
+// given up, never through the middle of a shutdown that was working.
 const GuestShutdownGrace = 60 * time.Second
 
 // ShutdownVM is Guest.Shutdown for a caller that has a socket path and nothing else: the guest
 // unit's own ExecStop, which runs as a separate process with no Guest handle to hold.
 //
-// It exists as a sibling rather than a reuse because of one detail that would otherwise make it
-// useless here, in either direction the underlying check could go. Guest.Shutdown confirms the
-// stop with WaitStopped, which judges the unit by its ActiveState -- and inside its own unit's
-// ExecStop the unit reads "deactivating" for as long as this function runs. Reading that as
-// stopped (`systemctl is-active`, which is what WaitStopped once did) returns SUCCESS
-// immediately, reporting a clean shutdown while the guest is still flushing, and systemd goes on
-// to kill QEMU underneath it; reading it as still-running, which is what WaitStopped does now,
-// waits on a state only this function's own return can clear. Vacuous one way, self-deadlocked
-// the other.
+// It is a sibling rather than a reuse because Guest.Shutdown confirms the stop with
+// WaitStopped, which judges the unit by its ActiveState -- and inside its own unit's ExecStop
+// the unit reads "deactivating" for as long as this function runs. Reading that as stopped
+// (`is-active`) would report a clean shutdown while the guest is still flushing, and systemd
+// would kill QEMU underneath it; reading it as still-running, as WaitStopped does, waits on a
+// state only this function's own return can clear. Vacuous one way, self-deadlocked the other.
 //
 // So this judges the VM by the MONITOR SOCKET instead, which belongs to QEMU rather than to
 // systemd's opinion of QEMU: a dial that no longer connects means the process is gone (QEMU
@@ -262,14 +245,14 @@ func qmpReachable(ctx context.Context, path string) bool {
 // costs roughly an order of magnitude of guest speed, so the one place it must not stay silent
 // is the log a future performance question starts from (host.bringUp logs it).
 //
-// ⚠️ IT ASKS FOR A NAME, NOT FOR A YES/NO ABOUT KVM, and the difference is not cosmetic. The
-// older `query-kvm` answers `{"enabled": false, "present": false}` on a perfectly accelerated
+// ⚠️ IT ASKS FOR A NAME, NOT FOR A YES/NO ABOUT KVM, and the difference is not cosmetic.
+// `query-kvm` answers `{"enabled": false, "present": false}` on a perfectly accelerated
 // WHPX guest, because it is asking whether the accelerator is KVM specifically -- measured on
-// Windows. Its `present` field was no better: QEMU implements it as
+// Windows. Its `present` field is no better: QEMU implements it as
 // `accel_find("kvm")`, i.e. *is KVM compiled into this binary*, so on every Linux build it is
 // true no matter what the host can do.
 //
-// `query-accelerators` needs QEMU 10.2+, which is what qemu-bundle.nix ships. An older qemu
+// `query-accelerators` needs QEMU 10.2+, which is what nixosTest/qemu-bundle.nix ships. An older qemu
 // errors here and the caller logs that it could not ask; there is deliberately no `query-kvm`
 // fallback, because a second code path maintained forever for a qemu we do not ship is the
 // wrong trade.
@@ -330,9 +313,8 @@ func (g *Guest) WaitStopped(ctx context.Context, grace time.Duration) error {
 }
 
 // Reset forces an immediate VM reset -- the hard reboot for a guest that is wedged past
-// talking to (its agent unreachable, ACPI ignored). It is the fallback path, not the reboot
-// mechanism: a planned reboot shuts down cleanly and relaunches, because only a relaunch can
-// change what the VM boots (the selector is a launch property).
+// talking to (its agent unreachable, ACPI ignored). It is not the reboot mechanism: a planned
+// reboot shuts down cleanly and relaunches.
 func (g *Guest) Reset(ctx context.Context) error {
 	if g == nil || g.unit == "" {
 		return nil
@@ -507,7 +489,7 @@ func DebugConsolePath(qmpSock string) string {
 //
 // IT IS THE BACKEND THAT MOVES, NOT THE PORT, because QEMU cannot hot-add a serial port at all
 // -- `device_add isa-serial` is refused outright with "Bus 'isa.0' does not support
-// hotplugging" (measured, qemu 10.2.4, the machine type qemuArgs asks for). What it will do is
+// hotplugging" (measured, on the machine type qemuArgs asks for). What it will do is
 // change a chardev under a live frontend, which is why serialArgs gives every guest the port up
 // front with nothing behind it. So arming costs no relaunch: the getty inside the guest has
 // been sitting on that port since boot, reading a device that never had anything to say.

@@ -12,27 +12,26 @@ import (
 // not reflect a frame to the port it came from. The consequence is narrow and unintuitive: the
 // machine RUNNING the guest is the one machine on the LAN that cannot open the address the guest
 // serves. Every other house on the network reaches it; a second briard host reaches it (that
-// traffic goes out the wire and back); only the host itself cannot. Measured on a stranger's
-// desktop, the same instant: from the host `http://<vip>/ -> 000`, from the router `-> OK`.
+// traffic goes out the wire and back); only the host itself cannot. Measured at the same instant:
+// from the host `http://<vip>/ -> 000`, from the router `-> OK`.
 //
-// The private host<->guest link is NOT isolated -- it is a plain tap on both ends (install.sh
-// creates it with `ip tuntap`, and qemu.go keeps it NetBridge even under macvtap, deliberately,
+// The private host<->guest link is NOT isolated -- it is a plain tap on both ends (the agent
+// creates it, agent/nic, and qemu.go keeps it NetBridge even under macvtap, deliberately,
 // because macvtap would isolate the very path the witness forwarder and the deadman gate ride).
 // So one /32 through that link restores the one address the household is given, on the one
 // machine that was missing it.
 //
-// WHAT THIS DELIBERATELY IS NOT: a way to publish the private address. The user is never given
-// 10.11.9.2. That address is node-scoped -- it is TRANSPORT -- while the VIP and the name are
-// flock-scoped and survive a failover it does not. A household that bookmarked the private
-// address would have bookmarked a machine instead of an app, which is the same incoherence
-// an earlier change took out of the mDNS name.
+// WHAT THIS DELIBERATELY IS NOT: a way to publish a private address. The user is never given
+// the guest's address on the private link. That address is node-scoped -- it is TRANSPORT --
+// while the VIP and the name are flock-scoped and survive a failover it does not. A household
+// that bookmarked it would have bookmarked a machine instead of an app.
 
 // VIPRoute is the host-side route to the guest's service address over the private link.
 type VIPRoute struct {
 	Addr string // the guest's service address, bare (no prefix) -- what the household is given
-	Via  string // the guest's end of the private link (its eth3 address)
-	Dev  string // the host's end of that link (the tap)
-	Src  string // the host's own address on the link -- the route's preferred source
+	Via  string // the guest's node IP -- resolvable on the tap through SetNodeRoute's pinned neighbour
+	Dev  string // the host's end of the private link (the tap)
+	Src  string // the host's own system-subnet address on that tap -- the route's preferred source
 }
 
 // routeReplaceArgs renders the `ip` argv that installs the route. Pure, so the one detail that
@@ -42,14 +41,14 @@ type VIPRoute struct {
 // The guest sets arp_ignore=1 (guest-image/configuration.nix, the ARP-flux fix): it
 // answers ARP only on the interface that HOLDS the address being asked for. An on-link route
 // makes the host ARP for the VIP on the tap; the VIP lives on the guest's eth2 and the request
-// arrives on its eth3, so the guest stays silent and the route black-holes. Going `via` makes
-// the host ARP for the guest's eth3 address instead, which is the one address that interface
-// does hold. No forwarding is involved on either side -- the VIP is a LOCAL address of the
-// guest, accepted on any interface under Linux's weak host model, so `via` here names a
-// destination rather than a router.
+// arrives on its eth3, so the guest stays silent and the route black-holes. Going `via` the
+// guest's node IP makes the next hop the address SetNodeRoute pinned a permanent neighbour
+// entry for, so the host never ARPs at all. No forwarding is involved on either side -- the
+// VIP is a LOCAL address of the guest, accepted on any interface under Linux's weak host
+// model, so `via` here names a destination rather than a router.
 //
-// `src` is the host's own end of the link, and it is what keeps the RETURN path legal: the
-// guest replies from the VIP, and the host's reverse-path check on the tap passes only because
+// `src` is the host's own system-subnet address on the tap, and it is what keeps the RETURN
+// path legal: the guest replies from the VIP, and the host's reverse-path check on the tap passes only because
 // this /32 is the best route to the VIP. The route is not merely how the request leaves; it is
 // why the answer is allowed back in.
 func routeReplaceArgs(r VIPRoute) []string {
@@ -96,10 +95,8 @@ type NodeRoute struct {
 // is safe precisely because the MAC is not discovered but DERIVED -- deriveMAC(node, "wit") is
 // what the agent already hands qemu for that NIC, so there is no second source to disagree.
 //
-// This is also why the link needs no addressing of its own. The older shape gave both ends
-// addresses on a private 10.11.9.0/24 purely so the host could `via` a resolvable address; pinning
-// the neighbour removes the reason for the subnet, and with it an invented range that could
-// collide with a household's LAN just as 10.0.0.0/24 can.
+// This is also why routing needs no addressing on the link itself: the pinned node IP is the
+// next hop for both this route and VIPRoute, so the link's own addresses are never one.
 func nodeRouteArgs(r NodeRoute) []string {
 	return []string{"route", "replace", r.GuestIP + "/32", "dev", r.Dev, "src", r.Src}
 }
@@ -126,7 +123,8 @@ func SetNodeRoute(ctx context.Context, r NodeRoute) error {
 // the guest pins as a permanent neighbour -- see the net.configure handler for why it must.
 //
 // READ, not derived, and re-read at every bring-up: `ip tuntap add` hands out a RANDOM MAC, so
-// this end's address changes whenever the tap is recreated (a host reboot re-runs net-up.sh).
+// this end's address changes whenever the tap is recreated (after a host reboot the agent makes
+// it again).
 // The guest's end is the opposite -- deriveMAC makes it a function of the node name -- which is
 // why only this direction needs carrying over the channel.
 func LinkMAC(ctx context.Context, dev string) (string, error) {

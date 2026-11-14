@@ -10,10 +10,8 @@ import (
 
 // THE DISKS A NODE'S GUEST RUNS ON, ALLOCATED BY THE AGENT.
 //
-// install.sh laid them down with `fallocate`, `truncate` and a `dd` fallback, behind a `noclobber`
-// trick -- three shell calls and a subtlety, none of which a Windows host can reuse. Here they are
-// a few primitives with one per-OS seam (alloc_linux.go / alloc_windows.go), which is the shape the
-// rest of this package already has for routes and units.
+// A few primitives with one per-OS seam (alloc_linux.go / alloc_windows.go), the shape the rest of
+// this package has for routes and units.
 //
 // ⚠️ CREATION NEVER OVERWRITES. A disk that exists is never recreated or rewritten: these are the
 // PET volumes, the ones a reinstall deliberately keeps, and the guest owns what is inside them.
@@ -23,9 +21,9 @@ import (
 // AllocateThick creates path at exactly size bytes with the space RESERVED, and does nothing if it
 // already exists.
 //
-// THICK, and this is the one volume whose failure mode is unacceptable: DRBD replicates it and the
-// guest writes app data into it, so a sparse file the host cannot actually back becomes ENOSPC
-// *underneath a replicated filesystem*, mid-write, on the node holding the primary role. Reserving
+// THICK, because a sparse file the host cannot actually back becomes ENOSPC underneath the guest,
+// mid-write -- on the data volume, *underneath the replicated filesystem* the guest writes app
+// data into, on the node holding the primary role. Reserving
 // up front makes "is there room for this node's data?" a question answered once, by a call that
 // either succeeds or refuses, rather than months later by a write that fails.
 //

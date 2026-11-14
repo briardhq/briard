@@ -17,15 +17,15 @@ import (
 	"briard.io/shared/dashboard"
 )
 
-// QEMUSpec describes the guest VM to boot. The Linux v0 backend shells out to
-// qemu-system directly (libvirt is a later backend behind this same boundary). Accel is a QEMU accel list, e.g. "kvm:tcg" -- KVM where
-// available, TCG fallback (the Windows-Home / no-nested-virt case).
+// QEMUSpec describes the guest VM to boot; the agent runs qemu-system directly. Accel is a QEMU
+// accel list -- "kvm:tcg" on Linux, "whpx:tcg" on Windows: the hypervisor where available, TCG
+// as the fallback on a host without one.
 type QEMUSpec struct {
 	Binary string // qemu-system-x86_64
 	Accel  string // e.g. "kvm:tcg"
 	// CPUModel is qemu's `-cpu`. Empty = qemu's default, which on x86_64 is `qemu64`:
 	// a 1990s-baseline model BELOW x86-64-v2 (60 CPUID features against the host's 190,
-	// measured on the shipped qemu 10.2). It has no aes, sha-ni, pclmulqdq, ssse3, sse4.1/4.2,
+	// measured on the shipped qemu). It has no aes, sha-ni, pclmulqdq, ssse3, sse4.1/4.2,
 	// avx*, bmi1/2, popcnt, rdrand, rdtscp, xsave, invpcid, pdpe1gb, tsc-deadline or pmu --
 	// so guest TLS, nix's sha256, OCI digest checks and btrfs/DRBD crc32c all run the software
 	// path, and the guest kernel cannot apply Spectre/SSBD mitigations at all because the
@@ -47,7 +47,7 @@ type QEMUSpec struct {
 	Cores       int
 	// DiskImage is the guest OS image, attached READ-ONLY: the guest writes nothing to it, and a
 	// write it tried would fail inside the guest rather than land in a file the host never sized.
-	// What an OS update swaps. Empty in kernel/initrd boots.
+	// What an OS update swaps. Empty = no OS disk.
 	DiskImage string
 	DataDisk  string // backing block device for the DRBD volume -> guest /dev/vdb
 	// StateDisk is the node-local STATE disk: every byte the guest writes -- what a restart must
@@ -79,14 +79,14 @@ type QEMUSpec struct {
 	WitnessTap string // host tap for the guest's private witness NIC (guest<->host cloud-witness reach; -> eth3); empty = none
 	WitnessMAC string // MAC for that NIC; empty = QEMU default
 	// NetMode selects the substrate for the *service + system* NICs:
-	// NetBridge (default) = host taps qemu opens by name (`ifname=`, the install.sh bridge-
-	// enslave substrate); NetMacvtap = macvtap chardevs qemu attaches to via an inherited fd
+	// NetBridge (default) = host taps qemu opens by name (`ifname=`, the bridge substrate);
+	// NetMacvtap = macvtap chardevs qemu attaches to via an inherited fd
 	// (`fd=N` on /dev/tap<ifindex>), which gives the guest L2 citizenship without a host bridge.
 	// NetIpvtap is NetMacvtap's shape for a wireless parent: the chardevs belong to ipvtap
 	// children in nic.HoldNS, which carry the parent's MAC -- so SystemMAC and ServiceMAC are the
 	// parent's, and nothing pins a MAC on the children.
 	// The witness NIC is ALWAYS a plain tap regardless -- macvtap isolates guest<->host,
-	// Which is exactly the private link the witness-forwarder needs.
+	// which is exactly the private link the witness-forwarder needs.
 	NetMode string
 	// NetWrapBin is the bundled fd-passing launch wrapper (briard-net-wrap) required by
 	// NetMacvtap and NetIpvtap: systemd-run starts the guest via PID 1, so the agent cannot hand
@@ -111,17 +111,17 @@ const (
 	// line, and the serial the guest sees it by (/dev/disk/by-id/virtio-briard-state).
 	StateDriveID    = "briard-state"
 	StateDiskSerial = "briard-state"
-	// RootDriveID names the guest OS disk on the QEMU command line so QMP can address it.
+	// RootDriveID and DataDriveID name the guest OS disk and the DRBD backing disk. Nothing
+	// addresses either, but every disk is an explicit device (see qemuArgs) and an explicit
+	// device wants a named drive.
 	RootDriveID = "briard-root"
-	// DataDriveID names the DRBD backing disk; nothing addresses it today, but every disk is an
-	// explicit device (see qemuArgs) and an explicit device wants a named drive.
 	DataDriveID = "briard-data"
-	// GuestDataDevice is where that disk appears INSIDE the guest. It is a hardware fact of the
+	// GuestDataDevice is where the data disk appears INSIDE the guest. It is a hardware fact of the
 	// VM this file builds rather than anything configured -- the disks are explicit devices in
 	// command-line order, so the slots ascend root < data < state and the guest sees vda/vdb/vdc
-	// (see qemuArgs, and the boot-order bug that comment records). Named here, beside the line
-	// that attaches it second, because the host now has to TELL the guest which device to build
-	// its storage tier on (shared/nodestorage) instead of the guest assuming it.
+	// (see qemuArgs). Named here, beside the line that attaches it second, because the host
+	// TELLS the guest which device to build its storage tier on (shared/nodestorage) rather than
+	// the guest assuming it.
 	GuestDataDevice = "/dev/vdb"
 	// IOThreadID names the one iothread every disk's I/O runs on (see qemuArgs).
 	IOThreadID = "briard-io"
@@ -193,22 +193,13 @@ func qemuArgs(s QEMUSpec) []string {
 		// see GuestUnit), and a supervisor that cannot observe its charge restarting is not
 		// supervising it.
 		//
-		// Two properties follow, both relied on elsewhere. The boot selector stays genuinely
-		// ONE-SHOT: `-smbios briard_boot=staging` is armed per LAUNCH (see BootStaging), so a
-		// guest that reset in place would come up on the staged generation a second time, when
-		// the whole point is that the next launch is the host's decision. And a guest that
-		// panics its way through boot exits rather than spinning invisibly, which is what lets
-		// the recovery loop damp a crash loop instead of racing one.
+		// A guest that panics its way through boot therefore exits rather than spinning
+		// invisibly, which is what lets the recovery loop damp a crash loop instead of racing one.
 		//
 		// The cost is that the guest cannot complete its own reboot -- it needs the agent to
-		// relaunch it. That is exactly why the recovery loop checks this unit's state before
-		// anything else (host/guestrecover.go): a stopped unit is relaunched at once, with no
-		// window and no gate, because a VM that is not running can neither heal itself nor
-		// outage a peer.
-		//
-		// (Recorded 2026-08-12. The flag was here from the first commit with no comment and no
-		// doc anywhere; the above is the justification it never had, arrived at by asking what
-		// would actually break without it.)
+		// relaunch it. That is why the recovery loop checks this unit's state before anything
+		// else (agent/host/guestrecover.go): a stopped unit is relaunched at once, with no window
+		// and no gate, because a VM that is not running can neither heal itself nor outage a peer.
 		"-no-reboot",
 		"-display", "none",
 		// The host<->guest control channel: a virtio-serial port named
@@ -242,23 +233,20 @@ func qemuArgs(s QEMUSpec) []string {
 	args = append(args, serialArgs(s)...)
 	// THE DISKS, EVERY ONE AS AN EXPLICIT DEVICE, IN THIS ORDER. `-drive if=virtio` shorthand and
 	// `-device virtio-blk-pci` do not mix: qemu realises the explicit devices FIRST and the
-	// shorthand drives last, so the first time a disk was added by -device (the state disk, which
-	// needs one because a serial is a device property) it took PCI slot 4 while the root disk
-	// landed at slot 6 -- SeaBIOS booted the blank state disk, grub's embedded prefix pointed at
-	// it, and the guest sat at a rescue prompt on a VGA nobody captures, with an empty serial
-	// console and a host that could only say "no handshake" (the state disk's first rig run). Explicit
-	// devices in command-line order keep the slots ascending root < data < state -- so the guest
-	// sees vda/vdb/vdc as it always has -- and bootindex=0 on the root says which one boots
-	// whatever else is ever attached. The drive ids are what QMP addresses (the snapshot work on
-	// RootDriveID); a serial is what the guest finds a disk by (/dev/disk/by-id/virtio-<serial>).
+	// shorthand drives last, so a -device disk (the state disk needs one: a serial is a device
+	// property) takes a lower PCI slot than a shorthand root -- SeaBIOS then boots the blank state
+	// disk and the guest sits at a grub rescue prompt on a VGA nobody captures, with an empty
+	// serial console and a host that can only say "no handshake". Explicit devices in
+	// command-line order keep the slots ascending root < data < state (vda/vdb/vdc), and
+	// bootindex=0 on the root says which one boots whatever else is ever attached. The drive ids
+	// are what QMP addresses (block_resize on StateDriveID); a serial is what the guest finds a
+	// disk by (/dev/disk/by-id/virtio-<serial>).
 	//
 	// EVERY DISK ALSO GETS: format= (qemu probes the format of a file that does not name one, which
-	// its own docs call unsafe); the cache mode diskCache, per OS -- `none` wherever qemu can open
-	// an image with it (the guest keeps a page cache of its own, so the host's is a second copy of
-	// the same bytes, paid out of RAM a small board does not have -- guest flushes are still
-	// honoured, so durability does not move); and the one iothread, so block I/O
-	// runs off qemu's main loop. That loop also serves the virtio-serial control channel, the
-	// agent's liveness signal, and a disk busy with a resync must not delay it into a self-fence.
+	// its own docs call unsafe); the cache mode diskCache, per OS (alloc_*.go says why each);
+	// and the one iothread, so block I/O runs off qemu's main loop. That loop also serves the
+	// virtio-serial control channel, the agent's liveness signal, and a disk busy with a resync
+	// must not delay it into a self-fence.
 	args = append(args, "-object", "iothread,id="+IOThreadID)
 	if s.DiskImage != "" {
 		args = append(args, "-drive", "file="+s.DiskImage+",if=none,format=qcow2,cache="+diskCache+",readonly=on,id="+RootDriveID,
@@ -287,36 +275,29 @@ func qemuArgs(s QEMUSpec) []string {
 	if s.MachineUUID != "" {
 		args = append(args, "-uuid", s.MachineUUID)
 	}
-	// Eth0 is a throwaway user-net so the tapped NICs enumerate predictably (the
-	// guest uses net.ifnames=0, so ethN follows -device order). The system/DRBD NIC
-	// comes first -> eth1: it is present on *every* fleet node, including a witness,
-	// so it earns the low index and a witness needs no placeholder. The service NIC
-	// (the VIP, on the LAN) comes second -> eth2 on a data node -- the two-subnet
-	// model. The witness NIC (a private guest<->host link the host's
-	// witness-forwarder answers) comes third -> eth3: uniform on a
-	// managed/pair-capable guest, idle until a pairing addresses it (no hotplug, no
-	// reboot -- extends c-ii's uniform layout). Which NIC carries the VIP is the
-	// agent's to say (net.configure); nothing is baked guest-side, so there is no
-	// default for a positional shape to be correct against (the
-	// last one was deleted).
+	// Eth0 is qemu's SLIRP user-net, the guest's WAN path, and comes first so the tapped NICs
+	// enumerate predictably (the guest uses net.ifnames=0, so ethN follows -device order). The
+	// system/DRBD NIC comes next -> eth1: it is present on *every* fleet node, including a
+	// witness, so it earns the low index and a witness needs no placeholder. The service NIC
+	// (the VIP, on the LAN) comes second -> eth2 on a data node -- the two-subnet model. The
+	// witness NIC (a private guest<->host link the host's witness-forwarder answers) comes
+	// third -> eth3: uniform on a pair-capable guest, idle until a pairing addresses it (no
+	// hotplug, no reboot). Which NIC carries the VIP is the agent's to say (net.configure);
+	// nothing is baked guest-side.
 	//
-	// ⚠️ THE NIC COUNT IS THE SUBSTRATE FORK, and it is two shapes
-	// rather than one. Under macvtap install.sh sets all three, so the guest boots
-	// eth1/eth2/eth3. Under BRIDGE mode it sets only SystemTap: one tap is all
-	// Windows can express, so the guest boots eth1 alone and MAKES eth2
-	// itself -- a macvlan child carrying the flock MAC -- and there is no eth3 at all
-	// (a bridged tap already puts host and guest on one L2,
-	// so the private link has nothing left to do). Both shapes present the same L3.
+	// ⚠️ THE NIC COUNT IS THE SUBSTRATE FORK, and it is two shapes rather than one. Under
+	// macvtap the agent sets all three (agent/host applySubstrate), so the guest boots
+	// eth1/eth2/eth3. Under BRIDGE mode it sets only SystemTap: one tap is all Windows can
+	// express, so the guest boots eth1 alone and MAKES eth2 itself -- a macvlan child carrying
+	// the flock MAC -- and there is no eth3 at all (a bridged tap already puts host and guest on
+	// one L2, so the private link has nothing left to do). Both shapes present the same L3.
 	//
-	// ⚠️ Omitting SystemTap is still the thing that breaks: it slides whatever else is
-	// set DOWN an index, so the service NIC becomes eth1 and the witness NIC eth2,
-	// and every address the agent hands out lands on the wrong device. A caller
-	// setting ServiceTap or WitnessTap must set SystemTap too.
+	// ⚠️ Omitting SystemTap is the thing that breaks: it slides whatever else is set DOWN an
+	// index, so the service NIC becomes eth1 and the witness NIC eth2, and every address the
+	// agent hands out lands on the wrong device. A caller setting ServiceTap or WitnessTap must
+	// set SystemTap too.
 	if s.ServiceTap != "" || s.SystemTap != "" || s.WitnessTap != "" {
-		// SLIRP's addressing is PINNED rather than defaulted, because the guest configures eth0
-		// statically from these exact numbers and runs no DHCP client for it. They happen to be
-		// qemu's defaults today; written out, the two sides agree by construction instead of by
-		// a convention either could change without the other noticing.
+		// SLIRP's addressing is PINNED rather than defaulted: see slirpNet.
 		args = append(args, "-netdev", "user,id=net0,net="+slirpNet+",host="+slirpGateway+",dns="+slirpDNS,
 			"-device", "virtio-net-pci,netdev=net0")
 	}
@@ -333,12 +314,12 @@ func qemuArgs(s QEMUSpec) []string {
 	if s.WitnessTap != "" {
 		// The witness NIC is ALWAYS a plain tap, even under NetMacvtap: it is the private
 		// guest<->host link the witness-forwarder answers, and macvtap would isolate exactly
-		// that path (decision).
+		// that path.
 		//
 		// ⚠️ NetBridge is passed here as "a tap qemu opens by name", NOT as "this node is in
-		// bridge mode" -- the two meanings share a constant and no longer coincide. A node
-		// actually in bridge mode has no WitnessTap at all, so this branch is
-		// reached only under macvtap.
+		// bridge mode" -- the two meanings share a constant and do not coincide. A node actually
+		// in bridge mode has no WitnessTap at all, so this branch is reached only under
+		// macvtap/ipvtap.
 		args = append(args,
 			"-netdev", netdevArg("net3", s.WitnessTap, NetBridge, 0),
 			"-device", "virtio-net-pci,netdev=net3"+macArg(s.WitnessMAC))
@@ -402,15 +383,14 @@ func macArg(mac string) string {
 	return ",mac=" + mac
 }
 
-// GuestUnit is the transient systemd service the guest VM runs as. The guest is
-// launched *by the systemd manager* (via systemd-run), so it lands in its own
-// cgroup, a sibling of briard-agent.service — a `systemctl restart briard-agent`
-// kills only the agent's cgroup and leaves the guest serving. The
-// agent stays the guest's sole *policy* supervisor (`-p Restart=no`), re-adopts
-// the running guest over the persisted control socket after a restart, and stops
-// it only for the self-fence VM-destroy backstop. (A `systemd-run --scope` was
-// tried first and failed the detach test — its payload stayed in the caller's
-// cgroup and died with the agent.)
+// GuestUnit is the transient unit the guest VM runs as (on Windows, the name of its job object,
+// unit_windows.go). On Linux the guest is launched *by the systemd manager* (via systemd-run),
+// so it lands in its own cgroup, a sibling of briard-agent.service — a `systemctl restart
+// briard-agent` kills only the agent's cgroup and leaves the guest serving. The agent stays the
+// guest's sole *policy* supervisor (`-p Restart=no`), re-adopts the running guest over the
+// persisted control socket after a restart, and stops it cleanly when it stops it at all (a
+// node shutdown's PowerOffGuest; Stop is only the fallback when a clean stop fails). NOT
+// `systemd-run --scope`: a scope's payload stays in the caller's cgroup and dies with the agent.
 const GuestUnit = "briard-guest.service"
 
 // Guest is a running guest VM, identified by its transient systemd unit.
@@ -437,12 +417,10 @@ const guestStopTimeout = 75 * time.Second
 // unit's stop contract -- the part with no observable effect until the machine is going down --
 // is assertable without a systemd.
 //
-// ExecStop is what makes a HOST SHUTDOWN survivable, and its absence was the defect. Stopping
-// this unit SIGTERMs QEMU, which is a power cut to the guest (see Guest.Shutdown); systemd stops
-// every unit when the host reboots; so before this, a user rebooting their own machine for their
-// own distro's updates power-cut the appliance every time, losing whatever the apps had not
-// itself flushed. The OS-upgrade path had already been fixed for exactly this and only for
-// itself.
+// ExecStop is what makes a HOST SHUTDOWN survivable. Without it, stopping this unit SIGTERMs
+// QEMU, which is a power cut to the guest (see Guest.Shutdown) -- and systemd stops every unit
+// when the host reboots, so a user rebooting their own machine for their distro's updates would
+// power-cut the appliance every time, losing whatever the apps had not flushed.
 //
 // It belongs on the UNIT rather than in the agent's own SIGTERM handler, and that is the crux
 // rather than a preference: an agent restart must be transparent to the guest, and the signal
@@ -472,13 +450,11 @@ func launchArgs(s QEMUSpec) []string {
 }
 
 // shutdownBin is the absolute path ExecStop invokes: this very binary, which grows a
-// --guest-shutdown mode for the purpose. /proc/self/exe is read at LAUNCH time, before any
-// self-update could have renamed it, and under install.sh it resolves to the committed
-// /var/lib/briard/briard-agent -- the stable path, so a later update swaps the file under a unit
-// line that stays correct. (The uncovered corner is launching a guest during a self-update TRIAL
-// boot, where it resolves to briard-agent.next and a commit renames that away. systemd then
-// fails the ExecStop and falls through to SIGTERM, i.e. exactly the old behaviour: a lost
-// improvement, never a new failure.)
+// --guest-shutdown mode for the purpose. /proc/self/exe is read at LAUNCH time and resolves to
+// the committed <base>/briard-agent (agent/selfupdate) -- the stable path: an update renames the
+// new binary onto that name before starting it, so the file swaps under a unit line that stays
+// correct. Should the path not resolve, systemd fails the ExecStop and falls through to SIGTERM:
+// a lost clean stop, never a new failure.
 func shutdownBin() string {
 	bin, err := os.Executable()
 	if err != nil {
@@ -551,25 +527,23 @@ func secureQMPDir(sock string) error {
 //
 // A constant rather than a knob: it is a disk-fill guard on an unattended machine, and the number
 // that matters is "small enough that a home disk never notices, large enough to hold several
-// boots". 32 MiB is both. install.sh carried a BRIARD_CONSOLE_MAX that nothing ever set.
+// boots". 32 MiB is both.
 const serialLogMax = 32 << 20
 
 // prepareSerialLog bounds the guest's serial capture and creates it with a mode of our own, on
 // every launch and before qemu opens it. Same shape and same reason as secureQMPDir above: qemu
 // creates what it opens under the unit's umask, so the containment has to be applied first.
 //
-// ⚠️ THE BOUND HAS TO BE PER LAUNCH, and that is what this being here rather than in the
-// installer's ExecStartPre buys. qemu appends
-// and never truncates -- deliberately, so a relaunch does not overwrite the boot that explains it
-// (serialArgs says why) -- and the guest is relaunched on every OS upgrade, every rollback, every
-// rung of the recovery ladder. A check that ran once when the AGENT started missed every one of
-// those, which is to say it missed the crash-looping guest the cap exists for. It also fired
-// while a re-adopted qemu held the file open, which is the rename trap the caller describes.
+// ⚠️ THE BOUND HAS TO BE PER LAUNCH. qemu appends and never truncates -- deliberately, so a
+// relaunch does not overwrite the boot that explains it (serialArgs says why) -- and the guest is
+// relaunched on every OS upgrade, every rollback, every rung of the recovery ladder. A check run
+// once when the AGENT starts would miss every one of those, which is to say the crash-looping
+// guest the cap exists for, and would fire while a re-adopted qemu held the file open, which is
+// the rename trap the caller describes.
 //
-// BEST-EFFORT THROUGHOUT, and silent, exactly as the shell it replaces was (`|| true` on every
-// line, `exit 0` at the end): this is a logging convenience, and a node must never fail to launch
-// its guest because a log could not be rolled. A pre-create that fails costs the mode, not the
-// capture -- qemu creates the file itself.
+// BEST-EFFORT THROUGHOUT, and silent: this is a logging convenience, and a node must never fail
+// to launch its guest because a log could not be rolled. A pre-create that fails costs the mode,
+// not the capture -- qemu creates the file itself.
 func prepareSerialLog(path string) {
 	if path == "" {
 		return // this node captures no console
@@ -579,9 +553,9 @@ func prepareSerialLog(path string) {
 		_ = os.Rename(path, path+".prev")
 	}
 	// Created here rather than left to qemu, because a guest console carries the household's
-	// hostnames and addresses: not secret, not public. Chmod unconditionally, so a file an older
-	// install left world-readable is tightened rather than trusted -- the same "applied on every
-	// launch" rule secureQMPDir states.
+	// hostnames and addresses: not secret, not public. Chmod unconditionally, so an existing
+	// world-readable file is tightened rather than trusted -- the same "applied on every launch"
+	// rule secureQMPDir states.
 	if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640); err == nil {
 		_ = f.Close()
 	}
@@ -694,7 +668,7 @@ func unitState(unit string) (string, error) {
 // "deactivating", which is not "active"; a caller that asks `is-active` therefore hears
 // "stopped" about a guest that is still flushing, and the next Launch trips over the unit it
 // was told had gone ("already loaded or has a fragment file"), rolling back a good upgrade.
-// Measured: the collision landed 2s into a stop that took 19s in the adjacent run.
+// Measured: such a stop takes ~19s, and the collision lands within the first 2.
 //
 // It names the states that MEAN at-rest rather than excluding the ones that mean running, so
 // an unfamiliar reading -- a systemd that grew a state, an empty line from a systemctl that
@@ -732,11 +706,11 @@ func unitLoaded(state string, err error) bool {
 
 // waitUnitFree blocks until the transient unit name can be created again.
 //
-// It is the same distinction one step earlier, and the step that was missing. The relaunch
-// decision asks `is-active`, so a unit spending its ExecStop reads as *not running* — true, and
-// not the same as *creatable*: systemd-run then trips over the unit that is still there, which
-// on the guest-recovery ladder spent all three relaunch attempts inside one second on a
-// condition that clears by itself in a few.
+// It is the same distinction one step earlier. The relaunch decision asks `is-active`, so a
+// unit spending its ExecStop reads as *not running* — true, and not the same as *creatable*:
+// systemd-run then trips over the unit that is still there, and without this wait the
+// guest-recovery ladder spends its relaunch burst inside one second on a condition that clears
+// by itself in a few.
 //
 // reset-failed is the one prod that helps: a unit that has finished is garbage-collected on its
 // own (`--collect`), but a corpse someone still references is not, and clearing it is free.
@@ -809,17 +783,15 @@ func unitLoadState(unit string) (string, error) {
 	return unitShow(unit, "LoadState")
 }
 
-// Stop terminates the guest VM by stopping its transient service (the self-fence
-// VM-destroy backstop). It is NOT called on a normal agent shutdown — an agent
-// restart must be transparent to the guest. No-op-safe if gone.
+// Stop is the FORCED stop -- a power cut to the guest -- and only ever the fallback when a clean
+// stop has already failed: on the recovery ladder, a rescue, an image rollback. It is NOT
+// called on an agent shutdown — an agent restart must be transparent to the guest, and a node
+// shutdown powers it off cleanly (PowerOffGuest). No-op-safe if gone.
 //
-// It KILLS QEMU first, and had to start doing so once the unit grew an ExecStop. Every caller of
-// this is a caller that wants the VM gone now and cannot wait: the self-fence backstop reaches
-// for it on a guest that is already wedged, and the rollback leg on a guest whose disk is about
-// to be reverted out from under it. A graceful ACPI powerdown asks such a guest a question it
-// will not answer, so going through ExecStop would buy nothing and cost a full TimeoutStopSec on
-// the two paths least able to spend it. Killing the main process first means the unit deactivates
-// on its own and the stop below is bookkeeping.
+// It KILLS QEMU first. A guest that just failed a clean stop will not answer an ACPI powerdown
+// either, so going through the unit's ExecStop would buy nothing and cost a full TimeoutStopSec.
+// Killing the main process first means the unit deactivates on its own and the stop below is
+// bookkeeping.
 func (g *Guest) Stop() error {
 	if g == nil || g.unit == "" {
 		return nil
@@ -852,8 +824,9 @@ func stopUnit(unit string) error {
 // volume it leaves behind is only worth keeping if the guest was not power-cut off it.
 // Windows has no ExecStop (a job is killed, unitStop): its uninstall powers the guest down first.
 //
-// THE FILE IS ASKED OF THE MANAGER, not assumed. install.sh writes the units wherever it was told
-// (a hermetic install puts them in /run), and nothing records where; the manager knows. A
+// THE FILE IS ASKED OF THE MANAGER, not assumed. The install writes the units wherever it was
+// told (BRIARD_UNIT_DIR; a hermetic install puts them in /run), and nothing records where; the
+// manager knows. A
 // transient unit has no file of ours -- systemd-run's is the manager's own, deleted when it
 // collects the unit -- so that one is only stopped. The caller reloads once, after the last.
 func RemoveUnit(unit string) error {
@@ -924,21 +897,20 @@ const DebugChardevID = "serial1"
 // and stops being reachable the moment DebugDisarm swaps it back.
 //
 // ORDER IS THE CONTRACT, AND THE EMPTY CASE IS WHY THIS IS A FUNCTION. The guest numbers its
-// ports by -serial POSITION, so the first one emitted is ttyS0. A real install always captures
-// (install.sh sets GUEST_SERIAL), but a launch without a capture is ordinary -- several rigs run
-// that way -- and the old code then emitted no -serial at all, which would now silently promote
-// the debug console to ttyS0: a login prompt where the kernel console belongs, and a getty out
-// from under the unit bound to /dev/ttyS1. Hence a null-backed serial0 stands in when there is
-// nothing to capture, so ttyS1 is ttyS1 on every launch of every node.
+// ports by -serial POSITION, so the first one emitted is ttyS0. The agent captures by default
+// (GUEST_SERIAL), but a launch without a capture is ordinary -- an empty GUEST_SERIAL, several
+// rigs -- and emitting no -serial then would silently promote the debug console to ttyS0: a
+// login prompt where the kernel console belongs, and a getty out from under the unit bound to
+// /dev/ttyS1. Hence a null-backed serial0 stands in when there is nothing to capture, so ttyS1
+// is ttyS1 on every launch of every node.
 func serialArgs(s QEMUSpec) []string {
 	var a []string
 	if s.SerialLog != "" {
 		// APPENDING, because `-chardev file` truncates on open and this guest is relaunched
-		// routinely: every OS upgrade reboots it, every agent restart re-launches it, and a
-		// rollback launches the PREVIOUS generation. Truncating means the console you need is
-		// the one just overwritten by the boot that replaced it, so the log reliably holds
-		// every incarnation except the interesting one. Measured while debugging a promotion
-		// that failed on an earlier boot than the log could still show.
+		// routinely: every OS upgrade, every rollback (onto the previous image), every rung of
+		// the recovery ladder. Truncating means the console you need is the one just overwritten
+		// by the boot that replaced it, so the log reliably holds every incarnation except the
+		// interesting one.
 		a = append(a, "-chardev", "file,id=serial0,path="+s.SerialLog+",append=on")
 	} else {
 		a = append(a, "-chardev", "null,id=serial0")

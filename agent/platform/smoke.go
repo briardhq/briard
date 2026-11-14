@@ -13,10 +13,9 @@ import (
 	"time"
 )
 
-// smokeTimeout bounds the whole smoke test -- its own hard limit, deliberately well under the
-// agent unit's TimeoutStartSec (60s). If a staged qemu hangs and the test merely waited,
-// systemd would kill the start: the revert would still happen, which is the right outcome, but
-// the agent would be killed before it could write down WHY, and nothing would ever report.
+// smokeTimeout bounds the whole smoke test -- its own hard limit, so a staged qemu that hangs is
+// a refusal of the release that says why, not an update run that hangs until something kills it
+// before it can.
 var smokeTimeout = 20 * time.Second
 
 // smokeDevices are the device models the guest launch depends on (qemuArgs); a bundle built
@@ -24,8 +23,8 @@ var smokeTimeout = 20 * time.Second
 // diagnosis surface the smoke test exists to remove.
 var smokeDevices = []string{"virtio-blk-pci", "virtio-net-pci", "virtio-serial-pci", "virtserialport"}
 
-// SmokeTest proves a STAGED qemu tree runs on this host, before the release that brought it
-// commits. Two tiers. First, without a VM and in milliseconds: `-version` proves the
+// SmokeTest proves a STAGED qemu tree runs on this host, before the update that brought it stops
+// anything (agent/install Update). Two tiers. First, without a VM and in milliseconds: `-version` proves the
 // binary execs and its libraries resolve; `-device help` proves it carries the device models we
 // depend on; `-M help` proves the default machine type exists. Then a scratch machine -- the
 // requested accelerator and CPU model, a throwaway raw disk on virtio-blk, a virtio NIC on a
@@ -172,7 +171,7 @@ func smokeRunner(tree, bin string) func(ctx context.Context, args ...string) (st
 
 // smokeCommand execs the tree's qemu THROUGH THE TREE'S OWN DYNAMIC LOADER. The bundle bakes
 // its ELF interpreter to the COMMITTED prefix (/opt/briard/qemu/lib/ld-linux..., see
-// qemu-bundle.nix), so exec'ing the staged binary directly would pair the new libc with the
+// nixosTest/qemu-bundle.nix), so exec'ing the staged binary directly would pair the new libc with the
 // old loader -- a glibc bump between releases fails that pairing, and the test would refuse a
 // good release for a reason that vanishes the moment the link moves. Invoking ld.so by path
 // bypasses PT_INTERP and keeps every byte the test runs inside the tree under test; the binary's

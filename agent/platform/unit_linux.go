@@ -9,12 +9,12 @@ import (
 	"time"
 )
 
-// This file is the service manager half of the platform seam: every place the agent reaches for
-// systemd to start, inspect or stop a transient unit. The policy above it -- what a state MEANS,
-// how long to wait for a name, when a corpse is worth clearing -- stays OS-neutral in qemu.go
-// and forwarder.go, so it reads and tests the same everywhere. What a port owes here is
-// re-adoption of a detached, named unit, not detachment; the analogues and the three gaps with
-// none are decided in the design.
+// This file is the service manager half of the platform seam on Linux: every place the agent
+// reaches for systemd to start, inspect or stop a transient unit or one of its own systemd units.
+// The policy above it -- what a state MEANS, how long to wait for a name, when a corpse is worth
+// clearing -- stays OS-neutral in qemu.go and forwarder.go, so it reads and tests the same
+// everywhere. What an arm owes here is re-adoption of a detached, named unit, not detachment
+// (unit_windows.go is the other arm).
 
 // startTransient runs a command as a detached, named transient unit that outlives this process.
 // args is the whole command line, built purely by the caller so it stays testable off-platform.
@@ -101,8 +101,8 @@ func unitStamp(unit string) string { return "/var/lib/systemd/timers/stamp-" + u
 // unit's TimeoutStopSec is not the bound (raising that would hold every shutdown), then a poll
 // until that process is gone, then `systemctl stop` -- instant once it has exited, it also
 // cancels a restart the exit queued, and past the patience it is the force (TimeoutStopSec, then
-// SIGKILL). patience 0 is that plain stop alone. The self-update's stop: the agent drains its act
-// lane on SIGTERM, so "stopped" means "stopped between acts".
+// SIGKILL). patience 0 is that plain stop alone (uninstall's). The self-update's stop: the agent
+// drains its act lane on SIGTERM, so "stopped" means "stopped between acts".
 func StopService(ctx context.Context, unit string, patience time.Duration, logf func(string, ...any)) error {
 	pid, err := unitShow(unit, "MainPID")
 	if err != nil {
