@@ -176,6 +176,16 @@ func TestCallHonorsContextOnStuckGuest(t *testing.T) {
 				}
 			}
 		}
+		// What everything else sees afterwards -- the observe loop's "control channel down"
+		// line among it -- is the rule's reason too, not the socket the close shut.
+		g.mu.Lock()
+		done := g.readDone
+		g.mu.Unlock()
+		<-done
+		err := g.Call(context.Background(), "echo", nil, nil)
+		if !errors.Is(err, ErrChannelDown) || !strings.Contains(err.Error(), "unanswered") || !strings.Contains(err.Error(), "verb1") {
+			t.Errorf("a call after the liveness close = %v, want ErrChannelDown naming the unanswered verbs", err)
+		}
 	})
 }
 

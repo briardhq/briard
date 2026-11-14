@@ -101,9 +101,12 @@ type Conn struct {
 	misses []miss
 	alive  bool
 	// readErr is why the reader stopped; set once, after which every call fails with it.
-	readErr  error
-	readDone chan struct{}
-	readOnce sync.Once
+	// closedFor is why the liveness rule closed the stream, set just before it does, so the
+	// reader reports the rule's reason (the verbs left unanswered) and not the closed socket.
+	readErr   error
+	closedFor error
+	readDone  chan struct{}
+	readOnce  sync.Once
 }
 
 // The liveness rule's numbers: three calls unanswered at their deadlines within a minute. A
@@ -143,6 +146,9 @@ func (c *Conn) reader() {
 		c.mu.Lock()
 		if err != nil {
 			c.readErr = err
+			if c.closedFor != nil {
+				c.readErr = c.closedFor
+			}
 			for id, ch := range c.pending {
 				delete(c.pending, id)
 				close(ch)
@@ -222,7 +228,11 @@ func (c *Conn) Call(ctx context.Context, verb string, arg, reply any) error {
 		case down != nil:
 			// The liveness rule: missLimit calls unanswered within missWindow, on a connection
 			// that used to answer. Close, so the reader ends and the host re-dials; the error
-			// carries the timeout, the dead channel and the verbs that went unanswered.
+			// carries the timeout, the dead channel and the verbs that went unanswered -- and so
+			// does every call the close fails, the reader's error being this reason.
+			c.mu.Lock()
+			c.closedFor = errors.New(missedVerbs(down))
+			c.mu.Unlock()
 			_ = c.rw.Close()
 			return fmt.Errorf("%w: %w (%s)", ErrChannelDown, ctx.Err(), missedVerbs(down))
 		case !alive:
