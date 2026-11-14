@@ -72,6 +72,14 @@ firmware the guest image bakes, the reverse proxy and the dashboard are Go progr
 Under Nix the module set is vendored from those exact versions (`vendor-hash.nix` pins it), so the
 binary the release ships is built from nothing else.
 
+## The flock-name word lists — Apache-2.0
+
+The adjective and animal lists a flock's name is drawn from, in
+[`shared/flockname/words.go`](shared/flockname/words.go), are derived from
+[`github.com/dustinkirkland/golang-petname`](https://github.com/dustinkirkland/golang-petname)
+(Apache-2.0): snapshotted from it and curated, then copied into this repository rather than
+imported, so they compile into the agent with no dependency on that module.
+
 ## The dashboard's stylesheet, script and icons — MIT, 0BSD, ISC
 
 The household dashboard's one stylesheet, `dashboard/static/app.css`, and its one script are built and fetched ahead of time by
