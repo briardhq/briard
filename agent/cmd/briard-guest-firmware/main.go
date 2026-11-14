@@ -8,10 +8,10 @@
 // pushed set lands in is emptied at every boot, so every boot starts here and the host re-dresses it.
 //
 // WHY IT IS ITS OWN MAIN. The guest image's version is a function of its INPUTS, and
-// the inputs are the Go packages the baked binary links. While the image baked the full agent,
-// every agent edit moved that hash and republished a 400 MB guest chain for a change no image
-// needed. Baking only the push protocol makes the image move when the PROTOCOL moves, which is
-// the honest condition. `internal/arch` asserts flake.nix's guestInputPackages against
+// the inputs are the Go packages the baked binary links. Baking the full agent would move that
+// hash on every agent edit and republish a 400 MB guest chain for a change no image needed.
+// Baking only the push protocol makes the image move when the PROTOCOL moves, which is the
+// honest condition. `internal/arch` asserts flake.nix's guestInputPackages against
 // `go list -deps ./agent/cmd/briard-guest-firmware`, so a new import cannot slip outside the hash.
 //
 // The argv is the contract the image's units and the pushed bundle share (guest-image/

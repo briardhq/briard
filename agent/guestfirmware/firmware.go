@@ -1,13 +1,14 @@
 // Package guestfirmware is the FIRMWARE half of the host<->guest control protocol: the part the
-// guest image bakes, and the only part whose change moves the guest image's inputs hash.
+// guest image bakes, and the only part of the protocol whose change moves the guest image's
+// inputs hash.
 //
 // It is a deliberately small graph -- the framing, the handshake, the three push verbs and their
 // trial/aftermath rules, `os.poweroff`, and the Executor those shell out through. Everything
 // else the guest does (DRBD bring-up, apps, telemetry, converge, the deadman) belongs to
 // agent/guestagent, which the host PUSHES as `briard-guest-agent` at every bring-up. The whole
-// point of the split is that an edit to any of those must NOT rebuild the image: the image's
-// inputs list is `go list -deps ./agent/cmd/briard-guest-firmware` and nothing more
-// (flake.nix guestInputPackages, asserted by internal/arch).
+// point of the split is that an edit to any of those must NOT rebuild the image: the image's Go
+// inputs are `go list -deps ./agent/cmd/briard-guest-firmware` and nothing more (flake.nix
+// guestInputPackages, asserted by internal/arch).
 //
 // So the rule for editing this package is the rule for the protocol itself: additive only. A
 // pushed binary can change everything about itself except the picker it is started by
@@ -44,16 +45,16 @@ const (
 // ⚠️ THERE IS NO PROTOCOL VERSION NUMBER, and adding one back is a decision, not a tidy-up.
 // Negotiation is by VERB NAME: the guest advertises the set it serves, and
 // Client.Supports refuses exactly the one path a guest cannot serve while every other path keeps
-// working -- the instrument app.warm set and data.member follows. A number can
-// only ever refuse the WHOLE channel, and the channel is what fixes a node: applying a vm release
-// runs through the guest's os.* verbs (agent/host/guestupdate.go), so a host that refuses the
-// handshake can never reach the image that would satisfy it. That deadlock is reachable from the
-// call graph, not a matter of how the floor is chosen.
+// working (SupportsSnapshotMember is one such caller). A number can only ever refuse the WHOLE
+// channel, and the channel is what fixes a node: applying a vm release runs through the guest's
+// os.* verbs (agent/host/guestupdate.go, osupgrade.go), so a host that refuses the handshake can
+// never reach the image that would satisfy it. That deadlock is reachable from the call graph,
+// not a matter of how the floor is chosen.
 //
 // A number would also have nothing left to measure. The guest agent is PUSHED at every bring-up
 // from the host's own tree, so a host that compares versions with a guest it dressed is
 // comparing a constant with itself. The only binary that can differ is this firmware, whose
-// contract is frozen and additive (the bin.* verbs) and whose five names Supports already checks.
+// contract is frozen and additive and whose push verbs SupportsBinPush already checks.
 // What the host needs about a guest it did not push it gets from facts richer than an integer:
 // Bundle names the release the guest runs, BootID the boot answering.
 //
@@ -75,15 +76,16 @@ const (
 	VerbHello      = "hello"       // handshake: the verb set, the boot, the bundle
 	VerbOSPowerOff = "os.poweroff" // ask the guest OS to shut itself down cleanly
 	// VerbCancel stops a request in flight, by id. A protocol verb: the serve loop handles it,
-	// no dispatch ever sees it, and it is not in Capabilities -- the host sends it on every
-	// abandoned call and drops the answer, so an older firmware's "unknown verb" costs nothing.
+	// no dispatch ever sees it, and it is not in Capabilities -- the host sends it when a
+	// deadline abandons a call on a guest that is still answering (Conn.Call) and drops the
+	// answer, so an older firmware's "unknown verb" costs nothing.
 	VerbCancel = "cancel"
 )
 
 // Capabilities is what the FIRMWARE advertises: the handshake, the three push verbs, and the
-// clean shutdown. Everything else a host might ask for belongs to the pushed agent, and a host
-// meeting this list learns from it that this guest has not been dressed yet -- which is exactly
-// what makes it dress the guest before any real verb (agent/host/dress.go).
+// clean shutdown. Everything else a host might ask for belongs to the pushed agent. What makes
+// the host dress the guest before any real verb is Hello.Bundle ("" here) differing from the
+// bundle it holds; this list tells it the guest CAN be dressed (agent/host/dress.go).
 var Capabilities = []string{VerbHello, VerbBinStage, VerbBinTest, VerbBinActivate, VerbOSPowerOff}
 
 // Hello is the guest's handshake reply: the verbs it serves -- the whole of the negotiation,
@@ -94,8 +96,8 @@ var Capabilities = []string{VerbHello, VerbBinStage, VerbBinTest, VerbBinActivat
 // agent bounced" from "the guest rebooted underneath me" -- two events that look identical
 // on the channel and need opposite responses. The agent serves one connection then
 // exits, so a handshake re-running proves nothing; the boot_id is stable across that and
-// changes only across an actual boot. Empty from a guest too old to send it, which reads as
-// "no evidence" rather than "a new boot" -- the host must not re-converge on silence.
+// changes only across an actual boot. Empty when the guest could not read it (HelloReply), which
+// reads as "no evidence" rather than "a new boot" -- the host must not re-converge on silence.
 type Hello struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 	BootID       string   `json:"boot_id,omitempty"`
@@ -118,10 +120,9 @@ const bootIDPath = "/proc/sys/kernel/random/boot_id"
 // firmware, the full verb set from the pushed agent. No side effects; safe to call before
 // anything else.
 //
-// The boot_id rides along because the host cannot otherwise tell a bounced agent from a
-// rebooted guest. Read best-effort: a hello that FAILED would be a guest the host
-// refuses to drive, and no host has ever needed this field to drive one -- so an unreadable
-// boot_id is reported as absent, not as an error.
+// The boot_id is read best-effort: a hello that FAILED would be a guest the host refuses to
+// drive, and the host does not need this field to drive one -- so an unreadable boot_id is
+// reported as absent, not as an error.
 func HelloReply(x Executor, caps []string) Hello {
 	h := Hello{Capabilities: caps, Bundle: runningBundle()}
 	if b, err := x.ReadFile(bootIDPath); err == nil {
@@ -166,16 +167,16 @@ func (osExecutor) Sethostname(name string) error {
 }
 
 // PowerOffGrace bounds the one handler that runs DETACHED from the serve context. Every other
-// verb is cancelled when the agent is asked to stop, and that is correct -- an app pull fetching a
-// closure has nothing worth finishing once the machine is going down. `os.poweroff` is the
-// exception, and the reason is circular: the shutdown it asks for is what SIGTERMs this process,
-// so inheriting that cancellation means the verb is killed by its own success.
+// verb is cancelled when the agent is asked to stop, and that is correct -- an app pull has
+// nothing worth finishing once the machine is going down. `os.poweroff` is the exception: the
+// shutdown it asks for is what SIGTERMs this process, so inheriting that cancellation would kill
+// the verb by its own success.
 //
 // Detached, it needs a ceiling of its own -- nothing else can stop it, and the handler holds the
-// serve loop's reply lock, which holds the control port open. Sized far above what the command
-// actually costs (~100ms: `--no-block` returns once systemd has ENQUEUED the job, not run it) and
-// far below the caller's exit backstop, so the reply is always written before the process ends.
-// The gap to that backstop is asserted at compile time where the backstop is declared.
+// control port open (ServeFrames). Sized far above what the command actually costs (~100ms:
+// `--no-block` returns once systemd has ENQUEUED the job, not run it) and below the caller's
+// exit backstop (guestStopGrace in both mains, which asserts the gap at compile time), so the
+// reply is always written before the process ends.
 const PowerOffGrace = 2 * time.Second
 
 // powerOffPollEvery paces the state probe below. Short relative to PowerOffGrace, because the gap
@@ -184,36 +185,31 @@ const PowerOffGrace = 2 * time.Second
 const powerOffPollEvery = 100 * time.Millisecond
 
 // systemStopping answers the one question that settles `os.poweroff`: has the manager entered
-// shutdown? It exists because the command that asks for one is routinely killed BY the shutdown it
-// asks for, so its exit status reports a failure for a request that worked. Two mechanisms did
-// that, in sequence -- the dispatch context and then systemd's own cgroup SIGTERM -- and
-// the second is what makes this the right shape rather than a third patch on the first: the verb
-// stops inferring its outcome from how a process died and observes the state it claims to cause.
+// shutdown? The command that asks for one is routinely killed BY the shutdown it asks for, so
+// its exit status reports a failure for a request that worked (PowerOff); the verb observes the
+// state it claims to cause instead of inferring it from how a process died.
 //
-// ⚠️ THE PROBE'S EXIT CODE IS NOT THE ANSWER EITHER, and it is the trap this function exists to
-// contain: `systemctl is-system-running` exits 0 ONLY for `running`. `stopping` -- the state being
-// looked for -- exits NON-ZERO, as do `degraded` and `starting`. Written as an ordinary success
-// check it would invert its own result and call a working shutdown a failure, which is the bug one
-// level up wearing a different hat. THE STDOUT IS THE ANSWER; the status is discarded on purpose.
+// ⚠️ THE PROBE'S EXIT CODE IS NOT THE ANSWER EITHER: `systemctl is-system-running` exits 0 ONLY
+// for `running`. `stopping` -- the state being looked for -- exits NON-ZERO, as do `degraded` and
+// `starting`. Written as an ordinary success check it would call a working shutdown a failure.
+// THE STDOUT IS THE ANSWER; the status is discarded on purpose.
 //
 // POLLED RATHER THAN READ ONCE, for two independent reasons. `--no-block` returns when the job is
 // ENQUEUED, which is not the instant the manager flips to `stopping`, so a single immediate read
-// can land in that gap. And this child sits in the same cgroup as the one whose death started all
-// this, so the probe can be signalled too -- a fix that loses to the race it settles is no fix.
+// can land in that gap. And this child sits in the same cgroup as the poweroff command, so the
+// probe can be signalled too.
 //
-// COST, since it is not free: a genuine refusal now takes the full grace to report instead of
-// returning at once, because "not stopping yet" and "never going to stop" look the same until the
-// window closes. Bounded by the caller's context, two seconds, against a host-side shutdown grace
-// measured in tens of them -- and the escalation it delays is the one this whole path exists to
-// avoid firing spuriously.
+// COST: a genuine refusal takes the full grace to report instead of returning at once, because
+// "not stopping yet" and "never going to stop" look the same until the window closes. Bounded by
+// the caller's context, two seconds, against a host-side shutdown grace measured in tens of them
+// -- and the escalation it delays is the one this path exists to avoid firing spuriously.
 func systemStopping(ctx context.Context, x Executor) bool {
 	// STRICT ON PURPOSE about everything that is not the word `stopping`. A shutdown far enough
 	// along that the manager no longer answers reports `offline`, or nothing at all, and a machine
 	// genuinely going down can reach that inside this window. Not read as success: "too far gone to
-	// answer" and "never started" are indistinguishable from in here, and guessing between them is
-	// the habit this function exists to break. Being wrong costs a bounded, already-budgeted
-	// escalation -- the host presses the ACPI button and then asks the question that does settle
-	// it, whether the VM is still there (host.stopCleanly).
+	// answer" and "never started" are indistinguishable from in here. Being wrong costs a bounded,
+	// already-budgeted escalation -- the host presses the ACPI button and then asks the question
+	// that does settle it, whether the VM is still there (host.stopCleanly).
 	for {
 		// Error deliberately dropped: a probe that was killed, or a manager that answers
 		// non-zero because it is not `running`, are both just "no answer yet, ask again".
@@ -229,53 +225,34 @@ func systemStopping(ctx context.Context, x Executor) bool {
 	}
 }
 
-// PowerOff serves `os.poweroff`.
+// PowerOff serves `os.poweroff`: the FIRST-CHOICE clean shutdown, asking the guest OS directly
+// over the channel the host already has instead of rattling its virtual power button. QMP's ACPI
+// path (platform.Guest.Shutdown) stays as the fallback for a guest whose agent is gone -- the two
+// fail independently, which is the whole reason to have both. The host confirms the outcome by
+// watching the VM disappear (platform.Guest.WaitStopped), not by this return value.
 //
-// The FIRST-CHOICE clean shutdown: ask the guest OS directly, over the channel
-// the host already has, instead of rattling its virtual power button and hoping
-// something inside is listening. QMP's ACPI path (platform.Guest.Shutdown) stays
-// as the fallback for a guest whose agent is gone -- the two fail independently,
-// which is the whole reason to have both.
+// --no-block because the reply must be written BEFORE systemd starts tearing the machine down:
+// without it the shutdown races the response and the host sees a dead channel, indistinguishable
+// from a guest that crashed. ServeFrames holds the control port open until the reply is written.
 //
-// --no-block because the reply must be written BEFORE systemd starts tearing the
-// machine down: without it the shutdown races the response and the host sees a
-// dead channel, which is indistinguishable from a guest that crashed. The host
-// confirms the outcome by watching the VM disappear, not by this return value
-// (platform.Guest.WaitStopped).
+// ⚠️ THE COMMAND IS KILLED BY ITS OWN SUCCESS, in two ways, so its exit status is not the answer:
+//   - PID 1 begins stopping units as soon as it holds the job, and nothing orders this agent's
+//     unit late, so its SIGTERM can cancel the dispatch context while `systemctl` is still
+//     exiting -- `context canceled` for a request that WORKED. Hence the detached context.
+//   - The unit's default KillMode is control-group, so the shutdown SIGTERMs every process in the
+//     agent's cgroup, `systemctl` included -- `signal: terminated` (one sample in four on an idle
+//     runner). Detaching stops US killing the child; it does not stop SYSTEMD killing it.
 //
-// ⚠️ DETACHED FROM THE DISPATCH CONTEXT, because this verb is cancelled by its own
-// success. `--no-block` returns once systemd has enqueued the shutdown, but PID 1
-// begins stopping units as soon as it holds the job -- and nothing orders this
-// agent's unit late, so its SIGTERM can land while `systemctl` is still exiting.
-// That cancels the dispatch context, exec.CommandContext kills the child, and Wait
-// reports `context canceled` for a request that WORKED. The host reads that as "the
-// agent route failed" and reaches for the ACPI power button -- the clean-shutdown regression
-// guest-rescue greps for, seen live on the nightly.
+// Either way the host would read a request that WORKED as a refusal and reach for the ACPI power
+// button -- the clean-shutdown regression nixosTest/guest-rescue.nix asserts against.
 //
-// The serve loop's fix covered the neighbouring half: the serve loop now holds the control port
-// open until this reply is written, so the answer does reach the host. That is why
-// the failure changed shape from a lost reply into a delivered error -- and why the
-// fix belongs here rather than in the channel. The reply was never the problem; the
-// command underneath it was.
-// ⚠️ AND THE COMMAND'S EXIT STATUS IS STILL NOT THE ANSWER. Detaching the context
-// stopped US killing the child; it does not stop SYSTEMD killing it. The unit's
-// default KillMode is control-group, so the shutdown this verb starts SIGTERMs
-// every process in the agent's cgroup -- `systemctl` included -- and the error
-// changes shape again, from `context canceled` to `signal: terminated`. Measured on
-// run 33978948462, one sample in four on an idle L0: the host read a request that
-// had WORKED as a refusal and reached for the ACPI button, which is guest-rescue going
-// red for the third distinct reason.
-//
-// So stop inferring the outcome from how the command died and ASK THE MANAGER. Being
-// signalled is not evidence the job was enqueued -- `--no-block` returns once systemd
-// has accepted it, and a SIGTERM landing before that would have us report a shutdown
-// that never started. `is-system-running` reporting `stopping` IS that evidence, and
-// it is the same fact the verb claims to have caused, observed rather than guessed.
-//
-// The exit status is consulted first and only as a fast path: a command that returned
-// cleanly needs no second question. Every non-`stopping` outcome keeps its ORIGINAL
-// error, so a genuine refusal still reaches the host with the text that says why, and
-// the host still escalates. What this removes is the false negative, not the alarm.
+// So the outcome is ASKED OF THE MANAGER (systemStopping). Being signalled is not evidence the job
+// was enqueued -- a SIGTERM landing before systemd accepted it would report a shutdown that never
+// started; `is-system-running` reporting `stopping` IS that evidence. The exit status is consulted
+// first and only as a fast path: a command that returned cleanly needs no second question. Every
+// non-`stopping` outcome keeps its ORIGINAL error, so a genuine refusal still reaches the host with
+// the text that says why, and the host still escalates. What this removes is the false negative,
+// not the alarm.
 func PowerOff(ctx context.Context, x Executor) error {
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), PowerOffGrace)
 	defer cancel()
