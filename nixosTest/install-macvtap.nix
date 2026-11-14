@@ -1,6 +1,6 @@
 # the test that owns the WHOLE install chain end to end:
-#   report-card gate -> BUNDLED qemu (no distro qemu on the host) boots the guest -> single-node
-#   DRBD data volume -> app served at the VIP -> an OFF-BOX LAN client reaches it.
+#   report-card gate -> BUNDLED qemu (no distro qemu on the host) boots the guest -> the data
+#   volume (a lone node runs no DRBD) -> app served at the VIP -> an OFF-BOX LAN client reaches it.
 #
 # The macvtap-specific deltas on top of that chain:
 #   1. NO bridge is created and the host's IP never leaves the physical NIC (the invasiveness
@@ -15,44 +15,37 @@
 #
 # It also proves assertion (d) -- cattle/pet reinstall: after green, `rm -rf /opt/briard`
 # (the cattle) + reinstall reaches green AGAIN with the guest DATA intact (the pet
-# /var/lib/briard data volume's btrfs filesystem UUID, read off the backing file, survives).
+# /var/lib/briard data volume's LUKS2 header UUID, read off the backing file, survives).
 # The failable control is sharp -- a wiped/reformatted volume would mint a new UUID; the
-# cattle/pet block below records how a runtime app install wins back the stronger
-# tick-counter comparison.
+# cattle/pet block below says why no app tick counter backs it up.
 #
-# It carries the mode-independent half (install-bridge.nix, cut down to the bridge deltas). It had
-# accumulated on BRIDGE's test purely because bridge was the original default -- so the default
-# substrate was the thin one, and anything done to the bridge rig risked silently taking the
-# reinstall proof with it. Now install-bridge.nix is a pure delta: nothing mode-independent
-# depends on it.
+# It carries the mode-independent half; install-bridge.nix is a pure delta over it, cut down to
+# the bridge deltas, so nothing mode-independent depends on the bridge rig.
 #
 # agent-bringup.nix already proves the agent MECHANISM (nested guest, DRBD, VIP) with the host
 # itself as the client. This test proves the INSTALLER around it: it runs scripts/install.sh
 # verbatim, uses only the bundled qemu (pkgs.qemu is deliberately absent), and a second node on
 # the shared L2 -- not the install host -- curls the VIP, so reachability is genuinely off-box.
 #
-# Heavy (two nested guest boots + a multi-GB guest disk) -> rides the `install` nightly tag
+# Heavy (many nested guest boots + a multi-GB guest disk) -> rides the `install` nightly tag
 # alongside install-bridge, qemu-bundle + report-card. Run:
 #   nix build .#tests.install-macvtap -L
 { pkgs, guestDisk, agent, qemuBundle, guestBundle, selfupdateStub, catalog }:
 let
   # THE RELEASE CHANNEL, BUILT THE WAY A RELEASE IS BUILT.
   #
-  # This used to be a `staging` dir of loose uncompressed files handed to install.sh through
-  # BRIARD_ARTIFACTS -- a shape nothing ships: the qemu bundle as a DIRECTORY rather than the
-  # tarball a real install unpacks, and no manifest, signature or compression anywhere. So the
-  # installer's actual first act on a stranger's machine (fetch a signed, compressed set over
-  # HTTP and verify it before touching the disk) was the one link in the chain no test ran, and
-  # BRIARD_ARTIFACTS -- an escape hatch -- was what every install test proved instead.
+  # Not a BRIARD_ARTIFACTS staging dir of loose files: the installer's actual first act on a
+  # stranger's machine is to fetch a signed, compressed set over HTTP and verify it before
+  # touching the disk, and an escape hatch that skips that proves a shape nothing ships.
   #
   # Everything here mirrors scripts/publish-release.sh, and the manifest is written by the REAL
   # writer (`briard-agent --stage-manifest`) -- the same binary that reads it back during the
-  # install below. A format change that breaks that round trip now fails HERE instead of at a
+  # install below. A format change that breaks that round trip fails HERE instead of at a
   # stranger's first install.
   #
   # The layout is the TREE the channel publishes: one directory per chain, one
-  # versioned directory under each. The pointers (`stable`) are laid at runtime beside the
-  # signatures, because a pointer is a byte-copy of a SIGNED manifest.
+  # versioned directory under each. The pointers (`stable`, `latest`) are laid at runtime beside
+  # the signatures, because a pointer is a byte-copy of a SIGNED manifest.
   channel = pkgs.runCommand "briard-test-channel" {
     nativeBuildInputs = [ pkgs.zstd pkgs.openssl pkgs.gnutar ];
   } ''
@@ -116,13 +109,12 @@ pkgs.testers.runNixOSTest {
     host =
       { ... }:
       {
-        virtualisation.memorySize = 6144; # report-card 4 GB floor + the 2 GB nested guest
+        virtualisation.memorySize = 6144; # report-card 4 GB floor + room for the nested guest
         virtualisation.cores = 4;
-        # 14 GB, not 10: this test runs install.sh TWICE, and the first (must-fail) invocation stages
-        # ~2 GB before dying at the NIC check -- so the real run's report card measures a disk the
-        # previous run already ate into. Against the product's own 8 GB floor that left under a GB of
-        # margin, and a release's artifact growth tipped it: the card refused with "7 GB free" and the
-        # install never ran. Headroom, so the test stops measuring the admission floor by accident.
+        # 14 GB: headroom over the report card, which refuses below what the install uses (6 GB on
+        # a fresh host: the image, a 4 GB data volume and a 1 GB state disk, all thick) and warns
+        # below that plus a Home Assistant and the advised free space. Headroom, so the test does
+        # not measure the admission floor by accident.
         virtualisation.diskSize = 14336;
         # eth1 on the shared 192.168.1.0/24 L2 (the LAN); eth2 a second uplink on the same LAN, held
         # down until the carrier re-parent block near the end.
@@ -133,7 +125,7 @@ pkgs.testers.runNixOSTest {
           { address = "192.168.1.1"; prefixLength = 24; }
         ];
         # ⚠️ THE DEFAULT ROUTE THIS RIG NEEDS IS ADDED BY THE TEST SCRIPT, not declared here.
-        # `networking.defaultGateway` looked right and did nothing: on these VMs no
+        # `networking.defaultGateway` looks right and does nothing: on these VMs no
         # `network-setup.service` line reaches the boot log at all, so the route never lands -- and
         # the only symptom is the report card refusing with "no default route" a hundred lines
         # later, which reads as a product bug. An `ip route add` in the script is visible, asserts
@@ -143,12 +135,12 @@ pkgs.testers.runNixOSTest {
         # disabled v6 before installing -- it is their machine and their setting -- and the design
         # puts our addressing on v4 INDEFINITELY, so nothing we ship may quietly need v6 to work.
         #
-        # This is not hypothetical: it caught one. With the private link briefly unnumbered, avahi
-        # answered mDNS on it over IPv6 only (it joins the IPv4 group on an interface only if that
-        # interface HAS a v4 address), so the name half silently depended on the HOST having
-        # a v6 link-local on the tap. With v6 on, the name resolved and everything looked correct;
-        # with v6 off, the household's own machine could not find its own node while every other
-        # assertion in this file still passed. A rig that leaves v6 enabled cannot tell those apart.
+        # The failure it guards: avahi joins the IPv4 group on an interface only if that interface
+        # HAS a v4 address, so a private link left unnumbered answers mDNS over IPv6 only, and the
+        # name half silently depends on the HOST having a v6 link-local on the tap. With v6 on, the
+        # name resolves and everything looks correct; with v6 off, the household's own machine
+        # cannot find its own node while every other assertion in this file still passes. A rig
+        # that leaves v6 enabled cannot tell those apart.
         boot.kernel.sysctl."net.ipv6.conf.all.disable_ipv6" = 1;
         boot.kernel.sysctl."net.ipv6.conf.default.disable_ipv6" = 1;
         # tar + zstd: the host-bundle section below re-publishes the qemu bundle with one file added,
@@ -189,9 +181,8 @@ pkgs.testers.runNixOSTest {
         services.avahi = { enable = true; nssmdns4 = true; };
       };
 
-    # THE ROUTER -- the piece this L2 never had, and the reason the DHCP path could only be
-    # argued for. Every other test DECLARES the service address, so they all exercise the
-    # operator-named source and none of them exercises the one the product now defaults to.
+    # THE ROUTER, so the service address comes from DHCP -- the source the product defaults to --
+    # rather than from an operator-named address.
     #
     # A POOL, deliberately, with no reservation for our MAC: the test must not know the address in
     # advance, because "we never depended on knowing it" is the property under test. It is
@@ -242,8 +233,8 @@ pkgs.testers.runNixOSTest {
     # table, whose columns are: <expiry> <mac> <ip> <hostname> <client-id>.
     #
     # It waits because the lease is drawn at PROMOTION, not at install: the guest has to boot and
-    # promote before it asks for anything. (install.sh itself now waits for the agent's healthy
-    # line before printing the link -- bounded, so the lease is still not implied.)
+    # promote before it asks for anything. (The installer waits for the agent's healthy line
+    # before printing the link -- bounded, so the lease is still not implied.)
     def wait_for_lease(timeout=180):
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -273,7 +264,7 @@ pkgs.testers.runNixOSTest {
 
     def diagnose(where):
         # EVERY briard-vip line from EVERY boot, untailed. The console appends across guest
-        # incarnations now, so the story spans boots -- and tailing it would keep only the last
+        # incarnations, so the story spans boots -- and tailing it would keep only the last
         # one, which is the boot that already told us it found nothing. What is wanted is the
         # EARLIER boot, where the address was acquired and should have been remembered.
         print(f"=== {where}: briard-vip, all boots ===")
@@ -315,26 +306,26 @@ pkgs.testers.runNixOSTest {
     # block is about two uplinks.
     host.succeed("ip link set eth2 down")
 
-    # The guest console. The host cannot reach the guest over macvtap, so this is the only witness to
-    # anything that happens inside it -- which is why THE INSTALLER now wires it, and why this test
-    # no longer lays down its own drop-in.
+    # The guest console. The host cannot reach the guest over macvtap, so this is the only witness
+    # to anything that happens inside it -- which is why THE AGENT captures it by default
+    # (GUEST_SERIAL, defaulted in agent/host/config.go), and why this test lays down no capture of
+    # its own.
     #
-    # The drop-in was a vacuous green of the exact shape [V3.7g-1] warned about: it granted this rig
-    # the witness that every real install went without, so the console every field diagnosis depended
-    # on (V3.20-V3.23) was one the product never actually shipped, and the test could not have said
-    # so. Reading the installer's own path is what makes the capture a tested property instead of a
-    # local convenience.
+    # A rig-only capture would be a vacuous green: it would grant this rig a witness a real install
+    # might go without, and the test could not say so. Reading the shipped default path is what
+    # makes the capture a tested property instead of a local convenience.
 
     # --- refuse-with-fix / never-a-half-install: a bogus NIC dies before touching networking ---
     # (The report-card refusals themselves are proven in report-card.nix; here we prove the
-    # installer aborts cleanly at the networking step, leaving no macvtap behind. Under macvtap
+    # installer aborts cleanly on a bogus NIC -- the card refuses it before anything is fetched --
+    # leaving no macvtap behind. Under macvtap
     # that step is not irreversible the way the bridge enslave is -- install-bridge.nix keeps the
     # sharper version of this check -- but "refuses and changes nothing" must hold on the default
     # substrate too, so it is asserted here in the mode's own terms.)
     # The release channel, served over HTTP for the rest of this test. Every install below goes
     # through the REAL network path -- fetch the signed manifest, verify it against the keyring,
     # verify each artifact's hash, expand the compressed ones -- which is what a stranger's
-    # machine does and what BRIARD_ARTIFACTS was quietly standing in for.
+    # machine does.
     # Mint a release keypair and sign the manifest the channel derivation already wrote. The
     # signed bytes are the ones the writer produced -- signing does not re-serialise them, so what
     # the agent verifies is exactly what `--stage-manifest` emitted.
@@ -342,7 +333,7 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"{stub} keygen /root/release.key /root/keyring.pem")
     # A symlink farm over the read-only store, one versioned directory per chain: only the
     # signatures and the pointers need to be real files here. The pointer is what
-    # `publish-release.sh sign`/`promote` lay: a byte-copy of the signed manifest, plus the
+    # `publish-release.sh latest`/`promote` lay: a byte-copy of the signed manifest, plus the
     # bootstrap agent on the briard chain (install.sh curls it from the pointer path).
     V = "${agent.version}"
     GV = "vm." + V.split(".", 1)[1]
@@ -409,8 +400,8 @@ pkgs.testers.runNixOSTest {
     # is the honest stand-in, because the refusal must come from the KERNEL rather than from a
     # name we blacklisted.
     #
-    # Before the probe existed this install ran to completion and left a guest that booted,
-    # reported healthy and answered nobody. So the assertion is that it refuses BEFORE writing:
+    # Without the probe this install runs to completion and leaves a guest that boots, reports
+    # healthy and answers nobody. So the assertion is that it refuses BEFORE writing:
     # no taps, and the install's own message names the device, the reason and the way out (the
     # setting, not an example naming a device: the selection could not vouch for one).
     host.succeed("ip tuntap add briard-vpn0 mode tun && ip link set briard-vpn0 up")
@@ -442,8 +433,8 @@ pkgs.testers.runNixOSTest {
     # one line a household reads -- not merely the name of the verb that would get one.
     # Redeemed below once the router has leased the VIP (the name is not resolvable from the
     # client; the reverse proxy is reached by address under the name the link carries, as a browser
-    # with mDNS would reach it). And it is the ONLY address the installer prints: an earlier
-    # "it will answer at" line named a node that was still booting.
+    # with mDNS would reach it). And it is the ONLY address the installer prints: an
+    # "it will answer at" line would name a node that is still booting.
     import re
     m = re.search(r"http://(briard\.local)/\?code=([0-9a-f]{64})", install_out)
     assert m, f"the installer printed no one-time link; its closing lines: {install_out.strip().splitlines()[-6:]}"
@@ -463,8 +454,8 @@ pkgs.testers.runNixOSTest {
     # ⚠️ AND THE CLOSING BLOCK IS THE AGENT'S OWN WORDS. install.sh prints what
     # `briard open` said rather than re-rendering the same facts in shell -- which is what lets
     # the "what is on this node" sentence live in versioned Go. The verb's exact phrasing is the
-    # assertion: install.sh used to write its own ("open this on any device on your network"), so a
-    # regression to a shell-rendered block fails here rather than reading identically to a human.
+    # assertion, so a shell-rendered block (say, "open this on any device on your network") fails
+    # here rather than reading identically to a human.
     assert "open this in a browser within" in install_out, (
         f"the installer re-renders the dashboard block instead of printing the verb's output; "
         f"its closing lines: {install_out.strip().splitlines()[-6:]}"
@@ -483,9 +474,11 @@ pkgs.testers.runNixOSTest {
     # DELTA 2b: the host end of each macvtap holds NO IPv6 address. The device carries the
     # MAC the wrapper pins -- the GUEST's -- so a host left to autoconfigure derives the same
     # EUI-64 identifier the guest derives on the same L2, and its avahi joins mDNS on the guest's
-    # segment. Not vacuous in a hermetic test with no router: a link-local needs no advertisement,
-    # it appears from the device coming up alone (measured on real hardware 2026-08-19), so this
-    # fails on any installer without the procfs write.
+    # segment. A link-local needs no advertisement: it appears from the device coming up alone
+    # (measured on real hardware). On THIS rig, though, the host config above sets
+    # net.ipv6.conf.default.disable_ipv6=1, so every new device starts with IPv6 off and this half
+    # passes without the agent's procfs write (nic.ensureMacvtap); the repair block at the cattle
+    # reset below is the one that fails without it.
     for dev in ("briard0", "briard-drbd0"):
         host.succeed(f"grep -qx 1 /proc/sys/net/ipv6/conf/{dev}/disable_ipv6")
         assert host.succeed(f"ip -6 addr show dev {dev}").strip() == "", (
@@ -517,8 +510,8 @@ pkgs.testers.runNixOSTest {
 
     # The flags reached the wire, which is the only place they can be confirmed. -h gives the
     # household a recognisable entry in its router's client list (and something to pin a static
-    # reservation against); -I "" makes the client-id the hardware address, which is what keeps
-    # ONE flock presenting ONE identity so the lease survives a failover.
+    # reservation against); -I 01:<mac> makes the client-id the hardware address, which is what
+    # keeps ONE flock presenting ONE identity so the lease survives a failover.
     assert name.startswith("briard-"), f"the router recorded the client as {name!r}, not briard-*"
     assert clientid.lower() == "01:" + mac.lower(), (
         f"client-id is {clientid!r}, not the hardware address -- a per-host DUID here is what "
@@ -531,8 +524,8 @@ pkgs.testers.runNixOSTest {
     # THE CONSOLE CAPTURE ITSELF, asserted rather than assumed. Every helper above reads this file
     # through `2>/dev/null ... || true`, because a diagnostic must not become the reason a test
     # fails -- which means a MISSING file is indistinguishable from a quiet boot, and the capture
-    # could silently stop shipping exactly the way it silently never shipped. So it is asserted once,
-    # here, where it must fail if the installer stops wiring GUEST_SERIAL.
+    # could silently stop shipping. So it is asserted once, here, where it must fail if the agent
+    # stops capturing the console by default (GUEST_SERIAL).
     #
     # Non-empty AND recognisable: a file qemu merely created proves the env var arrived, not that the
     # guest's console is on the other end of it. The kernel banner is the cheapest thing only a real
@@ -543,16 +536,17 @@ pkgs.testers.runNixOSTest {
     )
     # It must not be world-readable: it carries the household's hostnames and addresses. The mode
     # is the AGENT's -- applied at every launch before qemu opens the file, so an
-    # install that predates it is tightened rather than trusted.
+    # existing world-readable file is tightened rather than trusted.
     mode = host.succeed("stat -c%a /var/log/briard-guest-console.log").strip()
     assert mode in ("600", "640"), f"the guest console is mode {mode} -- readable beyond root"
     print("the INSTALLER's own guest-console capture is live, non-empty and not world-readable")
 
     # ...AND THE OPERATOR CAN REACH IT BY THE VERB, which is a different claim from the file being
-    # right, and the one that was false. `briard logs` resolved the path by asking systemd
-    # for GUEST_SERIAL, which stopped being on the unit when the node's values moved into
-    # config.env -- so every installed node was told it captured no console while the capture sat
-    # here. Nothing caught it: the only test stubbed the lookup with an answer it wrote itself.
+    # right. `briard logs` asks systemd where config.env is (BRIARD_CONFIG on the unit) and
+    # config.env where the console is (GUEST_SERIAL, defaulted when absent); asking systemd for
+    # GUEST_SERIAL directly would tell every installed node it captured no console while the
+    # capture sat here. The unit test stubs the lookup with an answer it wrote itself, so only a
+    # real install proves it.
     #
     # Run on the REAL install, and asserted on CONTENT rather than on exit status: the verb reports
     # an unreadable surface without failing, by design, so a status check would pass on exactly the
@@ -616,7 +610,7 @@ pkgs.testers.runNixOSTest {
     # says "installing" forever. (The alert list's copy across the channel is measured where
     # this rig opens an alert: "A NODE THAT HAS STOPPED UPDATING" below.)
     # The button is the index's word: the page offers nothing until the host has read the
-    # index (its update watcher's first tick) and pushed the list to the guest, so it is waited
+    # index (its catalog watcher's first read) and pushed the list to the guest, so it is waited
     # for, not assumed.
     session = [l.split(":", 1)[1].split(";")[0].strip() for l in redeemed.splitlines() if l.lower().startswith("set-cookie: briard_session=")][0]
     def node_page_offering():
@@ -654,8 +648,8 @@ pkgs.testers.runNixOSTest {
     print("the admin port carried the button's directive to the host and the host's refusal back")
 
     # --- THE NAME, and the three identifiers behind it ---
-    # Until this change one string (`guest`) was the API identity, the guest hostname, DRBD's
-    # `on <name>` AND the mDNS label, so every install on earth answered to briard-guest.local.
+    # One string for the API identity, the guest hostname, DRBD's `on <name>` AND the mDNS label
+    # would make every install on earth answer to the same name; the asserts below keep them apart.
     flock_name = host.succeed("cat /var/lib/briard/flock-name").strip()
     node_id = host.succeed("cat /var/lib/briard/node-id").strip()
     print(f"flock name={flock_name!r} node id={node_id!r}")
@@ -665,46 +659,49 @@ pkgs.testers.runNixOSTest {
     # can reuse none of a POSIX script. The agent says so once, on the boot that minted.
     host.succeed("journalctl -u briard-agent | grep -q 'identity: this install is called'")
     host.succeed(f"journalctl -u briard-agent | grep -q 'identity: this machine is {node_id}'")
-    # ...and it minted ONCE. The replicated volume's metadata is keyed to the node id, so a second
-    # start that re-minted would leave the guest unable to recognise its own disk -- the reinstall
-    # below re-runs install.sh over this same pet state, which is exactly that second start.
+    # ...and it minted ONCE. The VM UUID, and so the guest machine-id, derives from the node id
+    # (and in a flock DRBD names the node by it), so a second start that re-minted would leave the
+    # guest unable to recognise its own state -- the reinstall below re-runs install.sh over this
+    # same pet state, which is exactly that second start.
     assert host.succeed("grep -c . /var/lib/briard/node-id").strip() == "1", "the node id is not one line"
 
-    # THE DRAWN SUBNETS. Neither number is ours to spell any more: both are drawn per
+    # THE DRAWN SUBNETS. Neither number is ours to spell: both are drawn per
     # home and checked against the network the host can see, so every assertion below reads what
     # this install actually chose. A rig that kept spelling 10.0.0.1 would not merely fail -- the
     # NEGATIVE assertions ("the name must not resolve to the private address") would pass
     # VACUOUSLY, which is the one way a test lies while staying green.
     #
     # THE AGENT DREW THEM, not install.sh. The two halves are asserted together because either
-    # alone is satisfiable by the old shape: the agent SAYS it numbered this node, and config.env
-    # carries no address it could have been told instead. A node numbered by a file written once
-    # at install is a node no release can renumber and no re-parent can re-check.
+    # alone is satisfiable by an installer-numbered node: the agent SAYS it numbered this node,
+    # and config.env carries no address it could have been told instead. A node numbered by a
+    # file written once at install is a node no release can renumber and no re-parent can re-check.
     host.succeed("journalctl -u briard-agent | grep -q 'this node numbers itself from'")
     host.fail("grep -q '^SYSTEM_CIDR=' /opt/briard/config.env")
 
     # ---- CONFIG.ENV CARRIES TWO KINDS OF LINE AND NO THIRD ------------------------------------
-    # What install.sh COMPUTED about this host, and what the OPERATOR said -- copied out of the
-    # environment with the BRIARD_ prefix stripped. No defaults: a key nobody named is a key the
-    # agent answers from agent/host/config.go, which a release can change and a line in this file
-    # could not.
+    # What the install (`briard-agent install`, which install.sh calls) COMPUTED about this host,
+    # and what the OPERATOR said -- copied out of the environment with the BRIARD_ prefix
+    # stripped. No defaults: a key nobody named is a key the agent answers from
+    # agent/host/config.go, which a release can change and a line in this file could not. (The
+    # writer has a third kind, who installed it -- BACKUP_DIR -- which it writes only for a
+    # SUDO_USER other than root; this rig installs as root, so it has none.)
     #
-    # A WHITELIST rather than a list of the ~20 keys that left, because the failure this guards is
-    # a NEW default being written here out of habit, and that one fails by name. It also catches
+    # A WHITELIST rather than a list of keys that must be absent, because the failure this guards
+    # is a NEW default being written here out of habit, and that one fails by name. It also catches
     # the copy's other direction -- a stray BRIARD_* from the invoking environment landing in a
-    # node's configuration. This can fail: put QEMU= back and this says so.
+    # node's configuration. This can fail: any key outside the two sets is named as unexpected.
     keys = sorted(
         l.split("=")[0]
         for l in host.succeed("cat /opt/briard/config.env").splitlines()
         if l and not l.startswith("#")
     )
-    # ⚠️ NO IDENTIFIERS. NODE, FLOCK_ID and FLOCK_NAME left this file for the agent to mint: the AGENT mints
-    # them into pet state at its first start, so config.env now carries only paths to things this
-    # install laid down. Their reappearing here would mean the installer had taken back a decision
-    # a Windows host has to make too.
+    # ⚠️ NO IDENTIFIERS. NODE, FLOCK_ID and FLOCK_NAME are not in this file: the AGENT mints
+    # them into pet state at its first start, so the computed lines are only paths to things this
+    # install laid down or the agent makes. Their appearing here would mean the installer had taken
+    # back a decision a Windows host has to make too.
     computed = {
         "QEMU", "QEMU_DATADIR", "NET_WRAP_BIN",                     # staged here
-        "GUEST_IMAGE", "DATA_DISK", "STATE_DISK",                   # created here
+        "GUEST_IMAGE", "DATA_DISK", "STATE_DISK",                   # image laid here; disks the agent makes
     }
     copied = {"CHANNEL_URL", "UPDATE_KEYRING", "CATALOG_URL"}  # exactly what channelEnv carried
     assert set(keys) == computed | copied, (
@@ -722,8 +719,9 @@ pkgs.testers.runNixOSTest {
             f"the {label} subnet is {drawn!r}, not a bare 10.a.b -- install.sh built the substrate "
             f"out of something the draw did not produce"
         )
-    # The draw HAPPENED, rather than a constant surviving under a new name. Both old values are in
-    # the exclusion table, so neither can come back out of the draw by chance.
+    # The draw HAPPENED, rather than a constant surviving under a new name. 10.0.0 is in the flock
+    # pool exclusion table, so it cannot come back out of the draw; 10.11.9 is NOT excluded from
+    # the private-link draw (10.11.R, R uniform), so it is a legal draw one time in 256.
     assert system_subnet != "10.0.0", "the system subnet is still the hardcoded 10.0.0"
     assert priv_subnet != "10.11.9", "the private link is still the hardcoded 10.11.9"
     # The link pool is 10.11.x and the flock pool excludes it, which is what keeps a node's private
@@ -743,11 +741,11 @@ pkgs.testers.runNixOSTest {
     # mdns4_minimal resolver a household has. Publishing is not resolving -- a desktop measured a name
     # that published fine and was unlookupable -- so this asks the client, not the guest.
     #
-    # Instrumented BEFORE it is asserted, deliberately. The first two attempts at this assertion
-    # failed with nothing to read: the diagnose() helper hangs off wait_for_lease, so an mDNS
-    # failure printed one line and left the guest's side of it invisible. A publisher that refuses
-    # (avahi returning "Not permitted") and a publisher that never runs look identical from the
-    # client, and guessing between them costs a full runner round-trip each time.
+    # Instrumented BEFORE it is asserted, deliberately: the diagnose() helper hangs off
+    # wait_for_lease, so without this an mDNS failure prints one line and leaves the guest side
+    # of it invisible. A publisher that refuses (avahi returning "Not permitted") and a publisher
+    # that never runs look identical from the client, and guessing between them costs a full
+    # runner round-trip each time.
     def mdns_state(where):
         print(f"=== {where}: the guest's publisher and daemon ===")
         print(host.succeed(
@@ -788,9 +786,9 @@ pkgs.testers.runNixOSTest {
     # This is asserted rather than assumed because the cold-cache assertion that follows is only
     # as strong as it. An announcement is the SAME PACKET as a response, so a client that asks
     # while one is in flight can be answered by a multicast it never sent a query for -- and the
-    # assertion below then passes without a single query reaching the guest, which is exactly how
-    # the mc_filter bug stayed invisible: inbound mDNS dropped on the macvtap's per-child mc_filter while
-    # egress worked perfectly, so the name worked until every client's cache went cold.
+    # assertion below then passes without a single query reaching the guest -- which would hide
+    # inbound mDNS being dropped on the macvtap's per-child mc_filter while egress works perfectly,
+    # so the name works until every client's cache goes cold.
     #
     # The responder answers queries and announces nothing, so the window does not exist. If that
     # ever changes -- an announcer is a standing option this shipped without -- THIS assertion
@@ -818,8 +816,8 @@ pkgs.testers.runNixOSTest {
     #
     # THE RESTART IS THE FLUSH, and with nothing announcing it is the whole of what this needs:
     # there is no cached record left for a TTL to expire and no announcement tail to outlast. The
-    # assertion is checked the only way that means anything, the way the tail wait was:
-    # with `allmulticast` removed from install.sh it must still FAIL.
+    # assertion means something only if it FAILS with ALLMULTI removed from the agent
+    # (nic.ensureMacvtap, which sets it on each macvtap child).
     client.succeed("systemctl restart avahi-daemon")
     client.sleep(5)
     # avahi-resolve-host-name EXITS 0 EVEN WHEN IT FAILS -- it prints "Failed to resolve host
@@ -842,10 +840,10 @@ pkgs.testers.runNixOSTest {
     assert_guest_receives_multicast(client, "eth1", "192.168.1.2", vip)
 
     # DELTA 5: THE INSTALL HOST REACHES ITS OWN GUEST -- the one machine on this L2 that
-    # could not. Everything above is proved from `client`, deliberately, and that is exactly how
-    # the defect survived: the substrate isolates a parent NIC from its own children and a switch
-    # will not reflect a frame to the port it came from, so the installer handed its user an
-    # address and a name that worked everywhere except on the machine reading them.
+    # could not. Everything above is proved from `client`, deliberately, and that alone would miss
+    # it: the substrate isolates a parent NIC from its own children and a switch will not reflect
+    # a frame to the port it came from, so without the private link the installer hands its user
+    # an address and a name that work everywhere except on the machine reading them.
     #
     # The user-facing addresses are UNCHANGED -- the VIP and the flock name, the same two strings
     # the client just used. The private link is transport and is never published: its address appears
@@ -854,10 +852,9 @@ pkgs.testers.runNixOSTest {
     print(f"the install host reached its own guest at http://{vip}/")
 
     # THE NODE IP, on a LONE node. A standalone install is a single-node flock, so it
-    # is node-id 0 and its guest takes .1 on the system subnet -- assigned HERE, at install, not on
-    # a cloud pairing that a free-tier island never has. Before this, eth1 was deliberately left
-    # unaddressed single-node, which made the lone node the one shape in the fleet with no address
-    # of its own and left the reboot gate with nothing to aim at but a baked private-link constant.
+    # is node-id 0 and its guest takes .1 on the system subnet the agent drew -- with no cloud
+    # pairing, which a free-tier island never has. So the lone node has an address of its own,
+    # and the reboot gate has something to aim at besides a private-link address.
     #
     # Observed from the OFF-BOX client, not asked of the guest agent: the claim is that something
     # outside the guest reaches the guest AT this address, and asking the guest whether it
@@ -901,9 +898,10 @@ pkgs.testers.runNixOSTest {
     # its own. Asserting it here rather than racing the agent at boot is what makes the failure
     # REAL: it proves the route is the CAUSE, not merely present alongside the result.
     #
-    # The agent is stopped for the negative half deliberately, and not to be tidy -- its observe
-    # cadence is 10s, so a reconcile could otherwise land inside the curl's own timeout and turn
-    # this into a flake that fails at nobody's fault. Stopping it leaves the GUEST serving (the
+    # The agent is stopped for the negative half deliberately, and not to be tidy: its route
+    # reconcile (agent/host/viproute.go) acts only when the guest VIP changes, so a running agent
+    # would not notice a route deleted under it, and the restart is what makes a fresh reconcile
+    # install it again. Stopping it leaves the GUEST serving (the
     # guest is a detached sibling unit, as the cattle-reset below relies on), so what is measured
     # is the isolation and nothing else.
     host.succeed("systemctl stop briard-agent.service")
@@ -940,9 +938,10 @@ pkgs.testers.runNixOSTest {
     print(f"the install host reached http://briard-{flock_name}.local/ by NAME")
 
     # The DHCP hostname deliberately does NOT follow the flock name (by decision): option 12
-    # stays derived in-guest from the NIC's own MAC, because changing a hostname mid-lease is a
-    # change no one can predict an arbitrary server's reaction to, and a rename must never risk the
-    # address. Asserted so the divergence stays a DECISION and cannot decay into a bug either way.
+    # stays derived in-guest from the flock MAC the NIC carries, because changing a hostname
+    # mid-lease is a change no one can predict an arbitrary server's reaction to, and a rename
+    # must never risk the address. Asserted so the divergence stays a DECISION and cannot decay
+    # into a bug either way.
     assert name != f"briard-{flock_name}", (
         f"the router's client name {name!r} now tracks the flock name -- that coupling was "
         f"removed on purpose: it puts the address at risk every time someone renames"
@@ -961,13 +960,12 @@ pkgs.testers.runNixOSTest {
     # is two-node by nature and belongs to a two-node rig. What is proven here: a demote really stops
     # serving, seen from off-box, and re-promotion brings the VIP back on the SAME MAC.
     #
-    # ⚠️ PLACED HERE, on a freshly-converged node, and it was at the END of this file for one run.
-    # That run failed: the self-update section restarts the agent repeatedly, and `systemctl
-    # is-active` returning true does not mean the admin socket is back -- serveLocal runs in a
-    # GOROUTINE, so READY=1 and the listen are not ordered. The CLI said so plainly ("cannot reach
-    # the agent at /run/briard/admin.sock"), which is the product being honest rather than broken;
-    # the test was asking at a moment of its own making. The socket wait below is kept anyway,
-    # because a restart precedes nothing here by accident.
+    # ⚠️ PLACED HERE, on a freshly-converged node, not after the self-update section, which
+    # restarts the agent repeatedly: `systemctl is-active` returning true does not mean the admin
+    # socket is back -- serveLocal runs in a GOROUTINE started after READY=1, so the two are not
+    # ordered, and the CLI then says "cannot reach the agent at /run/briard/admin.sock", the
+    # product being honest about a moment of the test's own making. The socket wait below is
+    # kept anyway, because a restart precedes nothing here by accident.
     host.wait_until_succeeds("test -S /run/briard/admin.sock", timeout=60)
     serving_mac = client.succeed(f"ip -4 neigh show {vip} dev eth1").split()
     serving_mac = serving_mac[serving_mac.index("lladdr") + 1]
@@ -1006,26 +1004,24 @@ pkgs.testers.runNixOSTest {
     # --- assertion (d): cattle/pet reinstall ---
     # The pet (/var/lib/briard) must survive a cattle (/opt/briard) wipe: `rm -rf /opt/briard` +
     # reinstall re-fetches the cattle and reaches green again with the GUEST DATA intact -- proving
-    # the guest REATTACHES the existing data volume (blkid-guarded mkfs skipped, create-md without
-    # --force refuses to re-seed) rather than reformatting it.
+    # the guest REATTACHES the existing data volume (a LUKS header it finds is opened and its
+    # volume group activated; only a device with none reaches the format branch) rather than
+    # reformatting it.
     #
     # The handle is the volume's own UUID, read straight off the backing file: a reformat mints a
     # fresh one, so a reformat across the reinstall changes it and an honest reattach cannot.
-    # The handle was once the fixture's monotonic tick counter, which was strictly stronger (it
-    # proved committed *content* crossed, not just that the volume was the same one) -- but the
-    # shipped node runs no app, so there is nothing
-    # writing data to compare. A runtime app install gets the stronger proof back by installing an app at
-    # runtime and resuming the tick comparison on top of this one.
+    # An app's monotonic tick counter would be strictly stronger (it proves committed *content*
+    # crossed, not just that the volume was the same one) -- but the shipped node runs no app, so
+    # there is nothing writing data to compare, and no test installs one before a cattle wipe.
     def fsid(m):
-        # THE VOLUME'S IDENTITY, READ OFF THE BACKING FILE. It used to be btrfs's filesystem UUID
-        # at a fixed offset; since the storage seam the volume is ENCRYPTED, so there is no btrfs magic
-        # anywhere in this file to find -- which is the point, and is itself asserted below. The
-        # handle is therefore the LUKS2 header's own UUID: a reformat mints a new one, an honest
-        # reattach cannot, and it sits at a FIXED offset in a header whose layout is LUKS2's, not
-        # ours (magic at 0, uuid at 168, 40 bytes NUL-padded).
+        # THE VOLUME'S IDENTITY, READ OFF THE BACKING FILE. The volume is ENCRYPTED, so there is
+        # no btrfs magic anywhere in this file to find -- which is the point, and is itself
+        # asserted below. The handle is therefore the LUKS2 header's own UUID: a reformat mints a
+        # new one, an honest reattach cannot, and it sits at a FIXED offset in a header whose
+        # layout is LUKS2's, not ours (magic at 0, uuid at 168, 40 bytes NUL-padded).
         #
-        # Asserting the magic keeps this honest, the same way the btrfs one did: wrong offsets
-        # would otherwise compare two identical blobs of zeroes and "pass".
+        # Asserting the magic keeps this honest: wrong offsets would otherwise compare two
+        # identical blobs of zeroes and "pass".
         magic = m.succeed(
             "dd if=/var/lib/briard/data.img bs=1 count=6 status=none | od -An -tx1 | tr -d ' \\n'"
         ).strip()
@@ -1037,9 +1033,9 @@ pkgs.testers.runNixOSTest {
     pre = fsid(host)
     print(f"pre-wipe data volume LUKS uuid={pre}")
 
-    # ENCRYPTED AT REST, ASKED OF THE DISK. A real `curl | sh` install on a host with
-    # AES produced a volume whose btrfs is not findable in the backing file at all -- nobody chose
-    # this, nobody typed a passphrase, and the node came up green anyway. `grep -c` rather than
+    # ENCRYPTED AT REST, ASKED OF THE DISK. A default `curl | sh` install on a host with
+    # AES produces a volume whose btrfs is not findable in the backing file at all -- nobody chooses
+    # this, nobody types a passphrase, and the node comes up green anyway. `grep -c` rather than
     # `grep -q` on purpose: -q exits at the first match and the pipeline's status becomes the
     # SIGPIPE'd producer's, which inverts the answer on exactly the assertion that must not invert.
     hits = host.succeed("head -c 67108864 /var/lib/briard/data.img >/tmp/rawprobe; "
@@ -1059,7 +1055,7 @@ pkgs.testers.runNixOSTest {
     # recording: a withdrawal needs the agent alive to perform it, but an agent alive when its guest
     # unit stops does what it is built to do and RELAUNCHES the guest -- straight into the cattle
     # reset below. (It also leaves nothing to stop: a stopped transient unit is garbage-collected,
-    # so naming it again is exit 5. Measured, on the first L0 run of this file.) agent-recover
+    # so naming it again is exit 5.) agent-recover
     # already kills the guest with the agent running and waits out the relaunch, so the assertion
     # belongs where that perturbation already lives.
 
@@ -1082,14 +1078,14 @@ pkgs.testers.runNixOSTest {
     host.succeed("ip -o -4 addr show dev eth1 | grep -qw 192.168.1.1")
     # Non-vacuity for the re-green proof below: with the guest gone the VIP no longer answers.
     client.wait_until_fails(f"curl -fsS --max-time 3 http://{vip}/healthz", timeout=60)
-    # Arm the repair path: an install predating the fix left its macvtaps autoconfiguring,
-    # and convergence ADOPTS devices that already exist rather than re-creating them. Put one back
-    # the way such a host would have it -- the agent must flush it, which is the whole reason the
-    # write sits outside the create branch (agent/nic/converge.go, ensureMacvtap).
+    # Arm the repair path: convergence ADOPTS devices that already exist rather than re-creating
+    # them, so a macvtap left autoconfiguring stays that way unless the agent repairs it in place.
+    # Put one in that state -- the agent must flush it, which is the whole reason the write sits
+    # outside the create branch (agent/nic/converge.go, ensureMacvtap).
     host.succeed("echo 0 > /proc/sys/net/ipv6/conf/briard0/disable_ipv6")
     host.wait_until_succeeds("ip -6 addr show dev briard0 | grep -q inet6", timeout=30)
 
-    # Reinstall: the SAME one command. It re-lays /opt from staging, the image with it
+    # Reinstall: the SAME one command. It re-lays /opt from the channel, the image with it
     # (cattle), and does NOT recreate the pet data.img. Convergence is idempotent, so the agent
     # adopts the macvtaps that are already up rather than re-creating them.
     host.succeed(
@@ -1097,22 +1093,23 @@ pkgs.testers.runNixOSTest {
         "BRIARD_UNIT_DIR=/run/systemd/system sh ${installScript}"
     )
     host.succeed("test -x /opt/briard/qemu/bin/qemu-system-x86_64")  # cattle re-fetched
-    # THE STATE DISK on the shipped install: created sparse by install.sh, handed to
-    # the agent by serial, formatted by the guest exactly once (the first boot of the FIRST
-    # install -- the reinstall's guest found it and kept it), and the guest is the same machine
-    # on both boots because its machine-id comes from the VM UUID the host derives from the node.
-    # The PATH is a config.go default now rather than a config.env line, so the assertion
-    # reads what the running qemu was actually handed -- which is the claim that mattered anyway: a
-    # line in a file proves what the installer wrote, not what the guest got.
+    # THE STATE DISK on the shipped install: made thick by the agent before its first launch,
+    # handed to the guest by serial, formatted by the guest exactly once (the first boot of the
+    # FIRST install -- the reinstall's guest found it and kept it), and the guest is the same
+    # machine on both boots because its machine-id comes from the VM UUID the host derives from
+    # the node. The assertion reads what the running qemu was actually handed rather than the
+    # STATE_DISK line in config.env: a line in a file proves what the installer wrote, not what
+    # the guest got.
     host.succeed("pgrep -af qemu-system-x86_64 | grep -q '/var/lib/briard/state.img'")
     host.succeed("pgrep -af qemu-system-x86_64 | grep -q 'serial=briard-state'")
     host.succeed("pgrep -af qemu-system-x86_64 | grep -q -- '-uuid '")
     assert state_uuid == host.succeed("dd if=/var/lib/briard/state.img bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \\n'").strip(), "the reinstall's guest reformatted the state disk"
     NODE, STATE_IMG = host.succeed("cat /var/lib/briard/node-id").strip(), "/var/lib/briard/state.img"
     # ⚠️ THE REINSTALL IS THE AGENT'S SECOND START, which is the boot that could
-    # re-mint. It must not: the node id keys the DRBD metadata on the pet volume this reinstall
-    # deliberately kept, and the VM UUID derives from it, so a fresh one is a guest that no longer
-    # recognises its own disk. (The state-disk check above would catch it too, by a longer route.)
+    # re-mint. It must not: the VM UUID derives from the node id (and in a flock DRBD names the
+    # node by it), so a fresh one is a guest that no longer recognises the pet state this
+    # reinstall deliberately kept. (The state-disk check above would catch it too, by a longer
+    # route.)
     assert NODE == node_id, f"the reinstall re-minted the node id: {node_id!r} -> {NODE!r}"
     # The guest's machine-id, read off the state disk (journald keeps the journal under
     # /var/log/journal/<machine-id>/, which is /journal/<machine-id>/ on the disk): it must be
@@ -1137,8 +1134,8 @@ pkgs.testers.runNixOSTest {
     # The repair landed on the device that was already up, not just on freshly created
     # ones. BOUNDED WAIT rather than an immediate read, because the repair is the
     # AGENT's convergence tick rather than a line in a script the installer ran inline -- the
-    # install returns as soon as the node is healthy, which is before the next tick is due. The
-    # property is unchanged and still fails if convergence stops asking the question: `Converged`
+    # install returns as soon as the node is healthy, which is before the next tick is due. It
+    # still fails if convergence stops asking the question: `Converged`
     # checks disable_ipv6 precisely so a device that already exists, and is therefore never
     # re-created, still gets repaired.
     host.wait_until_succeeds("grep -qx 1 /proc/sys/net/ipv6/conf/briard0/disable_ipv6", timeout=60)
@@ -1149,17 +1146,17 @@ pkgs.testers.runNixOSTest {
     # Green again on the re-fetched bundle: the OFF-BOX client reaches the VIP -- AT THE SAME
     # ADDRESS. The flock id is PET state (/var/lib/briard/flock-id), so it survived the cattle
     # wipe; the service MAC derives from it, the client-id is that MAC, and the router therefore
-    # recognises the same client and returns the same lease. That is the chain install.sh promises
-    # when it says "keep it to keep your address", and until this test it was only a claim.
+    # recognises the same client and returns the same lease. That is the chain the agent promises
+    # when its identity line says "keep this file to keep your address".
     client.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=600)
     host.succeed("pgrep -f /opt/briard/qemu/bin/qemu-system-x86_64")
     again, _, _, _ = wait_for_lease()
     assert again == vip, f"the address moved across a cattle reinstall ({vip} -> {again}) -- the pet flock id did not carry it"
 
     # The NAME is pet too, and for the same reason the address is: a household that reinstalls must
-    # not find its bookmark dead. node-id additionally MUST survive -- DRBD wrote `on <name>` into
-    # the metadata on the pet data volume, so a regenerated one would leave the guest unable to
-    # recognise its own replica.
+    # not find its bookmark dead. node-id additionally MUST survive -- the VM UUID derives from it,
+    # and in a flock DRBD names the node by it (`on <name>`), so a regenerated one would leave the
+    # guest unable to recognise its own state. (This lone node runs no DRBD.)
     assert host.succeed("cat /var/lib/briard/flock-name").strip() == flock_name, (
         "the flock name changed across a cattle reinstall -- the name on the LAN is pet state"
     )
@@ -1207,8 +1204,8 @@ pkgs.testers.runNixOSTest {
         host.succeed("systemctl start briard-agent.service")
 
     # --- COMING BACK MUST NOT DEPEND ON THE HOUSEHOLD ROUTER --------------------------------
-    # The design's central claim, and until now only an argument. The address is replicated flock
-    # state (.vip-address on the DRBD volume), so promotion APPLIES it rather than ASKING for it.
+    # The design's central claim. The address is flock state (.vip-address on the data volume,
+    # replicated where there is a flock), so promotion APPLIES it rather than ASKING for it.
     # Kill the only DHCP server on the segment, restart the node, and it must come back serving on
     # the same address with nobody to ask.
     #
@@ -1231,8 +1228,7 @@ pkgs.testers.runNixOSTest {
     # us that one -- whether it refuses the request outright or simply offers a different address,
     # dhcpcd ends up holding something other than what we applied. That is the trigger the
     # address-changed hook exists for, and the hook has to withdraw ours, take theirs, re-announce
-    # it and update the flock's store. One path for every cause; until now only exercised against
-    # stubs.
+    # it and update the flock's store. One path for every cause.
     #
     # Run by hand rather than through the module: the pool has to change, and the module's config
     # is a store path. dhcp-authoritative keeps the server decisive about an address outside it.
@@ -1284,8 +1280,8 @@ pkgs.testers.runNixOSTest {
     # THE UNITS WERE COPIED OUT OF THE VERIFIED SET, NOT RENDERED. Byte-identical to what
     # the channel published is the whole claim, and it is the one assertion that fails the moment
     # somebody reintroduces a heredoc: a rendered unit can match every directive below and still
-    # not be the file the signature covered. The channel's copy is the one `--fetch-install`
-    # verified against the signed manifest before install.sh ever saw it.
+    # not be the file the signature covered. The channel's copy is the one `briard-agent install`
+    # fetched and verified against the signed manifest before laying it down.
     for u in ("briard-agent.service", "briard-update.service", "briard-update.timer"):
         host.succeed(f"cmp /run/systemd/system/{u} /srv/briard/{V}/linux-amd64/{u}")
     # ...and so was the agent's frozen update script. Same claim, and the one that matters most
@@ -1312,7 +1308,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("systemctl cat briard-update.timer | grep -q '^OnBootSec='")
 
     # ---- THE NETWORK IS THE AGENT'S ----------------------------------------------------------
-    # No generated script, no oneshot unit, and -- the part that took the node dark when it
+    # No generated script, no oneshot unit, and -- the part that would take the node dark when it
     # failed -- no [Unit] dependency on one. A cable out at boot must leave an agent RUNNING and
     # answerable, not a unit that never started.
     host.fail("test -e /opt/briard/net-up.sh")
@@ -1326,8 +1322,9 @@ pkgs.testers.runNixOSTest {
     # reads when the answer surprises them.
     host.succeed("journalctl -u briard-agent | grep -q \"the guest's L2 hangs off eth1\"")
     # The devices the agent built, with the two flags that are not kernel defaults. ALLMULTI is
-    # the one with teeth: without it the guest still ANNOUNCES its name and answers unicast, so
-    # every client caches the record and the household name resolves -- until that record expires.
+    # the one with teeth: without it the guest still answers unicast and its answers still leave,
+    # so a client holding the record keeps resolving the household name -- until that record
+    # expires.
     # An install therefore looks correct at the moment it finishes and only fails later, off-box,
     # which is why it is asserted here rather than trusted.
     for tap in ("briard0", "briard-drbd0"):
@@ -1343,10 +1340,10 @@ pkgs.testers.runNixOSTest {
     # configuration -- PATH (systemd sets one, so a file value would correctly lose), BRIARD_CONFIG
     # (where the file is), and GOTRACEBACK (read by the Go runtime before our code runs).
     #
-    # Asserted as a whitelist rather than by naming the ~30 that moved, because the failure this
-    # guards against is a NEW value being added to the unit out of habit.
-    # This can fail: drop the split and STATE_DISK/VIP_ADDR/SYSTEM_TAP
-    # reappear here, and this fails naming the one that came back.
+    # Asserted as a whitelist rather than by naming the keys config.env carries, because the
+    # failure this guards against is a NEW value being added to the unit out of habit.
+    # This can fail: an Environment= line naming any other key (STATE_DISK, VIP_ADDR,
+    # SYSTEM_TAP...) fails here, naming it.
     stray = [
         l.split("=")[1]
         for l in unit.splitlines()
@@ -1360,8 +1357,8 @@ pkgs.testers.runNixOSTest {
     # from nowhere.
 
     # THE SHIPPED UPDATE UNIT BELOW THE AGENT. agent-selfupdate.nix proves the
-    # mechanism with stub candidates; this proves install.sh SHIPPED it: the frozen script, the
-    # oneshot, the enabled timer, the installed manifests the verb compares against, and one
+    # mechanism with stub candidates; this proves the install SHIPPED it: the frozen script, the
+    # oneshot, the active timer, the installed manifests the verb compares against, and one
     # real round trip through `briard update` on this very node -- which pulls the
     # bootstrap from the test channel's pointer, verifies the manifest, compares, and says the
     # node is already at the release it installed from. Not a no-op test: the same command with
@@ -1375,7 +1372,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("systemctl cat briard-update.service | grep -q '^Type=oneshot'")
     # ⚠️ THE ENVIRONMENTFILE IS LOAD-BEARING FROM HERE DOWN, and worth naming because it is easy to
     # read the next lines as proving something else. briard-update is shipped verbatim, so
-    # it no longer has this channel's URL written into it: it reads CHANNEL_URL out of config.env,
+    # it has no channel URL written into it: it reads CHANNEL_URL out of config.env,
     # which the unit delivers. Every `update` round trip below reaches the stub at :8099 ONLY
     # through that path -- break the EnvironmentFile and the script falls back to its own
     # https://get.briard.io default, which this VM cannot reach, and they fail.
@@ -1569,16 +1566,16 @@ pkgs.testers.runNixOSTest {
     print(f"{V3b}: an agent that does not start was reverted to {V2}; the guest kept serving")
 
     # ---- THE GUEST BUNDLE ON THE SHIPPED NODE ------------------------------------------------
-    # Every briard binary the guest runs rides the briard chain: install.sh laid guest-<V>/bin/ and
-    # the `guest` link beside qemu's, and the FIRST bring-up dressed the guest -- the image booted
-    # on its firmware -- briard-guest-firmware, the push protocol and the ONE binary the image
-    # bakes; the guest AGENT, the reverse proxy and the dashboard exist in the guest only once
+    # Every briard binary the guest runs rides the briard chain: the install laid guest-<V>/bin/
+    # and the `guest` link beside qemu's, and the FIRST bring-up dressed the guest -- the image
+    # booted on its firmware -- briard-guest-firmware, the push protocol and the ONE binary the
+    # image bakes; the guest AGENT, the reverse proxy and the dashboard exist in the guest only once
     # pushed -- the host staged the release's set, PROVED each staged copy
     # with its own --test-launch, armed the set and restarted the agent, whose trial start is the
     # verdict on the reverse proxy and the dashboard -- and the next handshake reported the bundle.
-    # Both host updates above carried the same bundle bytes, hash-skipped (`staged (agent, qemu)`,
-    # no `guest`), so the guest still runs the tree the install laid -- and is REPORTED as running
-    # the current release's bundle, which is what it is.
+    # Both host updates above carried the same bundle bytes, hash-skipped ("updated to ...
+    # (agent, qemu)", no guest), so the guest still runs the tree the install laid -- and is
+    # REPORTED as running the current release's bundle, which is what it is.
     def dressed_count(release):
         return int(host.succeed(f"journalctl -u briard-agent | grep -c 'guest bundle: the guest runs {release} (dressed)' || true").strip())
     def console_count(pattern):
@@ -1604,15 +1601,15 @@ pkgs.testers.runNixOSTest {
     # ...and the pivot's own account agrees: every guest BOOT starts as firmware (the picker says
     # `baked` once per boot for the agent's unit, and the baked path it names is
     # briard-guest-firmware -- the only binary in the image -- and this rig boots the guest
-    # several times: the install, the cattle reinstall, the lease move), each of which the host
-    # dressed from firmware exactly once, and each of which committed the whole set ONCE, naming
-    # every binary in it. Within a boot every restart of the guest agent ran the committed pushed
-    # binary, never the firmware. Read from the console, which holds every boot (the state disk appends).
+    # several times: the install, the cattle reinstall, the router-down restart, the lease move),
+    # each of which the host dressed from firmware exactly once, and each of which committed the
+    # whole set ONCE, naming every binary in it. Within a boot every restart of the guest agent ran
+    # the committed pushed binary, never the firmware. Read from the console, which holds every
+    # boot (qemu appends to it and never truncates).
     boots = console_count("briard-bin-exec: briard-guest-agent: baked .*briard-guest-firmware")
     firmware_dresses = int(host.succeed("journalctl -u briard-agent | grep -c 'guest bundle: the guest runs its firmware' || true").strip())
     pushed_starts = console_count("briard-bin-exec: briard-guest-agent: pushed")
-    # The commit is the AGENT's own line ("bin: committed <release>: <names>"),
-    # not a briard-bin-commit unit hook -- same account, one process earlier.
+    # The commit is the guest AGENT's own line ("bin: committed <release>: <names>").
     commits = console_count("bin: committed")
     set_commits = console_count("bin: committed .*briard-dashboard.*briard-reverse-proxy.*briard-guest-agent")
     if boots < 1 or firmware_dresses != boots or commits != boots or set_commits != commits or pushed_starts < 1:
@@ -1679,11 +1676,12 @@ pkgs.testers.runNixOSTest {
     # proxy, whose start fails, the agent exits 1 without opening the port, and the committed agent
     # comes back. The reverse proxy reverted itself by its own auto-restart (its flag consumed), the
     # returning agent discards the staged set, and NOTHING DEMOTED: one failed start is well inside
-    # the unit's budget, and briard-promotion-hold never fired.
+    # the unit's budget, and briard-promotion-hold fires only once that budget is spent.
     V5 = "v3.99123100.b138door"
-    # The baseline for "nothing masked the promoter target": this rig has ALREADY masked it once
-    # on purpose, with `handover -keep-masked` above, and that line stays in the console for the
-    # rest of the run. Counting the whole log would fail on the rig's own earlier act.
+    # The baseline for "nothing masked the promoter target", counted so an earlier mask line in
+    # the console cannot fail it. On THIS lone node the chain target is briard-chain.target, not
+    # drbd-services@r0.target, and the hold masks nothing alone (configuration.nix,
+    # briard-hold-refuse), so the count is 0 before and after whatever the guest does.
     masked_before = console_count("drbd-services@r0.target is masked")
     # ...and the same for "the reverse proxy came back on the committed binary": it has run pushed
     # copies all run long, so only an INCREASE across the trial says anything.
@@ -1703,12 +1701,12 @@ pkgs.testers.runNixOSTest {
     # both ways: if the restart job reports the failed start, the verdict says "failed its real
     # launch"; if systemd's auto-restart repaired the unit first, the job SUCCEEDS and only the
     # picker's marker gives it away ("running the pushed binary, not the staged one"). The second
-    # is what this rig has measured; asserting only the first was a rig that would pass on one
-    # timing and fail on the other.
+    # is what this rig sees; asserting only the first would pass on one timing and fail on the
+    # other.
     try:
         # `grep -c`, never `grep -q`, on this file: -q ends grep at the first hit and the `tr`
         # feeding it dies on the closed pipe, which the shell reports as a failed command even
-        # though the line is there (measured on this rig, twice).
+        # though the line is there.
         host.wait_until_succeeds("[ $(tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'trial of .* REFUSED: briard-reverse-proxy' || true) -gt 0 ]", timeout=120)
         host.wait_until_succeeds("[ $(tr -d '\\r' < /var/log/briard-guest-console.log | grep -ac 'a staged set .* was left behind by a trial that did not commit' || true) -gt 0 ]", timeout=120)
         # ...and the set did NOT commit: no commit line names the refused release.
@@ -1716,28 +1714,22 @@ pkgs.testers.runNixOSTest {
     except Exception:
         print(guest_console("briard-bin|trial|briard-guest-agent|briard-reverse-proxy|briard-dashboard|Failed"))
         raise
-    # A FAILED UPGRADE NEVER DEMOTES (owner, 2026-09-08), and this is the assertion that says so.
-    # The first cut of it counted the string 'promotion hold' in the HOST's journal -- a unit that
-    # lives in the GUEST, so it could never have appeared and the check passed while the node was
-    # busy demoting itself, so the check could not fail. Read the guest instead, and
-    # assert the POSITIVE: OnFailure did fire (a failed start enters `failed`, RestartMode=direct
-    # or not), the hold ran, and its ExecCondition declined BECAUSE a dress was trialling the
-    # reverse proxy and the dashboard. Then the negative that follows from it: nothing masked the
-    # promoter target. Assert the OUTCOME, not the mechanism. Whether the demote hook even fires
-    # depends on systemd's mood about a failed start under RestartMode=direct -- measured both ways
-    # on this rig: once the hold ran and masked the promoter target (the node demoted and could
-    # never take the house back), and once the unit went straight to its auto-restart and the hook
-    # stayed silent. The guard in the guest (the trial holds the hook off) makes the first
-    # harmless; what this rig asserts is what the owner actually asked for -- the node still holds
-    # the house after a failed upgrade. An earlier cut of this counted a GUEST unit's name in the
-    # HOST's journal and could never have failed.
+    # A FAILED UPGRADE NEVER DEMOTES, and this is the assertion that says so. The hold is a GUEST
+    # unit, so it is read from the guest console: the HOST journal could never show it, and a
+    # check there could not fail. The mechanism: the reverse proxy restarts in direct mode, which
+    # skips OnFailure, so it fires briard-promotion-hold only once its start budget is spent
+    # (agent/guestagent/units.go, chainMemberFailure), and a trial costs one failed start out of
+    # that budget (agent/guestfirmware/bin.go). Assert the OUTCOME, not the mechanism: the
+    # node still holds the house after a failed upgrade. On this lone node the masked count
+    # cannot move (see its baseline above); primary=true on the last status line and the reverse
+    # proxy back on its committed binary are what this rig can see.
     try:
         assert console_count("drbd-services@r0.target is masked") == masked_before, "a failed guest upgrade masked the promoter target -- the node demoted and cannot take the house back"
         host.succeed("journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'primary=true'")
         # The reverse proxy is back on the COMMITTED binary, by its own restart: a new `pushed` line
-        # since the baseline above. (Counted, not `grep -q`: a bare grep -q on this file matched
-        # nothing here while the very same pattern counted fine -- an early match ends grep, and the
-        # `tr` feeding it dies on the closed pipe.)
+        # since the baseline above. (Counted, not `grep -q`: a bare grep -q on this file can fail
+        # where the very same pattern counts fine -- an early match ends grep, and the `tr`
+        # feeding it dies on the closed pipe.)
         assert console_count("briard-bin-exec: briard-reverse-proxy: pushed") > proxy_pushed_before, "the reverse proxy never came back on the committed binary after the refused trial"
     except Exception:
         print("=== what the guest did around the refused trial ===")
@@ -1761,7 +1753,7 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds(f"journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'bundle={V}'", timeout=60)
     print(f"{V5}: a reverse proxy that passed the cheap gate and failed its real launch refused the trial; it reverted itself, the node never demoted, and the house served throughout")
 
-    # THE REVERT IS PERMANENT (owner, 2026-09-07). The guest's own fallback lasts one launch; the
+    # THE REVERT IS PERMANENT. The guest's own fallback lasts one launch; the
     # host's record outlives it: the refusal is written beside the tree, the last GOOD tree is
     # recorded, and a fresh launch is dressed with the good bundle -- never with {V5} again, and
     # never left on the image's firmware. Alerted once. Proven by relaunching the guest.
@@ -1795,7 +1787,7 @@ pkgs.testers.runNixOSTest {
     print(f"a relaunch after the refusal was dressed with the last good bundle {V}, not {V5} and not the firmware; the refusal was alerted once")
 
     # ---- THE GUEST CHAIN ON THE SHIPPED NODE -------------------------------------------------
-    # The installed guest manifest names the closure the image boots; install.sh seeded the
+    # The installed guest manifest names the closure the image boots; the install seeded the
     # node-local record from it; the agent's config carries the channel root. `briard update -vm`
     # resolves vm/stable on the channel, verifies it, compares min_briard with this briard and
     # the closure with what the guest runs -- and says so: this node is already running it.
@@ -1815,10 +1807,9 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"{stub} sign /root/release.key {d}/manifest.json | base64 -d > {d}/manifest.json.sig")
     # ⚠️ WAIT FOR THE ADMIN DOOR BEFORE KNOCKING ON IT. The section above ends in a refused
     # bundle push and a relaunch, so the agent can still be re-opening its socket here -- and
-    # `host.fail` passes on ANY non-zero exit, including "cannot reach the agent". Measured
-    # (three rig rounds): the verb failed because nothing was listening, the refusal
-    # never happened, and only the journal grep below noticed. Same lesson upgrade.sh carries
-    # in its own words.
+    # `host.fail` passes on ANY non-zero exit, including "cannot reach the agent": the verb then
+    # fails because nothing is listening, the refusal never happens, and only the journal grep
+    # below notices.
     host.wait_until_succeeds("test -S /run/briard/admin.sock", timeout=60)
     host.wait_until_succeeds("journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'healthy=true'", timeout=120)
     # THE REFUSAL'S OWN WORDS, not just a non-zero exit.
@@ -1835,17 +1826,20 @@ pkgs.testers.runNixOSTest {
 
     # ---- CONVERGENCE RESTORES DRIFT, IT DOES NOT UNDO AN ACT -----------------------------------
     #
-    # A device that is administratively DOWN stays down. This is not a nicety: the fleet's
-    # `fault_partition` severs a node's DRBD link with `ip link set sys-<node> down`, and an agent
-    # that re-ups it within a tick heals the partition before DRBD can notice -- which is exactly
-    # what it did, taking out discipline.sh and fault-scenarios.sh on the 2026-09-16 nightly.
+    # A device that is administratively DOWN stays down. This is not a nicety: a fault harness
+    # severs a node's DRBD link with `ip link set <dev> down`, and an agent that re-ups it within
+    # a tick heals the partition before DRBD can notice.
     #
     # The distinction the rule turns on: NM flushing our ADDRESS is drift and gets restored; an
     # `ip link set X down` is somebody's decision. A REAL partition is carrier-down anyway, and a
     # carrier-down device is still IFF_UP, so this never fought a pulled cable either way.
     #
-    # briard-drbd0 rather than briard0, because on a lone node DRBD replicates over loopback, so
-    # downing it costs the household nothing while the assertion runs.
+    # briard-drbd0 rather than briard0, because a lone node runs no DRBD: briard-drbd0 carries
+    # only its node IP, so downing it costs the household (served at the VIP on briard0) nothing
+    # while the assertion runs.
+    #
+    # Meant to be long enough for a re-up to happen. The status tick is 5 s (STATUS_EVERY), but
+    # the network checks run on every third tick (netCheckTicks: 15 s), so 12 s may hold no check.
     host.succeed("ip link set briard-drbd0 down")
     host.sleep(12)  # several status ticks (STATUS_EVERY=5s): long enough for a re-up to happen
     assert "state DOWN" in host.succeed("ip -o link show briard-drbd0"), (
@@ -1901,7 +1895,7 @@ pkgs.testers.runNixOSTest {
     # ⚠️ WAITED FOR, not read once. The alert and the record both land at the END of the move --
     # after RescueGuest has stopped and relaunched the guest -- while the devices above are
     # rebuilt before it. Asserting these two the instant the re-parent LINE appears reads them a
-    # whole guest boot too early, which is what the first run of this block did.
+    # whole guest boot too early.
     host.wait_until_succeeds(
         "/opt/briard/agent/briard-agent alerts | grep -q 'different network device'",
         timeout=600,
@@ -1933,6 +1927,7 @@ pkgs.testers.runNixOSTest {
         "ip route add default via 192.168.1.3 dev eth2 metric 200",
     )
     host.wait_until_succeeds("grep -qx 1 /sys/class/net/eth2/carrier", timeout=30)
+    # The reparenter runs on the network checks, every third status tick (15 s): 12 s may hold none.
     host.sleep(12)  # several status ticks
     host.fail("journalctl -u briard-agent | grep -q 'onto eth2'")
     host.succeed("ip -d link show briard0 | grep -q 'briard0@eth9'")
@@ -1975,6 +1970,7 @@ pkgs.testers.runNixOSTest {
     unblocked_at = host.succeed("date '+%Y-%m-%d %H:%M:%S'").strip()
     host.unblock()
     host.wait_until_succeeds("grep -qx 1 /sys/class/net/eth9/carrier", timeout=30)
+    # As above, 12 s may hold no network check; a move back would also wait out the 60 s tier.
     host.sleep(12)  # several status ticks
     host.succeed("ip -d link show briard0 | grep -q 'briard0@eth2'")
     host.fail(f"journalctl -u briard-agent --since '{unblocked_at}' | grep -q 'onto eth9'")
