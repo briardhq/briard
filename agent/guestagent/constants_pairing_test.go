@@ -8,18 +8,16 @@ import (
 )
 
 // TestVolumePathsMatchGuestImage guards the one cross-language pairing that "shared types live in
-// shared/" cannot cover. These paths exist BOTH as Go consts here and as Nix let-bindings in
+// shared/" cannot cover: these paths are both Go consts here and Nix let-bindings in
 // guest-image/configuration.nix, because the pushed guest agent writes (or mounts) them and the
-// guest image reads the same ones — and they are different languages, so there is no shared Go
-// constant to import. A rename on either side silently breaks the pairing; a comment cannot catch
-// that, but this test reads both sides and fails loudly. It is the cheap mechanism
-// chosen over a generator: no build step, and the guest image is a sibling file already in the tree.
+// image reads them, in another language with no Go constant to import. A rename on either side
+// breaks the pairing silently; this test reads both sides and fails loudly. Chosen over a
+// generator: no build step, and the guest image is a sibling file already in the tree.
 //
-// WHAT IT PAIRS is what the image and the agent genuinely share. The tool profile is the
-// load-bearing one: it is the ONLY thing the image and the pushed agent agree on by name, so a
-// rename on either side is a guest whose units point at nothing -- and, because the agent refuses
-// to render without it, a guest that will not serve at all. The other two are read by the image's
-// own shell and written by the agent's Go.
+// It pairs what the image and the agent genuinely share. The tool profile is the load-bearing
+// one, the only thing they agree on by name: renamed on either side, the units point at nothing,
+// and since the agent refuses to render without it, the guest will not serve at all. The other
+// two are read by the image's own shell and written by the agent's Go.
 func TestVolumePathsMatchGuestImage(t *testing.T) {
 	raw, err := os.ReadFile("../../guest-image/configuration.nix")
 	if err != nil {
@@ -27,9 +25,8 @@ func TestVolumePathsMatchGuestImage(t *testing.T) {
 	}
 	nix := string(raw)
 
-	// THE TOOL PROFILE. Nix states it relative to /etc, because that is what
-	// `environment.etc.<name>` takes; Go states the bin directory inside it, because that is
-	// what a unit's PATH is. One pairing, spelled from each side's own end.
+	// The tool profile: Nix states it relative to /etc, what `environment.etc.<name>` takes; Go
+	// states the bin directory inside it, what a unit's PATH is.
 	if want := "/etc/" + nixLet(t, nix, "toolsEtc") + "/bin"; want != defaultToolsBin {
 		t.Errorf("constant drift: Go defaultToolsBin = %q but the image publishes %q — every agent-written unit's PATH points at nothing",
 			defaultToolsBin, want)
@@ -39,12 +36,11 @@ func TestVolumePathsMatchGuestImage(t *testing.T) {
 	// comparing to the Go consts, which carry the fully-expanded path.
 	root := nixLet(t, nix, "btrfsRoot")
 	for _, c := range []struct{ goName, goVal, nixName string }{
-		// The mount the VIP's scripts read the flock's stored address from, and the agent
-		// mounts.
+		// The mount the agent makes and the VIP's scripts read the flock's stored address from.
 		{"dataMountRoot", dataMountRoot, "btrfsRoot"},
-		// The topology word node storage writes and the hold's steps dispatch on.
-		// A rename here is a hold that reads "node storage has not run on this boot" on every
-		// node and skips itself -- silent, and only visible when something has to hand over.
+		// The topology word node storage writes and the hold's steps dispatch on. Renamed, every
+		// node's hold reads "node storage has not run on this boot" and skips itself -- silent
+		// until something has to hand over.
 		{"topologyEnvPath", topologyEnvPath, "topologyEnvPath"},
 	} {
 		nv := strings.ReplaceAll(nixLet(t, nix, c.nixName), "${btrfsRoot}", root)

@@ -97,7 +97,7 @@ func TestMonitorRebootsWhenQuorumSafe(t *testing.T) {
 }
 
 // The load-bearing negative: deadman fires but rebooting would tip the Primary out of quorum
-// (edge cluster: only 1 peer connected of 3) → NEVER reboot; hold + one alert.
+// (edge cluster: only 1 peer connected of 3) → never reboot; hold + one alert.
 func TestMonitorHoldsWhenQuorumCritical(t *testing.T) {
 	h := newHarness()
 	h.contactNow()
@@ -114,20 +114,17 @@ func TestMonitorHoldsWhenQuorumCritical(t *testing.T) {
 		t.Errorf("want one hold line, got %v", h.said)
 	}
 	// Holding persists the episode's start: a reboot the host performs meanwhile must still end
-	// ONE episode, dated from here, when the link returns.
+	// one episode, dated from here, when the link returns.
 	if h.state.ep.Since != h.now {
 		t.Errorf("hold did not persist the episode start: %+v", h.state.ep)
 	}
 }
 
-// A lone node (solo/free) REBOOTS. Holding, on the reasoning that a single node is its own
-// quorum and departing loses it, is true and irrelevant: there is no peer to outage, quorum is
-// guaranteed the moment it comes back, and the data is on its own disk. Holding would mean the
-// reflex does nothing at all on the shape most briard installs have, leaving a wedged node
-// wedged forever behind a single alert.
-//
-// This is the assertion that would silently rot if the gate were ever re-derived from the
-// majority formula, so it names the whole reason rather than just the expected number.
+// A lone node (solo/free) reboots. That a single node is its own quorum, lost by departing, is
+// true and irrelevant: no peer to outage, quorum guaranteed the moment it comes back, the data on
+// its own disk. Holding would leave the reflex inert on the shape most briard installs have, a
+// wedged node wedged forever behind a single alert -- spelled out because this assertion would
+// silently rot if the gate were re-derived from the majority formula.
 func TestMonitorSoloReboots(t *testing.T) {
 	h := newHarness()
 	h.contactNow()
@@ -140,7 +137,7 @@ func TestMonitorSoloReboots(t *testing.T) {
 	}
 }
 
-// The already-failed clause: a node that has ALREADY lost quorum is serving nobody
+// The already-failed clause: a node that has already lost quorum is serving nobody
 // (DRBD refuses its writes), so there is nothing to preserve by staying up and a reboot is free.
 // The partitioned anchor — WAN out, peer and cloud witness both unreachable.
 func TestMonitorRebootsWhenAlreadyOutOfQuorum(t *testing.T) {
@@ -153,7 +150,7 @@ func TestMonitorRebootsWhenAlreadyOutOfQuorum(t *testing.T) {
 	}
 }
 
-// An unreadable quorum probe is treated as NOT safe → hold, never reboot on unknown.
+// An unreadable quorum probe is treated as not safe → hold, never reboot on unknown.
 func TestMonitorHoldsOnQuorumError(t *testing.T) {
 	h := newHarness()
 	h.contactNow()
@@ -215,7 +212,7 @@ func TestMonitorRecoversOnContact(t *testing.T) {
 	if len(h.said) == 0 || !contains(h.said[len(h.said)-1], "restored") {
 		t.Errorf("missing the restored line, said=%v", h.said)
 	}
-	// THE RECORD FOR THE HOST. The deadman has nobody to tell (its only way out of the house is
+	// The record for the host: the deadman has nobody to tell (its only way out of the house is
 	// the host agent, the thing that was down), so it leaves the episode for the host to turn
 	// into the owner's alert when it collects it.
 	if len(h.state.last) != 1 {

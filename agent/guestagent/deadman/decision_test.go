@@ -58,8 +58,8 @@ func TestDecideHoldsWithinCadence(t *testing.T) {
 	}
 }
 
-// A simulated self-update window (the worst-case trial gap) must NOT trip the deadman — this is
-// the threshold-suppression proof at the decision layer.
+// A simulated self-update window (the worst-case trial gap) must not trip the deadman: the
+// threshold-suppression proof at the decision layer.
 func TestDecideSelfUpdateWindowDoesNotReboot(t *testing.T) {
 	got := Decide(Input{
 		SinceContact: SelfUpdateWindow, // the whole trial+revert window elapsed with no contact
@@ -83,23 +83,22 @@ func TestBackoffIsImmediateThenFlat(t *testing.T) {
 			t.Errorf("Backoff(%d) = %v, want the flat cadence %v", a, got, RebootCadence)
 		}
 	}
-	// It never becomes "stop" — a persistently degraded node keeps gently retrying, which is both
-	// a standing chance that whatever wedged it clears and the visible sign of degradation a
-	// remote fix looks for. An attempt count this large returning 0 (retry storm) or something
-	// unbounded (silence) would break one or the other.
+	// It never becomes "stop": retrying is both a standing chance that whatever wedged the node
+	// clears and the visible sign of degradation a remote fix looks for. A huge attempt count
+	// returning 0 (retry storm) or something unbounded (silence) would break one or the other.
 	if d := Backoff(1 << 30); d != RebootCadence {
 		t.Errorf("Backoff at a huge attempt = %v, want %v (never stops, never runs away)", d, RebootCadence)
 	}
 }
 
-// THE invariant: the base T_deadman — even before jitter, which only adds — must
+// The invariant: the base T_deadman — even before jitter, which only adds — must
 // exceed the worst-case self-update window, so a trial always converges or reverts first.
 func TestInvariantDeadmanExceedsSelfUpdateWindow(t *testing.T) {
 	if DefaultDeadman <= SelfUpdateWindow {
 		t.Fatalf("INVARIANT VIOLATED: DefaultDeadman (%v) must exceed the self-update window (%v) "+
 			"or a self-update would trip the deadman", DefaultDeadman, SelfUpdateWindow)
 	}
-	// Jitter only ever ADDS, so the minimum effective deadman is the base — still above the window.
+	// Jitter only ever adds, so the minimum effective deadman is the base — still above the window.
 	minEffective := DefaultDeadman
 	if minEffective <= SelfUpdateWindow {
 		t.Errorf("min effective deadman %v not above the self-update window %v", minEffective, SelfUpdateWindow)
@@ -137,23 +136,22 @@ func TestRebootAllowed(t *testing.T) {
 		f    Fabric
 		want bool
 	}{
-		// SINGLE NODE — allowed. Holding here would leave the reflex inert on the shape most
-		// briard installs actually have: the node would hold, alert once, and then sit wedged and
-		// silent forever. There is no cluster to
-		// disrupt, quorum is guaranteed on the way back, and the data is on its own disk.
+		// Single node — allowed: no cluster to disrupt, quorum guaranteed on the way back, the data
+		// on its own disk. Holding would leave the reflex inert on the shape most briard installs
+		// have: the node would hold, alert once, and sit wedged and silent forever.
 		{"single node, quorate", Fabric{Peers: 0, Connected: 0, Quorate: true}, true},
 		{"single node, not even quorate", Fabric{Peers: 0, Connected: 0, Quorate: false}, true},
 
-		// ALREADY FAILED — allowed. No quorum means DRBD has stopped this node writing, so it is
+		// Already failed — allowed. No quorum means DRBD has stopped this node writing, so it is
 		// serving nobody and there is nothing left to protect by staying up. The partitioned
 		// anchor: WAN out, peer and cloud witness both unreachable.
 		{"3-voter, fully partitioned and out of quorum", Fabric{Peers: 2, Connected: 0, Quorate: false}, true},
 
-		// SURVIVES WITHOUT ME — the case the gate was built for.
+		// Survives without me — the case the gate was built for.
 		{"3-voter, all present, I leave → 2 remain (majority)", Fabric{Peers: 2, Connected: 2, Quorate: true}, true},
 		{"5-voter, 3 connected, I leave → 3 remain (majority)", Fabric{Peers: 4, Connected: 3, Quorate: true}, true},
 
-		// THE LOAD-BEARING NEGATIVES: quorate, so I am serving, and my departure drops the
+		// The load-bearing negatives: quorate, so I am serving, and my departure drops the
 		// survivors below majority. 2 anchors + a cloud witness with the witness already gone is
 		// exactly this — a second self-removal would outage the house.
 		{"3-voter at the edge (2/3), I leave → 1 remains", Fabric{Peers: 2, Connected: 1, Quorate: true}, false},

@@ -128,7 +128,7 @@ func (v *usageVolume) ask(t *testing.T, now time.Time) dashboard.AppUsage {
 	return u
 }
 
-// THE FIRST ASK answers the totals, caps and counts at once and starts the walk; the next has the
+// The first ask answers the totals, caps and counts at once and starts the walk; the next has the
 // split: the history is the group less what the current data holds on disk, and the files' size
 // is compsize's referenced bytes, larger than the disk's under compression.
 func TestTheFirstAskHasTheTotalsAndTheNextTheSplit(t *testing.T) {
@@ -161,7 +161,7 @@ func TestTheFirstAskHasTheTotalsAndTheNextTheSplit(t *testing.T) {
 	}
 }
 
-// THE WALK IS PULLED AND CACHED: asking again inside ten minutes walks nothing; after them the
+// The walk is pulled and cached: asking again inside ten minutes walks nothing; after them the
 // last numbers are kept while the next walk runs; an undo -- another subvolume at the area --
 // discards the old numbers for that area and walks it at once.
 func TestTheWalkIsCachedUntilItIsStaleOrTheAreaIsSwapped(t *testing.T) {
@@ -194,7 +194,7 @@ func TestTheWalkIsCachedUntilItIsStaleOrTheAreaIsSwapped(t *testing.T) {
 	}
 }
 
-// AN EMPTY AREA is zero bytes, measured; a WALK THAT FAILS is no numbers, and is not tried again
+// An empty area is zero bytes, measured; a walk that fails is no numbers, and is not tried again
 // inside the window, so a page left open does not walk every time it asks. An app with no files
 // group has no files tier.
 func TestEmptyFailedAndAbsentAreas(t *testing.T) {
@@ -226,7 +226,7 @@ func TestEmptyFailedAndAbsentAreas(t *testing.T) {
 	}
 }
 
-// ONE WALK AT A TIME: an ask while another app's walk runs starts none of its own, says it is
+// One walk at a time: an ask while another app's walk runs starts none of its own, says it is
 // measuring, and its next ask after that walk starts it.
 func TestOneWalkAtATime(t *testing.T) {
 	v := newUsageVolume()
@@ -249,10 +249,10 @@ func TestOneWalkAtATime(t *testing.T) {
 	}
 }
 
-// THE UNVERSIONED AREA IS PART OF THE DATA AND THE CACHE IS SAID APART: both are charged to the
-// data group, so the data's current is the data and unversioned areas together, the history is
-// the group less both and the cache, and the cache is its own walk. Until every area of the group
-// is walked, the data is not measured: a history that counted the cache would be wrong.
+// The unversioned area counts as data and the cache is said apart. Both are charged to the data
+// group, so the data's current is the data and unversioned areas together, the history is the
+// group less both and the cache, and the cache is its own walk. Until every area of the group is
+// walked the data is not measured: a history that counted the cache would be wrong.
 func TestUnversionedCountsAsDataAndTheCacheApart(t *testing.T) {
 	v := newUsageVolume()
 	unversioned, cache := quadlet.Area("unversioned", usageApp), quadlet.Area("cache", usageApp)

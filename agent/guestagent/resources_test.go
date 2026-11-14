@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// An app's memory comes from the unit's CGROUP, and specifically from anon -- not
+// An app's memory comes from the unit's cgroup, and specifically from anon -- not
 // memory.current, which counts page cache that a database-writing app grows indefinitely, and
 // not the main process, which for a container is podman's supervisor.
 func TestParseCgroupAnonKB(t *testing.T) {
@@ -93,7 +93,7 @@ func TestResourcesVerbGathers(t *testing.T) {
 		case strings.HasPrefix(cmd, "systemctl show -p ControlGroup"):
 			return []byte("/system.slice/briard-ha-app.service\n"), nil
 		case cmd == "cat /sys/fs/cgroup/system.slice/briard-ha-app.service/memory.stat":
-			// anon is what the app actually holds; file is page cache and must NOT count.
+			// anon is what the app actually holds; file is page cache and must not count.
 			return []byte("anon 90112000\nfile 4294967296\n"), nil
 		case cmd == "ls /proc/4242/fd":
 			return []byte("0\n1\n2\n3\n4\n"), nil
@@ -164,7 +164,7 @@ func TestResourcesVerbGathers(t *testing.T) {
 	if r.MemTotalKB != 1000000 || r.MemAvailableKB != 300000 || r.AnonKB != 600000 {
 		t.Errorf("meminfo = total %d avail %d anon %d, want 1000000/300000/600000", r.MemTotalKB, r.MemAvailableKB, r.AnonKB)
 	}
-	// mm_stat is in BYTES: 300 MB parked, holding 105 MB of RAM (mem_used_total, field 2 --
+	// mm_stat is in bytes: 300 MB parked, holding 105 MB of RAM (mem_used_total, field 2 --
 	// not compr_data_size, field 1, which leaves out the allocator's own overhead).
 	if r.ZramOrigKB != 307200 || r.ZramUsedKB != 107520 {
 		t.Errorf("zram = orig %d used %d, want 307200/107520", r.ZramOrigKB, r.ZramUsedKB)
@@ -240,7 +240,7 @@ func TestResourcesVerbSkipsAStoppedApp(t *testing.T) {
 }
 
 // journalctl talks in its own voice, and none of it is a log line. "-- No entries --" is what a
-// HEALTHY node's poll returns, and counting it would make kerr sit at a permanent 1 -- hiding the
+// healthy node's poll returns, and counting it would make kerr sit at a permanent 1 -- hiding the
 // step up to a real kernel error, the one thing this signal exists to catch.
 func TestSplitJournalCursorDropsJournalctlMarkers(t *testing.T) {
 	t.Run("no entries yields no lines", func(t *testing.T) {
@@ -273,11 +273,10 @@ func TestSplitJournalCursorDropsJournalctlMarkers(t *testing.T) {
 	})
 }
 
-// N APPS, EACH MEASURED AND EACH NAMED. The alternative is summing them into
-// three scalars, and summing is what loses the signal: NRestarts exists to make
-// a crash-loop loud, and one app flapping inside a total reads as a small climb. So the
-// assertion is that a crash-looping app is attributable BY NAME while its quiet neighbour
-// stays at zero -- a sum could not tell those apart.
+// N apps, each measured and each named. Summing them into three scalars loses the signal:
+// NRestarts exists to make a crash-loop loud, and one app flapping inside a total reads as a small
+// climb. So the assertion is that a crash-looping app is attributable by name while its quiet
+// neighbour stays at zero -- a sum could not tell those apart.
 func TestResourcesVerbMeasuresEachAppSeparately(t *testing.T) {
 	x := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		cmd := strings.Join(append([]string{name}, args...), " ")
@@ -315,7 +314,7 @@ func TestResourcesVerbMeasuresEachAppSeparately(t *testing.T) {
 	}
 }
 
-// An app whose unit is unnamed is SKIPPED, not measured as zero. An unmeasured app and an
+// An app whose unit is unnamed is skipped, not measured as zero. An unmeasured app and an
 // idle one must not read the same: a zero row would enter the oracle's series as a real sample and
 // flatten a trend that nobody is actually watching.
 func TestResourcesVerbSkipsAAppWithNoUnit(t *testing.T) {

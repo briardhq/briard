@@ -13,7 +13,7 @@ import (
 	"briard.io/agent/quadlet"
 )
 
-// THE RULE AS DESIGNED, on numbers a human can check: a 100 GB volume with 2 GB of slack holding
+// The rule as designed, on numbers a human can check: a 100 GB volume with 2 GB of slack holding
 // 10 GB of app state gives the files tier 100 − 10 − 2 (20 %) − 2 = 86 GB, with a 4.3 GB
 // target. A small app state takes the 300 MB floor, a small cap the 1 GB target, and a volume
 // the data tier fills leaves a cap of zero rather than a negative one.
@@ -35,7 +35,7 @@ func TestFilesAllocationIsTheRule(t *testing.T) {
 	}
 }
 
-// THE SLACK IS MEASURED: what is on the disk past what the tree charges, and one metadata chunk
+// The slack is measured: what is on the disk past what the tree charges, and one metadata chunk
 // in every copy -- 256 MiB on a volume up to 50 GiB, 1 GiB above, never over a tenth of it.
 func TestTheSlackIsWhatBtrfsKeepsAndOneChunk(t *testing.T) {
 	for _, tc := range []struct {
@@ -55,7 +55,7 @@ func TestTheSlackIsWhatBtrfsKeepsAndOneChunk(t *testing.T) {
 	}
 }
 
-// THE APP'S CAP leaves the others a tenth of its size and the free space for a small app, the
+// The app's cap leaves the others a tenth of its size and the free space for a small app, the
 // tier's keep for a big one, and is never under zero.
 func TestAnAppsCapLeavesTheOthersTheirShare(t *testing.T) {
 	keep := int64(300 * mb)
@@ -74,7 +74,7 @@ func TestAnAppsCapLeavesTheOthersTheirShare(t *testing.T) {
 	}
 }
 
-// EVERY APP IN EACH TIER IS CAPPED: a data area by the volume's physical free space and the
+// Every app in each tier is capped: a data area by the volume's physical free space and the
 // volume's keep, a files area by the files tier's free space and its own. An app grown alone keeps
 // its cap -- what it adds, the tier loses -- and a tick with nothing changed sets no limit again.
 func TestTheTickCapsEveryApp(t *testing.T) {
@@ -118,7 +118,7 @@ func TestTheTickCapsEveryApp(t *testing.T) {
 	}
 }
 
-// WHILE THE TIER HAS ROOM, NO APP IS AT ITS CAP: the valve holds filesFree at its target, and every
+// While the tier has room, no app is at its cap: the valve holds filesFree at its target, and every
 // app in either tier is still short of its limit, so the household's warning comes first -- on
 // the default volume, and on a terabyte whichever tier holds it.
 func TestNoAppIsAtItsCapBeforeTheWarning(t *testing.T) {
@@ -154,7 +154,7 @@ func TestNoAppIsAtItsCapBeforeTheWarning(t *testing.T) {
 	}
 }
 
-// THE RING'S RETENTION, run the way the tick runs it: a member every hour for forty days, pruned at
+// The ring's retention, run the way the tick runs it: a member every hour for forty days, pruned at
 // every take. What is left is every member of the last day, one a day for the week, one a week to
 // thirty days, and nothing older.
 func TestTheUserRingKeepsHoursDaysAndWeeks(t *testing.T) {
@@ -306,7 +306,7 @@ func (v *userVolume) ran(prefix ...string) [][]string {
 
 var tickNow = time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 
-// A FRESH INSTALL: one member taken into the app's files group, the cap set, nothing shed and no
+// A fresh install: one member taken into the app's files group, the cap set, nothing shed and no
 // warning -- there is no pressure. A second tick an hour later takes the next member and does not
 // set the same limit again.
 func TestAFreshInstallTakesAMemberAndSetsTheCap(t *testing.T) {
@@ -346,7 +346,7 @@ func TestAFreshInstallTakesAMemberAndSetsTheCap(t *testing.T) {
 	}
 }
 
-// A GROWING APP LOWERS THE CAP, and the limit follows it -- below what the files tier holds,
+// A growing app lowers the cap, and the limit follows it -- below what the files tier holds,
 // which the kernel accepts and which stops the next write.
 func TestAGrowingAppLowersTheCap(t *testing.T) {
 	v := newUserVolume("immich")
@@ -363,7 +363,7 @@ func TestAGrowingAppLowersTheCap(t *testing.T) {
 	}
 }
 
-// THE VALVE sheds the oldest eligible member first, across apps, and stops when there is room:
+// The valve sheds the oldest eligible member first, across apps, and stops when there is room:
 // members younger than a day are never shed, and nothing outside the versions is ever deleted.
 // Versions of ten days gave the room, so there is no warning.
 func TestTheValveShedsTheOldestUntilThereIsRoom(t *testing.T) {
@@ -402,7 +402,7 @@ func TestTheValveShedsTheOldestUntilThereIsRoom(t *testing.T) {
 	}
 }
 
-// AT THE FLOOR THE VALVE STOPS AND SAYS SO: the household's own files fill the cap, the day's
+// At the floor the valve stops and says so: the household's own files fill the cap, the day's
 // members are all that is left, and the report is short -- the uploader meets EDQUOT next, and
 // the household has been told before it does.
 func TestTheValveStopsAtTheDayAndWarns(t *testing.T) {
@@ -421,7 +421,7 @@ func TestTheValveStopsAtTheDayAndWarns(t *testing.T) {
 	}
 }
 
-// OLD VERSIONS ARE SHED WITHOUT A WARNING; recent ones are not. A valve that had to reach into
+// Old versions are shed without a warning; recent ones are not. A valve that had to reach into
 // the last five days is the warning, even when it found the room.
 func TestTheWarningIsAboutRecentHistory(t *testing.T) {
 	for _, tc := range []struct {
@@ -442,7 +442,7 @@ func TestTheWarningIsAboutRecentHistory(t *testing.T) {
 	}
 }
 
-// NOTHING INSTALLED, NOTHING BOUNDED: with no files aggregate there is no limit to set and no
+// Nothing installed, nothing bounded: with no files aggregate there is no limit to set and no
 // warning to give.
 func TestATickBeforeAnyInstallDoesNothing(t *testing.T) {
 	v := newUserVolume()
@@ -453,7 +453,7 @@ func TestATickBeforeAnyInstallDoesNothing(t *testing.T) {
 	}
 }
 
-// ONE AT A TIME, and a finished report waits to be collected.
+// One at a time, and a finished report waits to be collected.
 func TestOneTickAtATime(t *testing.T) {
 	v := newUserVolume()
 	if !startFilesTick(v) {

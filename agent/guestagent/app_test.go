@@ -128,9 +128,8 @@ func TestAppProvisionCreatesAndRecords(t *testing.T) {
 	}
 }
 
-// TestAppProvisionKeepsExistingData is the one that protects the user's state: a re-install
-// onto an existing app must REUSE the subvolume. Re-creating it would silently delete
-// everything the app had written.
+// TestAppProvisionKeepsExistingData protects the user's state: a re-install onto an existing app
+// must reuse the subvolume, since re-creating it silently deletes everything the app had written.
 func TestAppProvisionKeepsExistingData(t *testing.T) {
 	f := &fakeExec{output: []byte("Name: \t\thome-assistant\n")} // `subvolume show` succeeds
 	g := dial(t, f)
@@ -175,9 +174,8 @@ func TestAppInstalledReadsBack(t *testing.T) {
 	}
 }
 
-// The pre-eviction flush. What matters: it syncs the MOUNTED volume and answers
-// "skipped" -- success, not error -- on a node that has it unmounted, because a Secondary
-// asked to make its dirty data small is already done.
+// The pre-eviction flush syncs the mounted volume, and answers "skipped" -- success, not error --
+// on a node that has it unmounted: a Secondary asked to make its dirty data small is already done.
 func TestFsSyncFlushesTheMountedVolume(t *testing.T) {
 	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		if name == "stat" {
@@ -245,13 +243,11 @@ func TestFsSyncSkipsAnUnmountedVolume(t *testing.T) {
 	}
 }
 
-// THE PER-APP SPLIT: the volume must be able to say WHICH app a manifest
-// belongs to. With one unnamed file, installing a second app records its identity over the
-// first's -- so the first's prior becomes unreadable, and on the host side filesToRemove then
-// deletes that app's rendered units as a renamed prior's orphans.
-//
-// Asserted on the PATHS, because that is where the property lives: two provisions must write two
-// files, and each must be named for its own app.
+// The per-app split: the volume must say which app a manifest belongs to. With one unnamed
+// file, installing a second app records its identity over the first's -- the first's prior
+// becomes unreadable, and the host's filesToRemove then deletes that app's rendered units as
+// a renamed prior's orphans. Asserted on the paths, where the property lives: two provisions
+// must write two files, each named for its own app.
 func TestAppProvisionRecordsPerApp(t *testing.T) {
 	f := &fakeExec{output: []byte("Name: \t\tx\n")} // an existing subvolume; this is about the manifest
 	g := dial(t, f)
@@ -277,7 +273,7 @@ func TestAppProvisionRecordsPerApp(t *testing.T) {
 	}
 }
 
-// An app name becomes a PATH ELEMENT on both verbs, so both re-check it here rather than
+// An app name becomes a path element on both verbs, so both re-check it here rather than
 // trusting the host to have validated its own input.
 func TestAppVerbsRefuseAnEscapingName(t *testing.T) {
 	g := dial(t, &fakeExec{})
@@ -289,7 +285,7 @@ func TestAppVerbsRefuseAnEscapingName(t *testing.T) {
 	}
 }
 
-// app.list names what the VOLUME carries, with the `.json` the files wear on disk stripped:
+// app.list names what the volume carries, with the `.json` the files wear on disk stripped:
 // it is how a node that promoted into somebody else's install can say what it runs at all
 // (without it, a survivor serves an app while reporting no apps).
 func TestAppListNamesTheVolumesApps(t *testing.T) {

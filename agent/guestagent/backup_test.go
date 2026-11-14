@@ -85,7 +85,7 @@ func resticRuns(f *fakeExec, sub string) [][]string {
 }
 
 // TestTheBackupVerbsAreAdvertisedBesideActs: a verb absent from the handshake is one no host
-// calls, and a read that minutes long must not hold the act lane.
+// calls, and a read that runs minutes long must not hold the act lane.
 func TestTheBackupVerbsAreAdvertisedBesideActs(t *testing.T) {
 	for _, v := range []string{verbDataBackup, verbDataBackupResult, verbDataBackupKey} {
 		for _, act := range []string{verbDataBackupRestore, verbDataBackupAdopt} {
@@ -736,10 +736,10 @@ func filesRig(userErr error) (*fakeExec, string) {
 	return f, newest
 }
 
-// THE HOUSEHOLD'S FILES ARE A SNAPSHOT OF THEIR OWN, after the apps': the newest member of every
+// The household's files are a snapshot of their own, after the apps': the newest member of every
 // app that mounts the files tier, bind-mounted read-only under its own root, backed up tagged and
-// on that root alone, unmounted after; an app with no files area is left out; one forget, after both, applies
-// the policy to each group; the report counts both.
+// on that root alone, unmounted after; an app with no files area is left out; one forget, after
+// both, applies the policy to each group; the report counts both.
 func TestTheHouseholdsFilesAreASnapshotOfTheirOwn(t *testing.T) {
 	f, member := filesRig(nil)
 	if !strings.HasPrefix(member, filesVersionsDir()+"/home-assistant-clock-") {
@@ -780,7 +780,7 @@ func TestTheHouseholdsFilesAreASnapshotOfTheirOwn(t *testing.T) {
 	}
 }
 
-// A FAILED FILES' SNAPSHOT IS THE NIGHT'S ERROR, and the apps' snapshot stands: it landed first.
+// A failed files' snapshot is the night's error, and the apps' snapshot stands: it landed first.
 func TestAFailedFilesSnapshotKeepsTheAppsBackup(t *testing.T) {
 	f, _ := filesRig(errors.New("exit status 1"))
 	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://10.0.0.129:7791/", Group: "f1d"})
@@ -796,7 +796,7 @@ func TestAFailedFilesSnapshotKeepsTheAppsBackup(t *testing.T) {
 	}
 }
 
-// THE LIST AND "LATEST" ARE THE DATA'S: the files' snapshots are not backups the page restores an
+// The list and "latest" are the data's: the files' snapshots are not backups the page restores an
 // app from, and the newest of them is newer than any app's every night. An untagged snapshot is an
 // earlier install's layout, which this agent does not restore from.
 func TestTheListAndLatestAreTheDatas(t *testing.T) {

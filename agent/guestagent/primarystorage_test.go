@@ -51,9 +51,9 @@ func (m *mountFake) ran(words ...string) bool {
 	return false
 }
 
-// THE LOAD-BEARING NEGATIVE: nothing on the promotion path formats, whatever the spec says about
-// seeding. The format is briard-node-storage's, so a promotion -- which happens on every
-// failover, on every node, forever -- has no destructive operation on it at all.
+// The load-bearing negative: nothing on the promotion path formats, whatever the spec says about
+// seeding. The format is briard-node-storage's, so a promotion -- on every failover, on every
+// node, forever -- has no destructive operation on it at all.
 func TestPrimaryStorageNeverFormats(t *testing.T) {
 	f := newMountFake()
 	if err := PrimaryStorage(context.Background(), f); err != nil {

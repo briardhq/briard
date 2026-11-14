@@ -21,7 +21,7 @@ func (c *convergeExec) index(argv ...string) int {
 	return -1
 }
 
-// STAGING LEAVES THE ACCEPTED MANIFEST ALONE, and writes the rollback point durably BEFORE the
+// Staging leaves the accepted manifest alone, and writes the rollback point durably before the
 // staged manifest: a `.json.next` whose rollback point is not yet on disk is an install a crash
 // would leave with nothing to undo it by.
 func TestStageWritesTheRollbackPointBeforeTheStagedManifest(t *testing.T) {
@@ -50,7 +50,7 @@ func TestStageWritesTheRollbackPointBeforeTheStagedManifest(t *testing.T) {
 	}
 }
 
-// A STALE ROLLBACK POINT IS NOT INHERITED: an install with none (a fresh one) removes whatever an
+// A stale rollback point is not inherited: an install with none (a fresh one) removes whatever an
 // earlier install left, or undoing it would put back some other day's data.
 func TestStageWithoutARollbackPointRemovesAStaleOne(t *testing.T) {
 	x := dummyNode(t)
@@ -64,7 +64,7 @@ func TestStageWithoutARollbackPointRemovesAStaleOne(t *testing.T) {
 	}
 }
 
-// THE COMMIT IS ONE RENAME, flushed before the rollback point goes.
+// The commit is one rename, flushed before the rollback point goes.
 func TestCommitRenamesTheStagedManifestOverTheAccepted(t *testing.T) {
 	x := dummyNode(t)
 	x.fakeExec.files[stagedPath("dummy")] = dummyManifestStaged
@@ -90,7 +90,7 @@ func TestCommitRenamesTheStagedManifestOverTheAccepted(t *testing.T) {
 	}
 }
 
-// DISCARD drops the staged manifest -- what "pending" means -- before the rollback point, and
+// Discard drops the staged manifest -- what "pending" means -- before the rollback point, and
 // leaves the accepted manifest standing.
 func TestDiscardDropsTheStageAndKeepsTheAccepted(t *testing.T) {
 	x := dummyNode(t)
@@ -112,7 +112,7 @@ func TestDiscardDropsTheStageAndKeepsTheAccepted(t *testing.T) {
 	}
 }
 
-// PENDING READS EVERYTHING THE UNDO NEEDS FROM DISK -- an upgrade with its rollback point, and a
+// Pending reads everything the undo needs from disk -- an upgrade with its rollback point, and a
 // fresh install with no accepted manifest and none.
 func TestPendingReportsEachStagedInstall(t *testing.T) {
 	x := dummyNode(t)
@@ -137,8 +137,8 @@ func TestPendingReportsEachStagedInstall(t *testing.T) {
 	}
 }
 
-// CONVERGE HOLDS A PENDING INSTALL BACK unless it is the live one. A node promoting onto a staged
-// upgrade starts NEITHER version: the staged one was never accepted, and the accepted one may be
+// Converge holds a pending install back unless it is the live one. A node promoting onto a staged
+// upgrade starts neither version: the staged one was never accepted, and the accepted one may be
 // about to run on data the staged one already migrated.
 func TestConvergeHoldsBackAStagedAppThatIsNotLive(t *testing.T) {
 	x := dummyNode(t)
@@ -154,7 +154,7 @@ func TestConvergeHoldsBackAStagedAppThatIsNotLive(t *testing.T) {
 	}
 }
 
-// THE LIVE INSTALL RENDERS FROM ITS STAGED MANIFEST -- the version under the health gate.
+// The live install renders from its staged manifest -- the version under the health gate.
 func TestConvergeRendersTheLiveInstallFromItsStagedManifest(t *testing.T) {
 	x := dummyNode(t)
 	x.fakeExec.files[stagedPath("dummy")] = dummyManifestStaged
@@ -169,7 +169,7 @@ func TestConvergeRendersTheLiveInstallFromItsStagedManifest(t *testing.T) {
 	}
 }
 
-// A FRESH INSTALL has no accepted manifest: live, it is rendered from the stage alone; not live,
+// A fresh install has no accepted manifest: live, it is rendered from the stage alone; not live,
 // it does not exist.
 func TestConvergeFreshStagedInstall(t *testing.T) {
 	for _, live := range []string{"other", ""} {

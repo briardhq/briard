@@ -24,7 +24,7 @@ func withoutQgroups(runs [][]string) [][]string {
 	return out
 }
 
-// THE IDS ARE A FORMAT. Two nodes, and two releases on one node, must name the same app's group
+// The ids are a format: two nodes, and two releases on one node, must name the same app's group
 // the same way, because nothing is stored: the id is recomputed at every creation. So one is
 // pinned, and the shape of every id is checked against the layout qgroup.go draws.
 func TestQgroupIDsAreTheLayout(t *testing.T) {
@@ -58,7 +58,7 @@ func TestQgroupIDsAreTheLayout(t *testing.T) {
 	}
 }
 
-// The PATH decides the tier, and anything that is not an app's area is refused rather than
+// The path decides the tier, and anything that is not an app's area is refused rather than
 // filed under a guess.
 func TestAreaOfReadsTheTierOffThePath(t *testing.T) {
 	for _, tc := range []struct {
@@ -82,11 +82,10 @@ func TestAreaOfReadsTheTierOffThePath(t *testing.T) {
 	}
 }
 
-// AN INSTALL MAKES AN AREA IN EVERY TIER THE APP MOUNTS, EACH BORN INTO ITS GROUP: created with
-// -i, the cache and unversioned areas into the data group, each group under its tier's
-// aggregate, the mounted directories inside them. An app that mounts only its data gets no other
-// area. And a second install of the same app makes nothing: its subvolumes exist, and the tree
-// already holds them.
+// An install makes an area in every tier the app mounts, each born into its group: created with
+// -i, the cache and unversioned areas into the data group, each group under its tier's aggregate,
+// the mounted directories inside them. An app that mounts only its data gets no other area, and a
+// second install of the same app makes nothing: its subvolumes exist and the tree holds them.
 func TestAnInstallBearsItsAreasIntoTheTree(t *testing.T) {
 	made := map[string]bool{}
 	f := &fakeExec{}
@@ -153,7 +152,7 @@ func TestAnInstallBearsItsAreasIntoTheTree(t *testing.T) {
 	}
 }
 
-// A RACER IS NOT A FAILURE. A container's start is a separate process and may make the same group
+// A racer is not a failure: a container's start is a separate process and may make the same group
 // between our read and our create; the create then fails on an id that exists, and the re-read
 // is what says the tree is right.
 func TestAreaGroupLosesARaceGracefully(t *testing.T) {
@@ -193,7 +192,7 @@ func (r *racingExec) Run(ctx context.Context, name string, args ...string) ([]by
 	return out, err
 }
 
-// A TREE THAT CANNOT BE MADE STOPS THE CREATION: no subvolume is born outside it, which is the
+// A tree that cannot be made stops the creation: no subvolume is born outside it, which is the
 // one state the limit cannot see.
 func TestNoSubvolumeIsBornOutsideTheTree(t *testing.T) {
 	x := &refusingExec{fakeExec: absentDest()}
@@ -222,7 +221,7 @@ func (r *refusingExec) Run(ctx context.Context, name string, args ...string) ([]
 	return r.fakeExec.Run(ctx, name, args...)
 }
 
-// THE SOAK SEES THE TREE AS THE KERNEL PRINTS IT: the mode, and every group with its parents and
+// The soak sees the tree as the kernel prints it: the mode, and every group with its parents and
 // nothing of the Path column, whose aggregate cells are not UTF-8. A shipped node's tick never
 // asks (only the oracle reads it), and a node without the volume mounted reports nothing.
 func TestTheSoakReportCarriesTheQuotaTree(t *testing.T) {
@@ -265,7 +264,7 @@ func TestTheSoakReportCarriesTheQuotaTree(t *testing.T) {
 	}
 }
 
-// A START EMPTIES THE CACHE WHEN SPACE IS SHORT: under a tenth of the app's data group's limit
+// A start empties the cache when space is short: under a tenth of the app's data group's limit
 // left, for an app of one container that mounts a cache. Not with room to spare, not with no
 // limit, not for an app with no cache, and not for an app of two containers, where the other
 // may be running with the cache open.

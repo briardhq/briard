@@ -10,7 +10,7 @@ import (
 	"briard.io/shared/chain"
 )
 
-// diskExec is fakeExec with a REAL WriteFile. The thing under test is a file systemd can load,
+// diskExec is fakeExec with a real WriteFile. The thing under test is a file systemd can load,
 // so a fake that keeps writes in a map would let every assertion below pass over a renderer that
 // wrote nothing at all.
 type diskExec struct {
@@ -26,10 +26,10 @@ func (d *diskExec) WriteFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// wroteTo reports whether the renderer ATTEMPTED this path. It is the only way to see the mask
-// guard work: os.WriteFile through a symlink to /dev/null opens the TARGET, so it succeeds,
-// writes nothing and leaves the symlink standing -- meaning the on-disk state looks identical
-// whether the guard is there or not. Asserting on the file alone would be vacuous.
+// wroteTo reports whether the renderer attempted this path, the only way to see the mask guard
+// work: os.WriteFile through a symlink to /dev/null opens the target, so it succeeds, writes
+// nothing and leaves the symlink standing -- the on-disk state is identical with or without the
+// guard, and asserting on the file alone would be vacuous.
 func (d *diskExec) wroteTo(path string) bool {
 	for _, p := range d.wrote {
 		if p == path {
@@ -40,8 +40,7 @@ func (d *diskExec) wroteTo(path string) bool {
 }
 
 // guestWithTools points the renderer at a temporary unit directory and a temporary tool profile,
-// and returns both. Every assertion below is about a real file on disk, because the thing under
-// test is a file on disk: a unit systemd can load.
+// and returns both, so every assertion is about a real file on disk: a unit systemd can load.
 func guestWithTools(t *testing.T) (unitDir, tools string) {
 	t.Helper()
 	unitDir = t.TempDir()
@@ -55,10 +54,10 @@ func guestWithTools(t *testing.T) (unitDir, tools string) {
 	return unitDir, tools
 }
 
-// THE UNIT EXISTS, AND IT IS THE ONE THE HOST IS ABOUT TO START. The property is
-// "the unit can never be older than the binary that wrote it", so what is asserted is that this
-// binary's start produces a briard-node-storage.service naming this binary's committed
-// path and this image's tool profile -- the two halves that, out of step, crash-loop the node.
+// The unit exists, and it is the one the host is about to start. The property is "the unit can
+// never be older than the binary that wrote it", so this binary's start must produce a
+// briard-node-storage.service naming this binary's committed path and this image's tool profile --
+// the two halves that, out of step, crash-loop the node.
 func TestWriteUnitsRendersNodeStorage(t *testing.T) {
 	dir, tools := guestWithTools(t)
 	f := &diskExec{}
@@ -81,17 +80,16 @@ func TestWriteUnitsRendersNodeStorage(t *testing.T) {
 			t.Errorf("rendered unit is missing %q:\n%s", want, got)
 		}
 	}
-	// NO [Install]: this unit runs when the host says so and
-	// never at boot. A rendered [Install] would be silently inert here (nothing enables it) and
-	// wrong the moment anything did.
+	// No [Install]: this unit runs when the host says so and never at boot. A rendered [Install]
+	// would be silently inert here (nothing enables it) and wrong the moment anything did.
 	if strings.Contains(got, "[Install]") {
 		t.Errorf("node storage must not be enablable:\n%s", got)
 	}
 }
 
-// A UNIT WRITTEN AND NOT RELOADED IS A UNIT systemctl SAYS DOES NOT EXIST -- the same symptom
-// as a unit nobody wrote, reached by a different route. systemd reads unit files at load, so the
-// reload is not housekeeping and its absence would pass every content assertion above.
+// A unit written and not reloaded is a unit systemctl says does not exist -- the same symptom as a
+// unit nobody wrote. systemd reads unit files at load, so the reload is not housekeeping, and its
+// absence would pass every content assertion above.
 func TestWriteUnitsReloadsSystemd(t *testing.T) {
 	guestWithTools(t)
 	f := &diskExec{}
@@ -109,10 +107,10 @@ func TestWriteUnitsReloadsSystemd(t *testing.T) {
 	}
 }
 
-// AN IMAGE THAT PREDATES THE TOOL PROFILE HAS NONE, and the agent must refuse to serve on it
-// rather than write units whose PATH resolves to nothing. That refusal is what makes a
-// too-new agent safe: the trial fails, the picker restores the committed binary, and the node
-// keeps running the release it had -- instead of promoting into units it cannot support.
+// An image that predates the tool profile has none, and the agent must refuse to serve on it
+// rather than write units whose PATH resolves to nothing. That refusal makes a too-new agent safe:
+// the trial fails, the picker restores the committed binary, and the node keeps running the
+// release it had instead of promoting into units it cannot support.
 func TestWriteUnitsRefusesAnImageWithNoToolProfile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("BRIARD_UNIT_DIR", dir)
@@ -125,7 +123,7 @@ func TestWriteUnitsRefusesAnImageWithNoToolProfile(t *testing.T) {
 	if !strings.Contains(err.Error(), "tool profile") {
 		t.Errorf("the refusal must name what is missing, got %q", err)
 	}
-	// AND IT MUST NOT HAVE WRITTEN ANYTHING FIRST. A half-rendered set that then fails is worse
+	// Nor may it have written anything first: a half-rendered set that then fails is worse
 	// than none: the next start's reload would load whatever landed before the error.
 	ents, _ := os.ReadDir(dir)
 	if len(ents) != 0 {
@@ -133,7 +131,7 @@ func TestWriteUnitsRefusesAnImageWithNoToolProfile(t *testing.T) {
 	}
 }
 
-// A TOOL PROFILE THAT IS A FILE, OR A DANGLING SYMLINK, IS NOT A TOOL PROFILE. Both are how a
+// A tool profile that is a file, or a dangling symlink, is not a tool profile. Both are how a
 // half-applied image presents, and both must route to the same refusal as absence rather than to
 // a unit that fails at exec time on the promotion path.
 func TestWriteUnitsRefusesAToolProfileThatIsNotADirectory(t *testing.T) {
@@ -167,7 +165,7 @@ func TestWriteUnitsRefusesAToolProfileThatIsNotADirectory(t *testing.T) {
 	}
 }
 
-// THE RENDER IS IDEMPOTENT, because it runs on every start of the agent -- a crash-restart, a
+// The render is idempotent, because it runs on every start of the agent -- a crash-restart, a
 // re-adopt, a trial that came back. Two renders must leave exactly the state one leaves, or the
 // mechanism that removes the defect class introduces a new one.
 func TestWriteUnitsIsIdempotent(t *testing.T) {
@@ -186,11 +184,10 @@ func TestWriteUnitsIsIdempotent(t *testing.T) {
 	}
 }
 
-// THE CHAIN IS AN ORDERED CHAIN, and the order is a dependency rather than a preference: each
-// member Requires= and After= the PREVIOUS one, so the reverse proxy starts only once briard-vip
-// holds the address its names resolve to (shared/chain). A rendered set that got this wrong would
-// still start on a lone node -- the target Wants them all -- and would start them in whatever
-// order systemd liked, which is how a reverse proxy comes up before its address.
+// The chain is ordered, as a dependency rather than a preference: each member Requires= and After=
+// the previous one, so the reverse proxy starts only once briard-vip holds the address its names
+// resolve to (shared/chain). Got wrong, a lone node would still start them all (the target Wants
+// them), in whatever order systemd liked -- a reverse proxy up before its address.
 func TestWriteUnitsChainsTheMembersInOrder(t *testing.T) {
 	guestWithTools(t)
 	u := units()
@@ -212,7 +209,7 @@ func TestWriteUnitsChainsTheMembersInOrder(t *testing.T) {
 			}
 		}
 	}
-	// The lone node's target carries the identical list, so a lone node and a flock run ONE
+	// The lone node's target carries the identical list, so a lone node and a flock run one
 	// chain and the members cannot tell which target started them.
 	tgt := u[chain.Target]
 	for _, k := range []string{"Wants=", "After="} {
@@ -222,17 +219,17 @@ func TestWriteUnitsChainsTheMembersInOrder(t *testing.T) {
 	}
 }
 
-// EVERY CHAIN MEMBER HANDS THE RESOURCE ON WHEN IT GIVES UP. OnFailure= is the
-// STATE hook that fires on the transition into failed, and the start limit is what decides when
-// that is -- a member rendered without either would crash quietly forever while the household
-// had no apps running, which is the shape the budget exists to end.
+// Every chain member hands the resource on when it gives up. OnFailure= is the state hook that
+// fires on the transition into failed, and the start limit decides when that is; a member rendered
+// without either would crash quietly forever while the household had no apps running, the shape
+// the budget exists to end.
 func TestWriteUnitsEveryMemberCanHandTheResourceOn(t *testing.T) {
 	guestWithTools(t)
 	u := units()
 	for _, m := range chain.Members() {
-		// WHOLE LINES, not substrings: "StartLimitBurst=5" is a prefix of "StartLimitBurst=50",
-		// so a substring check passes over a budget ten times the intended one -- which is a
-		// reverse proxy that keeps crash-looping instead of handing the house to a peer.
+		// Whole lines, not substrings: "StartLimitBurst=5" is a prefix of "StartLimitBurst=50", so
+		// a substring check passes a budget ten times the intended one -- a reverse proxy that
+		// keeps crash-looping instead of handing the house to a peer.
 		for _, want := range []string{
 			"OnFailure=" + holdUnit + "\n",
 			"OnFailureJobMode=replace-irreversibly\n",
@@ -244,22 +241,22 @@ func TestWriteUnitsEveryMemberCanHandTheResourceOn(t *testing.T) {
 			}
 		}
 	}
-	// AND THE HOLD ITSELF IS NOT A MEMBER: a hold that fired its own OnFailure would loop.
+	// The hold itself is not a member: a hold that fired its own OnFailure would loop.
 	if strings.Contains(u[holdUnit], "OnFailure=") {
 		t.Errorf("the hold must not hand the resource on to itself:\n%s", u[holdUnit])
 	}
-	// NOR IS THE RENEWAL TIMER'S SYSTEMD SERVICE: a renewal that fails must never be able to
+	// Nor is the renewal timer's systemd service: a renewal that fails must never be able to
 	// demote a serving node.
 	if strings.Contains(u[vipRenewUnit], "OnFailure=") || strings.Contains(u[vipRenewUnit], "PartOf="+chain.Target) {
 		t.Errorf("the lease renewal must not be able to demote a serving node:\n%s", u[vipRenewUnit])
 	}
 }
 
-// THE HOLD STOPS THE WHOLE CHAIN ON A LONE NODE, AND IN REVERSE. `systemctl stop` of a target
-// returns as soon as the TARGET is down -- measured, with the volume still mounted and the shim
-// then escalating to a reboot -- so the stop has to NAME every member. This is the one place the
-// agent's knowledge of the chain reaches an image-side tool, as arguments, so getting the list
-// or its direction wrong is silent until a member gives up in the field.
+// The hold stops the whole chain on a lone node, in reverse. `systemctl stop` of a target returns
+// as soon as the target is down -- measured, with the volume still mounted and the shim then
+// escalating to a reboot -- so the stop has to name every member. This is the one place the
+// agent's knowledge of the chain reaches an image-side tool, as arguments, so a wrong list or
+// direction is silent until a member gives up in the field.
 func TestWriteUnitsHoldStopsEveryMemberInReverse(t *testing.T) {
 	guestWithTools(t)
 	hold := units()[holdUnit]
@@ -268,23 +265,22 @@ func TestWriteUnitsHoldStopsEveryMemberInReverse(t *testing.T) {
 	if !strings.Contains(hold, want) {
 		t.Errorf("the hold's stop does not name the chain in reverse; want %q in:\n%s", want, hold)
 	}
-	// The release resets the start limit of every member, FORWARD order being irrelevant but
+	// The release resets the start limit of every member, forward order being irrelevant but
 	// completeness not: a member left inside its StartLimitIntervalSec when the hold ends is one
 	// systemd refuses to start on the next promotion, which would pin the hold to that window.
 	if !strings.Contains(hold, "reset-failed "+strings.Join(members, " ")) {
 		t.Errorf("the hold does not clear every member's start limit:\n%s", hold)
 	}
-	// AND THE LONE NODE'S RESTART IS HANDED THE TARGET IT MUST START. The step takes `$1`;
-	// passed nothing, `set -u` fails it with "unbound variable" -- on an ExecStopPost the unit
-	// deliberately marks `-`, so systemd swallows it and the lone node simply never comes back.
-	// Hold-and-restart is the
-	// lone node's whole answer to a member giving up; a silent no-op there is a dead house.
+	// The lone node's restart is handed the target it must start. The step takes `$1`; passed
+	// nothing, `set -u` fails it with "unbound variable" on an ExecStopPost the unit deliberately
+	// marks `-`, so systemd swallows it and the lone node never comes back. Hold-and-restart is
+	// the lone node's whole answer to a member giving up; a silent no-op there is a dead house.
 	if !strings.Contains(hold, "briard-hold-restart "+chain.Target+"\n") {
 		t.Errorf("the hold's restart is not told which target to start:\n%s", hold)
 	}
 }
 
-// THE HOLD LENGTH IS A CONSTANT WITH A TEST OVERRIDE: the contract rigs drive the full lifecycle
+// The hold length is a constant with a test override: the contract rigs drive the full lifecycle
 // and cannot wait five minutes.
 func TestWriteUnitsHoldSecs(t *testing.T) {
 	guestWithTools(t)
@@ -297,11 +293,10 @@ func TestWriteUnitsHoldSecs(t *testing.T) {
 	}
 }
 
-// EVERY Exec* LINE IS AN ABSOLUTE PATH, because systemd requires one for the first word and
-// silently refuses the unit otherwise -- a failure that shows up as "unit not found"-shaped
-// noise at promotion rather than at render. And every unit that shells out carries the profile
-// on its PATH, which includes the web units: the picker they exec is shell, and it
-// `rm`s its own trial flag.
+// Every Exec* line is an absolute path: systemd requires one for the first word and silently
+// refuses the unit otherwise, which shows up as "unit not found"-shaped noise at promotion rather
+// than at render. And every unit that shells out carries the profile on its PATH, the web units
+// included: the picker they exec is shell, and it `rm`s its own trial flag.
 func TestWriteUnitsExecLinesAreAbsoluteAndPathed(t *testing.T) {
 	_, tools := guestWithTools(t)
 	for name, text := range units() {
@@ -324,11 +319,10 @@ func TestWriteUnitsExecLinesAreAbsoluteAndPathed(t *testing.T) {
 	}
 }
 
-// A DOWNGRADE INSIDE ONE BOOT MUST NOT LEAVE THE NEWER AGENT'S UNITS BEHIND. A
-// refused release is reverted by pushing the previous bundle and restarting the agent, which is
-// not a reboot -- so tmpfs does not clear it, and what would be left is a newer unit pointing at
-// an older binary: the defect the render removes, with the ages swapped, and the harder
-// direction to read, because the stale unit looks freshly written.
+// A downgrade inside one boot must not leave the newer agent's units behind. A refused release is
+// reverted by pushing the previous bundle and restarting the agent, not a reboot, so tmpfs does
+// not clear it: a newer unit would point at an older binary -- the defect the render removes, with
+// the ages swapped, and harder to read because the stale unit looks freshly written.
 func TestWriteUnitsSweepsAPredecessorsUnits(t *testing.T) {
 	dir, _ := guestWithTools(t)
 	stale := filepath.Join(dir, "briard-from-the-future.service")
@@ -343,7 +337,7 @@ func TestWriteUnitsSweepsAPredecessorsUnits(t *testing.T) {
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Errorf("a predecessor's unit survived the render: %v", err)
 	}
-	// AND EVERY UNIT THIS AGENT OWNS IS STILL THERE -- a sweep that took its own output would
+	// Every unit this agent owns is still there: a sweep that took its own output would
 	// be a node with no chain at all.
 	for n := range units() {
 		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
@@ -352,7 +346,7 @@ func TestWriteUnitsSweepsAPredecessorsUnits(t *testing.T) {
 	}
 }
 
-// ⚠️ AND IT TOUCHES NOTHING THAT IS NOT OURS. The sweep deletes by prefix, so the blast radius is
+// ⚠️ The sweep touches nothing that is not ours. It deletes by prefix, so the blast radius is
 // the assertion: drbd-reactor's generated units and the hold's --runtime mask are named for the
 // DRBD resource and live in this same directory, and removing one of those mid-promotion would
 // be a far worse bug than the orphan the sweep exists to prevent.
@@ -387,13 +381,11 @@ func TestWriteUnitsSweepSparesEverythingElse(t *testing.T) {
 	}
 }
 
-// A MASK MUST SURVIVE A RENDER. `handover -keep-masked` exists so a machine about to
-// reboot for its own upgrade cannot take the house back before anyone has verified its new
-// generation -- and the agent restarts on that path. If the render overwrote the mask, the
-// refusal would last exactly until the next agent start, which is precisely when it is needed.
-//
-// The mask and the unit are one path because systemd defines a mask as a symlink to /dev/null
-// at the unit's own location, and the renderer writes that location too.
+// A mask must survive a render. `handover -keep-masked` exists so a machine about to reboot for
+// its own upgrade cannot take the house back before anyone has verified its new generation, and
+// the agent restarts on that path: a render that overwrote the mask would end the refusal at the
+// next agent start, precisely when it is needed. Mask and unit are one path because systemd
+// defines a mask as a symlink to /dev/null at the unit's own location, which the renderer writes.
 func TestWriteUnitsLeavesAMaskAlone(t *testing.T) {
 	dir, _ := guestWithTools(t)
 	f := &diskExec{}
@@ -421,25 +413,23 @@ func TestWriteUnitsLeavesAMaskAlone(t *testing.T) {
 	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("the render replaced a mask with a unit file, un-refusing a node that was told to stay out (mode=%v, err=%v)", fi.Mode(), err)
 	}
-	// AND IT DID NOT EVEN TRY. See wroteTo: a write through the mask would have succeeded
+	// And it did not even try. See wroteTo: a write through the mask would have succeeded
 	// silently into /dev/null, so the surviving symlink above proves nothing on its own.
 	if f.wroteTo(p) {
 		t.Errorf("the render wrote through the mask at %s -- into /dev/null, which looks like success", p)
 	}
-	// AND THE REST OF THE CHAIN IS STILL RENDERED: a mask on one unit must not stop the others
+	// The rest of the chain is still rendered: a mask on one unit must not stop the others
 	// being written, or a masked target would take the whole node's units with it.
 	if _, err := os.Stat(filepath.Join(dir, vipUnit)); err != nil {
 		t.Errorf("a mask on %s stopped %s being rendered: %v", chain.Target, vipUnit, err)
 	}
 }
 
-// AND UNMASKING PUTS THE UNIT BACK. Dropping the symlink leaves NO unit file, because every
-// render while the mask stood skipped it -- so an unmask that did not re-render would hand
-// `systemctl start` a unit that does not exist, which is the crash-loop by another road.
-//
-// The fake systemctl MODELS the one thing that matters here: `unmask --runtime` removes the
-// symlink. A fake that did nothing would leave the mask in place, the re-render would skip it
-// for the right reason, and the test would pass while asserting nothing.
+// Unmasking puts the unit back. Dropping the symlink leaves no unit file, since every render while
+// the mask stood skipped it, so an unmask that did not re-render would hand `systemctl start` a
+// unit that does not exist -- the crash-loop by another road. The fake systemctl models the one
+// thing that matters, `unmask --runtime` removing the symlink: a fake that did nothing would leave
+// the mask, the re-render would skip it for the right reason, and the test would assert nothing.
 func TestUnmaskRenderedRestoresTheUnit(t *testing.T) {
 	dir, _ := guestWithTools(t)
 	p := filepath.Join(dir, chain.Target)

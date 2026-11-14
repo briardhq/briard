@@ -14,7 +14,7 @@ import (
 
 // aesCPU and plainCPU are the two /proc/cpuinfo answers the AES axis turns on. Real shapes: the
 // flag lives on a `flags` (x86) or `Features` (aarch64) line, and the model name is free text --
-// which is why plainCPU names a CPU with "aes" in its NAME and must still read as no-AES.
+// which is why plainCPU names a CPU with "aes" in its name and must still read as no-AES.
 const (
 	aesCPU   = "processor\t: 0\nmodel name\t: Common KVM\nflags\t\t: fpu vme pse aes xsave\n"
 	plainCPU = "processor\t: 0\nmodel name\t: Praesidio aes 9000\nflags\t\t: fpu vme pse xsave\n"
@@ -25,10 +25,10 @@ const (
 // DRBD metadata. Everything else succeeds.
 type storageFake struct {
 	*fakeExec
-	// luks is what `cryptsetup isLuks <dev>` reports, and it is THREE-VALUED for the reason
-	// the three-valued probe exists: a bool here cannot say "the probe failed for a reason that is not an
-	// answer", so a fake carrying one encodes the very assumption that formats an unreadable
-	// disk, and no test written against it can reach the dangerous branch.
+	// luks is what `cryptsetup isLuks <dev>` reports, three-valued for the probe's own reason: a
+	// bool cannot say "the probe failed for a reason that is not an answer", so a fake carrying
+	// one encodes the assumption that formats an unreadable disk, and no test written against it
+	// can reach the dangerous branch.
 	luks      luksState
 	present   map[string]bool // `test -b <path>` exit 0
 	mdPresent bool            // `drbdmeta ... dump-md` succeeds: the metadata LV holds DRBD metadata
@@ -71,10 +71,10 @@ func (s *storageFake) storageRun(name string, args []string) ([]byte, error) {
 	case name == "vgs":
 		// A 256 MiB PV: 4 MiB extents, 63 of them once LVM has taken its label and metadata area.
 		// Two lines, because the real command warns on stderr ahead of the report and Run hands
-		// both back together -- the parser has to read the LAST line.
+		// both back together -- the parser has to read the last line.
 		return []byte("  WARNING: nothing to see here\n  4194304 63\n"), nil
 	case name == "drbdmeta" && slices.Contains(args, "dump-md"):
-		// THE probe: the DRBD magic on the metadata LV. Garbage (a never-written LV above LUKS)
+		// The probe: the DRBD magic on the metadata LV. Garbage (a never-written LV above LUKS)
 		// fails it, which is the common case; a wipe-md is answered like any other command.
 		if !s.mdPresent {
 			return []byte("No valid meta data found"), errors.New("exit status 1")
@@ -121,7 +121,7 @@ func demoSpec(mode nodestorage.Mode, fresh bool) nodestorage.Spec {
 	}
 }
 
-// A BLANK DISK ON AES HARDWARE IS THE SHIPPED PATH: format encrypted, build the seam on the crypt
+// A blank disk on AES hardware is the shipped path: format encrypted, build the seam on the crypt
 // device, create metadata, attach, and -- being the seed -- declare UpToDate and arm the one-time
 // format.
 func TestNodeStorageFreshEncrypted(t *testing.T) {
@@ -150,7 +150,7 @@ func TestNodeStorageFreshEncrypted(t *testing.T) {
 	if f.files[resPath("r0")] != "RES" {
 		t.Errorf(".res = %q, want the host's rendering", f.files[resPath("r0")])
 	}
-	// THE ORDER IS THE SAFETY: the format runs after the LVs exist and BEFORE DRBD attaches the
+	// The order is the safety: the format runs after the LVs exist and before DRBD attaches the
 	// backing exclusively -- and only this once, on a volume this run created.
 	var lv, mkfs, attach int
 	for i, r := range f.runs {
@@ -166,14 +166,14 @@ func TestNodeStorageFreshEncrypted(t *testing.T) {
 	if !(lv < mkfs && mkfs < attach) {
 		t.Errorf("format out of order (lvcreate %d, mkfs %d, attach %d): %v", lv, mkfs, attach, f.runs)
 	}
-	// The cipher and the pinned data offset are the two things the HOST also depends on: its
+	// The cipher and the pinned data offset are the two things the host also depends on: its
 	// header backup copies exactly this prefix (agent/host/luksheader.go).
 	args := f.argsOf("cryptsetup", "luksFormat")
 	if !strings.Contains(args, "--cipher aes-xts-plain64") || !strings.Contains(args, "--offset "+luksDataOffset) {
 		t.Errorf("luksFormat args = %q", args)
 	}
-	// The passphrase is written to a file created 0600 FIRST -- WriteFile's own mode is 0644, so
-	// the pre-creation is what keeps a volume key off a world-readable path.
+	// The passphrase goes to a file created 0600 first: WriteFile's own mode is 0644, so the
+	// pre-creation is what keeps a volume key off a world-readable path.
 	if !f.ran("install", "-m", "0600", "/dev/null", luksKeyPath) {
 		t.Errorf("the key file was not pre-created 0600; runs = %v", f.runs)
 	}
@@ -187,7 +187,7 @@ func TestNodeStorageFreshEncrypted(t *testing.T) {
 	}
 }
 
-// AES-LESS HARDWARE RUNS IN THE CLEAR, and says so elsewhere (the report card). The load-bearing
+// AES-less hardware runs in the clear, and says so elsewhere (the report card). The load-bearing
 // negative: no cryptsetup call at all, and the PV is the raw disk.
 func TestNodeStorageFreshWithoutAES(t *testing.T) {
 	f := newStorageFake(plainCPU)
@@ -233,10 +233,10 @@ func TestNodeStorageAdiantum(t *testing.T) {
 	}
 }
 
-// ★ A RETURNING NODE IS NEVER REFORMATTED. Its VG is on its disk, so activating it is the whole
+// ★ A returning node is never reformatted. Its VG is on its disk, so activating it is the whole
 // job: nothing destructive runs, create-md does not run (the probe finds the metadata), and the
-// seed-only steps are skipped even though this spec still says FreshInit -- because the metadata
-// was not created by this run.
+// seed-only steps are skipped even though this spec still says FreshInit, because this run did
+// not create the metadata.
 func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	f.present["/dev/mapper/briardvol-data"] = true
@@ -266,14 +266,14 @@ func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 	}
 }
 
-// A RETURNING ENCRYPTED NODE OPENS ITSELF from the clear-key token, with nothing supplied by
+// A returning encrypted node opens itself from the clear-key token, with nothing supplied by
 // anybody -- and does not reformat on the way.
 func TestNodeStorageReturningEncryptedNodeOpensItself(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	f.luks = luksFormatted
 	f.mdPresent = true
 	// The token cryptsetup will export, and the LV that appears once the VG is activated. The
-	// crypt device is NOT present: that is what makes this the open path.
+	// crypt device is not present: that is what makes this the open path.
 	f.runFn = func(name string, args []string) ([]byte, error) {
 		if name == "cryptsetup" && len(args) > 1 && args[0] == "token" && args[1] == "export" {
 			_ = f.WriteFile(luksTokenPath, []byte(`{"type":"briard-clear","keyslots":["0"],"briard_passphrase":"s3cret"}`))
@@ -300,7 +300,7 @@ func TestNodeStorageReturningEncryptedNodeOpensItself(t *testing.T) {
 	}
 }
 
-// An ARMED node has destroyed the clear-key token, so there is nothing to read: refuse and
+// An armed node has destroyed the clear-key token, so there is nothing to read: refuse and
 // say why, rather than opening with an empty passphrase and reporting a corrupt header.
 func TestNodeStorageRefusesWhenTheClearKeyIsGone(t *testing.T) {
 	f := newStorageFake(aesCPU)
@@ -318,23 +318,22 @@ func TestNodeStorageRefusesWhenTheClearKeyIsGone(t *testing.T) {
 	}
 }
 
-// AN UNREADABLE PROBE IS NOT A BLANK DISK. `cryptsetup isLuks` exits non-zero for far
-// more than "not LUKS" -- busy (5), no permission (2), wrong device (4) -- and read as blank on a
-// device that IS formatted, bring-up would fall through to the blank-disk path and luksFormat
-// over the household's header. That is a crypto-erase, not a wipe: the clear-key token lives in
-// the header being replaced, and `pvcreate`'s blank probe runs one step later, too late to cover
-// it.
+// An unreadable probe is not a blank disk. `cryptsetup isLuks` exits non-zero for far more than
+// "not LUKS" -- busy (5), no permission (2), wrong device (4) -- and read as blank on a device
+// that is formatted, bring-up would fall through to the blank-disk path and luksFormat over the
+// household's header: a crypto-erase, not a wipe, since the clear-key token lives in that header
+// and nothing can read the old volume again. `pvcreate`'s blank probe runs one step later, too
+// late to cover it.
 //
-// ⚠️ THE ASSERTION THAT MUST BE ABLE TO FAIL IS THE SECOND ONE. "bring-up returned an error" is
-// nearly free -- almost any bug produces one -- so the load-bearing half is that luksFormat NEVER
-// RAN. With isLuks collapsed back to two values, the runs come back holding
-// `cryptsetup luksFormat ... /dev/vdb`, then `token import`, `pvcreate`, `vgcreate`, both
-// `lvcreate`s and `create-md --force` -- the volume rebuilt end to end.
+// ⚠️ The assertion that must be able to fail is the second one: "bring-up returned an error" is
+// nearly free (almost any bug produces one), so the load-bearing half is that luksFormat never
+// ran. With isLuks collapsed back to two values, the runs come back holding `cryptsetup
+// luksFormat ... /dev/vdb`, then `token import`, `pvcreate`, `vgcreate`, both `lvcreate`s and
+// `create-md --force` -- the volume rebuilt end to end.
 //
-// FreshInit is FALSE because that is the realistic shape: the disk is already LUKS, so this is a
-// node coming BACK, and what it expects is to open what is there. The mkfs gate is sound and skips
-// on a returning node -- the luksFormat alone is what destroys it, since the header it replaces
-// carries the clear-key token and nothing can read the old volume again.
+// FreshInit is false, the realistic shape: the disk is already LUKS, so this is a node coming
+// back and expecting to open what is there. The mkfs gate is sound and skips on a returning node;
+// the luksFormat alone is what destroys it.
 func TestNodeStorageRefusesAnUnreadableLuksProbe(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	f.luks = luksUnreadable
@@ -355,10 +354,10 @@ func TestNodeStorageRefusesAnUnreadableLuksProbe(t *testing.T) {
 	}
 }
 
-// THE NON-VACUITY TWIN of the test above, and the reason the probe is three-valued rather than
-// inverted: a disk that PROVABLY has no LUKS on it -- cryptsetup's exit 1, the one code that is an
-// answer -- must still be formatted. A fix that simply refused on every non-zero exit would pass
-// the test above and break every fresh install; this is what catches that.
+// The non-vacuity twin of the test above, and why the probe is three-valued rather than inverted:
+// a disk that provably has no LUKS on it -- cryptsetup's exit 1, the one code that is an answer --
+// must still be formatted. A fix that refused on every non-zero exit would pass the test above
+// and break every fresh install; this catches it.
 func TestNodeStorageFormatsAProvablyBlankDisk(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	f.luks = luksBlank
@@ -371,7 +370,7 @@ func TestNodeStorageFormatsAProvablyBlankDisk(t *testing.T) {
 	}
 }
 
-// A WITNESS BUILDS NO TIER and still comes up: the .res is written and the resource attached, and
+// A witness builds no tier and still comes up: the .res is written and the resource attached, and
 // nothing touches a block device -- there is none.
 func TestNodeStorageWitness(t *testing.T) {
 	f := newStorageFake(aesCPU)
@@ -412,7 +411,7 @@ func TestNodeStorageRefusesAMissingSpec(t *testing.T) {
 	}
 }
 
-// A JOINER'S FRESH LVs ARE LEFT BLANK: the same blank-disk path builds them, and neither the
+// A joiner's fresh LVs are left blank: the same blank-disk path builds them, and neither the
 // format nor the UpToDate declaration runs, because the resync from the primary is what fills
 // them. FreshInit=false is the whole of the difference, and it is the host's to state.
 func TestNodeStorageJoinerBuildsButNeverFormats(t *testing.T) {
@@ -433,7 +432,7 @@ func TestNodeStorageJoinerBuildsButNeverFormats(t *testing.T) {
 	}
 }
 
-// A VOLUME FROM BEFORE THE METADATA LV has a data LV and nowhere for DRBD to write: refuse by
+// A volume from before the metadata LV has a data LV and nowhere for DRBD to write: refuse by
 // name rather than fail three steps later on a path that reads like a broken .res. The alpha's
 // answer is a reinstall, and the message says so.
 func TestNodeStorageRefusesAVolumeWithoutAMetadataLV(t *testing.T) {
@@ -498,8 +497,8 @@ func loneSpec(fresh bool) nodestorage.Spec {
 	return s
 }
 
-// ★ THE LONE ROW: the LVs are built and (as the seed) formatted, the topology word says alone,
-// and then NOTHING of DRBD's happens -- no .res, no create-md, no attach, no new-current-uuid.
+// ★ The lone row: the LVs are built and (as the seed) formatted, the topology word says alone,
+// and then nothing of DRBD's happens -- no .res, no create-md, no attach, no new-current-uuid.
 // The mount is briard-primary-storage's, off the LV the spec names, exactly as on a flock.
 func TestNodeStorageLoneNodeRunsNoDRBD(t *testing.T) {
 	f := newStorageFake(aesCPU)
@@ -544,7 +543,7 @@ func TestNodeStorageReturningLoneNode(t *testing.T) {
 	}
 }
 
-// ★ THE REFUSE CELL: "alone" in the spec and DRBD metadata on the metadata LV is a node whose
+// ★ The refuse cell: "alone" in the spec and DRBD metadata on the metadata LV is a node whose
 // host has forgotten its flock, and mounting the LV underneath metadata a peer may still be
 // replicating against is a split-brain factory. Bring-up stops; the volume is not mounted.
 func TestNodeStorageLoneNodeRefusesForeignMetadata(t *testing.T) {
@@ -569,11 +568,11 @@ func TestNodeStorageFlockWritesTheTopologyWord(t *testing.T) {
 	}
 }
 
-// ★ THE CONVERT ROW: a lone node joining its first peer. Its LVs exist and hold THE
-// data, the metadata LV holds nothing, and the spec now says replicated and seed. So: no mkfs,
-// create-md --force on the metadata LV, the disk up, disconnected and declared UpToDate BEFORE the stock
-// target connects anything -- the order that keeps a joiner already dialling from being marked
-// UpToDate without a sync.
+// ★ The convert row: a lone node joining its first peer. Its LVs exist and hold the only copy
+// of the data, the metadata LV holds nothing, and the spec now says replicated and seed. So: no
+// mkfs, create-md --force on the metadata LV, the disk up, disconnected and declared UpToDate
+// before the stock target connects anything -- the order that keeps a joiner already dialling
+// from being marked UpToDate without a sync.
 func TestNodeStorageConvertsALoneNodeToReplicated(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	f.present["/dev/mapper/briardvol-data"] = true
@@ -611,7 +610,7 @@ func TestNodeStorageConvertsALoneNodeToReplicated(t *testing.T) {
 }
 
 // A blank re-joiner with old LVs (a former member wiped by a removal) creates metadata and
-// attaches, and NEVER declares itself UpToDate: its data is discarded by the resync, which is
+// attaches, and never declares itself UpToDate: its data is discarded by the resync, which is
 // what "blank join" means. FreshInit=false is what separates it from the convert row.
 func TestNodeStorageRejoinerWithOldLVsNeverSeeds(t *testing.T) {
 	f := newStorageFake(aesCPU)
@@ -628,7 +627,7 @@ func TestNodeStorageRejoinerWithOldLVsNeverSeeds(t *testing.T) {
 	}
 }
 
-// ★ THE DISABLE ROW: alone, metadata present, and the one-shot intent asserted by an
+// ★ The disable row: alone, metadata present, and the one-shot intent asserted by an
 // unpair. The metadata is wiped (mandatory, not a courtesy: the next enable would find and attach
 // it) and the flock's .res goes with it; nothing else of DRBD runs.
 func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
@@ -662,9 +661,9 @@ func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
 	}
 }
 
-// The probe reads ABSENT off one phrase and nothing else: metadata a Primary left "unclean"
-// (a rebooted failover survivor) fails dump-md too and is metadata all the
-// same -- so a lone spec over it is refused, and only the phrase that means garbage lets it pass.
+// The probe reads absent off one phrase and nothing else: metadata a Primary left "unclean" (a
+// rebooted failover survivor) fails dump-md too and is metadata all the same -- so a lone spec
+// over it is refused, and only the phrase that means garbage lets it pass.
 func TestNodeStorageUncleanMetadataIsStillMetadata(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	f.present["/dev/mapper/briardvol-data"] = true
@@ -680,16 +679,13 @@ func TestNodeStorageUncleanMetadataIsStillMetadata(t *testing.T) {
 	}
 }
 
-// exitCode IS THE SEAM THE FAKE CANNOT TEST, so it gets tested against the real thing. Every other
-// test here supplies its own error type, which means they all assume the one fact production
-// depends on rather than checking it: that what `osExecutor.Run` hands back on a non-zero exit is
-// something `errors.As` can read an ExitCode off. If that assumption were wrong, `cryptsetup
-// isLuks`'s exit 1 would read as could-not-tell and EVERY FRESH INSTALL would refuse to format --
-// a green suite and a product that cannot install.
-//
+// exitCode is the seam the fake cannot test, so it is tested against real exec errors. Every
+// other test supplies its own error type and so assumes the one fact production depends on: that
+// what `osExecutor.Run` returns on a non-zero exit is something `errors.As` can read an ExitCode
+// off. Were that wrong, `cryptsetup isLuks`'s exit 1 would read as could-not-tell and every fresh
+// install would refuse to format -- a green suite and a product that cannot install.
 // `*exec.ExitError` carries ExitCode() through its embedded *os.ProcessState; a command that never
-// ran yields `*exec.Error`, which carries none. The second case is the one worth stating: absent a
-// status, could-not-tell is the answer, and that routes to a refusal.
+// ran yields `*exec.Error`, which carries none -- so could-not-tell, which routes to a refusal.
 func TestExitCodeReadsRealExecErrors(t *testing.T) {
 	run := func(name string, args ...string) error {
 		_, err := exec.CommandContext(context.Background(), name, args...).CombinedOutput()

@@ -104,8 +104,8 @@ func sidecarOf(t *testing.T, f *fakeExec) quadlet.SnapshotMeta {
 	return quadlet.SnapshotMeta{}
 }
 
-// THE CLOCK SAMPLE, QUIESCED: hold, snapshot, release — and the class is written from what
-// the RELEASE said, because Home Assistant is the only party that knows whether its lock survived.
+// The clock sample, quiesced: hold, snapshot, release — and the class is written from what
+// the release said, because Home Assistant is the only party that knows whether its lock survived.
 func TestQuiescedMemberUpgradesTheClassWhenTheAppHeld(t *testing.T) {
 	h := &haStub{held: true}
 	f := quiesceRig(t, hass.Name, h.start(t))
@@ -113,8 +113,8 @@ func TestQuiescedMemberUpgradesTheClassWhenTheAppHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("quiescedMember: %v", err)
 	}
-	// WHAT IT COST, reported rather than inferred: the hourly sample's price to Home
-	// Assistant is exactly these two numbers.
+	// What it cost, reported rather than inferred: the hourly sample's price to Home Assistant is
+	// exactly these two numbers.
 	if res.Acquire <= 0 || res.Hold <= 0 {
 		t.Errorf("result = %+v, want the acquire and hold durations", res)
 	}
@@ -124,7 +124,7 @@ func TestQuiescedMemberUpgradesTheClassWhenTheAppHeld(t *testing.T) {
 	if got := sidecarOf(t, f).Consistency; got != quadlet.Quiesced {
 		t.Errorf("consistency = %q, want quiesced", got)
 	}
-	// THE ORDER IS THE PROPERTY: the lock is taken before the snapshot and released after it, or
+	// The order is the property: the lock is taken before the snapshot and released after it, or
 	// the snapshot is of a database that was never held still.
 	var holdAt, snapAt, releaseAt = -1, -1, -1
 	for i, r := range f.runs {
@@ -145,7 +145,7 @@ func TestQuiescedMemberUpgradesTheClassWhenTheAppHeld(t *testing.T) {
 	}
 }
 
-// AND IT DOES NOT UPGRADE WHEN THE LOCK BROKE. Home Assistant resumes writing if the events it is
+// It does not upgrade when the lock broke: Home Assistant resumes writing if the events it is
 // buffering pile up; the member is still taken, and it says what it is.
 func TestQuiescedMemberKeepsCrashWhenTheLockDidNotHold(t *testing.T) {
 	h := &haStub{held: false}
@@ -165,7 +165,7 @@ func TestQuiescedMemberKeepsCrashWhenTheLockDidNotHold(t *testing.T) {
 	}
 }
 
-// An APP THAT CANNOT BE ASKED STILL GETS ITS MEMBER. A Home Assistant that is down, an older
+// An app that cannot be asked still gets its member. A Home Assistant that is down, an older
 // integration with no such view, an app with no way to hold still at all — the sample happens
 // and the member says crash-consistent. A hole in the ring would be the worse answer.
 func TestQuiescedMemberTakesOneEvenWhenNothingCanHoldStill(t *testing.T) {
@@ -220,7 +220,7 @@ func TestQuiescedMemberReleasesEvenWhenTheSnapshotFails(t *testing.T) {
 }
 
 // TestMosquittosClockSampleFlushesFirst: mosquitto cannot hold still,
-// but it can write its persistence database on SIGUSR1, and that happens BEFORE the snapshot. The
+// but it can write its persistence database on SIGUSR1, and that happens before the snapshot. The
 // member still says crash-consistent, which it is.
 func TestMosquittosClockSampleFlushesFirst(t *testing.T) {
 	f := quiesceRig(t, "mosquitto", 1)

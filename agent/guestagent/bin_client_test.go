@@ -11,12 +11,12 @@ import (
 	"briard.io/agent/guestfirmware"
 )
 
-// The HOST end of the push protocol: the streaming client, and the capability check that tells
+// The host end of the push protocol: the streaming client, and the capability check that tells
 // a dressable guest from one that predates the protocol. The guest end's own proofs live with
 // the firmware (agent/guestfirmware/bin_test.go).
 
 // A binary larger than the frame cap streams in chunks and lands as <name>.next, verified
-// against the digest the LAST chunk carries, executable.
+// against the digest the last chunk carries, executable.
 func TestBinStageStreamsAndVerifies(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("BRIARD_BIN_DIR", dir)
@@ -56,7 +56,7 @@ func TestHandshakeAdvertisesBinPush(t *testing.T) {
 	}
 }
 
-// The firmware's own capability list is a SUBSET of the dressed agent's: every verb a firmware
+// The firmware's own capability list is a subset of the dressed agent's: every verb a firmware
 // advertises, the dressed agent serves too. (The push verbs being in the firmware's list, so a
 // host that meets a firmware can still dress it, is not asserted here.)
 func TestFirmwareCapabilitiesAreASubsetOfTheAgents(t *testing.T) {

@@ -108,7 +108,7 @@ func memberAt(app string, tr quadlet.Trigger, at time.Time) string {
 	return quadlet.SnapshotMember(app, tr, at)
 }
 
-// AN UNINSTALL KEEPS THE DATA AND DELETES THE REST: the data area as a member named for the
+// An uninstall keeps the data and deletes the rest: the data area as a member named for the
 // uninstall, pinned to the manifest and carrying its event; every area, every other member of the
 // app gone, another app's untouched. The manifest goes, flushed, before any area is deleted.
 func TestAnUninstallKeepsTheDataAndDeletesTheRest(t *testing.T) {
@@ -151,7 +151,7 @@ func TestAnUninstallKeepsTheDataAndDeletesTheRest(t *testing.T) {
 	}
 }
 
-// DELETE NOW, after the uninstall: the kept copy and its sidecar go, and nothing converges -- the
+// Delete now, after the uninstall: the kept copy and its sidecar go, and nothing converges -- the
 // app is not on the volume to stop.
 func TestDeleteNowTakesTheKeptCopy(t *testing.T) {
 	kept := memberAt("dummy", quadlet.TriggerUninstall, uninstallAt)
@@ -173,7 +173,7 @@ func TestDeleteNowTakesTheKeptCopy(t *testing.T) {
 	}
 }
 
-// AN INSTALL STILL WAITING FOR ITS GATE refuses the uninstall, before anything is touched.
+// An install still waiting for its gate refuses the uninstall, before anything is touched.
 func TestAnUnfinishedInstallRefusesTheUninstall(t *testing.T) {
 	r := newUninstallRig(uninstallManifest, quadlet.DataRoot("dummy"))
 	r.files[stagedPath("dummy")] = uninstallManifest
@@ -185,7 +185,7 @@ func TestAnUnfinishedInstallRefusesTheUninstall(t *testing.T) {
 	}
 }
 
-// THE FILES ARE KEPT BESIDE THE VERSIONS, under the data member's name, and installing the app
+// The files are kept beside the Versions, under the data member's name, and installing the app
 // again puts them back as its files area and drops the copy. Its Versions go at the uninstall.
 func TestTheFilesAreKeptAndPutBack(t *testing.T) {
 	version := filepath.Join(filesVersionsDir(), filepath.Base(memberAt("dummy", quadlet.TriggerClock, uninstallAt.Add(-time.Hour))))
@@ -224,7 +224,7 @@ func TestTheFilesAreKeptAndPutBack(t *testing.T) {
 	}
 }
 
-// A KEPT COPY ENDS AT THIRTY DAYS, at the files tick. (The tick expires it before it asks whether
+// A kept copy ends at thirty days, at the files tick. (The tick expires it before it asks whether
 // any app has a files area; this rig has one, so that order is not exercised here.)
 func TestAKeptCopyEndsAtThirtyDays(t *testing.T) {
 	v := newUserVolume("immich")
@@ -237,7 +237,7 @@ func TestAKeptCopyEndsAtThirtyDays(t *testing.T) {
 	}
 }
 
-// THE VALVE SHEDS A KEPT COPY BEFORE ANY VERSION, but only once a backup holds it: an unmarked one
+// The valve sheds a kept copy before any Version, but only once a backup holds it: an unmarked one
 // is not a candidate, however old.
 func TestTheValveShedsABackedUpKeptCopyFirst(t *testing.T) {
 	v := newUserVolume("immich")
@@ -265,7 +265,7 @@ func TestTheValveShedsABackedUpKeptCopyFirst(t *testing.T) {
 	}
 }
 
-// THE BACKUP CARRIES A KEPT COPY as the app's member, and marks it once the run has finished.
+// The backup carries a kept copy as the app's member, and marks it once the run has finished.
 func TestTheBackupCarriesAKeptCopyAndMarksIt(t *testing.T) {
 	gone := strings.TrimPrefix(memberAt("mealie", quadlet.TriggerUninstall, time.Now().Add(-time.Hour)), quadlet.SnapshotsDir)
 	f, _ := backupRig(map[string]func() ([]byte, error){

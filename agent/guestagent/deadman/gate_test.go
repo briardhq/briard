@@ -30,10 +30,10 @@ func TestGateRendersUnknownBeforeFirstPublish(t *testing.T) {
 	}
 }
 
-// A published verdict carries its age, and the age is what makes a WEDGED deadman detectable: if
-// the evaluation loop stops while the accept loop lives, the answer keeps arriving and only its
-// age gives it away. An implementation that stamped at Render time instead of Publish time would
-// report age=0 forever and pass every other assertion here.
+// A published verdict carries its age, which is what makes a wedged deadman detectable: if the
+// evaluation loop stops while the accept loop lives, the answer keeps arriving and only its age
+// gives it away. Stamping at Render time instead of Publish time would report age=0 forever and
+// pass every other assertion here.
 func TestGateReportsVerdictAndItsAge(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	g := testGate(&now)
@@ -50,7 +50,7 @@ func TestGateReportsVerdictAndItsAge(t *testing.T) {
 	}
 }
 
-// A failed fabric read must ERASE the verdict, not leave the last one standing. Serving a stale
+// A failed fabric read must erase the verdict, not leave the last one standing. Serving a stale
 // "allowed=1" as though it described now is how the host ends up power-cycling a node whose
 // cluster changed underneath it ten minutes ago.
 func TestGateForgetsTheVerdictOnReadFailure(t *testing.T) {

@@ -30,7 +30,7 @@ func dbRig(answers map[string]string, members ...string) *fakeExec {
 		b, _ := json.Marshal(meta)
 		f.files[p] = string(b)
 	}
-	// SUBVOLUMES: a snapshot copies the files under its source, --exchange swaps two trees, a
+	// Subvolumes: a snapshot copies the files under its source, --exchange swaps two trees, a
 	// delete drops one -- enough to see what the live subvolume holds after a restore.
 	subvols := map[string]bool{quadlet.DataRoot("home-assistant"): true}
 	under := func(root string) []string {
@@ -152,7 +152,7 @@ func TestAQuiescedTakeIsHeldForTheRecorder(t *testing.T) {
 	if appState(f, soon) != "" {
 		t.Error("a take 7 h after the last hold was retained")
 	}
-	// THE HOLD IS WHAT KEEPS IT: the history would have replaced it with the next sample.
+	// The hold is what keeps it: the history would have replaced it with the next sample.
 	members, _ := listMembers(ctx, f, "home-assistant")
 	for _, m := range members {
 		if m.Member == first && !m.App {
@@ -167,7 +167,7 @@ func TestAQuiescedTakeIsHeldForTheRecorder(t *testing.T) {
 // TestTheNightlyCheckRestoresFromAHeldCleanCopy is check then restore, end to end in the guest: the
 // damaged newest member is found, the held clean one is put back through a staged copy swapped
 // in whole, and around it Home Assistant is stopped, an undo point carrying the event is taken
-// once the staged copy is ready and BEFORE the swap, and the app is started again.
+// once the staged copy is ready and before the swap, and the app is started again.
 func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -210,7 +210,7 @@ func TestTheNightlyCheckRestoresFromAHeldCleanCopy(t *testing.T) {
 	})
 	stage := step(f, func(r []string) bool { return r[0] == "btrfs" && r[2] == "snapshot" && r[len(r)-1] == staged })
 	swap := step(f, func(r []string) bool { return r[0] == "mv" && r[1] == "--exchange" })
-	// Without --no-target-directory, mv exchanges the copy with a path INSIDE the live directory.
+	// Without --no-target-directory, mv exchanges the copy with a path inside the live directory.
 	if swap >= 0 && !slices.Contains(f.runs[swap], "--no-target-directory") {
 		t.Errorf("the swap names the live subvolume as a target directory: %v", f.runs[swap])
 	}
@@ -406,7 +406,7 @@ func TestAFailedRestoreChangesNothingAndRestarts(t *testing.T) {
 			if _, ok := f.files[quadlet.DataRoot("home-assistant")+".dbrestore/app/home-assistant_v2.db"]; ok {
 				t.Error("the staged copy was left behind")
 			}
-			// NO ROW FOR A RESTORE THAT DID NOT HAPPEN: the undo point carries the event, so a failed
+			// No row for a restore that did not happen: the undo point carries the event, so a failed
 			// restore must not leave one.
 			members, _ := listMembers(ctx, f, "home-assistant")
 			for _, m := range members {
