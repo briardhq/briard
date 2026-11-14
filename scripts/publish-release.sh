@@ -2,14 +2,13 @@
 #
 # publish-release.sh — build, sign and publish the release channel a stranger installs from
 # and a node updates from. The consumer already exists (agent/install/fetch.go +
-# scripts/install.sh), so this script has NO LATITUDE: it must emit exactly what the verifier
-# reads, or installs refuse. Everything below is read off that verifier rather than designed
-# here.
+# scripts/install.sh), so this script has no latitude: everything below is read off that verifier,
+# not designed here, and must emit exactly what it reads, or installs refuse.
 #
-# THE TREE, at <BRIARD_CHANNEL_URL> (default https://get.briard.io):
+# The tree, at <BRIARD_CHANNEL_URL> (default https://get.briard.io):
 #
 #   install.sh                          a byte-copy of briard/stable/linux-amd64/install.sh, laid by
-#                                       `promote`; unsigned where it is SERVED, since
+#                                       `promote`; unsigned where it is served, since
 #                                       the one-liner fetches it before any verification exists
 #   install.ps1                         likewise, of briard/stable/windows-amd64/install.ps1
 #   briard-setup.exe                    likewise, of briard/stable/windows-amd64/briard-setup.exe -- the
@@ -33,110 +32,105 @@
 #     <version>/briard-store-setup.exe  the Store's installer, carrying that release's windows arm; written once,
 #                                       outside both chains (`setup`)
 #
-# A CHAIN is a release line with its own version series: the briard bundle moves as
-# `v3.<date>.<rev>` on every publish; the guest OS as `vm.<date>.<inputs>` and ONLY WHEN ITS
-# INPUTS CHANGE. The guest image is a function of its inputs (flake.nix guestInputs:
-# the image recipe, the packages built into it, the Go packages the guest binary links, the
-# module files, the nixpkgs pin) and carries no commit-derived stamp, so `stage` asks the live
-# channel whether an image with these exact inputs is already published and, if so, REUSES that
-# release instead of staging a 400 MB image nobody would be able to tell from the last one. The
-# pairing therefore lives in the BRIARD manifest: `vm` names the vm release this briard
-# release was staged beside, an installer fetches the briard chain and then the vm release it names,
-# and `promote` moves vm/stable to it. Every chain has one more level, the PLATFORM ARM:
-# a briard bundle is built per host OS and CPU (`linux-amd64`), the guest image per CPU (`amd64`)
-# -- the same VM on every host OS, on the host's CPU. A POINTER is just a path serving a byte-copy of one
-# version's signed manifest: no pointer file, no second signature format, one verified hop. The
-# client resolves every artifact against the manifest's own `version` field
-# (<chain>/<version>/<arm>/<name>), never against the path it fetched the manifest from — so a
-# pointer costs a few KB, not a second 380 MB image. The ONE exception is `briard-agent` (and
-# its .exe), duplicated under the host pointers, because install.sh has to curl a bootstrap
-# before anything exists that can parse a manifest, and that bootstrap must come from the TARGET
-# (a stale one that cannot parse a newer manifest is the forward-compat bricking the channel
-# layout exists to prevent).
+# A chain is a release line with its own version series: the briard bundle moves as
+# `v3.<date>.<rev>` on every publish, the guest OS as `vm.<date>.<inputs>` and only when its
+# inputs change. The guest image is a function of its inputs (flake.nix guestInputs: the image
+# recipe, the packages built into it, the Go packages the guest binary links, the module files,
+# the nixpkgs pin) with no commit-derived stamp, so `stage` asks the live channel for a release
+# with these exact inputs and reuses it rather than staging a 400 MB image nobody could tell from
+# the last one. The pairing therefore lives in the briard manifest: `vm` names the vm release it
+# was staged beside, which an installer fetches after the briard chain and `promote` moves
+# vm/stable to. Each chain has one more level, the platform arm: the briard bundle per host OS
+# and CPU (`linux-amd64`), the guest image per CPU (`amd64`: the same VM on every host OS, on the
+# host's CPU).
+#
+# A pointer is just a path serving a byte-copy of one signed manifest: no pointer file, no second
+# signature format, one verified hop. The client resolves every artifact against the `version`
+# field of the manifest (<chain>/<version>/<arm>/<name>), never the path it fetched it from, so a
+# pointer costs a few KB, not a second 380 MB image. The one exception is `briard-agent` (and its
+# .exe), duplicated under the host pointers: install.sh has to curl a bootstrap before anything
+# exists that can parse a manifest, and it must come from the target (a stale one that cannot
+# parse a newer manifest is the forward-compat bricking the channel layout exists to prevent).
 #
 #   manifest.json      {"chain","platform","version","artifacts":[{"name","sha256","size","mode"}]},
 #                      sha256 lowercase hex, mode omitted => 0644; plus the optional vm,
 #                      system, min_briard, inputs and min_upgrade_from (agent/install/fetch.go)
-#   manifest.json.sig  a RAW 64-byte detached Ed25519 signature over the exact manifest bytes
+#   manifest.json.sig  a raw 64-byte detached Ed25519 signature over the exact manifest bytes
 #                      (PureEdDSA over the whole file — no separate hash step)
-#   <name>             the big two travel COMPRESSED and the agent expands them after verifying
+#   <name>             the big two travel compressed and the agent expands them after verifying
 #                      the signed hash, so the manifest pins the compressed bytes (what the
 #                      network carries). The agent itself is never compressed: the bootstrap
 #                      fetches it with curl before anything exists that could decompress it.
-#   install.sh         an ORDINARY ARTIFACT of briard/<version>/linux-amd64 — hashed by the manifest and
-#                      covered by its signature like everything else — which is also
-#                      byte-copied to the channel root by `promote`. The root copy is fetched by
-#                      the one-liner before any verification exists, which is why the repo being
-#                      public and readable IS the answer to the `curl | sh` objection; `verify`
-#                      asserts the two are the same bytes, which is the only thing tying the
-#                      unsigned root to the signed set. It resolves `stable` by default on both
-#                      paths and is never stamped with its own id — see `stage` for why.
+#   install.sh         an ordinary artifact of briard/<version>/linux-amd64, hashed and signed
+#                      like everything else, which `promote` also byte-copies to the channel root.
+#                      The one-liner fetches the root copy before any verification exists, so the
+#                      public, readable repo is the answer to the `curl | sh` objection, and
+#                      `verify` asserting the two are the same bytes is the only tie between the
+#                      unsigned root and the signed set. It resolves `stable` by default on both
+#                      paths and is never stamped with its own id (see `stage` for why).
 #
-# VERSIONED DIRECTORIES ARE IMMUTABLE — the property is AN ID NEVER NAMES TWO DIFFERENT
-# BYTE-SETS, not that bytes live forever. The guest image is not bit-reproducible (timestamps,
-# filesystem UUIDs), so re-staging the same commit yields different bytes under the same id, and
-# a pointer copied from the old manifest would then name bytes the versioned directory no longer
-# serves. Two guards, because `gc` deletes, so the bucket alone cannot answer the whole
-# question: `publish` refuses a version the bucket already holds, and `release_version`
-# refuses a commit older than the gc floor (an id carries its COMMIT DATE, so re-minting one
-# means re-publishing that commit, and anything gc removed is past the floor).
+# Versioned directories are immutable: the property is that an id never names two different
+# byte-sets, not that bytes live forever. The guest image is not bit-reproducible (timestamps,
+# filesystem UUIDs), so re-staging a commit yields different bytes under the same id, and a
+# pointer copied from the old manifest would name bytes the versioned directory no longer serves.
+# `gc` deletes, so the bucket alone cannot answer that, hence two guards: `publish` refuses a
+# version the bucket holds, and `release_version` refuses a commit older than the gc floor (an id
+# carries its commit date, so re-minting one means re-publishing that commit, and anything gc
+# removed is past the floor).
 #
-# RECOVERY FROM A BAD RELEASE IS A REVERT COMMIT, PUBLISHED FORWARD — not a pointer move. Read
-# agent/install/update.go before reaching for `promote <older-id>`: the timer's `stable` path
-# installs only when date(have) < date(want), so moving stable BACKWARD rolls no installed node
-# back. It changes what new installs get and lowers the floor an exact cloud pin may reach, and
-# that is all. A revert commit is a new rev with today's date, so it is a forward move for every
-# node, and it needs no old bytes — which is why `gc` can delete them.
+# Recovery from a bad release is a revert commit published forward, not a pointer move. Read
+# agent/install/update.go before reaching for `promote <older-id>`: the `stable` path of the timer
+# installs only when date(have) < date(want), so moving stable backward rolls no installed node
+# back; it only changes what new installs get and lowers the floor an exact cloud pin may reach.
+# A revert commit is a new rev dated today, a forward move for every node needing no old bytes,
+# which is why `gc` can delete them.
 #
-# PUBLISHING POINTS NOTHING AT A RELEASE. `publish` uploads versioned directories and
-# stops; `latest` moves that pointer once the gates have passed on the exact id, and `promote`
-# moves `stable` and the root installer once the evidence is in. The order matters because it is
-# what lets a gate run on the bytes the CDN actually serves: an id nothing names is fetchable by
-# whoever knows it — they are commit-derived and this repo is public, so untagged is not private
-# — but it is advertised by no path, taken by no timer, and installed by no stranger. A release
-# that fails its gate is simply never pointed at, and `gc` collects it.
+# Publishing points nothing at a release. `publish` uploads versioned directories and stops;
+# `latest` moves that pointer once the gates have passed on the exact id, `promote` moves `stable`
+# and the root installer once the evidence is in. That order lets a gate run on the bytes the CDN
+# actually serves: an id nothing names is fetchable by whoever knows it (ids are commit-derived
+# and this repo is public, so untagged is not private) but advertised by no path, taken by no
+# timer and installed by no stranger. A release that fails its gate is never pointed at, and `gc`
+# collects it.
 #
-# `stable` is the one that matters: every installed node converges to it nightly and there is no
-# canary on that path, so promotion is meant to be evidence-driven (the canary converged, the
-# fleet stayed healthy for a real window) — never a release-day action. `promote` refuses a build
-# whose date field equals the currently promoted one's: the timer's stable path orders on that
-# field alone, so such a promotion would be invisible to it, and would only LOOK like a
-# release. The field is the commit's hour (YYMMDDHH, UTC), so a same-hour fix-up takes the next
-# hour's number.
+# `stable` is the one that matters: every installed node converges to it nightly with no canary
+# on that path, so promotion is meant to be evidence-driven (the canary converged, the fleet
+# stayed healthy for a real window), never a release-day action. `promote` refuses a build whose
+# date field equals that of the promoted one: the stable path of the timer orders on that field
+# alone, so such a promotion would be invisible to it and only look like a release. The field is
+# the commit hour (YYMMDDHH, UTC), so a same-hour fix-up takes the next hour.
 #
-# `dev` IS THE ONE UNGATED POINTER, and its release is the one that does not outlive its
-# successor. `stable` and `latest` are evidence-driven and stay in the bucket until `gc`'s floor;
-# a dev release is HEAD, published to be run on a test node this hour, and it is worth nothing
-# the moment the next one lands. So `dev` does the whole sequence in one run — stage, sign,
-# publish, point `dev` at it — with no gate anywhere, and then DELETES the previous dev release
-# outright, floor or no floor, unless `stable` or `latest` also names it (then it is theirs to
-# keep) or the new dev pairs with its vm image (unchanged inputs; the image stays, the briard
-# directory goes). Three pointer names, one mechanism, and exactly one of them is cheap.
+# `dev` is the one ungated pointer, and its release does not outlive its successor. `stable` and
+# `latest` are evidence-driven and stay in the bucket until the `gc` floor; a dev release is HEAD,
+# published to run on a test node this hour and worth nothing once the next lands. So `dev`
+# stages, signs, publishes and points `dev` in one run with no gate anywhere, then deletes the
+# previous dev release outright, floor or no floor, unless `stable` or `latest` also names it
+# (then it is theirs to keep) or the new dev pairs with its vm image (unchanged inputs: the image
+# stays, the briard directory goes). Three pointer names, one mechanism, exactly one of them cheap.
 #
-# SIGNING AND PUBLISHING ARE SEPARATE SUBCOMMANDS ON PURPOSE. `sign` needs the key and no
-# credential; `publish` needs the credential and no key. Either secret alone is inert — a
-# forged signature has nowhere to be served, and the bucket serves what will not verify —
-# while together they are arbitrary code on every installed machine. Keeping them apart from
-# day one means the split wants is a matter of WHERE each runs, not a rewrite.
+# Signing and publishing are separate subcommands on purpose: `sign` needs the key and no
+# credential, `publish` the credential and no key. Either secret alone is inert (a forged
+# signature has nowhere to be served, and the bucket serves what will not verify); together they
+# are arbitrary code on every installed machine. Kept apart from day one, splitting them is a
+# matter of where each runs, not a rewrite.
 #
-# THE KEY LIVES IN THE SIGNING REPOSITORY, AND GIT CARRIES WHAT IT SIGNS. The key is a secret of
-# github.com/briardhq/signing, which only its owner can write to. `stage` commits each manifest
-# under releases/<id>/<arm>/ on top of that repository's main, pushes it to the operator's fork and
-# opens a pull request; the owner reads the diff and merges, the merge starts its sign workflow,
-# which signs every manifest that has no signature and commits the signatures; `sign` then waits
-# for them, verifies each and copies it into the staged tree. The machine that publishes holds the
-# credential and never the key, and nothing it can push to holds the key. There is no second way
-# to sign a release: no key is read here.
+# The key is a secret of github.com/briardhq/signing, which only its owner can write to, and git
+# carries what it signs: `stage` commits each manifest under releases/<id>/<arm>/ on the signing
+# repository's main, pushes that to the fork of the operator and opens a pull request; the owner
+# reads the diff and merges, starting the sign workflow, which signs every manifest that has no
+# signature and commits the signatures; `sign` waits for them, verifies each and copies it into
+# the staged tree. The publishing machine holds the credential and never the key, and nothing it
+# can push to holds the key. No key is read here: there is no second way to sign a release.
 #
-# A KEY ROTATES BY RELEASE. $RELEASE_PUBKEY is the keyring, one or more PEM public keys: it is
+# A key rotates by release. $RELEASE_PUBKEY is the keyring, one or more PEM public keys: it is
 # embedded in the installers, and it is the `keyring.pem` artifact of both briard arms, which an
 # updating node lays over its own. A rotation that nodes must survive without a reinstall ships
 # [old, new] signed by old, and only then is the job's secret replaced by new; a node that has taken
 # it trusts releases of the new key. `verify` accepts a signature of any key in it.
 #
-# A DIRTY TREE IS REFUSED. The version is derived from the tree (flake.nix: epoch + commit
+# A dirty tree is refused. The version is derived from the tree (flake.nix: epoch + commit
 # date + short rev) and a dirty tree has no rev, so it stamps `v3.dirty`. A build nobody can
-# reproduce must not be publishable — and the reproducibility acceptance test is precisely
+# reproduce must not be publishable — the reproducibility acceptance test is precisely
 # "re-derive this artifact from its tag", which a working directory can never satisfy.
 #
 # Subcommands:
@@ -144,7 +138,7 @@
 #                         open the signing pull request (needs gh, logged in as the operator,
 #                         and its fork of briardhq/signing)
 #   sign     [DIR]        wait for the merged manifests' signatures, verify them, copy them in
-#   publish  [DIR]        upload the versioned dirs and NOTHING ELSE -- no pointer, no root
+#   publish  [DIR]        upload the versioned dirs and nothing else -- no pointer, no root
 #                         install.sh, so the release reaches nobody until it is pointed at
 #                         (needs the credential, no key; refuses an already-published version)
 #   latest   [VERSION]    move `latest` onto a published release, both chains — the second half
@@ -154,12 +148,12 @@
 #                         installers (install.sh, install.ps1, briard-setup.exe) to the channel root
 #                         (default: whatever briard/latest names; refuses a same-hour promotion,
 #                         and an upgrade floor newer than the newest Store exe under setup/)
-#   dev      [DIR]        stage + sign + publish + move `dev`, in one run and with NO gate, then
+#   dev      [DIR]        stage + sign + publish + move `dev`, in one run and with no gate, then
 #                         delete the previous dev release unless stable/latest names it
 #                         (needs the credential; a HEAD on pushed main, like any id)
-#   gc       [--keep V]…  DELETE versioned dirs no pointer names and nothing pins, older than
+#   gc       [--keep V]…  delete versioned dirs no pointer names and nothing pins, older than
 #                         the 30-day floor — whole releases, never files
-#   verify   [VERSION]    fetch stable, latest and dev of every chain and arm from the LIVE channel
+#   verify   [VERSION]    fetch stable, latest and dev of every chain and arm from the live channel
 #                         and check them the way a client does — plus the root installers against
 #                         briard/stable's. With a VERSION: that release where it was published,
 #                         both arms and the guest it pairs with, which is what a publish is
@@ -170,7 +164,7 @@
 #                         refuses a VERSION older than stable's upgrade floor)
 #
 # Env:
-#   BRIARD_CHANNEL_URL  public read ROOT            (default https://get.briard.io)
+#   BRIARD_CHANNEL_URL  public read root            (default https://get.briard.io)
 #   RELEASE_WRITE       write store URL — required by `publish`/`latest`/`promote`/`dev`/`gc`
 #                       and `setup publish`, e.g.
 #                       's3://get-briard-io?endpoint=<account>.r2.cloudflarestorage.com&region=auto'
@@ -206,7 +200,7 @@ WINDOWS_ARM=windows-amd64
 VM_ARM=amd64
 arms_of() { case "$1" in briard) echo "$LINUX_ARM $WINDOWS_ARM" ;; vm) echo "$VM_ARM" ;; esac; }
 # Nothing younger than this is ever removed, whatever the pointers say, so `gc` can never race a
-# rollback or a fresh pin. It is also the STALE-COMMIT FLOOR `release_version` refuses past —
+# rollback or a fresh pin. It is also the stale-commit floor `release_version` refuses past —
 # one number, because the two are the same fact seen from each end (see there).
 GC_FLOOR_DAYS=30
 
@@ -220,13 +214,13 @@ ossl() {
 	if command -v openssl >/dev/null 2>&1; then openssl "$@"; else nix run nixpkgs#openssl -- "$@"; fi
 }
 aws() { nix run nixpkgs#awscli2 -- "$@"; }
-# THE AUTHENTICODE SIGNATURE, Windows' own trust, never mixed with the channel's: the release
-# keyring signs manifests and is what nodes verify; this certificate signs the PE files Windows
-# evaluates -- every .exe and .dll of the windows arm we ship, and the Store exe. A PE that
-# already carries a signature keeps it (the TAP driver is OpenVPN's). Timestamped, so a
-# signature outlives the one-year certificate. The login is the SimplySign account's e-mail and
-# the seed of its one-time codes, CERTUM_EMAIL and CERTUM_OTP; without them the windows arm is
-# not staged at all, never staged unsigned. One ssign run signs a whole list on one login.
+# The Authenticode signature: Windows' own trust, never mixed with the channel's. The release
+# keyring signs manifests, which nodes verify; this certificate signs the PE files Windows
+# evaluates -- every .exe and .dll of the windows arm we ship, and the Store exe. A PE already
+# signed keeps its signature (the TAP driver is OpenVPN's). Timestamped, so a signature outlives
+# the one-year certificate. The login is CERTUM_EMAIL and CERTUM_OTP (the SimplySign account's
+# e-mail and the seed of its one-time codes); without them the windows arm is not staged at all,
+# never staged unsigned. One ssign run signs a whole list on one login.
 pe_signed() { # file -- true when its security directory names a certificate table
 	local lfanew magic dirs
 	[ "$(head -c2 "$1")" = MZ ] || return 1
@@ -257,27 +251,27 @@ release_version() {
 		v3.dirty|*dirty*) die "refusing a DIRTY tree (version=$v) — commit first; a build nobody can reproduce must not be published" ;;
 		"") die "empty version" ;;
 	esac
-	# THE PUSHED-MAIN GATE. Every tier that tests this code -- CI, the nightly's VM and fleet
+	# The pushed-main gate. Every tier that tests this code -- CI, the nightly's VM and fleet
 	# tiers, the single-test workflow -- tests pushed `main`, so a release cut from an unpushed
 	# commit or another branch ships code none of them has seen. An ancestor of `origin/main` is
 	# fine: it was on main, and the floor below bounds how old it may be.
 	git fetch --quiet origin main || die "cannot fetch origin/main to check that HEAD is on it"
 	git merge-base --is-ancestor HEAD origin/main ||
 		die "refusing HEAD $(git rev-parse --short HEAD) (version=$v): it is not on origin/main — push it to main first; the suites test pushed main, so anything else would ship untested code"
-	# THE STALE-COMMIT FLOOR, and it is what keeps ids unique given that `gc` DELETES. An id is
-	# `v3.<commit-hour>.<shortrev>`, so the only way to mint one twice is to publish the same
-	# commit twice — and `publish` catches that by asking the bucket, which is exactly the
-	# question a deleted release makes unanswerable. Everything `gc` removes is past the floor BY
-	# PUBLISH DATE, and a commit is never younger than its own publish, so refusing a commit
-	# older than the floor closes that hole with no ledger to keep or lose. It costs nothing in
-	# practice: releases are cut from HEAD, and shipping old code is a REVERT COMMIT (the header's
-	# recovery note) — a new rev with today's date, which passes this.
+	# The stale-commit floor keeps ids unique although `gc` deletes. An id is
+	# `v3.<commit-hour>.<shortrev>`, so minting one twice means publishing the same commit twice,
+	# which `publish` catches by asking the bucket — exactly the question a deleted release makes
+	# unanswerable. Everything `gc` removes is past the floor by publish date, and a commit is
+	# never younger than its own publish, so refusing a commit older than the floor closes that
+	# hole with no ledger to keep or lose. It costs nothing in practice: releases are cut from HEAD,
+	# and shipping old code is a revert commit (the recovery note in the header), a new rev with
+	# today's date, which passes this.
 	local age
 	age=$(( ( $(date -u +%s) - $(date -u -d "$(day_of "$v")" +%s) ) / 86400 ))
 	[ "$age" -le "$GC_FLOOR_DAYS" ] || die "refusing a commit $age days old (version=$v, floor ${GC_FLOOR_DAYS}d): gc deletes past that floor, so this id may name bytes that existed once and are gone — publish a revert commit, not the old tag"
 	echo "$v"
 }
-# The vm release a PUBLISHED briard release pairs with, read off its live manifest:
+# The vm release a published briard release pairs with, read off its live manifest:
 # the one place the pairing is recorded, and the same field an installing node reads.
 vm_of() {
 	curl -fsS "$CHANNEL/briard/$1/$LINUX_ARM/manifest.json" | jq -er '.vm // empty' ||
@@ -300,7 +294,7 @@ live_vm_for_inputs() { # <inputs> <candidate id>
 	done
 	return 1
 }
-# The date field of an id — the ONLY thing the timer's stable path orders on, as a number. It is
+# The date field of an id — the only thing the timer's stable path orders on, as a number. It is
 # the commit's YYMMDDHH (UTC); older releases carry YYYYMMDD, and every one of those is below
 # every YYMMDDHH, so numeric comparison orders both forms by time.
 date_of() { echo "$1" | cut -d. -f2; }
@@ -329,32 +323,30 @@ staged_version() {
 # Read the bucket + endpoint out of a write URL.
 bucket_of() { echo "$1" | sed 's|^s3://\([^?]*\).*|s3://\1|'; }
 endpoint_of() { echo "https://$(echo "$1" | sed 's|.*endpoint=\([^&]*\).*|\1|')"; }
-# Does the bucket hold this key, EXACTLY? `s3 ls <key>` is a PREFIX listing: asked for
+# Does the bucket hold exactly this key? `s3 ls <key>` is a prefix listing: asked for
 # `briard-agent` in a directory holding `briard-agent.exe` it prints that, and a pointer move
 # that trusted it would copy a key that does not exist (the Windows arm). So the listing's last
 # column must equal the key's own name.
 have_key() { aws s3 ls "$1" --endpoint-url "$2" 2>/dev/null | awk -v n="${1##*/}" '$NF == n { f = 1 } END { exit !f }'; }
-# Copy one key to another INSIDE the bucket, `$bucket`-relative on both sides.
+# Copy one key to another inside the bucket, `$bucket`-relative on both sides.
 #
-# ⚠️ `s3api copy-object`, NOT `s3 cp`, and the difference is not style. awscli2's `s3 cp` between
-# two S3 keys carries the source object's TAGS, which costs it a GetObjectTagging on the source
-# and an `x-amz-tagging-directive` on the copy -- neither of which R2 implements. `--copy-props
-# none` only trades the first error for the second. Without this a pointer move fails with
-# `NotImplemented` partway, and on exactly the small pointer files -- the manifest and its
-# signature -- since a multipart copy of a large object sets no tagging directive. Nothing here
-# has tags to lose.
-# A `cp` from a LOCAL file has no source object to interrogate and needs none of this.
+# ⚠️ `s3api copy-object`, deliberately not `s3 cp`: between two S3 keys awscli2's `s3 cp`
+# carries the source object's tags, costing a GetObjectTagging on the source and an
+# `x-amz-tagging-directive` on the copy, neither of which R2 implements (`--copy-props none` only
+# trades the first error for the second). A pointer move would fail with `NotImplemented` partway,
+# on exactly the small pointer files -- the manifest and its signature -- since a multipart copy
+# of a large object sets no tagging directive. Nothing here has tags to lose. A `cp` from a local
+# file has no source object to interrogate and needs none of this.
 copy_key() {
 	aws s3api copy-object --bucket "${2#s3://}" --key "$3" \
 		--copy-source "${2#s3://}/$1" --endpoint-url "$4" >/dev/null
 }
 
-# Purge a list of URLs (stdin) at the edge. CDN-specific, so it rides behind two env vars —
-# but a publish without them warns loudly, because the alternative is a silently stale
-# channel: the CDN caches the artifacts (measured: max-age 14400 on the .zst files), and a
-# pointer that moved while the edge still serves its old bytes fails every install closed for
-# hours. Versioned directories are immutable, so only POINTER paths and the root installers ever
-# need purging.
+# Purge a list of URLs (stdin) at the edge. CDN-specific, so it rides behind two env vars, but a
+# publish without them warns loudly rather than leave a silently stale channel: the CDN caches the
+# artifacts (measured: max-age 14400 on the .zst files), and a pointer that moved while the edge
+# still serves its old bytes fails every install closed for hours. Versioned directories are
+# immutable, so only pointer paths and the root installers ever need purging.
 purge_edge() {
 	if [ -n "${RELEASE_PURGE_URL:-}" ] && [ -n "${RELEASE_PURGE_TOKEN:-}" ]; then
 		need curl; need jq
@@ -392,7 +384,7 @@ embed_keyring() {
 		|| die "no public key landed in the staged $dst"
 }
 
-# Does <sig> verify <file> under ANY key of the keyring <pem>? The way a node's Keyring does: openssl
+# Does <sig> verify <file> under any key of the keyring <pem>? The way a node's Keyring does: openssl
 # reads only the first key of a PEM file, so each block gets its own file.
 verify_sig() {
 	local file=$1 sig=$2 pem=$3 d k
@@ -412,12 +404,12 @@ SIGNING=briardhq/signing
 SIGNING_MAIN=refs/signing/main
 fetch_signing() { git fetch --quiet "https://github.com/$SIGNING.git" "+main:$SIGNING_MAIN"; }
 
-# The release's manifests, proposed to the signing repository: the owner's merge is what starts
-# the sign job. <dir>..., each staged as <chain>/<id>/<arm>. One commit on its main, built with the
-# plumbing so the checkout does not move, force-pushed to release-<id> on the operator's fork,
-# which re-staging the id updates. A manifest staged again under the same id (a run that never
+# The release's manifests, proposed to the signing repository, where the owner's merge starts the
+# sign job. <dir>..., each staged as <chain>/<id>/<arm>. One commit on its main, built with
+# plumbing so the checkout does not move, force-pushed to release-<id> on the operator's fork
+# (re-staging the id updates it). A manifest staged again under the same id (a run that never
 # reached `publish`) drops the signature of the old bytes, so the job's question stays "has this a
-# signature at all". The description is a claim of this machine's: the diff is what is reviewed.
+# signature at all". The description is this machine's claim; the diff is what is reviewed.
 propose_manifests() {
 	local idx d p blob commit me v branch paths=""
 	need gh
@@ -471,20 +463,19 @@ pull_signature() {
 # The files a pointer directory carries, in the upload order that fails closed: the bootstrap
 # agent (if any) first, then the signature, then the manifest. A client racing the upload sees a
 # coherent old pair, a coherent new pair, or a manifest/signature mismatch it refuses — never a
-# manifest whose bytes are not there yet. Pointers are never synced, only copied, one file at a
+# manifest whose bytes are not there yet. Pointers are never synced, only copied one file at a
 # time: `sync --delete` can emit both an upload and a delete for the manifest in one run, and when
 # the delete wins the live channel 404s its manifest.
 POINTER_FILES="briard-agent briard-agent.exe manifest.json.sig manifest.json"
 
-# Move ONE chain/arm's pointer onto a published version, server-side, in POINTER_FILES order.
+# Move one chain/arm's pointer onto a published version, server-side, in POINTER_FILES order.
 # <chain> <version> <arm> <pointer> <bucket> <endpoint>
 #
-# ⚠️ ONE IMPLEMENTATION FOR BOTH POINTERS. `latest` and `stable` differ entirely in
-# what they MEAN -- one says a release exists, the other that every node should take it, and the
-# guards around them share nothing -- but moving one is the same act. It is a server-side copy
-# of the bytes just published, never an upload from the LOCAL staged directory: a re-upload could
-# name something other than what the versioned directory actually holds, and nothing would check.
-# A server-side copy cannot disagree.
+# ⚠️ One implementation for every pointer: `latest` and `stable` differ entirely in meaning (a
+# release exists; every node should take it) and share no guards, but moving one is the same act.
+# It is a server-side copy of the bytes just published, never an upload from the local staged
+# directory, which could name something other than what the versioned directory holds with
+# nothing checking; a server-side copy cannot disagree.
 move_pointer() {
 	local c=$1 v=$2 arm=$3 ptr=$4 bucket=$5 endpoint=$6 rel p f
 	rel=$(sub "$v" "$arm"); p=$(sub "$ptr" "$arm")
@@ -494,17 +485,15 @@ move_pointer() {
 	done
 }
 
-# Verify ONE served directory: the manifest's signature, that it names the chain and arm its path
-# implies (and the version asked for, when one is), and that every artifact it lists DOWNLOADS and
+# Verify one served directory: the manifest's signature, that it names the chain and arm its path
+# implies (and the version asked for, when one is), and that every artifact it lists downloads and
 # matches. <base-url> <chain> <arm> <want-version|"">; $tmp, $PUB and $CHANNEL come from the
 # caller (`verify` or `setup`).
 #
-# ⚠️ ONE IMPLEMENTATION FOR A POINTER AND FOR AN EXACT ID. A pointer is just a
-# manifest at a path, so the checks are identical and the URL is the only thing that differs --
-# which is exactly why this is a function rather than a second copy of the loop. Duplicating a
+# ⚠️ One implementation for a pointer and an exact id: a pointer is just a manifest at a path, so
+# only the URL differs, so it is one function, not a second copy of the loop; a duplicated
 # signature check is how one copy quietly stops being run.
-#
-# It never checks a manifest against itself: every artifact is fetched from where the MANIFEST
+# It never checks a manifest against itself: every artifact is fetched from where the manifest
 # says it lives (the versioned directory), not from the path the manifest came from.
 verify_manifest_at() {
 	local base=$1 c=$2 arm=$3 want=$4 v ch pl vdir label
@@ -534,9 +523,9 @@ verify_manifest_at() {
 		[ "$got" = "$sum" ] || die "$vdir/$name: sha256 $got != manifest $sum"
 		[ "$gotsize" = "$size" ] || die "$vdir/$name: size $gotsize != manifest $size"
 		echo "    ok  $vdir/$name  ($gotsize bytes)"
-		# A POINTER serves its own bootstrap copy, which must be the SAME bytes the manifest
+		# A pointer serves its own bootstrap copy, which must be the same bytes the manifest
 		# pins, or install.sh runs a bootstrap that is not the release it then installs. On a
-		# versioned path $base IS $vdir, so this re-reads the file just checked — cheap, and it
+		# versioned path $base is $vdir, so this re-reads the file just checked: cheap, and it
 		# keeps both callers on one path rather than adding a branch to skip it.
 		case "$name" in briard-agent|briard-agent.exe)
 			curl -fsS "$base/$name" -o "$tmp/$name.ptr" || die "$name is not served under $base (the bootstrap install.sh curls)"
@@ -546,9 +535,9 @@ verify_manifest_at() {
 	done
 	touch "$tmp/$c.$arm.$v.ok"
 }
-# ⚠️ EVERY SERVER-SIDE (s3->s3) COPY BELOW GOES THROUGH copy_key, never `s3 cp`: R2 implements
-# neither of the tagging calls awscli2 makes on a copy between two S3 keys (see copy_key). A `cp`
-# from a LOCAL file has no source object to interrogate, so the upload paths need nothing.
+# ⚠️ Every server-side (s3->s3) copy below goes through copy_key, never `s3 cp`: R2 implements
+# neither tagging call awscli2 makes on such a copy (see copy_key). Uploads from a local file
+# need nothing.
 
 case "${1:-}" in
 
@@ -556,11 +545,11 @@ stage)
 	DIR="${2:-$STAGE_DEFAULT}"
 	need nix; need sha256sum; need jq
 	V=$(release_version)
-	# THE VM RELEASE THIS BRIARD RELEASE PAIRS WITH. The image's inputs hash comes from
-	# the flake; if the live channel already serves an image with these exact inputs, that release
-	# is reused -- nothing of the vm chain is staged, and the briard manifest names it -- else a
-	# new id is minted: the commit date (so the same commit always mints the same id, and the
-	# timer's stable path, which orders on the date, sees a real step) and the inputs' short hash.
+	# The vm release this briard release pairs with. The image's inputs hash comes from the flake;
+	# if the live channel already serves an image with these exact inputs, that release is reused
+	# (nothing of the vm chain is staged; the briard manifest names it), else a new id is minted:
+	# the commit date (so the same commit always mints the same id, and the timer's stable path,
+	# which orders on the date, sees a real step) and the inputs' short hash.
 	INPUTS=$(nix eval --raw .#artifacts.guest-disk.inputs) || die "cannot read the guest image's inputs hash"
 	[ "${#INPUTS}" = 64 ] || die "the guest inputs hash is not a sha256 ($INPUTS)"
 	VM_REUSED=""
@@ -586,57 +575,51 @@ stage)
 	# produce a different sha256 on every run and the manifest would churn for no reason.
 	dtar() { tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf "$@"; }
 
-	# THE BRIARD CHAIN, LINUX ARM: agent + net-wrap + qemu, one release (they move as one
+	# The briard chain, linux arm: agent + net-wrap + qemu, one release (they move as one
 	# bundle and commit as one, so they are published as one). Copy, never symlink: the artifacts
 	# are uploaded as bytes, and a store symlink would publish a dangling link. `install -m` sets
 	# the mode the manifest then records.
 	H="$DIR/briard/$V/$LINUX_ARM"; mkdir -p "$H"
 	install -m0755 "$(out_of .#artifacts.agent)/bin/briard-agent"        "$H/briard-agent"
 	install -m0755 "$(out_of .#artifacts.net-wrap)/bin/briard-net-wrap"  "$H/briard-net-wrap"
-	# The systemd units, shipped verbatim rather than generated: the agent install copies them
-	# into place. Read from the working tree like install.sh below, not from a store path: they
-	# are static text with no build step. They are ordinary artifacts from here on -- the manifest
-	# hashes them and the signature covers them.
+	# The systemd units, shipped verbatim rather than generated (the agent install copies them into
+	# place): ordinary artifacts the manifest hashes and the signature covers. Read from the working
+	# tree like install.sh below, not a store path: static text with no build step.
 	install -m0644 scripts/units/briard-agent.service   "$H/briard-agent.service"
 	install -m0644 scripts/units/briard-update.service  "$H/briard-update.service"
 	install -m0644 scripts/units/briard-update.timer    "$H/briard-update.timer"
-	# The agent's frozen update script, same reasoning: the update launcher,
-	# shipped verbatim rather than generated. 0755 -- the manifest records a
-	# mode only when it is not the 0644 default, and this is run.
+	# The frozen update launcher, likewise. 0755 -- the manifest records a mode only when it is not
+	# the 0644 default, and this is run.
 	install -m0755 scripts/agent/briard-update  "$H/briard-update"
-	# qemu-bundle is a DIRECTORY in the store (bin/ lib/ share/ PROVENANCE) and the contract
+	# qemu-bundle is a directory in the store (bin/ lib/ share/ PROVENANCE) and the contract
 	# wants one file, so it is tarred here.
 	dtar "$H/qemu-bundle.tar" -C "$(out_of .#artifacts.qemu-bundle)" .
 	zst "$H/qemu-bundle.tar" "$H/qemu-bundle.tar.zst"
-	# THE GUEST BUNDLE: the briard binaries the guest runs ride the briard chain and are
+	# The guest bundle: the briard binaries the guest runs ride the briard chain and are
 	# pushed into the guest by the agent; the image bakes only the guest agent. Same shape as the
 	# qemu bundle (a tarred directory), hash-skipped by the update path when unchanged.
 	dtar "$H/guest-bundle.tar" -C "$(out_of .#artifacts.guest-bundle)" .
 	zst "$H/guest-bundle.tar" "$H/guest-bundle.tar.zst"
-	# install.sh, WITH THE RELEASE PUBKEY EMBEDDED, AS AN ARTIFACT OF THIS RELEASE.
-	# The source tree carries a placeholder and the script dies on it by design ("the embedded key
-	# is a build placeholder"), so shipping it unsubstituted would publish an installer that
-	# refuses to install.
+	# install.sh, with the release pubkey embedded, as an artifact of this release. The source tree
+	# carries a placeholder the script dies on by design ("the embedded key is a build
+	# placeholder"), so shipping it unsubstituted would publish an installer that refuses to
+	# install. In the linux-amd64 arm it is, like the frozen script and the units, versioned,
+	# diffable and covered by the release signature. It is also byte-copied to the channel root,
+	# but only by `promote`, never by `publish`: the advertised one-liner fetches the root URL on
+	# every `stable` install, so writing it at publish time would make publishing a live change to
+	# what strangers run. That root copy is fetched before anything exists that could verify it,
+	# which is why the repo being public and this script readable is the real answer to the
+	# `curl | sh` objection.
 	#
-	# It sits in the briard chain's linux-amd64 arm, which buys it exactly the three things shipping verbatim bought
-	# the frozen script and the units: versioned, diffable, and covered by the release signature.
-	# It is ALSO byte-copied to the channel root -- but only by `promote`, never by `publish`. The
-	# root URL is what the advertised one-liner fetches on every `stable` install, so writing it
-	# at publish time would make publishing a release a live change to what strangers run. That
-	# root copy is fetched before anything exists that could verify it, which is why the repo
-	# being public and this script readable is the real answer to the `curl | sh` objection.
-	#
-	# ⚠️ IT KEEPS DEFAULTING TO `RELEASE=stable` AND IS NOT STAMPED WITH ITS OWN ID. Stamping would
-	# make the deeper link self-contained, and would also make the ROOT copy name an exact id --
-	# so an installer somebody saved to disk months ago would silently install THAT release rather
-	# than healing forward to current stable, which is the property "old installer, new artifacts"
-	# rests on. Installing an exact id passes BRIARD_RELEASE beside the URL instead.
-	#
-	# The Windows installer, install.ps1, is the same thing on the windows-amd64 arm below: same
-	# placeholder, same embedding, same root copy at `promote`.
+	# ⚠️ It keeps defaulting to `RELEASE=stable` and is not stamped with its own id. Stamping would
+	# make the deeper link self-contained but would also make the root copy name an exact id, so an
+	# installer somebody saved to disk months ago would silently install that release rather than
+	# heal forward to current stable, the property "old installer, new artifacts" rests on.
+	# Installing an exact id passes BRIARD_RELEASE beside the URL instead. install.ps1 is the same
+	# on the windows-amd64 arm below: same placeholder, same embedding, same root copy at `promote`.
 	[ -n "${RELEASE_PUBKEY:-}" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key (embedded into install.sh)"
 	grep -q "BEGIN PUBLIC KEY" "$RELEASE_PUBKEY" || die "$RELEASE_PUBKEY is not a PEM PUBLIC KEY"
-	# THE CATALOG'S DEV KEY NEVER SHIPS. It signs the candidate list the test rigs read, so a
+	# The catalog's dev key never ships. It signs the candidate list the test rigs read, so a
 	# release whose keyring held it would let every node take a candidate signed by nobody but a
 	# test machine. Fail closed: a publisher that cannot name the dev key cannot prove its absence.
 	[ -f "${CATALOG_DEV_PUBKEY:-}" ] || die "set CATALOG_DEV_PUBKEY to the catalog's dev public key, which no release keyring may hold"
@@ -648,20 +631,19 @@ stage)
 	# The keyring again, as an artifact: the installers carry it to a new node, this to an old one.
 	install -m0644 "$RELEASE_PUBKEY" "$H/keyring.pem"
 
-	# The manifest, written BY THE AGENT rather than by this script: the format is a contract
-	# between the publisher and every installing node, so the writer shares its types with the
-	# reader (agent/install) and the format cannot disagree with itself — and the binary used is
-	# the one STAGED IN THIS DIRECTORY, the exact agent this release ships, so the manifest is
-	# written by the same build that will later read it on a node.
+	# The manifest is written by the agent, not this script: the format is a contract between the
+	# publisher and every installing node, so the writer shares its types with the reader
+	# (agent/install) and cannot disagree with it. The binary is the one staged in this directory,
+	# so the build this release ships writes the manifest it will later read on a node.
 	[ -x "$H/briard-agent" ] || die "no staged briard-agent to write the manifests with"
 	"$H/briard-agent" --stage-manifest "$H" --chain briard --platform "$LINUX_ARM" --release "$V" --vm "$GV" || die "writing the linux manifest failed"
 
-	# THE WINDOWS ARM. `FetchVerified` downloads EVERY artifact a manifest names, so a
-	# Windows-only bundle in the Linux manifest would make every Linux install pull tens of MB it
-	# can never run. An arm of its own gives it the identical shape — a signed manifest, its
-	# signature, the artifacts it names, the pointers — and the Windows installer names it the
-	# way the Linux one names `linux-amd64`. One path, run twice: no second protocol, no
-	# platform field on the wire beyond the manifest's own, and no client change on either side.
+	# The windows arm. `FetchVerified` downloads every artifact a manifest names, so a Windows-only
+	# bundle in the Linux manifest would make every Linux install pull tens of MB it can never run.
+	# An arm of its own has the identical shape (a signed manifest, its signature, the artifacts it
+	# names, the pointers), named by the Windows installer as the Linux one names `linux-amd64`.
+	# One path, run twice: no second protocol, no platform field on the wire beyond the manifest's
+	# own, no client change on either side.
 	W="$DIR/briard/$V/$WINDOWS_ARM"; mkdir -p "$W"
 	# The Windows agent, and the guest bundle it pushes. The bundle's bytes are the Linux arm's --
 	# the guest is Linux whatever runs it -- copied so a Windows install fetches one arm, not two.
@@ -671,16 +653,15 @@ stage)
 	# The TAP driver, OpenVPN's signed bytes pinned in the flake: the installer fetches it from this
 	# arm and checks the same hash, so a Windows install touches one origin.
 	install -m0644 "$(out_of .#artifacts.tap-windows)" "$W/tap-windows.exe"
-	# The qemu tree is signed before it is packed, so a copy out of the store, made writable; it
-	# lives under DIR, outside every versioned directory, so nothing uploads it and the next stage
-	# clears it.
+	# The qemu tree is signed before it is packed, so a writable copy out of the store, under DIR
+	# outside every versioned directory: nothing uploads it and the next stage clears it.
 	Q="$DIR/.qemu-windows"
 	cp -r "$(out_of .#artifacts.qemu-bundle-windows)/." "$Q"; chmod -R u+w "$Q"
 	mapfile -t QPE < <(find "$Q" -type f \( -iname '*.exe' -o -iname '*.dll' \))
-	# THE DOWNLOAD PAGE'S INSTALLER: the briard-setup stub with only the release public key
-	# appended, so it verifies stable's manifest and the install.ps1 that names, and runs that --
-	# installing current stable whenever it runs, never its own release, as the one-liner does. Its
-	# own version matters only for its own code. Signed with the rest, after the key is appended, so
+	# The download page's installer: the briard-setup stub with only the release public key
+	# appended, so it verifies stable's manifest and the install.ps1 that names, and runs that,
+	# installing current stable whenever it runs (never its own release), as the one-liner does; its
+	# own version matters only for its own code. Signed with the rest after the key is appended, so
 	# the signature covers the key.
 	K="$DIR/.setup-web"; rm -rf "$K"; mkdir -p "$K"
 	install -m0644 "$RELEASE_PUBKEY" "$K/keyring.pem"
@@ -697,7 +678,7 @@ stage)
 	install -m0644 scripts/agent/briard-update.ps1 "$W/briard-update.ps1"
 	"$H/briard-agent" --stage-manifest "$W" --chain briard --platform "$WINDOWS_ARM" --release "$V" --vm "$GV" || die "writing the windows manifest failed"
 
-	# THE VM CHAIN: the OS image, its own series, per CPU, and staged ONLY when its
+	# The vm chain: the OS image, its own series, per CPU, and staged only when its
 	# inputs changed (above). Measured: 1178 -> 377 MB compressed, which is what a household link
 	# actually waits on -- and what every household would otherwise re-download for a version string.
 	MANIFESTS="$H $W"
@@ -705,10 +686,10 @@ stage)
 		G="$DIR/vm/$GV/$VM_ARM"; mkdir -p "$G"
 		install -m0644 "$(out_of .#artifacts.guest-disk)/nixos.qcow2" "$G/nixos.qcow2"
 		zst "$G/nixos.qcow2" "$G/nixos.qcow2.zst"
-		# The closure the image boots, the oldest briard that tolerates this VM -- this
-		# very release's briard, the one it is built beside, and the tightest correct value: a node
-		# takes briard/stable daily and vm/stable rarely, so it is at or past this by the time
-		# the guest is promoted -- and the inputs hash that makes "unchanged" decidable next time.
+		# The closure the image boots; the oldest briard that tolerates this VM, which is the
+		# briard built beside it and the tightest correct value (a node takes briard/stable daily
+		# and vm/stable rarely, so it is at or past this by the time the guest is promoted); and the
+		# inputs hash that makes "unchanged" decidable next time.
 		"$H/briard-agent" --stage-manifest "$G" --chain vm --platform "$VM_ARM" --release "$GV" \
 			--system "$(out_of .#artifacts.guest-disk.system)" --min-briard "$V" --inputs "$INPUTS" \
 			|| die "writing the vm manifest failed"
@@ -755,10 +736,9 @@ publish)
 	DIR="${2:-$STAGE_DEFAULT}"
 	need nix
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
-	# Each installer is an artifact of ITS ARM and lives nowhere else in a staging dir
-	# (stage lays no root copy, and `promote` is what puts one at the channel root). A
-	# staging dir carrying no installer was built before the keyring
-	# was embedded, and publishing it would ship a release nobody can install.
+	# Each installer is an artifact of its arm and lives nowhere else in a staging dir (only
+	# `promote` puts one at the channel root). A staging dir carrying no installer was built before
+	# the keyring was embedded, and publishing it would ship a release nobody can install.
 	[ -f "$DIR/briard/$(staged_version "$DIR/briard")/$LINUX_ARM/install.sh" ] ||
 		die "no install.sh under $DIR/briard/<version>/$LINUX_ARM — run \`stage\` (it embeds the keyring)"
 	[ -f "$DIR/briard/$(staged_version "$DIR/briard")/$WINDOWS_ARM/install.ps1" ] ||
@@ -766,8 +746,8 @@ publish)
 	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
 	say "publishing $(cat "$DIR/VERSION" 2>/dev/null || echo '?') to $RELEASE_WRITE"
 
-	# THE PAIR: which vm release this briard release names, and whether it is staged here or
-	# already published (a reuse). A reused guest must actually BE in the bucket, or the host
+	# The pair: which vm release this briard release names, and whether it is staged here or
+	# already published (a reuse). A reused guest must actually be in the bucket, or the host
 	# manifest would name a release no installer can fetch.
 	GV=$(cat "$DIR/VM" 2>/dev/null) || die "no $DIR/VM — run \`stage\` first"
 	VM_REUSED=""; [ ! -f "$DIR/VM_REUSED" ] || VM_REUSED=1
@@ -776,7 +756,7 @@ publish)
 			die "the briard manifest names vm/$GV as its pair, but the bucket does not hold it — stage again against the live channel"
 	fi
 
-	# IMMUTABILITY FIRST, across every chain, before a byte moves: a half-published release
+	# Immutability first, across every chain, before a byte moves: a half-published release
 	# (briard uploaded, vm refused) would leave `latest` naming a pair nobody tested together.
 	for c in $CHAINS; do
 		[ "$c" = vm ] && [ -n "$VM_REUSED" ] && continue
@@ -797,10 +777,10 @@ publish)
 		for arm in $(arms_of "$c"); do
 			rel=$(sub "$v" "$arm")
 			# The versioned directory: artifacts first, manifest pair last. No --delete anywhere
-			# in this script: nothing is ever overwritten, so there is nothing to clean
-			# up — and the bucket ALSO holds `catalog/` (live runtime content the agent fetches
-			# for `briard app install`, produced by nothing in this repo), which a wide --delete
-			# would silently remove.
+			# in this script: nothing is ever overwritten, so there is nothing to clean up, and the
+			# bucket also holds `catalog/` (live runtime content the agent fetches for `briard app
+			# install`, produced by nothing in this repo), which a wide --delete would silently
+			# remove.
 			aws s3 sync "$DIR/$c/$rel" "$bucket/$c/$rel/" --endpoint-url "$endpoint" \
 				--exclude manifest.json --exclude manifest.json.sig --exclude "*/*" --no-progress
 			aws s3 cp "$DIR/$c/$rel/manifest.json.sig" "$bucket/$c/$rel/manifest.json.sig" --endpoint-url "$endpoint" --no-progress
@@ -809,38 +789,30 @@ publish)
 		done
 	done
 
-	# ⚠️ NOTHING THAT POINTS AT A RELEASE IS WRITTEN HERE, AND THAT IS THE POINT.
-	# Were `publish` to move `latest` or overwrite the root install.sh in the same breath as the
-	# upload, publishing a release would be a live change to what the fleet and what strangers
-	# get — so the only place a gate could stand would be BEFORE the upload, on bytes the CDN had
-	# never served. An id nothing names reaches nobody: it is fetchable by whoever knows it (the
-	# ids are commit-derived and the repo is public, so "untagged" is not "private"), signed,
-	# immutable, and advertised by not one path. That is what lets the gates run on the bytes the CDN
-	# actually serves. `latest` is moved by the `latest` subcommand once they pass; `stable` and
-	# the root install.sh by `promote`.
-	#
-	# The cost, stated rather than discovered: a release that fails its gate is dead bytes in the
-	# bucket until `gc` — immutable, named by no pointer, which is precisely the state `gc` was
-	# written to collect.
-	#
-	# NOTHING NEEDS PURGING EITHER. Only pointer paths and the root installer are ever
-	# overwritten, and this step writes neither; a versioned directory is immutable, so the
-	# edge has nothing stale to hold.
+	# ⚠️ Nothing that points at a release is written here, and that is the point. Were `publish` to
+	# move `latest` or overwrite the root install.sh with the upload, publishing would be a live
+	# change to what the fleet and strangers get, and the only place for a gate would be before the
+	# upload, on bytes the CDN had never served. An id nothing names reaches nobody: fetchable by
+	# whoever knows it (ids are commit-derived and the repo is public, so "untagged" is not
+	# "private"), signed, immutable, advertised by not one path, so the gates run on the bytes the
+	# CDN actually serves. `latest` moves by the `latest` subcommand once they pass; `stable` and
+	# the root install.sh by `promote`. The cost: a release that fails its gate is dead bytes in the
+	# bucket until `gc`, immutable and named by no pointer, precisely the state `gc` collects.
+	# Nothing needs purging either: only pointer paths and the root installer are ever overwritten,
+	# this step writes neither, and a versioned directory is immutable.
 	say "published — now run: ./scripts/publish-release.sh verify $(cat "$DIR/VERSION" 2>/dev/null || echo '<version>')"
 	say "   nothing points at it yet: \`latest\` once the gates pass, \`promote\` once the evidence is in"
 	;;
 
 latest)
-	# MOVE `latest` ONTO A PUBLISHED RELEASE — the second half of a publish, run once
-	# the gates have passed on the exact id. Separate from `publish` because that is the whole
-	# point of the split: uploading is inert, and this is the step that makes a release visible.
-	#
-	# It is NOT `promote` with a different argument, though it shares `move_pointer` with it.
-	# `stable` is what every installed node converges to and what a stranger gets, so promotion
-	# carries the no-same-date rule, the root installer and an evidence bar. `latest` says only
-	# "this exists and the gates liked it": it is what a cloud canary pins and what `briard update
-	# -to latest` asks for by name — nothing arrives at it by default.
-	# Two decisions, one mechanism.
+	# Move `latest` onto a published release: the second half of a publish, run once the gates
+	# have passed on the exact id. Separate from `publish` because uploading is inert and this is
+	# the step that makes a release visible. It is not `promote` with another argument, though it
+	# shares `move_pointer`: `stable` is what every installed node converges to and a stranger gets,
+	# so promotion carries the no-same-date rule, the root installer and an evidence bar; `latest`
+	# says only "this exists and the gates liked it", what a cloud canary pins and `briard update
+	# -to latest` asks for by name, and nothing arrives at it by default. Two decisions, one
+	# mechanism.
 	need nix; need curl; need jq
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
 	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
@@ -849,11 +821,10 @@ latest)
 		V=$(cat "$STAGE_DEFAULT/VERSION" 2>/dev/null) || die "no version given and no $STAGE_DEFAULT/VERSION to read one from"
 		say "no version given — taking the staged $V"
 	fi
-	# The PAIR moves together or not at all, the same obligation `promote` carries: `latest` on
-	# both chains must name the two releases that were staged, gated and verified beside each
-	# other. The briard manifest is where that pairing lives, so it is read from the
-	# PUBLISHED manifest rather than from anything local — this verb is about what is in the
-	# bucket, and a stage directory may be a different build by now.
+	# The pair moves together or not at all, as in `promote`: `latest` on both chains must name the
+	# two releases staged, gated and verified beside each other. The pairing is read from the
+	# published briard manifest, not from anything local: this verb is about what is in the bucket,
+	# and a stage directory may be a different build by now.
 	have_key "$bucket/briard/$V/$LINUX_ARM/manifest.json" "$endpoint" || die "briard/$V is not published; nothing to point at"
 	GV=$(curl -fsS "$CHANNEL/briard/$V/$LINUX_ARM/manifest.json" | jq -r '.vm // ""') || die "cannot read briard/$V/$LINUX_ARM to find its vm pair"
 	[ -n "$GV" ] || die "briard/$V names no vm release — published before the pairing was recorded; stage and publish again"
@@ -884,7 +855,7 @@ promote)
 		say "no version given — promoting what briard/latest names: $V"
 	fi
 	tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-	# Every chain and arm is checked before any of them moves: promotion is of the PAIR
+	# Every chain and arm is checked before any of them moves: promotion is of the pair
 	# (briard/stable + vm/stable is the tested pair by construction — there is no top-level
 	# install pointer, and this is the obligation that stands in for one).
 	for c in $CHAINS; do
@@ -892,10 +863,10 @@ promote)
 		for arm in $(arms_of "$c"); do
 			rel=$(sub "$v" "$arm"); p=$(sub stable "$arm"); tag="$c.$arm"
 			have_key "$bucket/$c/$rel/manifest.json" "$endpoint" || die "$c/$rel is not published; nothing to promote"
-			# The root installer is a byte-copy of the promoted release's, so that
-			# release has to carry one. A release staged before install.sh was carried in the release does not, and promoting it
-			# would move every pointer and leave the root serving the PREVIOUS installer — the
-			# silent half-promotion this whole check loop exists to refuse.
+			# The root installer is a byte-copy of the promoted release's, so that release must
+			# carry one. One staged before install.sh was carried in the release does not, and
+			# promoting it would move every pointer and leave the root serving the previous
+			# installer — the silent half-promotion this whole check loop exists to refuse.
 			if [ "$c" = briard ] && [ "$arm" = "$LINUX_ARM" ]; then
 				have_key "$bucket/$c/$rel/install.sh" "$endpoint" ||
 					die "$c/$rel carries no install.sh — it was staged before install.sh was carried in the release; re-stage and publish it"
@@ -905,7 +876,7 @@ promote)
 					die "$c/$rel carries no install.ps1 — it was staged before the Windows installer was carried in the release; re-stage and publish it"
 				have_key "$bucket/$c/$rel/briard-setup.exe" "$endpoint" ||
 					die "$c/$rel carries no briard-setup.exe — it was staged before the download page's installer was carried in the release; re-stage and publish it"
-				# THE STORE'S EXE STAYS UPGRADABLE. A Store install lays down the agent its exe
+				# The Store's exe stays upgradable. A Store install lays down the agent its exe
 				# carries, and that agent's first start updates it to stable -- which refuses an
 				# installed release older than stable's floor, so a floor past the exe leaves every
 				# new Store install unable to finish. The newest exe under setup/ is taken as the
@@ -929,12 +900,11 @@ promote)
 				if [ "$cur" = "$v" ]; then
 					say "$c/$p already names $v"
 				else
-					# THE NO-SAME-HOUR RULE. The timer's stable path orders on the
-					# date field alone and deliberately has no same-date rule (one would make
-					# the timer revert a cloud pin that shares a date with stable). So the
-					# constraint sits here, in the layer we can fix: a build whose date field
-					# equals the promoted one's is invisible to the fleet, and promoting it would
-					# only LOOK like a release.
+					# The no-same-hour rule. The timer's stable path orders on the date field
+					# alone and deliberately has no same-date rule (one would make the timer revert
+					# a cloud pin sharing stable's date), so the constraint sits here, in the layer
+					# we can fix: a build whose date field equals the promoted one's is invisible
+					# to the fleet, and promoting it would only look like a release.
 					[ "$(date_of "$cur")" != "$(date_of "$v")" ] ||
 						die "$c/$p is $cur, same date field as $v — the timer cannot tell them apart; a same-hour fix-up needs the next hour's number"
 				fi
@@ -953,14 +923,11 @@ promote)
 			fi
 		done
 	done
-	# THE CHANNEL ROOT'S INSTALLERS, byte-copied from the release just promoted and
-	# laid LAST, after every pointer — so the root can never advertise a `stable` that is not
-	# there yet.
-	#
-	# Unconditional, rather than folded into the pointer loop above: the pointer may already name
-	# $V (a re-run, or a promote that died after the pointers moved) while the root still serves
-	# the previous release's installer, and repairing exactly that half-laid state is what a
-	# re-run is for.
+	# The channel root's installers, byte-copied from the release just promoted and laid last,
+	# after every pointer, so the root can never advertise a `stable` that is not there yet.
+	# Unconditional rather than folded into the pointer loop: the pointer may already name $V (a
+	# re-run, or a promote that died after the pointers moved) while the root still serves the
+	# previous installer, and repairing exactly that half-laid state is what a re-run is for.
 	copy_key "briard/$V/$LINUX_ARM/install.sh" "$bucket" "install.sh" "$endpoint"
 	say "install.sh at the root -> briard/$V/$LINUX_ARM/install.sh"
 	copy_key "briard/$V/$WINDOWS_ARM/install.ps1" "$bucket" "install.ps1" "$endpoint"
@@ -981,25 +948,23 @@ promote)
 	;;
 
 dev)
-	# A DEV RELEASE, END TO END, WITH NO GATE. The header says why it exists; what matters here is
-	# what it shares and what it refuses to share. Staging, signing and publishing are the SAME
-	# steps a real release takes -- this arm calls them rather than re-spelling them, so a dev id is
-	# minted, signed and laid out exactly like one that will be promoted, and `verify <id>` reads it
-	# the same way. What it does not share is any gate and any floor: nothing is tested, and the
-	# previous dev release is deleted on the spot.
-	#
-	# THE ID IS AN ORDINARY ID. Cut from a committed HEAD on pushed main like every other
-	# (release_version's two gates stand), so a dev release can be told from a real one only by
-	# which pointer names it -- and `publish` refusing a version the bucket holds means the same
-	# commit cannot be dev-published twice: the last one is still there, under that id.
+	# A dev release end to end, with no gate (the header says why it exists). Staging, signing and
+	# publishing are the same steps a real release takes, called rather than re-spelled, so a dev
+	# id is minted, signed and laid out exactly like one that will be promoted, and `verify <id>`
+	# reads it the same way. What it does not share is any gate or floor: nothing is tested, and
+	# the previous dev release is deleted on the spot. The id is an ordinary id, cut from a
+	# committed HEAD on pushed main like every other (release_version's two gates stand), so only
+	# the pointer naming it tells a dev release from a real one; and since `publish` refuses a
+	# version the bucket holds, the same commit cannot be dev-published twice: the last one is
+	# still there, under that id.
 	DIR="${2:-$STAGE_DEFAULT}"
 	need nix; need curl; need jq
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
 	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
 	say "dev release: reading what dev names now (quiet for a moment -- awscli through nix), then stage, sign, publish, point"
-	# What a pointer names, read from the BUCKET rather than the edge: this decides a delete, and
+	# What a pointer names, read from the bucket rather than the edge: this decides a delete, and
 	# the edge may still serve the pointer that was purged a moment ago. Empty when the pointer
-	# does not exist yet -- and a missing pointer is the NORMAL first answer, so the failing
+	# does not exist yet -- and a missing pointer is the normal first answer, so the failing
 	# `aws` is swallowed inside the pipeline: under `pipefail` its status would otherwise be the
 	# substitution's, and `set -e` would end the whole run before a line was printed.
 	named_by() { { aws s3 cp "$bucket/$1/$(sub "$2" "$3")/manifest.json" - --endpoint-url "$endpoint" 2>/dev/null || true; } | jq -r "$4 // \"\""; }
@@ -1034,11 +999,11 @@ dev)
 		for f in $POINTER_FILES; do echo "$CHANNEL/vm/dev/$VM_ARM/$f"; done
 	} | purge_edge
 
-	# RETIRE THE PREVIOUS DEV. Whole release directories, the rule `gc` keeps (a partial one is a
+	# Retire the previous dev. Whole release directories, the rule `gc` keeps (a partial one is a
 	# manifest whose bytes are gone), and no floor: a dev release's only reader is the test node
 	# that asked for `dev`, and `dev` now names something else. The exceptions are the other
 	# pointers' releases -- `stable`'s and `latest`'s are theirs, not dev's to delete, however they
-	# came to share an id -- and, on the vm chain, the image the NEW dev just paired with.
+	# came to share an id -- and, on the vm chain, the image the new dev just paired with.
 	if [ -n "$prev" ]; then
 		keep=""
 		for p in stable latest; do
@@ -1072,23 +1037,22 @@ gc)
 	shift
 	need nix; need curl; need jq
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
-	# gc DELETES, and what makes that safe is that nothing needs the old
-	# BYTES — only the old CODE, which git has. An id is `v3.<commit-hour>.<shortrev>`, so the
-	# property a client depends on is "an id never names two different byte-sets", not "bytes
-	# live forever"; shipping old code is a REVERT COMMIT, which is a new rev under a new id and
-	# satisfies that trivially. `release_version`'s stale-commit floor is the other half.
+	# gc deletes, and that is safe because nothing needs the old bytes, only the old code, which
+	# git has. With ids `v3.<commit-hour>.<shortrev>`, a client depends on "an id never names two
+	# different byte-sets", not "bytes live forever"; shipping old code is a revert commit, a new
+	# rev under a new id, which satisfies that trivially. `release_version`'s stale-commit floor is
+	# the other half.
 	#
-	# AND THERE IS NO COLD ARCHIVE, deliberately. The case for one is "the bytes a rollback
-	# re-points to", and agent/install/update.go does not support it: `stable` installs only when
-	# date(have) < date(want), so a backward pointer move reaches new installs and cloud pins and
-	# no installed node. Against that: a second bucket, a second credential's blast radius, and a
-	# move R2 cannot perform — `s3 mv` fetches object tags for any copy past the 8 MB multipart
-	# threshold, i.e. every image and every agent, so it half-moves a release and leaves a
-	# manifest whose bytes are elsewhere, the one state this file exists to prevent. `--keep` and
-	# the floor cover the pin case instead.
+	# There is deliberately no cold archive. The case for one is "the bytes a rollback re-points
+	# to", which agent/install/update.go does not support: `stable` installs only when date(have) <
+	# date(want), so a backward pointer move reaches new installs and cloud pins, no installed node.
+	# Against it: a second bucket, a second credential's blast radius, and a move R2 cannot perform
+	# — `s3 mv` fetches object tags for any copy past the 8 MB multipart threshold (every image and
+	# agent), so it half-moves a release, leaving a manifest whose bytes are elsewhere, the one
+	# state this file exists to prevent. `--keep` and the floor cover the pin case instead.
 	bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
 	# Pins live in the cloud's rollout state, which this script cannot see; the operator names
-	# them. A release that is pinned and not named here is DELETED, and the pinned node's next
+	# them. A release that is pinned and not named here is deleted, and the pinned node's next
 	# tick fails its fetch loudly (a failed directive, not a silent no-op) — recovered by
 	# publishing a revert commit and re-pointing the pin at it, not by restoring bytes. This is
 	# the one place `--keep` earns its keep, and the floor is what buys time to use it.
@@ -1120,11 +1084,11 @@ gc)
 			if [ -z "$when" ] || [ "$when" \> "$floor" ]; then
 				echo "  keep  $c/$v (published $when, inside the $GC_FLOOR_DAYS-day floor)"; continue
 			fi
-			# WHOLE RELEASES, NEVER FILES: a release directory is what a signed manifest names,
-			# and a partial one is a manifest whose bytes are gone — indistinguishable, to a
-			# client, from an attack. `rm --recursive` needs no server-side copy, so it has no
-			# object-tagging call to trip on and cannot leave a release half-removed the way a
-			# move does — but the rule stands for whatever ever replaces it.
+			# Whole releases, never files: a release directory is what a signed manifest names, and
+			# a partial one is a manifest whose bytes are gone, to a client indistinguishable from
+			# an attack. `rm --recursive` needs no server-side copy, so it has no tagging call to
+			# trip on and cannot half-remove a release the way a move does; the rule stands for
+			# whatever replaces it.
 			say "deleting $c/$v (published $when, past the ${GC_FLOOR_DAYS}-day floor)"
 			aws s3 rm "$bucket/$c/$v/" --recursive --endpoint-url "$endpoint" --only-show-errors
 		done
@@ -1137,10 +1101,10 @@ verify)
 	[ -n "$PUB" ] || die "set RELEASE_PUBKEY to the PKIX PEM public key"
 	tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
-	# ONE EXACT RELEASE, NAMED — what follows a `publish`, since publishing points
-	# nothing at the release. The same checks a pointer gets, at the versioned path, plus the
-	# vm release it pairs with. No pointer check and no root installer, because this release is not
-	# claiming to be either yet; that is the whole state being verified.
+	# One exact release, named — what follows a `publish`, since publishing points nothing at the
+	# release: the checks a pointer gets, at the versioned path, plus the vm release it pairs with.
+	# No pointer check and no root installer: this release claims to be neither yet, which is the
+	# whole state being verified.
 	if [ -n "${2:-}" ]; then
 		V="$2"
 		say "verifying $V where it was published — no pointer names it yet"
@@ -1151,10 +1115,9 @@ verify)
 			die "cannot read briard/$V/$LINUX_ARM — is $V published?"
 		[ -n "$GV" ] || die "briard/$V names no vm release — published before the pairing was recorded; stage and publish again"
 		verify_manifest_at "$CHANNEL/vm/$GV/$VM_ARM" vm "$VM_ARM" "$GV"
-		# The installer a gate on this id will actually curl. Its BYTES are already
-		# checked — it is an artifact of the linux-amd64 arm above — so what this adds is that the
-		# deeper URL serves it, which is the one the gate names: the advertised root URL still
-		# serves the PROMOTED release and cannot reach this one at all.
+		# The installer a gate on this id will actually curl. Its bytes are already checked (an
+		# artifact of the linux-amd64 arm above); this adds that the deeper URL the gate names serves
+		# it: the advertised root URL serves the promoted release and cannot reach this one at all.
 		curl -fsS -o /dev/null "$CHANNEL/briard/$V/$LINUX_ARM/install.sh" ||
 			die "briard/$V/$LINUX_ARM/install.sh is not served — an install gate on $V has no installer to fetch"
 		say "$V verifies: both arms, vm $GV, every artifact matching, and its own install.sh served"
@@ -1163,21 +1126,18 @@ verify)
 		exit 0
 	fi
 
-	# EVERY CHAIN, EVERY ARM, EVERY POINTER. A pointer is a manifest at a path, so verifying one
-	# is verifying all of them with the path changed — and a pointer nobody verifies is a pointer
-	# nobody knows is broken until a stranger (or the timer, fleet-wide) runs into it.
-	# `stable` may not exist yet on a fresh tree; that is said out loud rather than failed,
-	# because the first publish of the tree is the one run where it is expected.
+	# Every chain, every arm, every pointer. A pointer is a manifest at a path, so verifying one is
+	# verifying all of them with the path changed, and a pointer nobody verifies is one nobody
+	# knows is broken until a stranger (or the timer, fleet-wide) runs into it.
 	for c in $CHAINS; do
 		for arm in $(arms_of "$c"); do
 			for p in stable latest dev; do
 				rel=$(sub "$p" "$arm"); base="$CHANNEL/$c/$rel"
-				# `stable` may not exist yet on a fresh tree; that is said out loud rather than
-				# failed, because the first publish of the tree is the one run where it is
-				# expected; a missing `dev` just means no dev release is out. A missing `latest` stays
-				# fatal: publishing moves no pointer, so a release can sit published with nothing
-				# naming it, but that is what `verify <VERSION>` is for —
-				# reaching here means the pointers are being checked, and one of them is gone.
+				# A missing `stable` is said out loud rather than failed: the first publish of a
+				# fresh tree is the one run where it is expected. A missing `dev` just means no dev
+				# release is out. A missing `latest` stays fatal: a release can sit published with
+				# nothing naming it (publishing moves no pointer), but that is what
+				# `verify <VERSION>` is for; here the pointers are being checked, and one is gone.
 				if ! curl -fsS -o /dev/null "$base/manifest.json" 2>/dev/null; then
 					[ "$p" = stable ] && { say "WARNING: no $c/$rel yet — nothing promoted here"; continue; }
 					[ "$p" = dev ] && { say "(no $c/$rel — no dev release out)"; continue; }
@@ -1187,7 +1147,7 @@ verify)
 			done
 		done
 	done
-	# THE PAIR HOLDS AT EVERY POINTER: what briard/<p> names as its vm is what vm/<p>
+	# The pair holds at every pointer: what briard/<p> names as its vm is what vm/<p>
 	# serves. This is the obligation "briard/stable + vm/stable is the tested pair" rests on,
 	# since the vm id is not derivable from the briard id; a pointer moved by hand on one
 	# chain and not the other fails here, before an installer meets it.
@@ -1199,24 +1159,21 @@ verify)
 		[ "$hg" = "$gv" ] || die "briard/$p pairs with vm/$hg but vm/$p serves $gv — the pointers disagree"
 		say "briard/$p <-> vm/$p agree on $gv (the tested pair)"
 	done
-	# install.sh at the channel root -- that is the URL the advertised one-liner names, so it
-	# is the one this must assert. The installer a stranger runs must agree with where the
-	# artifacts actually are: a published install.sh still defaulting to an old layout would
-	# fetch nothing and fail closed, which is safe but silent -- and would not be caught by any
-	# check above, since every one of them uses $CHANNEL rather than what the script believes.
-	# Downloaded to a FILE and then grepped, never `curl … | grep -q`: `-q` exits on the first
-	# match, which closes the pipe under a curl that is still writing; curl then dies with "(23)
-	# Failure writing output to destination" and `||` reads that as the assertion failing.
+	# install.sh at the channel root, the URL the advertised one-liner names, must agree with where
+	# the artifacts actually are: one still defaulting to an old layout would fetch nothing and
+	# fail closed, safe but silent, and no check above would catch it, since each uses $CHANNEL
+	# rather than what the script believes. Downloaded to a file and then grepped, never
+	# `curl … | grep -q`: `-q` exits on the first match, closing the pipe under a curl still
+	# writing, which dies with "(23) Failure writing output to destination", and `||` reads that as
+	# the assertion failing.
 	curl -fsS "$CHANNEL/install.sh" -o "$tmp/install.sh" || die "install.sh is not fetchable at $CHANNEL/install.sh"
 	grep -q "BRIARD_CHANNEL_URL:-$CHANNEL" "$tmp/install.sh" ||
 		die "the served install.sh does not default to $CHANNEL — it would look for the tree in the wrong place"
-	# ...and it is the PROMOTED RELEASE'S installer, byte for byte. Since the root
-	# copy is unsigned by construction — the one-liner fetches it before anything exists that
-	# could verify a signature — this equality is the only thing that ties it to the signed set
-	# at all: matching `briard/stable/linux-amd64/install.sh` makes it exactly as trustworthy as that
-	# manifest, which the loop above already verified against the release key. Without it the
-	# root could serve any installer at all and every check above would still pass.
-	#
+	# ...and it is the promoted release's installer, byte for byte. The root copy is unsigned by
+	# construction (the one-liner fetches it before anything could verify a signature), so this
+	# equality is the only tie to the signed set: matching `briard/stable/linux-amd64/install.sh`
+	# makes it exactly as trustworthy as that manifest, which the loop above verified against the
+	# release key. Without it the root could serve any installer and every check above would pass.
 	# Skipped only when nothing is promoted yet (a fresh tree), which the loop above already
 	# reported; the sha of a 404 would otherwise read as a mismatch and bury that.
 	if curl -fsS "$CHANNEL/briard/stable/$LINUX_ARM/manifest.json" -o "$tmp/stable.json" 2>/dev/null; then
@@ -1250,19 +1207,17 @@ verify)
 	;;
 
 setup)
-	# THE STORE'S INSTALLER, built from a release ALREADY PUBLISHED: its windows arm, fetched
-	# from the live channel and verified the way `verify` does, unpacked into the shape install.ps1
+	# The Store's installer, built from a release already published: its windows arm, fetched from
+	# the live channel and verified the way `verify` does, unpacked into the shape install.ps1
 	# installs from (BRIARD_ARTIFACTS: the qemu tree extracted, the guest bundle decompressed to its
-	# tar), zipped
-	# and appended to the briard-setup stub. No guest image: the installed agent's first start
-	# fetches it. Run when the Store listing needs a new installer -- the upgrade floor moved past
-	# the one it embeds, or the TAP driver or the qemu bundle changed -- never per release: the
-	# Store never updates an installed node, our self-update does.
+	# tar), zipped and appended to the briard-setup stub. No guest image: the installed agent's
+	# first start fetches it. Run when the Store listing needs a new installer (the upgrade floor
+	# moved past the one it embeds, or the TAP driver or qemu bundle changed), never per release:
+	# the Store never updates an installed node, our self-update does. `setup build` makes it
+	# locally with no credential, so it can be proven on a Windows machine first; `setup publish`
+	# uploads that file.
 	#
-	# `setup build` makes it locally, needing no credential, so it can be proven on a Windows
-	# machine first; `setup publish` uploads that file.
-	#
-	# ⚠️ ONE URL, ONE BINARY, FOREVER. The Store certifies the bytes at the URL it was given and
+	# ⚠️ One URL, one binary, forever. The Store certifies the bytes at the URL it was given and
 	# re-certifies on its own if they move, so setup/<VERSION>/briard-store-setup.exe is written
 	# once and refused after. It lives outside both chains, so `gc` never collects it. Named apart
 	# from the download page's briard-setup.exe (`stage`): the same stub, a different program.
@@ -1277,9 +1232,9 @@ setup)
 		[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE (see header)"
 		bucket=$(bucket_of "$RELEASE_WRITE"); endpoint=$(endpoint_of "$RELEASE_WRITE")
 		! have_key "$bucket/$key" "$endpoint" || die "$key is already published, and the Store certified those bytes; a new installer is a new release"
-		# The other side of `promote`'s check: an exe older than stable's floor could never
-		# finish an install, since its first start is the update to stable.
-		# A failed read stops here; only a channel with no stable yet (404) has no floor to hold.
+		# The other side of `promote`'s check: an exe older than stable's floor could never finish
+		# an install, since its first start is the update to stable. A failed read stops here; only
+		# a channel with no stable yet (404) has no floor to hold.
 		code=$(curl -sS -o "$OUT.stable.json" -w '%{http_code}' "$CHANNEL/briard/$(sub stable "$WINDOWS_ARM")/manifest.json") ||
 			die "cannot read stable's manifest for its upgrade floor"
 		case "$code" in 200 | 404) ;; *) die "stable's manifest answered $code" ;; esac

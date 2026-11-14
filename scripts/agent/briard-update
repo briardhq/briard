@@ -1,33 +1,32 @@
 #!/bin/sh
 # briard-update: converge this node to the release channel.
 #
-# SHIPPED VERBATIM and FROZEN: a signed artifact of the host chain that the agent install
-# (briard-agent install) copies into place, never a heredoc. The freeze is the safety property
-# -- this is dumb shell, so a bug in the volatile agent can never wedge the thing that replaces
-# it -- and it is frozen by necessity: it launches the replacement of the binary, so no release
-# can be what fixes it. What shipping adds is that the file is versioned, diffable and covered
-# by the release signature.
+# Shipped verbatim (so versioned, diffable and covered by the release signature) and frozen: a
+# signed artifact of the host chain that the agent install (briard-agent install) copies into
+# place, never a heredoc. The freeze is the safety property: this is dumb shell, so a bug in the
+# volatile agent can never wedge the thing that replaces it. It is frozen by necessity: it
+# launches the replacement of the binary, so no release can be what fixes it.
 #
-# ⚠️ IT HAS NO PRODUCT KNOWLEDGE, and that is the whole design: five steps -- read the channel and
-# keyring, read the target, download the pointer's agent, have the committed agent check it
-# against the target's signed manifest, run it with --update -- and the verdict written down. The
-# fetched binary does the whole update (stop, swap, start, commit or revert), so nothing in the
-# product can make this script need a new release.
+# ⚠️ It has no product knowledge, and that is the whole design. Five steps: read the channel and
+# keyring, read the target, download the agent of the pointer, have the committed agent check it
+# against the signed manifest of the target, run it with --update; then the verdict is written
+# down. The fetched binary does the whole update (stop, swap, start, commit or revert), so nothing
+# in the product can make this script need a new release.
 #
-# THE ONE QUESTION IT ASKS THE AGENT IT REPLACES is that check, and only because it cannot be
+# That check is the one question it asks the agent it replaces, and only because it cannot be
 # asked of the binary being checked: a forged agent would skip it, and the fetched agent runs as
 # root, so without it whoever can write to the channel could run code on every node with no
 # signing key. Every release answers it for its own release before it may become the committed
 # agent, so a committed agent that cannot answer it is one no update produced.
 set -eu
 
-# The node's own configuration, when it has one. The unit delivers it as an EnvironmentFile, so
-# what lands here is CHANNEL_URL and UPDATE_KEYRING exactly as the operator set them at install.
+# The node configuration, when it has one: the unit delivers config.env as an EnvironmentFile, so
+# CHANNEL_URL and UPDATE_KEYRING arrive exactly as the operator set them at install.
 #
-# ⚠️ THE TWO DEFAULTS BELOW ARE A DELIBERATE SECOND COPY of agent/host/config.go's (owner's call).
-# config.env carries a key only when somebody named one, so on an ordinary install there
-# is nothing here to read -- and this script must not ask the agent, which is the thing it exists
-# to replace. Two literals, pinned by a test that reads both files.
+# ⚠️ The two defaults below are a deliberate second copy of those in agent/host/config.go (owner
+# call): config.env carries a key only when somebody named one, so an ordinary install has nothing
+# here to read, and this script must not ask the agent it exists to replace. Two literals, pinned
+# by a test that reads both files.
 CHANNEL="${CHANNEL_URL:-https://get.briard.io}"
 KEYRING="${UPDATE_KEYRING:-/opt/briard/keyring.pem}"
 BASE=/opt/briard/agent
@@ -42,12 +41,12 @@ if [ -f "$RUN/update-target" ]; then
 	target=$(head -n1 "$RUN/update-target")
 	rm -f "$RUN/update-target"
 fi
-# (2) A fresh agent FROM THE TARGET runs the update. Under $BASE, not /run: Debian mounts /run
+# (2) A fresh agent from the target runs the update. Under $BASE, not /run: Debian mounts /run
 #     noexec; and never the committed file itself, which the update replaces.
 tmp=$(mktemp -d "$BASE/.update.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 #     Most runs find the target's agent byte-identical to the committed one, so curl asks for it
 #     only if it differs: the channel's ETag for a pointer's file is its MD5, and a 304 means the
-#     committed binary IS the target's, so its copy runs -- hashed after copying, so what runs is
+#     committed binary is the target's, so its copy runs -- hashed after copying, so what runs is
 #     what was compared. Any other ETag (an exact id's multipart upload) just downloads.
 url="$CHANNEL/briard/$target/linux-amd64/briard-agent"
 set --
@@ -60,7 +59,7 @@ if command -v curl >/dev/null 2>&1; then
 elif command -v wget >/dev/null 2>&1; then wget -qO "$tmp/briard-agent" "$url"
 else report failed "need curl or wget to fetch $url"; exit 1; fi || { report failed "could not fetch a bootstrap agent from $url"; exit 1; }
 chmod +x "$tmp/briard-agent"
-# (3) The COMMITTED agent checks it before it runs: the target's manifest and signature, as
+# (3) The committed agent checks it before it runs: the target's manifest and signature, as
 #     served beside it, must be a release the node's keyring signed and must name these bytes.
 #     A publish moving the pointer between the two downloads fails this run, and the next one
 #     finds them agreeing.
