@@ -7,10 +7,10 @@ package main
 // only assert it.
 //
 // ⚠️ IT ANSWERS QUERIES AND SAYS NOTHING UNSOLICITED. No probing, no announcements, no goodbyes.
-// That is the robustness argument, not a shortcut: a probing responder is a state machine that
-// can wedge, silently and permanently, if the address moves or an interface appears inside its
-// probe window, and a responder with no probe has no such state. "What address does this name
-// have" is a field read when the answer is written.
+// That is the robustness argument for not using avahi, not a shortcut: avahi's entry group is a
+// state machine we cannot see into, and it wedges -- silently, permanently -- if the address
+// moves or an interface appears inside its probe window. A responder with no probe has no such
+// state. "What address does this name have" is a field read when the answer is written.
 //
 // ⚠️ THE COST, ACCEPTED: a browsing client learns of a NEW app on its next periodic query rather
 // than instantly, and an uninstalled one leaves a stale PTR until its TTL. Failover needs none of
