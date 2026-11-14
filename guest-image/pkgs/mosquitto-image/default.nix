@@ -6,11 +6,11 @@
 # a node upgrades to is the manifest's content hash, and a manifest naming the same image is not
 # an upgrade at all.
 #
-# ── Why THIS pair (measured 2026-08-30, not reasoned) ────────────────────────────────────
+# ── Why THIS pair (measured, not reasoned) ───────────────────────────────────────────────
 #   from = 2.1.1
-#   to   = 2.1.2   (the catalog's entry when the pair was written; the pair is frozen, the catalog moves)
+#   to   = 2.1.2   (the pair is frozen; the catalog moves)
 #
-# Both were run under Briard's own config before the pair was written, and both answer
+# Both were run under Briard's own config, and both answer
 # `/api/v1/listeners` on the loopback management listener. That matters: the health floor probes
 # the same endpoint on both sides of the switch, so an upgrade test that failed would be reporting
 # on the PIPELINE rather than on a broker that changed its API mid-pair.
@@ -21,9 +21,9 @@
 # there after it, and rolls back with the snapshot if the switch is reverted.
 #
 # ── Pin provenance / refresh procedure ───────────────────────────────────────────────────
-# Per-arch amd64 manifest digests under each release's multi-arch index, resolved 2026-08-30 from
-# the registry (`docker manifest inspect eclipse-mosquitto:<tag>`). v0 is x86_64-only; arm64
-# waits for the Pi target. To (re)compute the FOD `sha256`: leave
+# Per-arch amd64 manifest digests under each release's multi-arch index, resolved from
+# the registry (`docker manifest inspect eclipse-mosquitto:<tag>`). Pinned for x86_64 only;
+# there is no arm64 pin. To (re)compute the FOD `sha256`: leave
 # it `lib.fakeSha256`, run `nix build .#mosquitto-image-2_1_2` (and `..._2_1_1`), and paste the
 # hash the build prints back here.
 { dockerTools, lib, stdenv }:

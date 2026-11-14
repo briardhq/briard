@@ -1,12 +1,13 @@
 # The HA upgrade-pair fixture: two digest-pinned HA images that straddle a
-# real recorder schema migration, so the upgrade tests can drive a *real* `Manager.Upgrade`
-# (not a dummy) through the pipeline and assert the DB actually migrated + survived.
+# real recorder schema migration, so the upgrade tests (hass-upgrade, hass-upgrade-rollback) can
+# drive a *real* HA upgrade (not a dummy) through the app-upgrade pipeline and assert the DB
+# actually migrated + survived.
 #
 # Hermetically pinned: pull the
 # official container by per-arch content digest, never a mutable tag, so Nix
 # reproduces it bit-for-bit. This file just pins TWO of them.
 #
-# ── Why this exact pair (the decision, 2026-07-23) ───────────────────────
+# ── Why this exact pair ──────────────────────────────────────────────────
 # The recorder DB schema is versioned by `SCHEMA_VERSION` in
 # homeassistant/components/recorder/db_schema.py; upgrades run the ordered
 # migrators in migration.py. Mapping release → schema (read from the tagged
@@ -34,17 +35,18 @@
 #   • v53 — MySQL-only (utf8mb4 charset conversion). No-op on SQLite.
 #   Net on SQLite: schema_version 51 → 53.
 #
-# The migration SIGNAL is schema_version, NOT column shape (corrected empirically): HA creates a fresh DB at its code's full model shape, so a fresh 2025.11.0
+# The migration SIGNAL is schema_version, NOT column shape: HA creates a fresh DB at its
+# code's full model shape, so a fresh 2025.11.0
 # (schema 51) DB ALREADY has statistics_meta.unit_class — column presence can't
 # distinguish pre/post, so v52's ADD COLUMN is effectively a no-op on our fresh
 # from-DB (the backfill has ~no rows too). What a real migration provably moves is the
 # schema_changes ledger: HA-to must detect 51 < 53 and record migrators 52+53. So
-# The upgrade tests assert on schema_version 51↔53 (+ history preserved), not on the column.
+# the upgrade tests assert on schema_version 51↔53 (+ history preserved), not on the column.
 #
 # One month of application delta (2025.11 → 2025.12) keeps unrelated integration
 # churn out of the way, isolating the recorder migration — the point of the fixture.
 #
-# Reversibility (feeds the rollback-safety analysis + the upgrade testsd): HA recorder
+# Reversibility (feeds the rollback-safety analysis + the upgrade tests): HA recorder
 # migrations are FORWARD-ONLY — there is no v53→v51 down-migration. Our rollback
 # does NOT need one: it restores the whole pre-upgrade btrfs snapshot of the data
 # subvolume (recorder DB + `.storage`), which brings back the schema-51 DB file
@@ -54,9 +56,9 @@
 # apps, does not bite here.)
 #
 # ── Pin provenance / refresh procedure ────────────────────────────────────────
-# Per-arch amd64 manifest digests, resolved 2026-07-23 from the ghcr registry API
-# (anonymous pull token → manifest list → linux/amd64 sub-manifest digest). v0 is
-# x86_64-only; arm64 waits for the Pi target.
+# Per-arch amd64 manifest digests, resolved from the ghcr registry API
+# (anonymous pull token → manifest list → linux/amd64 sub-manifest digest). Pinned for
+# x86_64 only; there is no arm64 pin.
 # To (re)compute the FOD `sha256`: leave it `lib.fakeSha256`, run
 #   nix build .#home-assistant-image-2025_11   (and .#..._2025_12)
 # and paste the real hash the build prints back here.

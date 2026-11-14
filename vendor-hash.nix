@@ -4,15 +4,12 @@
 # module's go.mod/go.sum. It is module-wide, so it is unaffected by build tags and by which
 # subPackages a given derivation builds — the vendor dir carries every dep either way.
 #
-# It lived inline in EIGHT files, coupled only by comments telling the next person to
-# "regenerate together with the agent's". That coupling is not free: adding one dependency
-# (klauspost/compress, a1d390e) meant editing eight files in lockstep, and the same shape has
-# already gone stale twice in the sibling repo, which held copies of its own. One definition,
-# no lockstep, nothing to remember.
+# Copies of it, coupled only by comments, would have to be edited in lockstep for every new
+# dependency and go stale when one is missed. One definition, no lockstep, nothing to remember.
 #
 # TO REGENERATE, when you change go.mod or go.sum:
-#   1. set this to `lib.fakeHash`
-#   2. nix build --no-link .#briard-agent
+#   1. set this to the string `lib.fakeHash` names (no `lib` is in scope in this file)
+#   2. nix build --no-link .#artifacts.agent
 #   3. copy the reported "got:" hash here
 #
 # ⚠️ THE PRIVATE SIBLING READS THIS FILE BY PATH. It builds one binary straight from this repo

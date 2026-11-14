@@ -1,18 +1,19 @@
 # The Briard agent binary, built from the repo's Go module. External deps are
-# kept minimal (CONTRIBUTING.md: new dependencies default to no); currently lego (ACME DNS-01) + its tree,
-# vendored via vendorHash. Three mains share the module: the host agent, the guest agent that
-# serves the host over the virtio-serial channel, and the guest FIRMWARE the image bakes.
+# kept minimal (CONTRIBUTING.md: new dependencies default to no); the module requires
+# klauspost/compress, pion/mdns and golang.org/x/{net,sys}, vendored via vendorHash. Every main
+# here builds from the one module: the host agent, the guest agent that serves the host over
+# the virtio-serial channel, the guest FIRMWARE the image bakes, and the Windows tray and setup.
 #
-# vendorHash lives in ../vendor-hash.nix, which every Go package here imports -- it used to be
-# copied into eight files kept in step by comments, so adding one dependency meant editing eight
-# of them in lockstep. That file carries the regenerate recipe. It is module-wide, so it is
+# vendorHash lives in ../vendor-hash.nix, which every Go package here imports, so adding one
+# dependency is one edit. That file carries the regenerate recipe. It is module-wide, so it is
 # unaffected by build tags (the vendor dir carries every dep; tags only change what links).
 #
 # subPackage: which main to build. `agent/cmd/briard-agent` is the HOST agent (and the `briard`
-# CLI); `agent/cmd/briard-guest-agent` is the in-guest agent, which the host PUSHES; and
+# CLI); `agent/cmd/briard-guest-agent` is the in-guest agent, which the host PUSHES;
 # `agent/cmd/briard-guest-firmware` is the push protocol alone, the ONE binary the guest
-# image bakes. Each is its own main, so what each links is an import graph the arch tests fence
-# rather than a build tag.
+# image bakes; and `agent/cmd/briard-tray` / `agent/cmd/briard-setup` are the Windows tray and
+# setup programs. Each is its own main, so what each links is an import graph the arch tests
+# fence rather than a build tag.
 #
 # version: the release id stamped into the binary. Shape `<epoch>.<commit-hour>.<short-rev>`
 # — e.g. `v3.26080614.92d4eee`, the hour YYMMDDHH in UTC — computed in flake.nix from `self`, i.e. DERIVED FROM THE TREE and
@@ -30,14 +31,18 @@
 # This is the same relocatability requirement qemu-bundle.nix solves by patchelf; the agent is
 # pure Go, so it can simply not need a loader. Nothing here uses cgo (net's pure-Go resolver
 # and os/user's pure-Go path are both fine -- the agent shells out to iproute2/systemd).
-# goos: "windows" cross-compiles the Windows host agent (briard-agent.exe) -- a plain Go cross build,
-# which is the whole reason the agent is pure Go. The ELF check below does not apply to a PE file.
-# gui: a Windows GUI-subsystem program (the tray), which Windows starts without a console window.
-# winres: a Windows resource script beside the main (its icon, version info and manifest, agent/cmd/
-# briard.rc), compiled by mingw's windres into the .syso the Go linker takes by itself -- the same
-# cross toolchain the Windows QEMU builds with. The host's cpp is its preprocessor.
+# goos: "windows" cross-compiles a Windows program (briard-agent.exe, the tray, setup) -- a plain
+# Go cross build, which is the whole reason the agent is pure Go. The ELF check below does not
+# apply to a PE file.
+# gui: a Windows GUI-subsystem program (the tray, setup), which Windows starts without a console
+# window.
+# winres: a Windows resource script beside the main (e.g. agent/cmd/briard-tray/briard-tray.rc:
+# the icon and version info of agent/cmd/briard.rc, plus the manifest), compiled by mingw's windres
+# into the .syso the Go linker takes by itself -- the same cross toolchain the Windows QEMU
+# builds with. The host's cpp is its preprocessor.
 # ⚠️ No argument here may share a name with a package: callPackage fills it from pkgs over its
-# default. This one was `rc` -- the Plan 9 shell -- and every build that left it unset ran windres.
+# default. Named `rc` -- the Plan 9 shell -- it would be set on every build that left it unset,
+# and every one would run windres.
 { lib, buildGoModule, patchelf, pkgsCross, subPackage ? "agent/cmd/briard-agent", version ? "0.0.0-dev", goos ? null, gui ? false, winres ? null }:
 let
   # The release id as Windows' four 16-bit version fields: v3.26102922.e073879 is 3.2610.2922.0
@@ -63,8 +68,8 @@ buildGoModule {
   # A cross-compiled test binary cannot run here; the Windows tests run on a Windows machine.
   doCheck = goos == null;
   # The PE is NOT stripped by the fixup: binutils' strip is an ELF tool, and run over the PE Go
-  # emits it leaves a file Windows refuses to start ("not a valid Win32 application" -- measured
-  # on the rig, with the unstripped build of the same tree running beside it). Go's own
+  # emits it leaves a file Windows refuses to start ("not a valid Win32 application", where the
+  # unstripped build of the same tree runs). Go's own
   # `-s -w` would be the way to shed the symbol table; the size is not worth a second ldflags path.
   dontStrip = goos != null;
   # Stamp the release id the agent reports as NodeStatus.AgentVersion and converges to on a
@@ -74,7 +79,7 @@ buildGoModule {
   # ...and PROVE it, at build time. Setting CGO_ENABLED is an intention; an ELF interpreter is a
   # fact, and it is the fact a stranger's kernel reads. A future dependency that quietly re-enables
   # cgo would otherwise ship an agent that cannot start on any machine without this exact store
-  # path -- the failure we already shipped once, and one no NixOS test can see. This fails the
+  # path -- a failure no NixOS test can see. This fails the
   # build instead: it is checked on the built binary, so it cannot go vacuous.
   nativeBuildInputs = [ patchelf ] ++ lib.optional (winres != null) pkgsCross.ucrt64.buildPackages.binutils;
   postFixup = lib.optionalString (goos == null) ''

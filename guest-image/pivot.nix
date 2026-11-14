@@ -24,9 +24,8 @@
 #                        both questions the rest of this asks -- "is this start a trial" (ran =
 #                        trial) and "what is this unit actually running" -- the second because a
 #                        failed start is invisible to `systemctl try-restart` once systemd's
-#                        auto-restart has succeeded. There used to be a separate `.trial` flag
-#                        saying the first; two files carrying one fact are two files that can
-#                        disagree, so the marker absorbed it (owner, 2026-09-08)
+#                        auto-restart has succeeded. One file answers both, because two files
+#                        carrying one fact are two files that can disagree
 #   <bin>/<name>         the PUSHED, committed binary; absent on a fresh boot
 #   <baked>              the firmware, for the agent's unit alone; `-` for the web units (none)
 #   <bin>/RELEASE        the host release id the committed set came from (the handshake's Bundle)
@@ -38,19 +37,18 @@
 # passing verdict opens the port. It then COMMITS -- every staged name plus RELEASE, together --
 # and only after that says READY and serves its first verb.
 #
-# ⚠️ THE COMMIT IS NOT A UNIT HOOK, and that is deliberate. It was an `ExecStartPost`
-# here (briard-bin-commit, a shell script systemd ran only after READY=1), which read as the
-# tighter gate and was not: the host is outside the guest and cannot see READY, so what it
-# actually waits on is the PORT -- opened before READY, and before systemd schedules any
-# ExecStartPost. In that window the host handshakes, judges the guest dressed and sends bring-up
-# verbs, and `briard-node-storage.service` execs `<bin>/briard-guest-agent` directly, which the
-# commit has not created yet: measured 203/EXEC on the fleet tier 2026-09-11 (os-reboot.sh, run
-# 34576181211, lost by 12 ms), rolling back a healthy OS upgrade. agent/guestfirmware/bin.go
-# BinCommit carries the full account and what the move gives up.
+# ⚠️ THE COMMIT IS NOT A UNIT HOOK, and that is deliberate. An `ExecStartPost` here (run by
+# systemd only after READY=1) reads as the tighter gate and is not: the host is outside the
+# guest and cannot see READY, so what it actually waits on is the PORT -- opened before READY,
+# and before systemd schedules any ExecStartPost. In that window the host handshakes, judges
+# the guest dressed and sends bring-up verbs, and `briard-node-storage.service` execs
+# `<bin>/briard-guest-agent` directly, which such a commit has not created yet: 203/EXEC, by
+# milliseconds, rolling back a healthy OS upgrade. agent/guestfirmware/bin.go BinCommit carries
+# the full account and what committing in the agent gives up.
 #
 # A web unit whose staged file fails has already reverted by then: its auto-restart (2 s, direct
 # mode) finds the flag consumed and execs the committed file. One failed start out of the unit's
-# budget -- the promotion hold fires on start-limit exhaustion only (configuration.nix,
+# budget -- the promotion hold fires on start-limit exhaustion only (agent/guestagent/units.go,
 # chainMemberFailure), so a failed upgrade NEVER demotes. The trial agent exits 1, its own picker
 # brings the committed agent back -- or, when the FIRST dress is what failed and there is no
 # committed agent yet, the firmware -- and that start discards the staged set and puts both web
@@ -59,23 +57,23 @@
 #
 # Frozen in the sense that matters: a pushed binary can change everything about itself except the
 # picker it is started by, --test-launch, and the verbs it is reached through -- those are the
-# contract the firmware keeps, versioned additively. That contract is now also the image's
+# contract the firmware keeps, versioned additively. That contract is also the image's
 # CHANGE CONDITION: the firmware's import graph is the guest chain's input hash, so the
 # guest image moves when the protocol does and not when the agent does.
 { lib, pkgs, config, ... }:
 let
   # In /var, the state disk's per-boot scratch (disk-image.nix) -- and NOT under
   # /var/lib/briard, which in the guest is the replicated data volume: mounted only while
-  # promoted (files put there before vanish under the mount) and unmountable while a binary runs from it (agent/guestfirmware/bin.go says how that
-  # was measured).
+  # promoted (files put there before vanish under the mount) and unmountable while a binary
+  # runs from it (agent/guestfirmware/bin.go).
   binDir = "/var/lib/briard-bin";
-  runDir = "/run/briard-bin"; # tmpfs: the single-use flags
-  # ⚠️ The SET is not listed here any more: the commit that used to walk it moved into
-  # the agent, so guestfirmware/bin.go BinNames is now the only place the names and their order
-  # live. This module cares about one name at a time -- whichever its picker was handed.
+  runDir = "/run/briard-bin"; # tmpfs: the single-use flags and the .ran markers
+  # ⚠️ The SET is not listed here: the agent commits it, so guestfirmware/bin.go BinNames is
+  # the only place the names and their order live. This module cares about one name at a
+  # time -- whichever its picker was handed.
   # briard-bin-exec <name> <baked|-> [args...]
   # A PACKAGE, not a bare script: the units that go through the picker are written
-  # by the pushed agent now, and an agent can only name a fixed path -- so the picker joins the
+  # by the pushed agent, and an agent can only name a fixed path -- so the picker joins the
   # image's tool profile under its own name (configuration.nix, guestTools) instead of being
   # interpolated as a store path into a baked unit.
   exec = pkgs.writeShellScriptBin "briard-bin-exec" ''
@@ -88,8 +86,8 @@ let
     # copy" (which the trial agent's verdict needs, because `systemctl try-restart` alone is not
     # enough -- a staged copy that exits 1 fails its start, systemd's own auto-restart brings the
     # unit back on the COMMITTED binary seconds later, and the restart JOB then succeeds, so
-    # systemctl reports nothing wrong; measured on the first install-macvtap run of this item, where
-    # the verdict passed and committed a web unit that had already reverted). Overwriting it IS the
+    # systemctl reports nothing wrong; without the marker the verdict passes and commits a web
+    # unit that has already reverted). Overwriting it IS the
     # revert: a failed trial's auto-restart lands below and the marker stops saying trial.
     if [ -e ${runDir}/$name.update ]; then
       rm -f ${runDir}/$name.update                       # consume SINGLE-USE: a crashing candidate cannot re-trial

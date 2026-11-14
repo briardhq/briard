@@ -1,54 +1,26 @@
 # A standalone bootable qcow2 of the guest image, for the agent's QEMU to boot
 # via -drive. The framework-boot guest (configuration.nix) has no
 # bootloader/root device; here we add grub + a partitioned root + virtio drivers
-# and bake it into a disk with make-disk-image. This is the *bootstrap* artifact;
-# field updates are incremental NixOS generation switches, not re-imaging.
-#
-# The deliberately-broken generation that used to live here (`.brokenSystem`: the app
-# container run with BRIARD_BROKEN=1) went with managed-upgrade.nix (c2-v). It was
-# PAYLOAD-derived, which is what dated it: the OS upgrade it fed no longer touches the payload
-# at all, and the lab rollback demo's broken generation breaks the REVERSE PROXY instead — an ordinary delta on
-# the shipped disk, fetched over the cache like any other target, needing no argument here.
+# and bake it into a disk with make-disk-image. The OS moves only by the host swapping
+# this whole image for the next release (see bootModule below), never by switching generations.
 #
 # stageImages (default none) bakes extra app image tarballs into the disk and loads them
 # into podman at boot (briard.stagedImages) — an image has to be resident before a manifest is
-# installed against it, since nothing on the failover path may pull. Used by the fleet upgrade
-# demo to pre-stage the target of a manifest rotation.
+# installed against it, since nothing on the failover path may pull. Used by rigs and lab disks
+# whose guests have no registry to pull from.
 #
-# stageSystemModule (default null) bakes a *second, distinct* guest system generation into
-# the disk (the running system + this delta module) — a warm-standby whole-OS upgrade
-# target. Its store path is exposed as the `.v1System` passthru so the OS rolling-update
-# demo can pin it (`rollout -system`). Content-addressed => identical across the fleet, so
-# a survivor can switch to the primary's exact closure (converge-at-promotion).
-#
-# rebootSystemModule (default null) bakes a THIRD generation, exposed as `.rebootSystem`, whose
-# delta is chosen to make ActivationFor return reboot-only — so the reboot path has a
-# target to aim at. A separate argument rather than a second entry in one list because the two
-# differ in kind, not degree: the point of one is that it CAN be activated in band and of the
-# other that it cannot, and a proof that mixed them up would still look like it passed. Costs
-# almost nothing to bake — a kernel-params delta shares every other store path with the running
-# generation.
-#
-# guestAgentEnv (default none) sets extra environment on the briard-guest-agent unit — used by
+# guestAgentEnv (default none) sets extra environment on the briard-deadman unit — used by
 # the deadman test to bake a short BRIARD_DEADMAN so the reflex fires in seconds.
 #
-# bakeTargets (default true) decides whether the upgrade-target generations above are also
-# BAKED into the image. False means they are built and exposed as passthrus but the guest must
-# FETCH them — which is what a field node does, and the only way to prove a fetched closure is
-# usable. It is per-import because the two callers want opposite things: the lab
-# demos exercise real delivery, while `boot-select` deliberately gives its guest no network at
-# all so that a boot-selector proof cannot fail for a delivery reason.
-#
-# commonModules (default none) are folded into EVERY generation this file builds — the running
-# system and each upgrade target alike. That is the point: the lab demos use it to point the
-# guest at a reachable substituter, and a setting present in one generation but not another
-# would widen the delta between them, which the reboot demo asserts is exactly one kernel
-# parameter. (Distinct from mkGuest's own `extraModules`, which is per-generation and is what
-# MAKES each target differ.)
+# commonModules (default none) are folded into the image's one generation. A different OS is a
+# different IMAGE, built by importing this file with a different `commonModules` delta: the lab
+# OS demos build each target as the product image plus one delta module, and a rig can bake a
+# file in the same way.
 { nixpkgs, pkgs, overlay, stageImages ? [ ], guestAgentEnv ? { }
 , commonModules ? [ ]
-  # The release id stamped into the guest's firmware. Defaulted so every existing caller (the
-  # lab fleet disks, the test variants) keeps building unchanged; flake.nix passes the real one.
+  # The build id stamped into the firmware and /etc/briard-release. nixosTest/outputs.nix passes
+  # the guest build version (flake.nix guestVersion); callers that pass none (the lab disks) get
+  # the dev default.
 , agentVersion ? "0.0.0-dev" }:
 let
   lib = nixpkgs.lib;
@@ -57,8 +29,8 @@ let
   # image's inputs hash and does not republish a 400 MB guest chain (flake.nix guestInputPackages).
   briardFirmware = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-guest-firmware"; version = agentVersion; };
 
-  # Common bootable-guest modules, shared by the good and broken generations so the
-  # broken one is a minimal, honest delta (only the app env differs).
+  # The bootable-guest modules: what this image adds to configuration.nix (grub, the read-only
+  # root, the state disk, the consoles and the guest units).
   bootModule =
     { config, lib, modulesPath, ... }:
     let
@@ -73,7 +45,9 @@ let
     in
     {
       imports = [ "${modulesPath}/profiles/qemu-guest.nix" ]; # virtio_blk/pci/console in initrd
-      networking.hostName = "guest"; # DRBD .res on-block name (matches the driver's NODE)
+      # A placeholder: the agent sets the node id, which the DRBD .res on-blocks name, at every
+      # bring-up (sys.hostname).
+      networking.hostName = "guest";
       # THE GUEST IS AN APPLIANCE IMAGE: one generation, no nix at runtime. The OS
       # moves only by the host swapping this image for the next release's, so nothing in here
       # ever stages, switches or collects a closure -- `nix` itself is not installed, which
@@ -86,7 +60,7 @@ let
         # Let grub speak on ttyS0, the guest's only console (boot.kernelParams already points
         # the kernel there): a bootloader that fails silently is a node that is simply "down"
         # with no evidence. There is exactly one generation to boot, so grub has no decision
-        # to make -- the boot selector that once lived here went with the closure path.
+        # to make.
         extraConfig = ''
           insmod serial
           serial --unit=0 --speed=115200
@@ -135,8 +109,9 @@ let
       # that wrote it -- the dressed binaries, a pull's staged layers, systemd's own state.
       #
       # Formatted by the guest on first boot when it finds no filesystem, so the host needs no
-      # mkfs. Every guest has one: install.sh creates it and every rig that boots this image passes
-      # STATE_DISK, so a missing disk fails the boot rather than finding somewhere else to write.
+      # mkfs. Every guest has one: the install names it (STATE_DISK, agent/host/install.go) and
+      # every rig that boots this image passes STATE_DISK, so a missing disk fails the boot rather
+      # than finding somewhere else to write.
       fileSystems."/briard-state" = {
         device = "/dev/disk/by-id/virtio-briard-state";
         fsType = "ext4";
@@ -202,11 +177,11 @@ let
       boot.kernelParams = [
         "console=ttyS0" # serial console for debugging
         # The machine-id comes from the VM's DMI product UUID, which the host derives from the
-        # node name: systemd no longer does that on its own (it fell back to a random
-        # id on the first rig run), so it is asked to. With no -uuid (a rig that predates it)
-        # qemu's all-zero UUID is rejected and systemd falls back to random, as before.
+        # node name: systemd does not take it on its own (without this the id is random), so it
+        # is asked to. With no -uuid (a launch that passes none) qemu's all-zero UUID is
+        # rejected and systemd falls back to a random id.
         "systemd.machine_id=firmware"
-        "net.ifnames=0" # predictable eth0/eth1 (the tapped service NIC -> eth1, the VIP)
+        "net.ifnames=0" # predictable ethN in -device order (the service NIC, the VIP, is eth2)
       ];
       # Forward the journal to ttyS0 so the captured serial log shows systemd +
       # drbd-reactor activity during an upgrade.
@@ -273,23 +248,21 @@ let
       # with it. A Wants= link adds no unit and overrides nothing.
       #
       # The upstream template carries `BindsTo=dev-%i.device`, so this is self-gating: on a guest
-      # whose host is too old to give it a second serial port, /dev/ttyS1 never appears, the
-      # device unit is never active, and the getty is simply never started -- no failure, no
-      # respawn. That is the case that makes the link safe to ship before every agent has the
-      # host half.
+      # launched without a second serial port, /dev/ttyS1 never appears, the device unit is
+      # never active, and the getty is simply never started -- no failure, no respawn.
       systemd.targets.getty.wants = [ "serial-getty@ttyS1.service" ];
       # ttyS0's getty is masked because ttyS0 is a FILE. With autologin on, the template would
       # otherwise spawn a root shell against the capture -- writing prompts into the log that
-      # `briard logs` prints, reading input that can never arrive. Nothing was using it: the
-      # login prompt it used to print into the log was never the way into this guest.
+      # `briard logs` prints, reading input that can never arrive. A login prompt in the log is
+      # not the way into this guest.
       systemd.services."serial-getty@ttyS0".enable = false;
 
       # EXACTLY ONE NIC IN THIS GUEST DOES DHCP, AND IT IS NOT THIS ONE.
       #
       # The four are fixed and only one faces a network we do not own: eth0 is qemu's SLIRP
-      # user-net (the WAN path for OCI pulls), eth1 is the DRBD link (private, statically
-      # addressed by the agent, unaddressed at all on a single node), eth3 is the private
-      # guest<->host witness link (static), and eth2 carries the VIP -- the one address that
+      # user-net (the WAN path for OCI pulls), eth1 is the system/DRBD NIC (this node's node IP,
+      # statically addressed by the agent), eth3 is the private guest<->host witness link
+      # (static), and eth2 carries the VIP -- the one address that
       # belongs to the household's LAN, and the only one worth asking anybody for.
       #
       # eth0's "DHCP server" is qemu's own, on a synthetic network whose addressing we hand to
@@ -299,10 +272,10 @@ let
       # neither vanilla nor surprised by its own NICs.
       #
       # It also removes a defect rather than working around one: with a system dhcpcd
-      # running, briard-vip's per-interface invocation for eth2 never became an instance -- it
-      # forwarded its argv to that master as a control command, and the master had eth2 in
-      # denyInterfaces (which we had put there), so DHCP silently never ran and the node refused
-      # to be primary. With no master, there is nothing to be hijacked by.
+      # running, briard-vip's per-interface invocation for eth2 never becomes an instance -- it
+      # forwards its argv to that master as a control command, and a master with eth2 in
+      # denyInterfaces never runs DHCP for it, so the node silently refuses to be primary. With no
+      # master, there is nothing to be hijacked by.
       networking.useDHCP = false;
       networking.interfaces.eth0.ipv4.addresses = [
         { address = "10.0.2.15"; prefixLength = 24; }
@@ -325,19 +298,18 @@ let
       # find its own node while everything else works (install-macvtap runs with v6
       # disabled precisely so nothing can pass for a reason we do not control).
       #
-      # NOT BAKED, and the objection to that is answered rather than dropped. The address used to be baked
-      # precisely because the host reads the reboot gate when the CONTROL CHANNEL IS DEAD, and an
-      # agent-assigned address looked like it would be "reliably absent in the one failure it
-      # exists to serve". It is not, and `-no-reboot` is why: the gate is consulted only on rung 3,
+      # NOT BAKED, though the host reads the reboot gate when the CONTROL CHANNEL IS DEAD, and an
+      # agent-assigned address looks like it would be "reliably absent in the one failure it
+      # exists to serve". It is not, and `-no-reboot` is why: the host reads the gate only for
       # a VM that is RUNNING but mute, and a running VM is one whose bring-up completed and
-      # therefore one whose node IP the agent already set. The case the old comment feared -- a
-      # guest that reboots itself with no agent to reconfigure it -- does not reach this code,
-      # because with `-no-reboot` that guest's unit ENDS and the host's rung 2 relaunches it
-      # (which runs bring-up) instead of asking a gate.
+      # therefore one whose node IP the agent already set. A guest that reboots itself with no
+      # agent to reconfigure it does not reach the gate, because with `-no-reboot` that guest's
+      # unit ENDS and the host relaunches the stopped unit (which runs bring-up) instead of
+      # asking a gate (agent/host/guestrecover.go).
 
       # drbd.conf includes the .res files the agent drops at runtime. TMPFS: the
       # `.res` is node-scoped, the host re-derives it at every bring-up (from cfg.Resource, which
-      # the mesh cache now durably holds even for a runtime pairing), and a copy that outlives the
+      # the mesh cache durably holds even for a runtime pairing), and a copy that outlives the
       # agent that wrote it is the only kind that can be stale. /etc/drbd.conf itself stays put --
       # drbdadm looks for that one file at a path we do not choose, and it is the POINTER, not the
       # state. (The framework drbd-* tests declare both halves themselves, via lib.nix.)
@@ -350,7 +322,7 @@ let
       # The in-guest control agent: opens the virtio-serial port and serves the
       # host's bring-up/observe/upgrade verbs. PATH carries the tools those verbs shell
       # out to. (reactor.pause/resume use `systemctl` on drbd-reactor.service; the
-      # daemon itself runs from its own unit, so drbd-reactor isn't needed here.)
+      # daemon itself runs from its own unit, and only reactor.evict needs drbd-reactorctl here.)
       systemd.services.briard-guest-agent = {
         description = "Briard in-guest control agent (serves the host over virtio-serial)";
         wantedBy = [ "multi-user.target" ];
@@ -381,19 +353,18 @@ let
           config.virtualisation.podman.package # podman, for the renderer + app.* verbs
         ];
         # Restart=always (not on-failure): the guest agent serves ONE host connection
-        # then Serve() returns nil on the clean EOF when the host disconnects (wire.go)
-        # -- so `run --guest` exits 0. The reconnect design (host.go) needs it
-        # back on the port for the *next* host connection, which a genuine disconnect
+        # then ServeFrames returns nil on the clean EOF when the host disconnects
+        # (agent/guestfirmware/wire.go) -- so `run --guest` exits 0. The reconnect design (host.go)
+        # needs it back on the port for the *next* host connection, which a genuine disconnect
         # (host-agent restart -> self-update; or a re-adopt) produces. `on-failure`
         # would NOT restart a clean exit, leaving the port dead and the new host's
         # handshake blocked. StartLimit off so this critical channel never permanently gives up.
         #
-        # This comment used to claim a virtio-serial read BLOCKS while no host is connected, so a
-        # reopened port just waits and there is no flapping. That is true only of a BRIEF gap: with
-        # the host end gone for good, the reopened port returns EOF on the first read and the exit
-        # is immediate, so Restart=always spun ~48x in 30s. The agent now pauses before
-        # exiting on a clean EOF (hostAbsentPause in main.go) -- the restart policy here is
-        # unchanged, and correct; what was wrong was the assumption that made it free.
+        # A virtio-serial read does NOT simply block while no host is connected: with the host end
+        # gone for good, the reopened port returns EOF on the first read and the exit is
+        # immediate, so Restart=always alone spins ~48x in 30s. Both mains pause before exiting
+        # on a clean EOF (hostAbsentPause, 5 s, in each main.go), which makes the restart loop a
+        # slow poll.
         startLimitIntervalSec = 0; # [Unit] section: never permanently give up on this channel
         serviceConfig = {
           # THROUGH THE PIVOT (pivot.nix): the agent the host pushed
@@ -402,8 +373,9 @@ let
           # unit is the one an activation restarts, and its start is the verdict on the web units:
           # trial verdict, then the port, then the ONE commit of the whole pushed set, and only
           # then READY (the mains). ⚠️ NO ExecStartPost, and its absence is deliberate:
-          # a commit systemd ran after READY ran after the host's first bring-up verbs too, and
-          # those start units that exec the committed path. It is the agent's own job now.
+          # a commit systemd ran after READY would run after the host's first bring-up verbs too,
+          # and those start units that exec the committed path. It is the agent's own job
+          # (agent/guestfirmware/bin.go BinCommit).
           Type = "notify";
           ExecStart = "${config.briard.pivot.exec}/bin/briard-bin-exec briard-guest-agent ${briardFirmware}/bin/briard-guest-firmware run --guest";
           Restart = "always";
@@ -414,20 +386,20 @@ let
       # The host-agent deadman as its OWN long-running systemd service — decoupled from the
       # per-connection guest agent (which crash-loops while the host is down, so an in-process
       # timer would keep resetting). It watches the contact stamp the guest agent bumps and, once
-      # the host agent is silent past T_deadman, reboots the guest — gated + graceful
-      #. guestAgentEnv carries a short BRIARD_DEADMAN for the deadman test.
+      # the host agent is silent past T_deadman, reboots the guest — gated + graceful.
+      # guestAgentEnv carries a short BRIARD_DEADMAN for the deadman test.
       #
-      # It also SERVES that gate to the host on the private link (BRIARD_GATE_ADDR), which is the
+      # It also SERVES that gate to the host at this node's node IP (BRIARD_GATE_ADDR), which is the
       # only reason the host's own rung can avoid power-cycling a node whose departure would cost
       # a peer its quorum: every other way of asking rides the channel whose death is the trigger.
       # BRIARD_GATE_ADDR is a PORT with no address: the gate answers on whatever this node holds,
-      # because its address is now the node IP -- agent-assigned, flock-scoped, and not a thing the
-      # image can know. Binding wide is safe here in a way it would not be for any
+      # because the address the host dials is the node IP -- agent-assigned, flock-scoped, and not
+      # a thing the image can know. Binding wide is safe here in a way it would not be for any
       # other listener: the gate READS NOTHING from a connection (accept, write one line, close),
       # so there is no request to parse and no parser to get wrong.
       #
-      # ⚠️ It is still a posture change worth naming: the gate used to be unreachable from the LAN
-      # by addressing alone, and the system subnet rides the LAN's L2. What a stranger on the wire
+      # ⚠️ It is still a posture worth naming: the gate is not hidden from the LAN by addressing,
+      # because the system subnet rides the LAN's L2. What a stranger on the wire
       # gains is the ability to READ whether this node currently thinks a reboot is safe. They
       # cannot set it -- the verdict comes from the deadman's own evaluation, never from the
       # connection -- and flooding the listener makes the host read "unreachable", which it treats
@@ -475,7 +447,7 @@ let
     };
 
   # The one generation this image boots, with any pre-staged app images baked in and
-  # warmed at boot. There is no second OS generation any more, baked or fetched: a different OS
+  # warmed at boot. There is no second OS generation, baked or fetched: a different OS
   # is a different IMAGE, built by importing this file with a different
   # `commonModules` delta.
   sys = mkGuest [
@@ -495,22 +467,15 @@ let
     #
     # ⚠️ IT IS INVISIBLE TO THE CLOSURE. The channel is not referenced by `system.build.toplevel`,
     # so `nix path-info -S` on the system says 982 MB and is RIGHT while the artifact a stranger
-    # downloads is 1691 MB. Measuring the closure is not measuring the download; the slimming pass cut the
-    # closure by 631 MB and did not touch this at all.
+    # downloads is 1691 MB. Measuring the closure is not measuring the download; slim.nix cuts the
+    # closure and does not touch this at all.
     #
-    # Nothing in the product reads it -- the agent updates by handing `nix-env --set` an explicit
-    # store path and running switch-to-configuration, which never evaluates an expression. Its only
-    # purpose was console convenience, and the slimming had already disabled most of that without meaning
-    # to: `setNixPath = false` leaves the guest with no `nix-path`, nix 2.34's compiled-in default
-    # for it is EMPTY (checked, not assumed), so `<nixpkgs>` already resolved to nothing and
-    # `nix-shell -p` / `nix-build '<nixpkgs>'` already failed. The one surviving user was
-    # `nix-env -iA nixos.<attr>`, which reads ~/.nix-defexpr directly. Half a gigabyte for one
-    # command on a box whose whole doctrine is dumb hands.
+    # Nothing in the guest could read it: `nix` is not installed (nix.enable = false, above), and
+    # the OS moves only by image swap, which never evaluates an expression. Its only purpose
+    # would be console convenience, on a box whose whole doctrine is dumb hands.
     #
-    # WHAT THIS COSTS: OFFLINE package installation at the console. Networked rescue still works
-    # through flakes by full URL (`nix shell github:NixOS/nixpkgs/nixos-26.05#tcpdump`); guest WAN
-    # is a standing product requirement, and a node with no network is one you are reaching through
-    # the host anyway. If offline rescue is ever wanted, buy it back as a few named tools in
+    # WHAT THIS COSTS: nothing the guest can use, since there is no package installation at the
+    # console without nix. If rescue tools are ever wanted, buy them back as a few named tools in
     # environment.systemPackages -- tens of MB, not 512.
     copyChannel = false;
     format = "qcow2";

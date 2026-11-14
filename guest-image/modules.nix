@@ -9,7 +9,7 @@
 # and the protocol stacks and filesystems nothing in the product speaks or mounts. What remains
 # is every module that could conceivably matter: all of virtio, all of netfilter and bridging
 # (podman's networking loads these on demand), the block and md layers, the filesystems we use,
-# crypto, and DRBD's out-of-tree module. Measured 2026-09-08: 149 -> 35 MB on disk, 141 -> 32 MB
+# crypto, and DRBD's out-of-tree module. Measured: 149 -> 35 MB on disk, 141 -> 32 MB
 # compressed, 7296 -> 1724 modules.
 #
 # A DENYLIST, NOT AN ALLOWLIST, and the difference is where a mistake surfaces. An allowlist guesses
@@ -32,13 +32,13 @@ let
     "sound"
     # hardware a virtio guest does not have
     "drivers/media" "drivers/gpu" "drivers/iio" "drivers/usb" "drivers/hid"
-    # drivers/input: THE SUBDIRECTORIES ONLY, and this is the one denial that has already bitten.
+    # drivers/input: THE SUBDIRECTORIES ONLY.
     # `evdev` (CONFIG_INPUT_EVDEV=m) sits at the top of this family, and it is what turns the ACPI
     # power button into a /dev/input/event* node -- the only thing logind watches to shut a
-    # machine down on that button. Denying the family wholesale left the guest deaf to it: the
-    # host pressed the button, waited its minute and killed the VM, so every clean stop became a
-    # hard one (agent-readopt, the nightly of 2026-09-08, the night this denylist landed). The
-    # devices themselves -- keyboards, mice, touchscreens -- this guest still has none of.
+    # machine down on that button. Denying the family wholesale leaves the guest deaf to it: the
+    # host presses the button, waits its minute and kills the VM, so every clean stop becomes a
+    # hard one (agent-readopt asserts the clean stop). The devices themselves -- keyboards, mice,
+    # touchscreens -- this guest has none of.
     "drivers/input/touchscreen" "drivers/input/tablet" "drivers/input/joystick"
     "drivers/input/mouse" "drivers/input/keyboard" "drivers/input/misc" "drivers/input/rmi4"
     "drivers/input/gameport" "drivers/input/serio"
@@ -70,7 +70,7 @@ let
   pruned = pkgs.runCommand "${kernel.name}-modules-pruned" { nativeBuildInputs = [ pkgs.kmod ]; } ''
     mkdir -p $out
     # -L: the aggregate is symlinks into the kernel's store path; the copy must be real files, or
-    # the prune would be deleting inside a read-only store path (it was, the first time).
+    # the prune would be deleting inside a read-only store path.
     cp -rL ${full}/lib $out/lib
     chmod -R u+w $out/lib
     for v in $out/lib/modules/*/; do
@@ -80,8 +80,8 @@ let
     done
     # depmod HERE. The aggregation below is a buildEnv that only re-runs depmod when the version
     # directory is writable -- with one input it is a symlink into this store path and is not
-    # (measured: the second attempt shipped no dependency tables at all, and the initrd's closure
-    # found no virtio_blk). So the tables are regenerated over the pruned set right here, and
+    # (left to it, the image ships no dependency tables at all, and the initrd closure finds no
+    # virtio_blk). So the tables are regenerated over the pruned set right here, and
     # never name a file that is gone.
     for v in $out/lib/modules/*/; do
       find "$v" -maxdepth 1 -name "modules.*" ! -name "modules.builtin*" ! -name "modules.order*" -delete
@@ -96,12 +96,12 @@ in
   # here fails the image build. The virtio set, and nothing else: this guest has virtio disks,
   # NICs, a console and an RNG, no display, no 9p share, no SATA, no USB.
   # ...plus the root filesystem, named here because mkForce also discards the entry NixOS adds for
-  # it (measured: the first pruned image reached the initrd and could not mount /sysroot) --
+  # it (without it the pruned image reaches the initrd and cannot mount /sysroot) --
   # and the /etc overlay's three, which the etc module adds the same way (disk-image.nix).
   boot.initrd.availableKernelModules = lib.mkForce [ "virtio_net" "virtio_pci" "virtio_mmio" "virtio_blk" "virtio_scsi" "ext4" "loop" "erofs" "overlay" ];
   boot.initrd.kernelModules = lib.mkForce [ "virtio_balloon" "virtio_console" "virtio_rng" ];
   # Loaded at boot by systemd-modules-load: DRBD (configuration.nix) and loop; NixOS's default
-  # `atkbd` (a PS/2 keyboard driver) would now fail to load and fail the unit.
+  # `atkbd` (a PS/2 keyboard driver) would fail to load from the pruned tree and fail the unit.
   # `evdev` is loaded EXPLICITLY rather than left to udev's modalias matching: it is what carries
   # the ACPI power button, and a clean stop of this guest is the host's whole shutdown contract.
   # A shutdown path must not depend on a device-matching rule firing.

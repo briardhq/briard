@@ -1,8 +1,8 @@
 { lib, rustPlatform, fetchFromGitHub, drbd }:
 
 # drbd-reactor is not in nixpkgs, so we package it ourselves.
-# It is the failover orchestrator: its promoter plugin runs the ordered
-# {DRBD-primary → workload → VIP} unit.
+# It is the failover orchestrator: its promoter plugin runs the ordered promoter chain
+# {storage → VIP → apps → reverse proxy → dashboard} on the primary (agent/drbd ReactorConfig).
 rustPlatform.buildRustPackage rec {
   pname = "drbd-reactor";
   version = "1.11.0";

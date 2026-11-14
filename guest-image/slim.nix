@@ -1,25 +1,24 @@
 # What this appliance does NOT need to carry.
 #
-# Every base-OS bump is a closure pull onto every node in the field, so the guest's size is not
-# cosmetic -- it is the wait and the bandwidth on every fleet update, on household links we do not
-# choose. This file is the answer to the size question, carried since v1.
+# Every base-OS bump is a whole-image download onto every node in the field, so the guest's size
+# is not cosmetic -- it is the wait and the bandwidth on every fleet update, on household links we
+# do not choose. This file is the answer to the size question.
 #
-# MEASURED, ONE LEVER AT A TIME (2026-08-11, `nix path-info -S` on the shipped
+# MEASURED, ONE LEVER AT A TIME (`nix path-info -S` on the shipped
 # `artifacts.guest-disk.system`), not reasoned about: 1613.7 MB -> 978.0 MB, a 40% cut with the
 # stock kernel untouched. The per-lever numbers below are what each one actually removed, because a
 # number nobody measured is a number that will be wrong after the next nixpkgs bump.
 #
-# THE SHAPE OF THE FAT WAS NOT WHAT THE ORIGINAL GUESS SAID. It said "docs/man/locales, trim
-# perl activation, minimal profile". Docs were real (94 MB); locales were already trimmed (3 MB
-# total); perl is NOT removable (`update-users-groups.pl` runs at every activation, and
-# `system.etc.overlay` -- the documented way off the other perl script -- measured 0.3 MB because of
-# it). What actually dominated were three ACCIDENTS, none of which anybody chose: a registry entry
+# THE FAT IS NOT WHERE A GUESS PUTS IT ("docs/man/locales, trim perl activation, minimal
+# profile"). Docs are real (94 MB); locales are already trimmed (3 MB total); perl is NOT
+# removable from the shipped image (its grub installer, install-grub.sh, is a perl program).
+# What dominated were three ACCIDENTS, none of which anybody chose: a registry entry
 # that dragged in the whole of nixpkgs, a container runtime built with a checkpoint engine that
 # propagates Python, and two copies of podman.
 #
 # WHAT IS DELIBERATELY NOT HERE:
 #   - `environment.defaultPackages = []` (perl/rsync/strace). Measured 4.8 MB -- perl stays for the
-#     activation script regardless -- and it costs `strace` on a node somebody is trying to debug in
+#     grub installer regardless -- and it costs `strace` on a node somebody is trying to debug in
 #     a stranger's house. Not a trade worth 5 MB.
 #   - Trimming the KERNEL to a virtio-only `structuredExtraConfig`. Its module tree was 148.7 MB,
 #     the largest single path in the closure, and a trimmed kernel would plausibly reach ~20 MB --
@@ -36,14 +35,11 @@ let
   # CRIU (checkpoint/restore) is the expensive one: nixpkgs' crun links it unconditionally and criu
   # PROPAGATES python3 -- an interpreter in an appliance that has no Python in it.
   #
-  # ⚠️ QUOTE THE WIRE NUMBERS, NOT THE NAR NUMBERS, because this trade was first argued with the
-  # wrong ones and looked ~3x better than it is. The cache stores xz (`Compression: xz`, 2.4-6x)
-  # and the disk ships zstd, so what anyone actually waits on is:
+  # ⚠️ QUOTE THE WIRE NUMBERS, NOT THE NAR NUMBERS: the NAR numbers make this trade look ~3x
+  # better than it is. The disk ships zstd, so what anyone actually waits on is:
   #     install download   438 -> 377 MB   (61 MB, 14%)   measured, both images built
-  #     closure fetch      -67 MB xz       (python3 56.5 + libkrunfw 7.8 + libkrun 1.8 + criu 0.8)
-  # against a cost of ~14.3 MB xz (podman 13.9 + crun 0.4) that WE serve instead of the CDN, plus a
-  # ~47s podman rebuild per nixpkgs bump. Kept on those numbers (owner, 2026-08-12) -- but it is a
-  # near thing, and it is the only package we deviate from stock on for SIZE rather than function.
+  # against a ~47s podman rebuild per nixpkgs bump. It is a near thing, and it is the only
+  # package we deviate from stock on for SIZE rather than function.
   #
   # There is no cheaper cut. python3's entire foothold is two files -- criu's `bin/criu-ns` and its
   # wrapper, a helper script nothing here calls -- so `rm`ing them would drop 56.5 MB while keeping
@@ -58,7 +54,8 @@ let
   # nodes and restarts the workload, which is the opposite technique.
   #
   # libkrun is crun's microVM handler, reached only by an explicit `run.oci.handler=krun`
-  # annotation. Our app is an ordinary host-networked container; there is no path to it.
+  # annotation. Our apps are ordinary containers and nothing sets that annotation; there is no
+  # path to it.
   #
   # `criu = null` RATHER THAN FILTERING buildInputs BY NAME, and the difference is which way it
   # breaks. A name filter fails OPEN -- a nixpkgs bump that renames the input silently re-admits
@@ -67,12 +64,11 @@ let
   # to the NIX_LDFLAGS reset, which is coupled to a nixpkgs implementation detail and will fail as
   # a link error rather than quietly.
   #
-  # THE COST, stated because it is not free: overriding crun changes podman's hash, so podman and
-  # more for our cache to serve, against a closure that is 636 MB smaller. Rebuild cost is
-  # negligible (measured 47s for podman; the Go vendor derivation is unaffected and still
-  # substitutes). It does put the container runtime behind the alpha signing key, which is
-  # provisional -- but drbd, drbd-reactor, reverse-proxy and briard-agent already ride that key, so
-  # it is one more component on a key already scheduled for rotation, not a new trust boundary.
+  # THE COST, stated because it is not free: overriding crun changes podman's hash, so podman is
+  # built here rather than substituted from the nixpkgs cache. Rebuild cost is negligible
+  # (measured 47s for podman; the Go vendor derivation is unaffected and still substitutes). It
+  # ships inside the signed guest image like every other package there, so it is no new trust
+  # boundary.
   leanCrun = (pkgs.crun.override {
     criu = null;
     withLibkrun = false;
@@ -83,9 +79,11 @@ let
 in
 {
   # -205 MB, the single largest item, and pure accident. Nothing here uses flakes at runtime, but
-  # the default registry writes `/etc/nix/registry.json` with a `path` entry pointing at the
-  # nixpkgs source -- so the ENTIRE nixpkgs tree is a runtime dependency of the guest, shipped to
-  # every household, to serve a `nix flake` command nobody will ever type on this box. `setNixPath`
+  # with nix enabled the default registry writes `/etc/nix/registry.json` with a `path` entry
+  # pointing at the nixpkgs source -- so the ENTIRE nixpkgs tree is a runtime dependency of the
+  # guest, to serve a `nix flake` command nobody will ever type on this box. (The shipped image
+  # sets nix.enable = false in disk-image.nix, so it writes no registry either way; a VM built
+  # from configuration.nix alone keeps nix and needs this.) `setNixPath`
   # goes with it (the module asserts registry is required for it, and `<nixpkgs>` is equally unused).
   nixpkgs.flake.setFlakeRegistry = false;
   nixpkgs.flake.setNixPath = false;
@@ -111,9 +109,9 @@ in
   # of them later will look like it saved nothing.
   virtualisation.podman.package = pkgs.podman.override { crun = leanCrun; };
 
-  # The other half of the python3 pair. `nixos-rebuild` is a Python program now, and this guest does
-  # not rebuild itself: the host agent owns the whole update lifecycle and drives it through
-  # `nix-env --set` + `switch-to-configuration` (agent/guestagent), never through nixos-rebuild.
+  # The other half of the python3 pair. `nixos-rebuild` is a Python program, and this guest does
+  # not rebuild itself: the OS moves only by the host swapping the whole image (disk-image.nix),
+  # never through nixos-rebuild.
   # ⚠️ This also removes `nixos-version`. Nothing in the product calls it (agent, scripts, and the
   # report card all checked) -- if that ever changes, take the per-tool
   # `system.tools.nixos-rebuild.enable = false` form instead of this blanket one.
