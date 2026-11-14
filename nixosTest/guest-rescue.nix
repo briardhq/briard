@@ -11,13 +11,16 @@
 # data disk. So this asserts:
 #
 #   1. a DIFFERENT QEMU is serving afterwards -- the VM went down and came back
-#   2. the data disk is the SAME file, same size, DRBD metadata intact
+#   2. the data disk is the SAME file, same size, same LUKS2 volume UUID
 #   3. the restarted guest converges and serves again
 #   4. the image is attached read-only, and its bytes are what the install laid down -- nothing
 #      any boot did reached it
-#   5. without -yes the verb refuses and the guest is left running
+#   5. the state disk keeps its filesystem (same ext4 UUID)
+#   6. the OS moves by image, and a release whose image boots another closure is put back
 #
-# (1) and (5) are what stop this passing vacuously: a rescue that quietly did nothing satisfies
+# and, before the rescue, that without -yes the verb refuses and the guest is left running.
+#
+# (1) is what stops this passing vacuously: a rescue that quietly did nothing satisfies
 # (2), (3) and (4) perfectly -- data intact, node serving, image untouched -- which is exactly what
 # a no-op looks like from the outside.
 #
@@ -51,10 +54,10 @@ pkgs.testers.runNixOSTest {
     host.succeed("ls -l /dev/kvm")
 
     # Same L2 as agent-recover, and it is the SHIPPED NIC contract rather than a rig convenience:
-    # veth parent, the guest's two LAN NICs as macvtap children in install.sh's order (sys0 -> eth1,
-    # svc0 -> eth2), and the private host<->guest link as a plain tap at 10.11.9.1/24. The macvlan
-    # shim this used to build was the rig granting itself reachability the product lacked; the VIP
-    # curls below now pass because the agent routes it over the private link.
+    # veth parent, the guest's two LAN NICs as macvtap children in the agent's order (sys0 -> eth1,
+    # svc0 -> eth2), and the private host<->guest link as a plain tap at 10.11.9.1/24. The rig
+    # builds no macvlan shim to reach the VIP: the VIP curls below pass because the agent routes
+    # it over the private link.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
@@ -63,8 +66,8 @@ pkgs.testers.runNixOSTest {
     )
 
     # A copy of the image in a WRITABLE directory, because an OS upgrade swaps the file by rename
-    # and the store is read-only; install.sh lays the image down as a copy too. The file itself is
-    # never written: its hash, taken here, is assertion (4).
+    # and the store is read-only; briard-agent install lays the image down as a copy too. The file
+    # itself is never written: its hash, taken here, is assertion (4).
     host.succeed("cp ${guestDisk}/nixos.qcow2 /tmp/nixos.qcow2 && chmod 0644 /tmp/nixos.qcow2")
     image_sum = host.succeed("sha256sum /tmp/nixos.qcow2").split()[0]
     host.succeed("truncate -s 512M /tmp/data.img")
@@ -75,20 +78,21 @@ pkgs.testers.runNixOSTest {
     # START, so it is minted before the launch and used by the channel section below.
     host.succeed("${stub}/bin/briard-selfupdate-stub keygen /root/release.key /root/keyring.pem")
 
-    # The host holds a guest bundle tree, as install.sh lays on every install: the image
+    # The host holds a guest bundle tree, as briard-agent install lays on every install: the image
     # bakes no reverse proxy, so a guest is dressed by its host or it cannot serve. Copied out of
     # the store because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
-        # The PATH install.sh gives the shipped unit (scripts/install.sh, "Environment=PATH="). The
-        # agent shells out to systemd-run, systemctl and -- since it owns the host's route -- `ip`, all BY NAME, and
+        # The PATH the shipped unit carries (scripts/units/briard-agent.service,
+        # "Environment=PATH="). The agent shells out to systemd-run, systemctl and -- since it
+        # owns the host's route -- `ip`, all BY NAME, and
         # a transient unit's default PATH resolves none of them reliably. Pinning the shipped value
         # is the point: the rig gets what the product gets.
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
-        # Where the host keeps its guest bundle tree, the way install.sh sets it.
+        # Where the host keeps its guest bundle tree: the agent default (/opt/briard/agent).
         "--setenv=UPDATE_BASE=/opt/briard/agent "
         "--setenv=GUEST_IMAGE=/tmp/nixos.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
         # The vm chain: the channel this rig serves, the keyring it mints, the record.
@@ -97,11 +101,11 @@ pkgs.testers.runNixOSTest {
         "--setenv=NODE=guest --setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.11.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 --setenv=STATUS_EVERY=2s "
         "--setenv=VIP_DEV=eth2 --setenv=VIP_ADDR=192.168.1.100/24 "
         "--setenv=NET_MODE=macvtap --setenv=NET_WRAP_BIN=${netWrap}/bin/briard-net-wrap "
-        # GUEST_SERIAL is the only window into the guest during a stop, and it is why the fallback stop sat
-        # unexplained: the host watches the VM's systemd unit and has no console on what is
+        # GUEST_SERIAL is the only window into the guest during a stop: without it
+        # the host watches the VM's systemd unit and has no console on what is
         # inside it, so 90 seconds of a guest ignoring `os.poweroff` and 90 seconds of a guest
         # shutting down slowly look identical from out here. The chardev APPENDS across launches
-        # (platform.qemuArgs), so one file holds the guest that was stopped AND the rebuilt one.
+        # (platform serialArgs), so one file holds the guest that was stopped AND the rebuilt one.
         "--setenv=GUEST_SERIAL=/tmp/guest-console.log "
         "${agent}/bin/briard-agent run"
     )
@@ -153,7 +157,7 @@ pkgs.testers.runNixOSTest {
 
     # === THE RESCUE ===
     # `briard-agent <verb>` IS the CLI (a bare first argument is a subcommand, main.go) -- the
-    # `briard` name is a symlink install.sh makes, which this harness does not have.
+    # `briard` name is a symlink briard-agent install makes, which this harness does not have.
     #
     # Without -yes it must refuse and touch nothing: the guard belongs to the verb, not to the
     # operator's memory, and asserting it here means a change that drops it fails a test rather
@@ -165,7 +169,7 @@ pkgs.testers.runNixOSTest {
     # WHERE THE SHUTDOWN STARTS IN THE CONSOLE, marked before it happens. The chardev APPENDS
     # across launches (see GUEST_SERIAL above), so by the time the assertions below run the file
     # ends with the REBUILT guest's boot -- a `tail` of it shows nsncd starting, not the stop that
-    # failed. Measured, by dumping a tail and getting exactly that. Marking the line count here and
+    # failed. Marking the line count here and
     # slicing from it is what makes the dump show the shutdown.
     #
     # Counted through the same `tr` the dump uses: collapsing carriage returns CHANGES the line
@@ -211,15 +215,15 @@ pkgs.testers.runNixOSTest {
     # === THE CLEAN STOP MUST ACTUALLY BE THE CLEAN ROUTE ===
     # The stop above goes through host.stopCleanly, which asks the guest agent first (`os.poweroff`
     # -> `systemctl poweroff --no-block`) and keeps the ACPI power button as the fallback for a
-    # guest whose agent is gone. It was measured taking the fallback EVERY time on a healthy node,
-    # and the reason was invisible from out here: the host watches its guest's systemd unit and has
+    # guest whose agent is gone. Why a healthy node takes the fallback is invisible from out
+    # here: the host watches its guest's systemd unit and has
     # no console on what is inside it, so "the request was ignored" and "the shutdown is stuck" look
-    # identical. GUEST_SERIAL above is what made the difference legible, and it is why it is set.
+    # identical. GUEST_SERIAL above is what makes the difference legible, and it is why it is set.
     #
-    # What it showed: the shutdown STARTED a second after the request, then drbd-reactor deadlocked
-    # on its own stop for a full 90s TimeoutStopSec and was SIGKILLed -- the promote-vs-stop
-    # deadlock, on the shutdown path, where nothing was
-    # defusing it. Fixed on drbd-reactor.service's ExecStop (guest-image/configuration.nix).
+    # The failure guarded against: the shutdown starts a second after the request, then
+    # drbd-reactor deadlocks on its own stop for a full 90s TimeoutStopSec and is SIGKILLed --
+    # the promote-vs-stop deadlock, on the shutdown path. Defused on drbd-reactor.service's ExecStop
+    # (guest-image/configuration.nix).
     #
     # TWO ASSERTIONS, because either alone passes for the wrong reason. The fallback line proves
     # the AGENT route worked -- a guest that still deadlocks reaches the power button, and its
@@ -232,12 +236,11 @@ pkgs.testers.runNixOSTest {
     print(stopleg)
 
     # KEEP THE DURATION -- it is the field that says WHICH bug this is. systemd's progress line
-    # carries its own elapsed time and the job's timeout, "... (10s / 1min 30s)", and this capture
-    # used to cut the match at the opening paren. That threw away exactly what separates a unit
-    # stalling a few seconds under a loaded runner from one sitting there until it was SIGKILLed.
+    # carries its own elapsed time and the job's timeout, "... (10s / 1min 30s)", and a match cut
+    # at the opening paren throws away exactly what separates a unit
+    # stalling a few seconds under a loaded runner from one sitting there until it is SIGKILLed.
     # Both trip the assertion below and they are not the same finding: the first is a race whose
-    # window load widened, the second is the promote-vs-stop deadlock back on the shutdown path. Every run had
-    # already recorded which of the two it was, on the console, and the regex discarded it.
+    # window load widened, the second is the promote-vs-stop deadlock back on the shutdown path.
     #
     # Matched up to the CLOSING paren rather than to end-of-line, because \r is stripped above and
     # systemd REPRINTS this line as the job runs -- so several prints land on one physical line and
@@ -250,10 +253,8 @@ pkgs.testers.runNixOSTest {
     # THE DUMP COVERS BOTH ASSERTIONS, and is taken BEFORE either fires. They are two halves of one
     # question -- did the clean route work, and if not, what inside the guest stopped it -- so
     # whichever trips, the console is the evidence for it. Hanging the dump off the `stuck` half
-    # alone left the ACPI-fallback failure reporting a host-side log line and nothing at all from
-    # inside the guest, which is the side the answer is on; the fallback stop was invisible in precisely that
-    # way until GUEST_SERIAL existed. Measured, not reasoned: the fallback half failed on a run
-    # while this was still one-sided, and the log could say nothing about why.
+    # alone would leave the ACPI-fallback failure reporting a host-side log line and nothing at all
+    # from inside the guest, which is the side the answer is on.
     #
     # \r -> \n rather than deleted: this is a progress console, and collapsing the carriage returns
     # is what makes the surrounding lines readable instead of one long smear.
@@ -283,7 +284,7 @@ pkgs.testers.runNixOSTest {
         f"same QEMU pid {qemu_after} -- the guest was never taken down, so nothing was restarted"
     print(f"guest replaced: pid {qemu_before} -> {qemu_after}")
 
-    # (2) THE DATA DISK WAS NOT. Same file, same size, metadata still there. This is the claim the
+    # (2) THE DATA DISK WAS NOT. Same file, same size, same LUKS2 volume. This is the claim the
     # whole verb rests on, and the catastrophic failure -- a rescue that recreated or wiped the
     # replicated volume -- cannot pass it.
     #

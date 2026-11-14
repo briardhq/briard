@@ -3,15 +3,16 @@
 # A shipped node boots with NO app: it mounts, promotes, and serves a landing page
 # at the VIP. This test takes that node and puts an app on it the way `briard app install`
 # does, then asserts the node ends up serving it — install -> promote -> serve, which is the
-# integration bar for the free tier (failover of a runtime-installed app is a flock concern,
-# not v3's: on briard free each node is an isolated island).
+# integration bar for the free tier (failover of a runtime-installed app is a flock concern:
+# on briard free each node is an isolated island).
 #
 # WHAT IS REAL HERE, because the value of this test is entirely in what it does NOT stub:
-#   - a real OCI registry over TLS, and a real DIGEST-PINNED `podman pull` from it (decided registries; a plain-HTTP registry is not an option — containers/image refuses HTTP for every
-#     address including localhost, which a probe confirmed, so the test runs a real CA);
-#   - the REAL renderer — and since converge-at-promotion it runs where the product runs it, inside
-#     `briard-guest-agent --converge`, off the manifest this test puts on the replicated volume. Nothing
-#     copies rendered units in from the side any more;
+#   - a real OCI registry over TLS, and a real DIGEST-PINNED `podman pull` from it (a plain-HTTP
+#     registry is not an option — containers/image refuses HTTP for every
+#     address including localhost, so the test runs a real CA);
+#   - the REAL renderer, run where the product runs it, inside `briard-guest-agent --converge`,
+#     off the manifest this test puts on the replicated volume. Only the .image unit is copied
+#     in from the side, to warm the pull; converge writes the app units;
 #   - real quadlet generation (files under /run/containers/systemd becoming units at daemon-reload),
 #     real podman, real drbd-reactor driving the static promoter chain, and the real reverse proxy;
 #   - the node promoting with ZERO apps first, then with one — the shipped state, then the
@@ -20,8 +21,8 @@
 # WHAT IS NOT COVERED, named so a green run is not read as more than it is:
 #   - the host agent's ORCHESTRATION (fetch/verify/warm/health-gate/revert) cannot run in this
 #     harness: it drives the guest over virtio-serial, and here the node IS the guest with no host
-#     on the other end. That sequence is unit-tested in agent/host/app_test.go, which is where
-#     its bugs have actually surfaced. What the test does by hand is the Primary-only half an
+#     on the other end. That sequence is unit-tested in agent/host/app_test.go. What the test
+#     does by hand is the Primary-only half an
 #     install performs on the volume, and then it hands over to converge.
 #
 # WITH broken = true, it runs the happy path and then keeps going: it UPGRADES the app
@@ -79,8 +80,7 @@ let
   ];
   # Promoter = false: the test writes the snippet itself, at the moment it chooses, so that the
   # node is seen promoting with ZERO apps before the install and with one after. The chain it
-  # writes is the STATIC production one — it is no longer derived from a rendering,
-  # by anyone.
+  # writes is the STATIC production one (lib.nix promoterSnippet), not derived from a rendering.
   node =
     { config, ... }:
     {
@@ -180,9 +180,10 @@ pkgs.testers.runNixOSTest {
     # the half of an install that legitimately needs the network. Running it on every node is what
     # makes the failover path able to promise it never will.
     #
-    # The rendered units are NOT copied anywhere here any more: converge writes them
-    # itself, from the manifest on the volume, on whichever node promotes. Copying them in from
-    # the side would put this harness back in the business of standing in for the product.
+    # Only the .image unit is copied in, to start the pull; the pod and container units are not:
+    # converge writes them itself, from the manifest on the volume, on whichever node promotes.
+    # Copying them in from the side would put this harness in the business of standing in for
+    # the product.
     for m in disk_nodes:
         m.succeed("mkdir -p /run/containers/systemd")
         m.succeed("cp /tmp/rendered/briard-fixture-app.image /run/containers/systemd/ && systemctl daemon-reload")
@@ -192,12 +193,12 @@ pkgs.testers.runNixOSTest {
         m.succeed(f"podman image exists ${registryHost}/briard-fixture@{digest}")
     print("images warmed on every node by a real digest-pinned TLS pull")
 
-    # NOTHING IS RUNNING YET, and nothing generated itself: the .image units are boot-time, the
-    # pod and container are not, and no node has been given the manifest.
+    # NOTHING IS RUNNING YET, and nothing generated itself: only the .image units exist (started by
+    # hand above), the pod and container units do not, and no node has been given the manifest.
     node1.fail("systemctl cat briard-fixture-app.service")
     print("the image is resident and the app does not exist — the state before an install")
 
-    # === 4. bring DRBD up, and give the promoter the RENDERED chain ===
+    # === 4. bring DRBD up, and give the promoter the STATIC chain ===
     for m in [node1, node2, witness]:
         m.succeed("modprobe drbd")
     for m in disk_nodes:
@@ -207,16 +208,14 @@ pkgs.testers.runNixOSTest {
     witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
 
-    # THE CHAIN IS STATIC, and no longer derived from the rendering at all. The chain
+    # THE CHAIN IS STATIC, not derived from the rendering at all. The chain
     # is what drbd-reactor promotes WITH, but the volume it must converge to is only readable
     # AFTER promotion — so the start-list cannot name the apps, and briard-apps is what
     # renders and starts them once the mount exists.
     #
-    # TAKEN FROM lib.nix rather than restated. This used to be a hand-written list
-    # annotated "exactly what host.promoterUnits writes in production", which is the kind of claim
-    # that stops being true silently: when the reverse proxy and the mDNS publishers became chain
-    # MEMBERS, this copy still had three units, so the reverse proxy never started here at all and
-    # the app was unreachable by name — the failure this comment is now attached to.
+    # TAKEN FROM lib.nix rather than restated: a hand-written copy of the production chain goes
+    # stale silently, and a copy missing the reverse proxy never starts it, leaving the app
+    # unreachable by name.
     snippet = """${h.promoterSnippet}"""
     for m in disk_nodes:
         m.succeed(f"install -D /dev/stdin /run/briard/drbd-reactor.d/briard.toml <<'SNIP'\n{snippet}SNIP")
@@ -232,9 +231,8 @@ pkgs.testers.runNixOSTest {
     print(f"primary={primary.name}")
 
     # IT PROMOTED WITH ZERO APPS FIRST, which is the shipped state of every node a stranger
-    # installs: briard-apps converged to nothing, the VIP came up, and the reverse
-    # proxy answers. Asserted before the install so the install's effect is a change and not a
-    # coincidence.
+    # installs: briard-apps converged to nothing (active, and no app unit exists). Asserted
+    # before the install so the install's effect is a change and not a coincidence.
     primary.wait_until_succeeds("test $(systemctl is-active briard-apps.service) = active", timeout=120)
     primary.fail("systemctl cat briard-fixture-app.service")
 
@@ -263,7 +261,7 @@ pkgs.testers.runNixOSTest {
     print(primary.succeed("podman ps --format '{{.Names}} {{.Pod}} {{.Status}}'"))
 
     # The app answers on its OWN endpoint (host-networked :8080) — the same thing the health
-    # gate probes (agent/host/app.go awaitHealthy, which now asks the guest to resolve it
+    # gate probes (agent/host/app.go awaitHealthy, which asks the guest to resolve it
     # rather than assembling this URL itself), and a REAL 200 from the app, not the reverse
     # proxy's own answer.
     primary.wait_until_succeeds("curl -fsS http://127.0.0.1:8080/healthz", timeout=120)
@@ -300,13 +298,10 @@ pkgs.testers.runNixOSTest {
     node_health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
     assert "1 app(s) routed" in node_health and "fixture" in node_health, f"node /healthz = {node_health!r}"
     # A name nobody serves still lands on the NODE's reverse proxy rather than on some app's 404 --
-    # the fall-through is the property, and it is unchanged. What the reverse proxy then says is
-    # not: since the dashboard landed it forwards to the household dashboard, which refuses a
-    # browser with no session (401, one instruction, no inventory) because reaching the VIP is not
-    # authentication.
-    # The half of the old claim that a household "reads which names this node
-    # answers to" HERE is therefore gone -- that reading needs a session now, and the
-    # unauthenticated version of it is /healthz, asserted just above.
+    # the fall-through is the property. The reverse proxy forwards it to the household dashboard,
+    # which refuses a browser with no session (401, one instruction, no inventory) because
+    # reaching the VIP is not authentication. Reading which names this node answers to needs a
+    # session; the unauthenticated version of it is /healthz, asserted just above.
     #
     # ⚠️ THIS IS THE NON-VACUOUS PLACE FOR THE NO-INVENTORY ASSERTION, which is why it is here and
     # not only in install-macvtap.nix. That test refuses on a node with NOTHING installed, so
@@ -355,10 +350,7 @@ pkgs.testers.runNixOSTest {
     #     each node renders its own units from it, so there is one identity and no second durable
     #     copy to drift from it. The consequence is that a reboot erases every rendered unit.
     #
-    #     ⚠️ THIS TEST'S CONCLUSION REVERSED WITH CONVERGE-AT-PROMOTION. It used to assert the premise and
-    #     stop there — "after a reboot the app is gone and stays gone until something
-    #     re-renders, which is why the HOST must, from its node-local cache at bring-up". Converge
-    #     makes that cure unnecessary and the claim false: briard-apps is a promoter chain
+    #     No host has to re-render them: briard-apps is a promoter chain
     #     member, so the node re-renders from the VOLUME the moment it promotes, with no host in
     #     the loop at all. That is the same mechanism that fixes the survivor case, seen from the
     #     reboot side.
@@ -411,8 +403,8 @@ pkgs.testers.runNixOSTest {
     print(f"pre-upgrade good tick = {good_tick}")
 
     # --- STOP, THEN snapshot the rollback point — applyAppInstall's quiesce + data.member,
-    #     in that order since the rollback point started being taken quiesced. A live snapshot is only crash-consistent, and the catalog
-    #     cannot promise every app survives one: apps-pair.nix measured mosquitto losing
+    #     in that order. A live snapshot is only crash-consistent, and the catalog
+    #     cannot promise every app survives one: apps-pair.nix shows mosquitto losing
     #     exactly the retained message a rollback would be FOR. The container unit, never the pod
     #     — the pod would take the volume down under every other app.
     #
@@ -438,10 +430,8 @@ pkgs.testers.runNixOSTest {
         '"env":{"BRIARD_BROKEN":"1"}}]}'
     )
 
-    # --- THE SWITCH, and it no longer takes a maintenance bracket. It used to:
-    #     pause both nodes' promoters, quiesce the container, re-render on every node, resume. All
-    #     of that existed because the app units WERE promoter chain members, so touching them
-    #     under a live reactor meant stopping the reactor first. They are not members now, so an
+    # --- THE SWITCH, with no maintenance bracket (no promoter pause): the app units are not
+    #     promoter chain members, so touching them needs no stop of the reactor, and an
     #     upgrade is: write the new manifest to the volume, converge.
     #
     #     Converge does the quiesce itself, and only for the app whose rendered bytes actually
@@ -453,7 +443,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed("mountpoint -q /var/lib/briard")  # nothing in the switch unmounted the volume
 
     # --- THE GATE. The broken container comes up ACTIVE — a live process — so nothing at the DRBD
-    #     layer knows anything is wrong, and under the new shape nothing at the promoter layer ever
+    #     layer knows anything is wrong, and nothing at the promoter layer ever
     #     will: the container is not a chain member, so a crash could not demote the node either.
     #     The signal is the APP's own /healthz, which stays 503 (probed directly, the way the
     #     host health gate does — NOT via the reverse proxy, which reports node readiness and would
@@ -484,9 +474,9 @@ pkgs.testers.runNixOSTest {
     #     it releases the bind (which the restore needs) and is a clean stop, while stopping the
     #     pod makes podman kill its members out from under their units and each lands in `failed`.
     #
-    #     No pause anywhere, and the failed-restore posture improved with it: the revert's refusal
-    #     to serve poisoned data is now simply "do not converge", instead of leaving the promoter
-    #     stopped and the node unable to fail over at all. ---
+    #     No pause anywhere: the refusal of the revert to serve poisoned data is simply "do not
+    #     converge", which leaves the one app stopped while the node keeps its ability to fail
+    #     over. ---
     primary.succeed("systemctl stop briard-fixture-app.service")
     primary.succeed("mountpoint -q /var/lib/briard")  # the shared mount survives a CLEAN container stop
     primary.succeed(f"btrfs subvolume delete {dataroot}")
