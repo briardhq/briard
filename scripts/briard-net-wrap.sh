@@ -1,30 +1,27 @@
 #!/bin/sh
 # briard macvtap launch wrapper.
 #
-# The agent launches the guest via `systemd-run`, i.e. through PID 1 -- so it cannot hand
-# qemu an inherited fd. A macvtap NIC has no ifname qemu can open; its datapath is the
-# /dev/tap<ifindex> chardev, attached as `-netdev tap,fd=N`. This dumb shim is the guest
-# unit's ExecStart: for each macvtap NIC it pins the device MAC (so it matches qemu's mac=),
-# brings it up, opens the chardev on the requested fd, then execs qemu -- which inherits those
-# fds.
+# The agent launches the guest via `systemd-run`, i.e. through PID 1, so it cannot hand qemu an
+# inherited fd. A macvtap NIC has no ifname qemu can open: its datapath is the
+# /dev/tap<ifindex> chardev, attached as `-netdev tap,fd=N`. This dumb shim is the guest unit
+# ExecStart: for each macvtap NIC it pins the device MAC (to match the mac= given to qemu),
+# brings it up and opens the chardev on the requested fd, then execs qemu, which inherits those fds.
 #
-# It is CATTLE, not part of the frozen layer, although it sits beside briard-update
-# in $PREFIX/agent and looks like it. That one is laid once by the install and never
-# updated; this is a shipped artifact of the host bundle, staged as briard-net-wrap.next
-# and swapped in WITH the agent by the update -- because its contract is with the
-# agent (the argv below, and the fd numbers both sides agree on), so the two must never
-# straddle a release boundary.
+# It is cattle, not part of the frozen layer, though it sits beside briard-update in
+# $PREFIX/agent and looks like it: that one is laid once by the install and never updated, while
+# this is a shipped artifact of the host bundle, staged as briard-net-wrap.next and swapped in
+# with the agent by the update, because its contract is with the agent (the argv below, and the
+# fd numbers both sides agree on) and the two must never straddle a release boundary.
 #
 #   briard-net-wrap <dev> <mac> <fd> [<dev> <mac> <fd> ...] -- <qemu> <args...>
 #
-# Triples are separate argv words (a MAC's colons never need escaping). The witness NIC is
-# NOT passed here: it stays a plain tap qemu opens by name (macvtap would isolate the
-# private guest<->host link the witness-forwarder answers).
-#
-# A <dev> written <netns>/<dev> is an ipvtap child the agent holds in that namespace (a slash
-# cannot occur in an interface name). Its MAC is its parent's and cannot be changed, so its
-# <mac> is empty and nothing is pinned; its /dev/tap<ifindex> node is opened from here all the
-# same, because the chardev is not namespaced -- only the index is read inside the namespace.
+# Triples are separate argv words (a MAC's colons never need escaping). The witness NIC is never
+# passed here: it stays a plain tap qemu opens by name (macvtap would isolate the private
+# guest<->host link the witness-forwarder answers). A <dev> written <netns>/<dev> is an ipvtap
+# child the agent holds in that namespace (a slash cannot occur in an interface name). Its MAC is
+# its parent's and cannot be changed, so its <mac> is empty and nothing is pinned; its
+# /dev/tap<ifindex> node is opened from here all the same, because the chardev is not namespaced:
+# only the index is read inside the namespace.
 set -eu
 
 # Run under systemd (the guest unit), whose PATH is minimal -- pin one that finds `ip`/`cat`

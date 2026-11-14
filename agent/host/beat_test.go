@@ -70,10 +70,10 @@ func TestNilBeatIsSafe(t *testing.T) {
 	b.Lease(ctx) // must not panic and must not spawn anything
 }
 
-// THE ORDERING PROPERTY. Lease must reject an unbounded context even when there is no watchdog
-// running, because that is the only place the mistake is visible: in tests and dev runs the
-// goroutine would never spawn, so a guard placed after the nil-check would stay silent until
-// production -- where the symptom is a watchdog that never fires again.
+// The ordering property: Lease must reject an unbounded context even with no watchdog running,
+// the only place the mistake is visible. In tests and dev runs the goroutine never spawns, so a
+// guard placed after the nil-check would stay silent until production, where the symptom is a
+// watchdog that never fires again.
 func TestLeaseRejectsUnboundedContextEvenWhenDisabled(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -94,12 +94,11 @@ func TestLeaseRejectsUnboundedContextEvenWhenDisabled(t *testing.T) {
 	}
 }
 
-// THE PROPERTY THAT MAKES IT A LEASE RATHER THAN A FLAG: it stops on its own.
-//
-// A flag with an enable/disable pair is never disabled by a goroutine that never returns, so a
-// wedge inside the leased operation would leave the pings running forever -- disabling the
-// watchdog permanently, and the more completely the agent wedged the longer it would stay off.
-// This asserts the expiry directly: pings while the budget is live, silence once it is spent.
+// What makes it a lease rather than a flag: it stops on its own. An enable/disable flag is never
+// disabled by a goroutine that never returns, so a wedge inside the leased operation would leave
+// the pings running forever, disabling the watchdog permanently: the more completely the agent
+// wedged, the longer it stays off. Asserted directly: pings while the budget is live, silence once
+// it is spent.
 func TestLeaseExpiresWithItsBudget(t *testing.T) {
 	b, sent := countingBeat(5 * time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
@@ -137,27 +136,25 @@ func TestLeaseReleasesOnCancel(t *testing.T) {
 }
 
 // ============================================================================================
-// THE GUARD AGAINST THE NEXT UNLEASED BUDGET, and it is here rather than in report_test.go because
-// what it defends is a property of the BEAT: a directive that declares a budget must lease it.
-//
-// The defect it exists to catch is invisible everywhere but a node under systemd. The observe
+// The guard against the next unleased budget, here rather than in report_test.go because it
+// defends a property of the beat: a directive that declares a budget must lease it. The observe
 // loop is the only thing that beats, and it does not beat while a directive runs on it, nor while
 // Run waits for a relauncher (a rescue) that took the channel down (acts.go), so only the
 // directive's lease pings meanwhile. A path there that declares a budget and leases none of it
-// runs unpinged, and is SIGABRTed once it outlasts WatchdogSec=20.
+// runs unpinged and is SIGABRTed once it outlasts WatchdogSec=20, a defect invisible everywhere
+// but a node under systemd.
 //
-// HOW THESE ASSERT IT, and why there is no sleep anywhere. A test that slept past a ping
-// interval and counted pings would be a timing race on a loaded runner. Instead the fake BLOCKS
-// until the watchdog is fed: if the budget was leased, a ping arrives within a millisecond and
-// the directive completes; if it was not, no ping can ever arrive, the hold gives up, and the
-// failure surfaces as the directive's own outcome detail. The handler cannot finish without the
-// property being true, which is the strongest shape available here.
+// No sleep anywhere: counting pings after sleeping past an interval would race on a loaded
+// runner. Instead the fake blocks until the watchdog is fed. Leased, a ping arrives within a
+// millisecond and the directive completes; unleased, no ping can ever arrive, the hold gives up,
+// and the failure surfaces as the directive's own outcome detail. The handler cannot finish
+// without the property being true, the strongest shape available here.
 //
-// WHAT IS NOT COVERED, so a green is not read as more than it is. Two paths are driven: rescue
-// and app install. `cert` and `agent-update` (30 s each) go through the same beat.budget call in
-// applyDirective and are NOT driven here, nor is any other beat.budget caller. And no test can
-// force the next budgeted directive to be added to this table -- what it does is make the pattern
-// obvious enough to copy, and fail loudly for the paths it drives.
+// Not covered, so a green is not read as more than it is: only rescue and app install are driven.
+// `cert` and `agent-update` (30 s each) go through the same beat.budget call in applyDirective
+// and are not driven here, nor is any other beat.budget caller. No test can force the next
+// budgeted directive into this table; this one makes the pattern obvious enough to copy, and
+// fails loudly for the paths it drives.
 // ============================================================================================
 
 // pingingBeat is a beat whose first ping closes the returned channel. Interval is a millisecond
