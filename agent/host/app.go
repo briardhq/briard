@@ -32,26 +32,24 @@ import (
 
 // Runtime app install. The host orchestrates; the guest is dumb hands.
 //
-// THE SHAPE: a shipped node mounts, PROMOTES and serves the landing page with zero apps, so
-// by the time anyone installs one the resource is already Primary with drbd-reactor actively
-// driving it. Installing means changing what the VOLUME says this node runs — which is an
-// upgrade, from "empty app" to the current version, and belongs on the same rails as one
-// rather than getting its own.
+// A shipped node mounts, promotes and serves the landing page with zero apps, so any install
+// finds the resource Primary with drbd-reactor actively driving it. Installing changes what the
+// volume says this node runs: an upgrade from "empty app" to the current version, on an
+// upgrade's rails rather than its own.
 //
 //	fetch+verify manifest -> render units + warm images (this node) -> snapshot + stage
 //	  (Primary only) -> converge -> health-gate -> commit, or undo on failure (the {code+data} rollback)
 //
-// THE UNDO READS ONLY THE VOLUME. The install stages the new manifest beside the accepted one,
-// with its rollback point, and the gate's pass is a rename (agent/guestagent/staging.go). A
-// failed gate and a crash inside the gate's window are therefore undone by one procedure from the
-// same files: the install calls it on failure, and the observe loop calls it for any install it
-// finds still staged when the node starts serving (undoPending) -- after an agent restart, a
-// guest relaunch or a failover.
+// The undo reads only the volume: the install stages the new manifest and its rollback point
+// beside the accepted one, and the gate's pass is a rename (agent/guestagent/staging.go), so one
+// procedure undoes a failed gate and a crash inside the gate's window from the same files. The
+// install calls it on failure; the observe loop calls it for any install still staged when the
+// node starts serving (undoPending), after an agent restart, a guest relaunch or a failover.
 //
-// The chain is static and app units are not members of it, so none of this pauses the promoter.
-// The one promoter contact is a guard: refuse to start while the OS-upgrade path holds the
-// maintenance bracket, so an overlap fails loudly at the beginning instead of mutating a resource
-// mid-bracket. It cannot PREVENT the race — a pause can still land between the check and ours —
+// App units are not members of the static chain, so none of this pauses the promoter. The
+// install's one promoter contact is a guard: refuse to start while the OS-upgrade path holds the
+// maintenance bracket, so an overlap fails loudly at the start instead of mutating a resource
+// mid-bracket. It cannot prevent the race (a pause can still land between the check and ours)
 // and is not claimed to.
 
 // appInstaller is the slice of the guest client an install drives. *guestagent.Client
@@ -61,16 +59,16 @@ type appInstaller interface {
 	AppRender(ctx context.Context, files map[string]string, stale []string) error
 	AppProvision(ctx context.Context, name, dataDir string, subdirs []string, manifest string) error
 	AppInstalled(ctx context.Context, name string) (string, error)
-	// SupportsAppInstalled gates the whole install: a guest that cannot NAME an app when
+	// SupportsAppInstalled gates the whole install: a guest that cannot name an app when
 	// recording its identity would overwrite whatever it already runs. See applyOneAppInstall.
 	SupportsAppInstalled() bool
-	// AppConverge makes the node match the VOLUME -- render, warm and start every manifest
-	// recorded there -- and SupportsAppConverge gates it the same way.
-	// It returns the apps the node could not PREPARE, having started every other
-	// one. An install must fail when its own app is in that list: the node is still serving
-	// the prior version, and reporting success would leave the volume, the cache and the cloud
-	// naming a version nothing is running. live names the install being run now ("" for none):
-	// its staged manifest is what renders, and every other staged install is held back.
+	// AppConverge makes the node match the volume -- render, warm and start every manifest
+	// recorded there -- and SupportsAppConverge gates it the same way. It returns the apps the
+	// node could not prepare, having started every other one. An install must fail when its own
+	// app is in that list: the node is still serving the prior version, and reporting success
+	// would leave the volume, the cache and the cloud naming a version nothing is running. live
+	// names the install being run now ("" for none): its staged manifest is what renders, and
+	// every other staged install is held back.
 	AppConverge(ctx context.Context, live string) ([]string, error)
 	SupportsAppConverge() bool
 	// StorageFree measures the guest's image store: the free-space gate reads it
@@ -86,14 +84,14 @@ type appInstaller interface {
 	AppPulling(ctx context.Context, app string, size, installed int64) error
 	AppPulled(ctx context.Context, app string) error
 	SupportsAppPulling() bool
-	// STAGE, THEN COMMIT (agent/guestagent/staging.go): an install is recorded on the volume beside
+	// Stage, then commit (agent/guestagent/staging.go): an install is recorded on the volume beside
 	// the accepted manifest, with its rollback point, and becomes the identity only at the commit.
 	// AppPending reads back every install that never committed, with all its undo needs.
 	AppStage(ctx context.Context, name, dataDir string, subdirs []string, manifest, rollback string) error
 	AppCommit(ctx context.Context, name string) error
 	AppDiscard(ctx context.Context, name string) error
 	AppPending(ctx context.Context) ([]guestagent.PendingInstall, error)
-	// ReactorActive is the interim overlap guard, and the ONLY promoter verb here: an install
+	// ReactorActive is the interim overlap guard, and the only promoter verb here: an install
 	// takes no maintenance bracket, it only refuses to start while somebody else holds one.
 	// Pausing and resuming belong to the OS upgrade path (agent/guest), which changes what a live
 	// promoted resource runs.
@@ -104,7 +102,7 @@ type appInstaller interface {
 	AppWarm(ctx context.Context, unit, ref string) error
 	AppStop(ctx context.Context, unit string) error
 	AppHealth(ctx context.Context, url string) (bool, error)
-	// AppHealthOf is the same floor asked BY NAME, so the guest resolves the address from the
+	// AppHealthOf is the same floor asked by name, so the guest resolves the address from the
 	// routing table it converged rather than from a URL the host assembled.
 	AppHealthOf(ctx context.Context, app string) (apps.Health, error)
 	// The S1 gate's input, one layer above the liveness floor AppHealth answers -- one method
@@ -113,24 +111,24 @@ type appInstaller interface {
 	// interface carries nothing that can.
 	HassReadiness(ctx context.Context, port int) ([]hass.Entry, error)
 	MosquittoProbe(ctx context.Context, token string) (mosquitto.Sample, error)
-	// HassNudge is the one call here that travels INTO an app rather than sampling it: a
+	// HassNudge is the one call here that travels into an app rather than sampling it: a
 	// Home Assistant that is already running has to be told that the node's offering changed,
 	// because nothing else will restart it.
 	HassNudge(ctx context.Context) (bool, error)
-	// Snapshot/Restore are the {data} half of the rollback: a broken UPGRADE must put
+	// Snapshot/Restore are the {data} half of the rollback: a broken upgrade must put
 	// the app's data subvolume back to its pre-upgrade point, not only put the prior manifest
 	// back. Fresh installs (no prior data) never call them.
 	Snapshot(ctx context.Context, dataDir, dest, sidecar string) error
-	// SupportsSnapshotMember gates the RING: an older guest does not advertise
+	// SupportsSnapshotMember gates the ring: an older guest does not advertise
 	// data.member, and taking a plain snapshot instead would leave an unlabelled member -- the one
 	// thing the sidecar exists to prevent. Refused loudly, never worked around.
 	SupportsSnapshotMember() bool
-	// The QUIESCED take, for the one member taken while the app still RUNS: the
+	// The quiesced take, for the one member taken while the app still runs: the
 	// guest asks the app to hold still, snapshots, releases, and answers whether it held --
 	// which is what the class is written from, by the guest, since the host cannot see it.
 	QuiescedSnapshot(ctx context.Context, app, dataDir, dest, sidecar string) (bool, string, error)
 	SupportsQuiescedSnapshot() bool
-	// The RESTORE's three: list an app's ring, make one member's images resident
+	// The restore's three: list an app's ring, make one member's images resident
 	// before anything is stopped, and put the data back. All capability-gated, because a guest
 	// older than the ring can do none of them and a fallback would be worse than a refusal.
 	Members(ctx context.Context, app string) ([]quadlet.SnapshotEntry, error)
@@ -143,7 +141,7 @@ type appInstaller interface {
 	SupportsAppList() bool
 	RemoveImage(ctx context.Context, ref string) (kept bool, err error)
 	SupportsImageRemove() bool
-	// Restore materialises a member over the live subvolume, MINUS the markers a household's own
+	// Restore materialises a member over the live subvolume, minus the markers a household's own
 	// backup restore leaves in it -- the guest's data.replace. RestoreWithoutSweep is
 	// the frozen unswept verb, for undo's one case where no rollback is worse than a stale
 	// marker; nothing else may call it.
@@ -157,35 +155,32 @@ type appInstaller interface {
 // the app half-installed.
 const installBudget = 15 * time.Minute
 
-// healthGate is how long the app gets to become HEALTHY (apps.Health, the one
+// healthGate is how long the app gets to become healthy (apps.Health, the one
 // answer) before the install is judged failed and reverted. HA takes tens of seconds.
 const healthGate = apps.HealthGate
 
-// revertBudget bounds the rollback, on its own DETACHED deadline. The health gate's most likely
-// failure is the install budget expiring, and a revert inheriting that dead context could neither
-// restore data nor put the prior manifest back — leaving the node half-reverted exactly when the
-// install went wrong. So the undo path never shares a deadline with the thing it undoes.
+// revertBudget bounds the rollback on its own detached deadline, so the undo path never shares a
+// deadline with the thing it undoes: the health gate's most likely failure is the install budget
+// expiring, and a revert inheriting that dead context could neither restore data nor put the prior
+// manifest back, leaving the node half-reverted exactly when the install went wrong.
 const revertBudget = 3 * time.Minute
 
-// applyAppPrewarm renders a catalogued app's units and pulls its images, and stops there.
-// It is the warm-standby half on its own: no provisioning, no promoter change, no
-// health gate — nothing that alters what this node is currently serving.
-//
-// It runs the same fetch/verify/render/warm prefix as an install, deliberately sharing the code
-// rather than approximating it: a peer that warmed from a different rendering than the one the
-// Primary installs is a peer that cannot take over, which is the exact failure this exists to
+// applyAppPrewarm renders a catalogued app's units and pulls its images, and stops there: the
+// warm-standby half on its own, with no provisioning, no promoter change, no health gate --
+// nothing that alters what this node is currently serving. It deliberately shares the install's
+// fetch/verify/render/warm code rather than approximating it: a peer that warmed from a different
+// rendering than the one the Primary installs cannot take over, the exact failure this exists to
 // prevent.
 //
-// ROLE-INDEPENDENT, and that is the point — for safety before speed. An install handed to a
+// It is role-independent, and that is the point, for safety before speed. An install handed to a
 // node that is not serving does this much and stops, which makes the phase a function of the
-// role. Roles are not ours to control (drbd-reactor promotes on quorum events), so that
-// directive's MEANING can change between enqueue and execution: a node sent a "download" while
-// Secondary, promoted before it got round to executing, would instead stage onto the volume,
-// converge and health-gate itself — mid-failover, the worst possible moment to be handed an
-// install nobody asked for. Naming the phase removes the race outright.
-//
-// The parallelism is the second reason, not the first: the Primary needs warming too, so every
-// anchor pulls at once instead of the Primary pulling again after the peers have finished.
+// role, and roles are not ours to control (drbd-reactor promotes on quorum events), so the
+// directive's meaning can change between enqueue and execution: a node sent a "download" while
+// Secondary and promoted before executing it would instead stage onto the volume, converge and
+// health-gate itself -- mid-failover, the worst possible moment to be handed an install nobody
+// asked for. Naming the phase removes the race outright. The parallelism is the second reason,
+// not the first: the Primary needs warming too, so every anchor pulls at once instead of the
+// Primary pulling again after the peers have finished.
 func (cfg Config) applyAppPrewarm(ctx context.Context, g appInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
@@ -223,7 +218,7 @@ func (cfg Config) applyAppPrewarm(ctx context.Context, g appInstaller, d api.Dir
 	for _, u := range rendered.ImageUnits {
 		// Ensure-present, not start: starting an .image unit is a registry pull, so an image that
 		// is already here (prewarmed, or staged into the guest at build time) must not be fetched
-		// again -- and for a locally-staged one there is no registry to fetch it FROM. Same verb,
+		// again -- and for a locally-staged one there is no registry to fetch it from. Same verb,
 		// same reason, as bring-up.
 		if err := g.AppWarm(ctx, u, rendered.ImageRefs[u]); err != nil {
 			return failed(fmt.Sprintf("warm image (%s): %v", u, err))
@@ -233,12 +228,11 @@ func (cfg Config) applyAppPrewarm(ctx context.Context, g appInstaller, d api.Dir
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "prewarmed"}
 }
 
-// applyAppInstall installs the apps the directive names -- one, or several separated by spaces --
-// in the order named, as ONE act. One act because a second act while one runs is refused "busy"
-// rather than queued: a household that picked three apps is told about the three together, and no
-// queue anywhere holds its intent for minutes with nothing to show for it. Each app is the whole
-// install path below, health gate and rollback included; the first that does not end healthy
-// ends the act, with the ones before it installed and said to be.
+// applyAppInstall installs the space-separated apps the directive names, in order, as one act: a
+// second act while one runs is refused "busy", not queued, so a household that picked three apps
+// hears about all three together and no queue anywhere holds its intent for minutes with nothing
+// to show. Each app takes the whole install path below, health gate and rollback included; the
+// first that does not end healthy ends the act, with the ones before it installed and said to be.
 func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Directive, n notify.Notifier, logf func(string, ...any)) api.DirectiveOutcome {
 	var names []string
 	for _, name := range strings.Fields(d.Payload) {
@@ -266,16 +260,15 @@ func (cfg Config) applyAppInstall(ctx context.Context, g appInstaller, d api.Dir
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: strings.Join(reach, "\n")}
 }
 
-// applyOneAppInstall installs — or UPGRADES — the catalogued app named by the directive,
-// returning the terminal outcome (announce-before-act). Install and upgrade are the
-// SAME path: install is an upgrade from "empty" to the target. Idempotent by construction —
-// re-installing the same manifest re-renders identical units and reuses the existing subvolume.
+// applyOneAppInstall installs or upgrades the catalogued app the directive names and returns the
+// terminal outcome (announce-before-act). Install is the same path, an upgrade from "empty", and
+// the path is idempotent by construction: re-installing the same manifest re-renders identical
+// units and reuses the existing subvolume.
 //
-// The failure contract is the point of the path: a target that never
-// becomes healthy leaves the node serving what it served before. For a fresh install that is
-// no app at all; for an UPGRADE it is the prior manifest AND its data — the app-level twin of
-// the {code+data} OS rollback. So the path snapshots the data before the switch and, on a
-// tripped gate, restores both the subvolume and the prior manifest.
+// The failure contract is the point of the path: a target that never becomes healthy leaves the
+// node serving what it served before -- no app for a fresh install; for an upgrade the prior
+// manifest and its data, the app-level twin of the {code+data} OS rollback. Hence the snapshot
+// before the switch and, on a tripped gate, the restore of both subvolume and prior manifest.
 func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.Directive, n notify.Notifier, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
@@ -283,37 +276,32 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	if d.Payload == "" {
 		return failed("no app named")
 	}
-	// FIRST, before the fetch, so a refusal costs nothing and leaves the node untouched. A guest
-	// that does not advertise app.installed keeps the apps' identities in ONE file on the
-	// volume, so it cannot say which app a manifest belongs to — installing here would record
-	// this app's identity over whatever that node already runs, and a survivor would then
-	// promote against the wrong manifest. Refusing loudly is the answer rather than a compat path
-	// -- the alpha reinstalls; the guest OS rolls and the verb appears.
+	// First, before the fetch, so a refusal costs nothing and leaves the node untouched. A guest
+	// without app.installed keeps every app's identity in one file on the volume, so it cannot say
+	// which app a manifest belongs to: installing would record this app's identity over whatever
+	// that node already runs and a survivor would promote against the wrong manifest. Refused
+	// loudly, with no compat path: the alpha reinstalls; the guest OS rolls and the verb appears.
 	if !g.SupportsAppInstalled() {
 		return failed("this VM is too old to name an app's identity on the volume (no app.installed); update the VM before installing")
 	}
-	// Same instrument, same reason, for converge. A guest without app.converge
-	// has no briard-apps unit either, so nothing there ever reads the volume — this would
-	// write the manifest, report success, and leave the node serving exactly what it served
-	// before. No compat path -- the alpha reinstalls; the guest OS rolls and the verb
-	// appears.
+	// Same for converge: a guest without app.converge has no briard-apps unit either, so nothing
+	// there ever reads the volume and this would write the manifest, report success and leave the
+	// node serving exactly what it served before. Same refusal, same reason.
 	if !g.SupportsAppConverge() {
 		return failed("this VM is too old to converge itself to the volume (no app.converge); update the VM before installing")
 	}
-	// Same instrument again, for the ring. It is the capability rather than a protocol
-	// floor DELIBERATELY: a floor makes every host refuse every not-yet-rolled guest fleet-wide
-	// and its own health gate then reverts the self-update -- the node cannot reach the image
-	// that would fix it, because reaching it needs the channel the floor just closed. This
-	// refuses exactly the one path that needs the verb.
+	// Same for the ring, and deliberately a capability, not a protocol floor: a floor makes every
+	// host refuse every not-yet-rolled guest fleet-wide, then its own health gate reverts the
+	// self-update, since reaching the image that would fix it needs the channel the floor just
+	// closed. This refuses exactly the one path that needs the verb.
 	if !g.SupportsSnapshotMember() {
 		return failed("this VM is too old to take a titled rollback point (no data.member); update the VM before installing")
 	}
-	// AN UNINSTALLED APP'S KEPT COPY is what installing it again puts back: the restore of that
-	// member, at the version it was uninstalled at, after which a newer one in the catalog is the
-	// ordinary update offer, on the update's rails. Installing the catalog's version over the kept
-	// data instead would be a fresh install's path, with no rollback point for the first start's
-	// migration. A ring that cannot be read refuses rather than installing empty beside a copy it
-	// could not see.
+	// Installing an uninstalled app again restores its kept copy, at the version it was uninstalled
+	// at; a newer catalog version is then the ordinary update offer, on the update's rails. The
+	// catalog's version over the kept data would take a fresh install's path, with no rollback point
+	// for the first start's migration. An unreadable ring refuses rather than installing empty beside
+	// a copy it could not see.
 	if kept, err := cfg.keptCopyOf(ctx, g, d.Payload); err != nil {
 		return failed(err.Error())
 	} else if kept.Member != "" {
@@ -350,11 +338,10 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	if refusal := cfg.roomForPull(ctx, g, m, logf); refusal != "" {
 		return failed(refusal)
 	}
-	// THE MEMORY GATE, beside it: the guest must hold the system's share plus every app's
-	// declared minimum -- this one's included -- before the new app first starts, because an
-	// app's first start is its busiest moment and growth reacts in minutes. So the running
-	// guest is grown to that now, and the install refused only when the host cannot give it that
-	// much at all. A guest whose size cannot be read installs unmeasured, like the image store.
+	// The memory gate, beside it: an app's first start is its busiest moment and growth reacts in
+	// minutes, so before it the running guest is grown to the system's share plus every app's
+	// declared minimum, this one's included, and the install refused only when the host cannot give
+	// that much at all. A guest whose size cannot be read installs unmeasured, like the image store.
 	if refusal := cfg.memoryFor(ctx, m, logf); refusal != "" {
 		return failed(refusal)
 	}
@@ -365,7 +352,7 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 		return failed(err.Error())
 	}
 
-	// Interim guard. Checked BEFORE anything is written, so a refusal leaves the node untouched.
+	// Interim guard. Checked before anything is written, so a refusal leaves the node untouched.
 	active, err := g.ReactorActive(ctx)
 	if err != nil {
 		return failed(fmt.Sprintf("could not read promoter state: %v", err))
@@ -374,18 +361,17 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 		return failed("the promoter is already paused — another maintenance operation is in progress")
 	}
 
-	// N APPS, so a second distinct app is not refused: everything below is per-app by
-	// construction. The node-local cache is a directory, the volume's `.apps/<name>.json` says
-	// which app a manifest belongs to, `priorApp` asks about THIS app and `filesToRemove`
-	// compares THIS app's renderings; `NodeStatus.Apps` carries one manifest identity per app and
-	// `telemetry.NodeResources.Payloads` measures each app's own footprint and restart count, so
-	// the cloud cannot confirm a rollout against the wrong app or miss a crash-loop in another.
-	// `Healthy` and `System` deliberately stay node-scoped — a closure is a property of the node,
-	// and the reverse proxy is what "is this node serving" means.
+	// N apps: a second distinct app is not refused, because everything below is per-app by
+	// construction. The node-local cache is a directory, the volume's `.apps/<name>.json` names a
+	// manifest's app, `priorApp` and `filesToRemove` look only at this app, `NodeStatus.Apps` carries
+	// an identity per app, and `telemetry.NodeResources.Payloads` measures each app's own footprint
+	// and restart count, so the cloud cannot confirm a rollout against the wrong app or miss a
+	// crash-loop in another. `Healthy` and `System` deliberately stay node-scoped: a closure is a
+	// property of the node, and the reverse proxy is what "is this node serving" means.
 
-	// What is installed NOW — the rollback target. nil on a fresh install (the shipped
-	// zero-app node) or an idempotent re-install of the same manifest: the manifest whose data
-	// the rollback point below is taken under.
+	// What is installed now -- the rollback target, the manifest whose data the rollback point
+	// below is taken under. nil on a fresh install (the shipped zero-app node) or an idempotent
+	// re-install of the same manifest.
 	prior, _, priorRaw, _ := cfg.priorApp(ctx, g, m.Name, raw, logf)
 
 	// Units are node-local (/run), so this node renders its own; the volume holds the manifest as
@@ -400,19 +386,17 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 		return failed(fmt.Sprintf("render units: %v", err))
 	}
 
-	// WARM THE IMAGES, synchronously, here. Nothing else starts the .image units (they carry no
-	// [Install]), and the containers are Pull=never, so an image not warmed here is one converge
-	// has to pull at promotion -- and a pull that cannot happen there fails converge and takes the
-	// VIP down. Install time is the right moment: a human is watching and the CLI can report the
-	// failure, whereas running and failover must never need the network. After a guest reboot,
-	// bring-up re-warms (BringUpSpec.AppImages); that is a RE-warm, not the primary fetch.
+	// Warm the images here, synchronously. Nothing else starts the .image units (no [Install]) and
+	// the containers are Pull=never, so converge would have to pull an image not warmed here at
+	// promotion, and a pull that cannot happen there fails converge and takes the VIP down. Install
+	// time is right because a human is watching and the CLI can report the failure, while running
+	// and failover must never need the network: `briard app install` is the one point where an
+	// offline node legitimately fails. Bring-up re-warms after a guest reboot
+	// (BringUpSpec.AppImages), a re-warm, not the primary fetch.
 	//
-	// This is also the one point where an offline node legitimately fails: `briard app
-	// install` needs the network, while running an installed app never does.
-	//
-	// The pull record for the dashboard's bar: the totals before the first byte,
-	// cleared after the last -- on every exit, because a stale record would draw a bar over an
-	// install that ended. Best-effort: a bar is a courtesy, never a gate on the install.
+	// The pull record draws the dashboard's bar: totals before the first byte, cleared after the
+	// last on every exit, since a stale record would draw a bar over an install that ended.
+	// Best-effort: a bar is a courtesy, never a gate on the install.
 	if m.Size > 0 && g.SupportsAppPulling() {
 		if err := g.AppPulling(ctx, m.Name, m.Size, m.InstalledSize); err != nil {
 			logf("app install %s: pull record: %v (no progress bar)", m.Name, err)
@@ -424,10 +408,7 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 		}()
 	}
 	for _, u := range rendered.ImageUnits {
-		// Ensure-present, not start: starting an .image unit is a registry pull, so an image that
-		// is already here (prewarmed, or staged into the guest at build time) must not be fetched
-		// again -- and for a locally-staged one there is no registry to fetch it FROM. Same verb,
-		// same reason, as bring-up.
+		// Ensure-present, not start, as in applyAppPrewarm and bring-up.
 		if err := g.AppWarm(ctx, u, rendered.ImageRefs[u]); err != nil {
 			return failed(fmt.Sprintf("warm image (%s): %v", u, err))
 		}
@@ -455,49 +436,40 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 
 	dataDir := quadlet.DataRoot(m.Name)
 
-	// CAPTURE THE S1 BASELINE FIRST, while the OLD version is still serving and still untouched.
+	// Capture the S1 baseline first, while the old version still serves untouched. The gate is
+	// differential, so this sample is the whole confounder control: an integration broken before
+	// the upgrade is excluded and only what this change breaks can trip it; any later sample is of
+	// something already disturbed.
 	//
-	// It is a DIFFERENTIAL gate, so this sample is the whole confounder control: an integration
-	// already broken before the upgrade is excluded, and only what this change breaks can trip it.
-	// A sample taken any later is a sample of something already disturbed.
+	// ⚠️ This line must stay above the stop and the snapshot below: a baseline of a stopped app reads
+	// as every integration having regressed. TestUpgradeCapturesTheBaselineBeforeTheSnapshot asserts
+	// the order by name.
 	//
-	// ⚠️ THIS LINE MUST STAY ABOVE THE STOP AND THE SNAPSHOT below it: a baseline
-	// captured after a stop is a baseline of an app that is not running, which reads as every
-	// integration having regressed. TestUpgradeCapturesTheBaselineBeforeTheSnapshot asserts the
-	// order by name.
-	//
-	// ONLY ON AN UPGRADE. A fresh install has nothing to differ against — the app was not
-	// running, so there is no "was loaded" to regress from — and the floor is the honest gate
-	// there. Deliberate rather than incidental: it is also the case where a Baseline call would
-	// be asking an app that does not exist yet.
-	// Through &g, so a gate built here asks over the channel the health gate may have followed.
+	// Deliberately only on an upgrade: a fresh install has no "was loaded" to regress from (the app
+	// was not running), so the floor is the honest gate there, and a Baseline call would ask an app
+	// that does not exist yet. Through &g, so a gate built here asks over the channel the health gate
+	// may have followed.
 	gate := guest.Gate{Assessor: cfg.assessorFor(m, heldProbe{&g}, logf), Logf: logf}
 	var readiness guest.Readiness
 	if prior != nil {
 		readiness = gate.Capture(ctx)
 	}
 
-	// STOP THE APP, THEN SNAPSHOT THE ROLLBACK POINT.
-	// Its data is what a broken upgrade can poison, and the read-only snapshot on the replicated
-	// volume is what a failed gate restores.
+	// Stop the app, then snapshot the rollback point: the data is what a broken upgrade can poison,
+	// and this read-only snapshot on the replicated volume is what a failed gate restores. Never
+	// live: a live snapshot is only crash-consistent, and `apps-pair.nix` shows the cost --
+	// mosquitto writes its in-memory retained state on a clean stop, so a running broker's snapshot
+	// misses a message it already accepted and the rollback restores a broker with nothing in it.
+	// HA surviving a live snapshot (btrfs snapshots atomically, HA replays its WAL on open) is a fact
+	// about HA, not a guarantee the catalog can make. Stopping first makes the point
+	// application-consistent for every app, and the rollback needs the same stop anyway:
+	// `data.restore` cannot run until the subvolume's bind is released. Container units, never the
+	// pod (see quiesce); only the upgraded app stops, so the node keeps serving every other one.
 	//
-	// NEVER TAKEN LIVE: a live snapshot is only crash-consistent, and `apps-pair.nix` shows the
-	// cost -- mosquitto holds retained state in memory and writes it on a clean stop, so a
-	// snapshot of a running broker misses a message it already accepted, and the rollback
-	// restores a broker with nothing in it. Home Assistant surviving a live snapshot (btrfs
-	// snapshots atomically, HA replays its WAL on open) is a fact about HA, not a guarantee the
-	// catalog can make. Stopping first makes the point application-consistent for every app, and
-	// it is the same stop the rollback path needs anyway — `data.restore` cannot run until the
-	// subvolume's bind is released.
-	//
-	// CONTAINER UNITS, never the pod: see quiesce. Only the upgraded app stops, so the node keeps
-	// serving every other one.
-	//
-	// A FAILED SNAPSHOT IS UNDONE BY A RE-CONVERGE, no new mechanism: until the stage below lands
-	// the volume names only the PRIOR app, so a converge re-renders from it and starts exactly
-	// what the stop stopped (converge starts every unit of every app it does not skip, so a unit
-	// stopped out from under it comes back). The stop INTERRUPTS the app, and an interruption the
-	// household is never brought out of is just an outage with a directive attached.
+	// A failed snapshot is undone by a re-converge, no new mechanism: until the stage below lands the
+	// volume names only the prior app, and converge starts every unit of every app it does not skip,
+	// so it starts exactly what the stop stopped. The stop interrupts the app, and an interruption
+	// the household is never brought out of is just an outage with a directive attached.
 	var snap string
 	stoppedFail := failed
 	if prior != nil {
@@ -508,23 +480,22 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 			}
 			return failed(detail + " (the app was restarted)")
 		}
-		// THE MEMBER IS PINNED TO THE VERSION IT IS TAKEN UNDER, which is v1 by construction —
-		// it is taken before the switch, so the manifest recorded here is the one still on the
-		// volume and the one an undo goes back to. v2's own first member will pin v2, leaving
-		// two members seconds apart with near-identical data and unambiguous meanings: this one
-		// goes back to v1, that one goes to v2 as of then. Both are kept; the duplication is not
-		// fought, and no "who wrote the data" bookkeeping is needed.
+		// The member is pinned to the version it is taken under, v1 by construction: taken before the
+		// switch, it records the manifest still on the volume, the one an undo goes back to. v2's first
+		// member will pin v2, leaving two near-identical members seconds apart with unambiguous meanings
+		// (back to v1; to v2 as of then). Both are kept: the duplication is not fought, and no "who
+		// wrote the data" bookkeeping is needed.
 		at := cfg.takenAt()
 		snap = quadlet.SnapshotMember(m.Name, quadlet.TriggerAppUpdateBefore, at)
 		meta := quadlet.SnapshotMeta{
 			App:     m.Name,
 			Trigger: quadlet.TriggerAppUpdateBefore,
 			TakenAt: at,
-			// QUIESCED BY THE STOP ABOVE, which is what that stop buys and the reason it
+			// Quiesced by the stop above, which is what that stop buys and the reason it
 			// is not an optimisation somebody may reorder away.
 			Consistency: quadlet.Quiesced,
 			Manifest:    priorRaw,
-			// THE UPDATE'S EVENT, on the point that undoes it. Written before the act
+			// The update's event, on the point that undoes it. Written before the act
 			// because the point is; a revert below records its own undo rather than rewriting this.
 			Event: &quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUpdate, What: "Updated to " + m.Version}}},
 		}
@@ -537,21 +508,18 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 		}
 	}
 
-	// STAGE the NEW manifest beside the accepted one, with the rollback point, and ensure the
-	// subvolume/subdirs. The accepted manifest is not touched until the commit below.
-	//
-	// From here on every failure is the UNDO, which reads what to undo from the volume: a stage
-	// that failed part-way has either landed its `.json.next` (then it is undone like any other)
-	// or not (then the accepted manifest still stands and the undo is a converge back to it).
-	//
-	// AND THE OWNER IS TOLD, like every other upgrade that rolls back: the outcome reaches only
-	// whoever is watching the directive, and an app update is the one a household meets most.
+	// Stage the new manifest and its rollback point beside the accepted one, which stays untouched
+	// until the commit, and ensure the subvolume/subdirs. From here every failure is the undo, which
+	// reads what to undo from the volume: a stage that failed part-way either landed its
+	// `.json.next` (undone like any other) or did not (the accepted manifest stands; a converge back
+	// to it). The owner is told, as for every upgrade that rolls back: the outcome reaches only
+	// whoever watches the directive, and an app update is the one a household meets most.
 	kind := "app install"
 	if prior != nil {
 		kind = "app update"
 	}
 	revert := func(cause error) api.DirectiveOutcome {
-		// A STEP THAT DIED WITH THE CHANNEL reverts over the one Run re-establishes: the dead
+		// A step that died with the channel reverts over the one Run re-establishes: the dead
 		// client would fail the revert the same way, leaving the install half undone.
 		if errors.Is(cause, guestfirmware.ErrChannelDown) {
 			cfg.follow(ctx, &g, logf)
@@ -565,43 +533,39 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 		return revert(fmt.Errorf("stage the install: %w", err))
 	}
 
-	// CONVERGE, in place, with this install LIVE: its staged manifest is what renders.
-	//
-	// NO MAINTENANCE BRACKET, and its absence is the point. The chain is static and the apps are
-	// not members, so an install is stage + tell the node to re-read the volume: it never stops
-	// the promoter for every OTHER app on the node, and a failure here cannot demote it.
-	//
-	// A VERB, not a `systemctl restart briard-apps`: briard-apps IS a chain member, so stopping
-	// it would deactivate drbd-reactor's target, unmount the volume and demote the node — the
-	// obvious way of triggering a re-converge, and the wrong one. Same code, same unit, no unit
-	// lifecycle touched.
+	// Converge in place with this install live (its staged manifest is what renders), and
+	// deliberately with no maintenance bracket: the chain is static and apps are not members, so an
+	// install is stage + tell the node to re-read the volume. It never stops the promoter for every
+	// other app on the node, and a failure here cannot demote it. A verb, not `systemctl restart
+	// briard-apps`: briard-apps is a chain member, so stopping it would deactivate drbd-reactor's
+	// target, unmount the volume and demote the node -- the obvious way to trigger a re-converge, and
+	// the wrong one. Same code, same unit, no unit lifecycle touched.
 	skipped, err := g.AppConverge(ctx, m.Name)
 	if err != nil {
 		return revert(fmt.Errorf("install %s: %w", m.Name, err))
 	}
-	// CONVERGE CONTAINS A PREPARATION FAILURE TO THE ONE APP, so it succeeds while declining
-	// to start ours — the right answer for a promoting node, and the wrong one to report as an
-	// install. Without this the old container would still be serving, the health gate below would
-	// pass on it, and the install would report the new version as running.
+	// Converge contains a preparation failure to the one app, so it succeeds while declining to
+	// start ours: the right answer for a promoting node, the wrong one to report as an install.
+	// Without this the old container would still be serving, the health gate below would pass on
+	// it, and the install would report the new version as running.
 	if slices.Contains(skipped, m.Name) {
 		return revert(fmt.Errorf("install %s: the node could not prepare it and did not start it (see the guest log)", m.Name))
 	}
 	logf("app install %s: converged from the volume; waiting for health", m.Name)
 
-	// Gate on the APP's own endpoint (in-guest), not the reverse proxy — see awaitHealthy. BY
-	// NAME: the converge above wrote the routing table, so the guest already knows where this
-	// app listens, rather than the host assembling an address it can only guess stays true.
+	// Gate on the app's own endpoint (in-guest), not the reverse proxy (see awaitHealthy), and by
+	// name: the converge above wrote the routing table, so the guest already knows where this app
+	// listens, rather than the host assembling an address it can only guess stays true.
 	if err := cfg.awaitHealthy(ctx, &g, m.Name, logf); err != nil {
 		logf("app install %s failed its health gate (%v); reverting", m.Name, err)
 		return revert(err)
 	}
-	// THE FLOOR HELD; now ask whether the app still does what it did. The floor's whole
-	// blind spot is an app that answers while its work is broken — Home Assistant returning
-	// 200 for /manifest.json with half the house's integrations dead — and this is the layer
-	// that sees it. A Rollback verdict reverts {code + data} exactly as a failed floor does; a
-	// Hold keeps the upgrade and says so; a Pass, a missing assessor, a fresh install or a
-	// failed sample all keep it silently, because S1 must never revert a household's app on
-	// the strength of its own telemetry breaking.
+	// The floor held; now ask whether the app still does what it did. The floor's whole blind spot
+	// is an app that answers while its work is broken (HA returning 200 for /manifest.json with half
+	// the house's integrations dead), and this layer sees it. Rollback reverts {code + data} exactly
+	// as a failed floor does; Hold keeps the upgrade and says so; Pass, a missing assessor, a fresh
+	// install or a failed sample keep it silently: S1 must never revert a household's app on the
+	// strength of its own telemetry breaking.
 	//
 	// ⚠️ A Hold currently reaches only the log. On the free tier that is nobody (the surface it
 	// needs is not built yet); the rollback window and the user remain the backstop until then.
@@ -609,58 +573,48 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 		logf("app install %s failed the readiness gate (%v); reverting", m.Name, err)
 		return revert(err)
 	}
-	// THE COMMIT: one rename on the volume, and the install is the identity. A commit that fails
+	// The commit: one rename on the volume, and the install is the identity. A commit that fails
 	// leaves it staged, and a staged install is undone -- the same as a gate that failed.
 	if err := g.AppCommit(ctx, m.Name); err != nil {
 		logf("app install %s could not be committed (%v); reverting", m.Name, err)
 		return revert(fmt.Errorf("commit the install: %w", err))
 	}
-	// Record the manifest NODE-LOCALLY as well as on the volume. Both copies are needed and they
-	// do different jobs: the volume's is the replicated identity (what the app IS), while this one
-	// is what the HOST reads at start-up, before promotion, when the replicated copy is
-	// unreadable -- which apps to report and measure, and which units bring-up writes back and
-	// re-warms after a guest reboot (installedApps). Same pattern, and the same reason, as
-	// AssignmentCache.
+	// Record the manifest node-locally too; both copies are needed. The volume's is the replicated
+	// identity (what the app is); this one is what the host reads at start-up, before promotion,
+	// while the replicated copy is unreadable: which apps to report and measure, and which units
+	// bring-up writes back and re-warms after a guest reboot (installedApps). Same pattern and reason
+	// as AssignmentCache.
 	if err := cfg.cacheApp(m.Name, raw); err != nil {
-		// Not fatal: the app IS installed and serving. Say so loudly though — the next agent
+		// Not fatal: the app is installed and serving. Say so loudly though: the next agent
 		// restart comes up without it until this node next reads the volume at promotion.
 		logf("app install %s: WARNING: could not cache the manifest (%v); an agent restart will drop it from the promoter chain", m.Name, err)
 	}
-	// TELL A HOME ASSISTANT THAT IS ALREADY RUNNING. Everything briard's integration
-	// does, it does at an HA start, and converge restarts only the apps whose bytes changed
-	// -- so installing the broker beside a live Home Assistant leaves it running and
-	// unwired until something happens to restart it. Nothing else in the product will.
-	//
-	// UNCONDITIONAL, and that is the cheap half of the design: no "which app implies what"
-	// table here, no check of what else is installed. The guest answers `false` when there is no
-	// Home Assistant to tell, and the signal carries nothing, so firing it after an install that
-	// Home Assistant does not care about costs one loopback request and changes nothing.
-	//
-	// AFTER THE GATES, so a reverted install never fires it, and after the health gate the broker
-	// is already accepting clients -- the integration's own socket check is what would otherwise
-	// have to lose that race.
-	//
-	// BEST-EFFORT, NEVER FATAL: the app IS installed and serving. A failure here costs the
-	// household exactly what they had before this existed, which is a Home Assistant that picks
-	// the change up at its next start.
+	// Tell a Home Assistant that is already running. briard's integration does everything at an HA
+	// start, and converge restarts only apps whose bytes changed, so a broker installed beside a live
+	// HA leaves it running unwired until something restarts it, and nothing else in the product will.
+	// Unconditional, the cheap half of the design: no "which app implies what" table, no check of
+	// what else is installed; the guest answers `false` when there is no HA to tell and the signal
+	// carries nothing, so a needless nudge costs one loopback request and changes nothing. After the
+	// gates, so a reverted install never fires it, and after the health gate the broker already
+	// accepts clients, a race the integration's own socket check would otherwise have to lose.
+	// Best-effort, never fatal: the app is installed and serving, and a failure costs the household
+	// exactly what they had before this existed, an HA that picks the change up at its next start.
 	if told, err := g.HassNudge(ctx); err != nil {
 		logf("app install %s: could not tell Home Assistant to reconsider (%v); it will pick this up at its next start", m.Name, err)
 	} else if told {
 		logf("app install %s: Home Assistant was told to reconsider what the node offers", m.Name)
 	}
 	logf("app install %s: healthy, serving", m.Name)
-	// COMMITTED: no gate is left that could revert it, so the image the prior version ran on is
+	// Committed: no gate is left that could revert it, so the image the prior version ran on is
 	// no longer anyone's rollback target. Without this every upgrade leaves one behind for good.
 	cfg.dropSuperseded(ctx, g, priorRaw, logf)
-	// WHERE TO REACH IT, carried back as the outcome Detail. The node knows the address and the
-	// operator does not: the name is the one the guest publishes over mDNS, and a port, where one
-	// is the address, is the manifest's (never typed by a human). Without it the verb reports
-	// success and leaves the address to be guessed, which walks the user to the reverse proxy's
-	// "nothing is routed here" page and reads a working install as a broken one.
-	//
-	// The sentence itself is the registry's (agent/apps), because it is not the same sentence
-	// for every app: one the reverse proxy does not front -- a broker -- is reached at a published
-	// port, not at its name on the proxy.
+	// Where to reach it, as the outcome Detail: the node knows the address and the operator does not
+	// (the name is the one the guest publishes over mDNS; a port, where one is the address, is the
+	// manifest's, never typed by a human). Without it a successful verb leaves the address to be
+	// guessed, walking the user to the reverse proxy's "nothing is routed here" page so a working
+	// install reads as broken. The registry (agent/apps) writes the sentence because it differs per
+	// app: one the reverse proxy does not front, a broker, is reached at a published port, not at its
+	// name on the proxy.
 	reach := apps.Reach(m, cfg.FlockName)
 	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: reach}
 }
@@ -685,25 +639,23 @@ func (cfg Config) memoryFor(ctx context.Context, m manifest.Manifest, logf func(
 	return ""
 }
 
-// cacheApp writes one app's manifest into the node-local cache directory, named for the
-// app. An install writes it only after its gates pass and it commits, so a failed install is
-// never what a restart brings up.
+// cacheApp writes one app's manifest into the node-local cache directory, named for the app. An
+// install writes it only once its gates pass and it commits, so a restart never brings up a
+// failed install.
 //
-// One file per app, holding the manifest's bytes VERBATIM. One file holding the set cannot work:
-// a manifest's content hash IS the app identity (shared/manifest), so re-encoding a set would give
-// every member a new identity on every write. Per file also makes install and uninstall a file
-// operation instead of a read-modify-write of a shared document, which is what keeps two installs
-// from losing each other's app.
+// One file per app, the manifest's bytes verbatim: one file holding the set cannot work, because
+// a manifest's content hash is the app identity (shared/manifest) and re-encoding the set would
+// give every member a new identity on every write. Per file, install and uninstall are file
+// operations rather than a read-modify-write of a shared document, which keeps two installs from
+// losing each other's app.
 //
 // Atomic and durable (shared/atomicfile): a bare WriteFile over an existing file truncates first,
-// so a crash inside the write leaves half a manifest, and an unflushed one leaves no manifest at
-// all for a commit interval after the install returned. Neither is loud: installedApps reads an
-// unparseable file as "this app is not installed" and logs it, and bring-up reads only this
-// cache, so the node quietly comes back without the app until it next reads the volume at
-// promotion (adoptVolumeApps).
-//
-// The mesh is the other node-scoped fact bring-up takes from a file rather than re-deriving it.
-// Two node-scoped facts, two caches, one rule -- see cacheMesh.
+// so a crash mid-write leaves half a manifest, and an unflushed one leaves none at all for a
+// commit interval after the install returned. Neither is loud: installedApps logs an unparseable
+// file and reads it as "not installed", and bring-up reads only this cache, so the node quietly
+// comes back without the app until it next reads the volume at promotion (adoptVolumeApps). The
+// mesh is the other node-scoped fact bring-up takes from a file rather than re-deriving: two
+// facts, two caches, one rule (cacheMesh).
 func (cfg Config) cacheApp(name string, raw []byte) error {
 	if cfg.AppCache == "" {
 		return nil
@@ -711,29 +663,27 @@ func (cfg Config) cacheApp(name string, raw []byte) error {
 	return atomicfile.Write(cfg.manifestPath(name), raw, 0o600, 0o700)
 }
 
-// manifestPath is one app's file in the cache directory. The name is a manifest slug --
-// shared/manifest's Validate refuses anything else, and refuses it precisely because these become
-// path elements -- so there is no traversal to strip here; the check upstream is the one that
-// matters and this would only duplicate it badly.
+// manifestPath is one app's file in the cache directory. The name is a manifest slug, and
+// shared/manifest's Validate refuses anything else precisely because these become path elements,
+// so there is no traversal to strip here: the check upstream is the one that matters and this
+// would only duplicate it badly.
 func (cfg Config) manifestPath(name string) string {
 	return filepath.Join(cfg.AppCache, name+".json")
 }
 
-// adoptInstalledApps refreshes the LIVE config from the node-local manifest cache after a
-// directive that changed what is installed. Run() does this once at startup; without it here, the
-// very process that performed the install would keep its old (usually empty) view of cfg.Apps
-// until something restarted it -- and everything the loop derives from cfg.Apps (the status
-// report's apps, each app's footprint, the clock sample, the recorder check) would leave the new
-// app out. The node would run perfectly and describe itself as empty.
+// adoptInstalledApps refreshes the live config from the node-local manifest cache after a
+// directive that changed what is installed. Run() does this once at startup; without it here the
+// process that performed the install would keep its old (usually empty) cfg.Apps until restarted,
+// and everything the loop derives from it (the status report's apps, each app's footprint, the
+// clock sample, the recorder check) would leave the new app out: the node would run perfectly and
+// describe itself as empty. Pointer receiver on purpose: it mutates the observe loop's own cfg,
+// the copy every later cycle reads. A failed re-read keeps the previous view, since the cache is
+// the authority on what is installed and a transient read error is not evidence of an uninstall.
 //
-// Pointer receiver on purpose: it mutates the observe loop's own cfg, the copy every later cycle
-// reads. A failed re-read leaves the previous view in place -- the cache is the authority on what
-// is installed, and a transient read error is not evidence of an uninstall.
-//
-// AFTER ANY INSTALL'S OUTCOME, done or not: an act that installs several apps can fail on the
-// second with the first installed, and an install that did nothing leaves the cache as it was.
-// And after a restore, from the history or the backup, which can move an app to the version its
-// point was taken under, or put back an app this node did not have. And after an uninstall.
+// It runs after any install's outcome, done or not (a multi-app act can fail on the second with
+// the first installed; an install that did nothing leaves the cache as it was), after a restore
+// from the history or the backup (which can move an app to its point's version or put back an
+// app this node did not have), and after an uninstall.
 func (cfg *Config) adoptInstalledApps(d api.Directive, o api.DirectiveOutcome, logf func(string, ...any)) {
 	if d.Kind != api.DirectiveAppInstall && d.Kind != api.DirectiveAppRestore && d.Kind != api.DirectiveBackupRestore &&
 		d.Kind != api.DirectiveAppUninstall {
@@ -752,28 +702,24 @@ func (cfg *Config) adoptInstalledApps(d api.Directive, o api.DirectiveOutcome, l
 	}
 }
 
-// installedApps reads the node-local manifest DIRECTORY and returns the app specs plus the
-// UNION of their RENDERED UNITS. Called at start-up (Run) so a restarted agent knows what it runs,
-// rather than reverting to whatever the environment describes, and again after every act that
-// changes what is installed (adoptInstalledApps).
+// installedApps reads the node-local manifest directory and returns the app specs plus the union
+// of their rendered units, at start-up (Run, so a restarted agent knows what it runs rather than
+// reverting to what the environment describes) and after every act that changes what is
+// installed (adoptInstalledApps). No chain comes back: an app is not a chain member, the promoter
+// chain is the same units everywhere (shared/chain), and `briard-apps` starts the apps from the
+// volume once the mount exists.
 //
-// NO CHAIN COMES BACK, because an app is not a chain member: the promoter chain is the same
-// units everywhere (shared/chain) and `briard-apps` starts the apps from the volume once the
-// mount exists.
+// The rendering is returned because the units live on tmpfs (/run/containers/systemd), which a
+// guest reboot erases while this cache survives; bring-up writes them back and re-warms their
+// images (BringUpSpec.AppUnits/AppImages), so a node, a standby included, is warm before it
+// promotes. Order is by filename, i.e. app name: deterministic and nothing more, the cheapest way
+// to owe the one property owed, stability across restarts.
 //
-// The rendering is returned because the units live under /run/containers/systemd — tmpfs — so a
-// guest reboot erases them while this cache survives. Bring-up writes them back and re-warms
-// their images (BringUpSpec.AppUnits/AppImages), so a node, a standby included, is warm before
-// it promotes.
-//
-// ORDER IS BY FILENAME, which is by app name: deterministic and nothing more. "Stable across
-// restarts" is the only property this owes, and alphabetical is the cheapest way to owe it.
-//
-// Every failure is a soft "not installed", per app and for the set: a cache directory that is
-// absent (the shipped zero-app node), unreadable, or holding a file that no longer parses must
-// leave the node bringing up with what remains rather than refusing to start. A node that will not
-// boot is worse than a node that lost an app — and losing ONE app must not cost the others,
-// which is why a bad file is skipped rather than failing the read.
+// Every failure is a soft "not installed", per app and for the set: an absent cache directory
+// (the shipped zero-app node), an unreadable one, or a file that no longer parses leaves the node
+// bringing up with what remains rather than refusing to start. A node that will not boot is worse
+// than one that lost an app, and losing one app must not cost the others, so a bad file is
+// skipped rather than failing the read.
 func (cfg Config) installedApps(logf func(string, ...any)) ([]model.AppSpec, quadlet.Rendered, bool) {
 	if cfg.AppCache == "" {
 		return nil, quadlet.Rendered{}, false
@@ -810,7 +756,7 @@ func (cfg Config) installedApps(logf func(string, ...any)) ([]model.AppSpec, qua
 	return specs, all, true
 }
 
-// specOf turns one manifest's bytes into the spec the node reports and the units it runs. ONE
+// specOf turns one manifest's bytes into the spec the node reports and the units it runs. One
 // implementation, because the two readers must agree about what a manifest means: the node-local
 // cache (installedApps, what this host was told) and the replicated volume
 // (adoptVolumeApps, what this node actually promoted into).
@@ -845,29 +791,25 @@ type volumeReader interface {
 	SupportsAppList() bool
 }
 
-// adoptVolumeApps makes this host's view of what it runs match the VOLUME, and caches it.
-//
-// WHY IT EXISTS: converge-at-promotion renders and starts from the volume, so a survivor that
-// never installed anything runs apps this host was never told about, while the report is built
-// from the node-local cache, which otherwise records only what this node itself installed or
-// restored. Without this a survivor serves the apps at the VIP while telling the cloud it runs
-// none: no rollout can be confirmed on it, and a perfectly healthy household reads "no apps" in
-// every view. The volume is the truth about what runs; this makes the host READ it instead of
+// adoptVolumeApps makes this host's view of what it runs match the volume, and caches it. A
+// survivor converges from the volume at promotion and so runs apps this host was never told
+// about, while the report comes from the node-local cache, holding only what this node itself
+// installed or restored; without this it serves the apps at the VIP while telling the cloud it
+// runs none, no rollout can be confirmed on it, and a perfectly healthy household reads "no apps"
+// in every view. The volume is the truth about what runs, so the host reads it instead of
 // remembering what it was told.
 //
-// ON THE PROMOTION EDGE, not every cycle: the volume is only readable by whoever holds it, and
-// what it says changes only when someone installs. Polling it would add a verb round-trip per
-// status cycle to answer a question whose answer just changed exactly once.
+// On the promotion edge, not every cycle: only the holder can read the volume, and what it says
+// changes only when someone installs, so polling would add a verb round-trip per status cycle
+// for an answer that changed exactly once. Caching what it finds keeps the node's own restart
+// correct: bring-up reads the cache, and a node that promoted into somebody else's install
+// would otherwise come back empty. The cache becomes a projection of the volume, not a record
+// of what this host did, which converge already made true of the units.
 //
-// It CACHES what it finds, which is what keeps the node's own restart correct: bring-up reads the
-// node-local cache, and a node that promoted into somebody else's install would otherwise come
-// back empty. The cache becomes a projection of the volume rather than a record of what this host
-// did -- which is what converge already made true of the units themselves.
-//
-// Every failure is soft. A guest too old to list (no app.list) leaves the previous view
-// standing, as does a read error or a manifest that will not parse: this is a REPORT, and a
-// wrong-but-quiet report is worse than a stale one only if it is silently wrong, which the log
-// prevents. The node keeps serving either way -- what runs is the guest's business.
+// Every failure is soft: a guest too old to list (no app.list), a read error or an unparseable
+// manifest leaves the previous view standing. This is a report, and a wrong-but-quiet report is
+// worse than a stale one only if it is silently wrong, which the log prevents. The node keeps
+// serving either way; what runs is the guest's business.
 func (cfg *Config) adoptVolumeApps(ctx context.Context, g volumeReader, logf func(string, ...any)) {
 	if !g.SupportsAppList() {
 		return // an older guest; the node-local cache is all this host can honestly report
@@ -939,17 +881,16 @@ func mergeRendered(all *quadlet.Rendered, r quadlet.Rendered) {
 	all.ContainerUnits = append(all.ContainerUnits, r.ContainerUnits...)
 }
 
-// priorApp reads the manifest currently on the volume FOR THIS APP and renders it — the
-// rollback target for an upgrade. Naming the app is what makes it correct at N>1: an unnamed
-// read would find another app's manifest, call it this install's prior, and have filesToRemove
-// delete that app's rendered units as a renamed prior's orphans.
+// priorApp reads and renders the manifest on the volume for this app: an upgrade's rollback
+// target. Naming the app keeps it correct at N>1, where an unnamed read would take another app's
+// manifest as this install's prior and have filesToRemove delete that app's units as a renamed
+// prior's orphans.
 //
-// Returns (nil, nil, "", "") for a fresh install, an idempotent re-install of the same
-// manifest, a failed read, or a prior that no longer parses/renders (no usable rollback target →
-// treated as fresh: no rollback point is taken). Beside the rendering come the subdirs, the raw
-// bytes -- what the rollback point is pinned to -- and the prior manifest's VERSION, which is not
-// derivable from the rendering: it is what a restore reports it moved the app between
-// ("code too (2026.8.0 -> 2026.7.1)").
+// Returns (nil, nil, "", "") for a fresh install, an idempotent re-install of the same manifest,
+// a failed read, or a prior that no longer parses/renders (no usable rollback target, so treated
+// as fresh: no rollback point is taken). Beside the rendering come the subdirs, the raw bytes
+// (what the rollback point is pinned to), and the prior version, which the rendering cannot give
+// and a restore reports moving between ("code too (2026.8.0 -> 2026.7.1)").
 func (cfg Config) priorApp(ctx context.Context, g appInstaller, name string, incoming []byte, logf func(string, ...any)) (*quadlet.Rendered, []string, string, string) {
 	raw, err := g.AppInstalled(ctx, name)
 	if err != nil {
@@ -994,19 +935,17 @@ func filesToRemove(have, want map[string]string) []string {
 	return out
 }
 
-// quiesce stops the given CONTAINER units, last first, best-effort — a unit that is not running
-// is not a failure worth aborting for.
+// quiesce stops the given container units, last first, best-effort: a unit that is not running
+// is not worth aborting for. No promoter pause, since app units are not chain members (as in
+// undo). The stop is the quiesce -- SIGTERM through podman, not a flush or checkpoint -- and a
+// well-behaved app writes what it holds on the way down, which is exactly what mosquitto's
+// retained message needs and a live snapshot does not give.
 //
-// NO PROMOTER PAUSE: the app units are not chain members, so the promoter has no opinion about
-// them (undo says the same). The stop is what QUIESCES: it is not a flush or a checkpoint, it is
-// SIGTERM through podman, and a well-behaved app writes what it was holding on the way down —
-// which is exactly what mosquitto's retained message needs and does not get from a live snapshot.
-//
-// It must be handed CONTAINER units, never the pod. The container holds the data Volume bind, so a
-// clean `systemctl stop` of it releases the bind (what data.restore needs). Stopping the POD
-// instead makes podman kill the containers out from under their units, which land in `failed` —
-// not a clean stop (quadlet.Rendered.ContainerUnits). The pod carries no data bind, so a data op
-// never needs to stop it.
+// Container units, never the pod: the container holds the data Volume bind, so a clean
+// `systemctl stop` of it releases the bind data.restore needs, while stopping the pod makes
+// podman kill the containers out from under their units, which land in `failed`, not cleanly
+// stopped (quadlet.Rendered.ContainerUnits). The pod carries no data bind, so a data op never
+// needs to stop it.
 func (cfg Config) quiesce(ctx context.Context, g appInstaller, containerUnits []string, logf func(string, ...any)) {
 	for i := len(containerUnits) - 1; i >= 0; i-- {
 		if err := g.AppStop(ctx, containerUnits[i]); err != nil {
@@ -1016,14 +955,14 @@ func (cfg Config) quiesce(ctx context.Context, g appInstaller, containerUnits []
 }
 
 // revert is the install's undo: undo whatever the volume holds staged for name, and report the
-// terminal outcome. It runs on a DETACHED, freshly-budgeted context (revertBudget): the most likely
+// terminal outcome. It runs on a detached, freshly-budgeted context (revertBudget): the most likely
 // trigger is the health gate's deadline expiring, and a revert inheriting that dead deadline could
 // restore nothing.
 func (cfg Config) revert(ctx context.Context, g appInstaller, d api.Directive, name string, logf func(string, ...any), cause error) api.DirectiveOutcome {
 	rctx, rcancel := cfg.beat.budget(context.WithoutCancel(ctx), revertBudget)
 	defer rcancel()
 	if err := cfg.undoInstall(rctx, g, name, logf); err != nil {
-		// The install AND its undo failed -- the node needs a human. Name the exact failed step.
+		// The install and its undo failed -- the node needs a human. Name the exact failed step.
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed,
 			Detail: fmt.Sprintf("%v; AND the revert failed to %v", cause, err)}
 	}
@@ -1049,21 +988,20 @@ func (cfg Config) undoInstall(ctx context.Context, g appInstaller, name string, 
 	return nil
 }
 
-// undo returns the node to what the volume ACCEPTED for one staged install -- the prior manifest
-// and its data (an upgrade), or nothing at all (a fresh install) -- from the record alone, so a gate
-// that failed and a crash nobody saw are undone identically.
+// undo returns the node to what the volume accepted for one staged install (an upgrade's prior
+// manifest and data, or nothing for a fresh install) from the record alone, so a failed gate
+// and a crash nobody saw are undone identically: stop the staged version -> restore the data ->
+// discard the stage -> converge, which renders the accepted manifest and starts the prior
+// version fresh. Data is restored before the discard because until then every converge holds
+// the app back, so nothing can start the prior version on the staged version's data; an undo
+// interrupted anywhere is simply run again.
 //
-// Stop the staged version -> restore the data -> discard the stage -> converge, which renders the
-// accepted manifest and starts the prior version fresh. Data is restored BEFORE the stage is
-// discarded: until the discard, every converge holds the app back, so nothing can start the
-// prior version on the staged version's data. An undo interrupted anywhere is simply run again.
-//
-// NO PROMOTER PAUSE: the apps are not chain members, so the promoter has no opinion about
-// them, and the units are stopped here by name. A failed restore does not converge, so the one
-// app stays stopped and the node keeps serving everything else and keeps its ability to fail
-// over. Silent data corruption is not recoverable; a stopped app is.
+// No promoter pause: apps are not chain members, and the units are stopped here by name. A
+// failed restore does not converge, leaving the one app stopped while the node serves everything
+// else and keeps its ability to fail over: silent data corruption is not recoverable; a stopped
+// app is.
 func (cfg Config) undo(ctx context.Context, g appInstaller, p guestagent.PendingInstall, logf func(string, ...any)) error {
-	// Stop the staged version's CONTAINERS (not the pod -- that would make podman kill them out
+	// Stop the staged version's containers (not the pod -- that would make podman kill them out
 	// from under their units): releases the data subvolume's bind, which restore needs. A staged
 	// manifest a crash tore cannot name its units; the accepted one names the same app's.
 	units := containerUnits(p.Staged)
@@ -1072,21 +1010,20 @@ func (cfg Config) undo(ctx context.Context, g appInstaller, p guestagent.Pending
 	}
 	cfg.quiesce(ctx, g, units, logf)
 	if p.Rollback != "" {
-		// SWEPT LIKE ANY OTHER MATERIALISED MEMBER: the pre-upgrade point can carry a household's
-		// in-flight backup restore like any other, and putting it back unswept would replay it. The
-		// markers come from the ACCEPTED manifest, which is what this member is pinned to.
+		// Swept like any other materialised member, since the pre-upgrade point can carry a household's
+		// in-flight backup restore and putting it back unswept would replay it; the markers come from
+		// the accepted manifest this member is pinned to.
 		//
-		// ⚠️ AND THIS IS THE ONE CALLER THAT FALLS BACK when the guest cannot sweep. Refusing here
-		// would leave a failed upgrade with no data rollback at all, which is a worse outcome than a
-		// marker nobody may ever have written; the restore path, whose alternative is simply leaving
-		// the household as they are, refuses instead.
+		// ⚠️ The one caller that falls back when the guest cannot sweep: refusing would leave a failed
+		// upgrade with no data rollback at all, worse than a marker nobody may ever have written. The
+		// restore path, whose alternative is simply leaving the household as they are, refuses instead.
 		var sweep []string
 		if pm, _, err := manifest.Parse([]byte(p.Accepted)); err == nil {
 			sweep = apps.RestoreMarkers(pm)
 		}
-		// THE UNDO RECORDS ITSELF: an event on a point of the failed version's data, pinned to the
-		// STAGED manifest it ran under, so the history shows the update and then its undoing -- and
-		// the update can still be redone. Best-effort: the rollback matters more than its entry.
+		// The undo records itself as an event on a point of the failed version's data, pinned to the
+		// staged manifest it ran under, so the history shows the update then its undoing, and the
+		// update can still be redone. Best-effort: the rollback matters more than its entry.
 		at := cfg.takenAt()
 		if err := cfg.takeMemberOf(ctx, g, p.Name, p.Staged, quadlet.SnapshotMember(p.Name, quadlet.TriggerAppUndoBefore, at),
 			quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
@@ -1108,26 +1045,24 @@ func (cfg Config) undo(ctx context.Context, g appInstaller, p guestagent.Pending
 	if err := g.AppDiscard(ctx, p.Name); err != nil {
 		return fmt.Errorf("discard the staged install: %w", err)
 	}
-	// The converge's skip list is not consulted, and that is not an oversight: the accepted
-	// manifest is one this node already prepared and ran, so a preparation failure here is a new
-	// fault on the undo path, and converge has logged it.
+	// The skip list is deliberately not consulted: the accepted manifest is one this node already
+	// prepared and ran, so a preparation failure here is a new fault on the undo path, and converge
+	// has logged it.
 	if _, err := g.AppConverge(ctx, ""); err != nil {
 		return fmt.Errorf("converge back to the prior app: %w", err)
 	}
 	return nil
 }
 
-// undoPending undoes every install the volume holds staged, as an act of the agent's own. It runs
-// when a node starts serving -- an agent that restarted, a guest that was relaunched, a peer that
-// promoted -- because that is when a staged install can be one nobody is running any more: an
-// install in progress holds the act slot for its whole length, so a stage found with the slot free
-// is one whose installer is gone. Converge has held the app back since (staging.go), so
-// nothing has run on its data in between.
+// undoPending undoes every install the volume holds staged, as the agent's own act, when a node
+// starts serving (an agent restart, a guest relaunch, a peer's promotion): an install in
+// progress holds the act slot throughout, so a stage found with the slot free has lost its
+// installer. Converge has held the app back since (staging.go), so nothing ran on its data.
 //
 // It reports whether this promotion's check is settled: true when nothing is staged or the undo
-// has started; false to ask again next cycle (an act holds the slot, or the read failed). An undo
-// that fails is not retried until the next promotion -- a restore that failed once and is retried
-// every cycle would only fail every cycle -- and leaves the app stopped, which the log names.
+// has started; false to ask again next cycle (an act holds the slot, or the read failed). A failed
+// undo waits for the next promotion, since a restore retried every cycle would only fail every
+// cycle, and leaves the app stopped, which the log names.
 func (cfg Config) undoPending(ctx context.Context, g appInstaller, logf func(string, ...any)) bool {
 	if cfg.acts.inFlight() {
 		return false
@@ -1169,33 +1104,27 @@ func containerUnits(raw string) []string {
 	return r.ContainerUnits
 }
 
-// awaitHealthy polls the APP's OWN health endpoint until it comes up, or the gate expires.
+// awaitHealthy polls the app's own health endpoint until it comes up, or the gate expires. It
+// asks by name and the guest resolves where: which host answers on the manifest's port is the
+// renderer's decision, so a host-assembled address is right only by coincidence, while a name
+// probes wherever the reverse proxy routes, by construction. It does not gate on the reverse
+// proxy, whose /healthz reports node readiness and answers 200 on a node with nothing routed (a
+// node with no apps is ready, not sick), so it would pass a broken install. That is no
+// workaround: node and app health have different consequences (one can cost a failover, the
+// other must only alert), and the proxy answering for the node keeps them separable.
 //
-// IT ASKS BY NAME, and the guest resolves where that is. The manifest names a port, and which
-// host answers on it is the renderer's decision, so an address the host assembled from the
-// manifest is right only by coincidence; handing the guest a name means the gate probes wherever
-// the reverse proxy routes, by construction.
+// Until the deadline an error is not an unhealthy verdict: an app the guest cannot resolve yet is
+// retried exactly like one not answering yet, since the two are indistinguishable from outside
+// and only one is worth reverting over. Healthy passes at once; at the deadline the last answer
+// settles it: unhealthy, still starting or an error reverts; unknown keeps the install and says
+// so. Unknown means the app told us nothing -- our login to it failing, which is not the app --
+// and reverting a working app over our own login would be the gate doing the damage it exists to
+// prevent.
 //
-// It does NOT gate on the reverse proxy. That /healthz reports NODE readiness — on a node with
-// nothing routed it answers 200 because a node with no apps is ready, not sick — so gating on
-// it would pass a broken install. The distinction is not a workaround: node health and app
-// health have different consequences (one can cost a failover, the other must only alert), and the
-// reverse proxy answering for the node is what keeps them separable.
-//
-// An ERROR IS NOT AN UNHEALTHY VERDICT here: an app the guest cannot resolve yet is retried
-// until the deadline, exactly like one that is not answering yet, because the two are
-// indistinguishable from outside and only one of them is worth reverting an install over.
-//
-// NOR IS UNKNOWN. Healthy passes at once. At the deadline the last
-// answer settles it: unhealthy, or still starting, reverts, as does an error; unknown keeps the
-// install and says so. Unknown means the app has told us nothing — our login to it failing, which
-// is not the app — and reverting a working app over our own login would be the gate doing the
-// damage it exists to prevent.
-//
-// NOR IS A DEAD CHANNEL, while the gate lasts. A guest that stalls long enough for the liveness
-// rule to close the channel and then serves again is the observe loop's to reconnect, in
-// seconds; the gate waits for that channel and asks over it (follow), and g is re-pointed so
-// every step after the gate -- the readiness verdict, the commit, a revert -- asks over it too.
+// Nor is a dead channel a verdict while the gate lasts: a guest that stalls long enough for the
+// liveness rule to close the channel and then serves again is the observe loop's to reconnect,
+// in seconds. The gate waits for that channel and asks over it (follow), re-pointing g so every
+// later step -- the readiness verdict, the commit, a revert -- asks over it too.
 func (cfg Config) awaitHealthy(ctx context.Context, g *appInstaller, app string, logf func(string, ...any)) error {
 	if app == "" {
 		return nil // nothing to probe (a witness never installs)
@@ -1235,7 +1164,7 @@ func (cfg Config) awaitHealthy(ctx context.Context, g *appInstaller, app string,
 
 // fetchManifest pulls the named app's signed manifest from the catalog and returns it with
 // the exact bytes that were signed — the bytes are what gets recorded on the volume, because the
-// content hash of THOSE is the app identity.
+// content hash of those is the app identity.
 func (cfg Config) fetchManifest(ctx context.Context, name string) (manifest.Manifest, []byte, error) {
 	kr, err := selfupdate.NewKeyring(cfg.UpdateKeyring)
 	if err != nil {
@@ -1275,21 +1204,20 @@ func installBudgetFor(m manifest.Manifest) time.Duration {
 	return installBudget
 }
 
-// applyAppRestore puts one app back to a ring member: its data, and its CODE with it when
+// applyAppRestore puts one app back to a ring member: its data, and its code with it when
 // the member's pinned manifest differs from what is running.
 //
-// ⚠️ THE ORDER INVERTS revert's, AND THAT IS THE WHOLE DESIGN. A revert runs from a BROKEN state
-// and is allowed to commit: the household already lost the thing it is undoing. A restore runs
-// from a HEALTHY one, chosen by somebody looking at a list, so every step that could fail is
-// placed BEFORE the first step that costs anything:
+// ⚠️ The order inverts revert's, and that is the whole design. A revert runs from a broken state
+// and may commit, the household having already lost what it undoes; a restore runs from a healthy
+// one somebody picked from a list, so every step that could fail comes before the first that
+// costs anything:
 //
 //	ensure the images -> stop -> take the undo member -> restore data -> record the manifest
 //	 -> converge
 //
-// The images come first because they are the one thing that can be simply GONE: a member from
-// three months ago pins a digest the registry may no longer serve, and a household whose rollback
-// target cannot be fetched must be told while its app is still running. Everything before the
-// stop leaves the node exactly as it was.
+// Images first, as the one thing that can be simply gone: a three-month-old member pins a digest
+// the registry may no longer serve, and the household must hear that while its app still runs.
+// Everything before the stop leaves the node exactly as it was.
 func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
@@ -1307,9 +1235,9 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 	ctx, cancel := cfg.beat.budget(ctx, installBudget)
 	defer cancel()
 
-	// THE MEMBER IS READ BACK FROM THE RING, never trusted from the payload. The caller names a
-	// path; what that path IS -- its event, and the manifest it was taken under -- is the guest's
-	// answer, so a stale history page cannot describe a member into something it is not.
+	// The member is read back from the ring, never trusted from the payload: the caller names a
+	// path, and what it is (its event, the manifest it was taken under) is the guest's answer, so a
+	// stale history page cannot describe a member into something it is not.
 	members, err := g.Members(ctx, app)
 	if err != nil {
 		return failed(fmt.Sprintf("read %s's ring: %v", app, err))
@@ -1334,12 +1262,11 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 
 	running, _, runningRaw, runningVersion := cfg.priorApp(ctx, g, app, nil, logf)
 
-	// (1) THE IMAGES, BEFORE ANYTHING IS TOUCHED. Not through converge's warm, whose failure is
-	// required to take the VIP down -- here a failure must cost nothing at all.
-	//
-	// ROOM FIRST, when the member runs on an image the running version does not: that image was
-	// removed when the version it belonged to was superseded, so this restore pulls it, and a pull
-	// is paid for before it starts (roomForPull). A data-only undo pulls nothing and grows nothing.
+	// (1) The images, before anything is touched, and not through converge's warm, whose failure
+	// must take the VIP down: here a failure must cost nothing at all. Room first when the member
+	// runs on an image the running version does not, since that image went when its version was
+	// superseded and a pull is paid for before it starts (roomForPull); a data-only undo pulls
+	// nothing and grows nothing.
 	if pullsAnew(rendered.ImageRefs, imageRefs(runningRaw)) {
 		if refusal := cfg.roomForPull(ctx, g, pm, logf); refusal != "" {
 			return failed(refusal + "; nothing was changed")
@@ -1353,14 +1280,12 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 
 	dataDir := quadlet.DataRoot(app)
 
-	// (2) THE STOP. Container units only, never the pod (see quiesce).
-	//
-	// ABOVE THE UNDO, so the undo is QUIESCED like every other member this product takes
-	// deliberately. Taken before the stop, the one member a mis-click depends on would be the one
-	// member whose bytes are crash-consistent — a bet mosquitto loses (apps-pair.nix). Nothing is
-	// risked by the order: the images are already local (step 1, which must run before anything
-	// stops), and a failure below puts the app back with a converge and says the data was never
-	// touched.
+	// (2) The stop, container units only, never the pod (see quiesce). It comes before the undo so
+	// the undo is quiesced like every member this product takes deliberately; otherwise the one
+	// member a mis-click depends on would be the one with crash-consistent bytes, a bet mosquitto
+	// loses (apps-pair.nix). The order risks nothing: the images are already local (step 1 must run
+	// before anything stops), and a failure below puts the app back with a converge and says the
+	// data was never touched.
 	stopped := failed
 	if running != nil {
 		cfg.quiesce(ctx, g, running.ContainerUnits, logf)
@@ -1375,7 +1300,7 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 		}
 	}
 
-	// (3) THE UNDO, and it is the only undo a mis-click has. It exists before anything is torn
+	// (3) The undo, and it is the only undo a mis-click has. It exists before anything is torn
 	// down: the data below is untouched until it is on disk.
 	at := cfg.takenAt()
 	undo := quadlet.SnapshotMember(app, quadlet.TriggerAppUndoBefore, at)
@@ -1386,12 +1311,12 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 	if target.Meta.Trigger == quadlet.TriggerFromBackup {
 		what = "Restored the backup from " + back
 	}
-	// NOTHING INSTALLED -- a new machine putting a household's app back from its backup -- is given
-	// its place first: app.provision makes the data subvolume (reusing one an earlier failed
-	// install left, never re-creating it) and records the night's manifest. The undo point below is
-	// then a point like any other -- of an empty app, or of what that install left -- so even this
-	// restore can be undone, and the swap below has a live copy to replace. Said POSITIVELY, from
-	// a read that answered, never from priorApp's nil, which a failed read returns too.
+	// An app not installed here (a new machine putting it back from the backup) gets its place
+	// first: app.provision makes the data subvolume, reusing one an earlier failed install left and
+	// never re-creating it, and records the night's manifest. The undo point below is then a point
+	// like any other, of an empty app or of what that install left, so even this restore can be
+	// undone and the swap has a live copy to replace. Decided positively, from a read that answered,
+	// never from priorApp's nil, which a failed read returns too.
 	unchanged, fresh := "nothing was changed", false
 	if running == nil {
 		raw, err := g.AppInstalled(ctx, app)
@@ -1407,34 +1332,33 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 			fresh = true
 		}
 	}
-	// INSTALLING AN UNINSTALLED APP AGAIN takes no undo point: undoing it would only put back the
+	// Installing an uninstalled app again takes no undo point: undoing it would only put back the
 	// empty app made a moment ago, and its History reads "Uninstalled", whose undo this is.
 	reinstall := fresh && target.Meta.Trigger == quadlet.TriggerUninstall
 	if reinstall {
 		unchanged = app + ` is installed here but empty and stopped; undo "Uninstalled" in its History to finish`
 	} else if err := cfg.takeMember(ctx, g, app, undo, quadlet.TriggerAppUndoBefore, quadlet.Quiesced,
-		// THE UNDO IS ITSELF AN EVENT, on the point that undoes it -- which is the redo.
+		// The undo is itself an event, on the point that undoes it -- which is the redo.
 		&quadlet.Event{At: at, Reasons: []quadlet.Reason{{Kind: quadlet.ReasonAppUndo, What: what}}},
 		at, logf); err != nil {
 		return stopped(fmt.Sprintf("take the undo point: %v; %s", err, unchanged))
 	}
-	// (4) THE DATA, keeping the verify -> materialise -> destroy order, and SWEPT of the
-	// markers a household's own backup restore leaves inside a member: a "before
-	// restoring backup" point put back unswept would hand HA the request and the tar again, and
-	// the household would land straight back where they were trying to leave. Refused rather than
-	// worked around on a guest that cannot sweep — this path's alternative is leaving them exactly
-	// as they are, which is no loss at all.
+	// (4) The data, in verify -> materialise -> destroy order, swept of the markers a household's own
+	// backup restore leaves in a member: a "before restoring backup" point put back unswept would hand
+	// HA the request and the tar again, landing the household straight back where they were trying
+	// to leave. A guest that cannot sweep is refused, not worked around: the alternative here is
+	// leaving them exactly as they are, which is no loss at all.
 	if !g.SupportsRestoreSweep() {
 		return stopped("this node's guest cannot put a point back safely (it predates the restore sweep); " + unchanged)
 	}
 	if err := g.Restore(ctx, dataDir, target.Member, apps.RestoreMarkers(pm)); err != nil {
-		// Do NOT converge: that would start the app on data that is neither what it was nor
+		// Do not converge: that would start the app on data that is neither what it was nor
 		// what was asked for. A stopped app is recoverable; silent corruption is not.
 		return failed(fmt.Sprintf("restore the data (the app is left stopped): %v", err))
 	}
-	// AN UNINSTALL'S COPY CARRIES THE FILES TOO, kept beside the Versions under the same name: they
-	// come back with the data, and the copy goes (the files are never rolled back, so no History
-	// holds them).
+	// An uninstall's copy carries the files too, kept beside the Versions under the same name: they
+	// come back with the data and the copy goes (files are never rolled back, so no History holds
+	// them).
 	if target.Meta.Trigger == quadlet.TriggerUninstall {
 		u, ok := g.(appUninstaller)
 		if !ok || !u.SupportsAppUninstall() {
@@ -1444,7 +1368,7 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 			return failed(fmt.Sprintf("put %s's files back (the app is left stopped): %v", app, err))
 		}
 	}
-	// (5) THE CODE, when the member was taken under a different one. Same rule the failed-upgrade
+	// (5) The code, when the member was taken under a different one. Same rule the failed-upgrade
 	// revert uses: {manifest + data} move together or the node is describing something it is not.
 	if err := g.AppProvision(ctx, app, dataDir, quadlet.Subdirs(pm), target.Meta.Manifest); err != nil {
 		return failed(fmt.Sprintf("record the member's manifest (the app is left stopped): %v", err))
@@ -1454,7 +1378,7 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 	if err := cfg.cacheApp(app, []byte(target.Meta.Manifest)); err != nil {
 		logf("app restore %s: WARNING: could not cache the restored manifest (%v); this node reports the version it undid until it next promotes", app, err)
 	}
-	// (6) CONVERGE, which re-renders from the volume and starts what it now names. Its start sample
+	// (6) Converge, which re-renders from the volume and starts what it now names. Its start sample
 	// is not compared with the undo's point: the app did not run between them.
 	if _, err := g.AppConverge(ctx, ""); err != nil {
 		return failed(fmt.Sprintf("converge onto the restored member (the app is left stopped): %v", err))
@@ -1484,9 +1408,8 @@ func (cfg Config) applyAppRestore(ctx context.Context, g appInstaller, d api.Dir
 // takeMember renders a member's sidecar and asks the guest for it. The host records the events
 // only it performs; the guest's own (agent/guestagent/inbound.go) never come through here.
 //
-// THE CONSISTENCY IS THE CALLER'S TO STATE, not this function's to guess: it is the call site that
-// knows whether it stopped the app first, and the clock's member, taken against a running app,
-// comes through here saying so.
+// The caller states the consistency, never this function: only the call site knows whether it
+// stopped the app first, and the clock's member, taken against a running app, says so here.
 func (cfg Config) takeMember(ctx context.Context, g memberTaker, app, member string, tr quadlet.Trigger, cons quadlet.Consistency, ev *quadlet.Event, at time.Time, logf func(string, ...any)) error {
 	raw, err := g.AppInstalled(ctx, app)
 	if err != nil {
@@ -1495,7 +1418,7 @@ func (cfg Config) takeMember(ctx context.Context, g memberTaker, app, member str
 	return cfg.takeMemberOf(ctx, g, app, raw, member, tr, cons, ev, at)
 }
 
-// takeMemberOf is takeMember with the manifest the member is pinned to NAMED rather than read: the
+// takeMemberOf is takeMember with the manifest the member is pinned to named rather than read: the
 // undo's point is taken of a version the volume never accepted (undo).
 func (cfg Config) takeMemberOf(ctx context.Context, g memberTaker, app, raw, member string, tr quadlet.Trigger, cons quadlet.Consistency, ev *quadlet.Event, at time.Time) error {
 	sidecar, err := json.Marshal(quadlet.SnapshotMeta{
@@ -1525,8 +1448,8 @@ func (cfg Config) applyAppMembers(ctx context.Context, g appInstaller, d api.Dir
 	if err != nil {
 		return failed(fmt.Sprintf("read %s's history: %v", d.Payload, err))
 	}
-	// EMPTY IS AN ANSWER, not a failure: an app installed a minute ago has no history yet, and
-	// saying so is what lets the history say "nothing yet" instead of an error.
+	// Empty is an answer, not a failure: an app installed a minute ago has no history yet, so the
+	// history can say "nothing yet" instead of an error.
 	body, err := json.Marshal(members)
 	if err != nil {
 		return failed(err.Error())
@@ -1624,16 +1547,16 @@ type imageRemover interface {
 	SupportsImageRemove() bool
 }
 
-// dropSuperseded deletes from the guest the images the manifest `was` pinned that no app on
-// the volume pins any more -- called once a change of version has COMMITTED, when the old image is
-// no longer a rollback target. The space it frees is the "temporary" line of the state disk's
-// accounting: an upgrade holds two images only until it commits, never for good.
+// dropSuperseded deletes the images `was` pinned that no app on the volume still pins, once a
+// version change has committed and the old image is no longer a rollback target: what it frees
+// is the "temporary" line of the state disk's accounting, so an upgrade holds two images only
+// until it commits, never for good.
 //
-// A DESTRUCTIVE ACT, GATED ON A POSITIVE ANSWER: every manifest on the volume must be read before
-// anything goes, and a read that fails removes nothing -- "I could not tell whether it is used"
-// must never take the branch "it is not". Everything here is best-effort past that: a removal that
-// fails (podman refuses an image a container still uses) is logged and the next one tried, and the
-// app, already committed, is untouched either way.
+// A destructive act, gated on a positive answer: every manifest on the volume must be read before
+// anything goes, and a failed read removes nothing ("I could not tell whether it is used" must
+// never take the branch "it is not"). Past that it is best-effort: a failed removal (podman
+// refuses an image a container still uses) is logged and the next tried, and the committed app
+// is untouched either way.
 func (cfg Config) dropSuperseded(ctx context.Context, g imageRemover, was string, logf func(string, ...any)) {
 	old := imageRefs(was)
 	if len(old) == 0 || !g.SupportsImageRemove() || !g.SupportsAppList() {
@@ -1697,21 +1620,20 @@ func imageRefs(raw string) []string {
 	return refs
 }
 
-// roomForPull makes room on the guest's state disk for pulling m, and says why not when it cannot:
-// "" means go ahead (including when the guest cannot measure its store -- then nothing is gated).
+// roomForPull makes room on the guest's state disk for pulling m and returns why not when it
+// cannot; "" means go ahead (also when the guest cannot measure its store: nothing is gated).
 //
-// THE FREE-SPACE GATE, before the first byte moves: the manifest says what the image store will
-// hold once pulled and what the pull stages beside it on the way (the compressed layers, freed
-// only when the whole pull completes), the guest says what its state disk has free, and a pull
-// that could only end in a full disk is refused here with both numbers -- rather than at 90 % of
-// the download with a unit that failed for a reason nobody can read. The margin is the headroom
-// the guest OS itself needs next to the image.
+// The gate runs before the first byte moves: the need (the store's size once pulled, plus what
+// the pull stages beside it until the whole pull completes -- the compressed layers -- plus the
+// headroom the guest OS needs) against what the guest reports free. A pull that could only end
+// in a full disk is refused here, giving both numbers, not at 90 % of the download with a unit
+// that failed for a reason nobody can read.
 //
-// THE DISK GROWS FIRST: the state disk is thick and starts small, so a pull is where the host
-// pays for what the app brings (growStateDisk). A host that cannot pay refuses here, with the
-// running apps untouched; a grow that fails for another reason is logged, and the gate says
-// whether the space is there anyway. ONE implementation for every pull a household asks for -- an
-// install and a History restore that changes version -- so the two cannot disagree about room.
+// The thick state disk starts small, so it grows first (growStateDisk): the pull is where the
+// host pays for what the app brings. A host that cannot pay refuses with the running apps
+// untouched; any other grow failure is logged and the gate says whether the space is there
+// anyway. Every pull a household asks for (an install, a History restore that changes version)
+// shares this one implementation, so the two cannot disagree about room.
 func (cfg Config) roomForPull(ctx context.Context, g appInstaller, m manifest.Manifest, logf func(string, ...any)) string {
 	if m.InstalledSize == 0 || !g.SupportsStorageFree() {
 		return ""

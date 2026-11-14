@@ -1,22 +1,21 @@
 package host
 
-// THE CATALOG'S INDEX, AS THIS NODE HOLDS IT. The published index lists every app a household
-// can see and which of them it can install; this node fetches it, whole, on a daily read,
-// and keeps it node-locally for its dashboard to render. The page never reaches the
-// network and no copy of the list is baked into any binary: the list has the catalog's clock,
-// not the release's, and a node that has never been online has no list to show.
+// The catalog's index, as this node holds it. The published index lists every app a household
+// can see and which of them it can install; this node fetches it whole on a daily read and keeps
+// it node-locally for its dashboard to render. The page never reaches the network and no copy of
+// the list is baked into any binary: the list has the catalog's clock, not the release's, and a
+// node that has never been online has no list to show.
 //
-// A WISH IS THE HOUSEHOLD'S, AND IS KEPT HERE. "I want this" on a listed-but-not-installable
-// app records the name on this node; when a later read of the index finds a manifest for a
-// wished app, the node tells the household itself -- the card on its page and an alert through
-// the ordinary surface -- so the promise the button makes is kept by the node alone, with no
-// account and no address. A household's preference is by nature shared by every node of a
-// flock, but a wish is not worth a file on the replicated volume; node-local is the trade, and
-// it is a trade.
+// A wish is the household's, and is kept here. "I want this" on a listed-but-not-installable app
+// records the name on this node; when a later read of the index finds a manifest for a wished
+// app, the node tells the household itself (the card on its page and an alert through the
+// ordinary surface), so the promise the button makes is kept by the node alone, with no account
+// and no address. A household's preference is by nature shared by every node of a flock, but a
+// wish is not worth a file on the replicated volume: node-local is the trade, and it is a trade.
 //
-// A NEW WISH IS ALSO COUNTED, ONCE (api.Wish): the app's name and a voter value that is a
-// one-way hash of the flock's id, sent off the loop with two retries and then dropped. The
-// count is how the next app is chosen; the wish on this node never depends on it.
+// A new wish is also counted, once (api.Wish): the app's name and a voter value that is a one-way
+// hash of the flock's id, sent off the loop with two retries and then dropped. The count is how
+// the next app is chosen; the wish on this node never depends on it.
 
 import (
 	"context"
@@ -262,7 +261,7 @@ func (s *catalogState) toggle(d api.Directive) api.DirectiveOutcome {
 // about each -- wished, installed, and whether the index offers an update to what it runs.
 // Nil-safe; a node without a catalog tells the page nothing.
 //
-// THE OFFER IS DERIVED, NEVER STORED: the index's identity against the installed one, at every
+// The offer is derived, never stored: the index's identity against the installed one, at every
 // look, so an update that commits or an undo that moves the app back changes the offer at the
 // next push with nothing to clear. An index that names no identity (one published before the
 // field) offers nothing.
