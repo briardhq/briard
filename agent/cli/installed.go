@@ -11,21 +11,16 @@ import (
 
 // WHAT IS ON THIS NODE, in the household's words.
 //
-// install.sh used to answer this with `grep -o '"name":"[^"]*"' | head -1` over the cache, to end
-// the install with "home-assistant is already installed on it and is coming back up" rather than
-// the flat lie "no app is installed on it yet" that a reinstall would otherwise print. The
-// sentence was right and its home was wrong: it reads the node's own state to say
-// something to a person, which is the shape of a thing that changes -- and the installer is the one
-// file no release can reach.
-//
-// So it is here, on the verb the installer already calls at exactly that moment, and it answers the
-// SAME question when a household runs `sudo briard open` a month later.
+// It lives on `briard open`, the verb the Linux install's closing calls, rather than in the
+// installer: it reads the node's own state to say something to a person, which is the shape of a
+// thing that changes -- and the installer is the one file no release can reach. Here it answers
+// the SAME question when a household runs `sudo briard open` a month later.
 //
 // ⚠️ THE MANIFEST'S OWN PARSER, not a second reader of the format. The cache holds each app's
 // manifest verbatim -- the bytes the catalog published and the agent verified -- so shared/manifest
-// is what should read them, and it costs nothing here: agent/cli already links net/http, and the
-// guest binary does not link agent/cli at all. A `grep` for `"name"` would have been a second
-// implementation of a format whose identity is its content hash.
+// is what reads them, at no cost: agent/cli already links net/http, and the guest binary does not
+// link agent/cli at all. A `grep` for `"name"` would be a second implementation of a format whose
+// identity is its content hash.
 
 // appCacheDir is where the agent keeps one manifest per installed app. It mirrors
 // ConfigFromEnv's APP_CACHE default (agent/host/config.go); a test asserts the two agree.
@@ -65,10 +60,8 @@ func installedApps(dir string) []string {
 	return names
 }
 
-// installedLine is the sentence, or "" when there is nothing to say. Empty rather than "no app
-// is installed" because the two callers want different things from that case: the installer says it
-// out loud (a fresh node SHOULD hear that it is a node first and a Home Assistant box second), and
-// a household running the verb a month later does not need to be told twice.
+// installedLine is the sentence, or "" when nothing is installed: the line is a courtesy, and
+// with no apps `briard open` prints only the link.
 func installedLine(names []string) string {
 	switch len(names) {
 	case 0:

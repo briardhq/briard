@@ -12,7 +12,7 @@ import (
 	"briard.io/shared/api"
 )
 
-// runUpdate is `briard update` and `briard update --vm`: the human trigger of each release chain.
+// runUpdate is `briard update` and `briard update -vm`: the human trigger of each release chain.
 //
 // THE VERB NAMES THE CHAIN, AND THE CHAIN IS THE UPGRADE UNIT, NOT THE SIDE. Every
 // briard binary the machine runs -- the agent, net-wrap, qemu AND the guest's own binaries
@@ -38,16 +38,16 @@ import (
 // on Linux, the scheduled task on Windows), wait for its verdict, and print the one line the run
 // ended on.
 //
-// VM IS an injector, and correctly so: the guest OS is moved by the agent (stage
-// from the cache, switch or reboot, health-gate, commit or revert), so there is nothing to do
-// when the agent is down but bring the agent back. It submits the update-vm directive --
-// the same one the agent's own nightly timer submits -- and reports the upgrade's outcome the
-// way `directive upgrade-system` would, with the release named. ⚠️ The DIRECTIVE KIND keeps its
-// name: it is a wire word, and the fleet tests read it out of journals.
+// VM IS an injector, and correctly so: the guest OS is moved by the agent (fetch and stage the
+// image, swap, health-gate, commit or revert), so there is nothing to do when the agent is down
+// but bring the agent back. It submits the update-vm directive -- the same one the agent's own
+// nightly timer submits -- and reports the upgrade's outcome the way `directive upgrade-system`
+// would, with the release named. ⚠️ The DIRECTIVE KIND's spelling (install.DirectiveUpdateVM)
+// matters beyond this file: the fleet tests read it out of journals.
 //
 // THE DEFAULT IS `stable`, on every path. `latest` exists to be proven before it is
 // promoted, by a canary pinned to it deliberately; it is not somewhere to arrive by typing four
-// words. Naming it explicitly stays supported -- only the default moved.
+// words. Naming it explicitly (-to latest) is supported.
 func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard update", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -64,8 +64,8 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	// No positional word at all: the chain is the flag, and a word here is the retired
-	// `<self|vm>` / `<host|guest>` shape, refused rather than guessed at.
+	// No positional word at all: the chain is the flag, so a word here (`self`, `vm`, `host`,
+	// `guest`) is refused rather than guessed at.
 	if fs.NArg() != 0 {
 		fmt.Fprintf(stderr, "briard update: unexpected argument %q (the VM is `-vm`; briard itself is the bare verb)\n", fs.Arg(0))
 		fs.Usage()
@@ -94,8 +94,8 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	case api.OutcomeRolledBack:
 		// The distinction an operator most needs, and the one the exit code alone cannot
 		// carry: the node is back where it started rather than broken. That includes the
-		// HA refusal, which never touched anything -- so the detail matters, not just the
-		// state.
+		// handover-required refusal (a node with a peer), which never touched anything -- so
+		// the detail matters, not just the state.
 		fmt.Fprintf(stderr, "not applied; the machine is unchanged and serving: %s\n", o.Detail)
 		return 1
 	default:

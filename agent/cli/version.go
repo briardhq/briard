@@ -10,9 +10,9 @@ import (
 	"briard.io/agent/install"
 )
 
-// Version is this binary's release id. The stamp is agent/host's (buildVersion, set by -ldflags),
-// and this package does not link agent/host, so main() copies it here before the CLI runs. Empty
-// in a binary built without the stamp.
+// Version is this binary's release id. The stamp is agent/host's (buildVersion, set by -ldflags);
+// main() copies it here from host.Version() before the CLI runs. Empty in a binary built without
+// the stamp.
 var Version string
 
 // guestReleaseRecord is the node's record of the VM release it runs. It mirrors

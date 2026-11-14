@@ -11,26 +11,28 @@ package cli
 // whose socket lives in a 0700 root directory, and a caller who can reach QMP can already reset
 // this VM and dump its RAM. Nothing here withholds a capability from anyone who has that; what
 // it withholds is the SUGGESTION that poking at the guest is a supported way to run the product.
-// The product's answers to "something is wrong" are `alerts`, `logs` and `rescue`.
+// The product's answers to "something is wrong" are `alerts`, `logs`, `doctor` and `rescue`.
 //
 // WHAT KEEPS THIS SAFE IS NOT THE LOCK. The guest is a disposable appliance: its OS
 // moves by image swap and `briard rescue` rebuilds it, so whatever an operator edits in there is
 // erased at the next update, and only the replicated data volume survives. A shell here is a
 // window, not a place to keep anything.
 //
-// ARM AND DISARM ARE THE AGENT'S, submitted over the admin socket as directive kinds
-// the cloud's down-channel is refused (host.localOnlyKinds). This client keeps only what is
+// ARM AND DISARM ARE THE AGENT'S, submitted over the admin socket as directive kinds the
+// cloud's down-channel is refused (host.localOnlyKinds). This client keeps only what is
 // inherently the operator's: the terminal, the escape key, and the guarantee that every path out
-// of here disarms. The agent owns the act so that it owns the RECORD -- its log reaches the
-// journal, where an interactive process's stderr never could.
+// of here disarms. The agent owns the act so that it owns the RECORD -- host.applyDebugConsole
+// logs it to the journal (the agent's log file on Windows), where an interactive process's
+// stderr never could reach (and log/syslog, the way round that, has no Windows build).
 //
-// What that gate does NOT do is stop a remote root shell, and the earlier claim that it did is
-// withdrawn: arming publishes a socket inside the 0700 root QMP directory, which nothing remote
-// can reach and no directive proxies. A cloud able to arm could leave a door open, not walk
-// through one -- walking through needs host root, which is already QMP, which is already this
-// guest's RAM. What the gate says is that the cloud has no business changing local debug state.
+// What that gate does NOT do is stop a remote root shell: arming publishes a socket inside the
+// 0700 root QMP directory, which nothing remote can reach and no directive proxies. A cloud able
+// to arm could leave a door open, not walk through one -- walking through needs host root, which
+// is already QMP, which is already this guest's RAM. What the gate says is that the cloud has no
+// business changing local debug state.
 //
-// The trade it costs: with the agent's observe loop wedged, no console. That is deliberate. The
+// The trade it costs: with the agent's observe loop wedged, no console (the loop is what takes a
+// local directive, even one that then runs off it). That is deliberate. The
 // user this product is built for should be deterred from operating on an already-degraded node,
 // and anyone equipped to drive QMP by hand is not that user.
 
@@ -82,12 +84,11 @@ func runDebugShell(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return 2
 	}
 
-	// ARM. The failures worth naming are the three the operator can act on, and they are now
-	// three rather than two: no agent (or not root -- `submit` says which), no guest running,
-	// or a guest launched by an agent old enough not to give it a debug port at all (QEMU
-	// refuses to change a chardev it has no record of). There is no -qmp here any more: the
-	// agent derives the console path from its own monitor, which is what keeps the socket in
-	// the 0700 root directory with no second setting able to move it.
+	// ARM. The failures worth naming are the three the operator can act on: no agent (or not
+	// root -- `submit` says which), no guest running, or a guest launched by an agent too old
+	// to give it a debug port (QEMU refuses to change a chardev it has no record of). There is
+	// no -qmp flag: the agent derives the console path from its own monitor, which keeps the
+	// socket in the 0700 root directory with no second setting able to move it.
 	o, err := submit(ctx, *sock, api.Directive{Kind: api.DirectiveDebugArm})
 	if err != nil {
 		fmt.Fprintf(stderr, "briard debug shell: %v\n", err)
@@ -272,9 +273,3 @@ func trimNewline(b []byte) []byte {
 	}
 	return b
 }
-
-// The record that a node was opened is the AGENT's now -- host.applyDebugConsole logs
-// it, and systemd puts the agent's stderr in the journal. What stood here was a syslog writer,
-// which existed only because an interactive process's stderr is the operator's terminal and so
-// reaches no journal at all; it also pinned `log/syslog`, which has no Windows build and broke
-// the GOOS seam for every package in this module.

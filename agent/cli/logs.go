@@ -16,8 +16,8 @@ import (
 	"briard.io/shared/notify"
 )
 
-// `briard alerts` and `briard logs` — the two verbs that READ the node instead of acting on it,
-// and the first that are not directive injectors (see this package's doc).
+// `briard alerts` and `briard logs` — verbs that READ the node instead of acting on it, and
+// are not directive injectors (see this package's doc).
 //
 // WHY THEY ARE NOT INJECTORS, which is not an implementation shortcut but the requirement:
 // the outage they are most needed for is the host agent being down. A verb routed through the
@@ -42,9 +42,9 @@ import (
 // surface is unavailable — an empty result from a surface that could not be opened must never
 // render as "nothing logged".
 //
-// WHAT THEY DELIBERATELY DO NOT DO: push. Surfacing degradation to an owner who is not sitting
-// at a terminal needs a channel that reaches them unprompted; that is a separate piece of work.
-// These verbs are the PULL half — they make "where do I look" answerable.
+// WHAT THEY DELIBERATELY DO NOT DO: push. Reaching an owner who is not sitting at a terminal is
+// the notifier's job (shared/notify); these verbs are the PULL half — they make "where do I look"
+// answerable.
 
 // A surface is one place log lines land on this node. Read is best-effort by contract: an error
 // makes the surface unavailable, never the command, because one readable surface is worth more
@@ -247,10 +247,10 @@ func (s *logSources) follow(ctx context.Context, only, filter string, stdout, st
 }
 
 // tailFile polls a file for growth and emits its lines as the surface name. Polling rather than
-// inotify because the writer is qemu appending to a chardev and the file is ROTATED by the agent's
-// ExecStartPre (on Windows, the agent rolling its own log to `.1`): a poll that notices the file
-// shrank simply starts over, where a watch on the old inode would go quiet forever without ever
-// reporting that it had.
+// inotify because the files are ROTATED under their readers -- the agent moves an oversized
+// console capture to `.prev` before each guest launch (platform.prepareSerialLog), and on Windows
+// rolls its own log to `.1`: a poll that notices the file shrank simply starts over, where a
+// watch on the old inode would go quiet forever without ever reporting that it had.
 func (s *logSources) tailFile(ctx context.Context, name, path string, emit func(name, line string), stderr io.Writer) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -297,10 +297,10 @@ func (s *logSources) tailFile(ctx context.Context, name, path string, emit func(
 // checked everything when one surface was unreadable. Silence about a surface reads as "clean"
 // to every operator who has ever run a log command.
 //
-// The same reasoning governs the all-clear line, which was wrong on its first run and is the
-// reason this note exists. "no alerts on this machine" is a claim about the MACHINE, and it is only
-// true when every surface was read; with one surface down the honest sentence is narrower, and
-// naming which surface is missing is the difference between a report and a reassurance.
+// The same reasoning governs the all-clear line (empty, e.g. "nothing logged yet"): it is a claim
+// about the MACHINE, and it is only true when every surface was read; with one surface down the
+// honest sentence is narrower, and naming which surface is missing is the difference between a
+// report and a reassurance.
 func render(stdout, stderr io.Writer, surfaces []surface, tail int, empty string) int {
 	ok, total := 0, 0
 	var missing []string
@@ -358,22 +358,21 @@ func filterLines(lines []string, filter string) []string {
 }
 
 // configValue reads one key out of the node's config file (/opt/briard/config.env), the format
-// install.sh writes and agent/host's loadConfigFile reads: KEY=value one per line, blank lines and
-// `#` comments ignored, whitespace either side of the `=` trimmed, and nothing else parsed.
+// `briard-agent install` and `briard config set` write and agent/host's loadConfigFile reads:
+// KEY=value one per line, blank lines and `#` comments ignored, whitespace either side of the `=`
+// trimmed, the first occurrence of a key wins, and nothing else parsed.
 //
-// A SECOND READER OF THE SAME FORMAT, and that is a real cost accepted for a reason. Importing
-// agent/host here would pull the whole orchestrator -- drbd, platform, cloud, net/http -- into a
-// package deliberately kept to five dependencies (the unit names above say why). The format is
-// four rules, and the duplication is not left to trust: a test in this package feeds an awkward
-// fixture to both implementations and asserts they agree. Keep it that way if either changes.
+// A SECOND READER OF THE SAME FORMAT, and the duplication is not left to trust:
+// TestConfigValueFollowsTheFormatsFourRules writes the rules down as a table. Keep the two
+// readers in step if either changes.
 //
 // ⚠️ IT REPORTS THREE STATES, NOT TWO, because the agent's own reader does (its `declared`):
 // a key that is ABSENT takes the shipped default, a key set to EMPTY is a decision to switch the
-// thing off, and those must not collapse into one answer. Collapsing them is exactly the bug that
-// reached the runner: config.env stopped carrying GUEST_SERIAL (the agent defaults it), and a
-// reader that read absent as "" told every node it captured no console.
+// thing off, and those must not collapse into one answer. config.env carries GUEST_SERIAL only
+// when the install was given one, so a reader that read absent as "" would tell every ordinary
+// node it captured no console.
 //
-// An unreadable or missing file is (", false) -- absent, so the caller takes the default, which is
+// An unreadable or missing file is ("", false) -- absent, so the caller takes the default, which is
 // what the agent running on that node would have done too.
 func configValue(path, key string) (string, bool) {
 	f, err := os.Open(path)

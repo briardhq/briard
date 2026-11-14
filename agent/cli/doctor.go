@@ -23,8 +23,10 @@ import (
 	"briard.io/shared/api"
 )
 
-// doctorWait bounds the agent half. The agent applies a directive between observe cycles, so a
-// node mid-upgrade or mid-bring-up does not answer at once, and doctor must still print.
+// doctorWait bounds the agent half. The agent's answer runs off the observe loop and bounds
+// itself (agent/host's doctorBudget), but only the running loop takes a local directive, so a node
+// mid-bring-up or between channels in an OS upgrade does not answer at once, and doctor must
+// still print.
 const doctorWait = 30 * time.Second
 
 func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int {

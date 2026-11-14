@@ -16,21 +16,20 @@ import (
 
 const (
 	// The units that carry the host's own story: the agent (all the logic) and the VM it runs
-	// (qemu's own output). Written here rather than imported from agent/platform, which owns
-	// GuestUnit: this package used to be linked into the guest binary, and platform pulls in the
-	// QEMU launcher and net/http, which that build exists to leave out.
+	// (qemu's own output). Literals here; agent/platform's GuestUnit is the agent's own name for
+	// the second.
 	agentUnit = "briard-agent.service"
 	guestUnit = "briard-guest.service"
 
-	// THE AGENT'S OWN default for the guest's serial console, copied here for the same reason the
-	// unit names above are copied, and pinned the same way: a test asserts this literal equals what
-	// ConfigFromEnv answers with GUEST_SERIAL unset. config.env carries the key only
-	// when an operator named one, so this is the path on an ORDINARY node -- not a guess about one.
+	// THE AGENT'S OWN default for the guest's serial console, pinned by
+	// TestDefaultConsoleMatchesTheAgents (it equals what ConfigFromEnv answers with GUEST_SERIAL
+	// unset). config.env carries the key only when the install was given one, so this is the path
+	// on an ORDINARY node -- not a guess about one.
 	defaultConsole = "/var/log/briard-guest-console.log"
 
-	// The node's configuration file, for a node whose unit does not name it. Copied from
-	// agent/host's defaultConfigFile for the same reason the unit names above are copied, and
-	// pinned the same way: a test in this package asserts the two literals are identical.
+	// The node's configuration file, for a node whose unit does not name it. Pinned by
+	// TestDefaultConfigFileMatchesTheShippedUnit against the BRIARD_CONFIG the shipped
+	// briard-agent.service carries.
 	defaultConfigFile = "/opt/briard/config.env"
 
 	privHint = "are you root?"
@@ -131,19 +130,18 @@ func (s *logSources) readHost(ctx context.Context, tail int, since, filter strin
 }
 
 // consolePath answers where this node's guest console actually is, asking THE NODE rather than
-// assuming the default: the path can be moved or switched off entirely (BRIARD_CONSOLE=), and a
-// node with capture disabled gets a straight answer -- "not captured here" -- instead of a stale
-// file from an earlier install, which would be the worst of the three outcomes: content, believed
-// current, that is not.
+// assuming the default: the path can be moved or switched off entirely (BRIARD_GUEST_SERIAL= at
+// install), and a node with capture disabled gets a straight answer -- "not captured here" --
+// instead of a stale file from an earlier install, which would be the worst of the three
+// outcomes: content, believed current, that is not.
 //
 // ⚠️ TWO HOPS, AND BOTH ARE THE NODE'S OWN WORD. systemd is asked where the config file is
 // (BRIARD_CONFIG on the unit), and the config file is asked where the console is (GUEST_SERIAL).
-// Asking systemd for GUEST_SERIAL directly is what this used to do, and it stopped being true the
-// moment the agent took ownership of the network and moved the node's values off the frozen unit and into a file the agent can
-// rewrite: `systemctl show` reports what the UNIT declares, so the lookup found nothing and this
-// verb told every installed node it captured no console while the capture sat on disk. It survived
-// because the only test stubbed unitProps with a GUEST_SERIAL it wrote itself,
-// so it could not fail; install-macvtap now runs the verb on a real install.
+// Asking systemd for GUEST_SERIAL directly looks right and is wrong: the node's values live in
+// config.env, not on the frozen unit, and `systemctl show` reports only what the UNIT declares --
+// so every installed node would be told it captured no console while the capture sat on disk.
+// TestConsolePathReadsTheNodesConfigFileNotTheUnit stubs a unit carrying only BRIARD_CONFIG, and
+// nixosTest/install-macvtap.nix runs the verb on a real install.
 //
 // Returns (path, note, err). A non-empty note replaces the surface's header when the path was
 // guessed rather than read from the node, so the reader can tell one from the other.
@@ -165,10 +163,10 @@ func (s *logSources) consolePath(ctx context.Context) (string, string, error) {
 				conf = v
 			}
 		}
-		// ⚠️ ABSENT IS NOT OFF. config.env carries GUEST_SERIAL only when an operator named one
-		// -- an ordinary node has no line, and the AGENT defaults it -- so a reader that
+		// ⚠️ ABSENT IS NOT OFF. config.env carries GUEST_SERIAL only when the install was given
+		// one -- an ordinary node has no line, and the AGENT defaults it -- so a reader that
 		// treated the missing key as "capture is off" would contradict the file sitting on disk.
-		// That is the bug the rig caught. Only an explicitly EMPTY entry means off.
+		// Only an explicitly EMPTY entry means off.
 		path, named := configValue(conf, "GUEST_SERIAL")
 		if !named {
 			path = defaultConsole

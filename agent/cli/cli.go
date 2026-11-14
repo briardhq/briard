@@ -1,26 +1,27 @@
 // Package cli is `briard` — the operator front.
 //
-// It is a MODE of the agent binary, not a second one. The binary was already a multitool
-// (the daemon modes, --report-card, --fetch-install), and the decisive argument against a
-// separate CLI is self-update is a single-binary story, so a second binary would need
-// its own signing, staging and update path PLUS a version-lockstep story with the agent — and a
-// CLI speaking api.Directive to a differently-versioned agent is a bug class that one binary
-// makes structurally impossible.
+// It is a MODE of the agent binary, not a second one. The binary is a multitool anyway (the
+// daemon, install/uninstall, internal flags such as --report-card and --fetch-install), and
+// self-update is a single-binary story: a second binary would need its own signing, staging and
+// update path PLUS a version-lockstep story with the agent — and a CLI speaking api.Directive to
+// a differently-versioned agent is a bug class that one binary makes structurally impossible.
 //
-// Named `briard` rather than `briardctl`: install.sh never puts the binary on $PATH, so the
-// operator-facing name is a free symlink independent of the on-disk name. The -ctl precedents
-// (systemctl/kubectl/machinectl) front SYSTEM DAEMONS; the product-CLI convention is the bare
-// name — docker, podman, nix, gh, and most closely tailscaled/tailscale, which is our exact
-// shape: a daemon plus a CLI, for a managed service with an agent on user hardware.
+// Named `briard` rather than `briardctl`: the install puts nothing under its prefix on $PATH, so
+// the operator-facing name is a symlink (/usr/local/bin/briard) independent of the on-disk name.
+// The -ctl precedents (systemctl/kubectl/machinectl) front SYSTEM DAEMONS; the product-CLI
+// convention is the bare name — docker, podman, nix, gh, and most closely tailscaled/tailscale,
+// which is our exact shape: a daemon plus a CLI, for a managed service with an agent on user
+// hardware.
 //
 // Most verbs here are INJECTORS: they submit an api.Directive to the running agent over
 // its admin socket and print the terminal outcome. The agent does the work, through the same
 // path the cloud's directives take.
 //
-// `alerts` and `logs` are the exception, and it is a deliberate one rather than a gap. They READ
-// the node's log surfaces directly, touching no socket, because the situation they exist for is
-// the agent being DOWN — an injector would answer "cannot reach the agent" precisely when the
-// operator most needs an answer. See logs.go.
+// The exceptions are deliberate, not gaps: `alerts`, `logs`, `version`, the machine's half of
+// `doctor`, bare `update`, `start`, and `stop` with the agent not answering act on or READ the
+// node directly, touching no socket, because the situation they exist for is the agent being
+// DOWN — an injector would answer "cannot reach the agent" precisely when the operator most
+// needs an answer. See logs.go.
 package cli
 
 import (
@@ -42,10 +43,10 @@ import (
 )
 
 // A command is one row of the CLI's SINGLE source of truth: `commands` is both the dispatch table
-// and the help text. The fault this shape exists to prevent is the one the CLI once shipped —
-// a help listing and a real surface that had drifted apart, with no test able to notice, because
-// they were two hand-maintained lists. TestEveryCommandIsDocumented walks this table from both
-// ends, so a verb cannot be added without a line in the help or removed without losing it.
+// and the help text, because a help listing and a dispatch table kept as two hand-maintained
+// lists drift apart with no test able to notice. TestEveryCommandIsDocumented checks this table
+// against its own independently declared list of verbs (so adding or removing one fails it until
+// the test says so too), and checks that every listed row appears in the help and dispatches.
 type command struct {
 	name     string // the word the user types
 	args     string // argument synopsis, shown after the name
@@ -243,9 +244,8 @@ var commands = []command{
 // the UI) drives, so an op that rolled back must be distinguishable from one that worked without
 // parsing prose — an admin tool that always exits 0 is one nobody can automate against.
 //
-// No arguments prints the help and succeeds, which is the ordinary CLI contract and
-// used to be "start the privileged host agent". Nothing reaches this path with the daemon in
-// mind any more: the units say `run`.
+// No arguments prints the help and succeeds, the ordinary CLI contract; the daemon is `run`,
+// which the units name and main() intercepts.
 func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stdout)
@@ -256,11 +256,11 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runHelp(ctx, args[1:], stdout, stderr)
 	case "debug":
 		// UNDOCUMENTED, AND INTERCEPTED HERE RATHER THAN ADDED TO `commands`, which is the
-		// help's single source of truth: TestEveryCommandIsDocumented walks that table from
-		// both ends, so a row with no help text is precisely what it exists to reject, and a
-		// row WITH help text would advertise a verb that is not part of the product. `help`
-		// is intercepted for the same structural reason. See debug.go for what it opens and
-		// why hiding it is a policy rather than a boundary.
+		// help's single source of truth: every row there needs a synopsis and is explained by
+		// `briard help <name>`, even an unlisted one, and debug is meant to have no help at all
+		// (TestDebugVerbIsUndocumented). `help` is intercepted too, since it reads the table
+		// rather than being a row of it. See debug.go for what it opens and why hiding it is a
+		// policy rather than a boundary.
 		return runDebug(ctx, args[1:], stdout, stderr)
 	}
 	for _, c := range commands {
@@ -329,9 +329,9 @@ is how you ask it what is wrong. Run it when something looks off, or on a schedu
 `)
 }
 
-// directive and report what it did. It is deliberately the first verb built — it exercises the
-// whole door with kinds that already exist (noop, log), so the local path is proven before any
-// new directive kind widens the shared/api allowlist.
+// runDirective is `briard directive <kind> [payload]`: submit one directive and report what it
+// did. It is the primitive every other injector is sugar over, and it exercises the whole door
+// with kinds that need no verb of their own (noop, log).
 func runDirective(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard directive", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -363,11 +363,9 @@ func runDirective(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	return 0
 }
 
-// runApp is the first verb that is SUGAR over `directive` rather than a separate mechanism —
-// which is the shape every later verb should copy. `briard app install ha` is exactly
-// `briard directive app-install ha`, so there is one path through the agent and the CLI adds
-// only a name a human would guess. (The verb a user types is `app`, the same word the
-// identifiers and the wire use.)
+// runApp is SUGAR over `directive` rather than a separate mechanism — the shape every verb
+// copies. `briard app install ha` is exactly `briard directive app-install ha`, so there is one
+// path through the agent and the CLI adds only a name a human would guess.
 //
 // It blocks until the node reaches a terminal state, because an install is a maintenance
 // operation on a live promoted resource: returning early would leave an operator guessing whether
@@ -507,28 +505,14 @@ func offeredVersion(ctx context.Context, sock, name string) string {
 	return ""
 }
 
-// runHandover is `briard handover` — give this node's work to a peer, on purpose, while it is
-// perfectly healthy. Sugar over `directive handover`, the shape `app install`
-// established.
-//
-// WHY A HUMAN WANTS THIS. Failover is the claim this product is bought for, and it is the one
-// claim that is otherwise only tested on the day it matters. Running it deliberately — after
-// pairing a second anchor, swapping hardware, moving the machine to a different switch — turns
-// "it should work" into "it worked, on Tuesday, and here is the log". It is also cheaper than the
-// upgrade it borrows from: no reboot, so it never opens the window where a degraded pair is one
-// power cut from trouble.
-//
-// ONE STEP, NO ORCHESTRATION, deliberately. Sequencing a pair of these — hand over, verify, hand
-// back — belongs to whatever can see every node (the cloud, or a lab script driving both). This
-// verb evicts the node it runs on and says what happened, which is exactly what a node can know:
-// `drbd-reactorctl evict` says "not me", never "you". Run it on the peer to come back.
 // runRescue restarts this node's guest on its verified, read-only image.
 //
-// IT REQUIRES -yes, and that is the only place in this CLI that does. Every other verb here is
-// reversible or health-gated: an OS upgrade rolls back, an app install restores its data, a
-// handover can be handed back. This one stops the household's app on a node whose fault
-// nobody has diagnosed, and empties the guest's scratch. A confirmation flag is the cheapest possible guard against the one invocation nobody
-// meant to type, and it costs an operator who did mean it four characters.
+// IT REQUIRES -yes, as `uninstall` does and no other verb. The rest are reversible or
+// health-gated -- an OS upgrade rolls back, an app install reverts, a handover can be handed
+// back -- or name their loss in their own flag (`app uninstall -now`).
+// This one stops the household's apps on a node whose fault nobody has diagnosed, and empties
+// the guest's scratch. A confirmation flag is the cheapest possible guard against the one
+// invocation nobody meant to type, and it costs an operator who did mean it four characters.
 //
 // It does NOT prompt interactively. The situations this verb exists for include a node being
 // driven over SSH from a script, and a prompt that sometimes appears is worse than a flag that
@@ -575,6 +559,20 @@ Read `+"`briard logs`"+` first. Re-run with -yes when you have.
 	return 0
 }
 
+// runHandover is `briard handover` — give this node's work to a peer, on purpose, while it is
+// perfectly healthy. Sugar over `directive handover`.
+//
+// WHY A HUMAN WANTS THIS. Failover is the claim this product is bought for, and it is the one
+// claim that is otherwise only tested on the day it matters. Running it deliberately — after
+// pairing a second anchor, swapping hardware, moving the machine to a different switch — turns
+// "it should work" into "it worked, on Tuesday, and here is the log". It is also cheaper than the
+// upgrade it borrows from: no reboot, so it never opens the window where a degraded pair is one
+// power cut from trouble.
+//
+// ONE STEP, NO ORCHESTRATION, deliberately. Sequencing a pair of these — hand over, verify, hand
+// back — belongs to whatever can see every node (the cloud, or a lab script driving both). This
+// verb evicts the node it runs on and says what happened, which is exactly what a node can know:
+// `drbd-reactorctl evict` says "not me", never "you". Run it on the peer to come back.
 func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard handover", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -623,7 +621,6 @@ func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	return 0
 }
 
-// runConfig is `briard config set <key> <value>`. The agent judges the value; this only carries it.
 // runBackup is `briard backup`: with no arguments the nightly run, now, answered once it has ended;
 // `restore [-at <backup>] <app>` the backup named, or the newest, as one directive -- the machine
 // reads the backup into the app's history and restores it, and answers once it has.
@@ -667,6 +664,7 @@ func runBackup(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	return 0
 }
 
+// runConfig is `briard config set <key> <value>`. The agent judges the value; this only carries it.
 func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard config", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -709,10 +707,10 @@ func sockDefault() string {
 
 // submit sends one directive and blocks for its outcome.
 //
-// There is no client-side deadline by design: a payload or OS upgrade legitimately runs for
-// minutes (the agent bounds it at 10 and 15 respectively), and a CLI that timed out first would
-// report failure for an op still in flight — then invite the operator to "retry" a node that is
-// mid-upgrade. Waiting is the honest behaviour; Ctrl-C is the operator's own escape. A caller
+// There is no client-side deadline by design: an app install or OS upgrade legitimately runs for
+// minutes (the agent bounds each at 15 by default, an install of a large image longer), and a
+// CLI that timed out first would report failure for an op still in flight — then invite the
+// operator to "retry" a node that is mid-upgrade. Waiting is the honest behaviour; Ctrl-C is the operator's own escape. A caller
 // whose verb changes nothing (doctor) puts a deadline on ctx, and that is honoured.
 func submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOutcome, error) {
 	o, err := host.Submit(ctx, sock, d)
@@ -742,8 +740,8 @@ func runBackupNow(ctx context.Context, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runStop is `briard stop`, and runStart `briard start` (host.Stop, host.Start: the uninstall
-// brings the node down through the same function).
+// runStop is `briard stop`, and runStart `briard start` (Config.Stop and host.Start in agent/host;
+// the uninstall brings the node down through the same Config.Stop).
 func runStop(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard stop", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -828,9 +826,9 @@ func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintf(stderr, "briard: %s: %s\n", o.State, o.Detail)
 		return 1
 	}
-	// What the browser is about to show, before the link to it. The installer prints this
-	// verb's output as the last thing an install says, so the sentence that used to be its own shell
-	// scan lives here -- and a household running the verb a month later gets the same answer.
+	// What the browser is about to show, before the link to it. The Linux install's closing
+	// (`briard-agent install -wait`) prints this verb's output as the last thing an install says,
+	// and a household running the verb a month later gets the same answer.
 	if line := installedLine(installedApps(appCacheDir)); line != "" {
 		fmt.Fprintf(stdout, "%s.\n\n", line)
 	}

@@ -17,8 +17,8 @@ import (
 // capture. There is no service manager to ask where the config file is either; the tree is fixed.
 
 const (
-	// The agent's defaults, copied for the reason logs_linux.go gives and pinned the same way
-	// (TestDefaultConsoleMatchesTheAgents).
+	// The agent's defaults. TestDefaultConsoleMatchesTheAgents pins the console path, and that
+	// qemuLog sits beside the agent's own log.
 	defaultConsole    = `C:\ProgramData\briard\log\guest-console.log`
 	defaultConfigFile = `C:\ProgramData\briard\config.env`
 	// qemuLog is where the guest unit's own stdout and stderr go: qemu's words, not the guest's.
