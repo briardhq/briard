@@ -17,17 +17,16 @@ import (
 
 // THE RECORDER CHECK RUNS IN THE BACKGROUND, and the restore does not.
 //
-// The check reads read-only members and can take minutes on a big database, while this channel
-// serves one verb at a time: run inline, it would stall every status read the host makes behind
-// it. So verbHassDBCheck starts it in this long-running process and answers at once, and the
-// host collects the report with verbHassDBCheckResult on a later cycle.
+// The check reads read-only members and can take minutes on a big database, far past the host's
+// short call, which its loop waits on. So verbHassDBCheck starts it in this long-running process
+// and answers at once, and the host collects the report with verbHassDBCheckResult on a later
+// cycle.
 //
-// The restore stops Home Assistant and writes its data, so it stays an ordinary verb
-// (verbHassDBRestore), serialised with every other operation on the app by the same channel.
-// Neither runs while the other does.
+// The restore stops Home Assistant and writes its data, so it is an act (verbHassDBRestore),
+// serialised with every other act. Neither runs while the other does.
 //
 // THE STATE IS THIS PROCESS'S. A restart loses a running check and its report; the check's own
-// hold is cleared the next night, and the host, finding nothing running, starts again.
+// hold is cleared by the next night's check, which the host starts as usual.
 var dbChecks struct {
 	sync.Mutex
 	busy   bool           // a check or a restore is running
@@ -177,7 +176,8 @@ func hassDBRestore(ctx context.Context, x Executor, run func(string, ...string) 
 // registers no change of its own.
 //
 // ONLY THE UNITS THAT WERE RUNNING are stopped and started. Container units, never the pod: a pod
-// stop unmounts the shared volume under every other app (quadlet.Rendered.ContainerUnits).
+// stop kills the containers out from under their units, which land in `failed` rather than
+// stopping cleanly (quadlet.Rendered.ContainerUnits).
 func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string) error, m manifest.Manifest, rawManifest string, from hass.Member, dir string) error {
 	rendered, err := quadlet.Render(m, "")
 	if err != nil {
@@ -239,9 +239,9 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 
 	// QUIESCED ONLY ON THE CLEAN-STOP MARKER, the evidence every other member reads: the unit's
 	// own ExecStopPost writes it when systemd says the stop succeeded. A stop that returned is
-	// not that -- Home Assistant stopped while still booting exited non-zero, and nothing then says
-	// it flushed (measured on L0 run 36984359024) -- and an app that was not running may have died. Read,
-	// not consumed: the start below is what spends it.
+	// not that -- Home Assistant stopped while still booting exits non-zero, and nothing then says
+	// it flushed -- and an app that was not running may have died. Read, not consumed: the start
+	// below is what spends it.
 	cons := quadlet.Crash
 	if _, err := x.ReadFile(cleanStopPath(hass.Name)); err == nil && len(active) > 0 {
 		cons = quadlet.Quiesced
@@ -262,7 +262,7 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 	}
 	recordMember(ctx, x, undo, meta)
 	// --no-target-directory: root is a directory, and without it mv would exchange with
-	// root/<staged> rather than with root (measured on L0 run 36984359024).
+	// root/<staged> rather than with root.
 	if err := run("mv", "--exchange", "--no-target-directory", staged, root); err != nil {
 		if derr := run("btrfs", "subvolume", "delete", undo); derr == nil {
 			_ = run("rm", "-f", quadlet.SnapshotSidecar(undo), quadlet.AppSidecar(undo))

@@ -10,11 +10,11 @@ import (
 // STAGE, THEN COMMIT: an app install is not the volume's identity until its health gate says so.
 //
 // An install has to put the new manifest on the volume BEFORE its gate decides, because converge
-// renders from the volume. Written straight over `<name>.json`, that left a window of minutes in
-// which the volume named a version nothing had accepted -- and anything that interrupted the
-// install inside it (a power cut, an agent restart, a failover) left the household converging to
-// that version for good, because what the revert needed to undo it lived only in the installing
-// process's memory.
+// renders from the volume. Written straight over `<name>.json`, it would leave a window of minutes
+// in which the volume named a version nothing had accepted -- and anything that interrupted the
+// install inside it (a power cut, an agent restart, a failover) would leave the household
+// converging to that version for good, because what the revert needed would live only in the
+// installing process's memory.
 //
 // So the volume holds the install in two files beside the accepted manifest, and every fact the
 // undo needs is one of them:
@@ -27,7 +27,7 @@ import (
 // The commit is ONE rename, `.json.next` over `.json`. Nothing else is the decision, so there is
 // no state in which the install is half-accepted. Undoing is the same procedure whichever way the
 // install ended -- a gate that failed, or a crash nobody saw -- because it reads only these files
-// (agent/host's rollBack): stop, put the data back, discard the stage, converge to the accepted.
+// (agent/host's undo): stop, put the data back, discard the stage, converge to the accepted.
 //
 // Converge holds every staged app back except the one an install names as live: a node that
 // promotes onto a pending install does NOT start it -- neither the staged version, which nothing

@@ -16,11 +16,10 @@ import (
 // EVERY node, this does filesystem work only where the volume is mounted, and the cut between
 // them is by scope rather than by tidiness.
 //
-// IT NEVER FORMATS. The one-time format lives in briard-node-storage, in the same
-// process and the same branch as the `lvcreate` that made the volume, so "this is brand new" is
-// a fact known where it is acted on rather than carried here on a marker. What that removes is
-// the shape the blank probe and the storage spec each had to guard: a destructive operation on a path that runs
-// at every promotion, on every node, forever. There is no such operation on this path now.
+// IT NEVER FORMATS. The one-time format lives in briard-node-storage, in the same process and the
+// same branch as the `lvcreate` that made the volume, so "this is brand new" is a fact known where
+// it is acted on rather than carried here on a marker. This path runs at every promotion, on every
+// node: it must hold no destructive operation.
 
 // snapshotsDir is the data tier's History, a sibling of the data areas rather
 // than a child of one: it replicates with the volume, so it survives a failover.

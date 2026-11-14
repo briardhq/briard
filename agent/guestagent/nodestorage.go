@@ -23,18 +23,15 @@ import (
 // `/dev/drbd0` attached and goes no further: the mount is briard-primary-storage's, on the one
 // node that promoted.
 //
-// IT REPLACES A BOOT UNIT, and the reason is scope rather than tidiness. The storage seam was first built
-// from `multi-user.target` with no inputs but what it could read off the machine, so
-// there was nowhere for a decision to arrive -- which is why (c) could not build the Adiantum
-// opt-in it specified. Storage policy is a node-scoped fact the host holds durably and pushes at
-// bring-up, so the host writes nodestorage.Path and starts this.
+// THE HOST STARTS IT, NOT THE BOOT: storage policy (the cipher mode, the tiers) is a node-scoped
+// fact the host holds durably and pushes at bring-up, so the host's storage.node verb writes
+// nodestorage.Path and starts this unit. A boot unit would have nowhere for that decision to
+// arrive.
 //
-// AND IT REPLACES drbd.provision/drbd.up/drbd.init-uptodate, which is what retires
-// /run/briard/data.fresh: "is this LV brand new" was an inference from `drbdadm create-md`'s exit
-// code, an inference ENCRYPTION BROKE (dm-crypt returns ciphertext for sectors nobody wrote, so
-// the blank-probe found "some data" on every fresh encrypted node). One program now
-// runs both `lvcreate` and `create-md`, so it knows in-process and no marker carries the fact
-// between two components.
+// ONE PROGRAM runs both `lvcreate` and `create-md`, so "is this LV brand new" is known in-process,
+// never inferred from `drbdadm create-md`'s exit code nor carried between components in a marker.
+// That inference is what ENCRYPTION BREAKS: dm-crypt returns ciphertext for sectors nobody wrote,
+// so a blank-probe finds "some data" on every fresh encrypted node.
 
 const (
 	// luksKeyPath is where the volume key lives for the seconds between generating it and
@@ -47,7 +44,7 @@ const (
 	luksTokenPath = "/run/briard/luks-token.json"
 	// clearKeyToken is the LUKS2 token type carrying slot 0's passphrase in plaintext JSON, and
 	// `cryptsetup luksDump` reading it back is the is-this-node-armed audit surface: an ARMED
-	// node (v5) has a keyslot worth stretching and no token of this type.
+	// node has a keyslot worth stretching and no token of this type.
 	clearKeyToken = "briard-clear"
 	// luksDataOffset PINS the data offset at 16 MiB in 512-byte sectors, rather than inheriting
 	// LUKS2's default. That makes the header size a stated product constant, which is what lets
@@ -61,12 +58,12 @@ const (
 	// loneProbeDevice is the device name drbdmeta wants for its lock file when the metadata
 	// probe runs on a node that has no DRBD device at all. It names nothing that exists.
 	loneProbeDevice = "/dev/drbd0"
-	// chainTarget is the lone node's promotion: the static target carrying the five chain
-	// members in the reactor's order (guest-image/configuration.nix). PAIRED with that name.
+	// chainTarget is the lone node's promotion: the static target carrying the chain members in
+	// the reactor's order, rendered by units.go. The same name as shared/chain.Target.
 	chainTarget = "briard-chain.target"
 	// chainRoot is the chain's first member, the mount. Every other member Requires= it
-	// transitively (the fold in configuration.nix), so stopping it is the one stop that waits
-	// for the whole chain to be down.
+	// transitively (each Requires= the one before it, units.go's chainEdges), so stopping it is
+	// the one stop that waits for the whole chain to be down.
 	chainRoot = "briard-primary-storage.service"
 )
 
@@ -98,9 +95,9 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 
 	// `pvmove`'s transient mirror is a dm-mirror target, and LVM cannot autoload it here: it
 	// shells out to /sbin/modprobe, which does not exist on a NixOS guest, so the first
-	// conversion dies with "Required device-mapper target(s) not detected in your kernel"
-	// (measured). Loading it now means the module a conversion needs is never the
-	// reason one cannot start. A witness builds no tier and converts nothing.
+	// conversion dies with "Required device-mapper target(s) not detected in your kernel".
+	// Loading it now means the module a conversion needs is never the reason one cannot start.
+	// A witness builds no tier and converts nothing.
 	if len(spec.Tiers) > 0 {
 		if err := run("modprobe", "dm-mirror"); err != nil {
 			return err
@@ -130,14 +127,13 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 	// It runs BEFORE the attach because DRBD opens its backing device exclusively, and it can run
 	// on the backing at all because the metadata is EXTERNAL: byte 0 of the data LV is byte 0 of
 	// the replicated device, so the filesystem written here is the one the Primary mounts.
-	// Nothing here promotes (architectural invariant 2): this is a block device the node owns
+	// Nothing here promotes: this is a block device the node owns
 	// outright for a few more lines, not the resource.
 	if fresh && spec.Resource.FreshInit {
 		data, _ := spec.Tier(nodestorage.TierData)
 		// The layout is written out rather than left to btrfs-progs: its defaults move between
 		// releases (6.19 added block-group-tree), and the image that formats the volume is not the
-		// one that will mount it after the next update. These are the 6.19 defaults, so a node
-		// formatted before the flags were written has the same layout.
+		// one that will mount it after the next update. These are the 6.19 defaults.
 		//
 		// SIMPLE QUOTAS FROM THE FIRST BYTE, the one flag that is not a default: the quota tree
 		// (qgroup.go) is how the files tier is bounded, and squota owns an extent by who allocated
@@ -180,7 +176,7 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 	//                                  volume; never re-created, never re-seeded (a blind
 	//                                  --force would split-brain against the peer that kept
 	//                                  serving);
-	//   no metadata, LVs just made  -> create: a seed or a blank joiner (today's first init);
+	//   no metadata, LVs just made  -> create: a seed or a blank joiner;
 	//   no metadata, LVs existing   -> CONVERT: a lone node joining its first peer, whose data
 	//                                  is THE data; or a blank re-joiner whose old LVs
 	//                                  are discarded by the resync. Same command either way.
@@ -204,13 +200,13 @@ func nodeStorage(ctx context.Context, x Executor, spec nodestorage.Spec) error {
 	//
 	// ⚠️ WITH NO PEER CONNECTED, which is why the resource is brought up and then DISCONNECTED
 	// before the word is said. `--clear-bitmap` with a peer CONNECTED declares that peer
-	// UpToDate too, with no sync -- the harness lesson, and on a conversion the joiner
-	// may already be up and dialling. `drbdadm attach` alone cannot do it (the minor does not
-	// exist until `up`, and drbdadm has no new-minor of its own -- measured, "Device minor not
-	// allocated"), so: `up` (which may let a dialling peer in for a moment -- two Inconsistent
-	// disks, nothing syncs, nothing promotes), `disconnect` (synchronous: every connection is
-	// down when it returns), the UUID on this disk alone, and the stock target's adjust below
-	// reconnects. The joiner then syncs from it for real.
+	// UpToDate too, with no sync -- and on a conversion the joiner may already be up and
+	// dialling. `drbdadm attach` alone cannot do it (the minor does not exist until `up`, and
+	// drbdadm has no new-minor of its own: "Device minor not allocated"), so: `up` (which may let
+	// a dialling peer in for a moment -- two Inconsistent disks, nothing syncs, nothing
+	// promotes), `disconnect` (synchronous: every connection is down when it returns), the UUID
+	// on this disk alone, and the stock target's adjust below reconnects. The joiner then syncs
+	// from it for real.
 	if created && spec.Resource.FreshInit {
 		if err := run("drbdadm", "up", spec.Resource.Name); err != nil {
 			return err
@@ -235,9 +231,9 @@ func metadataPresent(ctx context.Context, x Executor, spec nodestorage.Spec) boo
 	data, _ := spec.Tier(nodestorage.TierData)
 	out, err := x.Run(ctx, "drbdmeta", loneProbeDevice, "v09", data.MetaMapper(), "flex-external", "dump-md")
 	// ABSENT IS ONE PHRASE, AND EVERYTHING ELSE IS PRESENT. dump-md exits non-zero for more than
-	// garbage: metadata a Primary left behind reads "unclean, please apply-al first" (measured
-	// on the survivor of a failover, rebooted), and that is metadata as surely as a
-	// clean dump is. A device drbdmeta cannot open at all lands on the present side too, which
+	// garbage: metadata a Primary left behind (a failover's survivor, rebooted) reads "unclean,
+	// please apply-al first", and that is metadata as surely as a clean dump is. A device
+	// drbdmeta cannot open at all lands on the present side too, which
 	// is the conservative one for every row: alone, it refuses rather than mounts; replicated,
 	// it attaches and fails loudly rather than creating over what it could not read.
 	present := err == nil || !strings.Contains(string(out), "No valid meta data found")
@@ -308,8 +304,7 @@ func replicated(x Executor) (bool, error) {
 }
 
 // alone is replicated's answer for the verbs that have a sensible default when the spec is
-// missing: only a spec that SAYS alone makes a node alone; no spec reads as a flock, which is
-// what every verb did before there were lone nodes.
+// missing: only a spec that SAYS alone makes a node alone; no spec reads as a flock.
 func alone(x Executor) bool {
 	rep, err := replicated(x)
 	return err == nil && !rep
@@ -387,8 +382,8 @@ func buildTier(ctx context.Context, x Executor, run func(string, ...string) erro
 	// `pvcreate` WITHOUT -f is the blank probe, and it is the blank probe's one idiom rather than a second
 	// one: it refuses on ANY existing signature (the prompt hits a closed stdin and aborts) and
 	// it fails on a device it cannot read. So "pvcreate succeeded" means the device was readable
-	// AND blank -- the distinction a `blkid ||` probe cannot make, which is the mistake that once
-	// reformatted a household's replicated volume.
+	// AND blank -- the distinction a `blkid ||` probe cannot make: it reads "could not read" as
+	// "blank", and that reformats a household's replicated volume.
 	//
 	// A node installed before the seam therefore FAILS here rather than having its volume
 	// claimed: its disk already holds DRBD metadata. That is the alpha reinstall-only policy
@@ -469,7 +464,7 @@ func luksFormat(ctx context.Context, x Executor, run func(string, ...string) err
 		// is 256 bits of urandom stored IN THE CLEAR two hundred bytes away. A KDF makes GUESSING
 		// expensive; nobody has to guess this one. What the default would cost is real: LUKS2's
 		// argon2id targets ~1 GiB and two seconds, at every boot of every node, on guests that
-		// have 2 GB. Arming (v5) adds a slot with a secret worth stretching and destroys this
+		// have 2 GB. Arming adds a slot with a secret worth stretching and destroys this
 		// one, so no future keyslot inherits these parameters.
 		if err := run("cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode",
 			"--cipher", cipher, "--key-size", keyBits, "--offset", luksDataOffset,
@@ -579,7 +574,7 @@ func clearKey(ctx context.Context, x Executor, device string) (string, error) {
 	if err := json.Unmarshal(raw, &tok); err != nil {
 		return "", fmt.Errorf("parse the token on %s: %w", device, err)
 	}
-	// An ARMED node (v5) has destroyed this token and holds a secret worth stretching, so it has
+	// An ARMED node has destroyed this token and holds a secret worth stretching, so it has
 	// no clear key to read: refusing here says "this node needs a key from somewhere" rather
 	// than opening with an empty passphrase and reporting a corrupt header.
 	if tok.Type != clearKeyToken || tok.Passphrase == "" {
@@ -611,12 +606,12 @@ func writePrivate(x Executor, path string, data []byte) error {
 }
 
 // cryptName is the dm name the tier's dm-crypt device takes, and cryptDevice the path it appears
-// at. Derived from the tier so a second tier cannot collide with the first, and equal to what the
-// seam has always used for the data tier.
+// at. Derived from the tier so a second tier cannot collide with the first; the data tier's is
+// the name nixosTest/luks-convert.nix uses.
 //
-// ⚠️ The seam invariant tells this device from the LV by its dm TARGET (`crypt` vs `linear`), not
-// by its name -- the storage-seam invariant allows a crypt device and never requires one, because arming is
-// per-node (the AES axis) and not fleet-wide.
+// ⚠️ The storage-seam invariant tells this device from the LV by its dm TARGET (`crypt` vs
+// `linear`), not by its name, and allows a crypt device without requiring one: encryption is
+// per-node (the AES axis), not fleet-wide.
 func cryptName(t nodestorage.Tier) string { return t.VG + "-crypt" }
 
 func cryptDevice(t nodestorage.Tier) string { return "/dev/mapper/" + cryptName(t) }

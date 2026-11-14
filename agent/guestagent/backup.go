@@ -26,8 +26,8 @@ import (
 
 // THE BACKUP RUNS IN THE BACKGROUND, the recorder check's shape (dbcheck.go): data.backup starts
 // it and answers at once, data.backup.result hands the report over once. A first run copies the
-// whole volume and a later one still reads every changed file; either would stall every status
-// read the host makes behind it on this one-verb-at-a-time channel.
+// whole volume and a later one still reads every changed file; either would outlast by far the
+// host's short call, which its loop waits on.
 //
 // WHAT IS BACKED UP is everything a fresh install needs to come back as this household, laid out
 // under one root (backupRoot), one directory per storage tier, in two snapshots. The data's,
@@ -179,14 +179,15 @@ const (
 	// length, and inside the root it would be backed up beside what it opens.
 	backupPasswordFile = "/run/briard/backup.password"
 	// backupHost is the name a snapshot is taken under when the request names no group: a guest
-	// with no host (Backup below), or a node from before it had a flock id.
+	// with no host (Backup below).
 	backupHost = "briard"
 )
 
 // volumeFacts are the replicated volume's flock-scoped facts -- the ones every node shares and
-// whichever promotes next reads -- copied whole when present. tls/ carries the private key; the repository is encrypted under the household's key.
-// The user's record rides with them because every app matches its account on the username in it:
-// a restore that came back as a different user would be a stranger to every app it restored.
+// whichever promotes next reads -- copied whole when present. tls/ carries the private key; the
+// repository is encrypted under the household's key. The user's record rides with them because
+// every app matches its account on the username in it: a restore that came back as a different
+// user would be a stranger to every app it restored.
 var volumeFacts = []string{dataMountRoot + "/.vip-address", manifestDir, tlsDir, dashboard.AccountPath}
 
 // backupRequest is what the host hands a run: where the repository is, whose snapshots these are,
@@ -198,10 +199,9 @@ type backupRequest struct {
 	// Group is the name every snapshot is taken under and the only group the retention touches:
 	// restic groups snapshots by host for parent detection and for forget. THE HOUSEHOLD'S, not
 	// the node's -- the flock id -- so a failover continues one ladder rather than starting a
-	// second, and so a repository an earlier household wrote is never pruned by this one: a
-	// fresh install writing into it keeps its own ladder, and the earlier nights are frozen, there
-	// to restore from until somebody deletes them on purpose, rather than pushed out within two
-	// nights by a new install's near-empty data.
+	// second, and a repository an earlier household wrote is never pruned by this one: its
+	// nights stay, there to restore from until somebody deletes them on purpose, rather than
+	// pushed out within two nights by a new install's near-empty data.
 	Group string `json:"group,omitempty"`
 	// Host is the host's node-held facts a new install could not re-derive, by file name.
 	Host map[string][]byte `json:"host,omitempty"`
@@ -472,7 +472,7 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 	// THE HOUSEHOLD'S FILES, AFTER THE DATA, IN A SNAPSHOT OF THEIR OWN: a library's first copy can
 	// run for hours and a folder can fill on it, and neither may cost the night its apps' backup,
 	// which has landed by now. An interrupted run is not lost either: the next reuses every block
-	// this one wrote. Not restored by anything yet -- the household's files are never rolled back.
+	// this one wrote. Nothing restores it: the household's files are never rolled back.
 	files := func() error {
 		members := newestFileVersions(ctx, x)
 		if len(members) == 0 {
@@ -555,7 +555,7 @@ func Backup(ctx context.Context, x Executor, url string) BackupReport {
 // ("latest" for the newest), so an earlier install's nights restore the same way as this one's.
 //
 // AN ACT, in line: it writes the ring, and the channel serves acts one at a time beside its
-// reads, so a restore that takes minutes stalls nothing the host asks meanwhile.
+// reads, so a restore that takes minutes holds up other acts but none of the host's reads.
 //
 // SIDECAR BEFORE DATA, and the member goes if either cannot be finished: a half-restored member
 // would be offered as a restore point, which is worse than none. The subvolume is created empty,
