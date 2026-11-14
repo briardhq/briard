@@ -101,11 +101,12 @@ type fakeStatus struct {
 	// mdnsAsked counts both mDNS reads: the loop must never make them (nothing it decides depends
 	// on a name), so a test can assert the snapshot left them alone.
 	mdnsAsked *int
-	// asked counts the status reads (Cluster, one per cycle) and the VIP reads, so a test can hold
-	// the loop to one net.vip per cycle across every owner of the address.
+	// clusterAsked, vipAsked and resAsked count the status reads (Cluster, one per cycle), the VIP
+	// reads and the Resources reads, so a test can hold the loop to one net.vip per cycle across
+	// every owner of the address.
 	clusterAsked, vipAsked, resAsked *int
 	// volume is what the replicated volume says this node runs (name -> manifest bytes), which on a
-	// node that promoted into somebody else.s install is the only place that truth exists.
+	// node that promoted into somebody else's install is the only place that truth exists.
 	volume    map[string]string
 	volumeErr error
 	noAppList bool // a guest too old to list: the host must fall back, not fail
@@ -258,8 +259,8 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// The config file is the DEFAULT layer under the environment -- it delivers what
-// the unit's `Environment=` lines used to, and it loses to anything the environment says,
+// The config file is the DEFAULT layer under the environment -- it delivers the node's
+// deployment wiring, and it loses to anything the environment says,
 // INCLUDING an explicitly empty entry. That last part is not a nicety: empty is how the
 // substrate fork says "this node has no service tap", so a file value winning there
 // would render a NIC the node does not have.
@@ -331,11 +332,11 @@ func TestConfigFromEnv_DefaultsAndAnchor(t *testing.T) {
 
 // ⚠️ NOTHING THE INSTALL LAID DOWN IS DEFAULTED, and this is the assertion that says so.
 //
-// install.sh writes paths to files it CREATED OR STAGED -- the qemu tree it extracted, the disks it
-// allocated -- because those are facts about this host. The agent must not invent them, and the
-// reason is concrete: an empty value is how a harness says "I have no such disk, no -L
-// directory". Default them and the agent hands qemu `-drive file=...` for a file that is not
-// there, and the guest never boots.
+// `briard-agent install` writes paths to files the install CREATES OR STAGES -- the qemu tree it
+// extracted, the guest image, the disks -- because those are facts about this host. The agent must
+// not invent them, and the reason is concrete: an empty value is how a harness says "I have no
+// such disk, no -L directory". Default them and the agent hands qemu `-drive file=...` for a
+// file that is not there, and the guest never boots.
 //
 // The taps and device names are the OTHER rule (they default, through `declared`), which is why
 // both are asserted and neither is left to be inferred from the other.
@@ -357,11 +358,10 @@ func TestConfigFromEnv_TheInstallsOwnPathsAreNeverInvented(t *testing.T) {
 	}
 }
 
-// The shipped agent must launch its guest WITH a monitor. V3.17c2-ii built the clean
-// shutdown (ACPI over QMP, and a forced reset for a guest past talking to) but nothing
-// outside the test driver ever set QMPSock, so in the field every path that needed to stop
-// a guest still fell through to killing qemu -- a power cut. The mechanism existed and was
-// unreachable, which is the failure mode a default is for.
+// The shipped agent must launch its guest WITH a monitor. The clean shutdown (ACPI over QMP,
+// and a forced reset for a guest past talking to) needs QMPSock: with it unset, every path that
+// needs to stop a guest falls through to killing qemu -- a power cut. A mechanism that exists
+// but is unreachable is the failure mode a default is for.
 //
 // It also gets its OWN directory, asserted here because platform.Launch chmods that
 // directory 0700: QMP is unrestricted control of the VM, so sharing a directory with a
@@ -377,11 +377,11 @@ func TestConfigFromEnv_GuestGetsAMonitor(t *testing.T) {
 	}
 }
 
-// THE ENVIRONMENT CANNOT INSTALL AN APP: there
-// is no SERVICE_IMAGE (or any sibling) left to read, so an anchor comes up with the empty set and
+// THE ENVIRONMENT CANNOT INSTALL AN APP: no
+// SERVICE_IMAGE (or any sibling) is read, so an anchor comes up with the empty set and
 // fills it from what it was actually installed with -- the node-local cache, or the volume once it
-// promotes. Setting the old variables must therefore do NOTHING, which is what this asserts: a
-// re-introduced env path would give a node an app nobody installed.
+// promotes. Setting those variables must therefore do NOTHING, which is what this asserts: an
+// env path would give a node an app nobody installed.
 func TestConfigFromEnv_NoAppComesFromTheEnvironment(t *testing.T) {
 	for _, k := range []string{"SERVICE_NAME", "SERVICE_IMAGE", "SERVICE_DATADIR"} {
 		t.Setenv(k, "briard-dummy:v0")
@@ -397,16 +397,15 @@ func TestConfigFromEnv_NoAppComesFromTheEnvironment(t *testing.T) {
 // promotes WITH, but the volume it must converge to is only readable AFTER promotion, so the
 // start-list cannot name the apps themselves.
 //
-// The old assertion here was the opposite, and its reason was real: naming a unit the guest does
-// not define fails the whole ordered chain and takes the VIP down on every fresh install, which is
-// precisely the state `curl | sh` lands in. briard-apps is why it can now be unconditional —
-// the guest image defines it always, exactly as it defines briard-primary-storage and briard-vip.
+// Naming a unit the guest does not define fails the whole ordered chain and takes the VIP down
+// on every fresh install, which is precisely the state `curl | sh` lands in. briard-apps can be
+// unconditional because the guest agent renders it unconditionally, exactly as it renders
+// briard-primary-storage and briard-vip.
 //
-// Nothing is conditional any more (the last conditional member is gone): the chain is the same
-// units on every anchor, whatever the node is running and whatever the environment says. The
-// SHAPE is what this guards, not the membership -- the two mDNS publishers were added later, and the
-// property that must survive any such change is that nothing about the environment or the
-// installed apps can alter the list.
+// Nothing is conditional: the chain is the same units on every anchor, whatever the node is
+// running and whatever the environment says. The SHAPE is what this guards, not the membership:
+// the property that must survive any change to the list is that nothing about the environment or
+// the installed apps can alter it.
 func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 	t.Setenv("ROLE", string(model.RoleAnchor))
 	cfg := ConfigFromEnv()
@@ -431,14 +430,13 @@ func TestConfigFromEnv_TheChainIsStatic(t *testing.T) {
 	}
 }
 
-// There is NO baked probe target any more. The old default was the lab's own
-// http://192.168.1.100/healthz, and the reason it survived so long is that every test agreed with
-// it — a guess about someone else's network that nothing in our own could contradict. Unset now
-// means "resolve it from the address the guest actually holds", which is the only source that can
-// be right on a LAN we have never seen.
+// There is NO baked probe target. A default such as a lab address (http://192.168.1.100/healthz)
+// is a guess about someone else's network that every test agrees with and nothing in our own
+// network can contradict. Unset means "resolve it from the address the guest actually holds",
+// which is the only source that can be right on a LAN we have never seen.
 //
-// The probe target is still the reverse proxy rather than an app's own port; that part was never
-// the defect, and healthURLAt is what keeps it true once the address is dynamic.
+// The probe target is the reverse proxy rather than an app's own port, and
+// guest.ResolveHealthURL is what keeps it so with a dynamic address.
 func TestConfigFromEnv_NoBakedHealthTarget(t *testing.T) {
 	t.Setenv("HEALTH_URL", "")
 	t.Setenv("ROLE", string(model.RoleAnchor))
@@ -485,8 +483,8 @@ func TestConfigFromEnv_WitnessHasNoPromoter(t *testing.T) {
 // ⚠️ THE TWO HALVES OF `declared`, which is what lets the NIC names default in config.go without
 // losing the one meaning an empty value carries.
 //
-// A key nobody named takes the shipped answer -- that is every install now, since install.sh stopped
-// writing device names it had no opinion about. A key named EMPTY keeps the empty: that is how a
+// A key nobody named takes the shipped answer -- that is every install, since the install writes
+// no device names. A key named EMPTY keeps the empty: that is how a
 // node says it has no such NIC, and env() cannot express it (it reads an explicit empty as unset and
 // hands back the default). Getting this wrong renders a NIC the node does not have, on the substrate
 // where that is precisely the fork.
@@ -541,8 +539,8 @@ func TestParsePeers(t *testing.T) {
 	want := []drbd.Peer{
 		// The disk field is a DISKFUL/DISKLESS FLAG, not a path: every diskful node
 		// runs on the one seam LV, so ANY non-"none" value means that device and nothing else --
-		// which is why "sdb" below, a device name that would once have been honoured, no longer
-		// gives one node a backing it can disagree with the flock about.
+		// which is why "sdb" below, a device name, does not give one node a backing it can
+		// disagree with the flock about.
 		{Name: "n1", NodeID: 0, Address: "10.0.0.2:7789", Disk: drbd.DataDevice}, // bare host -> default port
 		{Name: "n2", NodeID: 1, Address: "10.0.0.3:7000", Disk: drbd.DataDevice}, // explicit port kept
 		{Name: "w", NodeID: 2, Address: "10.0.0.4:7789"},                         // witness: "none" -> diskless
@@ -679,10 +677,10 @@ func TestSnapshot_DoesNotAskThePublishedName(t *testing.T) {
 	}
 }
 
-// A WITNESS's health follows quorum, and the thing that says so is its ROLE. This used to be
-// keyed on an empty HealthURL, which read the same but meant something else: unbaking the VIP gives a data
-// node an address it acquires by DHCP, so "no configured URL" stops being witness-shaped. The
-// two now answer differently on purpose -- see the data-node case below.
+// A WITNESS's health follows quorum, and the thing that says so is its ROLE. An empty HealthURL
+// would read the same but mean something else: a data node acquires its address by DHCP, so
+// "no configured URL" is not witness-shaped. The two answer differently on purpose -- see the
+// data-node case below.
 func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleDiskless, Diskless: true, HealthURL: ""}
 	cfg.Resource.Name = "r0"
@@ -706,8 +704,8 @@ func TestSnapshot_HealthFollowsQuorumOnAWitness(t *testing.T) {
 	}
 }
 
-// Observe returns ErrChannelDown so Run re-dials — the fix for the older gap
-// where a single dropped channel blinded the host forever.
+// Observe returns ErrChannelDown so Run re-dials — without it a single dropped channel would
+// blind the host forever.
 func TestObserveReturnsOnChannelDown(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond}
 	cfg.Resource.Name = "r0"
@@ -760,7 +758,7 @@ func TestObserveAsksTheAddressOncePerCycle(t *testing.T) {
 
 // A REQUEST IS NOT A CYCLE. The tray asks for status every 5 s and the page polls while a card
 // moves; each is answered from what the last tick saw, never by running the tick's reads again,
-// which once doubled the idle agent's cost. With an hour-long tick, ten requests leave the loop
+// which would double the idle agent's cost. With an hour-long tick, ten requests leave the loop
 // at its one first cycle.
 func TestObserveAnswersARequestWithoutACycle(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Hour}
@@ -875,8 +873,8 @@ func TestSnapshot_HealthURLProbedNotQuorum(t *testing.T) {
 }
 
 // With no address of our own choosing, the loop probes the one the GUEST reports -- the DHCP
-// lease it acquired at promotion. This is the whole point of unbaking the VIP: the host stops deciding the
-// service address, so it has to be told what the address turned out to be, every cycle.
+// lease it acquired at promotion. The host does not decide the service address, so it has to be
+// told what the address turned out to be, every cycle.
 func TestSnapshot_HealthProbesTheAddressTheGuestReports(t *testing.T) {
 	var probed string
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
@@ -893,8 +891,8 @@ func TestSnapshot_HealthProbesTheAddressTheGuestReports(t *testing.T) {
 
 // An address WE set is the address we probe, even though the guest could be asked. The device
 // can hold more than one address (dhcpcd still serves the service NIC), and preferring what it
-// reports would reintroduce the baked VIP's own failure shape at the worst moment: a node-local lease
-// that keeps answering after the VIP has moved to the peer -- healthy while not serving.
+// reports would probe, at the worst moment, a node-local lease that keeps answering after the
+// VIP has moved to the peer -- healthy while not serving.
 func TestSnapshot_ConfiguredAddressWinsOverTheReportedOne(t *testing.T) {
 	var probed string
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "http://192.168.9.7/healthz", VIPDev: "eth2"}
@@ -906,10 +904,9 @@ func TestSnapshot_ConfiguredAddressWinsOverTheReportedOne(t *testing.T) {
 }
 
 // A PRIMARY with no address -- neither configured nor reported -- is not healthy. It is the node
-// nobody in the house can reach, which is the defect unbaking the VIP exists for; answering it like a witness
-// ("healthy == quorate") is how that defect stayed invisible. This is what it looked like in the
-// flesh: briard-vip timed out waiting for DHCP, took drbd-services@r0 down with it, and the node
-// went on being quorate the whole time.
+// nobody in the house can reach; answering it like a witness ("healthy == quorate") makes that
+// invisible: briard-vip times out waiting for DHCP, takes drbd-services@r0 down with it, and the
+// node goes on being quorate the whole time.
 func TestSnapshot_PrimaryWithNoAddressIsUnhealthy(t *testing.T) {
 	var probed string
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
@@ -931,7 +928,7 @@ func TestSnapshot_PrimaryWithNoAddressIsUnhealthy(t *testing.T) {
 
 // A SECONDARY holds no service address because the VIP is promoter-driven, not because anything
 // is wrong with it -- so its health is participation, the same rule the witness follows. Reporting
-// it unhealthy made every correct HA pair read DEGRADED in the cloud's view forever, with a
+// it unhealthy would make every correct HA pair read DEGRADED in the cloud's view forever, with a
 // standing "1 node unhealthy" nobody could act on.
 func TestSnapshot_SecondaryWithNoAddressIsHealthyWhenParticipating(t *testing.T) {
 	cfg := Config{Node: "n2", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
@@ -997,7 +994,7 @@ func TestSnapshot_HealthFallsBackToHostProbe(t *testing.T) {
 	}
 }
 
-// The OS-upgrade budget is now configurable (so the lab need not spend the production interval to
+// The OS-upgrade budget is configurable (so the lab need not spend the production interval to
 // watch a rollback), and that is exactly why its DEFAULT has to be asserted. It is not a timeout
 // detail: AwaitOSReady polls until this context ends, so this number IS how long a broken update
 // leaves a node degraded before it reverts itself, and it is also the bound on staging — the one
@@ -1012,7 +1009,7 @@ func TestConfigFromEnv_UpgradeBudgetDefault(t *testing.T) {
 		t.Errorf("UpgradeBudget default = %v, want 15m — see Config.UpgradeBudget before changing this", cfg.UpgradeBudget)
 	}
 
-	// And it is overridable, which is the point of the change.
+	// And it is overridable, which is the point of the setting.
 	t.Setenv("UPGRADE_BUDGET", "90s")
 	if got := ConfigFromEnv().UpgradeBudget; got != 90*time.Second {
 		t.Errorf("UPGRADE_BUDGET=90s gave %v", got)
@@ -1059,9 +1056,9 @@ func TestServiceMACFallsBackToNodeWithoutFlockID(t *testing.T) {
 // asserts the line that answers them, and that it comes from ASKING qemu
 // (`query-accelerators`) rather than from re-reading the argv we chose.
 //
-// The table asks for a NAME, which is what the accelerator check now does. The case that decides it is the
-// third: an accelerated guest whose accelerator is not KVM must not log a warning — under the
-// old `query-kvm` it did, because the question was KVM-shaped and WHPX answers it "no".
+// The table asks for a NAME, which is what the accelerator check asks qemu for. The case that
+// decides it is the third: an accelerated guest whose accelerator is not KVM must not log a
+// warning — `query-kvm` would, because the question is KVM-shaped and WHPX answers it "no".
 func TestLogAccelerationSaysWhatTheVMActuallyGot(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1081,9 +1078,9 @@ func TestLogAccelerationSaysWhatTheVMActuallyGot(t *testing.T) {
 			notWant: "WARNING",
 		},
 		{
-			// The case the swap exists for: a hypervisor that is not KVM is still a
-			// hypervisor. Asking `query-kvm` here answered {"enabled":false} and this line
-			// called a correctly accelerated node emulated (measured on Windows).
+			// The case asking for a name exists for: a hypervisor that is not KVM is still a
+			// hypervisor. `query-kvm` answers {"enabled":false} here, and this line would
+			// call a correctly accelerated node emulated.
 			name:    "accelerated by something that is not KVM",
 			accel:   `{"return":{"enabled":"whpx","present":["qtest","tcg","whpx"]}}`,
 			want:    []string{"accelerated by whpx"},
@@ -1209,9 +1206,9 @@ func TestCurrentSystem(t *testing.T) {
 }
 
 // A not-Primary anchor with nobody to stand by for is not a standby, it is a house nobody holds.
-// Measured 2026-09-07 (lab os-rollback): a lone anchor beside a diskless witness booted a release
-// whose reverse proxy failed, was demoted by its own OnFailure, and then reported healthy=true every
-// five seconds by the participation rule -- the free-tier owner's whole picture, and wrong.
+// A lone anchor beside a diskless witness that boots a release whose reverse proxy fails is
+// demoted by its own OnFailure, and by the participation rule alone would then report
+// healthy=true every five seconds -- the free-tier owner's whole picture, and wrong.
 func TestSnapshot_LoneAnchorThatIsNotPrimaryIsUnhealthy(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, HealthURL: "", VIPDev: "eth2"}
 	demoted := model.QuorumState{Primary: false, Quorate: true, Diskful: true, UpToDate: true}

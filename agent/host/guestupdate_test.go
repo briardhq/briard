@@ -31,7 +31,7 @@ func guestMan(version, system, minHost string) install.Manifest {
 }
 
 // The vm chain's comparison, one row each: the closure is the truth, min_briard is
-// the one direction that can go wrong, and the host chain's ordering rules apply after both.
+// the one direction that can go wrong, and the briard chain's ordering rules apply after both.
 func TestDecideGuest(t *testing.T) {
 	const host = "v3.20260906.aaaaaaa"
 	old, cur, next := "vm.20260901.o", "vm.20260906.c", "vm.20260910.n"
@@ -88,8 +88,8 @@ func TestDecideGuest(t *testing.T) {
 
 func ptr(m install.Manifest) *install.Manifest { return &m }
 
-// guestChannel is a signed guest chain served over HTTP: one release under `latest` and
-// `stable` (the same release, unless stableVersion differs), keyed by the returned PEM.
+// guestChannel is a signed guest chain served over HTTP: each published release under its
+// version and the pointers it was published to, keyed by the returned PEM.
 type guestChannel struct {
 	priv   ed25519.PrivateKey
 	bodies map[string][]byte
@@ -322,9 +322,9 @@ func TestUpdateGuestRefusesABadImageBeforeTouchingTheNode(t *testing.T) {
 	}
 }
 
-// A guest that runs the record's closure but was moved by the cloud since is upgraded rather
-// than reported as already there; a guest already on the release's closure with a stale record
-// gets the record corrected without an upgrade.
+// A guest whose record names the release but which runs another closure (moved by the cloud
+// since) is upgraded rather than reported as already there; a guest already on the release's
+// closure with a stale record gets the record corrected without an upgrade.
 func TestUpdateGuestTrustsTheClosureOverTheRecord(t *testing.T) {
 	c, key := newGuestChannel(t)
 	want := withImage(t, c, guestMan("vm.20260910.nnnnnnn", "/nix/store/n-nixos-system", ""), "img")
@@ -352,9 +352,9 @@ func TestUpdateGuestTrustsTheClosureOverTheRecord(t *testing.T) {
 // AN EMPTY PAYLOAD RESOLVES `stable`, NOT `latest`. The two pointers name different
 // releases here on purpose, because that is the only shape in which the default is observable:
 // a directive carrying no target is what an operator or a cloud sends when they mean "just
-// update", and until this it walked the node onto whatever was published last -- a release the
-// channel points at precisely so that it can be PROVEN before promotion. The assertion is which
-// release the node took, never that it took one.
+// update", and defaulting to `latest` would walk the node onto whatever was published last -- a
+// release the channel points at precisely so that it can be PROVEN before promotion. The
+// assertion is which release the node took, never that it took one.
 func TestUpdateGuestEmptyPayloadTakesStableNotLatest(t *testing.T) {
 	c, key := newGuestChannel(t)
 	promoted := withImage(t, c, guestMan("vm.20260910.sssssss", "/nix/store/s-nixos-system", ""), "the promoted image")

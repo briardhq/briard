@@ -133,7 +133,7 @@ func TestRestartGate(t *testing.T) {
 	})
 
 	// A READ THAT FAILS PROCEEDS, unmarked, so the next start asks again; and a record no install
-	// built (a node that had one before the count existed, or no record at all) asks nothing.
+	// built (a member swap's first record, or no record at all) asks nothing.
 	t.Run("could not tell, and nothing to count", func(t *testing.T) {
 		cfg, path := setup(t)
 		b := &bootRead{}

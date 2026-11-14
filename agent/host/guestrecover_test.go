@@ -21,7 +21,6 @@ import (
 var noGate = gateVerdict{}
 
 // allowGate / denyGate are fresh verdicts from a guest whose deadman is alive and evaluating.
-// Uptime is well past guestFreshBoot so it is not that check doing the work.
 var (
 	allowGate = gateVerdict{reached: true, fresh: true, allowed: true}
 	denyGate  = gateVerdict{reached: true, fresh: true, allowed: false}
@@ -30,9 +29,9 @@ var (
 // never is a sinceReboot meaning "we have not power-cycled this guest during this incident".
 const never = time.Duration(1 << 62)
 
-// The ladder reboots, waits out the cadence, and reboots again -- indefinitely. The old version
-// stopped after K attempts; this asserts it does not, because "stop" is what left a node with no
-// reflex at all and nothing reporting that fact.
+// The ladder reboots, waits out the cadence, and reboots again -- indefinitely. This asserts there
+// is no attempt bound, because "stop after K attempts" leaves a node with no reflex at all and
+// nothing reporting that fact.
 func TestLadderKeepsRetryingAtTheCadence(t *testing.T) {
 	r := &guestRecovery{cadence: time.Hour}
 
@@ -106,7 +105,7 @@ func TestUnreachableOrStaleGateDoesNotBlockTheReflex(t *testing.T) {
 // cannot outage a peer, so there is nothing the gate could protect. Relaunch at once.
 //
 // This is what closes the circularity in the guest deadman: its graceful reboot needs the agent to
-// finish, and the agent now finishes it in seconds rather than after a ten-minute wait for a
+// finish, and the agent finishes it in seconds rather than after a ten-minute wait for a
 // socket belonging to a dead process. A regression here is SILENT -- the node still recovers, just
 // an outage later -- which is why the gate is asserted to be actively ignored rather than merely
 // not consulted.
@@ -168,18 +167,18 @@ func TestOnlyALongHealthyStretchEndsTheIncident(t *testing.T) {
 }
 
 // ONE trouble alert and ONE all-clear per incident, however many times the guest recovers and
-// fails again inside it. The all-clear used to clear the trouble latch, which re-armed it: a guest
-// flapping on a ten-minute period sent a fresh pair every ten minutes forever. Only a healthy
-// stretch long enough to END the incident may re-arm either one.
+// fails again inside it. An all-clear that cleared the trouble latch would re-arm it: a guest
+// flapping on a ten-minute period would send a fresh pair every ten minutes forever. Only a
+// healthy stretch long enough to END the incident may re-arm either one.
 //
-// Written as a loop over recover-and-fail cycles because a single-cycle test passes under both the
-// old and new behaviour -- the defect only shows from the second cycle on.
+// Written as a loop over recover-and-fail cycles because a single-cycle test passes with the two
+// latches coupled or apart -- the defect only shows from the second cycle on.
 func TestAlertsFireOncePerIncidentAcrossRepeatedRecoveries(t *testing.T) {
 	r := &guestRecovery{reset: 30 * time.Minute}
 	troubles, clears := 0, 0
 	// The PRODUCT's latches, not a re-implementation of them. A local model of the same condition
-	// passes whatever announce()/resolved() actually do -- checked by mutation: re-coupling the two
-	// latches in the real code left a model-based version of this test green.
+	// passes whatever announce()/resolved() actually do -- a model-based version of this test stays
+	// green with the two latches coupled in the real code.
 	announce := func() {
 		if r.takeAnnounce() {
 			troubles++
@@ -232,8 +231,8 @@ func TestZeroValueIsTheShippedLadder(t *testing.T) {
 
 // THE BURST IS THREE TRIES, NOT THREE SHOTS. A relaunch that fails in milliseconds -- a unit
 // name that has not come free, a device the kernel still holds -- must not spend the next attempt
-// before the condition it failed on could possibly have changed. In the field all three landed in
-// the same logged second and the node then sat out the two-hour cadence with nothing left to try.
+// before the condition it failed on could possibly have changed. Without a floor all three land
+// in the same second and the node then sits out the two-hour cadence with nothing left to try.
 //
 // The assertion is on the SPREAD rather than on the floor alone: what matters is how long the
 // budget takes to spend, so raising the burst or dropping the floor both have to keep it real.
@@ -276,9 +275,9 @@ func TestRecoveryWindowIsLongerThanAnyOrdinaryBounce(t *testing.T) {
 // first decides which of those the house gets, so the guest gets its chance and the host
 // backstops the case the guest side cannot cover -- one where `systemctl reboot` itself failed.
 //
-// This inverts what the ladder shipped with, and the inversion is the reason this test is worth
-// its weight: the two numbers live in different packages, are read by different processes, and a
-// future tuning of either would silently flip the design back with nothing else failing.
+// The ordering is the reason this test is worth its weight: the two numbers live in different
+// packages, are read by different processes, and a future tuning of either would silently flip
+// the order with nothing else failing.
 func TestTheGuestDeadmanFiresBeforeTheHostActs(t *testing.T) {
 	// The LATEST the guest can fire: its base plus the whole jitter window.
 	guestFires := deadman.DefaultDeadman + deadman.DefaultJitter
@@ -289,7 +288,7 @@ func TestTheGuestDeadmanFiresBeforeTheHostActs(t *testing.T) {
 			"power-cycle guests that were about to reboot themselves gracefully",
 			hostActs, guestFires)
 	}
-	// There is no double-reboot race left to guard against, and it is worth saying why rather than
+	// There is no double-reboot race to guard against, and it is worth saying why rather than
 	// leaving the absence to look like an oversight. When the guest deadman fires, its graceful
 	// reboot ENDS the VM's unit (`-no-reboot`), so from the host's side the guest never "rebooted"
 	// at all -- it stopped, and the host started it. The two rungs cannot both act on one guest:
@@ -422,7 +421,8 @@ func TestCollectDeadmanEpisodeAlertsOnce(t *testing.T) {
 // answers it the way the finish's does: a stop is taken, anything else refused with what the
 // ladder is doing NOW (read afresh, so a wait that moves on says so) and the way to cut it
 // short. Without this the CLI blocks until the agent exits and the tray reads a healthy process
-// that says nothing, which is what the first real desktop showed.
+// that says nothing. The test drives holdDoor with the closure recoverAnswering hands it, not
+// recoverAnswering itself.
 func TestTheDoorIsAnsweredWhileTheLadderRuns(t *testing.T) {
 	ctx, down := context.WithCancelCause(context.Background())
 	cfg := Config{down: down}
