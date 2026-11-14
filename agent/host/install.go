@@ -49,6 +49,7 @@ import (
 
 	"briard.io/agent/install"
 	"briard.io/agent/selfupdate"
+	"briard.io/shared/atomicfile"
 )
 
 // installRoots are the three directories an install lays down, as one value so a test can point
@@ -346,7 +347,9 @@ STATE_DISK=%s
 		b.WriteString(l + "\n")
 	}
 	path := filepath.Join(r.prefix, "config.env")
-	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+	// Durable, as setConfigKey writes it too: an install interrupted by a
+	// power cut leaves the last complete file, never a torn one the agent would boot on.
+	if err := atomicfile.Write(path, []byte(b.String()), 0o600, 0o755); err != nil {
 		return err
 	}
 	return os.Chmod(path, 0o600)
