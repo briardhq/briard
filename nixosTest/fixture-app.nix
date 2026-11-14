@@ -1,36 +1,30 @@
-# The dummy fixture as a CATALOGUED APP — a digest-pinned manifest plus the image tarball it
-# names — so a test can install it the way a user installs one, with no registry.
+# The dummy fixture as a catalogued app (a digest-pinned manifest plus the image tarball it names),
+# so a test installs it the way a user installs one: at runtime from a manifest. The guest image
+# has no build-time app slot, and a fixture baked into the guest would prove a path nobody ships.
 #
-# WHY THIS EXISTS. A shipped node installs apps at runtime from a manifest, and the guest image
-# has no build-time app slot; a fixture baked into the guest would prove a path nobody ships.
-# This module is the fixture delivered the shipped way.
+# No registry. The schema accepts only digest-pinned refs (a mutable tag is unsayable), and
+# app-install.nix gets its digest by pushing to a real registry, which reads as "a registry node
+# per test". Measured (podman 5.8.2, skopeo 1.22.2):
 #
-# WHY NO REGISTRY. The manifest schema accepts only digest-pinned refs (a tag is mutable, so it
-# is UNSAYABLE here), and app-install.nix gets its digest by pushing to a real registry inside
-# the test and inspecting it — which reads as "a registry node per test". Measured (podman
-# 5.8.2, skopeo 1.22.2):
-#
-#   1. `podman load` of a docker-archive RECORDS a RepoDigest, for an image never pulled;
+#   1. `podman load` of a docker-archive records a RepoDigest, for an image never pulled;
 #   2. `podman image exists localhost/<name>@<digest>` resolves against it — what Pull=never needs;
-#   3. `skopeo inspect docker-archive:` returns the IDENTICAL digest at BUILD time.
+#   3. `skopeo inspect docker-archive:` returns the identical digest at build time.
 #
-# (3) is what makes this a derivation rather than a runtime step: the manifest is written here,
-# already pinned, and the tarball is loaded into the podman store the node mounts (imageStore below). `Container.Image`
-# in shared/manifest already described this shape — "from upstream, from our mirror, or from a
-# tarball without changing what this app means".
-#
-# app-install.nix KEEPS its registry, deliberately: proving a real digest-pinned TLS pull is
-# that test's whole subject. This is for every other test, whose subject is something else and
-# which only needs an app to exist.
+# (3) makes this a derivation, not a runtime step: the manifest is written here already pinned,
+# and the tarball is loaded into the podman store the node mounts (imageStore below), the shape
+# `Container.Image` in shared/manifest describes ("from upstream, from our mirror, or from a
+# tarball without changing what this app means"). app-install.nix deliberately keeps its
+# registry, since a real digest-pinned TLS pull is its whole subject; this is for every other
+# test, which only needs an app to exist.
 {
   pkgs,
   # The manifest slug: the unit prefix, the subvolume name, the handle a user would type.
   name ? "dummy",
   # The single container's slug within the app, and its unit's.
   container ? "app",
-  # The container's mounts, as the manifest says them. The fixture's data path is a CONST in its own
-  # source, so its mount point is dictated by the fixture while the host-side directory is the
-  # renderer's to choose -- the normal asymmetry for a catalogued app.
+  # The container mounts, as the manifest says them. The data path is a const in the fixture
+  # source, so the fixture dictates the mount point and the renderer chooses the host-side
+  # directory, the normal asymmetry for a catalogued app.
   mounts ? [
     {
       tier = "data";
@@ -42,53 +36,46 @@
   healthPath ? "/healthz",
   env ? { },
   version ? "0.0.0",
-  # THE POD'S NETWORKING, defaulting to host. Host rather than the schema's own default
-  # because this fixture is the SUBSTRATE for the DRBD, promoter and converge tests -- putting a new
-  # networking mode underneath tests whose subject is something else makes every future failure
-  # ambiguous. The private path is proven where it IS the subject: by mosquitto, which is private in
-  # the real catalog, and by a fixture that asks for it deliberately.
+  # The pod networking, host by default rather than the schema default: this fixture is the
+  # substrate of the DRBD, promoter and converge tests, and a new networking mode under tests
+  # about something else makes every failure ambiguous. The private path is proven where it is the
+  # subject: by mosquitto (private in the real catalog) and a fixture that deliberately asks
+  # for it.
   network ? "host",
-  # PUBLISHED PORTS, meaningful only on a private pod: a host-networked one already holds the
-  # guest's ports, and the manifest schema refuses the combination.
+  # Published ports, meaningful only on a private pod: a host-networked one already holds the
+  # guest ports, and the schema refuses the combination.
   ports ? [ ],
-  # THE DECLARED MINIMUM MEMORY (manifest minMemoryMB), and with it the app's container memory
-  # limit. Zero, the default, declares none.
+  # The declared minimum memory (manifest minMemoryMB), and with it the container memory limit.
+  # Zero, the default, declares none.
   minMemoryMB ? 0,
-  # THE DECLARED SIZES (manifest size / installedSize, bytes): what the download stages and what
-  # the image store holds once pulled -- what the host grows the guest's disk for and gates the
-  # install on. Declared, not measured from the tarball: a harness sizes the NUMBERS, which is
-  # what the host reads. Zero, the default, declares none.
+  # The declared sizes (manifest size / installedSize, bytes): what the download stages and the
+  # image store holds once pulled, which the host grows the guest disk for and gates the install
+  # on. Declared, not measured from the tarball: the host reads the numbers. Zero declares none.
   size ? 0,
   installedSize ? 0,
-  # THE IMAGE, when the caller has one. Default: the dummy is built here. The HA tests pass the
-  # pinned upstream image instead, which is what lets a REAL app be catalogued rather than only
-  # the fixture.
+  # The image, when the caller has one (default: the dummy, built here). The HA tests pass the
+  # pinned upstream image, which lets a real app be catalogued, not only the fixture. `imageFile`
+  # is a docker-archive derivation, `imageName` the repo the manifest names.
   #
-  # `imageFile` is a docker-archive derivation and `imageName` is the repo the manifest names.
-  # MEASURED (podman 5.8.2, skopeo 1.22.2), because the digest question is not obvious
-  # for a PULLED image: `podman load` of a `dockerTools.pullImage` archive records
-  # `<repo>@<archive digest>` -- the digest of the archive's own manifest, NOT the registry digest
-  # the image was pulled by -- and `podman image exists <repo>@<archive digest>` resolves against
-  # it, which is what `Pull=never` needs. So the manifest written here pins the archive's digest,
-  # and that ref is resolvable on any node the tarball was staged onto. It is deliberately NOT the
+  # Measured (podman 5.8.2, skopeo 1.22.2), since the digest is not obvious for a pulled image:
+  # `podman load` of a `dockerTools.pullImage` archive records `<repo>@<archive digest>`, the
+  # digest of the archive manifest, not the registry digest it was pulled by, and
+  # `podman image exists` resolves that ref, as `Pull=never` needs. So the manifest pins the
+  # archive digest, resolvable on any node the tarball was staged onto, and deliberately not the
   # ref a registry would serve: nothing here pulls, and a catalogue published to real nodes would
-  # pin the registry digest instead.
+  # pin the registry digest.
   imageFile ? null,
   imageName ? null,
-  # FURTHER VERSIONS OF THE SAME APP, one per attribute, for a harness whose subject is a
-  # version CHANGE rather than an install: `{ v1 = { version = "1.0.0"; }; bad = { version =
+  # Further versions of the same app, one per attribute, for a harness whose subject is a
+  # version change rather than an install: `{ v1 = { version = "1.0.0"; }; bad = { version =
   # "0.0.0-bad"; env = { BRIARD_BROKEN = "1"; }; }; }`. Each is emitted under
-  # `$out/variants/<label>/`, complete with its own signed catalog, and every one of them is
-  # published under the SAME app name — an upgrade is one name moving versions, so a variant
-  # that renamed itself would be a different app and prove nothing.
-  #
-  # ONE KEYRING ACROSS ALL OF THEM (catalog-sign signs every catalog with one key): the node is
-  # given its trust root once, out of band, before any of these exist.
-  #
-  # A variant's image carries a `briard.version` label, so the CODE differs too and not just the
-  # document naming it — a rotation whose two versions share a digest would render the identical
-  # units and could pass while doing nothing. `env` rides the MANIFEST rather than the image,
-  # which is where a catalogued app says what its container gets.
+  # `$out/variants/<label>/` with its own signed catalog, all under the same app name: an upgrade
+  # is one name moving versions, and a renamed variant would be a different app, proving nothing.
+  # One key signs every catalog (catalog-sign): the node gets its trust root once, out of band,
+  # before any of these exist. A variant image carries a `briard.version` label so the code
+  # differs, not just the document: two versions sharing a digest would render identical units
+  # and could pass while doing nothing. `env` rides the manifest, where a catalogued app says
+  # what its container gets.
   variants ? { },
 }:
 let
@@ -117,18 +104,18 @@ let
     tag = "v0";
     labels = { };
   };
-  # An explicit permissive policy rather than `--insecure-policy`: the flag's NAME reads like a TLS
-  # bypass, and this call has no TLS in it at all — it inspects a local file. Spelling it out keeps
-  # the security-shaped flag out of the tree, the same call app-install.nix made for skopeo.
+  # An explicit permissive policy rather than `--insecure-policy`, whose name reads like a TLS
+  # bypass though this call only inspects a local file: it keeps the security-shaped flag out of
+  # the tree, as app-install.nix does for skopeo.
   policy = pkgs.writeText "policy.json" (builtins.toJSON {
     default = [ { type = "insecureAcceptAnything"; } ];
   });
   envJSON = e: if e == { } then "" else '',"env":${builtins.toJSON e}'';
-  # Published ports, omitted entirely when empty so a host-networked fixture renders the manifest it
-  # always did -- the schema refuses `ports` alongside host networking.
+  # Published ports, omitted when empty so a host-networked fixture keeps its exact manifest
+  # bytes; the schema refuses `ports` alongside host networking.
   portsJSON = ps: if ps == [ ] then "" else '',"ports":${builtins.toJSON ps}'';
-  # The declared minimum memory, omitted when zero so every existing fixture keeps its exact bytes
-  # (and with them its identity) -- only a harness that asks for a limit gets one.
+  # The declared minimum memory, omitted when zero so every fixture that asks for no limit keeps
+  # its exact bytes (and with them its identity).
   minMemJSON = if minMemoryMB == 0 then "" else '',"minMemoryMB":${toString minMemoryMB}'';
   sizeJSON = if installedSize == 0 then "" else '',"size":${toString size},"installedSize":${toString installedSize}'';
   variantImages = lib.mapAttrs (
@@ -140,9 +127,9 @@ let
       labels = { "briard.version" = v.version; };
     }
   ) variants;
-  # The base fixture and every variant, in the one shape the builder loops over. The base lives at
-  # $out; a variant lives under $out/variants/<label>, so a caller reaches either through the same
-  # relative layout (image.tar, ref, manifest.json, catalog/).
+  # The base (at $out) and every variant (under $out/variants/<label>), in the one shape the
+  # builder loops over, so a caller reaches either through the same relative layout (image.tar,
+  # ref, manifest.json, catalog/).
   published = [
     {
       dir = ".";
@@ -157,20 +144,18 @@ let
     inherit (v) version;
     env = v.env or { };
   }) variants;
-  # THE PODMAN STORE, PREBUILT. Every version's archive is `podman load`ed ONCE, here, and the
-  # resulting store ships to the node as a read-only disk it mounts as an additional image store.
-  # Loading on every node at every boot instead costs, for the 2.4 GB HA archive, ~8 GB of host
-  # disk writes and ~100 s per node, for a step that is pure harness: a shipped node pulls by
-  # digest (image.ensure) and never loads an archive. What the node proves is the same: the same
-  # load records the same RepoDigest, and `podman image exists <ref>` at boot (lib.nix) asserts
-  # that the digest resolves through the store.
+  # The podman store, prebuilt: every archive is `podman load`ed once, here, and the store ships
+  # as a read-only disk the node mounts as an additional image store. Loading on every node at
+  # every boot costs, for the 2.4 GB HA archive, ~8 GB of host disk writes and ~100 s per node,
+  # for a pure-harness step (a shipped node pulls by digest, image.ensure, and never loads an
+  # archive). The proof is the same: the load records the same RepoDigest, and
+  # `podman image exists <ref>` at boot (lib.nix) asserts the digest resolves through the store.
   #
-  # A DISK IMAGE rather than a store directory, because a loaded layer carries its whiteouts as
-  # character devices, which a store path cannot hold. erofs because it is what a read-only
-  # overlay lower is for: device nodes and xattrs (the opaque-directory markers) intact, written
-  # in one stream. The load needs a kernel with overlayfs, so it runs in a build VM -- the same
-  # tool make-disk-image uses -- with a scratch disk for podman's temporary copies: the VM's root
-  # is tmpfs, and a 2.4 GB archive copied twice would otherwise be the VM's memory.
+  # A disk image, not a store directory: a loaded layer carries whiteouts as character devices,
+  # which a store path cannot hold. erofs is made for a read-only overlay lower (device nodes and
+  # xattrs, the opaque-directory markers, intact; written in one stream). The load needs overlayfs,
+  # so it runs in a build VM (the tool make-disk-image uses) with a scratch disk for podman
+  # temporary copies: the VM root is tmpfs, where a 2.4 GB archive copied twice would be memory.
   imageStore =
     let
       vm = pkgs.vmTools.override {
@@ -231,8 +216,8 @@ let
     cat > $out/${p.dir}/manifest.json <<EOF
     {"name":"${name}","version":"${p.version}","network":"${network}"${portsJSON ports},"containers":[{"name":"${container}","image":"$ref","mounts":${builtins.toJSON mounts},"primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]${minMemJSON}${sizeJSON}}
     EOF
-    # The heredoc above is indented for readability; the manifest's BYTES are its identity, so
-    # strip the indentation rather than shipping it into the content hash.
+    # The heredoc is indented for readability; the manifest bytes are its identity, so strip the
+    # indentation rather than ship it into the content hash.
     sed -i 's/^    //' $out/${p.dir}/manifest.json
   '';
 in
@@ -242,12 +227,11 @@ pkgs.runCommand "briard-fixture-${name}"
       pkgs.skopeo
       (pkgs.callPackage ./catalog-sign/package.nix { })
     ];
-    # Surfaced as passthru so a caller can stage the tarball without reaching into $out.
-    # appName is the manifest slug a caller passes to `app install`; `name` is the same
-    # string, exposed under both spellings because callers read as one or the other. `variants`
-    # carries each extra version's IMAGE, which a guest disk has to stage before the node can be
-    # rolled onto it (nothing pulls: `app.warm` starts an .image unit only when the image is
-    # missing).
+    # Passthru, so a caller can stage the tarball without reaching into $out. appName is the slug
+    # a caller passes to `app install`; `name` is the same string, as callers read one or the
+    # other. `variants` carries each extra version image, which a guest disk must stage before the
+    # node can be rolled onto it (nothing pulls: `app.warm` starts an .image unit only when the
+    # image is missing).
     passthru = {
       inherit
         container
@@ -261,9 +245,8 @@ pkgs.runCommand "briard-fixture-${name}"
       appName = name;
       image = base.tarball;
       inherit installedSize;
-      # Each extra version's IMAGE and the label it is published under. A guest disk stages these
-      # so a node can be rolled onto one without a pull, and a hermetic test stages them the same
-      # way through lib.nix's fixture wiring.
+      # Each extra version image and its published label, staged by a guest disk (or, in a
+      # hermetic test, by the lib.nix fixture wiring) so a node rolls onto one without a pull.
       variants = lib.mapAttrs (label: img: { image = img.tarball; }) variantImages;
       variantLabels = lib.attrNames variants;
     };
@@ -274,13 +257,12 @@ pkgs.runCommand "briard-fixture-${name}"
     # The prebuilt store holding every version above, for the node's additional image store.
     ln -s ${imageStore}/store.erofs $out/store.erofs
 
-    # A minimal SIGNED CATALOG beside each version, so a harness can install (and then roll) this
-    # the way a user does rather than seeding the node-local cache -- which reproduces what an
-    # install records but not what it does (no data subvolume, so the container cannot start).
-    # `fetchManifest` fails closed with no keyring and
-    # verifies before parsing, both deliberately, so the honest answer is a real catalog and not a
-    # weakened path. Every catalog here is signed by ONE key, because a node holds one keyring:
-    # publishing a new version must not need the node re-trusted.
+    # A minimal signed catalog beside each version, so a harness installs (and rolls) this the way
+    # a user does. Seeding the node-local cache reproduces what an install records, not what it
+    # does (no data subvolume, so the container cannot start). `fetchManifest` deliberately fails
+    # closed with no keyring and verifies before parsing, so the honest answer is a real catalog,
+    # not a weakened path. One key signs every catalog, as a node holds one keyring: a new version
+    # must not need the node re-trusted.
     catalog-sign ${
       lib.concatMapStringsSep " " (p: "$out/${p.dir}/manifest.json $out/${p.dir}/catalog") published
     }

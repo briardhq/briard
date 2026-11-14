@@ -1,28 +1,23 @@
-# TWO apps on one node, which is the claim converge-at-promotion makes.
+# Two apps on one node, the claim converge-at-promotion makes (one promoter, N apps rendered from
+# the volume by briard-apps at promotion). A single-app test is N=1; these hold only at N=2:
 #
-# The coordination is plural — one promoter, N apps rendered from the volume by
-# briard-apps at promotion — and a single-app test is a test of N=1. The properties that
-# only exist at N=2:
+#   1. Both apps converge from the volume and run together, on the node that installed them and
+#      on a survivor never told about either.
+#   2. Upgrading one leaves the other alone: converge bounces only apps whose rendered bytes
+#      changed; restarting everything would be an outage for every other app in the house,
+#      invisible in any single-app test.
+#   3. The pre-upgrade snapshot is a valid rollback point for the app that moved, and taking it
+#      back does not disturb the one that did not.
+#   4. A failover carries both, with the data each wrote.
 #
-#   1. BOTH apps converge from the volume and run together, on a node that installed them and
-#      on a survivor that was never told about either.
-#   2. Upgrading ONE leaves the OTHER ALONE. converge bounces only the apps whose rendered
-#      bytes changed, and the alternative — restarting everything because one app moved — is
-#      an outage for every other app in the house, invisible in any single-app test.
-#   3. The pre-upgrade snapshot is a valid rollback point for the app that moved, and taking
-#      it back does not disturb the one that did not.
-#   4. A failover carries BOTH, with the data each of them wrote.
+# The broker is the honest second app: real data (retained messages), its own version published
+# over its management API (an upgrade observable from outside the container), and not Home
+# Assistant: a pair of HA-shaped apps would prove less than a pair that differs.
 #
-# The broker is the honest second app: it has real data (retained messages), it publishes its
-# own version over its management API so an upgrade is observable from outside the container, and
-# it is not Home Assistant — a pair of HA-shaped apps would prove less than a pair that
-# differs.
-#
-# HARNESS SCOPE, stated the way the other lib.nix rigs state it: the host agent's orchestration
-# cannot run here (the node IS the guest, no host on the wire), so the install path's Primary-only
-# half is install_fixture and the rollback is driven the way the product's bracket drives it — a
-# btrfs snapshot taken before the change, restored after. What is REAL here is everything below
-# that line: the renderer, converge, the promoter chain, and DRBD.
+# Harness scope, as in the other lib.nix rigs: host agent orchestration cannot run here (the node
+# is the guest, no host on the wire), so the Primary-only install half is install_fixture and the
+# rollback is driven as the product bracket does (a btrfs snapshot before the change, restored
+# after). Real here is everything below that line: the renderer, converge, the promoter chain, DRBD.
 { pkgs, guestModule, fixture, mosquitto }:
 
 let
@@ -42,17 +37,16 @@ let
     { ... }:
     {
       imports = [ baseNode ];
-      # An MQTT client on every node: the broker's data is read from whichever node is NOT the one
-      # under test at that moment, and after the kill that set changes. app-probe is the REAL
-      # S1 probe as a command, so the rig drives the shipping code rather than a lookalike.
+      # An MQTT client on every node: broker data is read from a node not under test, a set the
+      # kill changes. app-probe is the real S1 probe as a command: shipping code, not a lookalike.
       environment.systemPackages = [
         pkgs.mosquitto
         (pkgs.callPackage ./app-probe-pkg.nix { })
       ];
     };
-  # The broker's rollback point, in the product's own layout: a read-only sibling of the app's
-  # subvolume under the data tier's .snapshots dir (agent/quadlet SnapshotsDir), so it replicates
-  # with the volume rather than living on the node that took it.
+  # The broker rollback point in the product layout: a read-only sibling of the app subvolume
+  # under the data tier .snapshots dir (agent/quadlet SnapshotsDir), so it replicates with the
+  # volume rather than living on the node that took it.
   subvol = "/var/lib/briard/data/${mosquitto.name}";
   snap = "/var/lib/briard/data/.snapshots/${mosquitto.name}-preupgrade";
 in
@@ -124,7 +118,7 @@ pkgs.testers.runNixOSTest {
     client = next(m for m in machines if m != primary)
     print(f"primary={primary.name} client={client.name}")
 
-    # ---- (1) BOTH APPS, ONE NODE --------------------------------------------------------------
+    # ---- (1) Both apps, one node --------------------------------------------------------------
     install_fixture(primary)
     broker_root = install_fixture(primary, app="${mosquitto.name}")
     for app in [None, "${mosquitto.name}"]:
@@ -133,22 +127,21 @@ pkgs.testers.runNixOSTest {
     primary.wait_until_succeeds(f"curl -fsS -o /dev/null http://{VIP}:${toString fixture.port}${fixture.healthPath}", timeout=180)
     primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(primary)}", timeout=180)
 
-    # WARM ON EVERY NODE, both apps, by the DIGEST each manifest pins -- the standby holds the
-    # images before it ever promotes, which is what makes a promotion that cannot pull survivable.
+    # Warm on every node, both apps, by the digest each manifest pins: a standby holding the
+    # images before it promotes is what makes a promotion that cannot pull survivable.
     for m in machines:
         m.succeed('podman image exists "$(cat /run/briard/fixtures/${fixture.name}/ref)"')
         m.succeed('podman image exists "$(cat /run/briard/fixtures/${mosquitto.name}/ref)"')
         m.succeed('podman image exists "$(cat /run/briard/fixtures/${mosquitto.name}/variants/to/ref)"')
 
-    # Real data in the broker, written from OFF the box and read back from off the box.
+    # Real data in the broker, written and read back from off the box.
     client.succeed(f"mosquitto_pub -h {VIP} -t briard/pair -m 'written-on-2.1.1' -r")
     assert broker_version(primary) == "2.1.1", "the pair did not start on its `from` version"
 
 
-    # ---- (1b) TWO APPS, TWO NAMES, ONE REVERSE PROXY -- AND THE BROKER IS NOT BEHIND IT ----
-    # N=1 could not test any of this. The properties that only exist at N=2 are that each name
-    # reaches its OWN app, and that "fronted" is a per-app decision rather than a property
-    # of there being exactly one thing to forward to.
+    # ---- (1b) Two apps, two names, one reverse proxy -- and the broker is not behind it ----
+    # Only at N=2: each name reaches its own app, and "fronted" is a per-app decision, not a
+    # property of there being exactly one thing to forward to.
     name_the_flock(primary)
     primary.succeed("briard-guest-agent --converge")
     import json as _rj
@@ -163,42 +156,38 @@ pkgs.testers.runNixOSTest {
     body = primary.succeed(f"curl -fsS -H 'Host: {app_host}' http://{VIP}${fixture.healthPath}")
     assert "ok" in body and "reverse proxy" not in body, f"the fixture through the reverse proxy answered {body!r}"
 
-    # THE BROKER IS NAMED BUT NOT FRONTED, and this is a security property rather than a nicety.
-    # Its manifest port is the MANAGEMENT API, which mosquitto.conf keeps off the LAN on purpose
-    # ("nothing outside the guest has any business reading it"; on this private pod it binds the
-    # pod namespace) -- and the reverse proxy runs inside that guest, so a table that fronted it
-    # would republish a guest-only endpoint on the LAN through a mechanism that never mentions
-    # the bind.
+    # The broker is named but not fronted, a security property rather than a nicety. Its manifest
+    # port is the management API, which mosquitto.conf keeps off the LAN on purpose ("nothing
+    # outside the guest has any business reading it"; on this private pod it binds the pod
+    # namespace). The reverse proxy runs inside that guest, so fronting it would republish a
+    # guest-only endpoint on the LAN through a mechanism that never mentions the bind.
     mq_host = routed["${mosquitto.name}"]["hosts"][0]
     assert not routed["${mosquitto.name}"].get("routes"), f"the broker has a route: {table}"
-    # It keeps the name and the address: the name resolves to the VIP where MQTT listens, and the
-    # address is what the health floor probes from inside the guest. Not-fronted is one of three.
+    # It keeps the name (resolving to the VIP, where MQTT listens) and the address (what the
+    # health floor probes from inside the guest). Not-fronted is one of three.
     assert routed["${mosquitto.name}"]["health"], f"the broker has no health endpoint to probe: {table}"
     primary.succeed(f"curl -fsS -o /dev/null {broker_mgmt(primary)}")
 
-    # The regression this guards, asserted from OFF the box, which is where it would matter.
+    # The regression this guards, asserted from off the box, where it would matter.
     client.fail(f"curl -fsS -m 5 -o /dev/null http://{VIP}:9883/api/v1/listeners")
     denied = client.succeed(
         f"curl -sS -m 5 -H 'Host: {mq_host}' http://{VIP}/api/v1/listeners || true"
     )
     assert "listeners" not in denied, f"the reverse proxy served the broker's management API: {denied!r}"
     assert "${mosquitto.name}" in denied, f"the reverse proxy did not name the app it declined to serve: {denied!r}"
-    # NOT asserted by NAME from off the box: resolving `.local` needs nss-mdns on the client, which
-    # is avahi's property and not this test's -- install-macvtap owns the does-a-stranger's-machine
-    # resolve-it question. What is asserted here is the reverse proxy's decision.
+    # Not asserted by name from off the box: resolving `.local` needs nss-mdns on the client, an
+    # avahi property, not one this test owns; install-macvtap owns whether the machine of a
+    # stranger resolves it. Asserted here is the reverse proxy decision.
 
-    # ---- (2) UPGRADE ONE, LEAVE THE OTHER ALONE -----------------------------------------------
+    # ---- (2) Upgrade one, leave the other alone -----------------------------------------------
     dummy_unit = container_unit(primary)
     dummy_started = started_at(primary, dummy_unit)
-    # THE ROLLBACK POINT, TAKEN QUIESCED -- the product's rule (applyOneAppInstall stops the
-    # app first), and this rig shows why it is one. Taken LIVE, the snapshot misses the message the
-    # broker has already accepted: mosquitto holds retained state in memory and writes it on a
-    # clean stop or every autosave_interval, so a live snapshot of an app that has just been
-    # written to is a rollback point missing exactly the data someone would roll back FOR: the
-    # upgrade carries the message across, and the rollback restores a broker with nothing in it.
-    #
-    # So the bracket's own order is used here: stop the app, take the point, start it again.
-    # Application-consistent by construction, and nothing writes between the stop and the snapshot.
+    # The rollback point, taken quiesced: the product rule (applyOneAppInstall stops the app
+    # first), and this rig shows why. mosquitto holds retained state in memory and writes it on a
+    # clean stop or every autosave_interval, so a live snapshot of a just-written app misses
+    # exactly the data someone would roll back for: the upgrade carries the message across, and
+    # the rollback restores an empty broker. So the bracket order: stop, take the point, start.
+    # Application-consistent by construction, nothing writes between the stop and the snapshot.
     mq_units = fixture_units(primary, "${mosquitto.name}")
     mq_containers = [u for u in mq_units if not u.endswith("-pod.service")]
     for u in reversed(mq_containers):
@@ -213,9 +202,8 @@ pkgs.testers.runNixOSTest {
     primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(primary, '/api/v1/version')}", timeout=180)
     assert broker_version(primary) == "2.1.2", "the broker did not move to the upgraded version"
 
-    # THE PROPERTY THAT ONLY EXISTS AT N=2: the other app was not touched. Same unit start
-    # instant, and it is still answering -- a converge that bounced everything because one app
-    # changed would fail here and nowhere else.
+    # The N=2 property: the other app was not touched (same unit start instant, still answering).
+    # A converge that bounced everything because one app changed fails here and nowhere else.
     assert started_at(primary, dummy_unit) == dummy_started, \
         "upgrading the broker restarted the other app"
     primary.succeed(f"curl -fsS -o /dev/null http://{VIP}:${toString fixture.port}${fixture.healthPath}")
@@ -224,10 +212,10 @@ pkgs.testers.runNixOSTest {
     got = client.succeed(f"mosquitto_sub -h {VIP} -t briard/pair -C 1 -W 15").strip()
     assert got == "written-on-2.1.1", f"the upgrade lost the broker's retained state: {got!r}"
 
-    # ---- (3) ROLLBACK, AND ONLY OF THE APP THAT MOVED ------------------------------------------
-    # The bracket's shape: stop the app, put its subvolume back, re-pin the previous manifest,
-    # start again. Only the container units are stopped -- never the pod -- because stopping the
-    # pod kills the members out from under their own units (agent/quadlet).
+    # ---- (3) Rollback, and only of the app that moved ------------------------------------------
+    # The bracket shape: stop the app, put its subvolume back, re-pin the previous manifest,
+    # start. Container units only, never the pod: stopping the pod kills the members out from
+    # under their own units (agent/quadlet).
     primary.succeed(f"systemctl stop {container_unit(primary, '${mosquitto.name}')}")
     primary.succeed("btrfs subvolume delete ${subvol}")
     primary.succeed("btrfs subvolume snapshot ${snap} ${subvol}")
@@ -239,20 +227,19 @@ pkgs.testers.runNixOSTest {
     assert started_at(primary, dummy_unit) == dummy_started, \
         "rolling back the broker restarted the other app"
 
-    # ---- (4) FAILOVER WITH BOTH RIDING ---------------------------------------------------------
-    # Everything the survivor runs, it renders from the VOLUME: it never installed either app.
+    # ---- (4) Failover with both riding ---------------------------------------------------------
+    # The survivor renders everything it runs from the volume: it never installed either app.
     client.succeed(f"mosquitto_pub -h {VIP} -t briard/pair -m 'before-the-kill' -r")
-    # WAIT FOR THE BROKER TO HAVE WRITTEN IT, then cut the power. mosquitto persists on a clean
-    # stop and every autosave_interval (30s, agent/mosquitto) -- so an abrupt loss can cost up to
-    # that much retained state, and a test that crashed the node the instant after a publish would
-    # be asserting on a race rather than on replication. Waiting for the bytes to reach the file
-    # is what makes this a claim about DRBD carrying what the app durably wrote.
+    # Wait for the broker to have written it, then cut the power. mosquitto persists on a clean
+    # stop and every autosave_interval (30s, agent/mosquitto), so an abrupt loss can cost up to
+    # that much retained state; crashing right after a publish would assert on a race, not on
+    # replication. Waiting for the bytes in the file makes this a claim about DRBD carrying what
+    # the app durably wrote.
     primary.wait_until_succeeds(f"grep -aq before-the-kill {broker_root}/${mosquitto.dataDir}/mosquitto.db", timeout=120)
     primary.succeed("sync")
-    # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
-    # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
-    # cannot promote. "Replicated" is the claim under test, so assert the disk state before
-    # removing the only UpToDate copy.
+    # The crash must find an UpToDate replica: the product seed path really syncs a joiner, which
+    # is a SyncTarget, unable to promote, until the initial resync completes. "Replicated" is the
+    # claim under test, so assert the disk state before removing the only UpToDate copy.
     for m in machines:
         if m != primary:
             m.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
@@ -265,8 +252,8 @@ pkgs.testers.runNixOSTest {
         for unit in fixture_units(new_primary, app):
             new_primary.wait_for_unit(unit, timeout=300)
 
-    # The broker came back on the version the volume names -- the rolled-back one, not the one the
-    # dead node was upgraded to and reverted from.
+    # Back on the version the volume names: the rolled-back one, not the one the dead node was
+    # upgraded to and reverted from.
     new_primary.wait_until_succeeds(f"curl -fsS -o /dev/null {broker_mgmt(new_primary, '/api/v1/version')}", timeout=180)
     assert broker_version(new_primary) == "2.1.1", "the survivor promoted onto the wrong version"
     reader = next(m for m in survivors if m != new_primary)
@@ -275,20 +262,18 @@ pkgs.testers.runNixOSTest {
     new_primary.succeed(f"test -s {broker_root}/${mosquitto.dataDir}/mosquitto.db")
 
 
-    # ---- (5) THE S1 PROBE, ON A REAL BROKER ---------------------------------------------------
-    # The gate above the liveness floor: a token left in the app's own durable
-    # state before a change and looked for after. What is asserted here is the SIGNAL -- that the
-    # real probe discriminates the three states a broker can be in -- because a lib.nix rig cannot
-    # run the host's install path at all. The verdicts those states map to are unit-tested
-    # (agent/host/readiness.go), the same split hass-upgrade-rollback.nix makes for HA.
+    # ---- (5) The S1 probe, on a real broker ---------------------------------------------------
+    # The gate above the liveness floor: a token left in the app durable state before a change
+    # and looked for after. Asserted is the signal (the real probe tells apart the three states a
+    # broker can be in), as a lib.nix rig cannot run the host install path; the verdicts are
+    # unit-tested (agent/host/readiness.go), the split hass-upgrade-rollback.nix makes for HA.
     broker_ctr = "briard-${mosquitto.name}-${mosquitto.container}"
 
     def probe(m, token=""):
         return m.succeed(f"app-probe {broker_ctr} {token}").strip()
 
-    # (i) A REAL UPGRADE PRESERVES IT. The token is written through the product's own code path --
-    # published retained and persisted with SIGUSR1 -- so what crosses the upgrade is what the
-    # gate would have written, not a message a test left lying around.
+    # (i) A real upgrade preserves it. The token goes through the product code path (published
+    # retained, persisted with SIGUSR1), so what crosses is what the gate would write.
     out = probe(new_primary, "briard-rig-token")
     assert out == "serving=true token=briard-rig-token", f"the probe did not store its token: {out}"
     install_fixture(new_primary, variant="to", app="${mosquitto.name}")
@@ -298,10 +283,9 @@ pkgs.testers.runNixOSTest {
     assert out == "serving=true token=briard-rig-token", \
         f"the token did not survive a real upgrade, so the gate would have rolled a good one back: {out}"
 
-    # (ii) A BROKER THAT CAME BACK EMPTY IS SEEN. This is the failure no floor can catch: the
-    # app answers its health endpoint and has lost every retained message the household had.
-    # The store is emptied under it, which is what a mount that no longer covers the data
-    # directory, or a database format the new version cannot read, produces.
+    # (ii) A broker that came back empty is seen: the failure no floor catches, healthy endpoint
+    # and every retained message lost. The store is emptied under it, as a mount no longer
+    # covering the data directory, or a format the new version cannot read, would do.
     units = fixture_units(new_primary, "${mosquitto.name}")
     ctrs = [u for u in units if not u.endswith("-pod.service")]
     for u in reversed(ctrs):
@@ -313,8 +297,8 @@ pkgs.testers.runNixOSTest {
     out = probe(new_primary)
     assert out == "serving=true token=", f"a broker that lost everything still looked healthy to the probe: {out}"
 
-    # (iii) AND A BROKER NOBODY CAN CONNECT TO IS A DIFFERENT ANSWER, not the same one. The two
-    # are separate findings with separate reasons, so the probe has to tell them apart.
+    # (iii) A broker nobody can connect to is a different answer: separate findings with separate
+    # reasons, which the probe must tell apart.
     for u in reversed(ctrs):
         new_primary.succeed(f"systemctl stop {u}")
     out = probe(new_primary)

@@ -1,25 +1,18 @@
-# THE HOST RESTARTS A GUEST THAT STOPPED ANSWERING (the host-side rung).
+# The host restarts a guest that stopped answering (the host-side rung of the ladder). The
+# guest-side half is agent-deadman (the guest reboots itself when the host goes silent); this is
+# the harder direction: the guest goes silent and the host, which cannot see inside it, must
+# decide on its own that waiting is no longer recovery.
 #
-# The guest-side half of this ladder is proven separately (agent-deadman: the guest reboots
-# itself when the HOST goes silent). This is the mirror, and the harder direction: the GUEST
-# goes silent and the host, which cannot see inside it, has to decide on its own that waiting
-# is no longer recovery.
+# The proof is the QEMU PID. agent-bringup freezes and thaws the guest, proving the host re-dials
+# the same VM; here the guest is never thawed, so a pass cannot be a reconnect: the old PID is
+# dead and a different one serves. Neither CONVERGED nor the VIP answering tells the two apart.
 #
-# WHAT MAKES IT A REAL PROOF, rather than a slower way of re-testing the reconnect that
-# agent-bringup already covers: the QEMU PID. agent-bringup freezes the guest and thaws it, and
-# what it proves is that the host RE-DIALS the same VM. Here the guest is frozen and never
-# thawed, so a passing run cannot be a reconnect -- the process the host was talking to is gone
-# and a different one is serving. The old PID being dead and the new one being different is the
-# assertion; CONVERGED alone would not distinguish the two paths, and the VIP answering would
-# not either.
-#
-# The second assertion is the PATIENCE, and it is the one that would otherwise rot silently.
-# Restarting a wedged guest is only safe because the host waits out a window that no ordinary
-# channel bounce can reach -- the in-guest agent exits per connection, an OS upgrade bounces the
-# channel, a slow verb closes it, and every one of those heals in seconds. Shorten the window
-# and this test still passes while the product starts power-cycling VMs over events that were
-# fixing themselves. So the run measures how long the host held off, and fails if it acted too
-# soon. That is why the test takes minutes rather than seconds: the wait IS the behaviour.
+# The second assertion is the patience, which would otherwise rot silently. Restarting a wedged
+# guest is safe only because the host waits out a window no ordinary channel bounce reaches (the
+# in-guest agent exits per connection, an OS upgrade bounces the channel, a slow verb closes it;
+# each heals in seconds). Shorten the window and this test would still pass while the product
+# power-cycles VMs that were fixing themselves, so the run measures how long the host held off and
+# fails if it acted too soon. The wait is the behaviour, hence minutes rather than seconds.
 #
 # Heavy (a nested VM + the shipped guest disk), so it rides the `integration` tag. Run:
 #   nix build .#tests.agent-recover -L
@@ -45,16 +38,15 @@ pkgs.testers.runNixOSTest {
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")
 
-    # The shipped NIC contract, same shape as agent-bringup: a carrier-bearing veth parent, the
-    # guest's two LAN NICs as macvtap children in the agent's order (sys0 -> eth1, svc0 -> eth2),
-    # and the private host<->guest link as a plain tap holding 10.11.9.1/24. All three or none --
-    # qemu.go assigns NICs positionally, so omitting sys0 lands the witness NIC on eth2 and the
-    # private link silently fails to exist.
+    # The shipped NIC contract, as in agent-bringup: a carrier-bearing veth parent, the guest's two
+    # LAN NICs as macvtap children in the agent's order (sys0 -> eth1, svc0 -> eth2), and the
+    # private link as a plain tap holding 10.11.9.1/24. All three or none: qemu.go assigns NICs
+    # positionally, so omitting sys0 lands the witness NIC on eth2 and the private link silently
+    # fails to exist.
     #
-    # ⚠️ NO HOST-SIDE MACVLAN SHIM: macvtap isolates host<->guest, and a shim would hand the rig a
-    # reachability the product does not have. The curls below pass because the agent routes the
-    # VIP over the private link. The isolation itself is still load-bearing HERE: it is
-    # precisely why the recovery ladder cannot probe the app before deciding.
+    # ⚠️ No host-side macvlan shim: it would hand the rig a reachability the product lacks. The
+    # curls pass because the agent routes the VIP over the private link. The macvtap isolation is
+    # load-bearing here: it is why the ladder cannot probe the app before deciding.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
@@ -64,35 +56,30 @@ pkgs.testers.runNixOSTest {
     host.succeed("ln -s ${guestDisk}/nixos.qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
 
-    # The host holds a guest bundle tree, as the install lays on every node: the image
-    # bakes no reverse proxy, so a guest is dressed by its host or it cannot serve. Copied out of
-    # the store because the host writes `guest.good` beside the tree.
+    # The guest bundle tree the install lays on every node: the image bakes no reverse proxy, so
+    # an undressed guest cannot serve. Copied out of the store, as the host writes `guest.good`
+    # beside it.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
-        # The PATH the shipped unit carries (scripts/units/briard-agent.service,
-        # "Environment=PATH="). The agent shells out to systemd-run, systemctl and -- as it owns
-        # the host route -- `ip`, all BY NAME, and a transient unit's default PATH resolves none
-        # of them reliably. Pinning the shipped value is the point: the rig gets what the product
-        # gets.
+        # The shipped unit PATH (scripts/units/briard-agent.service): the agent runs systemd-run,
+        # systemctl and `ip` (it owns the host route) by name, which a transient unit default
+        # PATH does not reliably resolve. The rig gets what the product gets.
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
         # Where the host keeps its guest bundle tree: the agent default (config.go), stated.
         "--setenv=UPDATE_BASE=/opt/briard/agent "
         "--setenv=GUEST_IMAGE=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
-        # The guest console, because this test's failure mode is "the guest never answered" and
-        # everything else here observes from OUTSIDE the VM. agent-readopt/deadman/watchdog all
-        # carry it for the same reason (the console is the window).
+        # The guest console: this failure mode is "the guest never answered", and everything else
+        # here observes from outside the VM (the console is the window, as in agent-readopt,
+        # deadman and watchdog).
         "--setenv=GUEST_SERIAL=/tmp/guest-serial.log "
-        # THE RECOVERY WINDOW, SHORTENED FROM THE SHIPPED TEN MINUTES. Proving a
-        # ten-minute timer by waiting ten minutes spends ~90% of the tier wall clock on one
-        # idle wait, and the principle it serves does not scale: nobody would
-        # wait out a two-day timer to watch it fire. This still runs the SHIPPED binary on a
-        # real wedged guest; only the number differs, and the assertion below checks the host
-        # waited THE CONFIGURED window, which is the property that would actually rot. That the
-        # shipped value outlasts the guest deadman is asserted where both constants are visible,
-        # in guestrecover_test.go.
+        # The recovery window, shortened from the shipped ten minutes, which would spend ~90% of
+        # the tier wall clock on one idle wait (and nobody waits out a two-day timer to watch it
+        # fire). The shipped binary still runs on a real wedged guest; the assertion below checks
+        # the host waited the configured window, the property that would rot. That the shipped
+        # value outlasts the guest deadman is asserted in guestrecover_test.go.
         "--setenv=BRIARD_GUEST_RECOVERY_WINDOW=60s "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest "
         "--setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.11.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 --setenv=STATUS_EVERY=2s "
@@ -104,29 +91,22 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
 
-    # === PHASE 1: the VM is GONE (not merely quiet) -- relaunched at once, no window. ===
-    #
-    # These are two different situations that reach the host as ONE signal, a dead control channel.
-    # Because of `-no-reboot` a guest that reboots itself EXITS, so "the unit stopped" is the
-    # ordinary case, not the exotic one -- and waiting ten minutes for a socket belonging to a dead
-    # process would be pure outage. The agent asks systemd instead of inferring from the channel.
-    #
-    # The timing assertion is the whole point: a regression here is SILENT, because the node still
-    # recovers, just a window later. Killing QEMU is exactly what the guest's own graceful reboot
-    # looks like from out here.
+    # === Phase 1: the VM is gone (not merely quiet) -- relaunched at once, no window. ===
+    # A gone VM and a quiet one reach the host as one signal, a dead control channel. With
+    # `-no-reboot` a guest that reboots itself exits, so a stopped unit is the ordinary case, and
+    # waiting ten minutes for a dead process socket would be pure outage: the agent asks systemd.
+    # The timing assertion is the point, since a regression is silent (the node still recovers, a
+    # window later). Killing QEMU is what the guest graceful reboot looks like from out here.
     gone = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
     print(f"killing the guest QEMU (pid {gone}) -- the shape of a guest that rebooted itself")
     killed_at = time.monotonic()
     host.succeed(f"kill -9 {gone}")
 
-    # THE HOST'S ROUTE FOLLOWS THE GUEST AWAY, and this is the live proof of the rule that
-    # matters most: the agent is ALIVE and the channel is DEAD, which is exactly when a peer may
-    # have taken the VIP over. Leaving a /32 pointing at our own dead guest would replace the
-    # working LAN path to that peer with a black hole, so the withdrawal fails OPEN.
-    #
-    # It lives here rather than in install-macvtap because this is where the perturbation already
-    # is: a withdrawal needs the agent running, and an agent running when its guest goes away
-    # relaunches it -- which is this test's whole subject, and was a race anywhere else.
+    # The host route follows the guest away. Agent alive and channel dead is exactly when a peer
+    # may have taken the VIP over, and a /32 left pointing at our dead guest would replace the
+    # working LAN path to that peer with a black hole, so the withdrawal fails open. Asserted here,
+    # not in install-macvtap: a withdrawal needs the agent running, and an agent running when its
+    # guest goes away relaunches it, which is this test subject and a race anywhere else.
     host.wait_until_fails("ip route get 192.168.1.100 | grep -q briard-priv0", timeout=180)
     print("the host route was withdrawn while the guest was gone")
 
@@ -152,26 +132,23 @@ pkgs.testers.runNixOSTest {
     restarted = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
     assert restarted != gone, f"same qemu pid {restarted} -- nothing was relaunched"
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
-    # ...and comes back with it. The curl above already needs the route (this host has no other
-    # path to the VIP), but assert the route itself too: the pair withdrawn-then-restored is what
-    # says the agent is TRACKING the guest rather than having got lucky once at bring-up.
+    # ...and the route comes back. The curl already needs it (no other path to the VIP), but the
+    # withdrawn-then-restored pair shows the agent tracking the guest, not lucky once.
     host.succeed("ip route get 192.168.1.100 | grep -q briard-priv0")
     print(f"guest back after a clean exit: pid {gone} -> {restarted}, route restored")
 
-    # === PHASE 1b: relaunching INTO a stop that has not finished. ===
+    # === Phase 1b: relaunching into a stop that has not finished. ===
+    # `is-active` says "not active" about a unit spending its ExecStop, so the ladder rightly
+    # launches -- into a name systemd has not released. systemd-run refuses it ("already loaded or
+    # has a fragment file") in milliseconds, so the relaunch burst (three attempts, a 30s floor
+    # between failures) is spent on a condition that clears by itself, and the node sits out the
+    # two-hour cadence with nothing left to try. The launch therefore waits for the name to come
+    # free (platform waitUnitFree).
     #
-    # `is-active` says "not active" about a unit that is spending its ExecStop, so the ladder
-    # correctly decides the VM is not running and launches -- into a name systemd has not released
-    # yet. systemd-run refuses it ("already loaded or has a fragment file"), and because a refusal
-    # costs milliseconds, the relaunch burst (three attempts, a 30s floor between failures) is
-    # spent on a condition that clears by itself, and the node sits out the two-hour cadence with
-    # nothing left to try. The launch waits for the name to come free (platform waitUnitFree).
-    #
-    # The window is made WIDE and certain rather than raced for. SIGSTOP the guest QEMU first: the
-    # control channel dies at once, and the graceful stop that follows cannot complete, because the
-    # ExecStop's ACPI request has nothing awake to answer it. So the unit sits in `deactivating`
-    # for the full TimeoutStopSec (75s) before systemd kills it -- which is also the honest test of
-    # the wait's bound, since a wait that gave up earlier than systemd does would be no wait at all.
+    # The window is made wide and certain, not raced for: with QEMU SIGSTOPped the channel dies at
+    # once and the ExecStop ACPI request has nothing awake to answer it, so the unit sits in
+    # `deactivating` for the full TimeoutStopSec (75s) before systemd kills it. That also tests the
+    # bound of the wait: one that gave up before systemd does would be no wait at all.
     print("freezing the guest QEMU and asking systemd to stop the unit -- the stop cannot finish")
     stopping = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
     host.succeed(f"kill -STOP {stopping}")
@@ -184,7 +161,7 @@ pkgs.testers.runNixOSTest {
         "journalctl -u briard-agent | grep -c 'guest relaunched and converged' || true"
     ).strip())
 
-    # THE ASSERTION THAT MUST BE ABLE TO FAIL: the node comes back. Without the wait each attempt
+    # The assertion that must be able to fail: the node comes back. Without the wait each attempt
     # is refused while the unit is still stopping, and once the burst is spent the guest is not
     # relaunched until the two-hour cadence comes round.
     host.wait_until_succeeds(
@@ -192,31 +169,28 @@ pkgs.testers.runNixOSTest {
         f"-gt {relaunched_before}",
         timeout=900,
     )
-    # And it came back by WAITING, not by getting lucky: the refusal never happened.
+    # And it came back by waiting, not by luck: the refusal never happened.
     host.fail("journalctl -u briard-agent | grep -q 'already loaded or has a fragment file'")
     host.wait_until_fails(f"kill -0 {stopping}", timeout=60)
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
     print("guest relaunched out of a stop that had not finished")
 
-    # === PHASE 2: the guest is RUNNING but wedged -- the window, then the power cycle. ===
-    # --- the guest stops answering, and never starts again on its own ---
-    # SIGSTOP the nested QEMU: the whole VM freezes, so the control channel dies AND every
-    # re-dial the host makes finds a socket nothing is reading. This is the shape of the case
-    # the ladder exists for -- indistinguishable, from outside, from a guest that has crashed.
+    # === Phase 2: the guest is running but wedged -- the window, then the power cycle. ===
+    # A SIGSTOPped QEMU freezes the whole VM: the channel dies and every re-dial finds a socket
+    # nothing reads. The case the ladder exists for, indistinguishable from outside from a crash.
     frozen = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
     print(f"freezing the guest QEMU (pid {frozen}) and leaving it frozen")
     host.succeed(f"kill -STOP {frozen}")
     froze_at = time.monotonic()
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'control channel down'", timeout=60)
 
-    # The host must NOT act on this yet. Nothing here distinguishes a wedged guest from a
-    # channel that is about to come back, which is the whole reason for the wait.
+    # The host must not act yet: nothing distinguishes a wedged guest from a channel about to come
+    # back, which is the whole reason for the wait.
     host.fail("journalctl -u briard-agent | grep -q 'restarting an unresponsive guest'")
 
-    # It waits out the recovery window (shortened to 60s above), then says what it is
-    # about to do -- in the node's alert store, which is where `briard alerts` answers from and,
-    # on the free tier, the only delivery there is. Asserted through the verb, on the OPEN
-    # section: the guest is a condition, and it is open from here until the guest answers.
+    # After the 60s window it says what it is about to do, in the node alert store (what
+    # `briard alerts` reads; on the free tier the only delivery). Asserted through the verb, on the
+    # open section: the guest is a condition, open from here until the guest answers.
     host.wait_until_succeeds(
         "${agent}/bin/briard-agent alerts | sed -n '/open now/,/history/p' | grep -q 'the VM has stopped answering'",
         timeout=300, # the 60s window plus the re-dials, with room to spare
@@ -224,58 +198,50 @@ pkgs.testers.runNixOSTest {
 
     waited = time.monotonic() - froze_at
 
-    # THE PATIENCE ASSERTION, AND IT IS TWO-SIDED ON PURPOSE. The property worth proving here is
-    # that the host waits THE CONFIGURED WINDOW -- that the timer is wired to the value the agent
-    # was given, not to a number someone typed once. A floor alone passes a host that waited far
-    # too long (a hung ladder looks patient); a ceiling alone passes one that never waited.
-    #
-    # The slack above the window is what the host spends around it: noticing the drop before
-    # the window opens (the liveness rule needs three missed calls), and the gate read and the
-    # alert write after it closes.
+    # The patience assertion, two-sided on purpose: the host waits the configured window, so the
+    # timer is wired to the value the agent was given, not a number typed once. A floor alone
+    # passes a host that waited far too long (a hung ladder looks patient); a ceiling alone passes
+    # one that never waited. The slack covers noticing the drop before the window opens (the
+    # liveness rule needs three missed calls) and the gate read and alert write after it closes.
     window = 60
     assert waited >= window, f"host acted after only {waited:.0f}s, inside its own {window}s window -- the wait is not driving the decision"
     assert waited < window + 90, f"host waited {waited:.0f}s for a {window}s window -- the ladder is not acting when the window closes"
     print(f"host held off for {waited:.0f}s against a {window}s window")
 
-    # A frozen QEMU answers neither its agent nor the ACPI button, so the clean stop must fail
-    # and the forced stop must be what takes it down. Asserted because which route ran is the
-    # single fact that decides whether DRBD recorded its quorum state on the way out.
+    # A frozen QEMU answers neither its agent nor the ACPI button, so the clean stop must fail and
+    # the forced stop take it down. Asserted because which route ran is the single fact that
+    # decides whether DRBD recorded its quorum state on the way out.
     host.wait_until_succeeds(
         "journalctl -u briard-agent | grep -q 'guest-recovery: could not stop the guest cleanly, forcing'",
         timeout=180,
     )
 
-    # THE PROOF. The frozen process is gone and a DIFFERENT QEMU is running -- so what recovered
-    # the node was a restart of the VM, not a re-dial to the one that was already there. A
-    # reconnect-only implementation fails right here.
+    # The proof: the frozen process is gone and a different QEMU runs, so a restart of the VM
+    # recovered the node, not a re-dial. A reconnect-only implementation fails here.
     host.wait_until_fails(f"kill -0 {frozen}", timeout=180)
-    # One query, and the pattern must match QEMU rather than anything mentioning the disk -- a bare
-    # `pgrep -f guest.qcow2` also matches the transient `systemd-run` wrapper the agent launches
-    # through, which exits moments later (see agent-deadman for the measured failure).
+    # The pattern must match QEMU: a bare `pgrep -f guest.qcow2` also matches the transient
+    # `systemd-run` wrapper, which exits moments later (agent-deadman has the measured failure).
     restarted = host.wait_until_succeeds(
         "pgrep -f 'qemu-system-x86_64.*guest.qcow2'", timeout=300
     ).strip().splitlines()[0]
     assert restarted != frozen, f"same QEMU pid {restarted} after recovery -- the guest was never restarted"
     print(f"guest restarted: pid {frozen} -> {restarted}")
 
-    # And it is a node again, not merely a running process: bring-up re-drove the whole
-    # sequence on the persisted data disk (idempotent by the same rule as the guest-side rung -- attach, never
-    # re-seed) and the reverse proxy answers.
+    # A node again, not merely a process: bring-up re-drove the sequence on the persisted data disk
+    # (idempotent as on the guest-side rung: attach, never re-seed) and the reverse proxy answers.
     host.wait_until_succeeds(
         "journalctl -u briard-agent | grep -q 'guest-recovery: guest restarted and converged'",
         timeout=600,
     )
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
 
-    # ANNOUNCED ONCE. recover() re-evaluates every time the window closes, which on a guest that
-    # never came back is forever -- so an alert that re-fired would move the flap this rung exists
-    # to prevent from the VM to the owner's phone.
+    # Announced once: recover() re-evaluates each time the window closes, forever on a guest that
+    # never returns, so a re-firing alert would move the flap this rung prevents to the owner phone.
     alerts = int(host.succeed("journalctl -u briard-agent | grep -c 'Briard: the VM has stopped answering' || true").strip())
     assert alerts == 1, f"{alerts} degraded alerts for one incident -- the announce-once latch is broken"
 
-    # AND THE INCIDENT CLOSES ITSELF. The guest came back, so the owner is told it is over.
-    # Without the all-clear the ladder would announce trouble and never mention it again either
-    # way, so a resolved incident would look exactly like an ignored one.
+    # The incident closes itself: without the all-clear, a resolved incident would look exactly
+    # like an ignored one.
     host.wait_until_succeeds(
         "${agent}/bin/briard-agent alerts | sed -n '/history/,$p' | grep -q 'the VM is answering again'",
         timeout=120,

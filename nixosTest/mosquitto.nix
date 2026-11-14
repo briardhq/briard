@@ -1,27 +1,25 @@
 # The broker as a catalogued app: it installs the shipped way, runs on Briard's config rather
 # than its image's, and keeps what it was told to keep.
 #
-# WHAT THIS EXISTS TO CATCH, and none of it is visible to a test that only asks "is it up".
-# mosquitto's own image ships with persistence OFF and its management API on every interface, so
-# a broker that starts is not evidence of anything a household needs. The product replaces that
-# config from `agent/apps`, and every claim in this file is about the difference:
+# None of what this catches is visible to a test that only asks "is it up": the mosquitto image
+# ships with persistence off and its management API on every interface, so a broker that starts
+# proves nothing a household needs. The product replaces that config from `agent/apps`, and
+# every claim here is about the difference:
 #
-#   1. the config is IN EFFECT (not merely rendered) -- the API answers at the pod's address;
-#   2. the API is NOT on the LAN -- asserted from ANOTHER MACHINE, which is the only place the
-#      claim can be made honestly (observe from outside);
-#   3. MQTT itself IS on the LAN -- from that same off-box client, because a broker only nobody
-#      can reach would pass (1) and (2) perfectly;
-#   4. a retained message SURVIVES a restart of the container, and lands in the file on the
-#      REPLICATED subvolume -- which is what makes the broker an app with data at all, and
-#      what the failover half of the apps-pair rig then carries across a node;
-#   5. the broker is FINDABLE -- it answers a `_mqtt._tcp` browse from that same off-box client,
-#      under the flock's name and on the port MQTT actually listens on, and the browse result is
-#      then connected to. An image that advertises nothing is invisible to every appliance in the
-#      house, which is a broker nobody without our documentation can use.
+#   1. the config is in effect (not merely rendered): the API answers at the pod address;
+#   2. the API is not on the LAN, asserted from another machine, the only honest place to observe;
+#   3. MQTT itself is on the LAN, from that same client: a broker nobody can reach would pass
+#      (1) and (2) perfectly;
+#   4. a retained message survives a container restart and lands in the file on the replicated
+#      subvolume, which makes the broker an app with data, carried across a node by apps-pair;
+#   5. the broker is findable: it answers a `_mqtt._tcp` browse from that client, under the flock
+#      name and on the port MQTT listens on, and the result is connected to. An image that
+#      advertises nothing is invisible to every appliance in the house, a broker nobody without
+#      our documentation can use.
 #
-# Two nodes for one broker: node2 is the off-box client, the outside from which (2), (3) and (5)
-# are observed. node1 seeds the volume; the script takes whichever node promoted as the broker
-# and the other as the client.
+# Two nodes: node2 is the off-box client, the outside from which (2), (3) and (5) are observed.
+# node1 seeds the volume; the script takes whichever node promoted as the broker and the other
+# as the client.
 { pkgs, guestModule, fixture }:
 
 let
@@ -33,22 +31,21 @@ let
       { name = "node2"; id = 1; }
     ];
   };
-  # The client is the OUTSIDE. It is the same mosquitto build the image would have, but that is
-  # incidental: what matters is that the publish, the subscribe and the browse all happen from a
-  # machine that is not the one running the broker.
+  # The client is the outside: what matters is that publish, subscribe and browse happen from a
+  # machine not running the broker (that its mosquitto is the image build is incidental).
   client =
     { ... }:
     {
       imports = [ node ];
-      # avahi-browse as well: this node is also where the broker's own announcement is OBSERVED,
-      # and observing it from the machine that publishes it would prove nothing.
+      # avahi too: the broker announcement is observed here, since observing it from the
+      # publishing machine would prove nothing.
       environment.systemPackages = [ pkgs.mosquitto pkgs.avahi ];
-      # ⚠️ AND THE DAEMON THOSE TOOLS TALK TO, which this node runs for ITSELF.
-      # `avahi-resolve` and `avahi-browse` are D-Bus clients: with no local daemon they fail with
-      # "Failed to create client object: Daemon not running" -- which reads as a name that did not
-      # resolve while proving nothing about the LAN. The household's other machine is a machine
-      # that speaks mDNS, and saying so here is the same dependency install-macvtap's client makes
-      # visible rather than inherits from whatever the product happens to ship.
+      # ⚠️ And the daemon those tools talk to, run by this node for itself. `avahi-resolve` and
+      # `avahi-browse` are D-Bus clients: with no local daemon they fail with "Failed to create
+      # client object: Daemon not running", which reads as an unresolved name while proving
+      # nothing about the LAN. The other household machine speaks mDNS; stating that here makes
+      # the dependency visible, as the install-macvtap client does, rather than inherited from
+      # whatever the product ships.
       services.avahi = { enable = true; nssmdns4 = true; };
     };
 in
@@ -68,10 +65,10 @@ pkgs.testers.runNixOSTest {
     for m in [node1, node2]:
         m.wait_for_unit("multi-user.target")
         m.wait_for_unit("briard-test-fixture-install.service", timeout=600)
-        # Named BEFORE the reactor promotes, which is the order a real node runs in: the agent mints
-        # the flock name at bring-up and the reverse proxy publishes it on promotion. Naming
-        # afterwards still reaches the wire -- the reverse proxy re-reads the name on its tick --
-        # but it would be testing a path a real node does not take.
+        # Named before the reactor promotes, as on a real node (the agent mints the flock name at
+        # bring-up, the reverse proxy publishes it on promotion). Naming afterwards still reaches
+        # the wire (the reverse proxy re-reads the name on its tick) but tests a path no real
+        # node takes.
         name_the_flock(m)
         m.succeed("modprobe drbd")
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
@@ -89,20 +86,18 @@ pkgs.testers.runNixOSTest {
     print(f"primary={primary.name} client={other.name}")
     dataroot = install_fixture(primary)
 
-    # The units the RENDERER produced are the ones that must be running -- never a list this test
-    # restates.
+    # The units the renderer produced must be running, never a list restated here.
     for unit in fixture_units(primary):
         primary.wait_for_unit(unit, timeout=180)
 
-    # (1) THE CONFIG IS IN EFFECT. The bind is what the product added (agent/mosquitto), and the
-    # proof that it took is the broker answering on the port only OUR config opens: the image's
-    # own config would leave 9883 open to every interface, and no config at all would leave the
-    # broker with no management listener for the health floor to probe.
+    # (1) The config is in effect: the bind the product adds (agent/mosquitto) answers on the port
+    # only our config opens. The image config would leave 9883 open on every interface, and no
+    # config would leave no management listener for the health floor to probe.
     #
-    # ⚠️ REACHED AT THE POD'S ADDRESS, NOT THE GUEST'S LOOPBACK. The broker runs on a
-    # PRIVATE network, so 127.0.0.1 in here is the guest's namespace and the broker is not in
-    # it. The address comes from the routing table -- the same place the product's own health probe
-    # resolves it -- so this test cannot pass against an address nothing else uses.
+    # ⚠️ Reached at the pod address, not the guest loopback: on a private network 127.0.0.1 here
+    # is the guest namespace, without the broker. The address comes from the routing table, where
+    # the product health probe resolves it, so the test cannot pass on an address nothing else
+    # uses.
     import json as _mj
     primary.succeed("test -f /run/briard/mosquitto/mosquitto.conf")
     table = _mj.loads(primary.succeed("cat /run/briard/routes.json"))
@@ -111,34 +106,28 @@ pkgs.testers.runNixOSTest {
     assert pod.startswith("10.12."), f"the broker is not on the pod pool: {broker}"
     mgmt = f"http://{pod}:9883/api/v1/listeners"
     primary.wait_until_succeeds(f"curl -fsS {mgmt}", timeout=120)
-    # The broker reports its own MQTT listener open -- the health path is not a static file, so a
-    # 200 here is the process answering rather than a directory being served.
+    # The broker reports its own MQTT listener; not a static file, so a 200 is the process.
     primary.succeed(f"curl -fsS {mgmt} | grep -q '\"port\":.*1883'")
 
-    # (2) AND IT IS NOT ON THE LAN. From the other machine, to the address the household uses.
-    # This is the assertion that fails if anyone simplifies the config back to the image's -- and
-    # it has a second guard behind it: the management port is not in the manifest's `ports`, so
-    # nothing publishes it out of the pod at all.
+    # (2) Not on the LAN, from the other machine at the household address: this fails if the
+    # config is simplified back to the image one. Second guard: the management port is not in the
+    # manifest `ports`, so nothing publishes it out of the pod.
     other.fail(f"curl -fsS --max-time 5 http://{VIP}:9883/api/v1/listeners")
     other.fail(f"curl -fsS --max-time 5 http://{primary.name}:9883/api/v1/listeners")
-    # Nor is the pod's own address reachable from off the box: the pod pool is guest-internal, and
-    # no host anywhere holds a route to it.
+    # Nor the pod address from off the box: the pool is guest-internal, no host routes to it.
     other.fail(f"curl -fsS --max-time 5 {mgmt}")
 
-    # (3) MQTT IS. An off-box client publishes and reads its own retained message back -- which is
-    # also the control for (2): a broker nothing could reach would satisfy (2) vacuously.
+    # (3) MQTT is: the off-box client publishes and reads back a retained message, the control
+    # for (2), which an unreachable broker would satisfy vacuously.
     other.succeed(f"mosquitto_pub -h {VIP} -t briard/test -m 'before-restart' -r")
     got = other.succeed(f"mosquitto_sub -h {VIP} -t briard/test -C 1 -W 10").strip()
     assert got == "before-restart", f"the broker did not return the retained message: {got!r}"
 
-    # (4) IT KEEPS WHAT IT WAS TOLD TO KEEP -- across a clean bounce and across a crash.
-    #
-    # THE BOUNCE IS THE PRODUCT'S OWN SEQUENCE, and it has to be: `systemctl restart` on a
-    # container unit does not work at all in a pod (MEASURED on this rig): stopping the
-    # container takes the POD down with it, and the start half then fails with
-    # `Bound to unit briard-mosquitto-pod.service, but unit isn't active`. So the units are
-    # stopped containers-first and started pod-first -- exactly what converge does
-    # (agent/guestagent) and the reason it never spells this as a restart.
+    # (4) It keeps what it was told to keep, across a clean bounce and a crash. The bounce has to
+    # be the product sequence: `systemctl restart` of a container unit does not work in a pod
+    # (measured on this rig: stopping the container takes the pod down, and the start then fails
+    # with `Bound to unit briard-mosquitto-pod.service, but unit isn't active`). So units stop
+    # containers-first and start pod-first, as converge does (agent/guestagent), never a restart.
     units = fixture_units(primary)
     containers = [u for u in units if not u.endswith("-pod.service")]
     assert len(containers) == 1, f"expected one container unit, got {containers}"
@@ -150,72 +139,59 @@ pkgs.testers.runNixOSTest {
     got = other.succeed(f"mosquitto_sub -h {VIP} -t briard/test -C 1 -W 10").strip()
     assert got == "before-restart", f"the retained message did not survive a bounce: {got!r}"
 
-    # And the file is on the REPLICATED subvolume, not in the container's own layer -- the
-    # difference between a broker whose state fails over and one whose state is lost with the node.
-    # mosquitto writes it on a clean stop, so by here it exists and holds what was published.
+    # The file is on the replicated subvolume, not the container layer: state that fails over
+    # rather than dies with the node. mosquitto writes it on a clean stop, so it holds the publish.
     primary.succeed(f"test -s {dataroot}/${fixture.dataDir}/mosquitto.db")
 
-    # THE CRASH, which is the household's actual failure mode and a claim converge-at-promotion rests on:
-    # app units are NOT promoter chain members, so nothing outside the unit brings a dead
-    # container back -- its own `Restart=always` is the whole recovery. A SIGKILL is the honest
-    # test of that, and the retained message is already on disk from the clean stop above, so what
-    # comes back is answering from the replicated volume rather than from memory.
+    # The crash, the actual household failure mode and a claim converge-at-promotion rests on: app
+    # units are not promoter chain members, so their own `Restart=always` is the whole recovery.
+    # SIGKILL is the honest test; the message is on disk from the clean stop, so what comes back
+    # answers from the replicated volume, not memory.
     primary.succeed(f"systemctl kill --signal=SIGKILL {containers[0]}")
     primary.wait_until_succeeds(f"systemctl is-active {containers[0]}", timeout=180)
     primary.wait_until_succeeds(f"curl -fsS -o /dev/null {mgmt}", timeout=180)
     got = other.succeed(f"mosquitto_sub -h {VIP} -t briard/test -C 1 -W 10").strip()
     assert got == "before-restart", f"the broker did not recover its state after a crash: {got!r}"
 
-    # The node did NOT demote for it: a crashed app alerts, it never fails the household over.
-    # The primary is still primary and the reverse proxy still answers.
+    # No demote for it: a crashed app alerts, it never fails the household over.
     assert role(primary) == "Primary", "a crashed container demoted the node"
     primary.succeed(f"curl -fsS -o /dev/null http://{VIP}/healthz")
 
-    # (5) AND THE HOUSEHOLD'S OTHER DEVICES CAN FIND IT. The broker is the one
-    # catalogued app whose clients are appliances rather than people: Tasmota- and
-    # ESPHome-class firmware browses `_mqtt._tcp` and never types a name. mosquitto's own image
-    # advertises nothing (measured -- there is no mDNS code in it at all), so the record comes from
-    # the REVERSE PROXY, off the very table it routes on -- one map, so a record that points
-    # somewhere the reverse proxy does not route is not expressible.
-    #
-    # FROM THE OTHER MACHINE AGAIN, because that is the only place the claim means anything: a
-    # record published to a LAN nobody hears is not an announcement.
-    #
-    # EVERY EXPECTED VALUE IS READ FROM THE NODE, never composed here: the name from the routing
-    # table (routed_host) and the announcement the product itself wrote beside it. So this asserts
-    # what the node decided, and a wrong decision fails rather than being restated.
+    # (5) The household devices can find it. The broker is the one catalogued app whose clients
+    # are appliances: Tasmota- and ESPHome-class firmware browses `_mqtt._tcp` and never types a
+    # name. The mosquitto image advertises nothing (measured: no mDNS code at all), so the record
+    # comes from the reverse proxy, off the table it routes on: one map, so a record pointing where
+    # the reverse proxy does not route is not expressible. Checked from the other machine again,
+    # since a record nobody on the LAN hears is no announcement. Every expected value is read from
+    # the node (routed_host, and the announcement written beside it), never composed here, so a
+    # wrong decision fails rather than being restated.
     host = routed_host(primary, "mosquitto")
     ann = next(s for s in _mj.loads(primary.succeed("cat /run/briard/routes.json"))["apps"]
                if s["name"] == "mosquitto")["announce"][0]
     assert ann["port"] == 1883, f"the node announces port {ann['port']}, not MQTT's"
 
-    # (5a) THE SRV TARGET RESOLVES ON THE LAN, over mDNS: a per-app name reached with
-    # `curl -H 'Host: …'` never touches a resolver, so a name that resolved nowhere would
-    # pass that.
+    # (5a) The SRV target resolves on the LAN, over mDNS: a per-app name reached with
+    # `curl -H 'Host: …'` never touches a resolver, so a name resolving nowhere would pass that.
     other.wait_until_succeeds(f"avahi-resolve -n {host} | grep -q {VIP}", timeout=120)
 
-    # (5b) AND THE SERVICE RECORD IS THERE, under the type and instance the node chose.
+    # (5b) The service record is there, under the type and instance the node chose.
     seen = f"';{ann['name']};{ann['type']};'"
     other.wait_until_succeeds(f"avahi-browse -atp | grep -q {seen}", timeout=60)
 
-    # (5c) AND THE ANNOUNCED ENDPOINT SERVES, from off the box. The port is the one the NODE
-    # announced, not one restated here -- so an announcement carrying the pod-internal management
-    # port fails at this line, because 9883 does not speak MQTT.
+    # (5c) The announced endpoint serves, from off the box, on the port the node announced: an
+    # announcement carrying the pod-internal management port (9883, not MQTT) fails here.
     got = other.succeed(f"mosquitto_sub -h {VIP} -p {ann['port']} -t briard/test -C 1 -W 10").strip()
     assert got == "before-restart", f"the announced endpoint did not serve MQTT: {got!r}"
     print(f"a browsing device finds {ann['name']} under {ann['type']} at {host} -> {VIP}:{ann['port']}")
 
-    # ⚠️ WHAT THIS DELIBERATELY DOES NOT ASSERT, and why, so nobody adds it back and spends the
-    # day: the SRV record's own target/port fields as read by `avahi-browse -r`. Those fields ARE
-    # correct -- observed resolving to `briard-brave-elf-mosquitto.local / 192.168.1.100 / 1883`
-    # -- but avahi's service-record resolver cannot be made to produce them on demand.
-    # MEASURED: it does not fetch the SRV target's address itself,
-    # so `-r` returns "Failed to resolve … Timeout reached" indefinitely -- through 120s of
-    # repeated short browses, a single 90s browse, on the off-box client AND on the node that
-    # publishes the records, with both records established and the name resolvable on that very
-    # box. Resolving the host first fixes it sometimes and not others (180s of exactly that
-    # sequence). It is avahi's client, not our records, and the three claims
-    # above cover what a household actually needs: the name is on the LAN, the service instance is on
-    # the LAN under its type, and the endpoint serves.
+    # ⚠️ Deliberately not asserted, so nobody adds it back and spends the day: the SRV target/port
+    # fields as read by `avahi-browse -r`. They are correct (observed resolving to
+    # `briard-brave-elf-mosquitto.local / 192.168.1.100 / 1883`), but the avahi service-record
+    # resolver does not fetch the SRV target address itself, so `-r` returns "Failed to resolve …
+    # Timeout reached" indefinitely (measured: 120s of short browses, one 90s browse, on the
+    # client and on the publishing node, with both records established and the name resolvable
+    # there). Resolving the host first fixes it only sometimes (180s of exactly that sequence). It
+    # is the avahi client, not our records, and the three claims above cover what a household
+    # needs: the name and the service instance are on the LAN, and the endpoint serves.
   '';
 }
