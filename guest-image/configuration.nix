@@ -1,14 +1,12 @@
-    # NOTHING TO POKE FOR THE NAME: the reverse proxy re-reads the live file on its own tick and
-    # the records follow the address within seconds. A unit to restart here was what the name cost
-    # when a separate publisher held it.
 # Briard VM unit image.
 #
 # The workload + DRBD 9 + drbd-reactor run *inside* this VM; the host agent runs
-# outside it (the host/guest boundary, V0). drbd-reactor's promoter
-# drives the ordered failover unit {DRBD-primary → data mount → apps → VIP}
-# on whichever node holds the DRBD primary role. The per-resource
+# outside it (the host/guest boundary). drbd-reactor's promoter
+# drives the ordered failover unit {DRBD-primary → data mount → VIP → apps → reverse proxy →
+# dashboard} on whichever node holds the DRBD primary role; a lone node runs no DRBD and the agent
+# starts the same chain as a static target. The per-resource
 # promoter rules are supplied per-deployment as a snippet the agent drops into /run/briard/drbd-reactor.d
-# (the agent writes them in prod, V0; the harness writes them in tests),
+# (the agent writes them in prod; the harness writes them in tests),
 # so this image stays generic and the daemon is idle until one appears.
 { config, pkgs, lib, ... }:
 let
@@ -26,21 +24,22 @@ let
   # LVM beats raw `dmsetup` here: nothing has to rebuild a table at every boot, and "which backing
   # is this node on" lives ON THE DISK rather than in host config.
   #
-  # ⚠️ NONE OF THOSE NAMES LIVE HERE ANY MORE. The device, the VG, the LV and the
+  # ⚠️ NONE OF THOSE NAMES LIVE HERE. The device, the VG, the LV and the
   # encryption mode arrive in the spec the HOST writes to /run/briard/node-storage.json, because
   # storage policy is a node-scoped fact the host holds and pushes at bring-up -- and
-  # a unit whose only inputs are what it can read off the machine has nowhere for a decision to
-  # arrive, which is why the Adiantum opt-in could not be built in it. This image contributes the unit
-  # file; the pushed agent contributes every name and every choice.
+  # a unit whose only inputs are what it can read off the machine has nowhere for a decision (the
+  # Adiantum opt-in, say) to arrive. The pushed agent writes the unit and contributes every name
+  # and every choice.
   #
-  # The one-time format marker and the snapshots directory left with it: both are the pushed
-  # agent's now (agent/guestagent's dataFormatMarker and snapshotsDir), because the unit that
-  # reads one and makes the other is Go rather than shell.
-  # ⚠️ THE TLS DIRECTORY AND THE VIP's ENV FILE ARE NOT NAMED HERE ANY MORE. Both were
+  # The one-time format and the snapshots directory are the pushed agent's too: the format runs
+  # in node storage, in the same branch as the `lvcreate` that made the volume, with no marker
+  # (agent/guestagent/nodestorage.go), and the snapshots directory is made at every promotion
+  # (agent/guestagent's snapshotsDir).
+  # ⚠️ THE TLS DIRECTORY AND THE VIP's ENV FILE ARE NOT NAMED HERE. Both are
   # read only by units -- the reverse proxy's `-cert`/`-key`, briard-vip's EnvironmentFile -- and
-  # those are the pushed agent's now, which already had its own spellings of both
-  # (guestagent's tlsCertPath/tlsKeyPath and vipEnvPath). The SCRIPTS below still write and read
-  # the VIP's live/stored addresses, which is why vipLivePath and vipAddrFile stay.
+  # those are written by the pushed agent, which spells both itself
+  # (guestagent's tlsCertPath/tlsKeyPath and vipEnvPath). The SCRIPTS below write and read
+  # the VIP's live/stored addresses, which is why vipLivePath and vipAddrFile are here.
   # The topology word node-storage writes beside vip.env: `flock` or `alone`, and the
   # only thing a shell unit needs to know about the spec. PAIRED with the Go const
   # guestagent.topologyEnvPath and the two values its topologyEnv writes.
@@ -48,12 +47,12 @@ let
   # ── THE IMAGE'S HALF OF A UNIT THE AGENT WRITES ──────────────────────────────────────────────
   #
   # THE IMAGE CONTRIBUTES THE CLOSURE; THE PUSHED AGENT CONTRIBUTES THE UNIT. The
-  # image bakes exactly one binary now and every other briard binary rides the host bundle -- but the
-  # units that start them were left behind here, and a unit is mostly an ExecStart plus the
-  # environment that binary needs, so the two moved on different cadences. Measured: a pushed
-  # agent asked its older image for a unit that image did not define, and the node crash-looped 53
-  # times with the household's app gone. The agent writes the units it owns into
-  # /run/systemd/system at every start now -- the only place it can, since NixOS makes
+  # image bakes exactly one binary and every other briard binary rides the host bundle. A unit is
+  # mostly an ExecStart plus the environment that binary needs, so a unit baked here would move on
+  # the image's cadence while its binary moves on the host's: a pushed agent asking its older image
+  # for a unit that image does not define crash-loops the node with the household's app gone. The
+  # agent writes the units it owns into
+  # /run/systemd/system at every start -- the only place it can, since NixOS makes
   # /etc/systemd/system a read-only store path -- so a unit can never be older than the binary
   # that wrote it, and the whole defect class is unrepresentable rather than merely detectable.
   #
@@ -65,19 +64,17 @@ let
   #
   # WHOLE PACKAGES, NOT NAMED COMMANDS, and that is the point rather than laziness: a pushed agent
   # that starts calling `lvs` must not need a new image to do it. Naming commands would put the
-  # skew back one level down. The list is the same one the units carried in their own `path =`, so
-  # the move leaves the closure unchanged.
+  # skew back one level down.
   #
-  # ⚠️ AN OLDER IMAGE HAS NO PROFILE AT ALL, and that is the good failure: the agent stats this
-  # directory before it renders and refuses to serve when it is missing, so its trial fails, the
-  # committed agent comes back, and the node keeps running the release it had. Refusing the
-  # upgrade is what this buys; stopping the host from OFFERING it is the release floor's job, which is
-  # still wanted for genuine on-disk migrations.
+  # ⚠️ AN IMAGE THAT PREDATES THE PROFILE HAS NONE AT ALL, and that is the good failure: the agent
+  # stats this directory before it renders and refuses to serve when it is missing, so its trial
+  # fails, the committed agent comes back, and the node keeps running the release it had. Refusing
+  # the upgrade is what this buys; stopping the host from OFFERING it is the release floor's job,
+  # which is still wanted for genuine on-disk migrations.
   guestTools = pkgs.buildEnv {
     name = "briard-guest-tools";
     paths = [
-      # The PACKAGES an agent-written unit's PATH resolves against -- the same lists those units
-      # carried in their own `path =` before they moved.
+      # The PACKAGES an agent-written unit's PATH resolves against.
       pkgs.lvm2.bin # pvcreate/vgcreate/lvcreate/vgchange/vgs -- the `bin` output, already in this closure
       pkgs.cryptsetup
       pkgs.kmod # modprobe dm-mirror, which LVM cannot autoload here
@@ -90,11 +87,11 @@ let
       config.systemd.package # systemctl, journalctl
       # ⚠️ THE BASELINE NixOS GAVE EVERY UNIT FOR FREE, restated because nothing gives it to a
       # runtime unit. nixpkgs defaults `systemd.services.<n>.path` to coreutils + findutils +
-      # gnugrep + gnused + systemd and APPENDS each unit's own list to it, so every unit deleted
-      # from this file had these five whether it asked or not. Leaving them out would have made
-      # the move a quiet PATH narrowing on the promotion path -- the one place a missing command
+      # gnugrep + gnused + systemd and APPENDS each unit's own list to it, so every NixOS-declared
+      # unit has these five whether it asks or not. Leaving them out would make an agent-written
+      # unit a quiet PATH narrowing on the promotion path -- the one place a missing command
       # costs a household its house. With them the agent-written units are a strict superset of
-      # what the baked ones had.
+      # what a NixOS-declared unit gets.
       pkgs.findutils
       pkgs.gnugrep
       pkgs.gnused
@@ -115,11 +112,9 @@ let
   # PAIRED with the Go const guestagent.defaultToolsBin, which is what an agent-written unit puts
   # on its PATH. Different languages, so no shared import; the agent-side comment names this back.
   toolsEtc = "briard/tools";
-  # ⚠️ THE CHAIN IS NOT STATED HERE ANY MORE. It was one of four copies -- this one, the
-  # lone node's target, the hold's stop-and-reset lists, and the host's promoterUnits() -- kept in
-  # step by hand. The units that named it are written by the pushed agent now, from the one Go
-  # definition both halves of the bundle read (shared/chain), and the steps below take it as
-  # arguments instead of baking it.
+  # ⚠️ THE CHAIN IS NOT STATED HERE. The units that name it are written by the pushed agent,
+  # from the one Go definition both halves of the bundle read (shared/chain; the host reads it
+  # in promoterUnits()), and the steps below take it as arguments instead of baking it.
   # A hold step with one body per topology. The word decides; a missing word is
   # "node storage has not run on this boot", and an unknown one names itself rather than
   # guessing -- both are failures of the step, and what a failed step means is the unit's to say
@@ -179,49 +174,29 @@ let
     . ${vipLivePath}
     exec ${pkgs.iputils}/bin/arping -A -c 1 -I "$VIP_DEV" "''${VIP_ADDR%%/*}"
   '';
-  # The address-changed handler. ONE path for every cause -- a NAK, a lease yielded to a host
-  # that ARP-claimed it, a router that repooled while the flock had no primary -- because "the
-  # address changed" does not care why it changed.
-  #
-  # WHAT IT DELIBERATELY DOES NOT DO: restart briard-vip. That was the first shape, and it is
-  # wrong twice over. (1) This hook runs as a descendant of briard-vip's own cgroup (dhcpcd was
-  # started from its ExecStart), so restarting that unit KILLS THE PROCESS ASKING FOR THE
-  # RESTART, mid-flight. (2) It would put an ordinary address change through the drbd-reactor
-  # promoter chain -- a member whose failure trips OnFailure=drbd-demote-or-escalate -- which is
-  # a failover-shaped risk taken for a job that needs no chain at all. The reverse proxy binds :80
-  # on every interface, so it does not care what the address is; the only things that do are the
-  # live file, the flock's store, the ARP announcement, and the name. All four are done HERE.
-  #
-  # A lease that EXPIRES needs nothing from this hook either: the interface then holds no
-  # address, net.vip reports "" as ground truth, and the node reads not-ready by the same rule
-  # that covers every other addressless data node. The honest signal already flows.
   # ── THE HOLD'S STEPS, AS IMAGE-SIDE TOOLS ────────────────────────────────────────────────────
   #
   # The unit that runs them is written by the pushed agent, so what lives here is only what the
-  # agent cannot carry: the topology dispatch and the store paths. Every step that used to bake
-  # the chain's member list takes it as arguments instead, which is why the list could leave this
-  # file entirely.
+  # agent cannot carry: the topology dispatch and the store paths. Every step that needs the
+  # chain's member list takes it as arguments, so the list does not live in this file.
   #
-  # THE ORDER IS THE DESIGN: mask BEFORE demoting. Measured on a lone node, drbd-reactor
-  # re-promotes about 2s after a demote completes, so a hold bolted on AFTER the demote loses
-  # that race. Masking first means the promotion is REFUSED rather than undone -- `systemctl
-  # start drbd-services@r0.target` fails outright, drbd-promote@ never runs, DRBD's role never
-  # moves, and there is no second mount/unmount cycle to pay for. The mask is also the ONLY lever
-  # that says "not me, for now": everything else reactor offers is either DRBD's own decision or
-  # a static handicap biasing WHICH node wins a race. `--runtime` puts it in /run, so a reboot
-  # clears it and a hold can never outlive the boot that might have fixed its cause.
+  # THE ORDER IS THE DESIGN: mask BEFORE demoting. Measured on a one-node DRBD resource,
+  # drbd-reactor re-promotes about 2s after a demote completes, so a hold bolted on AFTER the
+  # demote loses that race. Masking first means the promotion is REFUSED rather than undone --
+  # `systemctl start drbd-services@r0.target` fails outright, drbd-promote@ never runs, DRBD's
+  # role never moves, and there is no second mount/unmount cycle to pay for. The mask is also the
+  # ONLY lever that says "not me, for now": everything else reactor offers is either DRBD's own
+  # decision or a static handicap biasing WHICH node wins a race. `--runtime` puts it in /run, so
+  # a reboot clears it and a hold can never outlive the boot that might have fixed its cause.
   holdSteps = [
     # ⚠️ ONLY A NODE THAT HOLDS THE RESOURCE MAY HAND IT ON, and this guard is not defensive
     # programming -- without it the STANDBY masks itself on every boot. Measured: a member whose
     # start job fails with result `dependency` fires `OnFailure=` exactly like one that failed on
     # its own, and on the node that loses the promotion race every member does ("Multiple
     # primaries not allowed by config" -> drbd-promote@ fails -> "Dependency failed for ..." ->
-    # "Triggering OnFailure= dependencies"). So the loser ran this and masked itself for the whole
-    # hold, which at 300s is a standby that cannot take over for five minutes after a boot.
-    #
-    # It was harmless right up until it wasn't: the loser fired OnFailure into upstream's
-    # drbd-demote-or-escalate@ too, which demoted an already-Secondary node and exited 0. The same
-    # trigger only became dangerous when the action grew a five-minute mask.
+    # "Triggering OnFailure= dependencies"). Without this guard the loser runs the hold and masks
+    # itself for all of it, which at 300s is a standby that cannot take over for five minutes
+    # after a boot.
     #
     # ⚠️ AND ON A LONE NODE THE GUARD IS ALWAYS MET: there is no loser to protect and
     # nobody else who could be holding the volume, so every member failure is this node's own to
@@ -230,8 +205,8 @@ let
       flock = "${pkgs.drbd}/bin/drbdadm role r0 | ${pkgs.gnugrep}/bin/grep -q '^Primary'";
       alone = "exit 0";
     })
-    # A lone node needs no mask: nothing re-promotes during its hold, because the release below is
-    # the only thing that starts its target.
+    # A lone node needs no mask: nothing re-promotes during its hold, because it runs no reactor
+    # and the restart step below is what starts its target again.
     (byTopology "briard-hold-refuse" {
       flock = "${config.systemd.package}/bin/systemctl mask --runtime drbd-services@r0.target && ${config.systemd.package}/bin/systemctl daemon-reload";
       alone = ":";
@@ -276,6 +251,23 @@ let
     })
   ];
 
+  # The address-changed handler. ONE path for every cause -- a NAK, a lease yielded to a host
+  # that ARP-claimed it, a router that repooled while the flock had no primary -- because "the
+  # address changed" does not care why it changed.
+  #
+  # WHAT IT DELIBERATELY DOES NOT DO: restart briard-vip, which would be wrong twice over.
+  # (1) This hook runs as a descendant of briard-vip's own cgroup (dhcpcd was
+  # started from its ExecStart), so restarting that unit KILLS THE PROCESS ASKING FOR THE
+  # RESTART, mid-flight. (2) It would put an ordinary address change through the
+  # promoter chain -- a member whose failure trips OnFailure=briard-promotion-hold -- which is
+  # a failover-shaped risk taken for a job that needs no chain at all. The reverse proxy binds :80
+  # on every interface, so it does not care what the address is; the only things that do are the
+  # live file, the flock's store, the ARP announcement, and the name. The first three are done
+  # HERE; the name follows the live file on its own (below).
+  #
+  # A lease that EXPIRES needs nothing from this hook either: the interface then holds no
+  # address, net.vip reports "" as ground truth, and the node reads not-ready by the same rule
+  # that covers every other addressless data node. The honest signal already flows.
   vipHook = pkgs.writeShellScript "briard-vip-dhcp-hook" ''
     set -u
     case "''${reason:-}" in
@@ -320,7 +312,7 @@ let
   # An EMPTY config for the VIP's dhcpcd instance, and the emptiness is the point — every setting
   # this instance has is on its command line below, where it can be read.
   #
-  # It is not merely tidiness. The system's generated /etc/dhcpcd.conf now says
+  # It is not merely tidiness. The system's generated /etc/dhcpcd.conf says
   # `denyinterfaces ... eth2`, which is right for the boot-time client and would refuse the very
   # interface this instance exists to lease. And it is the file a nixpkgs bump would add `duid`
   # to — the setting that would quietly give the two nodes of one flock different identities. An
@@ -346,28 +338,27 @@ let
   #     dropped and the standard runner comes back.
   #   -L (noipv4ll) because a SERVICE address may not be invented by the machine that serves it.
   #     Left on, dhcpcd's answer to "no server answered" is to self-assign 169.254.x.x -- and
-  #     measured, that is exactly what it did: the node then probed its own link-local address,
-  #     passed (it owns it), and reported HEALTHY while nobody on the LAN could reach it. That is
-  #     the old baked-address failure restored by its replacement, and a house whose router is briefly down
-  #     at boot would have hit it. A VIP is the flock's address or it is nothing; a self-assigned
-  #     one is worse than none because it looks like success.
+  #     measured, that is exactly what it does: the node then probes its own link-local address,
+  #     passes (it owns it), and reports HEALTHY while nobody on the LAN can reach it. A house
+  #     whose router is briefly down at boot would hit it. A VIP is the flock's address or it is
+  #     nothing; a self-assigned one is worse than none because it looks like success.
   #   -I "01:<mac>" states the client-id OUTRIGHT: RFC 2132 type 1 (ethernet) + the FLOCK MAC,
   #     VIP_MAC from the agent (the NIC's own address where a harness sets none), which dhcpcd
   #     encodes as hex because the value is colon-separated. Stated rather than read off the NIC:
   #     the identity is the flock's, never a property of whichever NIC carries it, and it is the
   #     same pair the HOST asks under where it holds the lease instead (a single-anchor substrate,
-  #     VIP_LEASE=host above, agent/host/lease.go). One flock then presents ONE identity, which is what makes a lease survive a failover -- and what stops
+  #     VIP_LEASE=host below, agent/host/lease.go). One flock then presents ONE identity, which is
+  #     what makes a lease survive a failover -- and what stops
   #     dhcpcd's own shipped `duid` (a per-host DUID that, in the man page's words, "should not be
   #     copied to other hosts") from giving two nodes of one flock different leases if a nixpkgs
   #     bump ever restores it.
   #
-  #     ⚠️ It was `-I ""` -- the documented way to ask for the hardware-address default -- and that
-  #     was WRONG ON THE WIRE, which no amount of reading the command line could show. dhcpcd took
-  #     the literal string "-h" as the client-id (dnsmasq recorded `00:2d:68`: type 0, then ASCII
-  #     "-h"), which also consumed the -h option, so every node sent its SYSTEM hostname ("guest")
-  #     and an identical client-id. Two different flocks on one LAN would then have fought over a
-  #     single lease. Found by a real router the first time anything looked at what we actually
-  #     transmit. Never ask for a default when you can state the value.
+  #     ⚠️ Never `-I ""` -- the documented way to ask for the hardware-address default -- which is
+  #     WRONG ON THE WIRE, and no amount of reading the command line shows it. dhcpcd takes
+  #     the literal string "-h" as the client-id (dnsmasq records `00:2d:68`: type 0, then ASCII
+  #     "-h"), which also consumes the -h option, so every node sends its SYSTEM hostname ("guest")
+  #     and an identical client-id, and two different flocks on one LAN fight over a
+  #     single lease. Never ask for a default when you can state the value.
   #   -h briard-<xxxxxx> is the FLOCK's name (option 12), taken from the low three bytes of the
   #     same flock MAC -- the flock id's derivative. It gives a household's router a
   #     recognisable client-list entry, and it makes a user-created static reservation survive
@@ -417,9 +408,9 @@ let
   # documented behaviour with no instance running is "starts up as normal" -- and that is measured,
   # not inferred from the man page: run against an idle interface it forked a client and took an
   # address. On a STANDBY node, whose service NIC must have no LAN presence at all, that would put
-  # a DHCP client on it and claim an address the flock's primary owns. The units below already
-  # make it unreachable, since the timer lives and dies with briard-vip; this is what keeps it
-  # safe under a hand-run `systemctl start` too.
+  # a DHCP client on it and claim an address the flock's primary owns. The agent-written units
+  # (agent/guestagent/units.go) already make it unreachable, since the timer lives and dies with
+  # briard-vip; this is what keeps it safe under a hand-run `systemctl start` too.
   vipRenew = pkgs.writeShellScriptBin "briard-vip-renew" ''
     set -eu
     pidfile="$(${pkgs.dhcpcd}/sbin/dhcpcd -P "$VIP_DEV")"
@@ -485,17 +476,17 @@ let
       # ⚠️ `brd +` IS LOAD-BEARING: it keeps the VIP CONTINUOUSLY PRESENT across the lease. dhcpcd
       # is about to be handed the SAME address, and if what we put on differs from what it wants
       # it does not update -- it DELETES and re-adds. `ip addr add X/24` leaves the broadcast
-      # unset; dhcpcd wants X.X.X.255. Measured, one variable at a time, against a real dnsmasq
-      # (lab/avahi-repro5-deladd.nix), counting RTM_DELADDR:
+      # unset; dhcpcd wants X.X.X.255. Measured, one variable at a time, against a real dnsmasq,
+      # counting RTM_DELADDR:
       #
       #   ip addr replace X/24                 -> 1 delete
       #   ip addr replace X/24 brd +           -> 0 deletes
       #   ...also with noprefixroute, or the full dhcpcd shape -> 0
       #
-      # So the broadcast alone is the whole difference. A withdrawal here is no longer able to
-      # wedge a name -- the responder claims names without probing -- but an address
+      # So the broadcast alone is the whole difference. A withdrawal here cannot wedge a name --
+      # the reverse proxy answers mDNS without probing -- but an address
       # that blinks is still an address that is briefly not there, for the ARP cache of every
-      # device mid-connection. A wedged publisher once showed what that used to cost.
+      # device mid-connection.
       ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "$VIP_DEV"
       # A lease-holder here, never a gate: -b returns immediately, so nothing downstream of this
       # unit waits on a DHCP server. Failing to start it is not failing to serve -- the address
@@ -511,8 +502,7 @@ let
       # dual-stack household router SLAAC completes in ~0.3s while IPv4 is still ARP-probing, so
       # dhcpcd daemonises satisfied by an IPv6 address, the IPv4-only read below finds nothing,
       # and this unit fails on a network where nothing is wrong. It cannot be caught by a test
-      # topology that sends no RAs, because there "any family" and "IPv4" are the same behaviour
-      # (found on the first install onto a real home LAN).
+      # topology that sends no RAs, because there "any family" and "IPv4" are the same behaviour.
       ${dhcpcdRun} "$VIP_DEV" "" --waitip=4
       # The field after `inet`, which is the same rule net.vip reads ground truth by -- never a
       # prefix match, which would accept an inet6 link-local and hand us an address to claim
@@ -540,9 +530,9 @@ let
     # storing it would blur what this file means -- "the address this flock ACQUIRED".
     #
     # Never fatal -- the address is claimed either way, and the agent-less harnesses run this unit
-    # with no DRBD volume mounted at all -- but NOT silent. It was silenced, and that is precisely
-    # why "the peer came back with no address" could not be told apart from "the store was never
-    # written". Non-fatal is a decision about whether to stop; it is not a decision to say nothing.
+    # with no DRBD volume mounted at all -- but NOT silent: silenced, "the peer came back with no
+    # address" cannot be told apart from "the store was never written". Non-fatal is a decision
+    # about whether to stop; it is not a decision to say nothing.
     if [ -z "$configured" ]; then
       # ⚠️ THE SYNC IS THE POINT, not hygiene. This file exists so that an UNPLANNED
       # failover -- the case where the household router is least likely to be answering -- can
@@ -550,8 +540,8 @@ let
       # definition, usually a power cut. Writing it into the page cache and hoping means the one
       # event it exists for is the event that loses it: btrfs commits on its own schedule (30s by
       # default), and a guest killed inside that window comes back with the volume mounted, intact,
-      # and the file simply absent -- which is exactly what `install-macvtap`'s router-down
-      # assertion has been failing on, and why it "worked" by hand (a guest left running for a
+      # and the file simply absent -- which is what the router-down assertion
+      # of `install-macvtap` catches, and why it can pass by hand (a guest left running for a
       # minute has committed; a test that restarts immediately has not).
       #
       # `sync -f` (syncfs) rather than fsync-the-file: the file is NEW, so its directory entry has
@@ -598,30 +588,28 @@ let
     # traffic for the service address then goes to the node that is not serving. That is the wrong-port
     # class, and it is silent: nothing is down, the address is gone, and the packets still vanish.
     #
-    # ⚠️ THE QUESTION IS THE DEVICE, NOT WHERE THE ADDRESS CAME FROM, and it took a second look to see
-    # that. This used to read `[ -z "$configured" ]` -- down only under DHCP -- on the reasoning
-    # "static address => the NIC is shared => leave it up". That is a PROXY, and it stands for the
-    # thing actually feared: the agent-less harnesses set VIP_DEV=eth1, the DRBD NIC, where a
-    # link-down takes replication with it. On a SHIPPED node the proxy is simply false. A household
-    # that sets BRIARD_VIP -- a documented, supported option -- gets VIP_DEV=eth2, a
-    # dedicated service NIC shared with nothing local, and every Secondary in that flock kept the
-    # flock MAC up. The hazard the old comment described was live on the very configuration it
-    # exempted.
+    # ⚠️ THE QUESTION IS THE DEVICE, NOT WHERE THE ADDRESS CAME FROM. "Down only under DHCP", on
+    # the reasoning "static address => the NIC is shared => leave it up", is a PROXY, and it
+    # stands for the thing actually feared: the agent-less harnesses set VIP_DEV=eth1, the DRBD
+    # NIC, where a link-down takes replication with it. On a SHIPPED node the proxy is simply
+    # false. A household that sets BRIARD_VIP -- a documented, supported option -- gets
+    # VIP_DEV=eth2, a dedicated service NIC shared with nothing local, and under that rule every
+    # Secondary in that flock would keep the flock MAC up.
     #
     # ⚠️ ARGUED, NOT MEASURED, and the distinction is not a formality. The reasoning above stands on
     # reading -- the proxy is false, and this makes the static path behave like the DHCP path on a
     # hazard the file already treats as real. What is NOT demonstrated is the hazard biting: a
     # Secondary teaching the switch a wrong port needs a RIGHT port to exist, so it takes two nodes,
-    # and no test in the tree moves work between two installed nodes. An attempt to
-    # catch it with one produced an assertion that passed identically against fixed and unfixed
+    # and no test in the tree moves work between two installed nodes. An assertion with one
+    # node passes identically against fixed and unfixed
     # guests -- because a standby deletes the VIP address either way, and nobody answers ARP for an
     # address they do not hold. Do not read the install rigs' green as cover for this line.
     #
     # So: ask whether this NIC is the system/DRBD NIC. SYSTEM_DEV is written beside VIP_DEV by
     # net.configure, so a real node always knows; an agent-less harness never sets it and falls
-    # through to the old DHCP-only rule, which is exactly the conservative answer for a NIC we
-    # cannot identify. The `-z "$configured"` arm stays, so this strictly WIDENS when the NIC
-    # comes down and can regress nothing that came down before.
+    # through to the DHCP-only rule, which is exactly the conservative answer for a NIC we
+    # cannot identify. The `-z "$configured"` arm keeps every NIC that held a DHCP address
+    # coming down.
     if [ -z "$configured" ] || { [ -n "''${SYSTEM_DEV:-}" ] && [ "$VIP_DEV" != "''${SYSTEM_DEV}" ]; }; then
       ${pkgs.iproute2}/bin/ip link set dev "$VIP_DEV" down || true
     fi
@@ -672,8 +660,7 @@ in
     # No substituters and no baked cache key: the guest has no nix (disk-image.nix,
     # `nix.enable = false`), so nothing in it ever fetches a store path. An OS release reaches a
     # node as a whole signed IMAGE over the guest chain, verified by the release keyring the HOST
-    # holds; the image is what a release IS, and cache.briard.io and its narinfo key retired with
-    # the closure path they served.
+    # holds; the image is what a release IS.
 
     # Answer the ACPI power button. systemd-logind is what listens for it, and
     # nothing on this appliance was starting it: it ships with no [Install] section and only
@@ -710,7 +697,7 @@ in
     #   9.2.19  Holds a primary-loss survivor at Consistent until the post-loss
     #           reconcile settles, gap-free, so it cannot declare itself authoritative
     #           before learning whether a peer holds a write it is missing. Plus the
-    #           silent-divergence family LINBIT shipped two weeks early in April.
+    #           silent-divergence family of fixes.
     #
     # NOT 9.3.x, though it is the same `overrideAttrs` away: 9.2 is the maintenance
     # branch, 9.3 is where new functionality lands, and 9.3 makes resync-without-
@@ -747,9 +734,9 @@ in
 
     # drbd-reactor's promoter snippet lives on TMPFS, and is agent-written like everything else
     # node-scoped. The host re-derives it from cfg.Promoter at every bring-up, so
-    # persisting it bought nothing and cost the one thing that matters: a snippet on the overlay
-    # outlived the agent that wrote it, which is what let a boot-started reactor promote against
-    # configuration nobody had just restated. One lifetime for every fact the agent
+    # persisting it would buy nothing and cost the one thing that matters: a persisted snippet
+    # outlives the agent that wrote it, and a reactor started before bring-up would promote
+    # against configuration nobody had just restated. One lifetime for every fact the agent
     # writes means stale configuration cannot exist.
     #
     # A second, nearly-free backstop to the arm-by-agent gate below, and the reason this is worth doing rather
@@ -773,8 +760,8 @@ in
       "d ${reactorSnippetDir} 0755 root root -"
       # DRBD's own state dir. Without it every attach logs
       #   lk_bdev_save(/var/lib/drbd/drbd-minor-0.lkbd) failed: No such file or directory
-      # which is harmless (it caches the backing device's last known size) but sat directly on top
-      # of the real error while a wedged name publisher was being diagnosed, and cost time twice. Upstream ships this dir
+      # which is harmless (it caches the backing device's last known size) but sits directly on
+      # top of the real error when an attach is being diagnosed. Upstream ships this dir
       # in its package; nixpkgs' drbd does not create it.
       "d /var/lib/drbd 0700 root root -"
       # NIX'S CACHE DIR NEVER SURVIVES A BOOT. A crash-consistent guest disk can hand
@@ -800,36 +787,30 @@ in
     ];
 
     # THIS NODE'S NAME is set by the agent at every bring-up (sys.hostname) and NOTHING in this
-    # image restores it. A `briard-identity` oneshot used to, reading it back from
-    # /etc/briard/node-id before drbd-reactor could act; the unit and the file are gone.
-    # The reasoning is kept because it is a shape rather than one unit's story.
+    # image restores it.
     #
-    # What it solved: the baked hostname is "guest" (disk-image.nix) and
-    # syscall.Sethostname does not survive a reboot, while the `.res` naming this node did. So a
-    # rebooted guest ran as "guest" against a persistent config saying `on briard-node-<id>`, the
-    # boot-started reactor promoted into the mismatch, drbd@<res> failed, and a failed promote is
-    # never retried -- the node parked quorate but never Primary, with no VIP and no address.
-    # Invisible before nodes had their own names because the baked hostname and the node name were the SAME LITERAL.
+    # The hazard: the baked hostname is "guest" (disk-image.nix) and
+    # syscall.Sethostname does not survive a reboot. A `.res` that survived it would have a
+    # rebooted guest run as "guest" against a config saying `on briard-node-<id>`; a reactor
+    # promoting into the mismatch fails drbd@<res>, and a failed promote is
+    # never retried -- the node parks quorate but never Primary, with no VIP and no address.
     #
-    # The fix then was to give the two facts one lifetime by making the NAME persistent. This is the
-    # same principle read the other way: make the `.res` EPHEMERAL and the name with it. Both are
+    # So the two facts share one lifetime: the `.res` is EPHEMERAL and the name with it. Both are
     # node-scoped, the host re-derives both at every bring-up (cfg.Node, cfg.Resource), and
-    # the agent-armed promoter means nothing can promote before that bring-up has happened. Two facts with one
-    # lifetime cannot disagree -- and this way there is no third copy on disk to be right or wrong
-    # about, which is what a restored-at-boot file always is.
+    # the agent-armed promoter means nothing can promote before that bring-up has happened. Two
+    # facts with one lifetime cannot disagree -- and there is no third copy on disk to be right
+    # or wrong about, which is what a restored-at-boot file always is.
 
-    # THE PROMOTER IS ARMED BY THE AGENT, NEVER BY BOOT. Failover is still entirely
-    # drbd-reactor's (nothing here promotes or demotes) -- what changed
+    # THE PROMOTER IS ARMED BY THE AGENT, NEVER BY BOOT. Failover is entirely
+    # drbd-reactor's (nothing here promotes or demotes) -- what the agent decides
     # is WHEN the orchestrator is allowed to start, and the answer is "once the host has told this
-    # guest who it is, where its NICs are, and what its promoter chain is". guestagent's BringUp
-    # ends in `systemctl start drbd-reactor.service`, and that is now the only thing that starts it.
+    # guest who it is, where its NICs are, and what its promoter chain is". On a flock,
+    # guestagent's BringUp ends in `systemctl start drbd-reactor.service` (reactor.resume restarts
+    # it after a maintenance pause); nothing else starts it.
     #
-    # WHY, and it is not the agent-absence case alone. The promoter snippet lives on the PERSISTENT
-    # overlay, so on a first install there is no snippet and the ordering held by construction --
-    # but on every reboot afterwards the snippet is already on disk and a boot-started reactor
-    # RACES the agent's reconnect -> net.configure -> vip.env. The agent usually won, which is why
-    # this looked like an agent-absence bug when a stranger's node finally lost the race (in the field:
-    # the VIP claimed on the DRBD NIC, under a second DHCP identity, mDNS dead, probe blind).
+    # WHY, and it is not the agent-absence case alone. A boot-started reactor RACES the agent's
+    # reconnect -> net.configure -> vip.env, and a node that loses the race claims the VIP on the
+    # DRBD NIC, under a second DHCP identity, with mDNS dead and the probe blind.
     #
     # THERE IS NO DEADLOCK TO DESIGN AROUND, which is what makes it nearly free: bring-up gates on
     # QUORATE, not Primary (host.go), so the agent never waits for a promotion; and quorum does not
@@ -837,9 +818,9 @@ in
     # So promotion may safely wait for the agent, and does.
     #
     # THE COST, stated rather than buried: a permanently absent agent -- /opt/briard wiped, the unit
-    # masked, an incompatible binary after an upgrade -- is now a TOTAL outage rather than a
-    # degraded-but-serving node. Accepted: that field incident is the evidence for what
-    # degraded-but-serving actually looked like, and a node that plainly does not serve is more
+    # masked, an incompatible binary after an upgrade -- is a TOTAL outage rather than a
+    # degraded-but-serving node. Accepted: the lost race above is what
+    # degraded-but-serving actually looks like, and a node that plainly does not serve is more
     # honest and more repairable than one that is up in a way nobody can see or fix.
     #
     # It also makes bring-up the one place that arms the promoter, so an agent SIGKILLed inside a
@@ -866,15 +847,14 @@ in
         # then SIGKILL.
         #
         # MEASURED, from the guest's console during `briard rescue`: the shutdown began
-        # 1s after os.poweroff, deadlocked at +11.5s, and finished at +101s. It was read as "the
-        # guest agent ignores os.poweroff" because the host has no console on its guest and the
-        # two 90s constants -- this TimeoutStopSec and the host's shutdownGrace -- expired
-        # together, so the ACPI fallback appeared to do the work the SIGKILL had just done.
+        # 1s after os.poweroff, deadlocked at +11.5s, and finished at +101s -- the 90s
+        # TimeoutStopSec, then the SIGKILL.
         #
-        # Removing the drop-in first is drbd-reactor's own sanctioned defusal: it is what
-        # `reactor.pause` does (guestagent.go, verbReactorPause), and it is race-free because the
+        # Removing the drop-in first is drbd-reactor's own sanctioned defusal. `reactor.pause`
+        # (guestagent.go, verbReactorPause) is a bare stop and relies on it being done here, and it
+        # is race-free because the
         # promoter only (re)writes the file in Promoter::new -- i.e. on the next START -- so
-        # nothing re-arms it while we are stopping. That deadlock first showed as a managed-upgrade flake; the defusal is guarded
+        # nothing re-arms it while we are stopping. The defusal is guarded
         # on the shipped artifact by nixosTest/guest-rescue.nix (no unit may hold the shutdown).
         #
         # ON ExecStop RATHER THAN IN THE VERB, and that is the point: this stop happens on paths
@@ -886,7 +866,7 @@ in
         # that never promoted wrote no drop-in).
         #
         # WHY IT IS SAFE TO FIRE ON STOPS WE DO NOT INITIATE -- the obvious objection, since this
-        # now runs on every stop rather than on the one an agent verb drives. NOT because we are
+        # runs on every stop rather than on the one an agent verb drives. NOT because we are
         # the only ones who stop it: we are not, and that is the whole point (a user rebooting
         # their own machine is a stop nobody asked us about). It is because the drop-in's only
         # legitimate function is a START ordering -- drbd-services@r0.target before this daemon --
@@ -897,7 +877,7 @@ in
         #
         # WHAT DOES NOT GET IT, measured rather than assumed: a CRASH. systemd runs ExecStop= on
         # an explicit stop, on a restart and in a shutdown transaction, but NOT when the main
-        # process dies on its own (that path runs ExecStopPost= only). Which is fine twice over --
+        # process crashes on its own (that path runs ExecStopPost= only). Which is fine twice over:
         # a dead reactor has no last gasp to sequence, and `Restart=on-failure` then restarts it
         # through `Promoter::new`, which rewrites the drop-in anyway. It also means the one shape
         # that could have made a `daemon-reload` loop -- crash, restart, crash -- cannot, because
@@ -907,7 +887,7 @@ in
         # in-memory graph, so the deadlock would survive its own defusal.
         #
         # PAIRED with the same path in nixosTest/maintenance-contract.nix,
-        # deliberately written out rather than shared, for v0's single resource (r0): a test that
+        # deliberately written out rather than shared, for the single resource (r0): a test that
         # imported the constant could not notice the product changing it.
         ExecStop = [
           "-${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf"
@@ -940,13 +920,13 @@ in
       ];
     };
 
-    # ── THE PROMOTER CHAIN IS NOT DEFINED HERE ANY MORE ──────────────────────────────────────
+    # ── THE PROMOTER CHAIN IS NOT DEFINED HERE ───────────────────────────────────────────────
     #
     # Every unit the pushed binaries are started by -- briard-node-storage, the five chain
     # members, the VIP's renewal pair, the hold that hands the resource on, and the lone node's
     # target -- is written by the guest agent into /run/systemd/system at its own start
-    # (agent/guestagent/units.go, which carries the unit texts and all the reasoning that used to
-    # sit here). What the image still owns is above: the tool profile those units name, and the
+    # (agent/guestagent/units.go, which carries the unit texts and their reasoning). What the
+    # image owns is above: the tool profile those units name, and the
     # hold's per-topology steps, which take the chain's members as arguments rather than baking
     # them.
     #
@@ -954,7 +934,7 @@ in
     # only have ONE owner. The hold enumerates the members to stop and to reset, the target folds
     # the ordering onto them, and briard-vip sits in the middle of the list -- so leaving any of
     # them baked would put the list on both sides of the seam with nothing checking the two
-    # agree, which is this item's own defect at one remove.
+    # agree: the image-versus-agent skew the agent-written units remove, at one remove.
     #
     # WHAT STAYS BAKED, and each for its own reason: briard-guest-agent and briard-deadman
     # (disk-image.nix) supervise the agent's ARRIVAL, so they cannot be written by it -- the
@@ -965,7 +945,7 @@ in
     # Podman belongs to the guest OS, not to any app: it is the runtime an app will be
     # installed INTO, by the renderer, at runtime. There is no declared container
     # here and there is no `virtualisation.oci-containers` — a workload is not a build-time fact
-    # about this image any more.
+    # about this image.
     virtualisation.podman.enable = true;
 
     # Pre-stage image tarballs into local podman storage at boot: images that must already be
@@ -990,8 +970,9 @@ in
           mkdir -p /run/briard
           : > /run/briard/staged-images.tmp
           for img in ${lib.concatStringsSep " " config.briard.stagedImages}; do
-            # The load is its own command, so a failed one fails the unit: inside the `for` list's
-            # $(…) its status was lost and the unit reported success with nothing staged.
+            # The load is its own command, so a failed one fails the unit: inside the list of the
+            # `for`, a $(…) would lose its status and the unit would report success with nothing
+            # staged.
             loaded=$(podman load -i "$img")
             names=$(printf '%s\n' "$loaded" | sed -n 's/^Loaded image[^:]*: //p' | tr ',' ' ')
             [ -n "$names" ] || { echo "briard-stage: $img loaded no image" >&2; exit 1; }
@@ -1005,7 +986,8 @@ in
     };
 
     # Lean, headless test image. The nixosTest / VM runner supplies the real boot
-    # device + networking, so there is no bootloader/root device here.
+    # device + networking, so there is no bootloader here and the root device below is a
+    # placeholder (disk-image.nix overrides it with its own).
     boot.loader.grub.enable = false;
     # NO console here, deliberately: the guests built from this module alone are nixosTest NODES,
     # whose console the framework already captures. The BOOTABLE image adds its own
@@ -1019,8 +1001,8 @@ in
     networking.firewall.enable = false;
 
     # dhcpcd runs on every interface by default, and this guest has interfaces that must never
-    # ask a stranger's router for anything. Measured on the first bare-metal install: a node
-    # put TWO extra DHCP clients on the household's router, one of them on the DRBD replication
+    # ask a stranger's router for anything. Measured: left at the default, a node puts TWO extra
+    # DHCP clients on the household's router, one of them on the DRBD replication
     # link -- a private point-to-point path between anchors that has no business holding a LAN
     # address, and whose address the agent sets explicitly (net.configure) when a pairing happens.
     #
@@ -1028,8 +1010,7 @@ in
     # Denied: eth1 (DRBD) and eth3 (the private guest<->host witness link) -- both statically
     # addressed by the agent, both invisible to the LAN by design -- and eth2, the service NIC.
     #
-    # eth2's denial REVERSES what this list said when it was written ("the service NIC, whose
-    # lease becomes the VIP"). It does become the VIP, but it cannot be leased at BOOT:
+    # eth2 becomes the VIP, but it cannot be leased at BOOT:
     #   - a boot-time client leases it on the SECONDARY too, so the "VIP" would be a per-node
     #     address sitting on a node that is not serving; and
     #   - the service NIC's MAC is flock-scoped, so both nodes would be asking one
