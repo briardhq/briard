@@ -1,18 +1,18 @@
 // Package mealie is the product-side knowledge Briard holds about Mealie, the recipe manager: what
 // it is told on this node, and how the reverse proxy signs the user into it.
 //
-// SIGNED IN BY THE REVERSE PROXY, BY HEADER. Mealie reads its user from a reverse proxy's header
+// Signed in by the reverse proxy, by header. Mealie reads its user from a reverse proxy's header
 // when the proxy also sends a secret it shares with Mealie, and its login page asks for that
 // sign-in as it loads, so it opens with no dialog. The reverse proxy lets a browser through only
-// with the dashboard's session, and then sends the user's username and the secret (shared/routes:
-// Gate, GateHeader). Nothing that reaches Mealie's address without the reverse proxy holds the
+// with the dashboard's session, then sends the user's username and the secret (shared/routes:
+// Gate, GateHeader). Nothing reaching Mealie's address without the reverse proxy holds the
 // secret, which only root and Mealie's own uid on this node can read. Signing up by header is on,
 // for one account: briard's own, which the dashboard signs in as to find the user's
-// (dashboard/mealie.go), and makes again whenever it is gone. The reverse proxy sends no other name
-// than one the dashboard read off Mealie's own list of accounts.
+// (dashboard/mealie.go) and makes again whenever it is gone. The reverse proxy sends no name
+// other than one the dashboard read off Mealie's own list of accounts.
 //
-// ITS SETTINGS ARE FILES. Mealie reads any setting from a file of that name in /run/secrets, so
-// everything briard decides about it -- the sign-in, the password form, its address -- is written
+// Its settings are files: Mealie reads any setting from a file of that name in /run/secrets, so
+// everything briard decides about it (the sign-in, the password form, its address) is written
 // here, one file per setting, into a directory bound there. The catalog's manifest stays what any
 // Mealie needs, and what briard leaves in Mealie's own data is an ordinary Mealie.
 package mealie
@@ -85,11 +85,10 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 }
 
 // Prepare writes Mealie's settings on this node, before the container starts: Mealie's uid owns
-// them and nobody else but root reads them.
-//
-// THE SECRET IS KEPT FOR THE BOOT, as Files' is: converge restarts only the apps whose units
-// changed, so a secret minted anew would leave a running Mealie comparing against the old one
-// while the reverse proxy sends the new. /run ends it with the boot.
+// them and nobody else but root reads them. The secret is kept for the boot, as Files' is:
+// converge restarts only the apps whose units changed, so a secret minted anew would leave a
+// running Mealie comparing against the old one while the reverse proxy sends the new. /run ends
+// it with the boot.
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	if m.Name != Name {
 		return nil

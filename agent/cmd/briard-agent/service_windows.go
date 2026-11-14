@@ -87,30 +87,28 @@ type agentService struct{}
 
 // Wait hints: how long the SCM is told the next status change may take. Start covers what the
 // agent does before READY (identity, its config), and the warden ends a start that outlasts it
-// (host.startLimit); stop is re-sent on a rolling checkpoint while the stop is
-// still making progress.
+// (host.startLimit); stop is re-sent on a rolling checkpoint while the stop is still progressing.
 const (
 	startHint = 60 * time.Second
 	stopHint  = 20 * time.Second
 )
 
-// Execute is the service's whole life, in the SCM's terms.
+// Execute is the service's whole life, in the SCM's terms. RUNNING is reported when the agent
+// reaches the call that sends READY=1 under systemd: "the agent started", never "the node is
+// healthy" (sdnotify's package doc says why).
 //
-// RUNNING is reported when the agent reaches the call that sends READY=1 under systemd -- "the
-// agent started", never "the node is healthy" (sdnotify's package doc says why).
+// The two ways down differ in the guest. A STOP (an agent restart or an update) finishes the act
+// in flight and leaves the guest serving for the next agent to re-adopt, exactly as under
+// systemd. A PRESHUTDOWN (the machine going down) is the agent's shutdown (host.ErrShutdown):
+// the act aborts and the guest powers off cleanly before Run returns, inside the time Windows
+// gives it. The agent's own `briard stop` is the same shutdown, arriving as Run returning nil by
+// itself: a clean exit, which stays down.
 //
-// STOP and PRESHUTDOWN are the two ways down, and the difference between them is the guest. A stop
-// is an agent restart or an update: the act in flight finishes, the guest keeps serving and the
-// next agent re-adopts it, exactly as under systemd. A preshutdown is the machine going down: the
-// agent's shutdown (host.ErrShutdown) aborts the act and powers the guest off cleanly before Run
-// returns, inside the time Windows gives it. The agent's own `briard stop` is the same shutdown,
-// and Run returning by itself with nil is how it ends here: a clean exit, which stays down.
-//
-// A resume is the third event, and it costs the guest a clean restart: a guest that slept with the
-// machine wakes with a stale clock and a lease the router may have given away, and a fresh boot
-// asks neither question. Powering it off is all this does -- a stopped guest is the case the host
-// already relaunches at once. Fast Startup is why this matters on a desktop: its "shut down" is a
-// hibernate that sends no PRESHUTDOWN, so the power-on is a resume and arrives here.
+// A resume costs the guest a clean restart: a guest that slept with the machine wakes with a
+// stale clock and a lease the router may have given away, which a fresh boot never asks about.
+// This only powers it off; the host already relaunches a stopped guest at once. It matters on a
+// desktop because Fast Startup's "shut down" is a hibernate that sends no PRESHUTDOWN, so the
+// power-on is a resume and arrives here.
 func (agentService) Execute(_ []string, req <-chan svc.ChangeRequest, status chan<- svc.Status) (bool, uint32) {
 	status <- svc.Status{State: svc.StartPending, WaitHint: uint32(startHint / time.Millisecond)}
 	if err := holdAwake(); err != nil {

@@ -15,16 +15,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// TWO WAYS TO RUN, ONE INSTALL. Double-clicked, it shows the install in a window
+// Two ways to run, one install. Double-clicked, it shows the install in a window
 // (window_windows.go) that ends, when the restart is owed, on Restart now / Later. With /S -- the
 // Store's silent switch -- nothing opens but the UAC prompt and it never restarts Windows. Either
-// way it ends with the script's exit code, 3010 when the restart is owed (the Store shows its own
-// restart message for it), 0 when not, and anything else is a failure. The whole output also goes
-// to %TEMP%\briard-setup.log.
-//
-// Not elevated, it relaunches itself elevated and returns that run's code: its manifest asks for
-// no elevation (asInvoker), so the /S run the Store starts is the run that asks, as install.ps1
-// does.
+// way it ends with the script's exit code: 3010 when the restart is owed (the Store shows its own
+// restart message for it), 0 when not, anything else a failure. The whole output also goes to
+// %TEMP%\briard-setup.log. Not elevated, it relaunches itself elevated and returns that run's
+// code: its manifest asks for no elevation (asInvoker), so the /S run the Store starts is the run
+// that asks, as install.ps1 does.
 
 // exitCancelled is ERROR_CANCELLED: the UAC prompt was declined.
 const exitCancelled = 1223

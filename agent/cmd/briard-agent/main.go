@@ -26,7 +26,7 @@ import (
 func main() {
 	args := os.Args[1:]
 
-	// `run` is the DAEMON, intercepted here because the daemon (runHost) cannot live in the CLI
+	// `run` is the daemon, intercepted here because the daemon (runHost) cannot live in the CLI
 	// package. agent/cli still carries it in its command table, unlisted, so it is documented.
 	if len(args) > 0 && args[0] == "run" {
 		runDaemon(args[1:])
@@ -72,14 +72,13 @@ func runDaemon(args []string) {
 		return
 	}
 
-	// SIGTERM/SIGINT cancels the context so a `systemctl stop` is a clean stop rather than a kill:
-	// the agent finishes the act in flight and leaves its guest serving for the next agent. A
-	// SIGTERM while the machine is going down is the other stop, the node's shutdown (host.StopCause,
-	// on systemd's word, platform.SystemState): the act aborted, the guest powered off cleanly.
-	//
-	// What installing this handler COSTS, and it is easy to miss: it removes Go's default "SIGTERM
-	// terminates the process". Every path under this context must notice cancellation itself, and
-	// a path parked in a blocking syscall notices nothing at all.
+	// SIGTERM/SIGINT cancels the context so `systemctl stop` is a clean stop rather than a kill: the
+	// agent finishes the act in flight and leaves its guest serving for the next agent. A SIGTERM
+	// while the machine is going down is the other stop, the node's shutdown (host.StopCause, on
+	// systemd's word, platform.SystemState): the act aborted, the guest powered off cleanly. The
+	// cost, easy to miss: the handler removes Go's default "SIGTERM terminates the process". Every
+	// path under this context must notice cancellation itself, and one parked in a blocking syscall
+	// notices nothing at all.
 	ctx, stop := context.WithCancelCause(context.Background())
 	defer stop(nil)
 	sigs := make(chan os.Signal, 1)
@@ -109,7 +108,7 @@ func runDaemon(args []string) {
 const cardTimeout = 30 * time.Second
 
 // runInternal is the flag-shaped surface: helpers an installer, a release pipeline or a unit file
-// invokes, each of which does one thing and exits. They are deliberately NOT `briard` verbs —
+// invokes, each of which does one thing and exits. They are deliberately not `briard` verbs —
 // see the note at each one.
 func runInternal(args []string) {
 	fs := flag.NewFlagSet("briard-agent", flag.ExitOnError)
@@ -130,14 +129,12 @@ func runInternal(args []string) {
 	warden := fs.Bool("warden", false, "watch the agent's beat and end a wedged agent for the service manager to restart -- the briard-warden Windows service's program, Windows only")
 	_ = fs.Parse(args)
 
-	// The release pipeline's manifest writer (scripts/publish-release.sh calls it), HERE rather than
-	// in the shell script because the manifest is a CONTRACT between the publisher and every
-	// installing node: written by the same code that reads it (agent/install), the format cannot
-	// disagree with itself. A shell writer hand-assembles JSON -- `"mode":493` is 0o755 written in
-	// decimal by a human.
-	//
-	// It costs nothing in the shipped binary -- sha256 and encoding/json are already linked -- and
-	// the guest agent is its own main, so the guest trim is unaffected.
+	// The release pipeline's manifest writer (scripts/publish-release.sh calls it), here rather than
+	// in the shell script because the manifest is a contract between the publisher and every
+	// installing node: written by the code that reads it (agent/install), the format cannot disagree
+	// with itself. A shell writer hand-assembles JSON -- `"mode":493` is 0o755 written in decimal by
+	// a human. It costs nothing in the shipped binary (sha256 and encoding/json are already linked),
+	// and the guest agent is its own main, so the guest trim is unaffected.
 	if *stageManifest != "" {
 		if err := runStageManifest(*stageManifest, *stageChain, *stagePlatform, *stageRelease, *stageSystem, *stageMinBriard, *stageVM, *stageInputs); err != nil {
 			log.Fatalf("stage-manifest: %v", err)
@@ -146,11 +143,10 @@ func runInternal(args []string) {
 	}
 
 	// The machine report card on its own -- the card `install` runs first (runInstall). Pure host
-	// inspection (no host subsystems); it refuses the unfit with the fix named.
-	//
-	// Bounded (cardTimeout), because the card can block: on Linux as root it creates and deletes a
-	// throwaway macvtap on the NIC it selected, to turn "this device cannot carry the guest" into a
-	// refusal rather than an unreachable VM. A gate is worthless if it can hang.
+	// inspection (no host subsystems); it refuses the unfit with the fix named. Bounded (cardTimeout)
+	// because the card can block: on Linux as root it creates and deletes a throwaway macvtap on the
+	// NIC it selected, to turn "this device cannot carry the guest" into a refusal rather than an
+	// unreachable VM. A gate is worthless if it can hang.
 	if *reportCard {
 		ctx, cancel := context.WithTimeout(context.Background(), cardTimeout)
 		defer cancel()
@@ -173,12 +169,11 @@ func runInternal(args []string) {
 		return
 	}
 
-	// The frozen update unit's verb. The unit runs it on a fresh copy of the target's agent
-	// (downloaded, or the committed one copied when the channel says they are the same bytes),
-	// never on the committed file itself, so this is the release's own agent doing the whole update.
-	// The one line it prints on stdout is the verdict, failure included, which the unit writes down
-	// for `briard update` and the agent's update alerter; the log goes to stderr, the unit's
-	// journal. Host-only, like --fetch-install.
+	// The frozen update unit's verb, run on a fresh copy of the target's agent (downloaded, or the
+	// committed one copied when the channel says they are the same bytes), never on the committed
+	// file itself, so the release's own agent does the whole update. Its one stdout line is the
+	// verdict, failure included, which the unit writes down for `briard update` and the agent's
+	// update alerter; the log goes to stderr, the unit's journal. Host-only, like --fetch-install.
 	if *update != "" {
 		line, err := runUpdate(ctx, *update)
 		if err != nil {
@@ -189,9 +184,9 @@ func runInternal(args []string) {
 		fmt.Fprintln(os.Stdout, line)
 		return
 	}
-	// The update unit's check on the agent it just fetched, asked of the COMMITTED agent before
-	// the fetched one runs as root: the signature check cannot live in the binary it is checking.
-	// Silent on success; the reason on stdout otherwise, the line the unit relays as its verdict.
+	// The update unit's check on the agent it just fetched, asked of the committed agent before the
+	// fetched one runs as root: the signature check cannot live in the binary it is checking. Silent
+	// on success; the reason on stdout otherwise, the line the unit relays as its verdict.
 	if *verifyAgent != "" {
 		if err := runVerifyAgent(*verifyAgent); err != nil {
 			fmt.Fprintln(os.Stdout, err.Error())
@@ -199,25 +194,24 @@ func runInternal(args []string) {
 		}
 		return
 	}
-	// AN INSTALL THAT PREDATES --update asks for this flag, from a frozen script no release can
-	// reach. The other half of what it expects -- its own commit scripts, an agent that restarts
-	// itself -- is not in this release, so the node cannot be updated to it, only reinstalled.
-	// Said in the line the old script relays to its alerter, rather than as a usage dump.
+	// An install that predates --update asks for this flag, from a frozen script no release can
+	// reach. The rest of what it expects -- its own commit scripts, an agent that restarts itself --
+	// is not in this release, so the node cannot be updated to it, only reinstalled. Said in the line
+	// the old script relays to its alerter, rather than as a usage dump.
 	if *fetchUpdate != "" {
 		fmt.Fprintln(os.Stdout, "this machine's update scripts predate the release it was offered; reinstall briard to keep updating")
 		os.Exit(1)
 	}
 
-	// The guest unit's ExecStop (platform.launchArgs writes the line; systemd runs it). On a host
-	// shutdown this is the only thing that gets a chance to power the appliance down cleanly --
-	// the alternative is the SIGTERM systemd would otherwise send QEMU, which the guest
-	// experiences as a power cut. A flag because nobody types it: it is plumbing between the agent
-	// and a unit the agent itself wrote.
+	// The guest unit's ExecStop (platform.launchArgs writes the line; systemd runs it): on a host
+	// shutdown, the only chance to power the appliance down cleanly instead of systemd's SIGTERM to
+	// QEMU, which the guest experiences as a power cut. A flag because nobody types it: plumbing
+	// between the agent and a unit it wrote.
 	//
-	// NEVER FATAL, and that is the load-bearing part. A non-zero exit would make systemd report the
-	// guest unit as failed to stop and could delay the host's own shutdown over a VM that is
-	// already gone. Every failure degrades to systemd killing QEMU after TimeoutStopSec, so the
-	// honest response is to say what happened in the journal and get out of the way.
+	// Never fatal, and that is the load-bearing part: a non-zero exit would make systemd report the
+	// guest unit as failed to stop and could delay the host's own shutdown over a VM already gone.
+	// Every failure degrades to systemd killing QEMU after TimeoutStopSec, so the honest response
+	// is to say what happened in the journal and get out of the way.
 	if *guestShutdown != "" {
 		if err := runGuestShutdown(ctx, *guestShutdown); err != nil {
 			log.Printf("guest-shutdown: %v (systemd will stop the VM the hard way)", err)

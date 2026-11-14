@@ -1,18 +1,17 @@
 // briard-setup is the Windows installer a stranger runs, a signed program in two builds that
 // differ only in what they carry. The Store's (briard-store-setup.exe) carries the release's
-// windows-amd64 arm IN ITSELF and runs that arm's install.ps1 over it; nothing is fetched while it
-// runs, since the Store requires a standalone installer, and the guest image, which is data rather
-// than a program Windows evaluates, is the installed agent's to fetch at its first start. The
-// download page's (briard-setup.exe) carries only the release key, and runs stable's install.ps1
-// once it verifies (web.go). Either way it is nothing more -- the install is the script's and the
-// agent's, and this only unpacks and hands over -- so it adds no second implementation of the
-// install's body.
+// windows-amd64 arm in itself and runs that arm's install.ps1 over it: nothing is fetched while it
+// runs, since the Store requires a standalone installer, and the guest image, data rather than a
+// program Windows evaluates, is the installed agent's to fetch at its first start. The download
+// page's (briard-setup.exe) carries only the release key, and runs stable's install.ps1 once it
+// verifies (web.go). Either way it is nothing more: the install is the script's and the agent's,
+// this only unpacks and hands over, so it adds no second implementation of the install's body.
 //
-// THE PAYLOAD IS A ZIP APPENDED TO THE PROGRAM, before its Authenticode signature: the release
+// The payload is a zip appended to the program before its Authenticode signature: the release
 // pipeline builds this program, appends the payload, then signs the whole file, so the signature
 // covers the payload too. The program finds the payload's end at the signature's start (the PE
 // security directory, a file offset) or at the end of the file when unsigned, and reads the zip
-// back from there -- archive/zip finds an archive behind prepended bytes by itself.
+// back from there; archive/zip finds an archive behind prepended bytes by itself.
 package main
 
 import (

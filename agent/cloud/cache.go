@@ -33,7 +33,7 @@ func LoadAssignment(path string) (a api.Assignment, ok bool, err error) {
 	return a, true, nil
 }
 
-// SaveAssignment writes a to path atomically AND durably, so a crash mid-write never leaves a torn
+// SaveAssignment writes a to path atomically and durably, so a crash mid-write never leaves a torn
 // cache on the one path this file exists for -- booting when the cloud cannot be reached. The
 // argument for why atomic alone is not enough, and why the directory is fsynced too, lives once in
 // shared/atomicfile rather than at each of its callers.
@@ -45,14 +45,12 @@ func SaveAssignment(path string, a api.Assignment) error {
 	return atomicfile.Write(path, b, 0o644, 0o755)
 }
 
-// Resolve determines this node's Assignment at boot. It registers with the cloud and
-// caches the result; if the cloud is unreachable it cold-boots from the cache
-// (degrade-to-local -- the cloud is the source of identity, never a runtime dependency
-// for boot). With neither available (a first boot during an outage) it returns a local
-// default so the node still boots, its tenant unresolved until it can register.
-//
-// A nil client (standalone) or an empty cachePath (no persistence) each just skip that
-// step. Register is bounded so a wedged cloud can't stall boot.
+// Resolve determines this node's Assignment at boot: it registers with the cloud and caches the
+// result, and if the cloud is unreachable it cold-boots from the cache (degrade-to-local -- the
+// cloud is the source of identity, never a runtime dependency for boot). With neither available
+// (a first boot during an outage) it returns a local default so the node still boots, its tenant
+// unresolved until it can register. A nil client (standalone) or an empty cachePath (no
+// persistence) each just skip that step. Register is bounded so a wedged cloud can't stall boot.
 func Resolve(ctx context.Context, client CloudClient, cachePath string, info api.NodeInfo, logf func(string, ...any)) api.Assignment {
 	if client != nil {
 		rctx, cancel := context.WithTimeout(ctx, registerTimeout)

@@ -5,7 +5,7 @@
 // dashboard with a one-time link from the dashboard directive, and stops and starts briard the
 // way `briard stop` and `briard start` do.
 //
-// This file is what the icon SHOWS for what it read, kept apart from the Windows calls that show
+// This file is what the icon shows for what it read, kept apart from the Windows calls that show
 // it, so the decision is testable anywhere.
 package main
 

@@ -33,15 +33,13 @@ func runGuestShutdown(ctx context.Context, qmpSock string) error {
 	return platform.ShutdownVM(ctx, qmpSock, platform.GuestShutdownGrace)
 }
 
-// runFetchInstall downloads + verifies the signed artifact sets of BOTH chains into dest
-// (install.FetchRelease). The channel root, the release to install (default stable) and the
-// release keyring PEM come from the environment: BRIARD_CHANNEL_URL + BRIARD_RELEASE +
-// BRIARD_KEYRING.
-//
-// `briard-agent install` fetches through the same function. The flag stays for the installer that
-// predates the verb: an install.sh saved to disk heals forward to current stable ("old
-// installer, new artifacts", scripts/publish-release.sh), so a bootstrap must still answer the
-// --report-card / --fetch-install pair that installer calls before laying the files down itself.
+// runFetchInstall downloads + verifies the signed artifact sets of both chains into dest
+// (install.FetchRelease), from BRIARD_CHANNEL_URL (the channel root), BRIARD_RELEASE (the release
+// to install, default stable) and BRIARD_KEYRING (the release keyring PEM). `briard-agent
+// install` fetches through the same function; the flag stays for the installer that predates the
+// verb: an install.sh saved to disk heals forward to current stable ("old installer, new
+// artifacts", scripts/publish-release.sh), so a bootstrap must still answer the --report-card /
+// --fetch-install pair that installer calls before laying the files down itself.
 func runFetchInstall(ctx context.Context, dest string) error {
 	base := os.Getenv("BRIARD_CHANNEL_URL")
 	if base == "" {
@@ -153,11 +151,11 @@ func runStageManifest(dir, chain, platform, version, system, minBriard, vm, inpu
 }
 
 // runInstall is `briard-agent install [-wait]`, the installer's body (host.Install). Without
-// -wait: the machine report card, then the layout -- the card FIRST, so a refusal is truthful
+// -wait: the machine report card, then the layout -- the card first, so a refusal is truthful
 // when it says nothing was installed and its disk check measures a disk the install has not
 // eaten into. With -wait: the closing, once install.sh has enabled the agent's unit
-// (host.InstallWait). Failures read as the installer's own
-// (`briard: ERROR: ...`), since that is whose output they are.
+// (host.InstallWait). Failures read as the installer's own (`briard: ERROR: ...`), since that is
+// whose output they are.
 func runInstall(args []string) int {
 	fs := flag.NewFlagSet("briard install", flag.ContinueOnError)
 	wait := fs.Bool("wait", false, "wait for the installed node to answer, then print its one-time link")
@@ -181,12 +179,12 @@ func runInstall(args []string) int {
 	if !elevated() {
 		return fail(errors.New(elevateHint))
 	}
-	// The card is told the two things it cannot infer. VIP_ADDR, because judging a
-	// service address against THIS LAN is the one check that compares our intent with the household's
-	// network. BRIARD_NIC (read as is), because the card SELECTS the device the guest's L2 will
-	// hang off and validates it by creating a throwaway macvtap on it -- judging a different device
-	// than the install will use is the worst possible half-truth. The substrate is not passed at
-	// all: the card derives it from the device.
+	// The card is told the two things it cannot infer. VIP_ADDR, because judging a service address
+	// against this LAN is the one check that compares our intent with the household's network.
+	// BRIARD_NIC (read as is), because the card selects the device the guest's L2 will hang off and
+	// validates it with a throwaway macvtap on it -- judging a different device than the install
+	// will use is the worst possible half-truth. The substrate is not passed at all: the card
+	// derives it from the device.
 	say("checking host readiness ...")
 	os.Setenv("VIP_ADDR", os.Getenv("BRIARD_VIP_ADDR"))
 	cardCtx, cancel := context.WithTimeout(ctx, cardTimeout)
@@ -219,10 +217,10 @@ func runUninstall(args []string) int {
 		fmt.Fprint(os.Stderr, "briard uninstall: takes no arguments\n")
 		return 2
 	}
-	// WINDOWED: started from Windows' Installed apps, whose entry asks for an administrator's
-	// rights and starts this in a console of its own, which closes the moment this exits. There
-	// the question and the outcome are windows. Never with -yes: that is the quiet form a package
-	// manager or a script runs, with nobody there to close a window.
+	// Windowed: started from Windows' Installed apps, whose entry asks for an administrator's rights
+	// and starts this in a console of its own, which closes the moment this exits; there the question
+	// and the outcome are windows. Never with -yes: that is the quiet form a package manager or a
+	// script runs, with nobody there to close a window.
 	win := !*yes && windowed()
 	if win {
 		noQuickEdit()

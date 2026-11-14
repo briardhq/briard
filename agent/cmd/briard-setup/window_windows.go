@@ -15,18 +15,18 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// THE WINDOW is Windows' own task dialog -- the dialog an installer of Windows' shows: Briard's
-// icon, a bold line, the step under it and a moving bar while the install runs, then the same
-// window turned to how it ended. The install runs beside it and sends it each line; the dialog
-// runs its own message loop on this thread until it is closed.
+// The window is Windows' own task dialog, the one an installer of Windows' shows: Briard's icon,
+// a bold line, the step under it and a moving bar while the install runs, then the same window
+// turned to how it ended. The install runs beside it and sends it each line; the dialog runs its
+// own message loop on this thread until it is closed.
 //
-// THE TASK DIALOG IS COMMON CONTROLS 6, which a program gets only by asking for it in its
+// The task dialog is Common Controls 6, which a program gets only by asking for it in its
 // manifest -- briard-setup.manifest, compiled into the program by the release build
-// (briard-setup.rc). A build without it opens no window: it says so in a message box and installs
-// nothing.
+// (briard-setup.rc). A build without it opens no window: it says so in a message box and
+// installs nothing.
 //
-// THE INSTALL CANNOT BE STOPPED HALFWAY -- install.ps1 has no point to stop at that leaves
-// nothing behind -- so while it runs the window's one button is disabled and closing it is refused.
+// The install cannot be stopped halfway (install.ps1 has no point to stop at that leaves nothing
+// behind), so while it runs the window's one button is disabled and closing it is refused.
 
 var (
 	procTaskDialogIndirect = windows.NewLazySystemDLL("comctl32.dll").NewProc("TaskDialogIndirect")

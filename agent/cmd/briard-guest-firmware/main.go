@@ -1,18 +1,17 @@
-// Command briard-guest-firmware is the ONE briard binary the guest image bakes.
+// Command briard-guest-firmware is the one briard binary the guest image bakes. It serves the host
+// over the virtio-serial channel and answers exactly five verbs: the handshake, the three push
+// verbs the host dresses a guest through, and the clean shutdown. Everything else a running node
+// needs -- DRBD bring-up, apps, converge, telemetry, the deadman -- belongs to
+// `briard-guest-agent`, which the host pushes at every bring-up and the guest's pivot then runs in
+// this binary's place (guest-image/pivot.nix). The scratch the pushed set lands in is emptied at
+// every boot, so every boot starts here and the host re-dresses it.
 //
-// It serves the host over the virtio-serial channel and answers exactly five verbs: the
-// handshake, the three push verbs the host dresses a guest through, and the clean shutdown.
-// Everything else a running node needs -- DRBD bring-up, apps, converge, telemetry, the
-// deadman -- belongs to `briard-guest-agent`, which the host PUSHES at every bring-up and which
-// the guest's pivot then runs in this binary's place (guest-image/pivot.nix). The scratch the
-// pushed set lands in is emptied at every boot, so every boot starts here and the host re-dresses it.
-//
-// WHY IT IS ITS OWN MAIN. The guest image's version is a function of its INPUTS, and
-// the inputs are the Go packages the baked binary links. Baking the full agent would move that
-// hash on every agent edit and republish a 400 MB guest chain for a change no image needed.
-// Baking only the push protocol makes the image move when the PROTOCOL moves, which is the
-// honest condition. `internal/arch` asserts flake.nix's guestInputPackages against
-// `go list -deps ./agent/cmd/briard-guest-firmware`, so a new import cannot slip outside the hash.
+// It is its own main because the guest image's version is a function of its inputs, the Go
+// packages the baked binary links: baking the full agent would move that hash on every agent edit
+// and republish a 400 MB guest chain for a change no image needed. Baking only the push protocol
+// moves the image when the protocol moves, the honest condition. `internal/arch` asserts
+// flake.nix's guestInputPackages against `go list -deps ./agent/cmd/briard-guest-firmware`, so a
+// new import cannot slip outside the hash.
 //
 // The argv is the contract the image's units and the pushed bundle share (guest-image/
 // disk-image.nix, pivot.nix's picker passes it through verbatim):
@@ -47,11 +46,10 @@ func main() {
 	_ = fs.Bool("guest", false, "serve the host over the virtio-serial control channel")
 	_ = fs.Parse(args[1:])
 
-	// SIGTERM/SIGINT cancels the context so a `systemctl stop` is a clean shutdown rather than a
-	// kill. Installing this handler removes Go's default "SIGTERM terminates the process": every
-	// path under this context is responsible for noticing cancellation itself, and a path parked
-	// in a blocking syscall notices nothing -- which is why runGuest closes its port and holds a
-	// deadline.
+	// SIGTERM/SIGINT cancels the context so `systemctl stop` is a clean shutdown, not a kill. The
+	// handler removes Go's default "SIGTERM terminates the process": every path under this context
+	// must notice cancellation itself, and one parked in a blocking syscall notices nothing -- hence
+	// runGuest closes its port and holds a deadline.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -65,7 +63,7 @@ func main() {
 	}
 }
 
-// runGuest opens the virtio-serial port and serves the firmware dispatch for ONE host
+// runGuest opens the virtio-serial port and serves the firmware dispatch for one host
 // connection; the unit's Restart=always puts it back on the port for the next.
 //
 // Cancellation is a deadline, not a hope. A `systemctl stop` lands while Serve is parked in a
@@ -73,10 +71,10 @@ func main() {
 // guestStopGrace bounds the case where even that is not enough -- the host's clean-shutdown
 // timing depends on this process actually ending.
 func runGuest(ctx context.Context) error {
-	// THE PUSH PROTOCOL'S START-TIME DUTY, before the port. Reaching this binary at all
-	// means the picker found no pushed agent, so this start is never a trial -- but it IS the
-	// start that follows a first dress whose trial failed, and the aftermath rule is what
-	// discards the staged set and puts the web units back on what they ran before.
+	// The push protocol's start-time duty, before the port. Reaching this binary at all means the
+	// picker found no pushed agent, so this start is never a trial -- but it is the start after a
+	// first dress whose trial failed, and the aftermath rule is what discards the staged set and puts
+	// the web units back on what they ran before.
 	x := guestfirmware.NewOSExecutor()
 	if err := guestfirmware.BinStartup(ctx, x, log.Printf); err != nil {
 		return err
@@ -87,10 +85,10 @@ func runGuest(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	// The same call the pushed agent makes, and for the flags rather than the commit:
-	// reaching this binary means the picker found no trial to run, so there is nothing to
-	// commit -- but the markers an earlier start left in the tmpfs must still be cleared here,
-	// or the next trial's verdict would read a web unit's stale `trial` as its own.
+	// The same call the pushed agent makes, for the flags rather than the commit: reaching this
+	// binary means the picker found no trial to run, so there is nothing to commit, but the markers
+	// an earlier start left in the tmpfs must still be cleared here, or the next trial's verdict
+	// would read a web unit's stale `trial` as its own.
 	guestfirmware.BinCommit(ctx, x, log.Printf)
 
 	go func() {
@@ -98,9 +96,9 @@ func runGuest(ctx context.Context) error {
 		time.AfterFunc(guestStopGrace, func() { os.Exit(0) })
 	}()
 
-	// READY at listen: the unit is Type=notify under the guest's pivot. The firmware's
-	// own start commits nothing -- only a trial start does -- but it says READY at the same
-	// point, once the port it exists to serve is open.
+	// READY at listen: the unit is Type=notify under the guest's pivot. The firmware's own start
+	// commits nothing (only a trial start does), but it says READY at the same point, once the port
+	// it exists to serve is open.
 	_ = sdnotify.Ready()
 	if err := guestfirmware.Serve(ctx, conn, x); err != nil {
 		return err

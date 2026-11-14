@@ -1,23 +1,22 @@
 // Package files is the product-side knowledge Briard holds about Files: the household's window
 // onto every app's directories, a web file browser (FileBrowser Quantum) shown one folder per app.
 //
-// IT IS THE ONE APP THAT READS OTHER APPS' AREAS, and that is why its binds live here, keyed on
-// the catalog name, and never in a manifest: a catalog entry that could ask for another app's
-// data would be a catalog that could hand any app the household's files. Being curated is the
-// licence to hold this, as it is for Home Assistant's control channel and mosquitto's config.
+// It is the one app that reads other apps' areas, which is why its binds live here, keyed on the
+// catalog name, and never in a manifest: a catalog entry that could ask for another app's data
+// would be a catalog that could hand any app the household's files. Being curated is the licence
+// to hold this, as it is for Home Assistant's control channel and mosquitto's config.
 //
-// WHAT IT SEES IS A VIEW, NOT THE TIERS. The guest agent keeps /run/briard/files-view as one
-// folder per app holding the directories that app's manifest mounts outside its cache tier, each
-// a bind of the real one (agent/guestagent/filesview.go),
-// and Files mounts that tree once with slave propagation, so a bind the agent makes or replaces
-// later reaches the running container. Binding each app directory into Files' own unit instead
-// would go stale the moment a restore swapped the area underneath it -- the bind keeps the old,
-// deleted copy, and an edit made through it vanishes -- so the binds are the agent's to keep true,
-// and Files never restarts for another app's sake.
+// What it sees is a view, not the tiers. The guest agent keeps /run/briard/files-view as one
+// folder per app holding the directories that app's manifest mounts outside its cache tier, each a
+// bind of the real one (agent/guestagent/filesview.go), and Files mounts that tree once with slave
+// propagation, so a bind the agent makes or replaces later reaches the running container. Binding
+// each app directory into Files' own unit instead would go stale the moment a restore swapped the
+// area underneath it (the bind keeps the old, deleted copy, and an edit made through it vanishes),
+// so the binds are the agent's to keep true, and Files never restarts for another app's sake.
 //
-// SIGNED-IN BY THE DASHBOARD. The reverse proxy lets a browser through to Files only with the
-// dashboard's own session, and then signs the user in -- as User -- with a short-lived token made
-// with KeyPath's secret. Files verifies it on every request; nothing without the key can make one,
+// Signed in by the dashboard: the reverse proxy lets a browser through to Files only with the
+// dashboard's own session, then signs the user in, as User, with a short-lived token made with
+// KeyPath's secret. Files verifies it on every request; nothing without the key can make one,
 // wherever on the network it sits.
 package files
 
@@ -35,11 +34,11 @@ import (
 // Name is Files' catalog slug. Everything in this package is keyed on it.
 const Name = "files"
 
-// User is the one account Files has, the name the reverse proxy signs the household in as. FIXED,
-// NOT THE RECORD'S: Files matches its account on the name alone and makes one for a name it does
-// not know, and all an account holds -- preferences, share links -- lives in its cache area, which
-// no undo or restore brings back. A name that never changes is one Files never loses the user by,
-// whatever record a restore brings.
+// User is the one account Files has, the name the reverse proxy signs the household in as. Fixed,
+// deliberately not the record's: Files matches its account on the name alone and makes one for a
+// name it does not know, and all an account holds (preferences, share links) lives in its cache
+// area, which no undo or restore brings back. A name that never changes is one Files never loses
+// the user by, whatever record a restore brings.
 const User = "owner"
 
 // Dir is Files' own directory on the guest, mounted read-only at /briard in its container: its
@@ -92,11 +91,10 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 }
 
 // Prepare materialises Files' directory and the view's root on this node, before the container
-// starts.
-//
-// THE SECRET IS KEPT FOR THE BOOT, never rotated per converge as the inbound token is: converge
-// restarts only the apps whose units changed, so a secret minted anew would leave a running Files
-// verifying against the old one while the proxy signs with the new. /run ends it with the boot.
+// starts. The secret is kept for the boot, never rotated per converge as the inbound token is:
+// converge restarts only the apps whose units changed, so a secret minted anew would leave a
+// running Files verifying against the old one while the proxy signs with the new. /run ends it
+// with the boot.
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	if m.Name != Name {
 		return nil

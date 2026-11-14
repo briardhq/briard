@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 )
 
-// THE WINDOW'S WORDS, apart from the Windows calls that show them (window_windows.go): one page
+// The window's words, apart from the Windows calls that show them (window_windows.go): one page
 // while the install runs -- a moving bar under the step it is on, since nothing the install runs
 // reports how far along it is -- and the page it ends on, chosen by its exit code.
 

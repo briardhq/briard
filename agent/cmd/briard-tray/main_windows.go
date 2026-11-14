@@ -24,7 +24,7 @@ import (
 	"briard.io/shared/api"
 )
 
-// THE WIN32 HALF: one hidden window, which owns the notification-area icon and receives its
+// The Win32 half: one hidden window, which owns the notification-area icon and receives its
 // clicks, a message loop on a locked thread, and a poll beside it. Everything the icon does is on
 // the window's thread; the poll and the menu's actions run off it and post back.
 //
@@ -210,7 +210,7 @@ func main() {
 		if open {
 			class, _ := windows.UTF16PtrFromString("BriardTray")
 			if w, _, _ := findWindow.Call(uintptr(unsafe.Pointer(class)), 0); w != 0 {
-				// The person clicked THIS process, so only it may bring a window to the front; the
+				// The person clicked this process, so only it may bring a window to the front; the
 				// running tray's message box would open behind whatever has the focus without it.
 				var pid uint32
 				getWindowThreadPID.Call(w, uintptr(unsafe.Pointer(&pid)))
@@ -247,7 +247,7 @@ func main() {
 		translateMessage.Call(uintptr(unsafe.Pointer(&m)))
 		dispatchMessage.Call(uintptr(unsafe.Pointer(&m)))
 	}
-	// AN UPDATE REPLACED THIS PROGRAM: the new one takes over. The mutex goes first, or it would
+	// An update replaced this program: the new one takes over. The mutex goes first, or it would
 	// find this one still holding the session.
 	if t.relaunch {
 		windows.CloseHandle(mutex)

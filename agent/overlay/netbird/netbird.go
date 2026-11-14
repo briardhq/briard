@@ -1,13 +1,11 @@
-// Package netbird implements overlay.OverlayProvider against NetBird, hosted
-// (netbird.io, the default ManagementURL) or self-hosted. It drives the netbird
-// client CLI against a per-node daemon (the system service owns the daemon
-// lifecycle; this Provider issues up/status/down against it), so one Provider
-// manages one node's overlay membership.
+// Package netbird implements overlay.OverlayProvider against NetBird, hosted (netbird.io, the
+// default ManagementURL) or self-hosted. It drives the netbird client CLI against a per-node daemon
+// (the system service owns the daemon lifecycle; this Provider issues up/status/down against it),
+// so one Provider manages one node's overlay membership.
 //
-// Enrollment is coordinator-mediated: the coordinator mints the setup key (it
-// holds the management token; the node never does -- the same stance as cert
-// issuance) and hands it to the node, which only *consumes* it here via
-// EnrollNode.
+// Enrollment is coordinator-mediated: the coordinator mints the setup key (it holds the management
+// token; the node never does -- the same stance as cert issuance) and hands it to the node, which
+// only *consumes* it here via EnrollNode.
 package netbird
 
 import (
