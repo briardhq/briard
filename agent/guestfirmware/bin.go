@@ -14,42 +14,40 @@ import (
 	"time"
 )
 
-// THE PUSH PROTOCOL: every briard binary the guest runs
-// rides the HOST bundle, and the host dresses the guest with them over this channel -- at
-// bring-up, after a host commit, after any guest restart. The image bakes ONE binary,
-// briard-guest-firmware, whose whole content is this protocol -- these three verbs, the
-// handshake, os.poweroff -- so the guest chain moves when the protocol moves and not when the
-// agent does. The guest AGENT, the reverse proxy and the dashboard exist in the guest
-// only as pushed files. A pushed set lives in a disposable directory and is what the units run
-// until the next boot.
+// The push protocol: every briard binary the guest runs rides the host bundle, and the host
+// dresses the guest with them over this channel at bring-up, after a host commit, and after any
+// guest restart. The image bakes one binary, briard-guest-firmware, whose whole content is this
+// protocol (these three verbs, the handshake, os.poweroff), so the guest chain moves when the
+// protocol moves and not when the agent does. The guest agent, the reverse proxy and the
+// dashboard exist in the guest only as pushed files; a pushed set lives in a disposable directory
+// and is what the units run until the next boot.
 //
-// The set commits as ONE, or not at all:
+// The set commits as one, or not at all:
 //
 //	bin.stage     every binary lands as <name>.next, verified (sha256 over the whole file)
 //	bin.test      every staged file is run with --test-launch; any failure discards the whole
 //	              staged set and the dress is refused with nothing armed -- the cheap gate, and on
 //	              a secondary the only one
-//	bin.activate  arms every name's single-use trial flag and restarts ONLY the agent's unit
+//	bin.activate  arms every name's single-use trial flag and restarts only the agent's unit
 //
 // The trial agent's start is the verdict (BinStartup): it try-restarts the earliest running web
-// unit in chain order -- a secondary runs none and the verdict is immediate -- and the pickers of
+// unit in chain order (a secondary runs none and the verdict is immediate), and the pickers of
 // that unit and of the one the chain carries with it, flags consumed, exec the staged files. Both
 // units are Type=notify with a short start timeout, so `try-restart` returning is the outcome:
-// READY, or a failure. A failed web unit has ALREADY reverted itself by then: its auto-restart
-// (2 s, direct mode) finds the flag consumed and execs the committed file; one failed start out
-// of the unit's budget, which is why a failed upgrade never demotes (the promotion hold fires on
-// start-limit exhaustion only -- agent/guestagent/units.go, chainMemberFailure). A passing
-// verdict opens the control port and then COMMITS, in this process and before a single verb is
-// served (BinCommit): every staged name plus the release id together. A failing verdict exits 1
-// without opening the port; the agent's own picker brings the committed agent back -- or the
-// FIRMWARE, when the first dress is what failed and nothing is committed yet -- and that start
-// runs the AFTERMATH rule: staged files present on a non-trial start mean the set failed --
-// discard them and put every running web unit still on its staged copy back on the committed
-// file, whichever of the three failed (a failed reverse proxy reverted itself; a failed
-// dashboard or agent left the reverse proxy on the staged file).
+// READY, or a failure. A failed web unit has already reverted itself by then: its auto-restart
+// (2 s, direct mode) finds the flag consumed and execs the committed file, at a cost of one failed
+// start out of the unit's budget, which is why a failed upgrade never demotes (the promotion hold
+// fires on start-limit exhaustion only -- agent/guestagent/units.go, chainMemberFailure).
 //
-// The host reads the outcome in the next handshake's Bundle: the pushed release means the set
-// took; anything else means it was refused, recorded for good.
+// A passing verdict opens the control port and then commits, in this process and before a single
+// verb is served (BinCommit): every staged name plus the release id together. A failing verdict
+// exits 1 without opening the port; the agent's own picker brings the committed agent back (or the
+// firmware, when the first dress is what failed and nothing is committed yet), and that start runs
+// the aftermath rule: staged files on a non-trial start mean the set failed, so discard them and
+// put every running web unit still on its staged copy back on the committed file, whichever of the
+// three failed (a failed reverse proxy reverted itself; a failed dashboard or agent left the
+// reverse proxy on the staged file). The host reads the outcome in the next handshake's Bundle:
+// the pushed release means the set took; anything else means it was refused, recorded for good.
 //
 // Frozen contract: the verbs are versioned additively.
 const (
@@ -93,7 +91,7 @@ var binUnits = map[string]string{
 }
 
 // BinNames is the set, the only list of its names (the picker handles one name at a time): the
-// web units first, the guest agent LAST -- its own unit is the one bin.activate restarts, and its
+// web units first, the guest agent last -- its own unit is the one bin.activate restarts, and its
 // start is the verdict on the others. The web units' trial order is webNames, not this.
 var BinNames = []string{"briard-dashboard", "briard-reverse-proxy", selfBin}
 
@@ -101,15 +99,14 @@ var BinNames = []string{"briard-dashboard", "briard-reverse-proxy", selfBin}
 const selfBin = "briard-guest-agent"
 
 // webNames are the set minus the agent: the chain members the trial agent try-restarts, in
-// PROMOTER CHAIN ORDER (shared/chain Members: ... vip -> apps -> reverse-proxy -> dashboard),
-// and the order is load-bearing. The guest agent writes each member `Requires=`/`After=` the
-// previous one (agent/guestagent/units.go), so a restart of the reverse proxy tears down and
-// rebuilds the dashboard with it. Restarting the dashboard FIRST and the reverse proxy second
-// cancels the dashboard's in-flight start job -- and a member whose start job fails that way
-// fires `OnFailure=` exactly like one that failed on its own (the same trap units.go records for
-// a lost promotion race), demoting the node mid-upgrade (measured on install-macvtap). Earliest
-// first, and a web unit the earlier one's restart already carried is verified rather than
-// restarted again (trialVerdict).
+// promoter chain order (shared/chain Members: ... vip -> apps -> reverse-proxy -> dashboard), and
+// the order is load-bearing. The guest agent writes each member `Requires=`/`After=` the previous
+// one (agent/guestagent/units.go), so restarting the reverse proxy tears down and rebuilds the
+// dashboard with it. Restarting the dashboard first and the reverse proxy second cancels the
+// dashboard's in-flight start job, and a member whose start job fails that way fires `OnFailure=`
+// exactly like one that failed on its own (the trap units.go records for a lost promotion race),
+// demoting the node mid-upgrade (measured on install-macvtap). Earliest first, and a web unit the
+// earlier one's restart already carried is verified rather than restarted again (trialVerdict).
 var webNames = []string{"briard-reverse-proxy", "briard-dashboard"}
 
 // TestLaunchFlag is the argv every briard guest binary accepts as its cheap self-test: start,
@@ -127,28 +124,27 @@ const (
 )
 
 // The two directories, overridable for tests (BRIARD_BIN_DIR, BRIARD_BIN_RUN). BinDir is in the
-// guest's DISPOSABLE scratch, emptied at every boot: a pushed binary does not survive a boot,
-// which is the design -- every boot starts as firmware and the host re-dresses it. ⚠️ NOT under
-// /var/lib/briard: in the guest that path is the REPLICATED DATA VOLUME, mounted only while the
-// node holds the house -- binaries put there before promotion vanish under the mount, and
+// guest's disposable scratch, emptied at every boot: by design a pushed binary does not survive a
+// boot, so every boot starts as firmware and the host re-dresses it. ⚠️ Not under
+// /var/lib/briard: in the guest that path is the replicated data volume, mounted only while the
+// node holds the house, so binaries put there before promotion vanish under the mount, and
 // binaries running from it hold the volume open so the node cannot demote (measured on
-// install-macvtap: "Device is held open by someone"). The run dir is tmpfs: the trial flags,
-// single-use, read by the picker, and the `.ran` markers it writes.
+// install-macvtap: "Device is held open by someone"). The run dir is tmpfs: the single-use trial
+// flags the picker reads, and the `.ran` markers it writes.
 const (
 	defaultBinDir    = "/var/lib/briard-bin"
 	defaultBinRunDir = "/run/briard-bin"
 	releaseFile      = "RELEASE"
 	nextSuffix       = ".next"
 	partSuffix       = ".part"
-	updateSuffix     = ".update" // armed for a trial; the picker DELETES it as it execs (single-use)
+	updateSuffix     = ".update" // armed for a trial; the picker deletes it as it execs (single-use)
 	ranSuffix        = ".ran"    // what the picker exec'd on the last start: trial | pushed | baked
 )
 
-// BinDir is exported because the units the PUSHED AGENT writes that exec the agent directly
-// have to name the committed path (agent/guestagent/units.go, agent/quadlet/render.go) -- the
-// same path this package's commit creates, so a second spelling of it would be a second thing to
-// keep in step. It stays a function rather than a const for the reason the override exists:
-// tests move the directory.
+// BinDir is exported because the units the pushed agent writes that exec the agent directly must
+// name the committed path (agent/guestagent/units.go, agent/quadlet/render.go), the same path this
+// package's commit creates; a second spelling would be a second thing to keep in step. A function
+// rather than a const for the reason the override exists: tests move the directory.
 func BinDir() string { return binDir() }
 
 func binDir() string {
@@ -228,7 +224,7 @@ func fileSHA256(path string) (string, error) {
 }
 
 // testLaunch runs every named staged file with --test-launch, each under its own timeout, in
-// order. The first failure discards the WHOLE staged set (the invariant BinStartup's aftermath
+// order. The first failure discards the whole staged set (the invariant BinStartup's aftermath
 // rule relies on: staged files exist only between a stage and its verdict) and names the binary
 // in the error, so the host's log says which one.
 func testLaunch(ctx context.Context, x Executor, t BinTest) error {
@@ -264,7 +260,7 @@ func discardStaged() {
 		os.Remove(filepath.Join(dir, n+nextSuffix))
 		os.Remove(filepath.Join(dir, n+partSuffix))
 		os.Remove(filepath.Join(run, n+updateSuffix))
-		// NOT the `.ran` markers: they describe what each unit is RUNNING, which discarding a
+		// Not the `.ran` markers: they describe what each unit is running, which discarding a
 		// staged set does not change. The aftermath reads them right after this to decide which
 		// web units still need putting back, and the picker rewrites each as its unit restarts.
 	}
@@ -282,16 +278,14 @@ func stagedSet() []string {
 	return s
 }
 
-// activate arms the trial flags of every named binary and restarts the agent's own unit --
-// only that one: the web units are restarted by the TRIAL agent, whose start is the verdict on them
-// (BinStartup). It refuses to arm a name whose .next is not staged (the picker would exec
-// nothing), refuses a set without the agent (nothing would trial it), and refuses the release
-// id unless it is a plain segment (it becomes a file's contents and a handshake field).
-//
-// The restart is of this agent's OWN unit, so it is deferred to a transient timer outside this
-// cgroup (below) and asked for on a context detached from the dispatch one, for the reason
-// os.poweroff spells out: the SIGTERM it earns would otherwise cancel the command that asked
-// for it.
+// activate arms the trial flags of every named binary and restarts only the agent's own unit: the
+// web units are restarted by the trial agent, whose start is the verdict on them (BinStartup). It
+// refuses to arm a name whose .next is not staged (the picker would exec nothing), a set without
+// the agent (nothing would trial it), and a release id that is not a plain segment (it becomes a
+// file's contents and a handshake field). Because the restart is of this agent's own unit, it is
+// deferred to a transient timer outside this cgroup (below) and asked for on a context detached
+// from the dispatch one, for the reason os.poweroff spells out: the SIGTERM it earns would
+// otherwise cancel the command that asked for it.
 func activate(ctx context.Context, x Executor, a BinActivation) error {
 	if a.Release == "" || strings.ContainsAny(a.Release, "/ \n") {
 		return fmt.Errorf("bin.activate: bad release id %q", a.Release)
@@ -326,12 +320,12 @@ func activate(ctx context.Context, x Executor, a BinActivation) error {
 			return err
 		}
 	}
-	// OUR OWN UNIT, and the reason this is not a plain restart: the restart SIGTERMs this
-	// process's whole cgroup -- `systemctl` included -- before it returns, so the command
-	// dies with `signal: terminated` and the host reads a push that WORKED as a failure
-	// (measured on install-macvtap; os.poweroff meets the same trap). A transient timer runs
-	// OUTSIDE this cgroup and fires after the reply has left; the host then meets the restart
-	// as a dropped channel and reconnects.
+	// Our own unit, and the reason this is not a plain restart: the restart SIGTERMs this
+	// process's whole cgroup, `systemctl` included, before it returns, so the command dies with
+	// `signal: terminated` and the host reads a push that worked as a failure (measured on
+	// install-macvtap; os.poweroff meets the same trap). A transient timer runs outside this
+	// cgroup and fires after the reply has left; the host then meets the restart as a dropped
+	// channel and reconnects.
 	rctx := context.WithoutCancel(ctx)
 	out, err := x.Run(rctx, "systemd-run", "--quiet", "--collect", "--on-active=1", "--timer-property=AccuracySec=100ms",
 		"systemctl", "restart", binUnits[selfBin])
@@ -341,23 +335,23 @@ func activate(ctx context.Context, x Executor, a BinActivation) error {
 	return nil
 }
 
-// BinStartup is the push protocol's start-time duty, run by `run --guest` BEFORE the control
-// port is opened -- the host reconnects the moment the port opens and reads the release this
-// process runs, so the port must not open until that answer is decided.
+// BinStartup is the push protocol's start-time duty, run by `run --guest` before the control port
+// opens: the host reconnects the moment the port opens and reads the release this process runs,
+// so the port must not open until that answer is decided.
 //
-// A TRIAL start -- the picker's own marker says it ran the staged copy -- is the verdict on the
-// whole set: each web unit that is running is brought onto its staged copy -- try-restarted
-// (blocking, so systemctl's exit IS the outcome of a Type=notify unit's start) unless the earlier
-// member's restart already carried it -- and must be active afterwards AND still on its staged
-// copy (trialVerdict). Any failure returns an error and the caller exits 1 without opening the
-// port; the web unit that failed has already reverted itself, its arm flag consumed and its
-// marker no longer saying trial. A passing verdict returns nil, and the caller opens the port,
-// commits the set (BinCommit) and only then says READY and serves.
+// A trial start (the picker's own marker says it ran the staged copy) is the verdict on the whole
+// set: each running web unit is brought onto its staged copy, try-restarted (blocking, so
+// systemctl's exit is the outcome of a Type=notify unit's start) unless the earlier member's
+// restart already carried it, and must be active afterwards and still on its staged copy
+// (trialVerdict). Any failure returns an error and the caller exits 1 without opening the port;
+// the web unit that failed has already reverted itself, its arm flag consumed and its marker no
+// longer saying trial. A passing verdict returns nil, and the caller opens the port, commits the
+// set (BinCommit) and only then says READY and serves.
 //
-// A NON-TRIAL start with staged files present is the aftermath of a failed trial (the invariant:
-// staged files exist only between a stage and its verdict): the set is discarded and every
-// running web unit still on its staged copy is put back on the committed file, whichever of the
-// three actually failed.
+// A non-trial start with staged files present is the aftermath of a failed trial (the invariant:
+// staged files exist only between a stage and its verdict): the set is discarded and every running
+// web unit still on its staged copy is put back on the committed file, whichever of the three
+// actually failed.
 func BinStartup(ctx context.Context, x Executor, logf func(string, ...any)) error {
 	if pickerRan(selfBin) == "trial" {
 		return trialVerdict(ctx, x, logf)
@@ -365,13 +359,13 @@ func BinStartup(ctx context.Context, x Executor, logf func(string, ...any)) erro
 	if staged := stagedSet(); len(staged) > 0 {
 		logf("bin: a staged set (%s) was left behind by a trial that did not commit: discarding it and putting both web units back on the committed binaries", strings.Join(staged, ", "))
 		discardStaged()
-		// ONE restart, at the EARLIEST web unit in chain order, blocking -- the same rule the trial
-		// follows, and for the same reason (webNames): everything ordered after a member comes back
-		// with it in one transaction, so one call suffices, and a second overlapping one would
-		// cancel the start jobs the first had queued (a cancelled start job fires `OnFailure=`).
-		// The staged files are already gone, so every picker in that transaction lands on the
-		// committed binary. A web unit the transaction did not reach still reads `trial` and is
-		// restarted by the next turn of this loop.
+		// One restart, at the earliest web unit in chain order, blocking: the trial's rule, for the
+		// same reason (webNames). Everything ordered after a member comes back with it in one
+		// transaction, so one call suffices, and a second overlapping one would cancel the start
+		// jobs the first had queued (a cancelled start job fires `OnFailure=`). The staged files
+		// are already gone, so every picker in that transaction lands on the committed binary; a
+		// web unit the transaction did not reach still reads `trial` and is restarted by the next
+		// turn of this loop.
 		for _, n := range webNames {
 			if !unitActive(ctx, x, binUnits[n]) || pickerRan(n) != "trial" {
 				continue // not running here, or already carried back by an earlier member
@@ -387,33 +381,32 @@ func BinStartup(ctx context.Context, x Executor, logf func(string, ...any)) erro
 
 // trialVerdict is the trial agent's half of BinStartup.
 //
-// A FAILED UPGRADE MUST NEVER DEMOTE, and what that takes is ONE RESTART TRANSACTION AT A TIME,
-// walked in chain order. Three separate things have to be true, and the loop below is arranged
-// around them:
+// A failed upgrade must never demote, and that takes one restart transaction at a time, walked in
+// chain order. The loop below is arranged around three separate facts:
 //
-//  1. A web unit whose staged copy exits 1 fires NO hook. systemd's rule: an auto-restart under
-//     `RestartMode=direct` skips failed/inactive and skips `OnFailure=`, for a start that FAILED
-//     exactly as for a crash while running (`Restart=` covers both). It just comes back on the
+//  1. A web unit whose staged copy exits 1 fires no hook: under `RestartMode=direct` systemd's
+//     auto-restart skips failed/inactive and skips `OnFailure=`, for a start that failed exactly
+//     as for a crash while running (`Restart=` covers both), and the unit just comes back on the
 //     committed binary. So the failure this trial deliberately provokes is free.
-//  2. What DOES fire the hook, besides a member with no restart left, is a member whose START JOB
-//     IS CANCELLED. Restarting a chain member stops everything ordered after it and enqueues
-//     their restarts in the same transaction; a SECOND restart issued while that is in flight
-//     tears down what the first just started, and the cancelled start job is a job-level failure
-//     -- `RestartMode=direct` does not cover it and no start limit is involved. units.go records
-//     the same trap for a lost promotion race: a member whose start job fails with result
-//     `dependency` fires `OnFailure=` exactly like one that failed on its own. Restarting the
-//     dashboard first and the reverse proxy second demotes a node mid-upgrade this way
-//     (measured on install-macvtap). Hence: earliest member first, blocking, and a web unit
-//     the earlier restart already carried is verified rather than restarted again.
+//  2. What does fire the hook, besides a member with no restart left, is a member whose start job
+//     is cancelled. Restarting a chain member stops everything ordered after it and enqueues their
+//     restarts in the same transaction; a second restart issued while that is in flight tears
+//     down what the first just started, and the cancelled start job is a job-level failure that
+//     `RestartMode=direct` does not cover, with no start limit involved -- the trap units.go
+//     records for a lost promotion race (a member whose start job fails with result `dependency`
+//     fires `OnFailure=` exactly like one that failed on its own). Restarting the dashboard first
+//     and the reverse proxy second demotes a node mid-upgrade this way (measured on
+//     install-macvtap); hence earliest member first, blocking, and a web unit the earlier restart
+//     already carried is verified rather than restarted again.
 //  3. The start budget, the ordinary way the hook fires: `StartLimitBurst` inside
 //     `StartLimitIntervalSec`, 5 in 300 s here (agent/guestagent/units.go, chainMemberFailure).
 //     A trial spends up to three, so it clears the counter first (`reset-failed` zeroes the
 //     start rate limit and the restart counter -- systemctl(1)) and cannot land a web unit that
 //     had already burned starts over the limit.
 //
-// The `.ran` check below is what keeps a failed copy from being COMMITTED: a committed web
-// binary that exits 1 fails every later start, spends the budget in ~10 s, and the promotion
-// hold then fires correctly -- on a member that genuinely cannot start.
+// The `.ran` check below keeps a failed copy from being committed: a committed web binary that
+// exits 1 fails every later start, spends the budget in ~10 s, and the promotion hold then fires
+// correctly, on a member that genuinely cannot start.
 func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) error {
 	release := "?"
 	if b, err := os.ReadFile(filepath.Join(binDir(), releaseFile+nextSuffix)); err == nil {
@@ -425,21 +418,21 @@ func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) er
 			logf("bin: trial of %s: %s is not running here (not the primary); its staged file commits on the cheap gate alone", release, n)
 			continue
 		}
-		// RESTART ONLY WHAT IS STILL ARMED, which in the ordinary case is the FIRST web unit alone.
-		// The arm flag is single-use and consumed by the picker, so a web unit still holding one has
-		// not started since the activation; a web unit whose flag is gone was carried by the restart
-		// of the member before it (chain propagation, above) and is already on its staged copy.
-		// Restarting such a web unit again would find no flag, run the COMMITTED copy, and refuse a
-		// trial that is passing -- besides being the second transaction that cancels start jobs.
+		// Restart only what is still armed, which ordinarily is the first web unit alone. The arm
+		// flag is single-use and consumed by the picker, so a web unit still holding one has not
+		// started since the activation; one whose flag is gone was carried by the restart of the
+		// member before it (chain propagation, above) and is already on its staged copy. Restarting
+		// such a web unit again would find no flag, run the committed copy, and refuse a trial that
+		// is passing -- besides being the second transaction that cancels start jobs.
 		if !armed(n) {
 			logf("bin: trial of %s: %s came up with the member before it; verifying where it stands", release, n)
 		} else {
-			// A FULL START BUDGET FIRST. Best-effort: a reset that fails leaves the budget as it
+			// A full start budget first. Best-effort: a reset that fails leaves the budget as it
 			// was, and the trial is worth attempting on a web unit that has not been failing anyway.
 			if out, err := x.Run(ctx, "systemctl", "reset-failed", unit); err != nil {
 				logf("bin: trial of %s: could not clear %s's start budget first (%v: %s); trialling anyway", release, n, err, strings.TrimSpace(string(out)))
 			}
-			// BLOCKING: the next member is not touched until this transaction has finished.
+			// Blocking: the next member is not touched until this transaction has finished.
 			tctx, cancel := context.WithTimeout(ctx, webTrialTimeout)
 			out, err := x.Run(tctx, "systemctl", "try-restart", unit)
 			cancel()
@@ -450,9 +443,9 @@ func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) er
 		if !unitActive(ctx, x, unit) {
 			return fmt.Errorf("bin: trial of %s REFUSED: %s is not active after its restart", release, n)
 		}
-		// WHAT IT ACTUALLY RAN, and the reason the two checks above are not enough: a staged copy
+		// What it actually ran, and the reason the two checks above are not enough: a staged copy
 		// that exits 1 fails its start, systemd's own auto-restart brings the unit back on the
-		// COMMITTED binary 2 s later, and the restart job then reports success -- active, exit 0,
+		// committed binary 2 s later, and the restart job then reports success -- active, exit 0,
 		// nothing to see (measured on install-macvtap). The picker leaves the answer behind.
 		if ran := pickerRan(n); ran != "trial" {
 			return fmt.Errorf("bin: trial of %s REFUSED: %s is active but running the %s binary, not the staged one -- its start failed and systemd restarted it onto what it ran before", release, n, ran)
@@ -463,31 +456,30 @@ func trialVerdict(ctx context.Context, x Executor, logf func(string, ...any)) er
 	return nil
 }
 
-// BinCommit is the ONE commit of the pushed set -- every staged name plus RELEASE, moved
-// together, and every flag cleared. It runs IN THE AGENT, after the control port is open and
-// BEFORE the port is served or READY is sent.
+// BinCommit is the one commit of the pushed set: every staged name plus RELEASE, moved together,
+// and every flag cleared. It runs in the agent, after the control port is open and before the
+// port is served or READY is sent.
 //
-// ⚠️ NOT AN ExecStartPost run after READY=1, which reads as the tighter gate (a start systemd has
-// not seen succeed cannot commit) and is not: the host does not watch READY -- it cannot, it is
-// outside the guest -- it watches the PORT, opened before READY. In a window [port open, commit]
+// ⚠️ Not an ExecStartPost run after READY=1, which reads as the tighter gate (a start systemd has
+// not seen succeed cannot commit) and is not: the host does not watch READY (it cannot; it is
+// outside the guest), it watches the port, opened before READY. In a window [port open, commit]
 // the host reconnects, handshakes, judges the guest dressed and starts sending bring-up verbs,
-// while briard-node-storage.service names <binDir>/briard-guest-agent DIRECTLY
+// while briard-node-storage.service names <binDir>/briard-guest-agent directly
 // (agent/guestagent/units.go: through the picker it would arm a trial every time storage came
-// up). Measured on the fleet tier: storage bring-up reached the guest 12 ms before the commit
-// did, exec'd a path that did not exist yet, 203/EXEC -- and because `systemctl start` on a
-// oneshot returns the failure, a healthy image upgrade rolled back. The deadman lands in the
-// same window on every dress and survives it only because it retries every 2 s; the units
-// bring-up starts get one attempt each.
+// up). Measured on the fleet tier: storage bring-up reached the guest 12 ms before the commit did,
+// exec'd a path that did not exist yet, 203/EXEC, and because `systemctl start` on a oneshot
+// returns the failure, a healthy image upgrade rolled back. The deadman lands in the same window
+// on every dress and survives it only because it retries every 2 s; the units bring-up starts get
+// one attempt each.
 //
-// Committing here closes it by construction: the set is final before anything can ask for it.
-// What is given up is the guarantee that a binary which trialled, opened the port and then died
-// before READY cannot commit itself -- a datagram send's worth of stretch, and a binary that
-// dies immediately AFTER READY commits with the same result. The verdict is the pushed binary's
-// own (BinStartup); the guarantee that survives a wrong one is not this hook but the update
-// timer below the agent, which fetches, verifies and restarts again regardless.
-//
-// Only a TRIAL start commits. The flags are cleared on EVERY start: a `.ran` marker left behind
-// by an earlier start would otherwise be read as this one's.
+// Committing here closes the window by construction: the set is final before anything can ask for
+// it. What is given up is the guarantee that a binary which trialled, opened the port and then
+// died before READY cannot commit itself: a datagram send's worth of stretch, and a binary that
+// dies immediately after READY commits with the same result. The verdict is the pushed binary's
+// own (BinStartup); the guarantee that survives a wrong one is not this hook but the update timer
+// below the agent, which fetches, verifies and restarts again regardless. Only a trial start
+// commits; the flags are cleared on every start, because a `.ran` marker left behind by an earlier
+// start would otherwise be read as this one's.
 func BinCommit(ctx context.Context, x Executor, logf func(string, ...any)) {
 	dir, run := binDir(), binRunDir()
 	if pickerRan(selfBin) == "trial" {
@@ -530,7 +522,7 @@ func committedRelease() string {
 }
 
 // armed reports whether n still holds its single-use arm flag: it has not started since the
-// activation. The picker consumes the flag as it execs, so this is also "has NOT been carried by
+// activation. The picker consumes the flag as it execs, so this is also "has not been carried by
 // an earlier chain member's restart".
 func armed(name string) bool {
 	_, err := os.Stat(filepath.Join(binRunDir(), name+updateSuffix))
@@ -558,13 +550,12 @@ func unitActive(ctx context.Context, x Executor, unit string) bool {
 }
 
 // runningBundle is what the handshake reports: the bundle id when this process runs from the
-// pushed directory, "" when it runs the firmware.
-//
-// It reads the COMMITTED file and nothing else, and that is enough because BinCommit runs before
-// this process serves anything: by the time any handshake is answered RELEASE holds the id just
-// committed. (A handshake answered before the commit would hand the host the OLD id and have a
-// good dress recorded as a permanent revert.) A trial that FAILS never opens the port at all, so
-// this can only ever report a release the web units earned.
+// pushed directory, "" when it runs the firmware. It reads the committed file and nothing else,
+// which is enough because BinCommit runs before this process serves anything: by the time any
+// handshake is answered RELEASE holds the id just committed (a handshake answered before the
+// commit would hand the host the old id and have a good dress recorded as a permanent revert). A
+// trial that fails never opens the port at all, so this can only ever report a release the web
+// units earned.
 func runningBundle() string {
 	exe, err := os.Executable()
 	if err != nil {

@@ -13,38 +13,32 @@ import (
 )
 
 // notArtifacts are the channel files that describe the artifact set rather than belong to it:
-// the manifest cannot list itself, nor its signature. Nothing else is excluded, because a
-// release directory holds exactly what its manifest names -- THE INSTALLERS INCLUDED (install.sh;
-// install.ps1 and briard-setup.exe on the windows arm), ordinary artifacts that `promote`
-// byte-copies to the channel root. The root copy is served unsigned, because the one-liner
-// fetches it before anything exists that could verify a signature, and this manifest hashing it
-// is the only thing that ties those bytes to a release.
+// the manifest cannot list itself, nor its signature. Nothing else is excluded: a release
+// directory holds exactly what its manifest names, the installers included (install.sh;
+// install.ps1 and briard-setup.exe on the windows arm) as ordinary artifacts that `promote`
+// byte-copies to the channel root. That copy is served unsigned (the one-liner fetches it before
+// anything could verify a signature), so this manifest's hash is the only tie to a release.
 var notArtifacts = map[string]bool{
 	ManifestName:             true,
 	ManifestName + sigSuffix: true,
 }
 
-// WriteManifest describes every artifact in dir and writes dir/manifest.json — the exact bytes
-// the release then signs and FetchVerified later reads. chain names the release line the
-// directory belongs to (ChainBriard, ChainVM), platform the arm within it (every
-// chain has one) and version the release id; all go INSIDE the signed bytes, so a manifest
-// served from a pointer path can say which release it is and where its artifacts live.
+// WriteManifest describes every artifact in dir (every regular file but notArtifacts) and writes
+// dir/manifest.json, the exact bytes the release then signs and FetchVerified later reads. chain
+// names the release line (ChainBriard, ChainVM), platform the arm within it (every chain has one),
+// version the release id; all go inside the signed bytes, so a manifest served from a pointer
+// path can say which release it is and where its artifacts live. Entries are sorted by name so
+// the same directory always produces the same bytes; a signed set that reordered itself would
+// churn the signature for no reason. system, minBriard and inputs are the vm chain's extra facts
+// (Manifest.System / MinBriard / Inputs) and vm the briard chain's (the vm release it pairs
+// with); each is refused on any other chain, because a briard manifest naming a closure would be
+// a lie the reader has no way to catch.
 //
-// ⚠️ THIS EXISTS SO THERE IS ONE IMPLEMENTATION OF THE FORMAT. The release pipeline writes
-// every manifest through it (`briard-agent --stage-manifest`), so the writer and the reader share
-// this file's types and the format cannot disagree with itself. A manifest hand-assembled
-// elsewhere -- a renamed field, a mode written in decimal by a human, a `Size` that drifted from
-// what the reader bounds on -- would ship a channel no agent could install, with no test on
-// either side to catch it.
-//
-// Every regular file in dir is an artifact except the ones that describe the set (notArtifacts).
-// Entries are sorted by name so the same directory always produces the same bytes — the manifest
-// is signed, and a set that reordered itself would churn the signature for no reason.
-//
-// system, minBriard and inputs are the vm chain's extra facts (Manifest.System / MinBriard /
-// Inputs) and vm is the briard chain's (the vm release this briard release pairs with);
-// each is refused on any other chain, because a briard manifest naming a closure would be a lie
-// the reader has no way to catch.
+// ⚠️ This exists so there is one implementation of the format: the release pipeline writes every
+// manifest through it (`briard-agent --stage-manifest`), so writer and reader share this file's
+// types and the format cannot disagree with itself. A manifest hand-assembled elsewhere (a
+// renamed field, a mode written in decimal by a human, a `Size` that drifted from what the reader
+// bounds on) would ship a channel no agent could install, with no test on either side to catch it.
 func WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs string) error {
 	if !validSegment(chain) {
 		return fmt.Errorf("install: bad chain name %q", chain)
@@ -82,11 +76,11 @@ func WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs 
 	if err != nil {
 		return fmt.Errorf("install: read staging dir %s: %w", dir, err)
 	}
-	// THE FLOOR IS TAKEN FROM THE TREE, NEVER FROM A PARAMETER. Every other fact
-	// here is something the pipeline knows and this function is told; the floor is something the
-	// CODE knows, so the binary that writes the manifest is the right one to answer it. Briard
-	// chain only: the VM image is replaced whole and has no past of its own to be too old for,
-	// and a floor there would be a second answer to a question nobody asked yet.
+	// The floor comes from the tree, never a parameter: every other fact here the pipeline knows
+	// and passes in, the floor the code knows, so the binary writing the manifest is the right one
+	// to answer it. Briard chain
+	// only: the VM image is replaced whole, with no past of its own to be too old for, and a floor
+	// there would be a second answer to a question nobody asked yet.
 	floor := ""
 	if chain == ChainBriard {
 		floor = MinUpgradeFrom

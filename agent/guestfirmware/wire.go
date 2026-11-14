@@ -12,11 +12,10 @@ import (
 	"time"
 )
 
-// The framing of the host<->guest control channel: length-prefixed JSON request/response over
-// any io.ReadWriteCloser -- a net.Pipe in tests, a virtio-serial port in the guest. It is the
-// guest link's only transport, and it lives in the FIRMWARE because the firmware is the half of
-// the protocol the image bakes: the pushed agent layers its own verbs on this framing
-// and never redefines it.
+// The framing of the host<->guest control channel: length-prefixed JSON request/response over any
+// io.ReadWriteCloser (a net.Pipe in tests, a virtio-serial port in the guest). It is the guest
+// link's only transport, and it lives in the firmware, the half of the protocol the image bakes:
+// the pushed agent layers its own verbs on this framing and never redefines it.
 
 const maxFrame = 8 << 20 // 8 MiB cap so a corrupt length prefix can't allocate wildly
 
@@ -75,12 +74,12 @@ func readFrame(r io.Reader, v any) error {
 // Conn is the host end: calls multiplexed over the single stream, matched to their replies
 // by id. Any number may be in flight; the guest answers them in whatever order it serves them.
 //
-// A call's deadline abandons THAT call -- its reply, if it ever comes, is dropped, and the
+// A call's deadline abandons that call -- its reply, if it ever comes, is dropped, and the
 // guest is told to stop it (VerbCancel), so a hung act does not hold the guest's act lane --
 // and leaves the channel up for everything else, with one exception that is the liveness rule:
 // missLimit calls unanswered at their deadlines within missWindow close the channel, so the host
 // re-dials (which restarts the guest agent, as every new connection does) and, failing that,
-// climbs the recovery ladder. ONE unanswered call is never enough, whatever else did or did not
+// climbs the recovery ladder. One unanswered call is never enough, whatever else did or did not
 // answer meanwhile: a handler that waits on something outside the agent -- an in-guest HTTP
 // probe of an app that is slow to answer -- leaves every call in flight unanswered at once, and
 // a slow app is not a dead guest. A guest that answers nothing misses every call it is sent and
@@ -124,14 +123,13 @@ type miss struct {
 	verb string
 }
 
-// NewConn wraps a stream in a host-side Conn. Request ids start from the WALL CLOCK, not
-// from 1, because the stream OUTLIVES the process at both ends: QEMU keeps the guest port
-// open across a host re-dial, so an agent killed mid-call leaves its reply sitting in the
-// channel for its successor to read. A reply whose id nothing is waiting on is dropped, which
-// separates the two sessions only while their ids differ -- and ids that restart at 1
-// collide on the one frame every session has, the reply to its hello. A clock base makes a
-// later session's ids strictly greater than an earlier session's, so a leftover frame is
-// decidably stale rather than coincidentally distinguishable.
+// NewConn wraps a stream in a host-side Conn. Request ids start from the wall clock, not 1,
+// because the stream outlives the process at both ends: QEMU keeps the guest port open across a
+// host re-dial, so an agent killed mid-call leaves its reply in the channel for its successor to
+// read. A reply whose id nothing waits on is dropped, which separates two sessions only while
+// their ids differ, and ids restarting at 1 collide on the one frame every session has, the reply
+// to its hello. A clock base makes a later session's ids strictly greater than an earlier one's,
+// so a leftover frame is decidably stale rather than coincidentally distinguishable.
 func NewConn(rw io.ReadWriteCloser) *Conn {
 	return &Conn{rw: rw, nextID: uint64(time.Now().UnixNano()), pending: map[uint64]chan response{}, readDone: make(chan struct{})}
 }
@@ -236,7 +234,7 @@ func (c *Conn) Call(ctx context.Context, verb string, arg, reply any) error {
 			_ = c.rw.Close()
 			return fmt.Errorf("%w: %w (%s)", ErrChannelDown, ctx.Err(), missedVerbs(down))
 		case !alive:
-			// Nothing has EVER arrived here: not a guest that stopped answering but one that
+			// Nothing has ever arrived here: not a guest that stopped answering but one that
 			// has not answered yet -- the handshake's case, where the guest agent may be
 			// between an EOF and its restart and the request written meanwhile is lost with
 			// the port it held. The caller decides; sending again on this same connection is
@@ -313,7 +311,7 @@ func ctxOr(ctx context.Context, err error) error {
 // ErrChannelDown marks a transport-level failure of the control channel: a write or read
 // failed, or the guest left too many calls unanswered (Conn's liveness rule). The host re-dials
 // on it (host.Run's reconnect loop). A *verb* error -- the guest ran the request and returned an
-// error string -- is NOT this: the round-trip completed, the channel is fine, so callers see
+// error string -- is not this: the round-trip completed, the channel is fine, so callers see
 // the plain error and keep using the connection. Nor is a deadline on one call short of the
 // rule: that is the call's own context.DeadlineExceeded, and the channel stays up. When the
 // liveness rule does close it, the error wraps *both*, so a bounded op still sees its timeout
@@ -327,34 +325,33 @@ func channelDown(ctx context.Context, err error) error {
 // ServeFrames is the guest end: read requests, dispatch each to d in its own goroutine, write
 // responses as they complete, until the connection closes (returns nil on EOF) or ctx is done.
 //
-// TWO LANES. A verb for which act reports true takes the one act mutex, so acts run one at a
-// time in the order they arrived -- a pull, a converge, a format, a ring write never interleave.
-// Every other verb runs at once, beside whatever act is in flight: the handshake, a status
-// read, a health probe, the host's push of an alert copy all answer while an install pulls its
-// image, which is what lets the host tell a slow guest from a dead one. The host matches
-// replies by id, so answering out of order is the protocol working, not a fault.
+// Two lanes. A verb for which act reports true takes the one act mutex, so acts run one at a time
+// in arrival order: a pull, a converge, a format, a ring write never interleave. Every other verb
+// runs at once beside whatever act is in flight (the handshake, a status read, a health probe, the
+// host's push of an alert copy all answer while an install pulls its image), which is what lets
+// the host tell a slow guest from a dead one. The host matches replies by id, so answering out of
+// order is the protocol working, not a fault.
 //
-// ⚠️ CANCELLATION CLOSES THE CONNECTION HERE, AND ONLY BETWEEN REPLIES. The blocking read on a
+// ⚠️ Cancellation closes the connection here, and only between replies. The blocking read on a
 // virtio-serial port cannot be interrupted by a context, so something has to close the port out
-// from under it. Closing it the instant ctx is done would lose the in-flight replies -- and for
-// `os.poweroff` the reply lost is always the one the host is waiting on: the shutdown that verb
-// starts is what SIGTERMs this process, so the race is the guaranteed outcome, not a rare
-// interleaving. A lost reply reads as EOF, EOF is indistinguishable from a crashed agent, and the
-// host escalates to the ACPI power button on a guest that did exactly as it was asked.
+// from under it. Closing it the instant ctx is done would lose the in-flight replies, and for
+// `os.poweroff` the reply lost is always the one the host waits on: the shutdown that verb starts
+// is what SIGTERMs this process, so the race is the guaranteed outcome, not a rare interleaving.
+// A lost reply reads as EOF, indistinguishable from a crashed agent, and the host escalates to the
+// ACPI power button on a guest that did exactly as it was asked. So the close waits for every
+// reply owed (each handler holds the connection open for its run; the close takes it from all of
+// them at once) and nothing after it: the loop reads no further request once ctx is done, so the
+// wait is bounded by what was in flight. An act keeps running to its end whether the host is
+// listening or not, and the caller's own exit deadline remains the backstop for a handler that
+// never returns.
 //
-// So the close waits for every reply owed -- each handler holds the connection open for its
-// run, and the close takes it from all of them at once -- and nothing after it: the loop reads
-// no further request once ctx is done, so what the close waits for is bounded by what was in
-// flight. An act keeps running to its end whether the host is listening or not, and the caller's
-// own exit deadline remains the backstop for a handler that never returns.
-//
-// ...UNLESS THE HOST CANCELS IT. VerbCancel names a request in flight; the loop handles it here,
-// never d: the request's context is cancelled, exec.CommandContext kills its child, the handler
-// returns, and whatever it held -- the act mutex above all -- is free again. This is what the
-// host sends when a deadline abandons a call on a guest that is still answering (Conn.Call), and
-// it is what keeps a hung act from holding the guest's act lane until the next restart. A cancel
-// for an id nothing is running is a no-op, answered like any other request so the host's Conn
-// can drop the reply.
+// An act stops early only if the host cancels it: VerbCancel names a request in flight, and the
+// loop handles it here, never d. The request's context is cancelled, exec.CommandContext kills its
+// child, the handler returns, and whatever it held (the act mutex above all) is free again. The
+// host sends it when a deadline abandons a call on a guest that is still answering (Conn.Call);
+// it keeps a hung act from holding the guest's act lane until the next restart. A cancel for an
+// id nothing is running is a no-op, answered like any other request so the host's Conn can drop
+// the reply.
 func ServeFrames(ctx context.Context, rw io.ReadWriteCloser, d DispatchFunc, act func(verb string) bool) error {
 	var (
 		open    sync.RWMutex   // held (read) by every handler for its run; taken (write) to close

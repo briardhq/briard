@@ -1,38 +1,38 @@
 // Package selfupdate holds the on-disk half of the host-agent self-update: a flat layout the
 // updater moves by rename.
 //
-//	<base>/briard-agent        the COMMITTED binary -- what the OS service runs (mutable state, seeded
+//	<base>/briard-agent        the committed binary -- what the OS service runs (mutable state, seeded
 //	                           on install, since a /nix/store path can't be overwritten in place)
 //	<base>/manifest.json       the signed manifest of the committed release -- what an update
 //	                           compares the channel against
 //	<base>/briard-net-wrap     the guest launch shim, cattle that rides with the agent
 //	<base>/briard-tray.exe     Windows only: the notification-area icon, likewise
-//	<base>/qemu                a SYMLINK to the committed qemu tree, qemu-<release>/ beside it --
+//	<base>/qemu                a symlink to the committed qemu tree, qemu-<release>/ beside it --
 //	                           so moving qemu is a rename of a link, never a recursive delete, and
 //	                           N-1 stays on disk for free
 //	<base>/guest               the same, for the guest bundle (guest-<release>/)
 //	<base>/<entry>.next        fetched and verified, not yet in place
 //	<base>/<entry>.prev        displaced by a swap, not yet committed
-//	<run>/update-target        a MESSAGE to the update run: which release to converge to
+//	<run>/update-target        a message to the update run: which release to converge to
 //	<run>/update-result        the last run's verdict: ok or failed, then its one line
-//	<run>/update-failure       a MESSAGE from a reverted run to the agent that comes back after it
+//	<run>/update-failure       a message from a reverted run to the agent that comes back after it
 //
-// ONE PROCESS DOES THE WHOLE UPDATE: the candidate binary's --update, run by the frozen update
+// One process does the whole update: the candidate binary's --update, run by the frozen update
 // unit from a fresh download (agent/install.Update). It stages each changed entry as <entry>.next,
-// stops the agent, SWAPS (the committed entry to .prev, .next onto the committed name), starts the
-// agent and watches it reach READY, then COMMITS by deleting every .prev -- or REVERTS by renaming
+// stops the agent, swaps (the committed entry to .prev, .next onto the committed name), starts the
+// agent and watches it reach READY, then commits by deleting every .prev, or reverts by renaming
 // each .prev back. Names never change, so every path that reaches the agent by name stays valid;
 // every move is a rename on one filesystem, so a torn entry cannot exist.
 //
-// THE AGENT'S .prev IS THE TRIAL MARKER. Every run stages the agent, so a swap moves it first and a
-// commit deletes its .prev first, while a revert puts it back last: "the agent's .prev exists"
-// therefore means exactly "a run stopped between its swap and its verdict", and the next run
-// reverts it (Interrupted). One rule, no flag, no state file.
+// The agent's .prev is the trial marker. Every run stages the agent; a swap moves it first and a
+// commit deletes its .prev first, while a revert puts it back last, so "the agent's .prev exists"
+// means exactly "a run stopped between its swap and its verdict", and the next run reverts it
+// (Interrupted). One rule, no flag, no state file.
 //
-// The bundle moves as ONE release: whatever of {agent, manifest, net-wrap, tray, qemu, guest} a
+// The bundle moves as one release: whatever of {agent, manifest, net-wrap, tray, qemu, guest} a
 // release changed is staged, and a partial set is the normal case (an unchanged artifact is not
 // re-fetched). A revert puts every displaced entry back, so the node lands on a combination that
-// WAS tested, never on agent N with qemu N-1.
+// was tested, never on agent N with qemu N-1.
 package selfupdate
 
 import (
@@ -120,7 +120,7 @@ func (l Layout) ResultPath() string  { return filepath.Join(l.RunDir, resultName
 func (l Layout) FailurePath() string { return filepath.Join(l.RunDir, failureName) }
 
 // NetWrapPath / NextNetWrapPath are the guest launch shim and its staged candidate. The shim's
-// contract is with the AGENT (the fd-passing argv both sides agree on), so it must never
+// contract is with the agent (the fd-passing argv both sides agree on), so it must never
 // straddle a release boundary: it is swapped with the agent, in the same rename burst.
 func (l Layout) NetWrapPath() string     { return filepath.Join(l.Base, netWrapName) }
 func (l Layout) NextNetWrapPath() string { return filepath.Join(l.Base, nextNetWrap) }
@@ -130,7 +130,7 @@ func (l Layout) NextNetWrapPath() string { return filepath.Join(l.Base, nextNetW
 func (l Layout) TrayPath() string     { return filepath.Join(l.Base, trayName) }
 func (l Layout) NextTrayPath() string { return filepath.Join(l.Base, nextTray) }
 
-// QEMUPath / NextQEMUPath are the committed and staged LINKS to a qemu tree; QEMUTree is where
+// QEMUPath / NextQEMUPath are the committed and staged links to a qemu tree; QEMUTree is where
 // the tree for one release lives. The link is what the agent's QEMU/QEMU_DATADIR point through
 // (on Linux the install keeps the public /opt/briard/qemu path as a link onto QEMUPath, because
 // the bundle bakes that prefix into its ELF interpreter), so moving it is a rename of a link.
@@ -139,7 +139,7 @@ func (l Layout) NextQEMUPath() string           { return filepath.Join(l.Base, n
 func (l Layout) QEMUTree(release string) string { return filepath.Join(l.Base, qemuTree+release) }
 
 // StageNext atomically writes the candidate binary to <agent>.next (temp file in the same
-// directory, fsync, rename), mode 0755 — durable on disk BEFORE it can ever be swapped in, so
+// directory, fsync, rename), mode 0755 — durable on disk before it can ever be swapped in, so
 // the swap is safe against a power loss. Idempotent (overwrites). The temp name is unique per
 // call rather than a fixed `.tmp`: two writers are at least conceivable (a directive and a timer
 // tick merging late), and a fixed name would let them tear each other's candidate.
@@ -176,7 +176,7 @@ func (l Layout) StageNextTray(src io.Reader) error {
 }
 
 // StageNextQEMU points qemu.next at an extracted tree under Base (tmp link + rename, so the
-// staged link is never half-written). The target is RELATIVE — the tree's basename — so the
+// staged link is never half-written). The target is relative — the tree's basename — so the
 // layout stays addressable from Base alone. It does not check the tree's contents: that is the
 // updater's smoke test, run before anything is swapped.
 func (l Layout) StageNextQEMU(tree string) error {
@@ -187,7 +187,7 @@ func (l Layout) StageNextQEMU(tree string) error {
 // the link is made under a unique temp name and renamed into place. Shared by the qemu and the
 // guest bundle.
 //
-// THE TEMP LINK IS A SIBLING IN BASE, never in a subdirectory: Windows decides at creation
+// The temp link is a sibling in Base, never in a subdirectory: Windows decides at creation
 // whether a link is a directory link by resolving its target from where the link is made, and
 // the relative target resolves only from Base. Made anywhere else it becomes a file link to a
 // directory, which nothing can open. Any earlier .next goes before the rename, since Windows
@@ -245,7 +245,7 @@ func (l Layout) CommittedGuestRelease() string {
 }
 
 // PruneGuestTrees removes guest-<release> trees no link names -- committed, staged, or the last
-// GOOD one, which a refused release falls back to for as long as it is refused.
+// good one, which a refused release falls back to for as long as it is refused.
 func (l Layout) PruneGuestTrees() ([]string, error) {
 	return l.pruneTrees(guestTree, l.CommittedGuestTree, l.NextGuestTree, func() (string, bool) {
 		r := l.GoodGuestRelease()
@@ -253,14 +253,14 @@ func (l Layout) PruneGuestTrees() ([]string, error) {
 	})
 }
 
-// THE PERMANENT REVERT. The guest's own pivot falls back only until its next launch (a fresh
-// scratch knows nothing), so the host remembers two release ids beside
-// the committed tree: which tree the guest last ran SUCCESSFULLY (`guest.good`, which also keeps
-// that tree from the pruner) and which release it REFUSED (`guest.reverted`). A refused release is
-// never pushed again; the good tree is, on every launch, until a new host commit brings a different
-// tree -- at which point the refusal no longer names the committed release and is simply ignored.
+// The permanent revert. The guest's own pivot falls back only until its next launch (a fresh
+// scratch knows nothing), so the host remembers two release ids beside the committed tree: which
+// tree the guest last ran successfully (`guest.good`, which also keeps that tree from the pruner)
+// and which release it refused (`guest.reverted`). A refused release is never pushed again; the
+// good tree is, on every launch, until a new host commit brings a different tree, at which point
+// the refusal no longer names the committed release and is simply ignored.
 //
-// Ids in files, not links: nothing ever opens the good tree THROUGH its name, only asks which it
+// Ids in files, not links: nothing ever opens the good tree through its name, only asks which it
 // is, and on Windows a link cannot be atomically renamed over another directory link, nor opened
 // at all as the file link a relative target made from a temp dir becomes.
 const (
@@ -328,11 +328,11 @@ func (l Layout) qemuTarget(link string) (string, bool) {
 	return filepath.Clean(t), true
 }
 
-// DiscardNextBundle removes every staged .next -- a run that stopped before its swap, or a
-// release refused at stage time. The update verb calls it before staging, so a release that did
-// NOT change qemu is never paired with a stale qemu.next from one that did: the swap moves every
-// .next it finds, and the only .next that may exist are the ones THIS release staged. A staged
-// tree is left where it is: only its link goes.
+// DiscardNextBundle removes every staged .next: a run that stopped before its swap, or a release
+// refused at stage time. The update verb calls it before staging, so a release that did not change
+// qemu is never paired with a stale qemu.next from one that did: the swap moves every .next it
+// finds, and the only .next that may exist are the ones this release staged. A staged tree is left
+// where it is: only its link goes.
 func (l Layout) DiscardNextBundle() error {
 	for _, e := range entries {
 		if err := os.Remove(filepath.Join(l.Base, e+nextSuffix)); err != nil && !os.IsNotExist(err) {
@@ -342,12 +342,11 @@ func (l Layout) DiscardNextBundle() error {
 	return nil
 }
 
-// PruneQEMUTrees removes every qemu-<release> tree under Base that neither the committed nor
-// the staged link points at, and returns what it removed. Called at guest LAUNCH, and only
-// there: that is the one moment no qemu of ours is running from any tree — a guest that keeps
-// serving across an agent update still runs the binary it was launched from, and a tree a live
-// process runs from must not be pulled out from under it. Keeping N-1 is therefore free; it is
-// N-2 and older this collects.
+// PruneQEMUTrees removes every qemu-<release> tree under Base that neither the committed nor the
+// staged link points at, and returns what it removed. Called at guest launch, and only there: the
+// one moment no qemu of ours is running from any tree. A guest that keeps serving across an agent
+// update still runs the binary it was launched from, and a tree a live process runs from must not
+// be pulled out from under it. Keeping N-1 is therefore free; this collects N-2 and older.
 func (l Layout) PruneQEMUTrees() ([]string, error) {
 	return l.pruneTrees(qemuTree, l.CommittedQEMUTree, l.NextQEMUTree)
 }
@@ -458,13 +457,12 @@ func (l Layout) Swap() ([]string, error) {
 func (l Layout) Interrupted() bool { return present(l.PrevPath()) }
 
 // Revert puts every displaced entry back over the candidate that replaced it, and returns the
-// entries it restored. The agent goes back LAST, after a flush, so a revert cut short still
-// reads as Interrupted and is simply repeated. A candidate entry with nothing displaced behind it
-// (a name the committed release did not have) stays, inert.
-//
-// A candidate LINK is removed before its .prev goes back: Windows cannot rename a directory link
-// over another. Nothing reads the link while the agent is stopped, and a revert cut between the
-// two finds the name empty and the .prev still there, which it simply puts back.
+// entries it restored. The agent goes back last, after a flush, so a revert cut short still reads
+// as Interrupted and is simply repeated. A candidate entry with nothing displaced behind it (a
+// name the committed release did not have) stays, inert. A candidate link is removed before its
+// .prev goes back, since Windows cannot rename a directory link over another; nothing reads the
+// link while the agent is stopped, and a revert cut between the two finds the name empty and the
+// .prev still there, which it simply puts back.
 func (l Layout) Revert() ([]string, error) {
 	var back []string
 	for i := len(entries) - 1; i >= 0; i-- {
@@ -490,19 +488,19 @@ func (l Layout) Revert() ([]string, error) {
 	return back, atomicfile.SyncDir(l.Base)
 }
 
-// Commit makes the swap final by deleting every .prev. The agent's goes FIRST, flushed, so a
+// Commit makes the swap final by deleting every .prev. The agent's goes first, flushed, so a
 // commit cut short is never read as Interrupted: a .prev left without the agent's is the tail of
 // a commit, and Commit finishes it. A displaced tree link goes; its tree stays until a guest
 // launch prunes it.
 //
-// A PROGRAM'S .prev IS RENAMED ASIDE, THEN DELETED. Windows refuses to delete a program that is
-// still running -- a `briard` command started before the swap runs the displaced agent, the tray
-// runs the displaced tray until it moves onto the new one -- but renames one, and the agent's
-// trial marker must go either way: left in place, the next run would read a committed update as
-// an interrupted one and revert it. What cannot be deleted yet waits as <program>.<stamp>.old,
-// and every commit sweeps what earlier ones left. THE NAME IS THE COMMIT'S OWN: a fixed one is
-// held by a command still running from two releases back, the rename onto it fails, the .prev
-// stays, and the next run reverts a working update.
+// A program's .prev is renamed aside, then deleted. Windows refuses to delete a program that is
+// still running (a `briard` command started before the swap runs the displaced agent; the tray
+// runs the displaced tray until it moves onto the new one) but renames one, and the agent's trial
+// marker must go either way: left in place, the next run would read a committed update as an
+// interrupted one and revert it. What cannot be deleted yet waits as <program>.<stamp>.old, and
+// every commit sweeps what earlier ones left. The name is the commit's own: a fixed one is held by
+// a command still running from two releases back, the rename onto it fails, the .prev stays, and
+// the next run reverts a working update.
 func (l Layout) Commit() error {
 	l.sweepOld() // leftovers from earlier commits; one still running stays
 	old, err := l.setAside(agentName)
@@ -598,7 +596,7 @@ type Result struct {
 	At   time.Time // when the run ended (the file's mtime)
 }
 
-// ReadResult reads the last run's verdict WITHOUT consuming it: the CLI reads the run it waited
+// ReadResult reads the last run's verdict without consuming it: the CLI reads the run it waited
 // on, and the update alerter reads whatever run came last, so neither may take it from the
 // other. ok is false when no run has left one since boot (the run dir is tmpfs).
 func (l Layout) ReadResult() (Result, bool) {
@@ -618,15 +616,13 @@ func (l Layout) ReadResult() (Result, bool) {
 }
 
 // Trigger starts one update run against target: it writes the target message and starts the
-// frozen unit. With wait, it BLOCKS on the run and returns the line that run ended on, a failed
+// frozen unit. With wait, it blocks on the run and returns the line that run ended on, a failed
 // run surfacing as an error carrying that same line, so a bad pin looks like one. Without wait it
 // returns once the run is queued: the agent's own trigger must not wait, because the run it starts
 // stops that agent, and the stop waits for the act that is waiting on the run. How a run is
-// started and waited on is the OS's (startRun).
-//
-// It is deliberately NOT an injector over the admin socket: the case the timer and the CLI
-// exist for is the agent being down, and the cloud's handler uses this same path so there is
-// one way to start an update, not two.
+// started and waited on is the OS's (startRun). It is deliberately not an injector over the admin
+// socket: the case the timer and the CLI exist for is the agent being down, and the cloud's
+// handler uses this same path so there is one way to start an update, not two.
 func (l Layout) Trigger(ctx context.Context, unit, target string, wait bool) (string, error) {
 	if unit == "" {
 		unit = DefaultUpdateUnit

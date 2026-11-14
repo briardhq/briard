@@ -9,7 +9,7 @@ import (
 )
 
 // A release artifact is trusted only if it carries a valid detached Ed25519 signature from
-// the release-signing root. The agent verifies BEFORE it stages — refuse-and-stay is the whole
+// the release-signing root. The agent verifies before it stages — refuse-and-stay is the whole
 // point: a bad or absent signature must leave the committed binary untouched, never trial an
 // unverified binary. This is the client half of the four key-management points (keyring /
 // offline-blesses-warm root / M-of-N + escrow / verify-or-refuse); full TUF (roles,
@@ -18,7 +18,7 @@ import (
 // ErrUnsigned is returned when an artifact arrives with no signature — refused, not trialed.
 var ErrUnsigned = errors.New("selfupdate: unsigned artifact refused")
 
-// ErrNoKeys is returned when the keyring is empty. Fail CLOSED: with no trusted key there is
+// ErrNoKeys is returned when the keyring is empty. Fail closed: with no trusted key there is
 // no such thing as a valid signature, so every artifact is refused (never fail-open to "no
 // key configured means allow anything").
 var ErrNoKeys = errors.New("selfupdate: empty release keyring — every artifact refused")
@@ -28,8 +28,8 @@ var ErrNoKeys = errors.New("selfupdate: empty release keyring — every artifact
 var ErrBadSignature = errors.New("selfupdate: signature does not verify against any release key")
 
 // Keyring is the set of release-signing public keys the agent trusts. An artifact is accepted
-// iff at least ONE key verifies its signature, so:
-//   - key rotation is additive — ship the next public key in a release's keyring.pem BEFORE
+// iff at least one key verifies its signature, so:
+//   - key rotation is additive — ship the next public key in a release's keyring.pem before
 //     signing releases with it, and the union keeps verifying across the cutover;
 //   - a lost signing key is survivable — the offline M-of-N root blesses a fresh warm signer
 //     and its public key joins the ring; agents trust the union, no flag-day.
@@ -79,7 +79,7 @@ func (k *Keyring) Len() int { return len(k.keys) }
 // Verify checks a detached Ed25519 signature over the exact artifact bytes. It returns nil iff
 // the ring is non-empty, sig is present, and at least one trusted key verifies. Errors are
 // specific (ErrNoKeys / ErrUnsigned / ErrBadSignature) so the caller can alert precisely and,
-// crucially, NOT stage the artifact — the committed binary stays. The message signed is the
+// crucially, not stage the artifact — the committed binary stays. The message signed is the
 // whole artifact (stdlib PureEdDSA), so there is no separate hash step to get wrong.
 func (k *Keyring) Verify(artifact, sig []byte) error {
 	if len(k.keys) == 0 {
