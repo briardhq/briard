@@ -18,26 +18,24 @@ import (
 	"briard.io/shared/notify"
 )
 
-// THE VM CHAIN. The guest OS is its own release line -- `vm.<date>.<inputs>` beside
-// briard's `v3.<date>.<rev>` -- and its signed manifest names the CLOSURE the image boots
-// (Manifest.System) and the oldest briard that tolerates it (Manifest.MinBriard). Resolving a vm
-// release is therefore: fetch and verify the target's manifest, refuse it if the installed
-// briard is older than it needs, compare its closure with what the guest runs, stage the
-// release's image, and hand it to the image upgrade (osupgrade.go: swap, boot, prove the closure,
-// health-gate, commit or restore).
+// The vm chain. The guest OS is its own release line (`vm.<date>.<inputs>` beside briard's
+// `v3.<date>.<rev>`), and its signed manifest names the closure the image boots (Manifest.System)
+// and the oldest briard that tolerates it (Manifest.MinBriard). Resolving a vm release: fetch and
+// verify the target's manifest, refuse it if the installed briard is older than it needs, compare
+// its closure with what the guest runs, stage the release's image, and hand it to the image
+// upgrade (osupgrade.go: swap, boot, prove the closure, health-gate, commit or restore).
 //
 // Three triggers, mirroring the briard chain: the cloud (`upgrade-system`, an exact vm release
-// id), `briard update --vm` (`update-vm`, over the admin socket, resolving `stable` by default)
-// and a timer INSIDE the agent (`update-vm` with `stable`, nightly). The timer living inside the
-// agent is correct and not an inconsistency with the briard chain's frozen unit: the bootstrap
-// problem is agent-only. A broken agent that cannot upgrade the guest is not bricked, because the host
-// timer fixes the agent and the agent then fixes the guest. Only the thing at the bottom needs
-// an updater beneath it.
+// id), `briard update --vm` (`update-vm` over the admin socket, resolving `stable` by default) and
+// a nightly timer inside the agent (`update-vm` with `stable`). That timer is correct, not
+// inconsistent with the briard chain's frozen unit, because the bootstrap problem is agent-only: a
+// broken agent that cannot upgrade the guest is not bricked, since the host timer fixes the agent
+// and the agent then fixes the guest. Only the thing at the bottom needs an updater beneath it.
 
 // guestReleaseCacheName is the node-local record of the guest release this node last applied
 // (the exact signed manifest bytes), seeded by the install's image lay-down (layDownImage) from
 // the release it installed. It is what the stable path orders against: the guest itself knows
-// only a closure path, not a release id. NOT $PREFIX/guest-image/manifest.json -- that one is
+// only a closure path, not a release id. Not $PREFIX/guest-image/manifest.json -- that one is
 // written only by the lay-down and describes the image the install placed, which an image
 // upgrade does not rewrite.
 const guestReleaseCacheName = "guest-release.json"
@@ -58,7 +56,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
 	target := d.Payload
-	// AN EMPTY PAYLOAD IS `stable`, not `latest`. Every update target on every path
+	// An empty payload is `stable`, not `latest`. Every update target on every path
 	// defaults to the promoted pointer; `latest` is proven by a canary that names it on purpose.
 	if target == "" {
 		target = install.TargetStable
@@ -115,7 +113,7 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: dec.Reason}
 	}
 	logf("directive update-vm: %s — staging %s's image", dec.Reason, want.Version)
-	// THE IMAGE, STAGED BEFORE ANYTHING STOPS: fetched and verified into a private
+	// The image, staged before anything stops: fetched and verified into a private
 	// dir beside the image in use (same filesystem, so the swap is a rename), expanded, and
 	// placed at nextImage(). A fetch or hash failure returns here with the node untouched.
 	uctx, cancel := cfg.beat.budget(ctx, cfg.UpgradeBudget)
@@ -193,7 +191,7 @@ func (cfg Config) stageGuestImage(ctx context.Context, f *install.Fetcher, rel i
 // decideGuest is the vm chain's comparison, pure so it can be enumerated. Order matters:
 // a release naming no closure cannot be applied at all; a briard below the release's min_briard
 // is refused regardless of anything else (the one direction that can go wrong); a guest
-// already RUNNING the release's closure is at it whatever the record says; and only then do the
+// already running the release's closure is at it whatever the record says; and only then do the
 // briard chain's ordering rules apply -- stable forward on the date, latest/exact on the full id,
 // an exact pin floored at stable. A record that names this very release while the guest runs
 // another closure is disbelieved (the cloud moved the node by closure since), so the release
@@ -248,13 +246,13 @@ func (cfg Config) rememberGuestRelease(raw []byte, logf func(string, ...any)) {
 // guestUpdateTimer is the third trigger: once a night, in the small hours and jittered, the
 // agent converges its guest to `stable` through the same directive the CLI submits, over the
 // same channel (so it serialises with the observe loop like every admin operation). It runs
-// ONLY on a standalone node:
+// only on a standalone node:
 //
 //   - A managed node's OS is the cloud's to move (it sequences a flock one node at a time,
 //     serving node last, inside the home's window); a second driver on the node would race it.
 //     So the presence of a controller switches this off, with no knob.
 //   - A node with peers and no orchestrator: each node deciding to reboot on its own is a
-//     CORRELATED outage. Automatic OS updates disable themselves and say so, derived from the
+//     correlated outage. Automatic OS updates disable themselves and say so, derived from the
 //     mesh like every other statement about role.
 //
 // Failures are the upgrade path's own (escalated there); this only logs the outcome.

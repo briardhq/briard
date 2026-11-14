@@ -15,17 +15,17 @@ import (
 	"briard.io/shared/notify"
 )
 
-// THE RESTART AN INSTALL OWES, COUNTED, NEVER PROBED.
+// The restart an install owes, counted, never probed.
 //
 // A Windows bridge carries its TAP member only once the bridge object has been through a boot
-// (nic.BuildBridge), and which driver gate closes is not readable. A probe -- the guest, an ARP
-// through the TAP -- needs a bound, and the only bound is "a restart has been done", after which
+// (nic.BuildBridge), and which driver gate closes is not readable. A probe (the guest, an ARP
+// through the TAP) needs a bound, and the only bound is "a restart has been done", after which
 // there is no second act: the right behaviour then is to launch and report whatever a probe would
 // have said. So the gate is the count alone: one cold boot after the install built the bridge,
 // seen once and saved on the bridge record, never asked again.
 //
-// The record is born when an install builds the bridge and goes with it at uninstall, which is
-// what makes the three cases fall out: a first install asks until a cold boot; a reinstall over a
+// The record is born when an install builds the bridge and goes with it at uninstall, so the
+// three cases fall out: a first install asks until a cold boot; a reinstall over a
 // running node finds the record marked and asks nothing; an uninstall then an install owes the
 // restart again, rightly, since that bridge is new. On Linux there is no record and no gate.
 
@@ -106,11 +106,12 @@ const restartAlertKey = "install-restart"
 const restartFix = "Windows has not restarted since briard was installed: restart it (Restart, not Shut down) to finish the install"
 
 // restartGate is the first thing a start asks: true means the restart is still owed, said, and the
-// start ends here -- cleanly, a STOPPED Windows service and exit 0, because a non-zero exit is the
-// Windows service's recovery restarting it every few seconds, forever. The line is the network refusal's
-// own, so `install -wait` ends on it with the reason; the tray reads the clean stop instead.
+// start ends here, cleanly: a stopped Windows service and exit 0, because a non-zero exit is the
+// Windows service's recovery restarting it every few seconds, forever. The line is the network
+// refusal's own, so `install -wait` ends on it with the reason; the tray reads the clean stop
+// instead.
 //
-// ⚠️ A READ THAT FAILS PROCEEDS. Refusing on "could not tell" is a node that never starts;
+// ⚠️ A read that fails proceeds. Refusing on "could not tell" is a node that never starts;
 // proceeding on it is a node that may not reach the LAN and says so (the no-LAN-presence alert).
 func (cfg Config) restartGate(ctx context.Context, coldBoot func(time.Time) (bool, error), n notify.Notifier, logf func(string, ...any)) bool {
 	if cfg.stateDir() == "" {

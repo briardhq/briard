@@ -15,11 +15,11 @@ import (
 	"briard.io/shared/notify"
 )
 
-// THE FIRST START FINISHES THE INSTALL. An install that laid everything down but the guest image
-// -- the Store's exe, which may fetch nothing while it runs, or any install whose image never
-// landed -- leaves the rest to the agent, which does it before the guest, in this order:
+// The first start finishes the install. An install that laid everything down but the guest image
+// (the Store's exe, which may fetch nothing while it runs, or any install whose image never
+// landed) leaves the rest to the agent, which does it before the guest, in this order:
 //
-//  1. the self-update to stable, FORCED and FIRST: nothing is running yet to interrupt, the agent
+//  1. the self-update to stable, forced and first: nothing is running yet to interrupt, the agent
 //     that fetches the image is then the one its manifest was cut for (an agent months older than
 //     the image it fetches is a pairing the alpha never supports), and the one run a stranger
 //     watches does not run bugs already fixed. A no-op when this agent is already current; when
@@ -30,23 +30,21 @@ import (
 //     starts once the update has said this agent is current, so it is always the current agent's
 //     code and no update ends it half-way; a node with nothing to fetch starts it alone.
 //
-// It runs before anything this node is -- its identity, its cloud registration -- because none of
-// it is keyed to them, and because the Store's exe is resubmitted only when the floor moves: what a
-// first start does before the update is the exe's code, frozen until the next submission, and what
-// it does after is the channel's.
+// It runs before anything this node is (its identity, its cloud registration) because none of it
+// is keyed to them, and because the Store's exe is resubmitted only when the floor moves: what a
+// first start does before the update is the exe's code, frozen until the next submission, and
+// what it does after is the channel's.
 //
-// The trigger is a positive read -- the image is not there -- never a first-run flag, so a node
-// whose image went missing finishes the same way. A failure is a waiting state with one alert,
-// never terminal, and how long it waits is what the next attempt would cost:
+// The trigger is a positive read (the image is not there), never a first-run flag, so a node whose
+// image went missing finishes the same way. A failure is a waiting state with one alert, never
+// terminal, and how long it waits is what the next attempt would cost. A channel that could not be
+// reached (no network, the channel down, a download cut short) cost the attempt nothing, so it is
+// repeated after finishRetryNet. Anything else (a release that came down whole and was refused
+// here, or swapped in, did not start and was reverted) only a newer release fixes, and every
+// attempt downloads it again, so it is repeated after finishRetryRefused.
 //
-//   - the channel could not be reached (no network, the channel down, a download cut short): the
-//     attempt cost nothing, and is repeated after finishRetryNet;
-//   - anything else -- a release that came down whole and was refused here, or swapped in and did
-//     not start and was reverted: only a newer release fixes it, and every attempt downloads it
-//     again, so it is repeated after finishRetryRefused.
-//
-// The wait is counted from the records the update leaves -- its verdict and a revert's failure --
-// never from a timer alone: a candidate that does not start ends THIS process, and the agent the
+// The wait is counted from the records the update leaves (its verdict and a revert's failure),
+// never from a timer alone: a candidate that does not start ends this process, and the agent the
 // revert starts again is a new one, as is the one a restart of the agent's unit starts. Each reads
 // the records and waits out what is left.
 
@@ -177,7 +175,7 @@ func left(d time.Duration, at, now time.Time) time.Duration {
 	return min(d, max(0, d-now.Sub(at)))
 }
 
-// finishStep runs one step OFF the loop, bounded, while the loop answers the local door: a stranger
+// finishStep runs one step off the loop, bounded, while the loop answers the local door: a stranger
 // running `briard status` during a download gets the reason, not a CLI that hangs.
 func (cfg Config) finishStep(ctx context.Context, local <-chan localRequest, bound time.Duration, why string,
 	step func(context.Context, func(string, ...any)) error, logf func(string, ...any)) error {

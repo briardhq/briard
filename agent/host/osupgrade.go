@@ -18,43 +18,40 @@ import (
 	"briard.io/shared/model"
 )
 
-// AN OS UPGRADE, end to end: the guest moves to a new IMAGE, and the host holds the file.
+// An OS upgrade, end to end: the guest moves to a new image, and the host holds the file. It is
+// here and not in guest.Manager because the upgrade destroys the control channel a Manager is
+// bound to (the guest goes down and comes back on another image), and the file the guest boots is
+// a property of the launch, not of anything written inside the guest; host.go already owns
+// launch/adopt/reconnect. It keeps no second copy of the upgrade bracket: maintenance and the
+// health-gate are the Manager's own phases, called from here in order.
 //
-// WHY IT IS HERE AND NOT IN guest.Manager. The upgrade destroys the control channel a Manager
-// is bound to (the guest goes down and comes back on another image), and the file the guest
-// boots is a property of the launch, not of anything written inside the guest. host.go already
-// owns launch/adopt/reconnect, so this is where the sequence belongs. What it does NOT do is
-// keep a second copy of the upgrade bracket: maintenance and the health-gate are the Manager's
-// own phases, called from here in order.
-//
-// THE SHAPE: stop cleanly -> rename the image the guest boots (the old one kept beside it as
+// The shape: stop cleanly -> rename the image the guest boots (the old one kept beside it as
 // .prev) -> relaunch on the new one -> prove the booted closure is the one the release's signed
 // manifest names -> health-gate -> commit (drop .prev) or restore (rename it back). No
 // generation, no boot selector, no in-guest step: the guest is an appliance.
 //
-// WHAT IT NEVER TOUCHES: the workload. No app stop, no app start, no data snapshot, no
-// data restore. The new OS runs the same containers on the same data; systemd stops and starts
-// them in order by going down and coming up, without being asked. If the update fails, THE OS
-// rolls back -- the app has no reason to, and the replicated volume is never in scope. The
-// one thing that still reads app state is the health-gate, which is correct and is the
-// line: reading an app to decide whether to revert the OS is not touching it.
+// It never touches the workload: no app stop or start, no data snapshot or restore. The new OS
+// runs the same containers on the same data, which systemd stops and starts in order by going
+// down and coming up, unasked. If the update fails the OS rolls back; the app has no reason to,
+// and the replicated volume is never in scope. The one thing that still reads app state is the
+// health-gate, which is correct and is the line: reading an app to decide whether to revert the
+// OS is not touching it.
 //
-// WHAT THE ROLLBACK POINT COVERS: the previous image, and deliberately no btrfs data snapshot.
-// An OS upgrade cannot change app code -- an app's identity is the manifest on the
-// replicated volume, re-pointed only by an app install -- so there is no data migration to
-// undo, and reverting the subvolume would delete real user data written during the gate
-// window. What an OS upgrade *can* disturb is the OS itself, which is exactly the image.
+// The rollback point is the previous image, and deliberately no btrfs data snapshot. An OS upgrade
+// cannot change app code (an app's identity is the manifest on the replicated volume, re-pointed
+// only by an app install), so there is no data migration to undo, and reverting the subvolume
+// would delete real user data written during the gate window. What an OS upgrade can disturb is
+// the OS itself, which is exactly the image.
 
-// shutdownGrace bounds each clean-stop attempt. A guest that has not powered off in this long
-// is not going to: a converged guest -- DRBD Primary, volume mounted, apps serving, VIP up --
-// was MEASURED powering itself off in 1.5 s, so 30 s is twenty times the observed cost and still
-// well inside a stop worth waiting for.
+// shutdownGrace bounds each clean-stop attempt. A guest that has not powered off in this long is
+// not going to: a converged guest (DRBD Primary, volume mounted, apps serving, VIP up) was
+// measured powering itself off in 1.5 s, so 30 s is twenty times the observed cost and still well
+// inside a stop worth waiting for.
 //
-// ⚠️ KEEP IT SHORTER THAN systemd's DefaultTimeoutStopSec (90 s) in the guest. At equal values a
-// guest unit deadlocking on stop is SIGKILLed in the same instant this grace expires, so the
-// ACPI fallback appears to power the machine off in 1.5 s and every clean stop silently pays
-// 90 s. Shorter, the fallback genuinely does the work, and a fallback that fires every time is
-// visible.
+// ⚠️ Keep it shorter than systemd's DefaultTimeoutStopSec (90 s) in the guest. At equal values a
+// guest unit deadlocking on stop is SIGKILLed the instant this grace expires, so the ACPI fallback
+// appears to power the machine off in 1.5 s and every clean stop silently pays 90 s. Shorter, the
+// fallback genuinely does the work, and a fallback that fires every time is visible.
 const shutdownGrace = 30 * time.Second
 
 // reapGrace bounds the last question stopCleanly asks -- "is the machine gone?" -- after both
@@ -66,30 +63,25 @@ const shutdownGrace = 30 * time.Second
 const reapGrace = 10 * time.Second
 
 // ErrHandoverRequired is the refusal: this node is serving, a peer could take the work, and
-// applying the update means a reboot -- which on an HA pair IS a failover. Sequencing a
-// failover is not a decision a node makes about itself, so the node-local path declines and
-// leaves everything exactly as it found it.
+// applying the update means a reboot, which on an HA pair is a failover. Sequencing a failover is
+// not a decision a node makes about itself, so the node-local path declines with a clean no-op
+// rather than a partial attempt, leaving everything exactly as it found it.
 //
-// Refusing is not conservatism, it is the only correct answer. Reboot here and a peer takes
-// over while the node is down, so it returns Secondary -- where the apps never run, since
-// drbd-reactor promotes exactly one node. A node that went down serving is gated on serving
-// again (AwaitOSReadyServing: Primary, reverse proxy answering), which a Secondary can never
-// satisfy, so every such upgrade would false-roll-back. Demoting deliberately first is the
-// right operation but the wrong owner:
-// that is a handover, it must be scheduled so both anchors do not go at once, and only the
-// cloud sees the whole flock.
-//
-// Hence a clean no-op rather than a partial attempt: nothing has moved when this returns.
+// Refusing is not conservatism but the only correct answer. Reboot here and a peer takes over
+// while the node is down, so it returns Secondary, where the apps never run, since drbd-reactor
+// promotes exactly one node. A node that went down serving is gated on serving again
+// (AwaitOSReadyServing: Primary, reverse proxy answering), which a Secondary can never satisfy, so
+// every such upgrade would false-roll-back. Demoting deliberately first is the right operation but
+// the wrong owner: that is a handover, it must be scheduled so both anchors do not go at once, and
+// only the cloud sees the whole flock.
 var ErrHandoverRequired = errors.New("reboot needs a handover: a peer can take over, so this is a failover to schedule, not a local update")
 
 // osUpgrade is the host's binding to the guest, and the upgrade surface the directive path
-// drives: a guest.Manager plus the operations only the host can perform -- ImageUpgrade,
-// RescueGuest, RebootGuest and the recovery ladder. Everything the Manager already does is
-// promoted unchanged.
-//
-// It holds the binding rather than a snapshot of it because a reboot REPLACES all three parts
-// at once -- VM, channel and Manager -- and something has to own that swap. The ladder (recover)
-// rebinds it on a reconnect; the reboot and upgrade paths rebind it from the inside.
+// drives: a guest.Manager plus the operations only the host can perform (ImageUpgrade,
+// RescueGuest, RebootGuest and the recovery ladder), with everything the Manager already does
+// promoted unchanged. It holds the binding rather than a snapshot of it because a reboot replaces
+// all three parts at once (VM, channel and Manager) and something has to own that swap. The ladder
+// (recover) rebinds it on a reconnect; the reboot and upgrade paths rebind it from the inside.
 type osUpgrade struct {
 	*guest.Manager // over client, below; swapped whenever the channel is
 
@@ -139,10 +131,10 @@ func describePeers(cl model.Cluster) string {
 }
 
 // resume ends the maintenance bracket on a guest that is still up: an image upgrade whose clean
-// stop failed, BEFORE the guest went down. Nothing else needs undoing: the image swap has not
+// stop failed, before the guest went down. Nothing else needs undoing: the image swap has not
 // happened, so the disk still boots what it booted before.
 //
-// It runs on the CURRENT binding rather than a passed-in Manager, because a caller that has
+// It runs on the current binding rather than a passed-in Manager, because a caller that has
 // been through the rollback leg is holding a channel that no longer exists.
 func (u *osUpgrade) resume(ctx context.Context) error {
 	if e := u.Manager.ExitMaintenance(ctx); e != nil {
@@ -152,7 +144,7 @@ func (u *osUpgrade) resume(ctx context.Context) error {
 }
 
 // guestStopper is the two-method slice of *platform.Guest that stopCleanly actually uses: ask
-// the machine to stop, and ask whether it has. Narrowed to an interface so the STOPPING window
+// the machine to stop, and ask whether it has. Narrowed to an interface so the stopping window
 // -- a guest on its way down but not yet gone, where a lost reply hides -- can be exercised
 // without a live systemd unit. Both methods are nil-receiver-safe on the real type, so nothing
 // changes for a caller holding a nil guest.
@@ -161,19 +153,18 @@ type guestStopper interface {
 	WaitStopped(ctx context.Context, grace time.Duration) error
 }
 
-// stopCleanly takes the guest down without power-cutting it, by two independent routes with
-// the agent first: ask the guest OS in its own terms over the channel we already
-// hold, and fall back to the ACPI power button for the case that route cannot cover -- the
-// agent itself being what died. Neither route's request means the machine stopped, so both
-// end in WaitStopped: the caller's next act is to touch a disk QEMU may still hold open.
+// stopCleanly takes the guest down without power-cutting it, by two independent routes, agent
+// first: ask the guest OS in its own terms over the channel we already hold, and fall back to the
+// ACPI power button for the case that route cannot cover, the agent itself being what died.
+// Neither route's request means the machine stopped, so both end in WaitStopped: the caller's next
+// act is to touch a disk QEMU may still hold open.
 //
-// Every stop of a guest that comes back goes through here -- the image upgrade's, the rollback
-// leg's, the recovery ladder's power cycle and the rescue -- because each needs DRBD to record
-// its quorum state on the way down. (A node shutting down powers the guest off through
-// platform.PowerOffGuest instead, stop.go.) They differ in what they do when it fails: the
-// upgrade is abandoned (a guest that will not go down keeps serving its current image), while
-// the others force it (there is nothing left to preserve by waiting). Hence the neutral log
-// prefix below: which caller this is, the messages cannot assume.
+// Every stop of a guest that comes back goes through here (the image upgrade's, the rollback
+// leg's, the recovery ladder's power cycle and the rescue), because each needs DRBD to record its
+// quorum state on the way down; a node shutting down powers the guest off through
+// platform.PowerOffGuest instead (stop.go). On failure the upgrade is abandoned (a guest that will
+// not go down keeps serving its current image) and the others force it (nothing is left to
+// preserve by waiting), so the log prefix below is neutral: the messages cannot assume the caller.
 func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client, logf func(string, ...any)) error {
 	// No channel at all -- the recovery ladder entered from a bring-up that never got one -- is
 	// the agent route known unavailable before it is tried: straight to the button.
@@ -190,24 +181,23 @@ func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client,
 	}
 	logf("guest-stop: guest agent did not stop the machine (%v); trying the power button", perr)
 	if err := g.Shutdown(ctx, shutdownGrace); err != nil {
-		// A FAILED REQUEST IS NOT A FAILED SHUTDOWN. os.poweroff is `systemctl poweroff
-		// --no-block` exactly so the reply is written before systemd tears the machine down --
-		// a race the guest can lose. A lost reply looks identical to a dead agent (both are EOF),
+		// A failed request is not a failed shutdown. os.poweroff is `systemctl poweroff
+		// --no-block` exactly so the reply is written before systemd tears the machine down, a
+		// race the guest can lose. A lost reply looks identical to a dead agent (both are EOF),
 		// so this escalates to a power button with nothing left to press: the monitor socket is
-		// already gone (`dial ...: no such file or directory`), and reading THAT as failure
-		// force-kills a guest that has ALREADY stopped cleanly -- the very restart the clean stop
-		// exists to avoid. Both routes' errors are evidence about a REQUEST, never about the
-		// machine. Only one question settles it: is the VM still there?
+		// already gone (`dial ...: no such file or directory`), and reading that as failure
+		// force-kills a guest that has already stopped cleanly, the very restart the clean stop
+		// exists to avoid. Both routes' errors are evidence about a request, never about the
+		// machine; only one question settles it: is the VM still there?
 		//
-		// A ZERO GRACE ANSWERS ONE INSTANT TOO EARLY. QEMU unlinks its monitor socket the moment
-		// it exits, while the unit stays active until systemd reaps it (measured: ~3 s apart), so
+		// A zero grace answers one instant too early: QEMU unlinks its monitor socket the moment
+		// it exits, while the unit stays active until systemd reaps it (measured ~3 s apart), so
 		// a glance inside that gap says "still running" about a machine that has already stopped.
-		//
-		// reapGrace, not shutdownGrace: by here the machine has ALREADY had its chance to shut
-		// down -- either Shutdown could not reach QEMU at all (it is gone; only the unit is
-		// outstanding) or it pressed the button and waited a full grace. What remains is systemd
-		// finishing with a dead process, which is seconds, and a short window keeps the worst case
-		// inside the budget rebootGuest is sized for (BringUpBudget + 3*shutdownGrace).
+		// reapGrace, not shutdownGrace, because by here the machine has already had its chance to
+		// shut down: Shutdown either could not reach QEMU at all (it is gone; only the unit is
+		// outstanding) or pressed the button and waited a full grace. What remains is systemd
+		// finishing with a dead process, seconds, and a short window keeps the worst case inside
+		// the budget rebootGuest is sized for (BringUpBudget + 3*shutdownGrace).
 		if g.WaitStopped(ctx, reapGrace) == nil {
 			logf("guest-stop: the guest was already down — the request landed, its reply did not")
 			return nil
@@ -223,7 +213,7 @@ func stopCleanly(ctx context.Context, g guestStopper, client *guestagent.Client,
 func nextImage(backing string) string { return backing + ".next" }
 func prevImage(backing string) string { return backing + ".prev" }
 
-// ImageUpgrade moves THIS node to the guest release rel, whose image is already staged at
+// ImageUpgrade moves this node to the guest release rel, whose image is already staged at
 // nextImage(backing) by the caller. rolledBack says where the node ended up, err what went
 // wrong -- three outcomes: moved, rolled back, or failed with the node where it says.
 func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error) {
@@ -241,9 +231,9 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 	if cl.Serving() && cl.PeerCanTakeOver() {
 		return true, fmt.Errorf("%w (peers: %s)", ErrHandoverRequired, describePeers(cl))
 	}
-	// A serving node past that refusal is the LONE holder of the house: nobody could take the
+	// A serving node past that refusal is the lone holder of the house: nobody could take the
 	// work, so after the reboot nobody else can be serving it. That node's gate therefore has
-	// to see it SERVING again -- Primary with its reverse proxy answering -- where a standby's
+	// to see it serving again -- Primary with its reverse proxy answering -- where a standby's
 	// gate is satisfied by the job it has (guest.OSReadyServing says what this closes).
 	mustServe := cl.Serving()
 	backing := u.cfg.GuestImage
@@ -267,7 +257,7 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 		}
 		return true, fmt.Errorf("clean shutdown refused, node left running %s: %w", prev, e)
 	}
-	// THE SWAP: two renames on one filesystem. The previous image stays until the gate passes,
+	// The swap: two renames on one filesystem. The previous image stays until the gate passes,
 	// so a restore is the same two renames the other way.
 	if e := os.Remove(prevImage(backing)); e != nil && !os.IsNotExist(e) {
 		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("clear %s: %w", prevImage(backing), e))
@@ -295,7 +285,7 @@ func (u *osUpgrade) ImageUpgrade(ctx context.Context, rel install.Manifest) (rol
 	case e != nil:
 		return u.restoreImage(ctx, qspec, backing, prev, fmt.Errorf("read booted system: %w", e))
 	case booted != rel.System:
-		// The image booted SOMETHING else than its manifest says it is: a mis-published
+		// The image booted something else than its manifest says it is: a mis-published
 		// release, or a swap that did not take. Either way not the release we were asked for.
 		return u.restoreImage(ctx, qspec, backing, prev,
 			fmt.Errorf("booted %s, not %s's system %s", booted, rel.Version, rel.System))
@@ -329,28 +319,28 @@ type systemStater interface {
 	SystemState(ctx context.Context) (guestagent.SystemState, error)
 }
 
-// systemRunning is the OS gate's GENERIC check: did every unit the new image starts actually
+// systemRunning is the OS gate's generic check: did every unit the new image starts actually
 // start? systemd's own `running` (no failed unit) is a question any guest can answer without
-// knowing what it runs, and its failures -- a missing kernel module, a unit the new image broke --
-// are things reverting the image repairs. The OS gate asks nothing app-specific: a release's
-// fitness for a household's apps is established before it ships, not judged per house.
+// knowing what it runs, and its failures (a missing kernel module, a unit the new image broke) are
+// things reverting the image repairs. The OS gate asks nothing app-specific: a release's fitness
+// for a household's apps is established before it ships, not judged per house.
 //
-// READ ONCE, after the node-local gate has passed -- never polled until it turns `running`. Our own
-// recovery clears failed state (the promotion hold's `reset-failed` on the chain members, the firmware
-// bin units' resets), so a poll could wait out the very evidence it is looking for. Only
-// `starting`/`initializing` -- boot jobs still queued -- and a channel error are waited out; any
-// other state is the answer. What it cannot see: a member still inside its restart budget (not yet
-// `failed`, and covered for the storage chain by the gate before it), and a mount that came up but
-// wrong (a read-only btrfs is a mounted filesystem, not a failed unit).
+// Read once, after the node-local gate has passed, never polled until it turns `running`: our own
+// recovery clears failed state (the promotion hold's `reset-failed` on the chain members, the
+// firmware bin units' resets), so a poll could wait out the very evidence it is looking for. Only
+// `starting`/`initializing` (boot jobs still queued) and a channel error are waited out; any other
+// state is the answer. It cannot see a member still inside its restart budget (not yet `failed`,
+// and covered for the storage chain by the gate before it), or a mount that came up but wrong (a
+// read-only btrfs is a mounted filesystem, not a failed unit).
 //
-// ONE FAILED UNIT IS NOT THE IMAGE'S: drbd-reactor's promote unit (drbd-promote@<res>). The
-// promoter tries to promote on every node that comes up, and on a standby -- a peer already
-// Primary -- `drbdadm primary` refuses and the unit is left failed; that is the promoter losing
-// the race it is meant to lose, and the reactor retries on its own. Whether the storage came up
-// is the node-local gate's question, answered before this one.
+// One failed unit is not the image's: drbd-reactor's promote unit (drbd-promote@<res>). The
+// promoter tries to promote on every node that comes up, and on a standby (a peer already
+// Primary) `drbdadm primary` refuses and the unit is left failed: the promoter losing the race it
+// is meant to lose, which the reactor retries on its own. Whether the storage came up is the
+// node-local gate's question, answered before this one.
 //
-// Each read runs on a context detached from ctx and bounded on its own, for AwaitReady's reason:
-// a deadline landing inside a call would close the channel the restore then needs.
+// Each read runs on a context detached from ctx and bounded on its own, for AwaitReady's reason: a
+// deadline landing inside a call would close the channel the restore then needs.
 func systemRunning(ctx context.Context, g systemStater, every time.Duration) error {
 	for {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)

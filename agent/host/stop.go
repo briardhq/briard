@@ -1,18 +1,19 @@
 // The node's way down, and `briard stop` / `briard start`.
 //
-// TWO STOPS, BECAUSE THEY HAVE OPPOSITE PRIORITIES. A STOP -- an update, a restart, a
-// service manager's stop -- swaps the agent under a guest that keeps serving: the act in flight finishes
-// and the guest is never touched (acts.go, stopAfter). A SHUTDOWN brings the node down: the loop
-// and its act are cancelled at once -- the act is worthless, its guest is about to leave, and an
-// install keeps its stage and rollback point while a directive with no outcome is re-delivered --
-// then the guest is powered off cleanly, then the agent returns. Draining at a shutdown fails both
-// ways: the wait outlasts the time a machine gives its system services, so the halt power-cuts the
-// guest the drain was keeping, and the still-running loop sees its guest leave and relaunches it.
+// Two stops, because they have opposite priorities. A stop (an update, a restart, a
+// service manager's stop) swaps the agent under a guest that keeps serving: the act in flight
+// finishes and the guest is never touched (acts.go, stopAfter). A shutdown brings the node down:
+// the loop and its act are cancelled at once (the act is worthless, its guest is about to leave,
+// and an install keeps its stage and rollback point while a directive with no outcome is
+// re-delivered), then the guest is powered off cleanly, then the agent returns. Draining at a
+// shutdown fails both ways: the wait outlasts the time a machine gives its system services, so the
+// halt power-cuts the guest the drain was keeping, and the still-running loop sees its guest leave
+// and relaunches it.
 //
 // One way down, three triggers, all a context cancelled with ErrShutdown as its cause: the Windows
 // PRESHUTDOWN, a SIGTERM while systemd reports the machine stopping (StopCause), and the local
-// stop directive, which is `briard stop`. A clean exit stays down on both systems -- the agent unit
-// restarts on failure only, and the service manager's recovery acts on a non-zero exit -- so down
+// stop directive, which is `briard stop`. A clean exit stays down on both systems (the agent unit
+// restarts on failure only, and the service manager's recovery acts on a non-zero exit), so down
 // needs nothing disabled, and the next boot brings briard back.
 package host
 
@@ -125,9 +126,10 @@ const stopWait = shutdownBound + 30*time.Second
 
 // Stop is `briard stop`, and an uninstall's first step: the node down -- the act in flight
 // aborted and named, the guest powered off cleanly, the agent's unit stopped -- until `briard
-// start` or the next boot. THE FALLBACK IS PART OF THE VERB: an agent that is not there to ask
+// start` or the next boot. The fallback is part of the verb: an agent that is not there to ask
 // (crashed, crash-looping, half installed) may have left a qemu running, so with nobody answering
-// the agent's unit is stopped through the service manager and the guest powered off from here (stopNode).
+// the agent's unit is stopped through the service manager and the guest powered off from here
+// (stopNode).
 func (cfg Config) Stop(ctx context.Context, say func(string, ...any)) error {
 	o, err := Submit(ctx, cfg.AdminSock, api.Directive{Kind: api.DirectiveStop})
 	switch {
