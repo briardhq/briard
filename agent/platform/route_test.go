@@ -74,9 +74,9 @@ func TestSetVIPRoute_RejectsIncompleteSpec(t *testing.T) {
 	}
 }
 
-// The node route's two argvs, and the ORDER they must be issued in. Pure rendering, so what is
-// tested is the one thing reading the code cannot confirm: that the neighbour entry is permanent
-// and pins the derived MAC, and that the route carries a src.
+// The node route's two argvs (SetNodeRoute issues the neighbour first; the order is not asserted
+// here). Pure rendering, so what is tested is the one thing reading the code cannot confirm: that
+// the neighbour entry is permanent and pins the derived MAC, and that the route carries a src.
 //
 // Failable in the way that matters -- drop `nud permanent` and the kernel expires the entry, then
 // re-ARPs for an address the guest will not answer for on this interface (arp_ignore=1, the ARP-flux fix),

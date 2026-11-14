@@ -39,7 +39,7 @@ func sha(b []byte) string {
 
 // The release every fixture publishes, and where the tree puts its pieces: the manifest is
 // served from the `latest` pointer (what a fetch names), the artifacts only from the versioned
-// directory (what the manifest names) -- the split the fetcher has to honour. The host chain
+// directory (what the manifest names) -- the split the fetcher has to honour. The briard chain
 // carries the platform level, so the fixture does too.
 const testVersion = "v3.20260905.abc1234"
 
@@ -61,10 +61,10 @@ type channel struct {
 	missing map[string]bool
 }
 
-// newChannel builds a channel whose signed manifest lists arts (as the host chain at
+// newChannel builds a channel whose signed manifest lists arts (as the briard chain at
 // testVersion), serving bytesByName for each artifact under the versioned directory and the
-// signed manifest under both the versioned directory and the `latest` pointer -- the exact
-// shape `publish-release.sh sign` lays out.
+// signed manifest under both the versioned directory and the `latest` pointer -- the shape the
+// channel has once `publish-release.sh publish` and `latest` have run.
 func newChannel(t *testing.T, arts []Entry, bytesByName map[string][]byte) *channel {
 	t.Helper()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -120,7 +120,8 @@ func (c *channel) fetcher() *Fetcher {
 	return &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformHost, Keyring: c.kr}
 }
 
-// fetchLatest is what install.sh does: name the pointer, get whatever release it points at.
+// fetchLatest is what an install does: name a pointer (here `latest`), get whatever release it
+// points at.
 func (c *channel) fetchLatest(dest string) error {
 	return c.fetcher().FetchVerified(context.Background(), TargetLatest, dest)
 }
@@ -254,8 +255,9 @@ func TestFetchVerifiedFailsClosedWithoutKeyring(t *testing.T) {
 
 // A genuine, correctly signed manifest for the OTHER chain is refused: the signature proves the
 // bytes are ours, the chain field proves they are the wrong release line, and a fetch that
-// accepted them would install a guest image where a host bundle was expected (or compare a
-// guest date against a host date and silently no-op, which is the failure the update verb exists to refuse).
+// accepted them would install a briard bundle where the VM image was expected (or compare a
+// vm version against a briard one and silently no-op, which is the failure the update verb exists
+// to refuse).
 func TestFetchVerifiedRefusesWrongChain(t *testing.T) {
 	c := goodChannel(t)
 	// Serve the briard chain's (signed, chain:"briard") manifest where the vm chain's would be.
@@ -383,8 +385,8 @@ func TestFetchVerifiedExpandsCompressedArtifacts(t *testing.T) {
 	if err := c.fetchLatest(dest); err != nil {
 		t.Fatalf("compressed channel: %v", err)
 	}
-	// The staging dir holds the names install.sh expects — which is why shipping these
-	// compressed needed no change to install.sh.
+	// The staging dir holds the uncompressed names the install reads (nixos.qcow2,
+	// qemu-bundle.tar).
 	got, err := os.ReadFile(filepath.Join(dest, "nixos.qcow2"))
 	if err != nil {
 		t.Fatalf("guest image not expanded: %v", err)
@@ -481,8 +483,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	if len(man.Artifacts) != 2 {
 		t.Fatalf("manifest lists %d artifacts, want 2: %+v", len(man.Artifacts), man.Artifacts)
 	}
-	// The mode round-trips as a NUMBER the reader applies, which is the thing the old
-	// hand-written "mode":493 got right only by luck.
+	// The mode round-trips as a NUMBER the reader applies, and is omitted at the 0644 default.
 	for _, a := range man.Artifacts {
 		if a.Name == "briard-agent" && a.Mode != 0o755 {
 			t.Errorf("agent mode = %o, want 0755", a.Mode)
@@ -660,7 +661,7 @@ func TestFetchVerifiedHandlesTheVMChain(t *testing.T) {
 
 // THE SKIP-WHAT-IS-VERIFIED RULE: a release whose vm pair is the image already installed fetches
 // the briard chain alone, and dest carries no vm set -- the install keeps the image it has. Any
-// other installed image, or none, fetches the pair as before.
+// other installed image, or none, fetches the pair.
 func TestFetchReleaseSkipsTheInstalledImage(t *testing.T) {
 	gv := "vm.20260905.abc1234"
 	img := []byte("guest image bytes")

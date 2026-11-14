@@ -217,8 +217,8 @@ func TestACorruptNightRestoresTheNewestCleanHeldCopy(t *testing.T) {
 }
 
 // TestNoRestoreWithoutBothPositiveReads: an unreadable candidate, an unreadable live schema, or
-// a candidate whose schema is newer than the live database's all end in no restore -- and the
-// newer schema steps over to an older copy rather than stopping.
+// a candidate with no schema version all end in no restore -- while a candidate whose schema is
+// newer than the live database's is stepped over to an older copy rather than stopping.
 func TestNoRestoreWithoutBothPositiveReads(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

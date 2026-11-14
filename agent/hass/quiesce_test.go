@@ -120,7 +120,8 @@ func TestReleaseReportsALockThatDidNotHold(t *testing.T) {
 }
 
 // TestQuiesceReportsARefusal: a Home Assistant too old for the view (404), one whose recorder is
-// absent (501), or a lock that timed out (503) must not read as a successful hold. The caller's
+// absent (501), a lock that timed out (503), or one already held (409) must not read as a
+// successful hold. The caller's
 // fallback is the same either way — take the member unquiesced — but a silent success would label
 // that member as something it is not.
 func TestQuiesceReportsARefusal(t *testing.T) {

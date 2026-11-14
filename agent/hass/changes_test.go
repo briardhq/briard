@@ -139,7 +139,8 @@ func (f fakeFS) ReadFile(p string) ([]byte, error) {
 }
 
 // TestSignalsReadsOnlyTheSignals: the ring member is Home Assistant's whole config directory, and
-// the read must take the three signals out of it and nothing else.
+// the read must take the three signals out of it, plus the names of the files Home Assistant set
+// aside, and nothing else.
 func TestSignalsReadsOnlyTheSignals(t *testing.T) {
 	d := "/m/app"
 	fs := fakeFS{

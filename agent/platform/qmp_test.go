@@ -252,14 +252,12 @@ func TestShutdownVMOnAnAbsentVMIsSuccess(t *testing.T) {
 //
 // The listener here accepts and holds the connection WITHOUT writing a greeting, which is the
 // whole fixture. The assertion is the elapsed time, not the error: the call fails either way,
-// but before the setup/command deadline split it failed after the context's minutes rather
+// but without the setup/command deadline split it would fail after the context's minutes rather
 // than after qmpTimeout.
 func TestDialQMPDoesNotWaitOutALongCallerDeadlineForTheGreeting(t *testing.T) {
 	// testsock.Dir, not t.TempDir: this test's name is long enough that a CI runner's TMPDIR
 	// plus the test-name-derived directory clears sun_path's 108 bytes, and the kernel reports
-	// the overflow as a bare "bind: invalid argument". Which is exactly what happened -- green
-	// locally, red on CI -- i.e. the asymmetry that package's doc comment was written about,
-	// walked into by a test written to catch a different hang.
+	// the overflow as a bare "bind: invalid argument": green locally, red on CI.
 	path := filepath.Join(testsock.Dir(t), "qmp.sock")
 	l, err := net.Listen("unix", path)
 	if err != nil {
@@ -305,7 +303,7 @@ func TestDialQMPDoesNotWaitOutALongCallerDeadlineForTheGreeting(t *testing.T) {
 // on its own. Launch makes the QMP directory 0700 root, so a socket placed there inherits that
 // containment; the same socket somewhere world-reachable would be an open door onto an autologin
 // root shell. This asserts there is exactly one input and that nothing can pull the two apart --
-// the property `briard debug shell` gave up its -qmp flag to keep.
+// the property `briard debug shell` keeps by taking no -qmp flag.
 func TestDebugConsolePathIsBesideTheMonitor(t *testing.T) {
 	for _, tc := range []struct{ qmp, want string }{
 		{"/run/briard/qmp/guest.sock", "/run/briard/qmp/" + DebugConsoleName},

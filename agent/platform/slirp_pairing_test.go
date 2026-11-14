@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// TestSlirpAddressingMatchesGuestImage guards a pairing that only exists because the guest stopped
-// running a DHCP client on eth0: the host tells qemu what the SLIRP network is, and the
+// TestSlirpAddressingMatchesGuestImage guards a pairing that exists because the guest runs no
+// DHCP client on eth0: the host tells qemu what the SLIRP network is, and the
 // guest configures eth0 statically from the same numbers. Nothing at runtime reconciles them --
-// that is the point, since the reconciler we removed was the dhcpcd whose presence hijacked the
-// VIP's own client -- so a change on one side and not the other yields a guest with an address on
+// that is the point, since a system dhcpcd as the reconciler would hijack the VIP's own
+// client -- so a change on one side and not the other yields a guest with an address on
 // a network qemu is not running, i.e. no WAN, i.e. no image pulls, discovered late and far away.
 //
 // Same cheap mechanism as TestVolumePathsMatchGuestImage: read both sides, no build step.

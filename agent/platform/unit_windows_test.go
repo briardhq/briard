@@ -14,8 +14,8 @@ import (
 
 // The property the Windows backend exists for, against the real kernel: a unit started by one
 // process is still found BY NAME once that process holds no handle to it -- the agent restart.
-// The first version of this file failed exactly here (the job's name died with the launcher's
-// handle while the job and its process lived on), so this is the regression it would catch.
+// Without the unit's own process holding a handle, the job's name dies with the launcher's
+// handle while the job and its process live on: the regression this catches.
 // Runs on a Windows host: the cross-compiled test binary, as an administrator.
 func TestUnitIsFoundByNameAfterTheLauncherLetsGo(t *testing.T) {
 	ctx := context.Background()

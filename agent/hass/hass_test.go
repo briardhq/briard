@@ -55,7 +55,7 @@ func (f *fake) Run(_ context.Context, name string, args ...string) ([]byte, erro
 			f.files[args[2]] = v
 		}
 	}
-	// `podman cp` is modelled too, because what it produced is now checked: the extraction has
+	// `podman cp` is modelled too, because what it produced is checked: the extraction has
 	// to come back as a readable, non-empty file or it is refused. extracted lets a test say
 	// what the image handed over -- including nothing at all.
 	if name == "podman" && len(args) == 3 && args[0] == "cp" {
@@ -276,26 +276,26 @@ func TestMintAsksForAdminAndPrunes(t *testing.T) {
 		}
 	}
 	// hass.async_stop() is a no-op on a HomeAssistant that was never started, so it flushes
-	// nothing; the final-write event is what the delayed store save is waiting for. Measured
-	// against 2026.7.1 — without it the auth store was simply never written.
+	// nothing; the final-write event is what the delayed store save is waiting for. Without it the
+	// auth store is never written.
 	if !strings.Contains(scriptSource, "EVENT_HOMEASSISTANT_FINAL_WRITE") {
 		t.Fatal("the mint does not flush the auth store; nothing would be persisted")
 	}
 	// THE BOOTSTRAP IS BORROWED, NOT COPIED, and this is the assertion that keeps it that way.
 	// This package necessarily spans two Home Assistant releases -- an upgrade mints under the old
 	// image to take the readiness baseline and under the new one afterwards -- and the setup HA
-	// needs before its auth store will load CHANGED between them: 2026 added a
-	// device_registry.async_setup that the store's own load now requires, and releases before it
-	// have no such function. A hand-written copy therefore raises AttributeError on one end of the
-	// range and RuntimeError on the other, which is exactly how this file first failed. Running
+	// needs before its auth store will load DIFFERS between them: from 2026 the store's own load
+	// requires a device_registry.async_setup, and releases before that have no such function. A
+	// hand-written copy therefore raises AttributeError on one end of the range and RuntimeError
+	// on the other. Running
 	// HA's own `scripts/auth.run_command` and passing our mint as its callback makes the
 	// version-sensitive part someone else's to maintain, and leaves this file with no version
 	// branch at all.
 	if !strings.Contains(scriptSource, "ha_auth.run_command(") {
 		t.Fatal("the mint no longer borrows HA's own bootstrap; a copy of it drifts per release")
 	}
-	// Checked on the IMPORTS, not on prose: the comment above necessarily names the symbols the
-	// copy used, so a substring search over the whole file would match its own explanation.
+	// Checked on the IMPORTS, not on prose: the script's docstring names the symbols a copy would
+	// use, so a substring search over the whole file would match its own explanation.
 	for _, copied := range []string{
 		"from homeassistant.auth import auth_manager_from_config",
 		"from homeassistant.helpers import device_registry",
@@ -475,9 +475,9 @@ func TestStubDelegatesAndSurvivesAnAbsentImplementation(t *testing.T) {
 }
 
 // TestWrapperIsAWellFormedScript — the cheapest possible guard on the file we mount over Home
-// Assistant's own `run`, and it exists because its absence cost a VM run: an edit dropped the
-// shebang, every Go test still passed, and s6 answered with `unable to spawn ./run (waiting 60
-// seconds): Exec format error` and retried forever, so HA never started at all.
+// Assistant's own `run`. Without a shebang every other Go test still passes, and s6 answers with
+// `unable to spawn ./run (waiting 60 seconds): Exec format error` and retries forever, so HA
+// never starts at all.
 //
 // Asserted on the EMBEDDED source rather than on what Prepare wrote, because the defect is in the
 // file as shipped: by the time it reaches a node it is already too late to be a unit test.

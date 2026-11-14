@@ -55,7 +55,7 @@ func TestDecide(t *testing.T) {
 		{"latest equal id is a no-op", TargetLatest, *host(cur), host(cur), nil, false, nil},
 		{"latest different id installs, hash included", TargetLatest, *host(sameDay), host(cur), nil, true, nil},
 		// dev is a pointer like latest, not an exact id: it is never floored against stable and
-		// never compared with its own name -- the previous two were what an unknown word got.
+		// never compared with its own name -- both of which an exact id gets.
 		{"dev different id installs, no floor, no stable needed", TargetDev, *host(old), host(cur), nil, true, nil},
 		{"dev equal id is a no-op", TargetDev, *host(cur), host(cur), nil, false, nil},
 		{"exact newer than stable installs", next, *host(next), host(cur), stable, true, nil},
@@ -567,7 +567,8 @@ func TestUpdateRefusesAnUnknownPin(t *testing.T) {
 	assertNothingStaged(t, l)
 }
 
-// bundleChannel is a release of the WHOLE host bundle: an agent, a net-wrap, and a real (tiny)
+// bundleChannel is a release of the briard bundle without its guest bundle: an agent, a net-wrap,
+// and a real (tiny)
 // qemu-bundle.tar.zst whose tree holds bin/qemu-system-x86_64 and PROVENANCE.
 func bundleChannel(t *testing.T, provenance string) *channel {
 	t.Helper()
@@ -815,7 +816,7 @@ func TestUpdateRefusesATamperedOrBrokenBundle(t *testing.T) {
 }
 
 // min_briard: the vm chain's one-directional compatibility promise, ordered on the
-// date like everything else; a host id with no date cannot satisfy any requirement.
+// date like everything else; a briard id with no date cannot satisfy any requirement.
 func TestBriardSatisfies(t *testing.T) {
 	for _, tc := range []struct {
 		minHost, host string
@@ -839,7 +840,7 @@ func TestBriardSatisfies(t *testing.T) {
 }
 
 // The vm manifest names its closure and min_briard, round-tripped through the one writer and
-// reader; the host chain refuses them.
+// reader; the briard chain refuses them.
 func TestWriteManifestCarriesTheGuestFacts(t *testing.T) {
 	stage := t.TempDir()
 	os.WriteFile(filepath.Join(stage, "nixos.qcow2.zst"), []byte("img"), 0o644)
@@ -855,7 +856,7 @@ func TestWriteManifestCarriesTheGuestFacts(t *testing.T) {
 		t.Errorf("system/min_briard = %q/%q", m.System, m.MinBriard)
 	}
 	for _, bad := range [][]string{
-		{ChainBriard, "/nix/store/x", ""}, // a host manifest naming a closure
+		{ChainBriard, "/nix/store/x", ""}, // a briard manifest naming a closure
 		{ChainVM, "/tmp/not-store", ""},   // not a store path
 		{ChainVM, "", "not a segment/"},   // an unusable min_briard
 	} {
@@ -863,7 +864,7 @@ func TestWriteManifestCarriesTheGuestFacts(t *testing.T) {
 			t.Errorf("WriteManifest(%v) accepted", bad)
 		}
 	}
-	// Omitted when empty, so a host manifest's bytes are unchanged by the fields' existence.
+	// Omitted when empty, so a briard manifest's bytes are unchanged by the fields' existence.
 	if err := WriteManifest(stage, ChainVM, PlatformVM, "vm.20260906.abc1234", "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -873,9 +874,9 @@ func TestWriteManifestCarriesTheGuestFacts(t *testing.T) {
 	}
 }
 
-// The pairing fields: a host manifest names its guest release, a guest manifest its
-// inputs hash, and neither is accepted on the other chain -- a guest manifest naming a guest, or a
-// host manifest carrying an inputs hash, would be a lie the reader has no way to catch.
+// The pairing fields: a briard manifest names its vm release, a vm manifest its
+// inputs hash, and neither is accepted on the other chain -- a vm manifest naming a vm release, or
+// a briard manifest carrying an inputs hash, would be a lie the reader has no way to catch.
 func TestWriteManifestPairingFields(t *testing.T) {
 	stage := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stage, "briard-agent"), []byte("x"), 0o755); err != nil {
@@ -896,8 +897,8 @@ func TestWriteManifestPairingFields(t *testing.T) {
 		t.Fatalf("guest manifest read back as %+v (%v)", m, err)
 	}
 	for _, bad := range [][]string{
-		{ChainVM, "vm.20260901.def5678", ""}, // a guest naming a guest
-		{ChainBriard, "", inputs},            // a host carrying inputs
+		{ChainVM, "vm.20260901.def5678", ""}, // a vm manifest naming a vm release
+		{ChainBriard, "", inputs},            // a briard manifest carrying inputs
 		{ChainBriard, "stable", ""},          // a pointer word as the pair
 		{ChainVM, "", "not-a-hash"},          // inputs that are not a sha256
 	} {
@@ -907,14 +908,13 @@ func TestWriteManifestPairingFields(t *testing.T) {
 	}
 }
 
-// install.sh is an ORDINARY ARTIFACT of the host chain's linux arm, hashed and
+// install.sh is an ORDINARY ARTIFACT of the briard chain's linux arm, hashed and
 // mode-recorded like every other file in the directory.
 //
 // This looks tautological -- WriteManifest walks the directory, so of course it is included --
-// and that is exactly why it is worth pinning. The excluded set is a hand-written map, and the
-// comment beside it used to say install.sh lived outside every chain; an agent re-reading that
-// sentence and "tidying" the installer back out of the manifest would break the one property the
-// unsigned root copy has. `verify` asserts the root equals these bytes, so no hash here means
+// and that is exactly why it is worth pinning. The excluded set is a hand-written map, and
+// "tidying" the installer out of the manifest would break the one property the unsigned root
+// copy has. `verify` asserts the root equals these bytes, so no hash here means
 // nothing at all ties what a stranger curls to a release we signed.
 func TestWriteManifestCarriesTheInstaller(t *testing.T) {
 	stage := t.TempDir()
@@ -951,7 +951,7 @@ func TestWriteManifestCarriesTheInstaller(t *testing.T) {
 // here and not only its identifier. Every Go call site names the constant, which means a changed
 // value compiles, passes every table above, and breaks exactly two things this suite cannot see:
 // `briard directive <kind>` typed by hand at a node, and the fleet tests that wait on
-// `directive update-vm …` lines by text (lab/tests/integration/os-reboot.sh, os-rollback.sh).
+// `directive update-vm …` lines by text.
 // Those waits fail by TIMEOUT, so without this the cheapest signal for a one-character slip is a
 // fleet run measured in tens of minutes.
 func TestUpdateVMDirectiveKindIsWhatTheJournalSays(t *testing.T) {
@@ -961,11 +961,11 @@ func TestUpdateVMDirectiveKindIsWhatTheJournalSays(t *testing.T) {
 }
 
 // THE FLOOR IS A FACT ABOUT THE TREE, so the binary that writes a manifest is the one that
-// answers it -- there is no flag and nothing for a publish to remember. Host chain
-// only: the guest image is replaced whole and has no past of its own to be too old for.
+// answers it -- there is no flag and nothing for a publish to remember. Briard chain
+// only: the VM image is replaced whole and has no past of its own to be too old for.
 //
-// ⚠️ The floor is EMPTY in this tree, which is the normal state and also why this test sets it:
-// a wiring assertion against a value that never varies could not fail, and the failure it exists
+// ⚠️ The test sets the floor itself rather than reading the tree's value: a wiring assertion
+// against a value that never varies could not fail, and the failure it exists
 // to catch is exactly the silent one -- a manifest published with no floor on a release that
 // declared one, which refuses nothing and is indistinguishable from a release that declared
 // nothing.
@@ -1026,11 +1026,10 @@ func TestUpgradeFloorRefusalNamesTheRemedyAndBothIds(t *testing.T) {
 	}
 }
 
-// THE NO-OP LINE IS A PRODUCT SURFACE, AND THE STABLE DEFAULT MOVED WHICH BRANCH PRINTS IT. Before the
-// default became `stable`, a bare `briard update` resolved `latest` and an up-to-date node
-// read "already at <id>"; the stable branch had its own wording and nobody met it, because
-// nothing reached it by default. The moment the default moved, two host-agent rigs went red on
-// the wording alone -- an hour of VM suite to catch a string, which is why it is asserted here.
+// THE NO-OP LINE IS A PRODUCT SURFACE. A bare `briard update` resolves `stable`, so the stable
+// branch is the one an up-to-date node meets, and it must print the shared "already at <id>":
+// host-agent rigs assert that wording, and an hour of VM suite is a slow way to catch a string,
+// which is why it is asserted here.
 //
 // The distinction is worth keeping, not flattening: EQUAL means nothing is owed and reads as
 // "already at X" (what agent/cli/cli.go's help row promises the verb prints); genuinely PAST

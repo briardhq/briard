@@ -103,8 +103,8 @@ func TestReadinessReadsTheStatesThroughTheToken(t *testing.T) {
 	}
 }
 
-// TestReadinessTrimsTheTokenFile: the file is written with a trailing newline (it is read by a
-// shell wrapper too), and a token sent with one is a token HA does not know.
+// TestReadinessTrimsTheTokenFile: the file is written with a trailing newline, and a token sent
+// with one is a token HA does not know.
 func TestReadinessTrimsTheTokenFile(t *testing.T) {
 	h := &haStub{token: "tok", entries: `[]`}
 	if _, err := Readiness(context.Background(), tokenFile("  tok\n"), h.start(t)); err != nil {
@@ -113,9 +113,9 @@ func TestReadinessTrimsTheTokenFile(t *testing.T) {
 }
 
 // TestReadinessEmptyIsNotAnError: Home Assistant answers its HTTP stack before default_config has
-// finished setting entries up, so an early sample is legitimately empty — measured, and it is the
-// first thing this gate saw in CI. An empty PRE sample simply excludes everything, which is the
-// safe direction; treating it as a failure would have made the gate flap on every fast node.
+// finished setting entries up, so an early sample is legitimately empty — measured. An empty PRE
+// sample simply excludes everything, which is the safe direction; treating it as a failure would
+// make the gate flap on every fast node.
 func TestReadinessEmptyIsNotAnError(t *testing.T) {
 	h := &haStub{token: "tok", entries: `[]`}
 	got, err := Readiness(context.Background(), tokenFile("tok"), h.start(t))

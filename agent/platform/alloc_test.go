@@ -37,9 +37,10 @@ func TestAllocateThickReservesTheSpace(t *testing.T) {
 }
 
 // ⚠️ THE DESTRUCTIVE CASE. A data volume that is already there is never written over --
-// and the guard has to hold for "present but unstat-able" too, which is why the creation itself is
-// the proof of absence rather than a check before it. Here the file is present and readable, which
-// is the case a stat WOULD catch; the O_EXCL open is what makes the unreadable one safe as well.
+// and the guard has to hold for "present but unstat-able" too, which is why the publish itself (a
+// hard link) is the proof of absence rather than a check before it. Here the file is present and
+// readable, which is the case a stat WOULD catch; the link is what makes the unreadable one safe
+// as well.
 func TestAllocateThickNeverOverwrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.img")
 	body := []byte("a household's app data")

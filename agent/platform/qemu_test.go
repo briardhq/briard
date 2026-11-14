@@ -38,7 +38,7 @@ func TestQEMUArgsFullSpec(t *testing.T) {
 		"virtserialport,chardev=briardadmin,name=briard.admin",
 		"file=/var/lib/briard/guest.qcow2",
 		"file=/dev/vg/drbd0",
-		"user,id=net0",                                     // eth0: throwaway user-net
+		"user,id=net0",                                     // eth0: SLIRP user-net, the WAN path
 		"tap,id=net1,ifname=sys0,script=no,downscript=no",  // eth1: system NIC (DRBD)
 		"virtio-net-pci,netdev=net1,mac=52:54:00:11:22:33", // its unique MAC
 		"tap,id=net2,ifname=svc0,script=no,downscript=no",  // eth2: service NIC (VIP)
@@ -82,7 +82,7 @@ func TestQEMUArgsWitnessNICOrder(t *testing.T) {
 	}
 }
 
-// The system NIC alone (a witness) still gets the throwaway net0, and its DRBD tap
+// The system NIC alone (a witness) still gets net0 (SLIRP, the WAN path), and its DRBD tap
 // is net1 -> eth1 (no service NIC to precede it, so no placeholder is needed).
 func TestQEMUArgsSystemTapOnly(t *testing.T) {
 	got := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", SystemTap: "sys0"}), " ")
@@ -270,9 +270,10 @@ func TestQEMUArgsDataDir(t *testing.T) {
 	}
 }
 
-// CPUModel renders `-cpu <model>`; empty omits it so qemu keeps its own default. The
-// assertion that matters is the ABSENCE of a bare `-cpu host`: `host` requires KVM, Accel is
-// a kvm:tcg fallback list, and a host that lands on tcg would then not boot at all.
+// CPUModel renders `-cpu <model>`; empty omits it so qemu keeps its own default. The model the
+// agent passes is `max` (agent/host/config.go), never a bare `host`: `host` requires KVM, Accel is
+// a kvm:tcg fallback list, and a host that lands on tcg would then not boot at all. This test
+// checks the rendering only.
 func TestQEMUArgsCPUModel(t *testing.T) {
 	with := strings.Join(qemuArgs(QEMUSpec{Accel: "kvm:tcg", ControlSock: "/s", CPUModel: "max"}), " ")
 	if !strings.Contains(with, "-cpu max") {
@@ -297,9 +298,9 @@ func TestQEMUArgsMinimal(t *testing.T) {
 }
 
 // The guest unit's STOP contract, which is the half of the unit with no observable effect until
-// the machine is going down -- and so the half that was silently absent. Stopping the unit
+// the machine is going down -- and so the half that can go missing silently. Stopping the unit
 // SIGTERMs QEMU, which the guest experiences as a power cut; systemd stops every unit on a host
-// reboot; so without an ExecStop, a user rebooting their own host power-cut the appliance.
+// reboot; so without an ExecStop, a user rebooting their own host power-cuts the appliance.
 //
 // Three things are asserted and each one fails differently in the field:
 //
@@ -363,8 +364,8 @@ func TestLaunchArgsNoMonitorNoStopContract(t *testing.T) {
 	}
 }
 
-// TestUnitAtRest pins the reading the stop path turned on: "deactivating" is a unit that is
-// still running its ExecStop, and calling it stopped is what let a Launch collide with the
+// TestUnitAtRest pins the reading the stop path turns on: "deactivating" is a unit that is
+// still running its ExecStop, and calling it stopped lets a Launch collide with the
 // guest it had just asked to go away. The at-rest set is deliberately small -- anything not
 // named here keeps the caller waiting.
 func TestUnitAtRest(t *testing.T) {
@@ -394,8 +395,8 @@ func TestUnitAtRest(t *testing.T) {
 
 // A unit NAME is free only once systemctl has forgotten the unit: systemd-run refuses a name
 // that is still loaded, and a unit stays loaded through its whole stop and past it, until the
-// corpse is collected. Reading "not running" as "free" is what spent three relaunch attempts in
-// one second on a guest that was still stopping.
+// corpse is collected. Reading "not running" as "free" spends the relaunch attempts within a
+// second on a guest that is still stopping.
 func TestUnitLoaded(t *testing.T) {
 	for _, tc := range []struct {
 		state string
@@ -488,7 +489,7 @@ func borrowedInvocation(t *testing.T) (unit, id string) {
 
 // The state disk is attached by SERIAL -- the guest mounts /dev/disk/by-id/virtio-
 // briard-state, never a bus position -- and the machine UUID rides -uuid; neither appears when
-// unset, so rigs that predate them launch exactly as before.
+// unset.
 func TestQemuArgsStateDiskAndMachineUUID(t *testing.T) {
 	base := QEMUSpec{Accel: "tcg", ControlSock: "/s"}
 	without := strings.Join(qemuArgs(base), " ")
@@ -511,8 +512,8 @@ func TestQemuArgsStateDiskAndMachineUUID(t *testing.T) {
 }
 
 // Disks are explicit devices in ascending order -- root, data, state -- with the root marked
-// bootable: mixing `-drive if=virtio` with `-device` put the state disk on a lower PCI slot than
-// the root and SeaBIOS booted the blank disk. The guest's vda/vdb/vdc depend on this order.
+// bootable: mixing `-drive if=virtio` with `-device` puts the state disk on a lower PCI slot than
+// the root and SeaBIOS boots the blank disk. The guest's vda/vdb/vdc depend on this order.
 func TestQemuArgsDisksAreOrderedExplicitDevices(t *testing.T) {
 	got := strings.Join(qemuArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s", DiskImage: "/r.qcow2", DataDisk: "/d.img", StateDisk: "/s.img"}), " ")
 	root := strings.Index(got, "virtio-blk-pci,drive=briard-root,iothread=briard-io,bootindex=0")
@@ -535,9 +536,9 @@ func TestQemuArgsDisksAreOrderedExplicitDevices(t *testing.T) {
 
 // BOTH SERIAL PORTS, ALWAYS, AND ttyS1 SECOND. The guest numbers its ports by -serial position:
 // ttyS0 is the capture `briard logs` reads and ttyS1 is the debug console the guest binds an
-// autologin getty to. If the first port is ever dropped -- which is what the old code did
-// whenever SerialLog was empty, i.e. on every production node -- the debug console silently
-// becomes ttyS0 and the getty binds to a device that is now the log file.
+// autologin getty to. If the first port is ever dropped -- the risk whenever SerialLog is empty,
+// which a launch without a capture is -- the debug console silently becomes ttyS0 and the getty
+// binds to a device that is now the log file.
 func TestQEMUArgsSerialPortsAlwaysBothInOrder(t *testing.T) {
 	for _, tc := range []struct {
 		name, serialLog, wantFirst string

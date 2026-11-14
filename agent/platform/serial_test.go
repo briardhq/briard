@@ -60,8 +60,8 @@ func TestPrepareSerialLogLeavesASmallCaptureAlone(t *testing.T) {
 
 // The mode is OURS, on every launch. A guest console carries the household's hostnames and
 // addresses: not secret, not public. Asserted on a file that already exists with a looser mode,
-// because that is the case a one-shot pre-create at install time would never reach -- an install
-// that predates this, or anything else that touched the file.
+// because that is the case a one-shot pre-create at install time would never reach -- a file an
+// earlier release left, or anything else that touched it.
 func TestPrepareSerialLogTightensAnExistingMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "console.log")
 	if err := os.WriteFile(path, []byte("boot\n"), 0o644); err != nil {
@@ -78,8 +78,8 @@ func TestPrepareSerialLogTightensAnExistingMode(t *testing.T) {
 	}
 }
 
-// A node that captures no console (BRIARD_CONSOLE=) gets nothing done to it, and in particular no
-// file appears at the default path by accident.
+// A node that captures no console (BRIARD_GUEST_SERIAL=) gets nothing done to it, and in
+// particular no file appears at the default path by accident.
 func TestPrepareSerialLogWithNoCaptureCreatesNothing(t *testing.T) {
 	dir := t.TempDir()
 	prepareSerialLog("")
@@ -93,9 +93,8 @@ func TestPrepareSerialLogWithNoCaptureCreatesNothing(t *testing.T) {
 }
 
 // ⚠️ NEVER A REASON A GUEST DOES NOT LAUNCH. A host with a read-only or absent /var/log is a host
-// whose logging convenience fails; it is not a host that should refuse to run its apps. The
-// shell this replaced learned that the hard way (a POSIX special builtin made a redirection
-// failure fatal to the whole script), so the property is pinned rather than assumed.
+// whose logging convenience fails; it is not a host that should refuse to run its apps, so the
+// property is pinned rather than assumed.
 func TestPrepareSerialLogSurvivesAnUnwritablePath(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "ro")
 	if err := os.Mkdir(dir, 0o500); err != nil {
@@ -116,7 +115,7 @@ func TestLastLinesKeepsTheSpeakingTail(t *testing.T) {
 	for i := range long {
 		long[i] = 'x'
 	}
-	// Twice the read window of padding ahead of the tail, so a read of the whole file and a
+	// Over twice the read window of padding ahead of the tail, so a read of the whole file and a
 	// read of its end give different answers only if the implementation got the window wrong.
 	pad := make([]byte, 40<<10)
 	for i := range pad {
