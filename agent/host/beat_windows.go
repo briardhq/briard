@@ -47,14 +47,14 @@ func beatEvent() (windows.Handle, error) {
 	return h, err
 }
 
-// newBeat on Windows keeps the beat and does the half of the watchdog that can be done in-process:
-// the DIAGNOSIS. The restart is the warden's (warden_windows.go), which this feeds through the
-// beat event; an in-process detector could not be trusted to restart (beat.go: a timer goroutine
-// keeps firing while the loop it vouches for is stuck). But that same property is exactly what a
-// stack dump needs -- the dumper keeps running while the loop is stuck -- and Windows has no signal
-// that makes the Go runtime print every goroutine the way SIGABRT does under systemd's watchdog. So
-// the trip's evidence is produced here, once per stall, before the warden's threshold ends the
-// process.
+// newBeat on Windows keeps the beat and does the half of the watchdog that can be done
+// in-process: the diagnosis. The restart is the warden's (warden_windows.go), which this feeds
+// through the beat event; an in-process detector could not be trusted to restart (beat.go: a
+// timer goroutine keeps firing while the loop it vouches for is stuck). That same property is
+// what a stack dump needs (the dumper keeps running while the loop is stuck), and Windows has no
+// signal that makes the Go runtime print every goroutine the way SIGABRT does under systemd's
+// watchdog, so the trip's evidence is produced here, once per stall, before the warden's
+// threshold ends the process.
 func newBeat(logf func(string, ...any)) *beat {
 	var beaten atomic.Bool
 	ev, err := beatEvent()

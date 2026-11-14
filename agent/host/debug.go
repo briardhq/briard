@@ -4,17 +4,16 @@ package host
 // (ttyS1) onto a unix socket so the getty that has been sitting there since boot becomes
 // reachable; disarming puts it back on a null backend and QEMU unlinks the socket.
 //
-// THE AGENT OWNS THE ACT SO THAT IT OWNS THE RECORD. An interactive CLI's stderr is the
-// operator's terminal -- the one place the record will not be found afterwards -- so the agent,
-// not `briard debug shell`, drives the monitor, and logf reaches the journal the way every other
-// action on this node does.
+// The agent owns the act so that it owns the record: an interactive CLI's stderr is the
+// operator's terminal, the one place the record will not be found afterwards, so the agent, not
+// `briard debug shell`, drives the monitor, and logf reaches the journal like every other action
+// on this node.
 //
-// WHAT THIS COSTS, ACCEPTED KNOWINGLY: routed through the observe loop, the console cannot be
-// opened while that loop is wedged -- and a wedged agent is one reason somebody reaches for a
-// shell. That is closer to a feature than a defect: the user Briard is built for should be
-// deterred from working on an already-degraded node, and anyone who can drive QMP by hand is not
-// that user. A wedged host agent has its own answers (`briard logs`, restarting the unit,
-// `rescue`).
+// The cost, accepted knowingly: routed through the observe loop, the console cannot be opened
+// while that loop is wedged, and a wedged agent is one reason somebody reaches for a shell. That
+// is closer to a feature than a defect: the user Briard is built for should be deterred from
+// working on an already-degraded node, and anyone who can drive QMP by hand is not that user. A
+// wedged host agent has its own answers (`briard logs`, restarting the unit, `rescue`).
 
 import (
 	"context"
@@ -43,8 +42,8 @@ func (cfg Config) applyDebugConsole(ctx context.Context, d api.Directive, logf f
 
 	if d.Kind == api.DirectiveDebugDisarm {
 		if err := platform.DebugDisarm(cctx, cfg.QMPSock); err != nil {
-			// LOUD, because a console that failed to close is a node left open and the journal
-			// is the only place that fact now lives -- the operator is about to walk away.
+			// Loud, because a console that failed to close is a node left open and the journal
+			// is the only place that fact now lives: the operator is about to walk away.
 			logf("debug console DISARM FAILED on %s: %v", console, err)
 			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: err.Error()}
 		}

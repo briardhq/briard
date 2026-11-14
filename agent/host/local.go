@@ -1,17 +1,15 @@
-// The local admin door — the surface `briard` (the operator CLI) talks to.
+// The local admin door — the surface `briard` (the operator CLI) talks to. The host agent
+// otherwise only dials: out to the cloud (the report, whose answer carries the directives) and in
+// to the guest's virtio-serial socket. The CLI cannot simply do the work itself: the agent holds
+// the guest control channel, so a second process driving guest verbs would fight it for the wire.
 //
-// The host agent otherwise only dials: OUT to the cloud (the report, whose answer carries the
-// directives) and IN to the guest's virtio-serial socket. The CLI cannot simply do the work
-// itself: the agent holds the guest control channel, so a second process driving guest verbs
-// would fight it for the wire.
-//
-// So the CLI is an INJECTOR. It hands the agent an api.Directive over this socket and the agent
+// So the CLI is an injector: it hands the agent an api.Directive over this socket, and the agent
 // applies it through the exact path the cloud's directives take (the observe loop's run, then
-// dispatch). The tray and the guest's admin port (adminport.go) inject the same way.
-// shared/api already names the cloud twin of this gesture — DirectivePath, "admin: enqueue a
-// directive for a node" — so this is that endpoint's LOCAL DOOR rather than a second way to drive
-// a node. The payoff is that a CLI which sees little production use cannot rot: it is a different
-// doorway onto a permanently hot path, exercised by every cloud-driven install.
+// dispatch); the tray and the guest's admin port (adminport.go) inject the same way. shared/api
+// already names the cloud twin of this gesture, DirectivePath ("admin: enqueue a directive for a
+// node"), so this is that endpoint's local door, not a second way to drive a node, and a CLI that
+// sees little production use cannot rot: it is a different doorway onto a permanently hot path,
+// exercised by every cloud-driven install.
 //
 // Root-only by construction: the socket is created 0600 and the agent runs as root. On Windows the
 // socket's DACL is the same gate -- connect needs write on the socket file there too -- and admits
@@ -31,10 +29,9 @@ import (
 	"briard.io/shared/notify"
 )
 
-// localRequest is one locally submitted directive -- the admin socket's or the guest admin
-// port's -- plus the channel its terminal outcome returns on.
-// The observe loop is the only consumer: it decides the lane a directive runs on (acts.go), and
-// one place must own that decision.
+// localRequest is one locally submitted directive (the admin socket's or the guest admin port's)
+// plus the channel its terminal outcome returns on. The observe loop is the only consumer: it
+// decides the lane a directive runs on (acts.go), and one place must own that decision.
 type localRequest struct {
 	d    api.Directive
 	resp chan api.DirectiveOutcome
@@ -91,9 +88,9 @@ func serveLocal(ctx context.Context, sock, owner string, reqs chan<- localReques
 // terminal outcome. One directive per connection: the CLI is a one-shot, and a request/response
 // pair with no framing beyond JSON's own is the least machinery that carries an outcome home.
 //
-// There is deliberately NO read deadline on the wait. A locally-submitted upgrade legitimately
-// runs for minutes (bounded by UpgradeBudget, 15 by default), and a CLI that gave up early would report a
-// failure for an op that went on to succeed — the worst answer an admin tool can give.
+// There is deliberately no read deadline on the wait. A locally-submitted upgrade legitimately
+// runs for minutes (bounded by UpgradeBudget, 15 by default), and a CLI that gave up early would
+// report a failure for an op that went on to succeed — the worst answer an admin tool can give.
 func handleLocal(ctx context.Context, conn net.Conn, reqs chan<- localRequest, logf func(string, ...any)) {
 	defer conn.Close()
 	failed := func(detail string) api.DirectiveOutcome {
@@ -146,9 +143,9 @@ type LocalStatus struct {
 	Serving   bool `json:"serving"`   // the last tick found the node healthy
 	Attention int  `json:"attention"` // alerts needing attention now (notify.Attention)
 	Updating  bool `json:"updating"`  // an update of the agent, the guest's image or its OS is in flight
-	// Refused is why the node cannot serve until the household acts, and what to do -- the
-	// network refusal's own line (lease.go) -- or "" when nothing refuses. Waiting does not end
-	// it, so a tray waiting for the page stops on it.
+	// Refused is why the node cannot serve until the household acts, and what to do (the network
+	// refusal's own line, lease.go), or "" when nothing refuses. Waiting does not end it, so a
+	// tray waiting for the page stops on it.
 	Refused string `json:"refused,omitempty"`
 	// Updates is every installed app the catalog offers an update for, in its order: an
 	// offer, not a fault, so it is counted apart from Attention.
@@ -200,10 +197,11 @@ func (cfg Config) applyStatus(d api.Directive, n notify.Notifier) api.DirectiveO
 
 // holdDoor answers the local door until `until` fires or ctx ends, beating as it goes, for the
 // stretches when the loop is not there to: the install finishing (finish.go), the disks being
-// made (disks.go) and the recovery ladder (guestrecover.go). A stop is the one directive taken, as in the network's wait
-// (waitTick); anything else is refused at once with the reason, read afresh each time so a wait
-// that moves on can say so -- the alternative is what the channel does with no reader, a CLI
-// that blocks until the agent exits, which to the person at the machine is an agent that wedged.
+// made (disks.go) and the recovery ladder (guestrecover.go). As in the network's wait (waitTick),
+// a stop is the one directive taken; anything else is refused at once with the reason, read
+// afresh each time so a wait that moves on can say so. The alternative is what the channel does
+// with no reader: a CLI that blocks until the agent exits, which to the person at the machine is
+// an agent that wedged.
 func (cfg Config) holdDoor(ctx context.Context, local <-chan localRequest, refusal func() string, until <-chan struct{}, logf func(string, ...any)) error {
 	tick := time.NewTicker(netTick)
 	defer tick.Stop()

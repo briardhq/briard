@@ -20,11 +20,10 @@ type handoffWriter interface {
 // applyDashboard handles a DirectiveDashboard: mint a one-time code, hand it to the
 // guest with what the payload says about the OS account, and report the URL to open.
 //
-// THE CODE IS MINTED HERE, ON THE HOST, and nowhere else. Identity is the host's,
-// and what this code proves is that its holder could drive the CLI on this machine -- so the
-// mint sits behind the local door, and the guest only ever receives one. A fresh directive is a
-// fresh code: the previous one is overwritten, which is how `briard open` doubles as the
-// reset when a browser lost its session.
+// The code is minted here, on the host, and nowhere else: identity is the host's, and the code
+// proves its holder could drive the CLI on this machine, so the mint sits behind the local door
+// and the guest only ever receives one. A fresh directive is a fresh code that overwrites the
+// previous one, which is how `briard open` doubles as the reset when a browser lost its session.
 func (cfg Config) applyDashboard(ctx context.Context, g handoffWriter, d api.Directive, cs *casaRunner, logf func(string, ...any)) api.DirectiveOutcome {
 	var h dashboard.Handoff
 	if d.Payload != "" {
@@ -49,11 +48,11 @@ func (cfg Config) applyDashboard(ctx context.Context, g handoffWriter, d api.Dir
 	if err := g.DashboardHandoff(hctx, h); err != nil {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: fmt.Sprintf("hand the code to the VM: %v", err)}
 	}
-	// The address to open, one per line: the household's own name first when it is usable --
-	// registered, found to resolve on this network, with its certificate on the volume -- and
-	// the `.local` alias under it, the same code on both (it works once, on whichever is
-	// opened; the dashboard carries the trust across its names on its own). The tray opens the
-	// first line; the CLI prints them all.
+	// The address to open, one per line: the household's own name first when it is usable
+	// (registered, found to resolve on this network, with its certificate on the volume), then
+	// the `.local` alias, the same code on both (it works once, on whichever is opened; the
+	// dashboard carries the trust across its names on its own). The tray opens the first line;
+	// the CLI prints them all.
 	url := dashboard.URL(code)
 	if name, ok := cs.usableName(); ok {
 		url = "https://" + name + "/?code=" + code + "\n" + url

@@ -1,11 +1,10 @@
-// The agent's half of `briard doctor`: the node judged live, from the agent's own view.
-//
-// The report card gates the install; doctor answers "what is wrong NOW" on a node long after,
-// which its history (`briard alerts`, `briard logs`) cannot. The CLI reads what the host can see
-// by itself (agent/reportcard, agent/cli/doctor.go); this half answers what
-// only the agent can -- the network it built, the guest behind the channel it holds, and what
-// the guest says -- through the same snapshot the report loop sends upward, so the doctor and
-// the cloud judge one sample, never two readings that could disagree.
+// The agent's half of `briard doctor`: the node judged live, from the agent's own view. The
+// report card gates the install; doctor answers "what is wrong now" on a node long after, which
+// its history (`briard alerts`, `briard logs`) cannot. The CLI reads what the host can see by
+// itself (agent/reportcard, agent/cli/doctor.go); this half answers what only the agent can (the
+// network it built, the guest behind the channel it holds, and what the guest says) through the
+// same snapshot the report loop sends upward, so the doctor and the cloud judge one sample,
+// never two readings that could disagree.
 //
 // Local-only (localOnlyKinds): the answer is for the person at the machine, and must never
 // become a second, wider path out of the house than NodeStatus.
@@ -228,11 +227,11 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		}
 	}
 
-	// THE ADDRESS AGAINST THE ROLE: a probe alone cannot tell a handover from a fault,
-	// so what is expected depends on whether this node serves.
+	// The address against the role: a probe alone cannot tell a handover from a fault, so what
+	// is expected depends on whether this node serves.
 	switch {
 	case f.Refused != "":
-		// Ahead of the generic "no address" line, which it would otherwise read as: this is WHY
+		// Ahead of the generic "no address" line, which it would otherwise read as: this is why
 		// there is none, and the remedy is not the router's free addresses.
 		add("address", reportcard.Refuse, f.Refused, f.RefusedFix)
 	case serving && f.Probe == "":
@@ -252,11 +251,11 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		return cs
 	}
 
-	// THE NAME THE REVERSE PROXY REPORTS IS THE ONE IT WAS GIVEN: the responder probes nothing and renames
-	// nothing, so Published is either the flock name or empty, and "published as some other name"
-	// is not a state it can be in. A second flock answering the bare `briard.local` is a
-	// different fact: that name is ambiguous by design (routes.BareHostName), nothing is wrong
-	// and nothing yields, so it is a warning that says which name is unambiguously this one.
+	// The name the reverse proxy reports is the one it was given: the responder probes nothing and
+	// renames nothing, so Published is the flock name or empty, never "some other name". A second
+	// flock answering the bare `briard.local` is a different fact: that name is ambiguous by
+	// design (routes.BareHostName), nothing is wrong and nothing yields, so it is a warning that
+	// says which name is unambiguously this one.
 	if f.FlockName != "" {
 		want := routes.FlockHostName(f.FlockName)
 		switch {
@@ -270,7 +269,7 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		}
 	}
 
-	// THE CASA NAME IS USED ONLY WHERE THE HOUSE RESOLVES IT: not yet known is a warning, because
+	// The casa name is used only where the house resolves it: not yet known is a warning, because
 	// until it is known the page does not link the name.
 	if f.Casa != "" {
 		switch f.CasaResolves {
@@ -300,9 +299,8 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		}
 	}
 
-	// AN UPDATE ON OFFER IS NOT A FAULT: a pass, with the one command that takes it, because
-	// nothing takes it unasked and the CLI is the only place a person without the page hears of
-	// it.
+	// An update on offer is not a fault: a pass, with the one command that takes it, because
+	// nothing takes it unasked and the CLI is the only place a person without the page hears of it.
 	for _, u := range f.Updates {
 		add("update", reportcard.Pass, fmt.Sprintf("%s %s is available", u.Title, u.Version),
 			fmt.Sprintf("`sudo briard app install %s` updates it, and puts it back by itself if it does not come up", u.Name))

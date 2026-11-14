@@ -10,18 +10,17 @@ import (
 // localTimezone returns the machine's IANA zone name, or "" if it cannot be established. root is
 // unused: Windows keeps the zone in the registry, not in a file under a root.
 //
-// The registry names a WINDOWS zone ("GTB Standard Time"), which nothing outside Windows reads.
+// The registry names a Windows zone ("GTB Standard Time"), which nothing outside Windows reads.
 // ICU, which Windows ships as icu.dll, maps it to IANA with CLDR's table. Without a region, ICU
-// answers with the zone's representative city (Europe/Bucharest for Athens too). By definition a
-// Windows zone groups IANA zones that keep the same clock, so the times are right and only the
+// answers with the zone's representative city (Europe/Bucharest for Athens too); a Windows zone
+// by definition groups IANA zones that keep the same clock, so the times are right and only the
 // city's name may differ.
 //
-// THE NAME IS NOT LOADED HERE, unlike on Linux. Windows has no zone database Go can read, so
+// Unlike on Linux, the name is not loaded here: Windows has no zone database Go can read, so
 // time.LoadLocation would refuse every name, and ICU answers only with canonical IANA names
 // anyway. The guest still refuses a zone its own database lacks. The host's own schedules use
-// time.Local, which Go builds from the same registry key.
-//
-// TZ is not read: on Windows it does not set this process's clock either.
+// time.Local, which Go builds from the same registry key. TZ is not read: on Windows it does not
+// set this process's clock either.
 func localTimezone(string) string {
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE,
 		`SYSTEM\CurrentControlSet\Control\TimeZoneInformation`, registry.QUERY_VALUE)

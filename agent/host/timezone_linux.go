@@ -20,13 +20,10 @@ import (
 //
 // A source that names a zone we cannot load is skipped rather than passed on: a zone the cloud
 // cannot resolve is a window that never opens, which there is indistinguishable from a home that
-// reported nothing at all -- so it is better to report nothing honestly and let that one fault
-// have one meaning.
-//
-// A machine that says UTC is reported as UTC. It is tempting to read that as "unconfigured" and
-// answer "" instead, but a headless install genuinely on UTC is not a fault, and inventing that
-// distinction would trade a schedule the operator can correct for a home that is never scheduled
-// at all.
+// reported nothing at all, so better to report nothing honestly and let that one fault have one
+// meaning. A machine that says UTC is reported as UTC, not read as "unconfigured" (""): a
+// headless install genuinely on UTC is not a fault, and inventing that distinction would trade a
+// schedule the operator can correct for a home that is never scheduled at all.
 func localTimezone(root string) string {
 	for _, name := range []string{os.Getenv("TZ"), zoneFromLocaltime(root), zoneFromEtcTimezone(root)} {
 		if name == "" {

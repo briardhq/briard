@@ -9,14 +9,14 @@ import (
 )
 
 // dashboardMetrics is the closed allowlist of resource fields that leave a node as cloud
-// aggregates: product-health signals fit for a cloud dashboard -- disk capacity used
-// and system load -- not the soak's internal leak instruments (agent/app RSS+FDs,
-// log/store sizes, guest kernel errors, restart counts), which stay in shared/telemetry.
-// Expanding this set is a deliberate, visible act -- and a cheap one: the cloud rollup is
-// long-format (metric name as data), so a new metric is new rows, not a schema change. A zero value means "unread this cycle" (the telemetry
+// aggregates: product-health signals fit for a cloud dashboard (disk capacity used, system load),
+// not the soak's internal leak instruments (agent/app RSS+FDs, log/store sizes, guest kernel
+// errors, restart counts), which stay in shared/telemetry. Expanding this set is a deliberate,
+// visible act, and a cheap one: the cloud rollup is long-format (metric name as data), so a new
+// metric is new rows, not a schema change. A zero value means "unread this cycle" (the telemetry
 // convention) and is skipped, so a transient read miss never poisons a bucket's min with a
-// spurious 0 (a node's formatted volume is never legitimately 0, and a running
-// node's load is virtually never exactly 0.00).
+// spurious 0 (a node's formatted volume is never legitimately 0, and a running node's load is
+// virtually never exactly 0.00).
 func dashboardMetrics(r *telemetry.NodeResources) map[string]float64 {
 	out := map[string]float64{}
 	if r.VolumeUsedKB > 0 {
@@ -47,14 +47,13 @@ func (b *metricBucket) add(v float64) {
 }
 
 // metricsAggregator rolls a node's per-cycle resource samples into per-window min/max/avg
-// aggregates (the window is one hour in production; a short window in the soak/tests
-// exercises rollover quickly). It is an online accumulator: it never stores raw samples, only
-// the running aggregate per (bucket, metric). The current bucket is re-uploaded with each fresh
-// sample so a dashboard sees the in-flight hour live; a just-completed bucket rides along until
-// an upload acks it (prune), then drops out. Bounded: at most maxBuckets are retained, so a long
-// cloud outage drops the oldest completed buckets with a log (an honest gap -- telemetry is a
-// signal, not a gate). Not restart-durable: in-memory, matching the best-effort telemetry
-// stance.
+// aggregates (one hour in production; a short window in the soak/tests exercises rollover
+// quickly), keeping only the running aggregate per (bucket, metric), never raw samples. The
+// current bucket is re-uploaded with each fresh sample so a dashboard sees the in-flight hour
+// live; a just-completed bucket rides along until an upload acks it (prune). At most maxBuckets
+// are retained, so a long cloud outage drops the oldest completed buckets with a log (an honest
+// gap: telemetry is a signal, not a gate). In-memory, not restart-durable, matching the
+// best-effort telemetry stance.
 type metricsAggregator struct {
 	window     time.Duration
 	maxBuckets int

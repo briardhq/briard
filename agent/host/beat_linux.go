@@ -9,13 +9,12 @@ import (
 )
 
 // newBeat reads the watchdog contract out of the environment systemd sets, and returns nil when
-// there is no watchdog to feed — no WatchdogSec on the unit (a dev run, the lab fleet, a
-// nixosTest that writes its own unit), or a WATCHDOG_PID naming someone else.
+// there is no watchdog to feed: no WatchdogSec on the unit (a dev run, the lab fleet, a nixosTest
+// that writes its own unit), or a WATCHDOG_PID naming someone else. nil is a working beat, not a
+// broken one: every method is nil-safe, so an agent outside systemd spawns no goroutines and
+// sends nothing, and no caller needs to ask which it has.
 //
-// nil is a WORKING beat, not a broken one: every method is nil-safe, so an agent running outside
-// systemd spawns no goroutines and sends nothing, and no caller needs to ask which it has.
-//
-// The interval comes from the unit rather than a constant here, so WatchdogSec has exactly one
+// The interval comes from the unit, not a constant here, so WatchdogSec has exactly one
 // definition and the two cannot drift apart. A third of the period rather than the documented
 // half: the margin costs one extra datagram per interval, and misfiring is the one outcome a
 // watchdog must not have.

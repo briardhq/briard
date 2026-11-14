@@ -10,38 +10,33 @@ import (
 	"briard.io/shared/notify"
 )
 
-// THE OBSERVE LOOP KEEPS TICKING WHILE A DIRECTIVE RUNS.
+// The observe loop keeps ticking while a directive runs. A directive run on the loop would hold
+// the tick for its whole budget, and with it the guest's liveness observation, the recovery
+// ladder and every CLI or dashboard request, so a guest that froze early in an install would go
+// unnoticed until the budget expired. The control channel serves reads beside an act
+// (guestfirmware.ServeFrames), so the directives that only talk to the guest leave the loop in
+// two lanes, and the loop keeps only what holds nothing:
 //
-// A directive run on the loop would hold the tick -- and with it the guest's liveness
-// observation, the recovery ladder and every CLI or dashboard request -- for its whole budget, so
-// a guest that froze early in an install would go unnoticed until the budget expired. The control
-// channel serves reads beside an act (guestfirmware.ServeFrames), so the directives that only
-// talk to the guest leave the loop.
+//   - Acts run off the loop, one at a time: an install, a restore, a handover, the agent update,
+//     and the relaunchers (an OS update, `config set`, a pairing, a rescue), which stop the guest
+//     and bring it back on a new channel. A second act while one runs is refused "busy", not
+//     queued: a queue holds a household's intent for minutes with nothing to tell it, and a
+//     refusal is honest at once.
+//   - Pulls run off the loop whenever asked, beside an act: doctor, an app's history and storage,
+//     the backup's list and run, the dashboard code, the casa claim, the debug console; what the
+//     household reaches for during an install.
+//   - On the loop, instant and holding nothing: noop, log, a cert request's keygen, status,
+//     alert-dismiss, stop, wish.
 //
-// Two lanes off the loop, and the loop keeps only what holds nothing:
-//
-//   - ACTS run off the loop, ONE AT A TIME: an install, a restore, a handover, the agent update,
-//     and the RELAUNCHERS -- an OS update, `config set`, a pairing, a rescue -- which stop the
-//     guest and bring it back on a NEW channel. A second act while one runs is refused with
-//     "busy" -- not queued, because a queue holds a household's intent for minutes with nothing
-//     to tell it, and a refusal is honest at once.
-//   - PULLS run off the loop whenever asked, beside an act: doctor, an app's history and storage,
-//     the backup's list and run, the dashboard code, the casa claim, the debug console. They are
-//     what the household reaches for DURING an install.
-//   - On the loop: noop, log, a cert request's keygen, status, alert-dismiss, stop, wish.
-//     Instant, and they hold nothing.
-//
-// A relauncher kills the channel the loop reads, on purpose. The loop sees it die, returns to
-// Run, and Run -- which owns what happens when a channel dies -- asks this lane before it does
-// anything: a relauncher in flight means wait for it and adopt the channel it re-established;
-// nothing in flight means the recovery ladder.
-//
-// Outcomes come back through one channel the loop drains each cycle, so the bookkeeping a
-// directive ends with -- the cloud's pending outcome, the CLI's answer, adopting what was
-// installed -- stays on the loop. The lane outlives any one observe() call
-// (it is Run's, like pendingOutcomes): an act that spans a channel bounce finishes on the client
-// it started with -- or, when that channel dies under it, on the one Run re-establishes
-// (follow) -- and still reports through here.
+// A relauncher kills the channel the loop reads, on purpose. The loop sees it die and returns to
+// Run, which owns what happens when a channel dies and asks this lane first: a relauncher in
+// flight means wait for it and adopt the channel it re-established; nothing in flight means the
+// recovery ladder.
+// Outcomes come back through one channel the loop drains each cycle, so a directive's closing
+// bookkeeping (the cloud's pending outcome, the CLI's answer, adopting what was installed) stays
+// on the loop. The lane is Run's, like pendingOutcomes, and outlives any one observe() call: an
+// act that spans a channel bounce finishes on the client it started with, or, when that channel
+// dies under it, on the one Run re-establishes (follow), and still reports through here.
 type actLane struct {
 	mu       sync.Mutex
 	busy     string          // the kind of the act in flight, "" when none
@@ -208,7 +203,7 @@ func (a *actLane) drained(id string) {
 // loop, or finished with its outcome not yet acknowledged. The cloud re-delivers a directive on
 // every report until an outcome reaches it (at-least-once), and a report runs off the loop, so
 // its reply can arrive after the act it names has started or even ended. Running such a copy
-// again repeats a whole act; refusing it as busy reports a FAILED outcome under the running
+// again repeats a whole act; refusing it as busy reports a failed outcome under the running
 // act's own ID. Neither answers anything, so the copy is skipped. nil-safe like inFlight.
 func (a *actLane) ours(id string, pending []api.DirectiveOutcome) bool {
 	if slices.ContainsFunc(pending, func(o api.DirectiveOutcome) bool { return o.ID == id }) {
@@ -272,14 +267,13 @@ func (a *actLane) state() (kind string, stopping bool) {
 }
 
 // stopAfter is the stop path, and what makes a stop the self-update's safe point: it returns the
-// context the loop and its acts run on, which ends when parent ends AND the act in flight has
-// finished. From parent's end the lane refuses every new act, so the stop ends between acts; until
-// the act ends the loop keeps running -- beating, and talking to the guest, whose deadman counts
-// the host's silence -- exactly as it did while the act ran. Bounded by the act's own budget and,
-// above it, by the service manager's stop timeout. nil-safe: without a lane it is parent.
-//
-// A SHUTDOWN IS THE OTHER STOP (stop.go): parent ended with ErrShutdown, the node is going down,
-// and the loop and the act in flight end at once, the act named as aborted.
+// context the loop and its acts run on, which ends only once parent has ended and the act in
+// flight has finished. From parent's end the lane refuses every new act, so the stop ends
+// between acts; until the act ends the loop keeps running (beating, and talking to the guest,
+// whose deadman counts the host's silence) exactly as it did while the act ran. Bounded by the
+// act's own budget and, above it, by the service manager's stop timeout. nil-safe: without a lane
+// it is parent. A shutdown is the other stop (stop.go): parent ended with ErrShutdown, the node
+// is going down, and the loop and the act in flight end at once, the act named as aborted.
 func (a *actLane) stopAfter(parent context.Context, logf func(string, ...any)) context.Context {
 	if a == nil {
 		return parent
@@ -344,13 +338,12 @@ func (a *actLane) channelAfter(ctx context.Context, old any) (any, bool) {
 }
 
 // follow points an act whose channel died under it at the one Run re-establishes, and reports
-// whether it did. The channel can die mid-act for a reason that is no fault of the act: a guest
-// that stalls long enough for the liveness rule to close the channel (guestfirmware.Conn) and
-// then carries on, which the observe loop's reconnect recovers in seconds. An act that kept
-// calling the dead client would fail the rest of its steps the same way -- a health gate read as
-// a failed install, then a revert that cannot reach the guest either -- so it waits for the
-// reconnect instead, bounded by its own ctx, and carries on there. An act on a guest that does
-// not come back ends with its ctx.
+// whether it did. The channel can die mid-act through no fault of the act: a guest that stalls
+// long enough for the liveness rule to close the channel (guestfirmware.Conn) and then carries
+// on, which the observe loop's reconnect recovers in seconds. An act that kept calling the dead
+// client would fail the rest of its steps the same way (a health gate read as a failed install,
+// then a revert that cannot reach the guest either), so it waits for the reconnect, bounded by
+// its own ctx, and carries on there; on a guest that does not come back it ends with its ctx.
 func (cfg Config) follow(ctx context.Context, g *appInstaller, logf func(string, ...any)) bool {
 	next, ok := cfg.acts.channelAfter(ctx, *g)
 	if !ok {

@@ -2,21 +2,18 @@ package host
 
 import "context"
 
-// LOCAL TIMEZONE DETECTION -- what the node tells the cloud at registration so its home can be
+// Local timezone detection: what the node tells the cloud at registration so its home can be
 // given a local-time update window, what it pushes to the guest (pushTimezone), and the zone the
-// host's own nightly jobs count "tonight" in.
+// host's own nightly jobs count "tonight" in. It reads the host's configuration, right twice
+// over: the host is where a human installed the machine and set its clock (logic lives on the
+// host by default), and the guest is an appliance with no zone of its own until the host pushes
+// one. Each OS keeps its zone somewhere else, so localTimezone has one arm per OS.
 //
-// It reads the HOST's configuration, which is the right place for it twice over: the host is
-// where a human installed the machine and set its clock (logic lives on the host by default), and
-// the guest is an appliance with no zone of its own until the host pushes one.
-//
-// Go's own time.Local is deliberately not the answer. It resolves to a *zone offset* --
-// Local.String() is "Local" and a formatted time carries an abbreviation like "EEST" -- and
-// neither is an IANA name. Abbreviations are ambiguous (IST is Ireland, Israel and India) and an offset is not a
-// zone at all: it cannot say when the clocks change, which is the entire question the cloud-side
-// window predicate asks.
-//
-// Each OS keeps its zone somewhere else, so localTimezone has one arm per OS.
+// Go's own time.Local is deliberately not the answer. It resolves to a *zone offset*
+// (Local.String() is "Local" and a formatted time carries an abbreviation like "EEST"), and
+// neither is an IANA name. Abbreviations are ambiguous (IST is Ireland, Israel and India), and an
+// offset is not a zone at all: it cannot say when the clocks change, which is the entire question
+// the cloud-side window predicate asks.
 
 // timezoneSetter is the slice of the guest the timezone push costs.
 type timezoneSetter interface {
@@ -25,11 +22,10 @@ type timezoneSetter interface {
 }
 
 // pushTimezone hands the guest the household's zone at bring-up, a node-scoped fact the host holds
-// and the guest keeps only for the boot it was pushed into.
-//
-// IT WARNS AND NEVER FAILS: a guest on UTC shows a household its History in the wrong hours, which
-// is worth a log line and not worth a node that will not come up. A host naming no zone, and a
-// guest too old to be told one, leave the guest on UTC the same way.
+// and the guest keeps only for the boot it was pushed into. It warns and never fails: a guest on
+// UTC shows a household its History in the wrong hours, worth a log line and not a node that will
+// not come up. A host naming no zone, and a guest too old to be told one, leave the guest on UTC
+// the same way.
 func pushTimezone(ctx context.Context, g timezoneSetter, zone string, logf func(string, ...any)) {
 	switch {
 	case zone == "":

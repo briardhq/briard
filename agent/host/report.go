@@ -19,11 +19,11 @@ import (
 )
 
 // certRequester holds the node-side state of the CSR renewal handshake. On a
-// DirectiveCertRequest it generates a fresh keypair + CSR -- the private key stays home --
-// stashing the key until the signed cert returns and
-// queuing the CSR to ride the next report up. On the DirectiveCert it pairs the returned
-// cert with the stashed key and writes both to the replicated volume. In-memory only: a
-// restart drops the stash, and the cloud simply re-requests a CSR on its next tick.
+// DirectiveCertRequest it generates a fresh keypair + CSR (the private key stays home), stashes
+// the key until the signed cert returns, and queues the CSR to ride the next report up. On the
+// DirectiveCert it pairs the returned cert with the stashed key and writes both to the replicated
+// volume. In-memory only: a restart drops the stash, and the cloud re-requests a CSR on its next
+// tick.
 type certRequester struct {
 	name       string // the DNS name in flight
 	keyPEM     string // the stashed private key awaiting its cert
@@ -71,22 +71,22 @@ func (cr *certRequester) keyFor(name string) string {
 // old code and a node the host could not finish with are different news, and the cloud acts on
 // them differently.
 //
-// No method takes an AppSpec, and that is load-bearing rather than tidy: an OS upgrade must
-// not touch apps, and a signature with nothing to name an app with is a
-// separation the compiler keeps rather than one a reader has to.
+// No method takes an AppSpec, and that is load-bearing rather than tidy: an OS upgrade must not
+// touch apps, and a signature with nothing to name an app with is a separation the compiler
+// keeps rather than one a reader has to.
 type upgrader interface {
 	ImageUpgrade(ctx context.Context, rel install.Manifest) (rolledBack bool, err error) // the guest chain's release, image already staged
 	WriteCert(ctx context.Context, cert, key string) error                               // apply a renewed cert to the volume
-	// RescueGuest restarts the guest on its verified, read-only image -- the one
-	// recovery rung that is never a reflex. It is on this interface rather than beside it because
-	// it performs the same VM+channel+Manager swap the upgrade legs do, and a second owner of that
-	// swap would be a second way to do it.
+	// RescueGuest restarts the guest on its verified, read-only image, the one recovery rung that
+	// is never a reflex. It is on this interface, not beside it, because it performs the same
+	// VM+channel+Manager swap the upgrade legs do, and a second owner of that swap would be a
+	// second way to do it.
 	RescueGuest(ctx context.Context) error
 }
 
-// selfUpdater is the slice of the host-agent self-update the agent-update directive drives
-// -- narrow so the dispatch is unit-testable without a real binary/systemd. Trigger hands the
-// offered version to the frozen update unit BELOW the agent and returns once the run is started:
+// selfUpdater is the slice of the host-agent self-update the agent-update directive drives,
+// narrow so the dispatch is unit-testable without a real binary/systemd. Trigger hands the
+// offered version to the frozen update unit below the agent and returns once the run is started:
 // that run fetches, verifies, stops this agent, swaps and starts the new one, and its verdict is
 // the update result the alerter reads. Current is the running agent version, so a re-offer of the
 // same version is an idempotent no-op.
@@ -98,12 +98,10 @@ type selfUpdater interface {
 // applyDirective is dispatch's fallthrough: noop, log, rescue, cert-request, cert and
 // agent-update, from the cloud or the local door; any other kind is logged and fails as
 // unhandled. Which lane each runs on is run's decision (acts.go). It returns the op's terminal
-// outcome, done or failed, which the caller reports back so the cloud moves the intent terminal
-// -- the durable answer a post-outage reconcile polls. A re-offer of the running agent version is
-// a no-op that reports done.
-//
-// IT TAKES NO APP, and that is deliberate: nothing here acts on one. A version change is an
-// app-install directive carrying a catalog name (applyAppInstall).
+// outcome, done or failed, which the caller reports back so the cloud moves the intent terminal:
+// the durable answer a post-outage reconcile polls. A re-offer of the running agent version is a
+// no-op that reports done. It deliberately takes no app: nothing here acts on one, and a version
+// change is an app-install directive carrying a catalog name (applyAppInstall).
 func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.Notifier, cr *certRequester, su selfUpdater, logf func(string, ...any), upgradeBudget time.Duration, wd *beat) api.DirectiveOutcome {
 	done := api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone}
 	failed := func(detail string) api.DirectiveOutcome {
@@ -121,10 +119,10 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 			logf("directive kind=rescue ignored (no guest on this node)")
 			return failed("no VM on this machine")
 		}
-		// The bound is the bring-up budget plus room for the stop, and it is generous on purpose:
-		// past the stop the guest is down, so a context that expires mid-bring-up leaves a node
-		// needing another rescue rather than one that reverted. There is nothing to revert to --
-		// that is the nature of this rung, and the reason it is never automatic.
+		// The bound is the bring-up budget plus room for the stop, generous on purpose: past the
+		// stop the guest is down, so a context that expires mid-bring-up leaves a node needing
+		// another rescue, not one that reverted. There is nothing to revert to; that is the nature
+		// of this rung, and the reason it is never automatic.
 		rctx, cancel := wd.budget(ctx, upgradeBudget)
 		defer cancel()
 		logf("directive kind=rescue: restarting the guest on its image")
@@ -183,8 +181,8 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 			logf("directive agent-update: already running %s; nothing to do", u.Version)
 			return done // idempotent: a re-offer of the running version is a no-op
 		}
-		// THE CLOUD TRIGGER: write the target and start the frozen unit, which pulls a fresh agent
-		// from the channel and lets THAT binary run the update -- so a fetch bug in this running
+		// The cloud trigger: write the target and start the frozen unit, which pulls a fresh agent
+		// from the channel and lets that binary run the update, so a fetch bug in this running
 		// binary cannot prevent its own replacement. Started, not waited on: the run stops this
 		// agent, and the stop finishes the act in flight first, which would be this one. So the
 		// outcome is "started"; whether the node moved is NodeStatus.AgentVersion, and a run that
@@ -206,12 +204,12 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 	}
 }
 
-// escalate raises an alert when a change to what the node runs fails -- an app install or update, a guest
-// OS update or image stage, a guest bundle push, the agent's self-update, a cert renewal. These
-// are rare, so this is not fatigue -- and a failure includes a revert that could not finish,
-// which is exactly the case a bound exists to surface instead of hanging silently. It goes through the alert store like every alert, so
-// on the free tier -- where there is no endpoint to push to -- the record is still there for
-// the person who looks after "it stopped working".
+// escalate raises an alert when a change to what the node runs fails: an app install or update,
+// a guest OS update or image stage, a guest bundle push, the agent's self-update, a cert renewal.
+// These are rare, so this is not fatigue, and a failure includes a revert that could not finish,
+// exactly the case a bound exists to surface instead of hanging silently. It goes through the
+// alert store like every alert, so on the free tier, with no endpoint to push to, the record is
+// still there for the person who looks after "it stopped working".
 func escalate(
 	ctx context.Context, n notify.Notifier, logf func(string, ...any), subject, kind, target string, cause error) {
 	fireAlert(ctx, n, logf, notify.Alert{

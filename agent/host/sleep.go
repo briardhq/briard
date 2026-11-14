@@ -8,21 +8,20 @@ import (
 	"briard.io/shared/notify"
 )
 
-// sleepAlerter tells the owner when this computer was asleep, after it wakes: an event, because
-// by the time it can be said the sleep is over and there is nothing left to resolve -- and asserts
-// the condition that it sleeps at all, which is what asks for attention (sleepsKey). The agent
-// holds idle sleep off, so a sleep that happens anyway was asked for -- a closed lid, the power
-// button, Sleep from the Start menu, a Fast Startup shut down -- and every one of them took the
-// household's apps down for its length. The last of them is a hibernate to the machine and a
-// Shut down to the household, and is told as the one they chose. When the machine has a lid that
-// the power plan sleeps on (plugged in), the alert says how to change that, since the lid is the
-// one a person closes without meaning to stop a server.
+// sleepAlerter tells the owner, after a wake, that this computer was asleep (an event: by then
+// the sleep is over and nothing is left to resolve), and asserts the condition that it sleeps at
+// all, which is what asks for attention (sleepsKey). The agent holds idle sleep off, so a sleep
+// that happens anyway was asked for (a closed lid, the power button, Sleep from the Start menu, a
+// Fast Startup shut down), and every one took the household's apps down for its length. A Fast
+// Startup shut down, a hibernate to the machine and a Shut down to the household, is told as the
+// one they chose. When the machine has a lid the power plan sleeps on (plugged in), the alert
+// says how to change that: the lid is the one a person closes without meaning to stop a server.
 //
-// ONLY A SLEEP THIS AGENT SAW START TO END IS NEWS. The first reading primes: a sleep that ended
-// before the agent started was not one it was serving through. "No sleep since boot" is an answer
-// (ok, zero times) and primes like any other -- read as unknown, the first sleep after a boot would
-// be the reading that primes, and go untold. AN UNKNOWN IS NOT AN ALARM: a machine that does not
-// say (Linux) or a read that failed is not-ok and changes nothing.
+// Only a sleep this agent saw start to end is news, so the first reading primes: a sleep that
+// ended before the agent started was not one it was serving through. "No sleep since boot" is an
+// answer (ok, zero times) and primes like any other; read as unknown, the first sleep after a
+// boot would be the reading that primes, and go untold. An unknown is not an alarm: a machine
+// that does not say (Linux) or a read that failed is not-ok and changes nothing.
 type sleepAlerter struct {
 	read func() (slept, woke time.Time, ok bool) // lastSleep in production
 	lid  func() string                           // lidAction in production: "sleeps", "stays", or ""
@@ -45,7 +44,7 @@ const sleepQuiet = 7 * 24 * time.Hour
 // The two keys: every sleep is history (host-asleep, an Info event, the stretch and the apps down
 // with it), and that this computer sleeps at all is what asks for attention (host-sleeps, a
 // Warning condition). Each sleep asserts the condition again, which the store drops while it is
-// open with the same title -- so one dismissal holds for as long as the habit does.
+// open with the same title, so one dismissal holds for as long as the habit does.
 const (
 	sleepEventKey = "host-asleep"
 	sleepsKey     = "host-sleeps"
@@ -106,7 +105,7 @@ func (s *sleepAlerter) tell(ctx context.Context, n notify.Notifier, node string,
 		Title: "Briard: your apps stop while this computer sleeps or is off", Body: habit + lidFix})
 }
 
-// settle ends the condition sleepQuiet after the last sleep the STORE recorded: this alerter
+// settle ends the condition sleepQuiet after the last sleep the store recorded: this alerter
 // starts blank at every agent start, and the machine's own reading forgets a sleep at every boot,
 // but the store kept the event. A notifier that is no store (a test's) has no record to ask.
 func (s *sleepAlerter) settle(ctx context.Context, n notify.Notifier, now time.Time, logf func(string, ...any)) {

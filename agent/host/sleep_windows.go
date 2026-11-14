@@ -95,7 +95,7 @@ func fastStartup(since time.Time) bool {
 	return err == nil && strings.Contains(string(out), "<Data Name='BootType'>1</Data>")
 }
 
-// coldBootSince reports whether Windows has COLD-booted since t: a Kernel-Boot 27 of boot type 0.
+// coldBootSince reports whether Windows has cold-booted since t: a Kernel-Boot 27 of boot type 0.
 // A Fast Startup power-on (1) and a hibernate's resume (2) are not boots of the bridge
 // (restart.go), so neither counts. The inverse of fastStartup's query, every event since t rather
 // than the last, and here a failed read is an error, never a no: the gate proceeds on it.

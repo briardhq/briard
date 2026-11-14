@@ -16,7 +16,7 @@ import (
 	"briard.io/shared/notify"
 )
 
-// AlertStorePath is the node's alert store: the ONE record of every alert this host has raised,
+// AlertStorePath is the node's alert store: the one record of every alert this host has raised,
 // node-local like the mesh cache beside it. `briard alerts` reads it; nothing reads a log for an
 // alert. It lives on the host because the host is the side that is up when the guest is not,
 // and it is pushed to the guest only as a copy to display.
@@ -27,18 +27,17 @@ var AlertStorePath = filepath.Join(stateDir, "alerts.json")
 // whether the key is open.
 const alertStoreCap = 200
 
-// alertStore is where every host-side alert goes, and the ONLY place that knows whether a key is
+// alertStore is where every host-side alert goes, and the only place that knows whether a key is
 // open. It is a notify.Notifier so every emitter keeps its one call, and it sits in front of
-// delivery: the record is written first, then the alert is handed on -- delivery is the half
-// that can be absent (no endpoint configured) or fail, so the record must never depend on it.
+// delivery: the record is written first, then the alert is handed on, because delivery can be
+// absent (no endpoint configured) or fail and the record must never depend on it.
 //
-// EMITTERS ASSERT; THE STORE TRANSITIONS. An emitter says what it sees every time it looks
-// (open while the condition holds, resolved when it does not) and keeps no memory of what it
-// said before; the store compares each assertion with the key's latest record and writes only a
-// change. That is what survives a restart: the emitter starts blank, says what it sees, and the
-// store -- which did not restart -- knows whether that is news. A condition that cleared while
-// the agent was down gets its resolved on the first reading; one that persisted gets nothing,
-// not a second push.
+// Emitters assert; the store transitions. An emitter says what it sees every time it looks (open
+// while the condition holds, resolved when it does not) and keeps no memory; the store compares
+// each assertion with the key's latest record and writes only a change. That survives a restart:
+// the emitter starts blank, and the store, which did not restart, knows whether it is news. A
+// condition that cleared while the agent was down gets its resolved on the first reading; one
+// that persisted gets nothing, not a second push.
 type alertStore struct {
 	path  string
 	inner notify.Notifier // delivery, after the record; nil on a node with nobody to push to
@@ -59,7 +58,7 @@ func newAlertStore(path string, inner notify.Notifier, logf func(string, ...any)
 // Notify applies the transition rule, records the alert if it is a change, and only then
 // delivers it. A dropped assertion is not an error: it is the common case on every tick.
 //
-//   - an Open is dropped when the key is already open WITH THE SAME TITLE; a different title is
+//   - an Open is dropped when the key is already open with the same title; a different title is
 //     the condition changing state within open (reduced redundancy -> no second copy) and is
 //     recorded and pushed;
 //   - a Resolved is dropped when the key is not open, so "resolve at every act that could end a
@@ -252,7 +251,7 @@ func pushAlerts(ctx context.Context, r any, n notify.Notifier, pushed *int, logf
 }
 
 // applyAlertDismiss is the household's Dismiss: one record leaves what needs attention. On the
-// loop, as status is -- one write to the store, and no act: it holds nothing and waits on nothing.
+// loop like status: one write to the store and no act; it holds nothing and waits on nothing.
 func applyAlertDismiss(d api.Directive, n notify.Notifier) api.DirectiveOutcome {
 	fail := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}

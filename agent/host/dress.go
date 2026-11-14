@@ -14,48 +14,46 @@ import (
 	"briard.io/shared/notify"
 )
 
-// DRESSING THE GUEST. Every briard binary the guest runs rides the HOST bundle: the committed tree
-// at <base>/guest -> guest-<release>/bin/{briard-dashboard,briard-reverse-proxy,briard-guest-agent}.
-// The image bakes ONE binary, briard-guest-firmware -- the push protocol alone, which receives the
-// first push; the guest AGENT has no baked copy either. The guest's scratch is emptied at every
-// boot, so every launch starts as firmware with no web unit and no agent at all; the host compares
-// the bundle the guest reports in its handshake with the tree it holds and pushes when they differ
-// -- at every bring-up (BEFORE rejoin, so nothing can promote an undressed node), which covers a
-// host commit and any guest relaunch. A convergence the committed HOST agent performs, the same
-// way it pushes the hostname and the addresses: not a third update mechanism.
+// Dressing the guest. Every briard binary the guest runs rides the host bundle: the committed
+// tree at <base>/guest -> guest-<release>/bin/{briard-dashboard,briard-reverse-proxy,briard-guest-agent}.
+// The image bakes one binary, briard-guest-firmware (the push protocol alone, which receives the
+// first push); the guest agent has no baked copy either. The guest's scratch is emptied at every
+// boot, so every launch starts as firmware with no web unit and no agent at all. At every
+// bring-up (before rejoin, so nothing can promote an undressed node), which covers a host commit
+// and any guest relaunch, the host compares the bundle the guest reports in its handshake with
+// the tree it holds and pushes when they differ: a convergence the committed host agent
+// performs, the same way it pushes the hostname and the addresses, not a third update mechanism.
 //
-// THE SET COMMITS AS ONE, OR NOT AT ALL. The push is stage, prove, arm:
-// every file staged, then `bin.test` runs each staged copy's --test-launch in the guest -- the
-// cheap gate; a failure names the binary, the guest discards the whole staged set, nothing is
-// armed, and the dress is REFUSED here and now -- then `bin.activate` arms every name and
-// restarts the guest agent's unit alone. That agent's start is the verdict on the rest: where a
-// web unit is running (the primary; a single node is always the primary, which is where there is no
-// peer to fall back on) it try-restarts it onto the staged copy and reads READY or failure; on a
-// secondary the web units are not running and the cheap gate was the only one. Only a passing
-// verdict opens the port, and it commits the set plus the release id together before it serves
-// the reconnect below -- so a handshake this host can read is a handshake taken after the commit.
-// A failed web unit has already reverted itself by its own auto-restart (flag consumed), one start
-// out of its budget -- a failed upgrade never demotes; the refused agent exits without opening
-// the port, the committed agent comes back, discards the staged set and puts both web units on the
-// committed files. (guest-image/pivot.nix, agent/guestfirmware/bin.go.)
+// The set commits as one, or not at all. The push is stage, prove, arm: every file staged;
+// `bin.test` runs each staged copy's --test-launch in the guest (the cheap gate: a failure names
+// the binary, the guest discards the whole staged set, nothing is armed, and the dress is refused
+// here and now); `bin.activate` arms every name and restarts the guest agent's unit alone. That
+// agent's start is the verdict on the rest: where a web unit runs (the primary, which a single
+// node always is and has no peer to fall back on) it try-restarts it onto the staged copy
+// and reads READY or failure; on a secondary, where the web units are not running, the cheap gate
+// was the only one. Only a passing verdict opens the port, and it commits the set and the release
+// id together before serving the reconnect below, so any handshake this host can read was taken
+// after the commit. A failed web unit has already reverted itself by its own auto-restart (flag
+// consumed), one start out of its budget (a failed upgrade never demotes); the refused agent
+// exits without opening the port, and the committed agent comes back, discards the staged set and
+// puts both web units on the committed files (guest-image/pivot.nix, agent/guestfirmware/bin.go).
 //
 // The host's own trial gate stays "the agent started"; a host update never waits for its guest
-// to be dressed (a host update may be what fixes the guest). The host learns the outcome
-// from the next handshake: the new id means the set took, the old one means it was refused --
-// and because the port opens only after the verdict, there is no handshake in between.
+// to be dressed (a host update may be what fixes the guest). The host learns the outcome from the
+// next handshake: the new id means the set took, the old one that it was refused, and because the
+// port opens only after the verdict, there is no handshake in between.
 //
-// THE REVERT IS PERMANENT, and the host is what makes it so. The guest's own
-// fallback only lasts until its next launch -- a fresh scratch knows nothing, so the next boot
-// would trial the same bad bundle again. So the host keeps two facts beside the committed tree:
-// `guest.good`, the release id of the last tree a dress was JUDGED to have taken (the guest came back
-// reporting it), and `guest.reverted`, the release id of a tree the guest refused -- at the
-// cheap gate or at the trial, the record is the same. A refused release is never pushed again;
-// the good tree is pushed instead, on every launch, until a new host commit brings a new tree.
-// Host and guest are then on different releases, and the status line says so (GuestBundle names
-// the good tree) -- the ordinary transient every rollout passes through, held for one release
-// rather than papered over. No joint host+guest commit: a host whose guest is down commits its
-// own bundle and converges the guest when it can. Since the guest commits as a whole, a host tree
-// and the guest's set always correspond.
+// The revert is permanent, and the host is what makes it so: the guest's own fallback lasts only
+// until its next launch (a fresh scratch knows nothing, so the next boot would trial the same bad
+// bundle again). Beside the committed tree the host keeps `guest.good`, the release id of the
+// last tree a dress was judged to have taken (the guest came back reporting it), and
+// `guest.reverted`, that of a tree the guest refused, the same record at the cheap gate or at the
+// trial. A refused release is never pushed again; the good tree is pushed instead, on every
+// launch, until a new host commit brings a new tree. Host and guest are then on different
+// releases, and the status line says so (GuestBundle names the good tree): the ordinary transient
+// of every rollout, held for one release rather than papered over. No joint host+guest commit: a
+// host whose guest is down commits its own bundle and converges the guest when it can; since the
+// guest commits as a whole, a host tree and the guest's set always correspond.
 
 // dresser is what dressGuest needs of a guest: the handshake facts and the three push verbs.
 type dresser interface {
@@ -101,8 +99,8 @@ func (cfg Config) guestWant() (release string, skippedReverted bool) {
 }
 
 // dressGuest compares what the guest runs with what the host wants it on and pushes when they
-// differ. It returns dressPushed when the activation was accepted -- the guest agent's unit is
-// restarting, so the caller must reconnect and handshake again before using the channel -- and
+// differ. It returns dressPushed when the activation was accepted (the guest agent's unit is
+// restarting, so the caller must reconnect and handshake again before using the channel), and
 // dressRefused when the guest's cheap gate rejected a staged copy (recorded by the caller). It
 // never fails bring-up: a guest that cannot be dressed is a guest on what it ran before, and the
 // mismatch stays visible in the status line for the cloud to act on.
@@ -169,9 +167,9 @@ func orFirmware(bundle string) string {
 	return bundle
 }
 
-// judgeDress reads the handshake AFTER a push of `pushed`: that release means the guest took it
-// -- recorded as the good tree, so a later refusal has something to fall back to -- and anything
-// else means the trial was refused: a web unit failed its real launch or the agent never reached
+// judgeDress reads the handshake after a push of `pushed`: that release means the guest took it
+// (recorded as the good tree, so a later refusal has something to fall back to); anything else
+// means the trial was refused: a web unit failed its real launch or the agent never reached
 // READY, and the guest's own pivot fell back on the whole set. The refusal is recorded durably so
 // the release is never pushed again, and said once here; the observe loop raises the alert, which
 // is where a notifier is in scope.
@@ -198,11 +196,11 @@ func (cfg Config) recordRefusal(release string, logf func(string, ...any)) {
 	}
 }
 
-// dressAndRejoin runs one dressing attempt and, when a set was pushed, waits for the guest
-// agent to come back on the pushed (or reverted) binary, judges the handshake, and -- if the
-// push was refused, at the cheap gate or at the trial -- dresses the guest with the last good
-// bundle in the same breath, so the house never runs its firmware for want of a good bundle it
-// has. The returned client is the one to keep using; after a push it is a new one.
+// dressAndRejoin runs one dressing attempt and, when a set was pushed, waits for the guest agent
+// to come back on the pushed (or reverted) binary and judges the handshake. If the push was
+// refused, at the cheap gate or at the trial, it dresses the guest with the last good bundle in
+// the same breath, so the house never runs its firmware for want of a good bundle it has. The
+// returned client is the one to keep using; after a push it is a new one.
 func (cfg Config) dressAndRejoin(ctx context.Context, client *guestagent.Client, logf func(string, ...any)) (*guestagent.Client, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		want, _ := cfg.guestWant()

@@ -9,20 +9,18 @@ import (
 	"briard.io/shared/notify"
 )
 
-// updateAlerter is the reader of the update timer's runs.
+// updateAlerter is the reader of the update timer's runs. `briard update` prints the frozen
+// update unit's verdict to whoever typed it; the timer, which runs nightly on every node and is
+// the whole of updating on a standalone home, hands its verdict to nobody. A failed run ends in
+// that unit's journal, so without this a household that has silently stopped updating looks
+// exactly like one that is current. Above all a node below the upgrade floor: it is refused by
+// design, keeps serving, and must be reinstalled, and this is what tells the household so.
 //
-// `briard update` prints the frozen update unit's verdict to whoever typed it. The TIMER hands
-// its verdict to nobody -- and the timer is the one that runs on every node, nightly, and is the
-// whole of updating on a standalone home. A run that fails ends in that unit's journal and stops
-// there, so without this a household that has silently stopped updating would look exactly like
-// one that is current. Above all a node below the upgrade floor: it is refused BY DESIGN, keeps
-// serving, and must be reinstalled, and this is what tells the household so.
-//
-// ⚠️ THE READER IS THE AGENT, NOT THE UNIT. The frozen layer carries no product knowledge: the
+// ⚠️ The reader is the agent, not the unit. The frozen layer carries no product knowledge: the
 // update script leaves its run's verdict (selfupdate.Result), and what "this node has stopped
-// updating" MEANS to a household is the product's to say, not a shell script's. The verdict is a
-// file rather than the unit's systemd state so the same reader serves a service manager that keeps
-// no such state.
+// updating" means to a household is the product's to say, not a shell script's. The verdict is
+// a file rather than the unit's systemd state so the same reader serves a service manager that
+// keeps no such state.
 type updateAlerter struct {
 	n     notify.Notifier
 	node  string
@@ -33,8 +31,8 @@ type updateAlerter struct {
 }
 
 // updateCheckEvery is how often the verdict is read. The unit runs once a night, so this is not
-// a race to catch a transition -- it is how long a node that has stopped updating stays quiet
-// about it, and an hour is comfortably inside the next run.
+// a race to catch a transition but how long a node that has stopped updating stays quiet about
+// it; an hour is comfortably inside the next run.
 const updateCheckEvery = time.Hour
 
 // updateStaleAfter is how long a node may go without a finished run before that is itself the
@@ -46,9 +44,8 @@ func newUpdateAlerter(n notify.Notifier, node string, lay selfupdate.Layout, log
 }
 
 // watchUpdates reads the update run's verdict on a slow cadence for the life of the agent.
-// Started once, beside the guest update timer, and on EVERY node -- a witness included. A node
-// that can no longer update is outside its support window whatever else it is, and that is not a
-// statement about replicas, apps or role.
+// Started once, beside the guest update timer, on every node, a witness included: a node that can
+// no longer update is outside its support window whatever its replicas, apps or role.
 func (cfg Config) watchUpdates(ctx context.Context, n notify.Notifier, logf func(string, ...any)) {
 	a := newUpdateAlerter(n, cfg.Node, selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir), logf)
 	t := time.NewTicker(updateCheckEvery)
@@ -68,11 +65,11 @@ func (cfg Config) watchUpdates(ctx context.Context, n notify.Notifier, logf func
 // updateStaleAfter, or none at all once this agent has watched that long (on Linux the run dir is
 // tmpfs, so a fresh boot has none until the timer's boot run). Otherwise no verdict yet holds.
 //
-// IT DOES NOT PRIME, and that is the opposite of the redundancy alerter's rule on purpose. The
-// startup reading is the case this exists for: a floored node's agent is the one
-// agent that never gets replaced, so "already failing when I came up" is the steady state, not
-// a false positive, and a primed alerter would be silent about it forever. The store is what
-// keeps that first reading from being announced again at every restart while the state holds.
+// It deliberately does not prime, the opposite of the redundancy alerter's rule. The startup
+// reading is the case this exists for: a floored node's agent is the one agent that never gets
+// replaced, so "already failing when I came up" is the steady state, not a false positive, and a
+// primed alerter would be silent about it forever. The store keeps that first reading from being
+// announced again at every restart while the state holds.
 func (a *updateAlerter) observe(ctx context.Context) {
 	r, ok := a.lay.ReadResult()
 	now := a.now()
@@ -88,11 +85,10 @@ func (a *updateAlerter) observe(ctx context.Context) {
 	}
 }
 
-// alertFor is what the household is actually told. The warning names the CONSEQUENCE rather
-// than the unit -- "this node has stopped updating" is the fact an owner can act on -- and it
-// carries why, which for a failed run is the run's own last line: that is where the remedy lives,
-// and a floored node's refusal says in so many words that it must be reinstalled
-// ([install.ErrTooOldToUpgrade]).
+// alertFor is what the household is actually told. The warning names the consequence, not the
+// unit ("this node has stopped updating" is the fact an owner can act on), and carries why: for
+// a failed run, the run's own last line, where the remedy lives; a floored node's refusal says
+// in so many words that it must be reinstalled ([install.ErrTooOldToUpgrade]).
 func (a *updateAlerter) alertFor(failing bool, why string) notify.Alert {
 	if !failing {
 		return notify.Alert{

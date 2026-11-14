@@ -14,7 +14,7 @@ import (
 
 // redundancy is what this node's replica set currently is, in three states because "a peer is
 // gone" and "the only other copy of the household's data is gone" are different facts the peer
-// COUNT cannot tell apart: on an anchor+anchor+witness flock both read as connected 1-of-2, and
+// count cannot tell apart: on an anchor+anchor+witness flock both read as connected 1-of-2, and
 // only one of them means the house is down to a single disk.
 type redundancy int
 
@@ -24,18 +24,18 @@ const (
 	redundancyAlone                     // no connected peer carries a usable copy: one disk left
 )
 
-// redundancyAlerter says what the replica set is, every reading, and the alert store turns that
-// into the edge-triggered alert the owner sees: open when a data node loses redundancy -- still
-// quorate and serving, but a peer connection dropped, so "one more failure would cause an
-// outage" -- and resolved when all replicas reconnect. Derived from the DRBD/quorum state the
-// observe loop already reads. Not built on a witness (its view is redundant with the data
-// nodes') nor on a node with no peers (no redundancy to lose); observe is nil-safe for both.
+// redundancyAlerter says what the replica set is, every reading, from the DRBD/quorum state the
+// observe loop already reads; the alert store turns that into the edge-triggered alert the owner
+// sees: open when a data node loses redundancy (still quorate and serving, but a peer connection
+// dropped, so "one more failure would cause an outage"), resolved when all replicas reconnect.
+// Not built on a witness (its view is redundant with the data nodes') nor on a node with no
+// peers (no redundancy to lose); observe is nil-safe for both.
 //
-// PRIMED BY CONVERGENCE OR BY TIME, ONE WAY: a flock still converging at startup reads reduced
-// until its peers connect, and how many readings that spans depends on how fast the loop ticks,
-// so the grace is a duration, never a count of readings. Until the first full reading, or
-// redundancyConvergeFor after the first reading, a reading may resolve but never open. After
-// that every reading is asserted and the store decides whether it is news.
+// Primed by convergence or by time, one way: a flock converging at startup reads reduced until
+// its peers connect, over however many readings the loop's tick makes, so the grace is a
+// duration, never a count of readings. Until the first full reading, or redundancyConvergeFor
+// after the first reading of any kind, a reading may resolve but never open; after that every
+// reading is asserted and the store decides whether it is news.
 type redundancyAlerter struct {
 	n     notify.Notifier
 	node  string
@@ -54,15 +54,14 @@ func newRedundancyAlerter(n notify.Notifier, node string, peers int, logf func(s
 	return &redundancyAlerter{n: n, node: node, peers: peers, logf: logf}
 }
 
-// classify reads the replica set the way the household experiences it. The peer COUNT decides
-// whether anything is missing; the peer LIST decides whether what is missing was the second
-// copy -- model.Cluster carries both from one sample, which is why this takes a Cluster rather
-// than the QuorumState summary that rides the cloud wire.
+// classify reads the replica set the way the household experiences it. The peer count decides
+// whether anything is missing; the peer list decides whether what is missing was the second
+// copy. model.Cluster carries both from one sample, hence a Cluster rather than the QuorumState
+// summary that rides the cloud wire.
 //
-// AN UNKNOWN IS NOT AN ALARM. A reading with no peer detail falls back to the weaker claim
-// rather than announce a lost second copy it cannot see -- the same rule the reconnect check
-// follows for boot ids. So
-// redundancyAlone requires positive evidence: peers we can read, none of which can take over.
+// An unknown is not an alarm (the reconnect check's rule for boot ids): a reading with no peer
+// detail falls back to the weaker claim rather than announce a lost second copy it cannot see,
+// so redundancyAlone requires positive evidence: peers we can read, none of which can take over.
 func (a *redundancyAlerter) classify(cl model.Cluster) redundancy {
 	switch {
 	case cl.Connected >= a.peers:
@@ -77,9 +76,8 @@ func (a *redundancyAlerter) classify(cl model.Cluster) redundancy {
 }
 
 // observe classifies the current cluster and asserts it. Not quorate (an outage or the
-// minority side of a partition) is out of scope for this alert -- a single node can't
-// distinguish a minority partition from a true outage; that's the controller's fleet view --
-// so it says nothing.
+// minority side of a partition) it says nothing: a single node can't tell a minority partition
+// from a true outage; that's the controller's fleet view.
 //
 // Every change between the three states is a change of title under one key, so the store
 // records and pushes each. The reduced -> alone edge is the one this exists for: a household
@@ -105,12 +103,10 @@ func (a *redundancyAlerter) observe(ctx context.Context, cl model.Cluster, now t
 	a.fire(ctx, a.alertFor(cur, cl))
 }
 
-// alertFor is what the owner is actually told, and each body claims only what was read.
-//
-// The reduced body's reassurance is CONDITIONAL for that reason: it is added when a peer that
-// could take over was actually seen, and omitted when the peer list was empty, where the
-// honest statement is the count alone. "Another machine still holds a copy" on no evidence is
-// the lost-second-copy failure pointed the other way.
+// alertFor is what the owner is actually told, and each body claims only what was read. So the
+// reduced body's reassurance is added only when a peer that could take over was actually seen;
+// with an empty peer list the honest statement is the count alone. "Another machine still holds
+// a copy" on no evidence is the lost-second-copy failure pointed the other way.
 func (a *redundancyAlerter) alertFor(cur redundancy, cl model.Cluster) notify.Alert {
 	switch cur {
 	case redundancyFull:
@@ -152,19 +148,16 @@ func (a *redundancyAlerter) fire(ctx context.Context, al notify.Alert) {
 }
 
 // clockAlerter warns when the host's clock has not been synchronised with a time server for
-// clockUnsyncedFor, and says so again when it is. A wrong clock turns a valid cert into
-// a refusal and misdates every alert and backup; an RTC-less board boots with whatever time it
+// clockUnsyncedFor, and says so again when it is. A wrong clock turns a valid cert into a
+// refusal and misdates every alert and backup; an RTC-less board boots with whatever time it
 // last saved. We only report: keeping time is the OS's job, and a host whose NTP is on keeps it.
 // On Windows the reading is whether "Set the time automatically" is on, not whether a sync
-// happened (reportcard.NTPSynced).
-//
-// THE HOST'S CLOCK, NOT THE GUEST'S. The guest takes the host's time at every boot and then keeps
-// its own with its own timesyncd over the same network, so a network that starves one starves
-// both, and the host is the one we can read without a verb.
-//
-// THE GRACE IS THE PRIMING. A Linux host that just booted reads "no" until its first sync, so
-// only an hour of continuous "no" opens the alert. AN UNKNOWN IS NOT AN ALARM: a host whose answer could
-// not be read neither starts nor clears the hour.
+// happened (reportcard.NTPSynced). It reads the host's clock, not the guest's: the guest takes
+// the host's time at every boot, then keeps its own with timesyncd over the same network, so a
+// network that starves one starves both, and the host is the one we can read without a verb.
+// The grace is the priming: a Linux host that just booted reads "no" until its first sync, so
+// only an hour of continuous "no" opens the alert. An unknown is not an alarm: an answer that
+// could not be read neither starts nor clears the hour.
 type clockAlerter struct {
 	read     func(context.Context) string // reportcard.NTPSynced in production
 	unsynced time.Time                    // start of the current run of "no"; zero otherwise
@@ -208,25 +201,21 @@ func (c *clockAlerter) observe(ctx context.Context, n notify.Notifier, node stri
 	}
 }
 
-// appAlerter tells the owner when an installed app has stopped working on the node that
-// runs it, and again when it works. Nothing else does: an app is not a promoter-chain member,
-// so a crashed one demotes nothing, and the reverse proxy answers for the node, so the node reads
-// healthy while the app behind it is down.
+// appAlerter tells the owner when an installed app has stopped working on the node that runs it,
+// and again when it works. Nothing else does: an app is not a promoter-chain member, so a crashed
+// one demotes nothing, and the reverse proxy answers for the node, so the node reads healthy
+// while the app behind it is down.
 //
-// DOWN IS "STOPPED" OR "RUNNING AND UNHEALTHY", one condition under one title -- a crash-loop
-// moves between the two every few seconds, and the store records a change of title as news.
-// WORKING IS "RUNNING AND HEALTHY", and nothing short of it resolves. STARTING AND EMPTY SAY
-// NOTHING: an app booting is not down, and empty is "not asked" (a Secondary, a channel
-// hiccup, an app that told us nothing) -- an unknown is not an alarm.
-//
-// THE GRACE IS THE DEBOUNCE, and it is held across the readings that say nothing: a crash-loop
-// reads stopped, then starting, then stopped, and never healthy, so its run of "down" is never
-// broken and it opens. It opens only on a down reading, so an app that blipped once and is now
-// starting through a long migration does not. The deliberate stops -- an install's quiesce,
-// a restore -- are shorter than the grace.
-//
-// A NODE THAT NO LONGER HOLDS THE VOLUME RESOLVES what it opened: the apps run on whichever
-// node does, and that node asserts its own.
+// Down is "stopped" or "running and unhealthy", one condition under one title, because a
+// crash-loop moves between the two every few seconds and the store records a change of title as
+// news. Only "running and healthy" resolves. Starting and empty say nothing (an unknown is not an
+// alarm): an app booting is not down, and empty is "not asked" (a Secondary, a channel hiccup, an
+// app that told us nothing). The grace is the debounce, held across those readings: a crash-loop
+// reads stopped, starting, stopped, never healthy, so its run of "down" is never broken and it
+// opens. It opens only on a down reading, so an app that blipped once and is now starting through
+// a long migration does not. The deliberate stops (an install's quiesce, a restore) are shorter
+// than the grace. A node that no longer holds the volume resolves what it opened: the apps run on
+// whichever node does, and that node asserts its own.
 type appAlerter struct {
 	down map[string]time.Time // per app: start of the current run of "down"
 }
@@ -291,17 +280,13 @@ func (a *appAlerter) observe(ctx context.Context, n notify.Notifier, node string
 	}
 }
 
-// fireAlert is how every alert on the host side leaves: through the notifier, which in
-// production is the alert store in front of delivery (alertStore). The store writes the record
-// FIRST and only then pushes, so the record of an alert never depends on the alert having been
-// delivered -- the free tier delivers nothing, and its record is the whole of the alerting.
-//
-// Emitters call this with what they see, every time they look; the store decides whether it is
-// a change. The log line is a log, for a person reading the journal next to everything else
-// the agent said; it is not where an alert is kept.
-//
-// A nil notifier is a supported case in tests; Run always builds the store, a witness's
-// included.
+// fireAlert is how every alert on the host side leaves: through the notifier, in production the
+// alert store in front of delivery (alertStore). The store writes the record first and only then
+// pushes, so the record never depends on delivery: the free tier delivers nothing, and its
+// record is the whole of the alerting. Emitters call this with what they see, every time they
+// look; the store decides whether it is a change. The log line is for a person reading the
+// journal, not where an alert is kept. A nil notifier is a supported case in tests; Run always
+// builds the store, a witness's included.
 func fireAlert(ctx context.Context, n notify.Notifier, logf func(string, ...any), al notify.Alert) {
 	if n == nil {
 		return
