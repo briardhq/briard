@@ -436,15 +436,9 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 	if f.healthOf != "home-assistant" {
 		t.Fatalf("health probe asked about %q, want the installed app by name", f.healthOf)
 	}
-	// The chain is not touched. It is static (data -> vip -> apps -> reverse-proxy -> dashboard;
-	// the reverse proxy carries the household's names) and the installed app is not a member of
-	// it, which is what makes an app crash unable to demote the node.
-	if !slices.Equal(cfg.Promoter, []string{
-		"briard-primary-storage.service", "briard-vip.service", "briard-apps.service",
-		"briard-reverse-proxy.service", "briard-dashboard.service",
-	}) {
-		t.Fatalf("install changed the promoter chain to %v — it must be static", cfg.Promoter)
-	}
+	// The chain is not touched: the steps above hold no rewrite of it, and the installed app is
+	// not a member of it, which is what makes an app crash unable to demote the node. (cfg is a
+	// copy here, so reading cfg.Promoter back could never show a change.)
 }
 
 // TestAFailedNudgeDoesNotFailTheInstall. The app is already installed and serving when the nudge
@@ -1478,7 +1472,7 @@ func TestUpgradeStopsTheAppBeforeSnapshottingIt(t *testing.T) {
 	if si < 0 || qi > si {
 		t.Fatalf("the rollback point was taken on a RUNNING app: %v", f.steps)
 	}
-	if strings.Contains(joined, "stop:briard-home-assistant.pod") {
+	if strings.Contains(joined, "stop:briard-home-assistant-pod.service") {
 		t.Fatalf("the pod was stopped — that unmounts the shared volume under every other app: %v", f.steps)
 	}
 }

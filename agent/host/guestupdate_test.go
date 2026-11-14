@@ -253,9 +253,6 @@ func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 	if up.imageTarget.Version != want.Version || up.imageTarget.System != want.System {
 		t.Errorf("ImageUpgrade got %+v, want the resolved release", up.imageTarget)
 	}
-	if false {
-		t.Errorf("the closure path was driven by a guest-chain update: %+v", up)
-	}
 	if b, err := os.ReadFile(nextImage(cfg.GuestImage)); err != nil || string(b) != "the new image" {
 		t.Errorf("staged image = %q, %v; want the expanded artifact", b, err)
 	}
