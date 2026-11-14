@@ -277,6 +277,24 @@ func (r *guestRecovery) next(g gateVerdict, sinceAction time.Duration, unitDown 
 	return stepReboot
 }
 
+// holdWords is what a hold of a running guest says, to the local door and in the alert. The two
+// holds next tells apart need different words: too soon (this incident already started or
+// restarted the VM inside the cadence) and denied (the guest's gate says a restart would drop the
+// rest of the cluster below quorum). A lone node's gate always allows, so there too soon is the
+// only hold, and naming quorum would give the owner the wrong reason.
+func (r *guestRecovery) holdWords(lastAction time.Time, sinceAction time.Duration) (door, situation string) {
+	if !lastAction.IsZero() && sinceAction < r.cadenceFor() {
+		again := at(lastAction.Add(r.cadenceFor()))
+		return "the VM is not answering after a restart; Briard restarts it again at " + again,
+			fmt.Sprintf("no answer from the VM for %s, although Briard just restarted it. "+
+				"Briard restarts it again at %s.", r.waitFor(), again)
+	}
+	return "the VM is not answering, and restarting it would drop the rest of the cluster below quorum; Briard is leaving it alone and watching",
+		fmt.Sprintf("no answer from the VM for %s. Briard is not "+
+			"restarting it: the VM reports that restarting it would drop the rest of the "+
+			"cluster below quorum. It is being left alone and watched.", r.waitFor())
+}
+
 // recover runs the ladder for one channel-down event and returns the live channel it ends on. It
 // returns an error only when ctx ends (a clean agent shutdown), because there is no other
 // terminal state: it never stops trying, so it either gets its guest back or the agent goes down.
@@ -403,14 +421,9 @@ func (u *osUpgrade) recover(ctx context.Context, r *guestRecovery, n notify.Noti
 			// Say it once per incident, whichever branch: a node the gate keeps denying must not
 			// stay silently down, and holding is the one state the house cannot leave without the
 			// owner.
-			if !lastAction.IsZero() && sinceAction < r.cadenceFor() {
-				r.say("the VM is not answering after a restart; Briard restarts it again at %s", at(lastAction.Add(r.cadenceFor())))
-			} else {
-				r.say("the VM is not answering, and restarting it would drop the rest of the cluster below quorum; Briard is leaving it alone and watching")
-			}
-			u.announce(ctx, n, r, fmt.Sprintf("no answer from the VM for %s. Briard is not "+
-				"restarting it: the VM reports that restarting it would drop the rest of the "+
-				"cluster below quorum. It is being left alone and watched.", r.waitFor()))
+			door, situation := r.holdWords(lastAction, sinceAction)
+			r.say("%s", door)
+			u.announce(ctx, n, r, situation)
 			continue
 		}
 

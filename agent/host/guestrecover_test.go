@@ -437,3 +437,30 @@ func TestTheDoorIsAnsweredWhileTheLadderRuns(t *testing.T) {
 		t.Error("holdDoor must return once the stop ended its context")
 	}
 }
+
+// A hold names its real cause. Too soon (restarted inside the cadence) is the only hold a lone
+// node can reach, since its gate always allows, so blaming quorum there gives every lone owner the
+// wrong reason; only a hold with nothing done this incident is the gate's denial.
+func TestHoldSaysWhyItHolds(t *testing.T) {
+	r := &guestRecovery{cadence: time.Hour}
+	last := time.Now().Add(-5 * time.Minute)
+	if got := r.next(allowGate, 5*time.Minute, false); got != stepHold {
+		t.Fatalf("inside the cadence with an allowing gate = %v, want stepHold", got)
+	}
+	door, situation := r.holdWords(last, 5*time.Minute)
+	for _, s := range []string{door, situation} {
+		if strings.Contains(s, "quorum") || !strings.Contains(s, "restarts it again at "+at(last.Add(time.Hour))) {
+			t.Errorf("a too-soon hold says %q; want the next restart time and no quorum", s)
+		}
+	}
+
+	if got := r.next(denyGate, never, false); got != stepHold {
+		t.Fatalf("a denying gate = %v, want stepHold", got)
+	}
+	door, situation = r.holdWords(time.Time{}, never)
+	for _, s := range []string{door, situation} {
+		if !strings.Contains(s, "below quorum") {
+			t.Errorf("a denied hold says %q; want the quorum reason", s)
+		}
+	}
+}
