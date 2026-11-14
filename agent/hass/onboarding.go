@@ -1,20 +1,20 @@
 package hass
 
-// Home Assistant's ONBOARDING, from the outside (measured against a live Home Assistant).
+// Home Assistant's onboarding, from the outside (measured against a live Home Assistant).
 //
-// The install ends by handing the household a logged-in Home Assistant, and the way it does so is
-// HA's own resume path: briard creates the first user through the onboarding API, and sends the
-// browser to HA's onboarding page with the code that call returns. The page sees the user step
-// done, exchanges the code from the URL, and continues at the first undone step -- location --
-// with HA's own map and detection, then its discovered-devices page, then a fresh code and the
-// logged-in dashboard. Every function here is one call on that path; none of them is a page.
+// The install ends by handing the household a logged-in Home Assistant through HA's own resume
+// path: briard creates the first user through the onboarding API and sends the browser to HA's
+// onboarding page with the code that call returns. The page sees the user step done, exchanges the
+// code from the URL, and continues at the first undone step -- location -- with HA's own map and
+// detection, then its discovered-devices page, then a fresh code and the logged-in dashboard.
+// Every function here is one call on that path; none of them is a page.
 //
-// THE CODE IS SINGLE-USE AND BELONGS TO THE BROWSER. Anything briard needs to do to HA before the
-// hand-off (marking analytics done, so the page is skipped and analytics stays off) is done with
-// the control channel's OWN token, never by spending the user's code -- measured:
-// the exchange pops the code, and there is no API that mints another for a user we hold a token
-// for. Every LATER open is minted instead: the in-HA integration issues a code for
-// HA's owner on request (MintLogin), and the browser lands on HA's own callback with it.
+// The code is single-use and belongs to the browser. Anything briard must do to HA before the
+// hand-off (marking analytics done, so the page is skipped and analytics stays off) uses the
+// control channel's own token, never the user's code -- measured: the exchange pops the code, and
+// no API mints another for a user we hold a token for. Every later open is minted instead: the
+// in-HA integration issues a code for HA's owner on request (MintLogin), and the browser lands on
+// HA's own callback with it.
 
 import (
 	"bytes"
@@ -55,10 +55,10 @@ func (s Steps) Done() bool {
 // OnboardingSteps reads `GET /api/onboarding`, which needs no auth -- it is the thing the
 // dashboard's button reads to decide what it does.
 //
-// A 404 IS "DONE": once every step is complete AND HA has restarted, the onboarding views are not
+// A 404 is "done": once every step is complete and HA has restarted, the onboarding views are not
 // registered at all, so a 404 is what an onboarded HA answers. (Within the same process the views
-// stay up and report every step done; both shapes mean the same thing, and HA's own frontend
-// treats them identically.)
+// stay up and report every step done; both shapes mean the same, and HA's own frontend treats them
+// identically.)
 func OnboardingSteps(ctx context.Context, base string) (Steps, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/onboarding", nil)
 	if err != nil {
@@ -94,7 +94,7 @@ type NewUser struct {
 	Name     string
 	Username string
 	Password string
-	// ClientID is the browser's own origin WITH a trailing slash -- HA's `genClientId()` -- and
+	// ClientID is the browser's own origin with a trailing slash -- HA's `genClientId()` -- and
 	// the code that comes back is bound to it. The `state` OnboardingURL builds must carry the
 	// same value, or HA's frontend refuses the callback (measured).
 	ClientID string
@@ -102,10 +102,9 @@ type NewUser struct {
 }
 
 // CreateUser runs the user step and returns the auth code the browser will exchange. The user is
-// the first non-system one, so HA makes it the OWNER -- the control channel's system user does
-// not count (measured).
-//
-// Refused (403) once the step is done: this is a fresh-HA-only call, by HA's own rule.
+// the first non-system one, so HA makes it the owner -- the control channel's system user does
+// not count (measured). Refused (403) once the step is done: this is a fresh-HA-only call, by
+// HA's own rule.
 func CreateUser(ctx context.Context, base string, u NewUser) (string, error) {
 	body, err := json.Marshal(map[string]string{
 		"name": u.Name, "username": u.Username, "password": u.Password,
@@ -139,7 +138,7 @@ func CreateUser(ctx context.Context, base string, u NewUser) (string, error) {
 	return out.AuthCode, nil
 }
 
-// MarkAnalytics marks the analytics step done WITHOUT setting preferences, which is how analytics
+// MarkAnalytics marks the analytics step done without setting preferences, which is how analytics
 // stays off and the page is skipped (measured). Any admin's access token will do -- the
 // control channel's is the one to use, so the household's code is never spent. Already done is
 // not an error: HA answers 403 for it, and the outcome is the one asked for.
@@ -194,7 +193,7 @@ func SystemAccess(ctx context.Context, x Executor, port int) (base, access strin
 }
 
 // OnboardingURL is where the browser goes with the user step's code: HA's own onboarding page,
-// which resumes at the first undone step. `origin` is HA as the BROWSER reaches it (scheme +
+// which resumes at the first undone step. `origin` is HA as the browser reaches it (scheme +
 // host, no trailing slash). The `state` is what home-assistant-js-websocket's `getAuth` decodes
 // and checks against the page's own origin under `limitHassInstance` -- hassUrl without the
 // trailing slash, clientId with it -- so it is built here, once, next to ClientID's rule.

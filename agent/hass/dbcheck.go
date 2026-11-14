@@ -13,31 +13,30 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// THE RECORDER CHECK: finding damage in Home Assistant's history database before Home Assistant
+// The recorder check: finding damage in Home Assistant's history database before Home Assistant
 // does, and putting back a copy that passed the same check.
 //
-// WHY BRIARD HAS TO LOOK. A query that hits a bad page makes the recorder rename the database,
+// Briard has to look because a query that hits a bad page makes the recorder rename the database,
 // its -wal and its -shm to `*.corrupt.<isotime>` and start empty, with no notification and the app
-// still healthy. Its startup check reads one row per table, and the only routine full read is the
+// still healthy. Its startup check reads one row per table and the only routine full read is the
 // monthly repack (a plain VACUUM in the second Sunday's nightly purge), so damage can sit for a
-// month: past every ring member, which is when undo stops being a remedy. Restoring an UNCHECKED
+// month: past every ring member, which is when undo stops being a remedy. Restoring an unchecked
 // copy only resets again at the next full read.
 //
-// SO EACH NIGHT ONE QUIESCED MEMBER IS CHECKED (`PRAGMA quick_check`, read-only, in a throwaway
-// container of Home Assistant's own image: its sqlite is the right version by construction and
-// the guest needs no tool for it), and the ring holds a member every RetainEvery through the app
+// So each night one quiesced member is checked (`PRAGMA quick_check`, read-only, in a throwaway
+// container of Home Assistant's own image: its sqlite is the right version by construction and the
+// guest needs no tool for it), and the ring holds a member every RetainEvery through the app
 // sidecar, so a corrupt finding has a recent copy to restore from. A clean finding releases every
 // older hold.
 //
-// THE RESTORE IS GATED ON TWO POSITIVE READS (a destructive act needs a positive confirmation):
-// the copy checked clean, and its schema version is not newer than the live database's. The
+// The restore is gated on two positive reads (a destructive act needs a positive confirmation):
+// the copy checked clean, and its schema version is not newer than the live database's (the
 // recorder migrates any older schema forward on start, one version at a time, and refuses only a
-// newer one. Either read failing means no restore. When the restore runs, Restorable reads the
-// copy's clean record and both schema versions again, because the check that named the copy ran
-// earlier.
+// newer one). Either read failing means no restore. The check that named the copy ran earlier, so
+// Restorable reads the copy's clean record and both schema versions again when the restore runs.
 //
-// THE CHECK IS A READ, THE RESTORE A WRITE, and they run apart: the check takes minutes on a big
-// database and runs in the background beside everything else, while the restore stops the app
+// The check is a read and the restore a write, and they run apart: the check takes minutes on a
+// big database and runs in the background beside everything else, while the restore stops the app
 // and is asked for separately, in line with every other operation on it.
 
 // The app sidecar's key for this state, and the states it holds.
@@ -109,10 +108,8 @@ func readApp(x Executor, app string) (map[string]json.RawMessage, error) {
 }
 
 // SetRecord writes a member's hass-db record, or removes it when r is nil. Other keys are kept,
-// and a sidecar left with no keys is removed, since its existence is what holds the member.
-//
-// tmp + rename + `sync -f`: the next node to read this may be the one that promotes after this
-// one dies.
+// and a sidecar left with no keys is removed, since its existence is what holds the member. tmp +
+// rename + `sync -f`: the next node to read this may be the one that promotes after this one dies.
 func SetRecord(ctx context.Context, x Executor, app string, r *DBRecord) error {
 	all, _ := readApp(x, app)
 	if r == nil {
@@ -145,11 +142,9 @@ func SetRecord(ctx context.Context, x Executor, app string, r *DBRecord) error {
 	return err
 }
 
-// Sampled is the take path's half: a QUIESCED sample taken at least RetainEvery after the newest
-// member holding a record is retained. ring is the app's members, the new one among them.
-//
-// It only ever creates a sidecar, on a member that has just been taken; only the check rewrites
-// one.
+// Sampled is the take path's half: a quiesced sample taken at least RetainEvery after the newest
+// member holding a record is retained. ring is the app's members, the new one among them. Sampled
+// only ever creates a sidecar, on a member that has just been taken; only the check rewrites one.
 func Sampled(ctx context.Context, x Executor, ring []Member, m Member) error {
 	if !m.Quiesced {
 		return nil
@@ -178,10 +173,9 @@ type DBReport struct {
 }
 
 // Nightly is one night's check over ring (oldest first), with live the config directory Home
-// Assistant runs on. On a corrupt finding it searches for a copy to put back and names it.
-//
-// READ-ONLY ON THE DATA: it writes only app sidecars, so it runs beside everything else the guest
-// does. The restore is a separate step (Restorable, RestoreDB) the host asks for.
+// Assistant runs on. On a corrupt finding it searches for a copy to put back and names it. It is
+// read-only on the data, writing only app sidecars, so it runs beside everything else the guest
+// does; the restore is a separate step (Restorable, RestoreDB) the host asks for.
 func Nightly(ctx context.Context, x Executor, image, live string, ring []Member) DBReport {
 	sort.Slice(ring, func(i, j int) bool { return ring[i].At.Before(ring[j].At) })
 	// A `checking` left by a crash holds nothing any more.
@@ -201,7 +195,7 @@ func Nightly(ctx context.Context, x Executor, image, live string, ring []Member)
 	}
 	m := ring[newest]
 	rep := DBReport{Checked: m.Path}
-	// HELD THROUGH THE CHECK, so a take landing meanwhile cannot prune it from under the read. A
+	// Held through the check, so a take landing meanwhile cannot prune it from under the read. A
 	// member already held keeps its record.
 	_, held := Record(x, m.App)
 	if !held {
@@ -263,21 +257,18 @@ func Restorable(ctx context.Context, x Executor, image, live string, m Member) e
 	return nil
 }
 
-// search walks back from the damaged member for a copy to restore from: every QUIESCED member
-// in ring (the members older than the damaged one) newer than the clean floor, newest first, then
-// the floor itself, stopping at the first that checks clean and whose schema is not newer than
-// the live database's. Its index, or the reason there is none.
+// search walks back from the damaged member for a copy to restore from: every quiesced member in
+// ring (the members older than the damaged one) newer than the clean floor, newest first, then the
+// floor itself, stopping at the first that checks clean and whose schema is not newer than the
+// live database's. It returns that index, or the reason there is none.
 //
-// HELD OR NOT. The holds guarantee a candidate exists, never that it is the best one: an hour-old
-// sample that checks clean loses less history than an eight-hour-old hold. A member read here
-// without a record is held `checking` for the read, so a prune cannot take it mid-read, and
-// released unless it is chosen.
-//
-// NO DEADLINE ON THE WALK: it runs in the background and only reads. Each read has its own bound
-// (checkTimeout).
-//
-// ANY READ THAT FAILS ENDS THE SEARCH: an older member that would check clean is still a guess
-// about one that could not be read, and a restore on a guess loses history the household had.
+// Held or not: the holds guarantee a candidate exists, never that it is the best one, and an
+// hour-old sample that checks clean loses less history than an eight-hour-old hold. A member read
+// here without a record is held `checking` for the read, so a prune cannot take it mid-read, and
+// released unless it is chosen. The walk has no deadline (it runs in the background and only
+// reads); each read has its own bound (checkTimeout). Any read that fails ends the search: an
+// older member that would check clean is still a guess about one that could not be read, and a
+// restore on a guess loses history the household had.
 func search(ctx context.Context, x Executor, image, live string, ring []Member) (int, string) {
 	_, liveSchema, err := Check(ctx, x, image, live, false)
 	if err == nil && liveSchema < 0 {
@@ -331,7 +322,7 @@ func search(ctx context.Context, x Executor, image, live string, ring []Member) 
 	return -1, "no copy checked clean"
 }
 
-// markClean records ring[i] clean, THEN releases every older hold. A crash between the two only
+// markClean records ring[i] clean, then releases every older hold. A crash between the two only
 // leaves extra holds, which the next clean night releases.
 func markClean(ctx context.Context, x Executor, ring []Member, i int) {
 	if err := SetRecord(ctx, x, ring[i].App, &DBRecord{State: DBClean}); err != nil {
@@ -352,11 +343,9 @@ func release(ctx context.Context, x Executor, m Member) {
 // checkScript reads the database in /db without writing anything: immutable=1 takes no lock and
 // opens no -wal, so it works on a read-only member, and on the live database it reads the main
 // file alone. A non-empty -wal in a member is never read: its frames are checked the next night,
-// once they are in the main file. "full" adds quick_check to the schema read.
-//
-// THE ERROR CLASSES ARE THE VERDICT. OperationalError (cannot open, I/O) is "could not run";
-// any other DatabaseError ("malformed", "not a database") is damage, the same messages the
-// recorder resets on.
+// once they are in the main file. "full" adds quick_check to the schema read. The error classes
+// are the verdict: OperationalError (cannot open, I/O) is "could not run"; any other DatabaseError
+// ("malformed", "not a database") is damage, the same messages the recorder resets on.
 const checkScript = `
 import json, sqlite3, sys
 out = {}
@@ -381,17 +370,15 @@ except sqlite3.OperationalError as e:
 print(json.dumps(out))
 `
 
-// checkTimeout bounds ONE read: a quick_check of a large database is minutes, and a read that
+// checkTimeout bounds one read: a quick_check of a large database is minutes, and a read that
 // takes longer than this is stuck rather than slow. The walk over many reads has no bound of its
 // own (search).
 const checkTimeout = 30 * time.Minute
 
 // Check reads the recorder database in dir: whether it is damaged (full only; otherwise the
 // verdict is clean) and its schema version, or -1 when that could not be read. An error means no
-// answer at all, never damage.
-//
-// -1, NEVER ZERO, for an unread schema: zero compares as older than anything, which is the answer
-// that would let a restore through.
+// answer at all, never damage. An unread schema is -1, never zero: zero compares as older than
+// anything, which is the answer that would let a restore through.
 func Check(ctx context.Context, x Executor, image, dir string, full bool) (verdict string, schema int, err error) {
 	mode := "schema"
 	if full {
@@ -436,9 +423,8 @@ func lastLine(out []byte) string {
 }
 
 // RestoreDB puts the recorder database from one config directory into another: into, which is a
-// STAGED COPY of the live config directory, never the live one. The caller swaps the copy in
+// staged copy of the live config directory, never the live one. The caller swaps the copy in
 // once this has succeeded, so a failure anywhere here changes nothing Home Assistant can see.
-//
 // The copy's -wal and -shm go before the database lands: a stale -wal beside a different database
 // is replayed into it. The `*.corrupt.*` renames the recorder made of the damaged database go too;
 // the undo point holds them.

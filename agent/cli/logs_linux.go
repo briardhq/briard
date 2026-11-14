@@ -21,10 +21,10 @@ const (
 	agentUnit = "briard-agent.service"
 	guestUnit = "briard-guest.service"
 
-	// THE AGENT'S OWN default for the guest's serial console, pinned by
+	// The agent's own default for the guest's serial console, pinned by
 	// TestDefaultConsoleMatchesTheAgents (it equals what ConfigFromEnv answers with GUEST_SERIAL
 	// unset). config.env carries the key only when the install was given one, so this is the path
-	// on an ORDINARY node -- not a guess about one.
+	// on an ordinary node -- not a guess about one.
 	defaultConsole = "/var/log/briard-guest-console.log"
 
 	// The node's configuration file, for a node whose unit does not name it. Pinned by
@@ -47,7 +47,7 @@ func defaultSources() *logSources {
 			for _, p := range props {
 				args = append(args, "--property="+p)
 			}
-			// NOT --value: a unit that does not exist is reported by `systemctl show` with exit 0
+			// Not --value: a unit that does not exist is reported by `systemctl show` with exit 0
 			// and empty properties, which is indistinguishable from a unit that exists and is
 			// configured with nothing. LoadState is what tells the two apart, so the properties are
 			// read by name.
@@ -129,22 +129,21 @@ func (s *logSources) readHost(ctx context.Context, tail int, since, filter strin
 	return sf
 }
 
-// consolePath answers where this node's guest console actually is, asking THE NODE rather than
+// consolePath answers where this node's guest console actually is, asking the node rather than
 // assuming the default: the path can be moved or switched off entirely (BRIARD_GUEST_SERIAL= at
 // install), and a node with capture disabled gets a straight answer -- "not captured here" --
-// instead of a stale file from an earlier install, which would be the worst of the three
-// outcomes: content, believed current, that is not.
+// instead of a stale file from an earlier install, the worst of the three outcomes: content,
+// believed current, that is not.
 //
-// ⚠️ TWO HOPS, AND BOTH ARE THE NODE'S OWN WORD. systemd is asked where the config file is
+// ⚠️ Two hops, both the node's own word: systemd is asked where the config file is
 // (BRIARD_CONFIG on the unit), and the config file is asked where the console is (GUEST_SERIAL).
 // Asking systemd for GUEST_SERIAL directly looks right and is wrong: the node's values live in
-// config.env, not on the frozen unit, and `systemctl show` reports only what the UNIT declares --
+// config.env, not on the frozen unit, and `systemctl show` reports only what the unit declares,
 // so every installed node would be told it captured no console while the capture sat on disk.
 // TestConsolePathReadsTheNodesConfigFileNotTheUnit stubs a unit carrying only BRIARD_CONFIG, and
-// nixosTest/install-macvtap.nix runs the verb on a real install.
-//
-// Returns (path, note, err). A non-empty note replaces the surface's header when the path was
-// guessed rather than read from the node, so the reader can tell one from the other.
+// nixosTest/install-macvtap.nix runs the verb on a real install. It returns (path, note, err): a
+// non-empty note replaces the surface's header when the path was guessed rather than read from
+// the node, so the reader can tell one from the other.
 func (s *logSources) consolePath(ctx context.Context) (string, string, error) {
 	if s.consoleFlag != "" {
 		return s.consoleFlag, "", nil
@@ -163,10 +162,10 @@ func (s *logSources) consolePath(ctx context.Context) (string, string, error) {
 				conf = v
 			}
 		}
-		// ⚠️ ABSENT IS NOT OFF. config.env carries GUEST_SERIAL only when the install was given
-		// one -- an ordinary node has no line, and the AGENT defaults it -- so a reader that
+		// ⚠️ Absent is not off. config.env carries GUEST_SERIAL only when the install was given
+		// one -- an ordinary node has no line, and the agent defaults it -- so a reader that
 		// treated the missing key as "capture is off" would contradict the file sitting on disk.
-		// Only an explicitly EMPTY entry means off.
+		// Only an explicitly empty entry means off.
 		path, named := configValue(conf, "GUEST_SERIAL")
 		if !named {
 			path = defaultConsole
@@ -177,7 +176,7 @@ func (s *logSources) consolePath(ctx context.Context) (string, string, error) {
 		return "", "", fmt.Errorf("this machine does not capture the guest console "+
 			"(%s sets GUEST_SERIAL to nothing) — reinstall without BRIARD_GUEST_SERIAL= to enable it", conf)
 	}
-	// No systemd to ask (a container, a test rig, not root). Fall back, but SAY it is a guess.
+	// No systemd to ask (a container, a test rig, not root). Fall back, but say it is a guess.
 	path := s.env("GUEST_SERIAL")
 	if path == "" {
 		path = defaultConsole

@@ -1,27 +1,24 @@
 // Package cli is `briard` — the operator front.
 //
-// It is a MODE of the agent binary, not a second one. The binary is a multitool anyway (the
+// It is a mode of the agent binary, not a second one. The binary is a multitool anyway (the
 // daemon, install/uninstall, internal flags such as --report-card and --fetch-install), and
 // self-update is a single-binary story: a second binary would need its own signing, staging and
-// update path PLUS a version-lockstep story with the agent — and a CLI speaking api.Directive to
-// a differently-versioned agent is a bug class that one binary makes structurally impossible.
+// update path plus a version-lockstep story with the agent, and a CLI speaking api.Directive to a
+// differently-versioned agent is a bug class that one binary makes structurally impossible.
 //
 // Named `briard` rather than `briardctl`: the install puts nothing under its prefix on $PATH, so
 // the operator-facing name is a symlink (/usr/local/bin/briard) independent of the on-disk name.
-// The -ctl precedents (systemctl/kubectl/machinectl) front SYSTEM DAEMONS; the product-CLI
+// The -ctl precedents (systemctl/kubectl/machinectl) front system daemons; the product-CLI
 // convention is the bare name — docker, podman, nix, gh, and most closely tailscaled/tailscale,
-// which is our exact shape: a daemon plus a CLI, for a managed service with an agent on user
-// hardware.
+// our exact shape: a daemon plus a CLI, for a managed service with an agent on user hardware.
 //
-// Most verbs here are INJECTORS: they submit an api.Directive to the running agent over
-// its admin socket and print the terminal outcome. The agent does the work, through the same
-// path the cloud's directives take.
-//
-// The exceptions are deliberate, not gaps: `alerts`, `logs`, `version`, the machine's half of
-// `doctor`, bare `update`, `start`, and `stop` with the agent not answering act on or READ the
-// node directly, touching no socket, because the situation they exist for is the agent being
-// DOWN — an injector would answer "cannot reach the agent" precisely when the operator most
-// needs an answer. See logs.go.
+// Most verbs here are injectors: they submit an api.Directive to the running agent over its admin
+// socket and print the terminal outcome, and the agent does the work through the same path the
+// cloud's directives take. The exceptions are deliberate, not gaps: `alerts`, `logs`, `version`,
+// the machine's half of `doctor`, bare `update`, `start`, and `stop` with the agent not answering
+// act on or read the node directly, touching no socket, because the situation they exist for is
+// the agent being down — an injector would answer "cannot reach the agent" precisely when the
+// operator most needs an answer. See logs.go.
 package cli
 
 import (
@@ -42,7 +39,7 @@ import (
 	"briard.io/shared/dashboard"
 )
 
-// A command is one row of the CLI's SINGLE source of truth: `commands` is both the dispatch table
+// A command is one row of the CLI's single source of truth: `commands` is both the dispatch table
 // and the help text, because a help listing and a dispatch table kept as two hand-maintained
 // lists drift apart with no test able to notice. TestEveryCommandIsDocumented checks this table
 // against its own independently declared list of verbs (so adding or removing one fails it until
@@ -233,19 +230,18 @@ var commands = []command{
 			"started by units inside the VM image.) You should not need to type it: the installer\n" +
 			"writes the unit that does.",
 		// run: nil — main() intercepts this word before the CLI sees it (the daemon modes cannot
-		// live in this package). It is in the table so it is DOCUMENTED; the test knows.
+		// live in this package). It is in the table so it is documented; the test knows.
 	},
 }
 
 // Main runs one CLI invocation and returns the process exit code: 0 when the directive reached a
 // clean terminal state, 1 when the node refused or reverted it, 2 for a usage error.
 //
-// The refused/reverted case exits NON-ZERO on purpose. `briard` is the seam a script (and later
+// The refused/reverted case exits non-zero on purpose: `briard` is the seam a script (and later
 // the UI) drives, so an op that rolled back must be distinguishable from one that worked without
-// parsing prose — an admin tool that always exits 0 is one nobody can automate against.
-//
-// No arguments prints the help and succeeds, the ordinary CLI contract; the daemon is `run`,
-// which the units name and main() intercepts.
+// parsing prose — an admin tool that always exits 0 is one nobody can automate against. No
+// arguments prints the help and succeeds, the ordinary CLI contract; the daemon is `run`, which
+// the units name and main() intercepts.
 func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stdout)
@@ -255,9 +251,9 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "help", "-h", "--help":
 		return runHelp(ctx, args[1:], stdout, stderr)
 	case "debug":
-		// UNDOCUMENTED, AND INTERCEPTED HERE RATHER THAN ADDED TO `commands`, which is the
-		// help's single source of truth: every row there needs a synopsis and is explained by
-		// `briard help <name>`, even an unlisted one, and debug is meant to have no help at all
+		// Undocumented, and intercepted here rather than added to `commands`, the help's single
+		// source of truth: every row there needs a synopsis and is explained by `briard help
+		// <name>`, even an unlisted one, and debug is meant to have no help at all
 		// (TestDebugVerbIsUndocumented). `help` is intercepted too, since it reads the table
 		// rather than being a row of it. See debug.go for what it opens and why hiding it is a
 		// policy rather than a boundary.
@@ -291,7 +287,7 @@ func runHelp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "\n%s\n", c.detail)
 		}
 		if c.run != nil {
-			// The verb prints its OWN options. It returns 2 (flag.ErrHelp is a usage error to the
+			// The verb prints its own options. It returns 2 (flag.ErrHelp is a usage error to the
 			// verb), which is right for `briard rescue -h` and wrong for `briard help rescue` —
 			// so the exit code is ours, and both writers are stdout because this output was asked
 			// for rather than complained about.
@@ -363,13 +359,12 @@ func runDirective(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	return 0
 }
 
-// runApp is SUGAR over `directive` rather than a separate mechanism — the shape every verb
-// copies. `briard app install ha` is exactly `briard directive app-install ha`, so there is one
-// path through the agent and the CLI adds only a name a human would guess.
-//
-// It blocks until the node reaches a terminal state, because an install is a maintenance
-// operation on a live promoted resource: returning early would leave an operator guessing whether
-// the thing they just did is still happening.
+// runApp is sugar over `directive` rather than a separate mechanism — the shape every verb copies.
+// `briard app install ha` is exactly `briard directive app-install ha`, so there is one path
+// through the agent and the CLI adds only a name a human would guess. It blocks until the node
+// reaches a terminal state, because an install is a maintenance operation on a live promoted
+// resource: returning early would leave an operator guessing whether the thing they just did is
+// still happening.
 func runApp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) >= 1 && (args[0] == "history" || args[0] == "undo") {
 		return runAppHistory(ctx, args, stdout, stderr)
@@ -507,16 +502,15 @@ func offeredVersion(ctx context.Context, sock, name string) string {
 
 // runRescue restarts this node's guest on its verified, read-only image.
 //
-// IT REQUIRES -yes, as `uninstall` does and no other verb. The rest are reversible or
-// health-gated -- an OS upgrade rolls back, an app install reverts, a handover can be handed
-// back -- or name their loss in their own flag (`app uninstall -now`).
-// This one stops the household's apps on a node whose fault nobody has diagnosed, and empties
-// the guest's scratch. A confirmation flag is the cheapest possible guard against the one
-// invocation nobody meant to type, and it costs an operator who did mean it four characters.
-//
-// It does NOT prompt interactively. The situations this verb exists for include a node being
-// driven over SSH from a script, and a prompt that sometimes appears is worse than a flag that
-// always must — it makes the safe path the one that varies by terminal.
+// It requires -yes, as `uninstall` does and no other verb. The rest are reversible or health-gated
+// -- an OS upgrade rolls back, an app install reverts, a handover can be handed back -- or name
+// their loss in their own flag (`app uninstall -now`); this one stops the household's apps on a
+// node whose fault nobody has diagnosed, and empties the guest's scratch. A confirmation flag is
+// the cheapest possible guard against the one invocation nobody meant to type, and costs an
+// operator who did mean it four characters. It does not prompt interactively: the situations this
+// verb exists for include a node driven over SSH from a script, and a prompt that sometimes
+// appears is worse than a flag that always must — it makes the safe path the one that varies by
+// terminal.
 func runRescue(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard rescue", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -562,15 +556,15 @@ Read `+"`briard logs`"+` first. Re-run with -yes when you have.
 // runHandover is `briard handover` — give this node's work to a peer, on purpose, while it is
 // perfectly healthy. Sugar over `directive handover`.
 //
-// WHY A HUMAN WANTS THIS. Failover is the claim this product is bought for, and it is the one
-// claim that is otherwise only tested on the day it matters. Running it deliberately — after
-// pairing a second anchor, swapping hardware, moving the machine to a different switch — turns
-// "it should work" into "it worked, on Tuesday, and here is the log". It is also cheaper than the
-// upgrade it borrows from: no reboot, so it never opens the window where a degraded pair is one
-// power cut from trouble.
+// A human wants this because failover is the claim this product is bought for, and the one claim
+// otherwise only tested on the day it matters. Running it deliberately — after pairing a second
+// anchor, swapping hardware, moving the machine to a different switch — turns "it should work"
+// into "it worked, on Tuesday, and here is the log". It is also cheaper than the upgrade it
+// borrows from: no reboot, so it never opens the window where a degraded pair is one power cut
+// from trouble.
 //
-// ONE STEP, NO ORCHESTRATION, deliberately. Sequencing a pair of these — hand over, verify, hand
-// back — belongs to whatever can see every node (the cloud, or a lab script driving both). This
+// One step, no orchestration, deliberately: sequencing a pair of these (hand over, verify, hand
+// back) belongs to whatever can see every node (the cloud, or a lab script driving both). This
 // verb evicts the node it runs on and says what happened, which is exactly what a node can know:
 // `drbd-reactorctl evict` says "not me", never "you". Run it on the peer to come back.
 func runHandover(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -705,12 +699,11 @@ func sockDefault() string {
 	return defaultSock
 }
 
-// submit sends one directive and blocks for its outcome.
-//
-// There is no client-side deadline by design: an app install or OS upgrade legitimately runs for
-// minutes (the agent bounds each at 15 by default, an install of a large image longer), and a
-// CLI that timed out first would report failure for an op still in flight — then invite the
-// operator to "retry" a node that is mid-upgrade. Waiting is the honest behaviour; Ctrl-C is the operator's own escape. A caller
+// submit sends one directive and blocks for its outcome, with no client-side deadline by design:
+// an app install or OS upgrade legitimately runs for minutes (the agent bounds each at 15 by
+// default, an install of a large image longer), and a CLI that timed out first would report
+// failure for an op still in flight, then invite the operator to "retry" a node that is
+// mid-upgrade. Waiting is the honest behaviour; Ctrl-C is the operator's own escape. A caller
 // whose verb changes nothing (doctor) puts a deadline on ctx, and that is honoured.
 func submit(ctx context.Context, sock string, d api.Directive) (api.DirectiveOutcome, error) {
 	o, err := host.Submit(ctx, sock, d)
@@ -791,11 +784,11 @@ func sayTo(w io.Writer) func(string, ...any) {
 	return func(format string, a ...any) { fmt.Fprintf(w, format+"\n", a...) }
 }
 
-// runDashboard is `briard open`: it asks the agent for a one-time link to the dashboard
-// (the verb a user types is `open`, and *dashboard* stays the engineering name of the
-// guest unit and the directive). The account details ride along because THIS is where
-// the OS account is visible: the agent runs as a systemd or Windows service with no SUDO_USER, and the guest knows
-// nothing about the host's users at all.
+// runDashboard is `briard open`: it asks the agent for a one-time link to the dashboard (the verb
+// a user types is `open`, and *dashboard* stays the engineering name of the guest unit and the
+// directive). The account details ride along because this is where the OS account is visible:
+// the agent runs as a systemd or Windows service with no SUDO_USER, and the guest knows nothing
+// about the host's users at all.
 func runDashboard(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard open", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -876,12 +869,11 @@ func accountLang() string {
 	return strings.ToLower(l)
 }
 
-// runAppHistory is `briard app history <name>` and `briard app undo <point>`.
-//
-// TWO VERBS AND NOT ONE INTERACTIVE PICKER, deliberately. An index into a list ("undo 3") is stale
-// the moment anything takes a member, and members are taken on every app start — so the second
-// command would act on a different point than the one the operator read. Naming the point exactly
-// as history printed it is copy-and-paste, and it cannot drift.
+// runAppHistory is `briard app history <name>` and `briard app undo <point>`: two verbs and not
+// one interactive picker, deliberately. An index into a list ("undo 3") is stale the moment
+// anything takes a member, and members are taken on every app start, so the second command would
+// act on a different point than the one the operator read. Naming the point exactly as history
+// printed it is copy-and-paste, and it cannot drift.
 func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	verb := args[0]
 	fs := flag.NewFlagSet("briard app "+verb, flag.ContinueOnError)
@@ -918,8 +910,8 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stdout, "%s has no history yet\n", fs.Arg(0))
 		return 0
 	}
-	// NEWEST LAST, the order a terminal reads: the most recent row ends up next to the prompt,
-	// where the operator is looking. The row shows the EVENT's time; the point under it is what
+	// Newest last, the order a terminal reads: the most recent row ends up next to the prompt,
+	// where the operator is looking. The row shows the event's time; the point under it is what
 	// undoing it puts back.
 	//
 	// A row whose app did not start cleanly carries the page's red caption as a `!` line.
@@ -939,12 +931,11 @@ func runAppHistory(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return 0
 }
 
-// consistencyNote is how the listing keeps the two kinds of point apart. A point taken
-// while the app was running is one the app has to recover from on the way back up, which is a
-// thing the household is entitled to know BEFORE choosing it.
-//
-// The WORDS are quadlet.Consistency.Note's, shared with the dashboard's history page so a household
-// hears one description of the fact rather than two. This adds only the shape of a terminal line.
+// consistencyNote is how the listing keeps the two kinds of point apart. A point taken while the
+// app was running is one the app has to recover from on the way back up, which the household is
+// entitled to know before choosing it. The words are quadlet.Consistency.Note's, shared with the
+// dashboard's history page so a household hears one description of the fact rather than two;
+// this adds only the shape of a terminal line.
 func consistencyNote(c quadlet.Consistency) string {
 	if note := c.Note(); note != "" {
 		return "  (" + note + ")"
@@ -952,7 +943,7 @@ func consistencyNote(c quadlet.Consistency) string {
 	return ""
 }
 
-// runAppUndo puts one point back. It says the EXACT moment it goes back to, which differs from the
+// runAppUndo puts one point back. It says the exact moment it goes back to, which differs from the
 // row's own time for a detected change, and what that costs.
 func runAppUndo(ctx context.Context, sock, member string, stdout, stderr io.Writer) int {
 	if at, ok := quadlet.SnapshotMemberTime(member); ok {

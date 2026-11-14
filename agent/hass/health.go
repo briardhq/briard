@@ -10,7 +10,7 @@ import (
 )
 
 // httpStatus is an answer Home Assistant gave with a status other than 200. It is a type rather
-// than a string because Health reads the CLASS of the code: a 4xx is our login failing, a 5xx is
+// than a string because Health reads the class of the code: a 4xx is our login failing, a 5xx is
 // Home Assistant failing, and the two mean opposite things about the app.
 type httpStatus struct {
 	what string
@@ -30,7 +30,7 @@ const (
 	VerdictUnhealthy
 )
 
-// Health is Home Assistant's app health: whether the APP works, which its own
+// Health is Home Assistant's app health: whether the app works, which its own
 // `/manifest.json` cannot say. Recovery mode — a configuration that does not parse — keeps that
 // answering 200 while every integration is down; `/api/config` reports it (measured by
 // nixosTest/hass-health-probe.nix).

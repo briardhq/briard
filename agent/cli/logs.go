@@ -16,34 +16,32 @@ import (
 	"briard.io/shared/notify"
 )
 
-// `briard alerts` and `briard logs` — verbs that READ the node instead of acting on it, and
-// are not directive injectors (see this package's doc).
+// `briard alerts` and `briard logs` — verbs that read the node instead of acting on it, and are
+// not directive injectors (see this package's doc). That is the requirement, not an
+// implementation shortcut: the outage they are most needed for is the host agent being down, and
+// a verb routed through the admin socket answers "cannot reach the agent" in exactly the case the
+// operator is trying to investigate. Reading the node's files directly means these two work on a
+// node where nothing else does.
 //
-// WHY THEY ARE NOT INJECTORS, which is not an implementation shortcut but the requirement:
-// the outage they are most needed for is the host agent being down. A verb routed through the
-// admin socket answers "cannot reach the agent" in exactly the case the operator is trying to
-// investigate. Reading the node's files directly means these two work on a node where nothing
-// else does.
+// `alerts` reads the node's alert store (agent/host/alertstore.go): the one record of every alert
+// the host has raised, which is also where "what is wrong right now" is answered -- the latest
+// record per key. Nothing reads a log for an alert.
 //
-// `alerts` reads the node's ALERT STORE (agent/host/alertstore.go): the one record of every
-// alert the host has raised, which is also where "what is wrong right now" is answered -- the
-// latest record per key. Nothing reads a log for an alert.
-//
-// `logs` reads the node's TWO LOG SURFACES, written by processes that share no logger:
+// `logs` reads the node's two log surfaces, written by processes that share no logger:
 //
 //	the host agent  → its journal (briard-agent.service); on Windows, its own log file and qemu's
-//	the guest       → INSIDE the VM: its stderr goes to the guest's own journal, out the guest's
+//	the guest       → inside the VM: its stderr goes to the guest's own journal, out the guest's
 //	                  ttyS0, into a file on the host. Under macvtap the host cannot reach the
 //	                  guest over the network at all, so that file is the only witness to
 //	                  anything in there.
 //
 // A reader that tailed one of them would be silent about a whole class of trouble while looking
-// like it had checked. That is why `logs` reads both and says so per surface, including when a
-// surface is unavailable — an empty result from a surface that could not be opened must never
-// render as "nothing logged".
+// like it had checked, so `logs` reads both and says so per surface, including when a surface is
+// unavailable — an empty result from a surface that could not be opened must never render as
+// "nothing logged".
 //
-// WHAT THEY DELIBERATELY DO NOT DO: push. Reaching an owner who is not sitting at a terminal is
-// the notifier's job (shared/notify); these verbs are the PULL half — they make "where do I look"
+// What they deliberately do not do is push: reaching an owner who is not sitting at a terminal is
+// the notifier's job (shared/notify); these verbs are the pull half — they make "where do I look"
 // answerable.
 
 // A surface is one place log lines land on this node. Read is best-effort by contract: an error
@@ -67,12 +65,10 @@ type logSources struct {
 }
 
 // runAlerts is `briard alerts` — what is wrong right now, then what has happened: the node's
-// alert store, read directly from the file so it answers while the agent is down.
-//
-// EXIT CODE. 0 when the store was read (or has never been written: nothing has happened), 1
-// when it could not be — deliberately NOT "1 if something is open". A script that wants that
-// can read the "open now" count; a command people run by hand when worried should not fail at
-// them on top.
+// alert store, read directly from the file so it answers while the agent is down. It exits 0 when
+// the store was read (or has never been written: nothing has happened), 1 when it could not be —
+// deliberately not "1 if something is open". A script that wants that can read the "open now"
+// count; a command people run by hand when worried should not fail at them on top.
 func runAlerts(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("briard alerts", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -154,7 +150,7 @@ func runLogs(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 // surfaceFlags registers -host/-guest; chosen() resolves them once parsing is done. Neither flag
-// means BOTH, which is the answer that is right when the operator does not yet know where to
+// means both, which is the answer that is right when the operator does not yet know where to
 // look -- i.e. every time this is reached for in anger. Both flags together also means both,
 // since asking for everything is not a usage error.
 func surfaceFlags(fs *flag.FlagSet) func() string {
@@ -186,7 +182,7 @@ func (s *logSources) collect(ctx context.Context, only string, tail int, since, 
 	return out
 }
 
-// readGuest reads the guest's serial console file. Note what it does NOT do: apply -since. The
+// readGuest reads the guest's serial console file. It deliberately does not apply -since: the
 // file is a raw console capture whose lines are stamped by the guest kernel's monotonic clock
 // (and, after boot, by nothing at all), so there is no wall-clock field to filter on. Saying so
 // is better than filtering on a timestamp that does not mean what the flag implies.
@@ -247,7 +243,7 @@ func (s *logSources) follow(ctx context.Context, only, filter string, stdout, st
 }
 
 // tailFile polls a file for growth and emits its lines as the surface name. Polling rather than
-// inotify because the files are ROTATED under their readers -- the agent moves an oversized
+// inotify because the files are rotated under their readers -- the agent moves an oversized
 // console capture to `.prev` before each guest launch (platform.prepareSerialLog), and on Windows
 // rolls its own log to `.1`: a poll that notices the file shrank simply starts over, where a
 // watch on the old inode would go quiet forever without ever reporting that it had.
@@ -290,17 +286,14 @@ func (s *logSources) tailFile(ctx context.Context, name, path string, emit func(
 	}
 }
 
-// render prints the surfaces, newest last, at most tail lines each.
-//
-// It prints a HEADER PER SURFACE even when that surface is empty or broken, and that is
-// load-bearing rather than decoration: the failure this command must not have is looking like it
-// checked everything when one surface was unreadable. Silence about a surface reads as "clean"
-// to every operator who has ever run a log command.
-//
-// The same reasoning governs the all-clear line (empty, e.g. "nothing logged yet"): it is a claim
-// about the MACHINE, and it is only true when every surface was read; with one surface down the
-// honest sentence is narrower, and naming which surface is missing is the difference between a
-// report and a reassurance.
+// render prints the surfaces, newest last, at most tail lines each. It prints a header per
+// surface even when that surface is empty or broken, which is load-bearing rather than
+// decoration: the failure this command must not have is looking like it checked everything when
+// one surface was unreadable, and silence about a surface reads as "clean" to every operator who
+// has ever run a log command. The same reasoning governs the all-clear line (empty, e.g. "nothing
+// logged yet"): it is a claim about the machine, true only when every surface was read; with one
+// surface down the honest sentence is narrower, and naming which surface is missing is the
+// difference between a report and a reassurance.
 func render(stdout, stderr io.Writer, surfaces []surface, tail int, empty string) int {
 	ok, total := 0, 0
 	var missing []string
@@ -360,20 +353,17 @@ func filterLines(lines []string, filter string) []string {
 // configValue reads one key out of the node's config file (/opt/briard/config.env), the format
 // `briard-agent install` and `briard config set` write and agent/host's loadConfigFile reads:
 // KEY=value one per line, blank lines and `#` comments ignored, whitespace either side of the `=`
-// trimmed, the first occurrence of a key wins, and nothing else parsed.
-//
-// A SECOND READER OF THE SAME FORMAT, and the duplication is not left to trust:
+// trimmed, the first occurrence of a key wins, and nothing else parsed. It is a second reader of
+// the same format, and the duplication is not left to trust:
 // TestConfigValueFollowsTheFormatsFourRules writes the rules down as a table. Keep the two
 // readers in step if either changes.
 //
-// ⚠️ IT REPORTS THREE STATES, NOT TWO, because the agent's own reader does (its `declared`):
-// a key that is ABSENT takes the shipped default, a key set to EMPTY is a decision to switch the
-// thing off, and those must not collapse into one answer. config.env carries GUEST_SERIAL only
-// when the install was given one, so a reader that read absent as "" would tell every ordinary
-// node it captured no console.
-//
-// An unreadable or missing file is ("", false) -- absent, so the caller takes the default, which is
-// what the agent running on that node would have done too.
+// ⚠️ It reports three states, not two, because the agent's own reader does (its `declared`): a key
+// that is absent takes the shipped default, a key set to empty is a decision to switch the thing
+// off, and those must not collapse into one answer. config.env carries GUEST_SERIAL only when the
+// install was given one, so a reader that read absent as "" would tell every ordinary node it
+// captured no console. An unreadable or missing file is ("", false) -- absent, so the caller
+// takes the default, which is what the agent running on that node would have done too.
 func configValue(path, key string) (string, bool) {
 	f, err := os.Open(path)
 	if err != nil {

@@ -12,7 +12,7 @@ import (
 )
 
 // Entry is one Home Assistant config entry's identity and setup state — the triple the S1
-// readiness gate is fed. It is also the WIRE shape of the app.home-assistant.readiness verb,
+// readiness gate is fed. It is also the wire shape of the app.home-assistant.readiness verb,
 // which is why it carries HA's own JSON names: the guest decodes HA's answer straight into it and
 // the host decodes the verb's answer into the same type, so both hops share one spelling. The
 // host maps it onto the gate's own entrygate.Entry (agent/host/readiness.go).
@@ -33,17 +33,15 @@ type Entry struct {
 // hung would eat the budget the install needs to finish or revert.
 var client = &http.Client{Timeout: 10 * time.Second}
 
-// Readiness samples Home Assistant's per-config-entry setup states, from inside the guest.
+// Readiness samples Home Assistant's per-config-entry setup states, from inside the guest because
+// both halves are there: the token is on this node's tmpfs, and Home Assistant listens on the
+// guest's loopback. Asking the guest is also what the liveness floor already does (`app.health`),
+// for the same reason: on the macvtap substrate the host cannot reach the guest's addresses at all.
 //
-// IN THE GUEST BECAUSE BOTH HALVES ARE THERE: the token is on this node's tmpfs, and Home
-// Assistant listens on the guest's loopback. Asking the guest is also what the liveness floor
-// already does (`app.health`), and for the same reason — on the macvtap substrate the host
-// cannot reach the guest's addresses at all.
-//
-// THIS IS NOT A DECISION, and the split matters (logic lives on the host by default). What lives here
-// is how you TALK to Home Assistant: where the token is, that a refresh token has to be exchanged
-// for an access token first, which path lists config entries, and which three fields of the
-// answer mean anything. What the samples MEAN — which regressions are the upgrade's fault, how
+// This is not a decision, and the split matters (logic lives on the host by default). What lives
+// here is how to talk to Home Assistant: where the token is, that a refresh token has to be
+// exchanged for an access token first, which path lists config entries, and which three fields of
+// the answer mean anything. What the samples mean — which regressions are the upgrade's fault, how
 // long to let them settle, and whether to roll back — is the host's (agent/host/readiness.go,
 // agent/guest/entrygate).
 //
@@ -59,11 +57,10 @@ func Readiness(ctx context.Context, x Executor, port int) ([]Entry, error) {
 
 // connect is the two steps every use of the control channel starts with: find the token this node
 // minted, and trade it for an access token at the Home Assistant on this guest's loopback. The
-// base URL comes back too, because the port it is built from is the caller's.
-//
-// SHARED BY EVERY USE on purpose — Readiness, Health, Nudge, Hold/Release and SystemAccess. There
-// is one control channel and one way to open it; a second copy of these lines would be a second
-// place for the exchange to drift from what Home Assistant documents.
+// base URL comes back too, because the port it is built from is the caller's. It is shared by
+// every use on purpose (Readiness, Health, Nudge, Hold/Release and SystemAccess): there is one
+// control channel and one way to open it, and a second copy of these lines would be a second place
+// for the exchange to drift from what Home Assistant documents.
 func connect(ctx context.Context, x Executor, port int) (string, string, error) {
 	if port < 1 || port > 65535 {
 		return "", "", fmt.Errorf("hass: port %d out of range: %w", port, errNoChannel)
@@ -88,9 +85,8 @@ func connect(ctx context.Context, x Executor, port int) (string, string, error) 
 }
 
 // exchange trades the long-lived refresh token for a short-lived access token — HA's documented
-// flow, with client_id omitted (a system token has none, and sending one is refused).
-//
-// Per use, never cached: an access token lives 30 minutes, and uses come minutes apart (the
+// flow, with client_id omitted (a system token has none, and sending one is refused). Per use,
+// never cached: an access token lives 30 minutes, and uses come minutes apart (the
 // readiness samples straddle an app restart). Holding one would trade a negligible saving for a
 // class of bug where a caller presents a stale credential.
 func exchange(ctx context.Context, base, token string) (string, error) {
@@ -122,10 +118,10 @@ func exchange(ctx context.Context, base, token string) (string, error) {
 	return out.AccessToken, nil
 }
 
-// entries lists the config entries. An EMPTY list is not an error and must not be treated as one:
+// entries lists the config entries. An empty list is not an error and must not be treated as one:
 // Home Assistant answers its HTTP stack before `default_config` has finished setting entries up,
 // so a sample taken early is legitimately empty — measured, and it is what the differential gate
-// is for. An empty PRE sample simply excludes everything, which is the safe direction.
+// is for. An empty pre sample simply excludes everything, which is the safe direction.
 func entries(ctx context.Context, base, access string) ([]Entry, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/config/config_entries/entry", nil)
 	if err != nil {

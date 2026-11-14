@@ -2,39 +2,37 @@ package cli
 
 // `briard debug shell` — a root shell on the guest's second serial port.
 //
-// UNDOCUMENTED ON PURPOSE. It is dispatched from Main ahead of the `commands` table rather than
-// being a row in it, so it appears in no help, no listing and no completion; `briard help debug`
-// says the command does not exist, which is the honest answer for a verb that is not part of the
+// Undocumented on purpose: it is dispatched from Main ahead of the `commands` table rather than
+// being a row in it, so it appears in no help, no listing and no completion, and `briard help
+// debug` says the command does not exist, the honest answer for a verb that is not part of the
 // product. The way anyone learns it is a support answer that names it.
 //
-// That is a policy, not a boundary, and the difference matters. The gate underneath is QMP,
-// whose socket lives in a 0700 root directory, and a caller who can reach QMP can already reset
-// this VM and dump its RAM. Nothing here withholds a capability from anyone who has that; what
-// it withholds is the SUGGESTION that poking at the guest is a supported way to run the product.
-// The product's answers to "something is wrong" are `alerts`, `logs`, `doctor` and `rescue`.
+// That is a policy, not a boundary, and the difference matters. The gate underneath is QMP, whose
+// socket lives in a 0700 root directory, and a caller who can reach QMP can already reset this VM
+// and dump its RAM. Nothing here withholds a capability from anyone who has that; it withholds
+// the suggestion that poking at the guest is a supported way to run the product, whose answers to
+// "something is wrong" are `alerts`, `logs`, `doctor` and `rescue`. What keeps this safe is not
+// the lock: the guest is a disposable appliance whose OS moves by image swap and which `briard
+// rescue` rebuilds, so whatever an operator edits in there is erased at the next update, and only
+// the replicated data volume survives. A shell here is a window, not a place to keep anything.
 //
-// WHAT KEEPS THIS SAFE IS NOT THE LOCK. The guest is a disposable appliance: its OS
-// moves by image swap and `briard rescue` rebuilds it, so whatever an operator edits in there is
-// erased at the next update, and only the replicated data volume survives. A shell here is a
-// window, not a place to keep anything.
+// Arm and disarm are the agent's, submitted over the admin socket as directive kinds the cloud's
+// down-channel is refused (host.localOnlyKinds). This client keeps only what is inherently the
+// operator's: the terminal, the escape key, and the guarantee that every path out of here
+// disarms. The agent owns the act so that it owns the record -- host.applyDebugConsole logs it to
+// the journal (the agent's log file on Windows), where an interactive process's stderr never
+// could reach (and log/syslog, the way round that, has no Windows build).
 //
-// ARM AND DISARM ARE THE AGENT'S, submitted over the admin socket as directive kinds the
-// cloud's down-channel is refused (host.localOnlyKinds). This client keeps only what is
-// inherently the operator's: the terminal, the escape key, and the guarantee that every path out
-// of here disarms. The agent owns the act so that it owns the RECORD -- host.applyDebugConsole
-// logs it to the journal (the agent's log file on Windows), where an interactive process's
-// stderr never could reach (and log/syslog, the way round that, has no Windows build).
-//
-// What that gate does NOT do is stop a remote root shell: arming publishes a socket inside the
+// What that gate does not do is stop a remote root shell: arming publishes a socket inside the
 // 0700 root QMP directory, which nothing remote can reach and no directive proxies. A cloud able
 // to arm could leave a door open, not walk through one -- walking through needs host root, which
 // is already QMP, which is already this guest's RAM. What the gate says is that the cloud has no
 // business changing local debug state.
 //
-// The trade it costs: with the agent's observe loop wedged, no console (the loop is what takes a
-// local directive, even one that then runs off it). That is deliberate. The
-// user this product is built for should be deterred from operating on an already-degraded node,
-// and anyone equipped to drive QMP by hand is not that user.
+// The trade it costs, deliberately: with the agent's observe loop wedged, no console (the loop is
+// what takes a local directive, even one that then runs off it). The user this product is built
+// for should be deterred from operating on an already-degraded node, and anyone equipped to drive
+// QMP by hand is not that user.
 
 import (
 	"context"
@@ -84,7 +82,7 @@ func runDebugShell(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return 2
 	}
 
-	// ARM. The failures worth naming are the three the operator can act on: no agent (or not
+	// Arm. The failures worth naming are the three the operator can act on: no agent (or not
 	// root -- `submit` says which), no guest running, or a guest launched by an agent too old
 	// to give it a debug port (QEMU refuses to change a chardev it has no record of). There is
 	// no -qmp flag: the agent derives the console path from its own monitor, which keeps the
@@ -102,7 +100,7 @@ func runDebugShell(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	console := o.Detail
 
-	// DISARM ON EVERY PATH OUT, including the signals a terminal delivers, because an armed node
+	// Disarm on every path out, including the signals a terminal delivers, because an armed node
 	// is a node left open. The one hole is SIGKILL, which nothing can close from in here -- the
 	// socket's existence is what makes that state visible afterwards.
 	disarmed := false
@@ -111,15 +109,14 @@ func runDebugShell(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return
 		}
 		disarmed = true
-		// A FRESH CONTEXT, NOT ctx: the usual reason we are unwinding is that ctx was cancelled,
+		// A fresh context, not ctx: the usual reason we are unwinding is that ctx was cancelled,
 		// and cleanup that inherits the cancellation is cleanup that does not run.
 		dctx, dcancel := context.WithTimeout(context.Background(), disarmTimeout)
 		defer dcancel()
 		// The terminal is already restored by the time this runs (restore is deferred later,
 		// so it unwinds first), which is why these are plain newlines and not raw-mode CRLF.
-		//
-		// Loud on stderr for BOTH failure shapes -- the submit never landing, and the agent
-		// reporting it could not disarm. The operator is the only one who can fix a node that
+		// Loud on stderr for both failure shapes -- the submit never landing, and the agent
+		// reporting it could not disarm: the operator is the only one who can fix a node that
 		// stayed open and is about to walk away from the terminal; the agent has already written
 		// its own side to the journal.
 		left := func(reason string) {
@@ -150,7 +147,7 @@ func runDebugShell(ctx context.Context, args []string, stdout, stderr io.Writer)
 
 	fmt.Fprint(stdout, banner)
 
-	// RAW MODE VIA stty, not a terminal library, to keep this from adding a module dependency
+	// Raw mode via stty, not a terminal library, to keep this from adding a module dependency
 	// for one verb nobody is meant to use. Degrading to line mode is survivable (doubled echo,
 	// no Ctrl-C to the guest, no tab completion) where refusing to open at all is not, so a
 	// missing or unhappy stty is a warning and not an error.

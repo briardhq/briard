@@ -1,55 +1,49 @@
 // Package hass is the one place Home Assistant's operational knowledge lives.
 //
-// A curated catalog is the licence to encode app-specific knowledge in the product, and the
-// first thing Briard has to know about Home Assistant is how to TALK to it: HA's config-entry
-// states are what the S1 health gate reads to tell "the container answers" from "half the
-// house's integrations are dead", and reading them needs an authenticated API.
+// A curated catalog is the licence to encode app-specific knowledge in the product, and the first
+// thing Briard must know about Home Assistant is how to talk to it: the S1 health gate reads HA's
+// config-entry states to tell "the container answers" from "half the house's integrations are
+// dead", and reading them needs an authenticated API.
 //
-// So this package delivers two capabilities, split by what each can only do from where it
-// stands. The first is an authenticated HA API available to the guest from the moment HA
-// starts, for consumers OUTSIDE Home Assistant. The second is briard's own integration, running
-// INSIDE it: everything that wants a running Home Assistant rather than a stopped one (offering
-// the node's broker, the apps' update entities, Repairs issues for the node's alerts, the owner's
-// login, the recorder's lock) belongs in a process that already holds `hass`, not in a
-// stopped-window script talking HTTP to a process it is inside of.
+// The package delivers two capabilities, split by what each can do only from where it stands: an
+// authenticated HA API, available to the guest from the moment HA starts, for consumers outside
+// Home Assistant; and briard's own integration, running inside it, for everything that wants a
+// running HA rather than a stopped one (offering the node's broker, the apps' update entities,
+// Repairs issues for the node's alerts, the owner's login, the recorder's lock), which belongs in
+// a process that already holds `hass`, not in a stopped-window script talking HTTP to a process
+// it is inside of. The two share no credential: the integration needs no token to act in-process,
+// so it never mints the control token; the mint stays where only it can be done, and the token
+// serves the outside.
 //
-// The two share no credential. The integration never mints the control token: it needs no token
-// to act in-process, so the mint stays where only it can be done, and the token serves the
-// outside.
+// The mechanism, and why each part is where it is:
 //
-// THE MECHANISM, and why every part of it is where it is:
+//   - The token value is ours, chosen first and written to tmpfs at converge, so consumers know
+//     it from t=0: no return channel, no writable mount, no startup race. HA validates a refresh
+//     token by looking the string up in its store, so a chosen value is as good as a generated
+//     one.
 //
-//   - The token VALUE is ours and is chosen first, written to tmpfs at converge. So
-//     consumers know it from t=0: no return channel, no writable mount, no startup
-//     race. HA validates a refresh token by looking the string up in its store, so a
-//     chosen value is as good as a generated one.
+//   - The mint happens in a stopped window because no other kind exists. HA's auth store is
+//     memory-cached: a write under a running HA is invisible to it until restart and is clobbered
+//     by its next save, and every live route that could issue a token needs credentials already
+//     held. A live mint from outside is not a compromise we refused — it does not exist.
 //
-//   - The mint happens in a STOPPED window, because no other kind exists. HA's auth
-//     store is memory-cached: a write under a running HA is invisible to it until
-//     restart and is clobbered by its next save, and every live route that could issue
-//     a token needs credentials already held. A live mint from outside is not a
-//     compromise we refused — it does not exist.
+//   - The stopped window is s6's `run` script, which the image re-executes at every s6 service
+//     start: container start, every exit-100 restart (`homeassistant.restart`), and the boot
+//     after a config restore. That last is why this hook and no other: a restore wipes /config,
+//     `.storage/auth` included, and is itself an exit-100 restart, so the mint after it is the
+//     one that sticks, with no extra restart and no marker to race against.
 //
-//   - The stopped window is s6's `run` script, which the image re-executes at EVERY
-//     s6 service start: container start, every exit-100 restart (`homeassistant.restart`),
-//     and the boot after a config restore. That last one is why this hook and no other:
-//     a restore WIPES /config, `.storage/auth` included, and the restore is itself an
-//     exit-100 restart — so the mint that lands after it is the one that sticks, with
-//     no extra restart and no marker to race against.
+//   - We shadow that script rather than patch it, handing over to the image's own `run`,
+//     extracted byte-for-byte from the digest-pinned image. Relaying HA's bootstrap instead of
+//     authoring a copy keeps an upstream layout change from becoming a correlated, fleet-wide
+//     "HA never starts"; it becomes a blessed-image check that fails in CI
+//     (nixosTest/hass-payload.nix) before the image can enter the catalog.
 //
-//   - We SHADOW that script rather than patch it, and the thing we hand over to is the
-//     image's own `run`, extracted byte-for-byte from the digest-pinned image. Relaying
-//     HA's bootstrap instead of authoring a copy of it is what keeps an upstream layout
-//     change from becoming a correlated, fleet-wide "HA never starts". What it becomes
-//     instead is a blessed-image check that fails in CI (nixosTest/hass-payload.nix),
-//     before the image can enter the catalog.
-//
-// Ephemerality is one-sided by HA's model. Our custody is tmpfs-only and the value
-// rotates every guest boot; HA must persist the current token to validate it, so the
-// then-current value rides in HA's own backups. The prune is the answer to that: every
-// start drops every OTHER token on our user, so one resurrected by a restore is revoked
-// as a side effect. Failover needs no secret sync at all — the standby mints its own
-// boot value into the replicated store when it promotes.
+// Ephemerality is one-sided by HA's model. Our custody is tmpfs-only and the value rotates every
+// guest boot; HA must persist the current token to validate it, so the then-current value rides in
+// HA's own backups. Hence the prune: every start drops every other token on our user, so one
+// resurrected by a restore is revoked as a side effect. Failover needs no secret sync at all — the
+// standby mints its own boot value into the replicated store when it promotes.
 package hass
 
 import (
@@ -74,15 +68,14 @@ import (
 // knowledge encoded here app-specific by construction rather than by discipline.
 const Name = "home-assistant"
 
-// Dir is where the control channel's files live: node-local, tmpfs, re-derived by
-// every converge. Nothing here is replicated and nothing survives a guest reboot —
-// deliberately, since the token rotates per boot and the extracted script must match
-// the digest THIS node is running.
+// Dir is where the control channel's files live: node-local, tmpfs, re-derived by every converge.
+// Nothing here is replicated and nothing survives a guest reboot — deliberately, since the token
+// rotates per boot and the extracted script must match the digest this node is running.
 //
-// ⚠️ NAMED FOR THE APP, not for this package. The agent resolves an inbound caller by taking a
-// DIRECTORY NAME in the run directory as the app, so a directory named after the Go package
-// would resolve to an app that does not exist. TestAppDirMatchesTheRegistry (agent/apps)
-// asserts the two agree.
+// ⚠️ Named for the app, not this package: the agent resolves an inbound caller by taking a
+// directory name in the run directory as the app, so a directory named after the Go package would
+// resolve to an app that does not exist. TestAppDirMatchesTheRegistry (agent/apps) asserts the
+// two agree.
 const Dir = "/run/briard/home-assistant"
 
 // TokenPath is the refresh token, 0600 on tmpfs. It is the guest-side half of the
@@ -122,7 +115,7 @@ const planterPath = Dir + "/plant.py"
 // Go because only the container can see /config.
 const stubDir = Dir + "/stub"
 
-// implDir is where the integration's implementation is mounted, read-only, OUTSIDE /config —
+// implDir is where the integration's implementation is mounted, read-only, outside /config —
 // which is the whole placement decision: the restore wipe never sees it, no backup
 // can carry it, and the stub in /config stays inert wherever it is restored. The stub names
 // this same path; the two agree on a path and a module name and on nothing else.
@@ -242,18 +235,15 @@ type Executor interface {
 // Volumes returns the extra quadlet Volume= values one container needs, which for
 // every app but Home Assistant is none.
 //
-// The manifest schema cannot express a host bind, and that is not an oversight to work
-// around: capability comes by omission there, so that a catalog entry cannot ask for
-// the host. These binds are the product's own knowledge about one app, applied
-// on the node — which is exactly where the readiness registry puts app-specific
-// knowledge too. Render stays a pure function of the manifest: the same manifest
-// renders the same units on every node.
-//
-// The app's own directory (read-only at /briard) is not here: it is the product's general
-// shape, so agent/apps adds it for every app that has one. What is here IS Home Assistant
-// knowledge: our s6 wrapper shadow-mounted over the image's own `run`, at a path only this image
-// has, and the node's alerts for the integration. Both sources live outside /config, so HA's
-// restore wipe never sees them.
+// The manifest schema cannot express a host bind, and that is not an oversight to work around:
+// capability comes by omission there, so a catalog entry cannot ask for the host. These binds are
+// the product's own knowledge about one app, applied on the node — exactly where the readiness
+// registry puts app-specific knowledge too — and Render stays a pure function of the manifest:
+// the same manifest renders the same units on every node. The app's own directory (read-only at
+// /briard) is not here: it is the product's general shape, so agent/apps adds it for every app
+// that has one. What is here is Home Assistant knowledge: our s6 wrapper shadow-mounted over the
+// image's own `run`, at a path only this image has, and the node's alerts for the integration.
+// Both sources live outside /config, so HA's restore wipe never sees them.
 func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	if m.Name != Name || !c.Primary {
 		return nil
@@ -267,49 +257,45 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 }
 
 // RestoreMarker is the file Home Assistant writes inside its config directory to say that a
-// restore of one of ITS OWN backups is in flight.
+// restore of one of its own backups is in flight. The household asks a live HA for the restore;
+// HA writes this and exits 100 to be restarted into it, and the restore unlinks the marker in a
+// `finally` right after parsing and before the wipe (its own "prevent a boot loop" step). So it
+// exists only across the restart in between — the window the s6 wrapper's notification lands in,
+// which is why that notification is the only thing in the system that can see one.
 //
-// The household asks a live HA for the restore; HA writes this and exits 100 to be restarted into
-// it. The restore then unlinks the marker in a `finally` right after parsing and BEFORE the wipe
-// (its own "prevent a boot loop" step), so it exists only across the restart in between — which is
-// the window the s6 wrapper's notification lands in, and the reason that notification is the only
-// thing in the system that can see one.
-//
-// ⚠️ IT IS ALSO A LANDMINE INSIDE A RING MEMBER. A member taken while it is present carries it,
-// and HA's wipe deliberately keeps `backups/` — so restoring that member naively would hand HA
-// back both the request and the tar, and the household would land straight back where they were
-// trying to leave. Members are swept of it as they are materialised: apps.RestoreMarkers
-// names it, and the guest's data.replace removes it from the staged copy.
+// ⚠️ It is also a landmine inside a ring member. A member taken while it is present carries it,
+// and HA's wipe deliberately keeps `backups/`, so restoring that member naively would hand HA back
+// both the request and the tar, and the household would land straight back where they were trying
+// to leave. Members are swept of it as they are materialised: apps.RestoreMarkers names it, and
+// the guest's data.replace removes it from the staged copy.
 const RestoreMarker = ".HA_RESTORE"
 
 // Prepare materialises the control channel on this node, and is a no-op for every
 // other app.
 //
-// IT RUNS AT CONVERGE, not at install, and the difference is a node that was down when
-// the install ran. Converge is what a promoting survivor executes against the volume;
-// an install-time-only step would leave that node mounting a wrapper
-// that does not exist. /run is tmpfs, so this is also the only placement that survives
-// a guest reboot. One code path covers install, upgrade, reboot and cold promotion.
-//
-// It must run AFTER the image is warm (the extraction reads it) and BEFORE the
+// It runs at converge, not at install, for the sake of a node that was down when the install ran:
+// converge is what a promoting survivor executes against the volume, and an install-time-only step
+// would leave that node mounting a wrapper that does not exist. /run is tmpfs, so this is also the
+// only placement that survives a guest reboot; one code path covers install, upgrade, reboot and
+// cold promotion. It must run after the image is warm (the extraction reads it) and before the
 // containers start (the mounts must resolve).
 //
-// EVERY WRITE IS A RENAME over a possibly-live bind mount source. A truncate-in-place
-// would be visible inside a running container mid-write — including on the script s6
-// is about to exec. A rename swaps the directory entry, so a container that is already
-// running keeps the inode it started with and the next start gets the new one.
+// Every write is a rename over a possibly-live bind mount source: a truncate-in-place would be
+// visible inside a running container mid-write, including on the script s6 is about to exec,
+// while a rename swaps the directory entry, so an already-running container keeps the inode it
+// started with and the next start gets the new one.
 //
-// FAILURE MUST NOT BE SURVIVED SILENTLY. The rendered units name bind sources this writes, and
-// (measured on runc, the OCI bind semantics podman drives) a missing bind source is CREATED as a
+// Failure must not be survived silently. The rendered units name bind sources this writes, and
+// (measured on runc, the OCI bind semantics podman drives) a missing bind source is created as a
 // root-owned directory, after which the container refuses to start — "not a directory: Are you
-// trying to mount a directory onto a file" — and the path is poisoned for the next attempt,
-// since a file has to go where a directory now sits. So a caller that ignores this error and
-// starts the container anyway gets an app that can never run again. Converge declines to start
-// THIS app and lets the others promote (argued at its call site in agent/guestagent).
+// trying to mount a directory onto a file" — and the path is poisoned for the next attempt, since
+// a file has to go where a directory now sits: a caller that ignores this error and starts the
+// container anyway gets an app that can never run again. Converge declines to start this app and
+// lets the others promote (argued at its call site in agent/guestagent).
 //
-// mqttPort is the broker's port, passed in by the registry (agent/apps) because it belongs
-// to the OTHER app. Zero means "this build knows of no broker", and the integration is then
-// materialised with nothing to dial -- it still loads, and its own socket check is what stops it.
+// mqttPort is the broker's port, passed in by the registry (agent/apps) because it belongs to the
+// other app. Zero means "this build knows of no broker": the integration is then materialised with
+// nothing to dial -- it still loads, and its own socket check is what stops it.
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest, mqttPort int) error {
 	if m.Name != Name {
 		return nil
@@ -342,12 +328,10 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest, mqttPort int)
 	return extractOriginal(ctx, x, m.Primary().Image)
 }
 
-// ensureToken mints this boot's value once and keeps it.
-//
-// ENSURE, NOT ROTATE: converge runs on every install, promotion and guest boot, and a value
-// that changed under a container that is already running would break every consumer
-// until something restarted HA. Rotation comes from tmpfs instead — a guest reboot
-// clears /run, and nothing is running then either.
+// ensureToken mints this boot's value once and keeps it. Ensure, not rotate: converge runs on
+// every install, promotion and guest boot, and a value changed under an already-running container
+// would break every consumer until something restarted HA. Rotation comes from tmpfs instead — a
+// guest reboot clears /run, and nothing is running then either.
 func ensureToken(ctx context.Context, x Executor) error {
 	if raw, err := x.ReadFile(TokenPath); err == nil && len(strings.TrimSpace(string(raw))) >= 2*tokenBytes {
 		return nil
@@ -359,11 +343,10 @@ func ensureToken(ctx context.Context, x Executor) error {
 	return write(ctx, x, TokenPath, hex.EncodeToString(buf)+"\n", "0600")
 }
 
-// extractOriginal copies the image's own `run` out of the pinned image, every time.
-//
-// Unconditionally, because the digest is what it must match: an upgrade changes the
-// image and the extracted script has to change with it. The container is created and
-// removed without ever being started, so nothing from the image executes here.
+// extractOriginal copies the image's own `run` out of the pinned image, every time, because the
+// digest is what it must match: an upgrade changes the image and the extracted script has to
+// change with it. The container is created and removed without ever being started, so nothing
+// from the image executes here.
 func extractOriginal(ctx context.Context, x Executor, image string) error {
 	if image == "" {
 		return fmt.Errorf("hass: the manifest names no primary image")
@@ -379,11 +362,11 @@ func extractOriginal(ctx context.Context, x Executor, image string) error {
 	if out, err := x.Run(ctx, "podman", "cp", extractCtr+":"+s6Run, tmp); err != nil {
 		return fmt.Errorf("hass: extract %s: %w: %s%s", s6Run, err, strings.TrimSpace(string(out)), describeLayout(ctx, x))
 	}
-	// WHAT CAME BACK HAS TO BE A SCRIPT. `podman cp` copies a DIRECTORY just as happily as a
-	// file, so a layout change that turned this path into a directory — a native s6-rc service
-	// is a directory holding `run` — would otherwise be mounted over HA's `run` and produce the
-	// same unstartable container as a missing source. ReadFile answers both questions at once:
-	// a directory is an error, and an empty file has a length.
+	// What came back has to be a script: `podman cp` copies a directory as happily as a file, so
+	// a layout change that turned this path into a directory (a native s6-rc service is a
+	// directory holding `run`) would otherwise be mounted over HA's `run`, the same unstartable
+	// container as a missing source. ReadFile answers both questions at once: a directory is an
+	// error, and an empty file has a length.
 	body, err := x.ReadFile(tmp)
 	if err != nil {
 		return fmt.Errorf("hass: extracted %s is not a readable file: %w%s", s6Run, err, describeLayout(ctx, x))
@@ -404,11 +387,11 @@ func extractOriginal(ctx context.Context, x Executor, image string) error {
 // legacy tree (what Home Assistant uses, and what s6-overlay v3 still supports through its
 // s6 legacy-services bundle) and the native s6-rc tree beside it.
 //
-// They are here to DESCRIBE, never to search. Finding the script elsewhere and adapting to it
-// would defeat the point of relaying it at all: the bind path is fixed when the unit is rendered,
-// before this code can look at anything, and an upstream layout change is meant to fail a blessed
-// image in catalog CI rather than be papered over on a household's node. What breadth buys
-// is a diagnosis — the failure names the layout the image actually has instead of an errno.
+// They are here to describe, never to search: adapting to the script found elsewhere would defeat
+// relaying it at all. The bind path is fixed when the unit is rendered, before this code can look
+// at anything, and an upstream layout change is meant to fail a blessed image in catalog CI rather
+// than be papered over on a household's node. What breadth buys is a diagnosis: the failure names
+// the layout the image actually has instead of an errno.
 var serviceRoots = []string{"/etc/services.d", "/etc/s6-overlay/s6-rc.d"}
 
 // describeLayout reports what service definitions the staged image carries, for the error message
@@ -456,15 +439,13 @@ func write(ctx context.Context, x Executor, path, content, mode string) error {
 
 // writeIntegration materialises briard's own integration: the stub the planter will copy into
 // /config, and the implementation it delegates to, staged outside /config where no restore and
-// no backup can reach it.
+// no backup can reach it. Every placeholder is substituted rather than restated in the
+// integration: each value has one definition elsewhere (the tokens' comments above say where).
 //
-// Every placeholder is substituted rather than restated in the integration: each value has one
-// definition elsewhere (the tokens' comments above say where).
-//
-// THE SUBSTITUTION IS CHECKED BOTH WAYS, and the before-check is the half that bites: a Replace
-// of a token that is not there is a silent no-op, so a check only AFTER it catches a SECOND
-// placeholder and never a MISSING one -- and a missing one installs an integration dialling a
-// port named "@MQTT_PORT@", failing silently at every Home Assistant start in the fleet.
+// The substitution is checked both ways, and the before-check is the half that bites: a Replace
+// of an absent token is a silent no-op, so a check only after it catches a second placeholder and
+// never a missing one -- and a missing one installs an integration dialling a port named
+// "@MQTT_PORT@", failing silently at every Home Assistant start in the fleet.
 func writeIntegration(ctx context.Context, x Executor, mqttPort int) error {
 	src := implSource
 	for _, t := range [][2]string{

@@ -11,14 +11,13 @@ import (
 	"unicode/utf8"
 )
 
-// CHANGE DETECTION: what a household did to Home Assistant between two samples, read
-// off the two members rather than watched live.
+// Change detection: what a household did to Home Assistant between two samples, read off the two
+// members rather than watched live.
 //
-// A CLOSED LIST OF SIGNALS, never "the bytes differ". Home Assistant writes its history and entity
-// state continuously, so every two samples differ; a detector that said so would put a row on
-// every sample. These three are the ones a household changes on purpose, and the list stays
-// three: quiet time is the safety net for everything else, and an addition needs an argument of
-// its own.
+// A closed list of signals, never "the bytes differ": Home Assistant writes its history and entity
+// state continuously, so every two samples differ, and a detector that said so would put a row on
+// every sample. These three are the ones a household changes on purpose, and the list stays three:
+// quiet time is the safety net for everything else, and an addition needs an argument of its own.
 //
 //   - custom_components/*/manifest.json — a custom integration installed, removed or updated,
 //     which covers HACS and manual drops without knowing about HACS.
@@ -26,7 +25,7 @@ import (
 //     and packages/.
 //   - the domains in .storage/core.config_entries — an integration added or removed in the UI.
 //
-// And one the household does NOT do, which is why it is a reset and not a change (Resets):
+// And one the household does not do, which is why it is a reset and not a change (Resets):
 //
 //   - a `*.corrupt.*` file new since the previous sample. Home Assistant found a store or its
 //     database undecodable, renamed it aside and started empty — silent data loss that no health
@@ -80,11 +79,10 @@ func Signals(ctx context.Context, x Executor, dir string) (map[string][]byte, er
 	return out, nil
 }
 
-// Corrupt names the stores and databases Home Assistant has set aside in dir, relative to it.
-//
-// BY NAME ONLY: the file set aside may be the recorder database, and reading it would cost a copy
-// of the household's history for a fact the listing already has. Home Assistant puts them in two
-// places — the stores in .storage/, the database beside it. dir may be the LIVE config directory:
+// Corrupt names the stores and databases Home Assistant has set aside in dir, relative to it, by
+// name only: the file set aside may be the recorder database, and reading it would cost a copy of
+// the household's history for a fact the listing already has. Home Assistant puts them in two
+// places — the stores in .storage/, the database beside it. dir may be the live config directory:
 // a boot's renames are read after that boot, before any sample holds them.
 func Corrupt(ctx context.Context, x Executor, dir string) []string {
 	var out []string
@@ -118,10 +116,9 @@ var resetWhat = map[string]string{
 }
 
 // Resets names what Home Assistant reset between two samples' signals — a store or its database it
-// found undecodable and started empty — as the renames' paths, sorted. Pure, like Detect.
-//
-// NEW SINCE THE PREVIOUS SAMPLE, by the full name: the rename carries a time, so an old one that
-// is still lying around is not found again, and a second reset of the same store is.
+// found undecodable and started empty — as the renames' paths, sorted. Pure, like Detect. New
+// since the previous sample, by the full name: the rename carries a time, so an old one still
+// lying around is not found again, and a second reset of the same store is.
 func Resets(prev, next map[string][]byte) []string {
 	var out []string
 	for _, rel := range sortedKeys(next) {
@@ -162,11 +159,11 @@ func ResetPhrase(rels []string) string {
 // Detect names what changed between two samples' signals, as phrases a household reads ("Added
 // the Hue integration"), or nothing. Pure: the reading is Signals'.
 //
-// running says the later sample was taken while Home Assistant RAN. A custom integration updated
+// running says the later sample was taken while Home Assistant ran: a custom integration updated
 // or removed on disk keeps its loaded code running until Home Assistant restarts, and the phrase
 // says so. An install says nothing: Home Assistant's Marketplace loads a new integration as soon
-// as it is installed, and one that is not loaded yet has no running code to differ from. A sample
-// at a start is taken just before anything loads.
+// as it is installed, and one not loaded yet has no running code to differ from. A sample at a
+// start is taken just before anything loads.
 func Detect(prev, next map[string][]byte, running bool) []string {
 	var out []string
 	later := ""
@@ -330,7 +327,7 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// clean makes text Home Assistant wrote fit for a history row. It is WRITTEN BY THE WORKLOAD — a
+// clean makes text Home Assistant wrote fit for a history row. It is written by the workload — a
 // custom integration names itself, a config entry is titled by whoever set it up — and it ends up
 // in a terminal (`briard app history`), so a control character in it is an escape sequence in
 // somebody's shell. Unprintables go and the length is capped, as backupName does for HA's marker.

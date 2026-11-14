@@ -2,7 +2,7 @@
 //
 // Two halves, and the split is the point. The host half (agent/reportcard, AssessLive) reads what
 // this machine can see by itself, touching no socket, the way `alerts` and `logs` do, because the
-// agent being DOWN is when someone most needs an answer. The agent half is a local-only
+// agent being down is when someone most needs an answer. The agent half is a local-only
 // directive (agent/host, doctor.go) for what only the agent can see: the network it built, the
 // guest behind the channel it holds, and what that guest says. An agent that cannot answer is a
 // finding of its own, printed with the rest -- never a reason to print nothing.
@@ -54,7 +54,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 }
 
 // agentChecks turns the agent's answer, or its absence, into checks. unit is systemd's view of
-// briard-agent.service, which is what says WHY the socket did not answer.
+// briard-agent.service, which is what says why the socket did not answer.
 func agentChecks(o api.DirectiveOutcome, err error, unit string) []reportcard.Check {
 	if err != nil {
 		return []reportcard.Check{{Name: "agent", Status: reportcard.Refuse,
