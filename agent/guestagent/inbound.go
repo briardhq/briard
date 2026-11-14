@@ -37,7 +37,7 @@ import (
 // ⚠️ THE CALLER IS UNTRUSTED, and this is the rule the whole design hangs off. The socket is
 // bind-mounted into the app's container, so everything running as that app can reach it —
 // for Home Assistant that includes every custom component the household ever installed from HACS.
-// Before this channel a compromised Home Assistant could not reach the guest agent at all. So:
+// Without this channel a compromised Home Assistant could not reach the guest agent at all. So:
 //
 //   - THE CALLER DOES NOT NAME ITSELF. It presents a TOKEN minted per app at converge and
 //     mounted read-only into that app's container alone, and the agent maps that back to a
@@ -57,15 +57,14 @@ import (
 // ONE REQUEST, ONE RESPONSE, THEN THE CONNECTION IS DONE. No session and no state carried
 // between calls: every answer is derived from the ring on disk and the manifest on the volume.
 //
-// ⚠️ THE FIRST BUILD GAVE EACH APP ITS OWN SOCKET, and the token is what replaced it
-// (2026-09-22, the owner's call). Per-app sockets made identity a property of the transport,
-// which is genuinely stronger — but they also made the LISTENER SET a function of the app
-// list, and the only thing that knows that list is converge, which runs in two processes (the
-// host's verb and drbd-reactor's one-shot). That forced systemd to own the binds: template units,
-// a converge step to start instances, socket activation, fd inheritance, an idle-exit handler —
-// and it put the logic in a short-lived process while everything that logic reasons about lives
-// in the long-running agent. A great deal of machinery downstream of one decision, buying a
-// property a per-app secret already provides.
+// ⚠️ ONE SOCKET AND A PER-APP TOKEN, NOT A SOCKET PER APP. Per-app sockets would make identity a
+// property of the transport, which is genuinely stronger — but they also make the LISTENER SET a
+// function of the app list, and the only thing that knows that list is converge, which runs in
+// two processes (the host's app.converge verb and briard-apps' one-shot). That forces systemd to
+// own the binds — template units, a converge step to start instances, socket activation, fd
+// inheritance, an idle-exit handler — and puts the logic in a short-lived process while
+// everything it reasons about lives in the long-running agent: a great deal of machinery to buy
+// a property a per-app secret already provides (ListenInbound).
 
 // InboundVerb is a request this channel accepts. The set is closed and deliberately tiny; read
 // the trust rules above before adding to it.
@@ -154,6 +153,7 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 // did not. It is stateless by construction: everything it decides, it decides from the ring on
 // disk and the manifest on the volume, so a handler process that has never run before reaches the
 // same answer as one that has.
+//
 // containerStart says this is the CONTAINER's own start (the rendered unit's pre-start) rather than
 // a restart inside a container that stayed up -- the only caller that may read the clean-stop
 // marker, since the marker is a claim about the last container stop.
@@ -223,9 +223,10 @@ func startingMember(ctx context.Context, x Executor, app string, containerStart 
 var ringMu sync.Mutex
 
 // recordMember is what every take does once its member exists: evaluate it, add any
-// reasons that finds to the member they land on, let its app hold it, and prune. One function for the three ways a
-// member is taken (a start, the host's data.member, the quiesced clock sample), so the history
-// cannot depend on which door a sample came through.
+// reasons that finds to the member they land on, let its app hold it, and prune. One function for
+// every way a member is taken (a start, the host's data.member, the quiesced clock sample, the
+// recorder restore's undo point), so the history cannot depend on which door a sample came
+// through.
 //
 // A START IS NOT EVALUATED HERE: what its boot reveals is part of its evaluation, and the pre-start
 // hook cannot wait for a boot. It is written pending, replaces the start still pending before it,
@@ -729,19 +730,15 @@ func backupName(body []byte) string {
 
 // takeSnapshot makes one ring member: the read-only subvolume and the sidecar beside it.
 //
-// REFUSE A COLLISION; do not resolve it. This used to DELETE an existing destination first, and
-// that was right for exactly as long as the name was fixed: one `<app>-preupgrade` per app
-// meant the second upgrade found the first one's snapshot sitting there, and `btrfs subvolume
-// snapshot` given an existing directory creates the new snapshot INSIDE it -- which on a read-only
-// snapshot fails with "Read-only file system". Measured on a soak run 2026-08-28: every upgrade
-// after the first failed, the fleet stopped converging, and the error named the filesystem rather
-// than the collision it actually was.
+// REFUSE A COLLISION; do not resolve it. Members are a series (quadlet.SnapshotMember), distinct
+// by construction, so nothing legitimately supersedes anything.
 //
-// ⚠️ THAT DELETE IS FATAL TO A RING. Members are a series now
-// (quadlet.SnapshotMember), so they are distinct by construction and nothing legitimately
-// supersedes anything. A delete-before-take kept here would silently destroy a member whenever two
+// ⚠️ A DELETE-BEFORE-TAKE IS FATAL TO A RING: it would silently destroy a member whenever two
 // landed in the same second -- losing history inside the one function whose job is keeping it.
-// Refusing makes that case loud and leaves the earlier member intact.
+// Taking over an existing one is no better: `btrfs subvolume snapshot` given an existing
+// directory creates the new snapshot INSIDE it, which on a read-only member fails with
+// "Read-only file system" -- an error naming the filesystem rather than the collision. Refusing
+// makes the case loud and leaves the earlier member intact.
 //
 // THE SIDECAR, AND WHY THE MEMBER GOES IF IT CANNOT BE WRITTEN. It cannot live inside the member
 // (read-only from the instant it exists) and so cannot be atomic with it. The history and the
@@ -774,9 +771,9 @@ func takeSnapshot(ctx context.Context, x Executor, run func(string, ...string) e
 
 // ringMembers lists one app's members, oldest first.
 //
-// The NAME IS THE INDEX, which is the whole reason quadlet.SnapshotMember puts a fixed-width UTC
-// stamp in it: this needs no sidecar read, no parsing of btrfs output and no walk in timestamp
-// order. A ring of a thousand members costs one listing and a sort.
+// The NAME IS THE INDEX: quadlet.SnapshotMember puts the app and a fixed-width UTC stamp in it,
+// so this needs no sidecar read and no parsing of btrfs output. A ring of a thousand members
+// costs one listing and a sort.
 func ringMembers(ctx context.Context, x Executor, app string) []string {
 	out, err := x.Run(ctx, "ls", "-1", quadlet.SnapshotsDir)
 	if err != nil {
@@ -800,10 +797,8 @@ func ringMembers(ctx context.Context, x Executor, app string) []string {
 	// ⚠️ SORT ON THE PARSED TIME, NOT THE NAME. A member is `<app>-<trigger>-<stamp>`, so the
 	// TRIGGER sits between the app and the stamp and dominates any string comparison: every
 	// `-clock-` member sorts before every `-start-` one whatever their times, and every reader that
-	// asks for "the newest" or "the one before" would get the alphabet's answer.
-	//
-	// The stamp is fixed-width UTC so that TIMES compare correctly once parsed; that was always
-	// the property, and "lexical order is chronological" was only ever true within one trigger.
+	// asks for "the newest" or "the one before" would get the alphabet's answer. Lexical order is
+	// chronological only within one trigger.
 	sort.Slice(names, func(i, j int) bool {
 		ti, _ := quadlet.SnapshotMemberTime(names[i])
 		tj, _ := quadlet.SnapshotMemberTime(names[j])
@@ -849,23 +844,16 @@ func pruneRing(ctx context.Context, x Executor, app string, now time.Time) {
 
 // ListenInbound binds the one inbound socket and serves it until ctx ends.
 //
-// IT RUNS IN THE LONG-RUNNING AGENT, which is the whole of the correction the token made
-// possible. The first build gave each app its own socket, which made a
-// caller's identity a property of the transport -- and made the listener SET a function of the
-// app list, which only converge knows, which runs in two processes, which forced systemd to
-// own the binds: template units, socket activation, fd inheritance, a per-connection process. All
-// of it downstream of one decision, and it left the logic in a short-lived process while
-// everything that logic reasons about lives here.
-//
-// With a per-app token the identity is carried by the request and the listener needs to know
-// nothing in advance. One socket, bound unconditionally at agent start, whether this node runs
-// zero apps or five.
+// IT RUNS IN THE LONG-RUNNING AGENT, which the per-app token makes possible: the identity is
+// carried by the request, so the listener needs to know nothing in advance (the file header says
+// why not a socket per app). One socket, bound unconditionally at agent start, whether this node
+// runs zero apps or five.
 //
 // ⚠️ THE SOCKET DIES WITH THIS PROCESS, and the agent restarts when the host link drops (the
 // unit's Restart=always, one host connection per run). So a container starting in the seconds
 // around a host reconnect finds nothing listening, gets a refused connection, and starts without
-// a member -- the `|| true` case. That is the cost of moving the listener here, it is bounded and
-// benign, and it is worth stating rather than discovering.
+// a member -- the `|| true` case. That is the cost of the listener living here; it is bounded and
+// benign.
 func ListenInbound(ctx context.Context, x Executor) error {
 	ensureToolsOnPath()
 	if err := os.MkdirAll(apps.RunDir(), 0o755); err != nil {
@@ -991,12 +979,12 @@ func signalProxy(ctx context.Context, x Executor) {
 // ensureToolsOnPath puts the image's tool profile on this process's PATH.
 //
 // ⚠️ THE RING SHELLS OUT TO btrfs, so every entry point that can take a member needs the profile
-// — and not every one of them is started by a unit that sets it. In the product the listener runs
-// inside `run --guest`, whose unit does; the generic pre-start hook is an ExecStartPre on a unit
-// the RENDERER writes, which deliberately carries no profile (agent/quadlet); and an agent-less
-// rig starts the listener on its own. Measured by the third of those, on L0 2026-09-22:
-// "inbound home-assistant: exec: \"btrfs\": executable file not found in $PATH" — the channel
-// worked end to end, the token resolved, and the take failed on a missing tool.
+// — and not every one of them is started by a unit that provides it. In the product the listener
+// runs inside `run --guest`, whose unit carries btrfs on its PATH; the generic pre-start hook is an
+// ExecStartPre on a unit the RENDERER writes, which deliberately carries no profile
+// (agent/quadlet); and an agent-less rig starts the listener on its own. Without this the channel
+// works end to end, the token resolves, and the take fails with `exec: "btrfs": executable file
+// not found in $PATH`.
 //
 // So the code that needs the tools puts them there, rather than every caller remembering to.
 // Prepended, never replacing: a caller that already set a good PATH keeps it.

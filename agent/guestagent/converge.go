@@ -20,18 +20,17 @@ import (
 
 // Converge-at-promotion: a node that takes over makes itself match the VOLUME.
 //
-// THE PROBLEM IT SOLVES, measured on a real fleet 2026-08-27: an install renders and chains on
-// the node that ran it, and a peer that was Secondary at the time (or absent, or joined later)
-// promoted onto whatever it had last rendered — nothing. The survivor served the zero-app
-// landing page and reported healthy, because the reverse proxy answers its own /healthz. So what a
-// node was TOLD decided what the household got after a failover.
+// THE PROBLEM IT SOLVES: an install renders on the node that ran it, so without this a peer that
+// was Secondary at the time (or absent, or joined later) promotes onto whatever it last rendered
+// — nothing — and serves the zero-app landing page while reporting healthy, because the reverse
+// proxy answers its own /healthz. What a node was TOLD would decide what the household gets after
+// a failover.
 //
 // THE SHAPE, and the chicken-and-egg it has to solve. The promoter chain is what drbd-reactor
-// promotes WITH, but the volume is only readable AFTER promotion. So the chain is STATIC —
-// `briard-primary-storage -> briard-apps -> briard-vip` on every data node — and `briard-apps` is
-// the unit that, once the mount exists, reads the manifests, renders, warms and starts them.
-// A constant chain is what made converge-at-promotion possible for the deleted payload slot;
-// generalising it is what makes it possible for N runtime-installed apps.
+// promotes WITH, but the volume is only readable AFTER promotion. So the chain is STATIC — the
+// same members on every data node (shared/chain.Members) — and `briard-apps` is the member that,
+// once the mount exists, reads the manifests, renders, warms and starts them. The app units
+// themselves are not chain members.
 //
 // The manifests are TRUSTED here, and the signature is not re-checked. Identity is the host's:
 // it fetched the manifest from the catalog, verified it against the release keyring, and wrote
@@ -45,27 +44,24 @@ import (
 // unitsFile records the ordered units converge started, so ConvergeStop can stop exactly those.
 // /run (tmpfs), re-derived by every converge, therefore immune to the durable-write rule.
 //
-// Recording them beats re-deriving them at stop time: ExecStop runs while the volume is still
-// mounted TODAY (drbd-reactor unwinds the chain in reverse, so briard-primary-storage goes last), but a stop
-// that depends on reading the volume would fail exactly when the volume is what went wrong.
+// Recording them beats re-deriving them at stop time: ExecStop does run while the volume is
+// still mounted (drbd-reactor unwinds the chain in reverse, so briard-primary-storage goes last),
+// but a stop that depends on reading the volume would fail exactly when the volume is what went
+// wrong.
 const unitsFile = "/run/briard/apps.units"
 
 // startedFile records what converge last STARTED, one `<unit source> <sha256>` line per file.
 //
-// WHY NOT COMPARE THE FILES ON DISK, which is what this replaced and what looked obviously right:
-// the unit sources are in /run and converge writes them, so "differs from disk" reads like
-// "differs from what is running". It is not, because converge is not the only writer -- an
-// INSTALL renders the new units through app.render before asking the node to converge. By the
-// time converge looked, disk already held the new bytes, every file compared equal, nothing was
-// bounced, and `systemctl start` on an already-active unit is a no-op. The upgrade therefore left
-// the OLD container serving while the volume, the node-local cache and the report all named the
-// new version -- and the install's health gate passed, because the old container was answering.
-// Measured on a soak run 2026-08-28: a deliberately-broken version installed "healthy" in three
-// seconds.
+// ⚠️ COMPARING AGAINST THE FILES ON DISK LOOKS RIGHT AND IS WRONG: converge is not their only
+// writer -- an INSTALL renders the new units through app.render before asking the node to
+// converge. Disk would already hold the new bytes, every file would compare equal, nothing would
+// be bounced, and `systemctl start` on an already-active unit is a no-op: the OLD container keeps
+// serving while the volume, the node-local cache and the report all name the new version, and the
+// install's health gate passes because the old container answers. A deliberately-broken version
+// installed "healthy" in three seconds that way.
 //
-// So converge remembers what IT started, rather than inferring it from bytes anyone may have
-// written. /run is tmpfs, so a guest reboot loses the record and everything counts as changed --
-// which is correct: nothing is running either.
+// So converge remembers what IT started. /run is tmpfs, so a guest reboot loses the record and
+// everything counts as changed -- which is correct: nothing is running either.
 const startedFile = "/run/briard/apps.started"
 
 // unitPrefix namespaces everything the renderer writes into quadletDir. Converge owns the files
@@ -83,9 +79,9 @@ const unitPrefix = "briard-"
 //
 //   - CONVERGE's own failure — the volume unreadable, a manifest that will not render, units that
 //     cannot be written, an image that is absent and cannot be fetched — returns an error. This
-//     runs as a promoter chain member ahead of briard-vip, so the promotion fails, the node takes
-//     no address, and snapshot() already reports a primary with no address as unhealthy. Loud,
-//     through machinery that already exists.
+//     runs as briard-apps, a promoter chain member after briard-vip, so the failure reaches the
+//     promotion hold through the member's OnFailure=, which stops the chain — the VIP with it —
+//     and hands the resource on (units.go). Loud, through machinery that already exists.
 //
 //   - An APP's own failure to start is logged and survived. A container that crashes must not
 //     demote: a code fault is deterministic, so the peer running the identical closure hits it
@@ -112,8 +108,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 		return nil, err
 	}
 	// The pod network, before any unit is written that names it. Only when something actually
-	// wants one: a node running host-networked apps creates nothing, which keeps the shipped
-	// zero-app and all-host cases exactly as they were.
+	// wants one: a node with zero apps, or only host-networked ones, creates nothing.
 	if needsPodNetwork(svcs) {
 		pool := podPool(x)
 		if pool == "" {
@@ -194,9 +189,8 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 		// A CHANGED RENDERING MUST BE MADE TO TAKE EFFECT, and a start alone will not do it:
 		// systemd does not restart an already-active unit on daemon-reload, so an upgrade
 		// (same app name => same unit names) would leave the OLD container serving while
-		// every file on disk described the new one. That is what the install path's `quiesce`
-		// used to do inside the maintenance bracket, and it belongs here now that converge is
-		// the only thing that starts these units.
+		// every file on disk described the new one. It belongs here because converge is the only
+		// thing that starts these units.
 		//
 		// Only the apps whose bytes actually changed are bounced. Converge runs on every
 		// promotion and on every install, so restarting unconditionally would take an untouched
@@ -274,13 +268,13 @@ func stopApp(ctx context.Context, x Executor, r quadlet.Rendered) {
 	}
 }
 
-// stopUnrendered stops what the previous converge started and this one no longer renders — a
+// stopUnrendered stops what the previous converge started and this one no longer renders — an
 // app forgotten after its first install failed, or uninstalled — containers before their pod,
 // as ConvergeStop does. Before the unit sources go, while systemd still has them.
 //
 // ⚠️ THE POD DOES NOT STOP ITSELF, which is why this exists. Pods are rendered with
 // ExitPolicy=continue so a crashed container is restarted, and the price is that stopping the last
-// container no longer takes the pod down with it. A pod left behind holds its address and its
+// container does not take the pod down with it. A pod left behind holds its address and its
 // published ports, and a reinstall of the same app would join the stale pod.
 //
 // Best-effort, like every stop here: a unit already gone is the state this wants.
@@ -325,7 +319,7 @@ func ConvergeStop(ctx context.Context, x Executor) error {
 		return fmt.Errorf("converge stop: read started units: %w", err)
 	}
 	units := nonEmptyLines(raw)
-	// Reverse: containers before their pod, exactly the order the promoter used to unwind in.
+	// Reverse: containers before their pod.
 	for i := len(units) - 1; i >= 0; i-- {
 		if _, err := x.Run(ctx, "systemctl", "stop", units[i]); err != nil {
 			log.Printf("converge stop: %s: %v (continuing)", units[i], err)
@@ -337,9 +331,8 @@ func ConvergeStop(ctx context.Context, x Executor) error {
 // renderVolume reads every manifest on the volume and renders them, returning them
 // as a per-app list.
 //
-// ORDER IS BY APP NAME, and it owes nothing more than determinism today. A set of apps
-// has a real dependency order, which gets settled once there is a second real app to
-// decide against; until then alphabetical is the cheapest way to be the same on every node.
+// ORDER IS BY APP NAME, which owes nothing but determinism: no inter-app dependency order is
+// modelled, and alphabetical is the cheapest way to be the same on every node.
 //
 // An ABSENT manifest directory is the shipped zero-app node, not a failure. A manifest that
 // is present and unusable IS a failure, and the difference is deliberate: absence is a state we
@@ -613,35 +606,29 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 // PRESENT => DONE, without touching the network. Starting the unit is a `podman image pull`:
 // quadlet generates `Wants=network-online.target` + `ExecStart=podman image pull <ref>` with no
 // already-present short-circuit (measured with podman's own generator), so an unconditional start
-// made every guest reboot depend on reaching a registry — the running half of the doctrine that
+// would make every guest reboot depend on reaching a registry — breaking the doctrine that
 // running and failover never need network.
 //
 // MISSING => pull, and wait for it. Absence is not something to fail on: the image SHOULD already
 // be here (install warms it, prewarm puts it on every standby, and app-install.nix asserts
-// exactly that), so reaching this line means the design was not upheld and a short wait beats
-// refusing to run. Under converge that is not even an unlikely case any more -- a node that was
-// down when the install ran, or joined afterwards, promotes into an app it was never told
-// about and legitimately has no image for. Still deliberately NOT conditioned on whether some
-// other node could promote instead: two nodes that both lack the image would refuse in turn with
-// no flap bound (ReactorConfig emits only `start` + `adjust-resource-on-start`), and on the free
-// tier there is no cloud to stop them. A node that fetches what it can name beats a cluster-wide
-// negotiation nothing arbitrates.
+// exactly that), but a node that was down when the install ran, or joined afterwards, promotes
+// into an app it was never told about and legitimately has no image for. Deliberately NOT
+// conditioned on whether some other node could promote instead: two nodes that both lack the
+// image would refuse in turn, bounded only by the promotion hold (units.go, holdSecs), and on the
+// free tier there is no cloud to stop them. A node that fetches what it can name beats a
+// cluster-wide negotiation nothing arbitrates.
 //
-// PULLING IS SAFE BECAUSE THE REF IS DIGEST-PINNED, and that is the whole difference from the
-// baked slot this replaced, which faced the same question and answered it the other way. Its
-// `briard-converge` REFUSED to promote when the pinned image was not staged, and was right to:
-// that pin was a tag plus a pin-file, so a fetch could not guarantee the same bytes (the pin is
-// deleted). A manifest names `repo@sha256:…`
+// PULLING IS SAFE BECAUSE THE REF IS DIGEST-PINNED. A manifest names `repo@sha256:…`
 // (shared/manifest refuses anything else), so a pull returns exactly those bytes or fails —
-// identity survives either outcome. One rule, two answers: refuse when you cannot verify what you
-// would get, fetch when the digest pins it.
+// identity survives either outcome. The rule: refuse when you cannot verify what you would get
+// (a tag), fetch when the digest pins it.
 //
 // RESTART, NEVER START: the unit is `Type=oneshot` + `RemainAfterExit=yes` (podman's generator
 // says so), so once it has pulled it stays active until the guest reboots, and a `start` of an
 // active unit succeeds having run nothing. Reaching this line means the image is gone, so what the
 // unit says about it is stale -- an uninstall or a superseded version removed the image under it,
-// and the same unit name carries the next version's pull. A start there sent an app installed
-// again, or upgraded twice since boot, to Pull=never with no image.
+// and the same unit name carries the next version's pull. A start would leave an app installed
+// again, or upgraded twice since boot, at Pull=never with no image.
 //
 // Shared by the app.warm verb and by converge, which is the point: a converging survivor and
 // an installing Primary must not disagree about what "the image is here" means.
@@ -717,7 +704,8 @@ func writeStarted(x Executor, r quadlet.Rendered) error {
 }
 
 // writeRoutes materialises the reverse proxy's routing table from what this converge rendered —
-// the names included, so the mDNS publisher and the reverse proxy read one list.
+// the names included, so what the reverse proxy routes and what its mDNS responder answers are one
+// list.
 //
 // IT IS WRITTEN EVEN WHEN THERE ARE NO APPS, as an empty table rather than an absent file:
 // "this node routes nothing" and "nobody has told me anything" are different states, and the
@@ -730,9 +718,9 @@ func writeStarted(x Executor, r quadlet.Rendered) error {
 // its app is down, while a name that resolves to nothing tells them they typed it wrong. The
 // per-app health probe reads the same table and reports the same truth.
 //
-// A FAILURE HERE FAILS THE CONVERGE, and that is the harsher of the two options on purpose. This
-// runs as a promoter chain member ahead of briard-vip, so a node that cannot write its routing
-// table takes no address and is reported unhealthy, rather than promoting into a reverse proxy
+// A FAILURE HERE FAILS THE CONVERGE, and that is the harsher of the two options on purpose. A
+// node that cannot write its routing table fails its briard-apps member, which ends in the
+// resource handed on (see Converge's failure rule), rather than promoting into a reverse proxy
 // serving the landing page over a household's running app — the silent-degradation shape
 // converge-at-promotion was built to end, one layer up.
 func writeRoutes(x Executor, svcs []convergedApp) error {
@@ -740,11 +728,10 @@ func writeRoutes(x Executor, svcs []convergedApp) error {
 	return putRoutes(x, t)
 }
 
-// putRoutes writes the table. ONE FILE: the reverse proxy reloads it on mtime and the mDNS publisher
-// watches the same file and reads it with jq, so writing it IS the notification to both. No
-// `systemctl restart` of either, and neither can be left stale by a restart that was skipped
-// because the unit happened to be inactive. On a Secondary, where both are stopped, the write is
-// simply read by whoever promotes next.
+// putRoutes writes the table. ONE FILE: the reverse proxy reloads it on mtime, for its routes and
+// for the names its mDNS responder answers, so writing it IS the notification. No `systemctl
+// restart`, and nothing can be left stale by a restart that was skipped because the unit happened
+// to be inactive. Where the reverse proxy is stopped, the write is simply read at its next start.
 func putRoutes(x Executor, t routes.Table) error {
 	raw, err := t.Marshal()
 	if err != nil {
@@ -788,8 +775,8 @@ func routesFor(flock string, svcs []convergedApp) routes.Table {
 		}
 		if hosts := routes.HostNames(flock, s.name); hosts != nil {
 			// The flock-scoped label first (announcements point at Hosts[0]), the bare alias and
-			// the casa name beside it: the reverse proxy answers all three, the publisher claims the
-			// `.local` ones.
+			// the casa name beside it: the reverse proxy routes all three, and its mDNS responder
+			// answers the `.local` ones.
 			e.Hosts = hosts
 			// Only alongside a name, because an announcement's SRV target is that name. The
 			// registry applies the same rule to itself; the ordering here is what makes it true
@@ -818,7 +805,7 @@ func routesFor(flock string, svcs []convergedApp) routes.Table {
 // routing table with no name in it. The name is guest-local state for exactly the same reason the
 // manifests are volume state: it must be readable by a node that nobody is talking to.
 //
-// An unreadable or nameless file yields "", which routes.HostName turns into an app with no
+// An unreadable or nameless file yields "", which routes.HostNames turns into an app with no
 // hostname — installed and reachable on its port, simply not yet named. That is the same rule
 // the reverse proxy already applies to the flock's own name, and it is the state of a node between
 // install and its first name.
