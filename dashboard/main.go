@@ -52,6 +52,7 @@ import (
 	"briard.io/agent/files"
 	"briard.io/agent/hass"
 	"briard.io/agent/quadlet"
+	"briard.io/shared/atomicfile"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/routes"
@@ -776,7 +777,8 @@ func newSecret() (string, error) {
 }
 
 // readState / writeState are the dashboard's own directory on the volume: 0700, files 0600,
-// written whole and renamed into place so a crash mid-write leaves the last good file.
+// written whole with atomicfile, so a crash mid-write leaves the last good file and a guest stop
+// (a power cut to the guest) right after a pairing or an account write does not lose it.
 func (a *app) readState(name string, v any) error {
 	raw, err := os.ReadFile(filepath.Join(a.statePath, name))
 	if err != nil {
@@ -786,19 +788,11 @@ func (a *app) readState(name string, v any) error {
 }
 
 func (a *app) writeState(name string, v any) error {
-	if err := os.MkdirAll(a.statePath, 0o700); err != nil {
-		return err
-	}
 	raw, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(a.statePath, name)
-	tmp := path + ".new"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return atomicfile.Write(filepath.Join(a.statePath, name), raw, 0o600, 0o700)
 }
 
 // homeAssistant is what the routing table says about Home Assistant on this node: where the
