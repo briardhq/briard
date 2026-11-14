@@ -699,22 +699,6 @@ in
       # top of the real error when an attach is being diagnosed. Upstream ships this dir
       # in its package; nixpkgs' drbd does not create it.
       "d /var/lib/drbd 0700 root root -"
-      # Nix's cache dir never survives a boot. A crash-consistent guest disk can hand nix a torn
-      # `binary-cache-v7.sqlite`, its narinfo lookup cache, opened `synchronous = off` precisely
-      # because it is disposable, which removes SQLite's write-ordering guarantees. Nix does not
-      # self-heal it: it warns, drops the substituter, and reports "there is no substituter that
-      # can build it", so a corrupt local file presents as a delivery failure and the node
-      # silently cannot take another update. Upstream has no fix (NixOS/nix#8647 open,
-      # nixpkgs#3958 older still); the canonical remedy is to delete it. We produce
-      # crash-consistent disks deliberately (the switch path's live snapshot) and the field does
-      # anyway (a power cut), so this must not be tied to the rollback leg: clearing at boot covers
-      # every producer, and the whole directory, not the one file we caught, since XDG defines it
-      # as non-essential data deletable at any time and the sibling caches tear the same way.
-      # `R!` is boot-only on purpose: a mid-life `switch-to-configuration` restarts
-      # systemd-tmpfiles-resetup, and a rule firing there could wipe the cache under a running
-      # stage. Costs nothing measurable: only `os.stage` consults the cache, and the cache cannot
-      # help an update anyway (keyed per store path, and a new release's paths were never queried).
-      "R! /root/.cache/nix - - - - -"
     ];
 
     # This node's name is set by the agent at every bring-up (sys.hostname) and nothing in this

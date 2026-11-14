@@ -66,10 +66,6 @@ $RELEASE_KEYRING_PEM = '__BRIARD_RELEASE_KEYRING_PEM__'
 $TapSha256 = '1c44e77ab148ddfb174de8041100efc38c4f23500183faff88f9badac5782e3c'
 $TapDescription = 'TAP-Windows Adapter V9' # how the driver describes its adapters, whatever they are named
 
-# The console task an earlier installer registered to run the closing at the next logon: removed
-# here, so a reinstall over a node still waiting for that logon opens no console.
-$ResumeTask = 'briard-install'
-
 function Say($m) { Write-Host "briard: $m" }
 function Die($m) { Unlock; throw "briard: ERROR: $m" }
 # The install lock (step 0), given back the moment this run stops: the one-liner's window stays
@@ -229,9 +225,8 @@ if ($rc -ne 0 -and $rc -ne 3010) { Die 'the install did not finish (the agent sa
 # The service starts by itself at boot, with no window. The hand-over is the agent's, laid down
 # above: at the installing account's next logon the notification-area icon starts once with
 # --open, says Briard is starting, and opens the dashboard in that person's browser once the node
-# serves. All that is left here is removing an earlier installer's console task.
+# serves.
 $exe = "$Prefix\agent\briard-agent.exe"
-Unregister-ScheduledTask -TaskName $ResumeTask -Confirm:$false -ErrorAction SilentlyContinue
 
 Unlock # installed: what follows is the ending, and a retry no longer races anything
 

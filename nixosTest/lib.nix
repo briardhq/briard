@@ -154,10 +154,6 @@ let
     '';
   };
 
-  # The singular form. No rig calls it or fixturesInstall directly: they reach both through
-  # mkNode, as `fixture` / `fixtures`.
-  fixtureInstall = fixture: fixturesInstall [ fixture ];
-
   # testScript helpers for a node built with `fixture`. Prepend to a test's script.
   #
   # install_fixture stands in for the one half of the install path a hermetic harness cannot run,
@@ -550,7 +546,6 @@ in
   inherit
     mkResource
     mkNode
-    fixtureInstall
     fixturesInstall
     fixtureHelpers
     # Two rigs ask what HA advertises: one where HA is installed after promotion, one where it

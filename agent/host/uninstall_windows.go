@@ -43,10 +43,6 @@ import (
 // deleteHint finishes the kept-data line with how to delete it by hand.
 const deleteHint = "`Remove-Item -Recurse -Force '%s'`, in a terminal opened as administrator, deletes them for good"
 
-// resumeTask is the console task an older install.ps1 registered to run the closing at the next
-// logon. It deletes itself when it runs; an uninstall before that logon finds it still waiting.
-const resumeTask = "briard-install"
-
 // firewallRule is the backup store's inbound rule, by the name layDownOS gives it.
 const firewallRule = "Briard backup store"
 
@@ -83,8 +79,6 @@ func (cfg Config) removeServices(ctx context.Context, logf func(string, ...any))
 	if err := run(ctx, "schtasks", "/delete", "/tn", selfupdate.DefaultUpdateUnit, "/f"); err != nil {
 		logf("the update task: %v", err)
 	}
-	// Best-effort: absent is the common case (resumeTask says why).
-	_ = run(ctx, "schtasks", "/delete", "/tn", resumeTask, "/f")
 	return nil
 }
 
