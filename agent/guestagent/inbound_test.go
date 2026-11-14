@@ -23,11 +23,12 @@ import (
 	"briard.io/shared/routes"
 )
 
-// ringExec is a guest with a .snapshots directory: `ls` answers with `members`, `btrfs subvolume
-// show` fails for anything absent (nothing is at a fresh member's path), and everything else
-// succeeds. It is the minimum a ring's take and its replacement both read.
 const haToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
+// ringExec is a guest with a .snapshots directory: `ls` answers with `members` (and the run
+// directory with its fixed listing), `btrfs subvolume show` always fails (nothing is at a fresh
+// member's path), and everything else succeeds. It is the minimum a ring's take and its
+// replacement both read.
 func ringExec(members ...string) *fakeExec {
 	f := &fakeExec{files: map[string]string{
 		manifestPath("home-assistant"):          `{"name":"home-assistant","version":"2026.7.1"}`,
@@ -229,7 +230,7 @@ func TestBackupNameSurvivesWhateverTheMarkerSays(t *testing.T) {
 	}
 }
 
-// serve sends one request as Home Assistant unless the body already carries its own token.
+// serve sends one request body, as given, down the inbound channel and parses the one response.
 func serve(t *testing.T, f *fakeExec, body string) inboundResponse {
 	t.Helper()
 	var out bytes.Buffer
@@ -275,8 +276,8 @@ func TestInboundStartingTakesAMember(t *testing.T) {
 	if !strings.Contains(meta.Manifest, "2026.7.1") {
 		t.Errorf("sidecar manifest = %q, want the version on the volume", meta.Manifest)
 	}
-	// QUIESCED, and STATED rather than left to be inferred: this runs in the unit's pre-start, so
-	// the container is not up and the previous one was stopped before the restart. A member that
+	// QUIESCED, and STATED rather than left to be inferred: this is the app announcing its own
+	// restart from inside the container, holding itself stopped until answered. A member that
 	// does not say what its bytes are is one the integrity check may not use and the picker cannot rank, which
 	// is the whole reason the field exists.
 	if meta.Consistency != quadlet.Quiesced {
@@ -406,7 +407,7 @@ func TestInboundRequestCannotNameItsApp(t *testing.T) {
 
 // TestInboundRefusesACallerItCannotIdentify: with one shared socket the token IS the boundary, so
 // everything that is not a minted token has to land in the same place — refused, before any verb
-// is reached and before anything is read or written.
+// is reached and before anything is written.
 func TestInboundRefusesACallerItCannotIdentify(t *testing.T) {
 	for _, tok := range []string{
 		"",    // none offered
@@ -486,8 +487,8 @@ func TestInboundAlwaysAnswers(t *testing.T) {
 	}
 }
 
-// TestInboundRejectsAAppNameThatIsAPath: the app name is read out of a token FILENAME in
-// a directory on /run, and it then becomes a path element in every path the verb derives. Writing
+// TestInboundRejectsAAppNameThatIsAPath: the app name is the name of the DIRECTORY holding the
+// token on /run, and it then becomes a path element in every path the verb derives. Writing
 // there takes root, so this is defence in depth rather than a live hole -- but the cost of being
 // wrong is a verb pointed at an arbitrary subvolume, and the check is one line.
 func TestInboundRejectsAAppNameThatIsAPath(t *testing.T) {
@@ -511,9 +512,6 @@ func TestInboundRejectsAAppNameThatIsAPath(t *testing.T) {
 	}
 }
 
-// TestServeInboundSocketOverARealSocket drives the whole transport the way a container does:
-// connect to a unix socket, write one line, read one line. The per-connection handler is covered
-// above; this is the loop around it, and the thing it proves is that a second caller is served
 // TestListenInboundOverARealSocket drives the whole transport the way a container does: connect
 // to the socket, write one line, read one line. The per-request handler is covered above; this is
 // the listener around it, and what it proves is that a second caller is served after the first
@@ -1272,7 +1270,7 @@ func TestEveryStartSignalsTheReverseProxy(t *testing.T) {
 
 // TestTheStopHookFindsItsTools: the rendered ExecStopPost runs with systemd's default PATH, which
 // on the guest holds no coreutils, so the hook puts the image's profile on it itself -- without
-// it `sync` was not found and no stop was ever recorded clean.
+// it `sync` is not found and no stop is ever recorded clean.
 func TestTheStopHookFindsItsTools(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin:/bin")
 	if err := RecordAppStop(context.Background(), restoreRig(""), "home-assistant", "success"); err != nil {

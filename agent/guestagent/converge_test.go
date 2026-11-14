@@ -93,8 +93,8 @@ func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]
 	case name == "systemctl" && len(args) == 2 && (args[0] == "start" || args[0] == "restart") && c.failStart[args[1]]:
 		return []byte("Job failed"), errors.New("exit status 1")
 	case name == "podman" && len(args) == 3 && args[0] == "cp":
-		// The per-app preparation extracts a script out of the image, and converge now
-		// refuses an app whose extraction comes back empty. failExtract models an image whose
+		// The per-app preparation extracts a script out of the image, and converge
+		// skips an app whose extraction fails or comes back empty. failExtract models an image whose
 		// layout moved -- the case that must cost ONE app and not the node.
 		if c.failExtract {
 			return []byte("Error: no such file or directory"), errors.New("exit status 125")
@@ -131,9 +131,9 @@ func dummyNode(t *testing.T) *convergeExec {
 	return x
 }
 
-// TestConvergeRendersFromTheVolume is the item's whole point: a node that was never
+// TestConvergeRendersFromTheVolume is converge's whole point: a node that was never
 // told about an app -- never rendered, never cached, never chained -- still runs it, because
-// the volume said so. The measured failure was a survivor that promoted and served nothing.
+// the volume said so. Without it a survivor promotes and serves nothing.
 func TestConvergeRendersFromTheVolume(t *testing.T) {
 	x := dummyNode(t)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
@@ -147,7 +147,7 @@ func TestConvergeRendersFromTheVolume(t *testing.T) {
 	if !x.ran("systemctl", "daemon-reload") {
 		t.Fatal("converge did not reload systemd, so quadlet never generated the units")
 	}
-	// The pod before its members: the quadlet spike proved starting the pod does not start them.
+	// The pod and its members both: starting the pod does not start them.
 	if !x.ran("systemctl", "start", "briard-dummy-pod.service") ||
 		!x.ran("systemctl", "start", "briard-dummy-app.service") {
 		t.Fatalf("converge did not start the app units; ran %v", x.fakeExec.runs)
@@ -170,8 +170,8 @@ func TestConvergeToNothingIsNotAnError(t *testing.T) {
 // TestConvergeRefusesAnUnusableManifest is the other side of the line above, and the difference
 // is deliberate: ABSENT means nothing is installed (a state we ship), while a manifest that is
 // present and will not parse means this node cannot honour what the volume says it runs.
-// Promoting anyway is how a household silently loses an app -- the exact failure (f) exists
-// to end -- so converge fails and the promotion fails with it.
+// Promoting anyway is how a household silently loses an app -- the exact failure converge
+// exists to end -- so converge fails and the promotion fails with it.
 func TestConvergeRefusesAnUnusableManifest(t *testing.T) {
 	x := &convergeExec{apps: []string{"dummy.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{manifestDir + "/dummy.json": "{not json"}
@@ -323,9 +323,7 @@ const dummyManifestV2 = `{"name":"dummy","version":"2","network":"host","contain
 
 // TestConvergeBouncesAAppWhoseRenderingChanged is the upgrade case. systemd does not restart
 // an already-active unit on daemon-reload, so a converge that only ever STARTS would leave the
-// old container serving while every file on disk described the new one — green, and wrong. This
-// is what the install path's quiesce did inside the maintenance bracket, and it moved here with
-// the bracket's deletion.
+// old container serving while every file on disk described the new one — green, and wrong.
 func TestConvergeBouncesAAppWhoseRenderingChanged(t *testing.T) {
 	x := dummyNode(t)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
@@ -352,13 +350,13 @@ func TestConvergeBouncesAAppWhoseRenderingChanged(t *testing.T) {
 	}
 }
 
-// THE INSTALL PATH IS ANOTHER WRITER, and forgetting that made every upgrade a no-op. An install
+// THE INSTALL PATH IS ANOTHER WRITER, and forgetting that makes every upgrade a no-op. An install
 // renders the new units through app.render BEFORE asking the node to converge, so by the time
-// converge looked, the files on disk already held the new bytes: nothing compared as changed,
-// nothing was bounced, `systemctl start` on an already-active unit did nothing, and the OLD
-// container kept serving while the volume and the report named the new version. The install's
-// health gate then passed on the old container -- a deliberately-broken version installed
-// "healthy" in three seconds on a soak run, 2026-08-28.
+// converge looks, the files on disk already hold the new bytes: compared against disk, nothing
+// is changed, nothing is bounced, `systemctl start` on an already-active unit does nothing, and
+// the OLD container keeps serving while the volume and the report name the new version. The
+// install's health gate then passes on the old container, and a broken version installs
+// "healthy".
 //
 // So converge compares against what IT started, not against what is on disk. This test writes the
 // new bytes to disk first, exactly as the install path does.
@@ -426,9 +424,8 @@ func TestConvergeLeavesAnUnchangedAppAlone(t *testing.T) {
 // (SupportsAppConverge), so a verb the dispatch switch handles but the capability list omits
 // is invisible — an install would refuse a guest that could in fact do the work.
 //
-// THE HANDSHAKE IS THE POINT, not scenery: Supports returns true when caps is nil (a guest too old
-// to advertise anything), so asserting on an un-handshaken client passes whatever the capability
-// list says. That is exactly how this test was wrong the first time it was written.
+// THE HANDSHAKE IS THE POINT, not scenery: Supports returns true before a handshake (caps nil),
+// so asserting on an un-handshaken client passes whatever the capability list says.
 func TestConvergeVerbsAreAdvertised(t *testing.T) {
 	g := dial(t, dummyNode(t))
 	if _, err := g.Handshake(context.Background()); err != nil {
@@ -490,7 +487,7 @@ func TestConvergePreparesTheControlChannel(t *testing.T) {
 }
 
 // TestConvergeLeavesOtherAppsAlone: the knowledge is keyed on the catalog name, so an app
-// the product knows nothing about must converge exactly as it did before any of this existed.
+// the product knows nothing about converges with no Home Assistant preparation at all.
 func TestConvergeLeavesOtherAppsAlone(t *testing.T) {
 	x := dummyNode(t)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
@@ -570,8 +567,8 @@ func TestPreparationFailureLeavesTheOldContainerServing(t *testing.T) {
 }
 
 // The reverse proxy's routing table is converge's output too: the same pass that renders the
-// units writes where each app can be reached and under what name. Before this, a
-// runtime-installed app was reachable only on its own port -- the reverse proxy kept serving the
+// units writes where each app can be reached and under what name. Without it, a
+// runtime-installed app is reachable only on its own port -- the reverse proxy keeps serving the
 // landing page over a running household.
 func TestConvergeWritesTheRoutingTable(t *testing.T) {
 	x := dummyNode(t)
@@ -592,15 +589,15 @@ func TestConvergeWritesTheRoutingTable(t *testing.T) {
 	}
 	s := tbl.Apps[0]
 	// The ADDRESS comes from the renderer, which is the only thing that knows how the pod was
-	// wired -- host networking today, which is why it is the guest's own loopback.
+	// wired -- host networking here, which is why it is the guest's own loopback.
 	if s.Name != "dummy" || s.Address != "127.0.0.1" || s.Health != "http://:8080/healthz" {
 		t.Errorf("entry = %+v, want the rendered address and a host-less health endpoint", s)
 	}
 	if len(s.Hosts) != 3 || s.Hosts[0] != "briard-brave-elf-dummy.local" || s.Hosts[1] != "briard-dummy.local" || s.Hosts[2] != "dummy.brave-elf.briard.casa" {
 		t.Errorf("hosts = %v, want the flock-scoped mDNS label first, the bare alias and the casa name beside it", s.Hosts)
 	}
-	// ONE FILE: the mDNS publisher reads these same names out of this same table with jq, so there
-	// is no flattened second copy anyone can read while it is stale.
+	// ONE FILE: the reverse proxy's mDNS responder reads these same names out of this same table,
+	// so there is no flattened second copy anyone can read while it is stale.
 	if _, ok := x.fakeExec.files["/run/briard/routes.hosts"]; ok {
 		t.Error("converge wrote a second hosts file; the publisher reads the table itself")
 	}
@@ -648,7 +645,7 @@ func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 	if len(tbl.Apps) != 0 {
 		t.Fatalf("table = %+v, want it emptied with the apps", tbl.Apps)
 	}
-	// The publisher reads the same table, so an emptied table IS the withdrawal -- there is no
+	// The mDNS responder reads the same table, so an emptied table IS the withdrawal -- there is no
 	// second file that could still be listing a name nothing serves.
 	if _, ok := x.fakeExec.files["/run/briard/routes.hosts"]; ok {
 		t.Error("converge wrote a second hosts file")
@@ -687,8 +684,7 @@ func TestAppHealthURLResolvesThroughTheTable(t *testing.T) {
 	}
 }
 
-// A flock RENAME moves the app names with it -- and it must not re-derive the table from the
-// A flock RENAME moves the app names with it, in the table and in the publisher's list -- and
+// A flock RENAME moves the app names with it, in the table the mDNS responder also reads -- and
 // it must not re-derive the table from the volume to do it: a rename can arrive on a Secondary,
 // where the volume is not mounted, and re-rendering there would write an empty table over a good
 // one and take every route down because a name changed.
@@ -881,8 +877,8 @@ func addressOf(t *testing.T, x *convergeExec, name string) string {
 }
 
 // The pod network is created ONCE, by the node, before anything joins it -- and a node running
-// only host-networked apps creates none at all, which is what keeps the shipped all-host case
-// exactly as it was.
+// only host-networked apps creates none at all, so the shipped all-host case carries no pod
+// network.
 func TestThePodNetworkIsCreatedOnlyWhenSomethingWantsOne(t *testing.T) {
 	hostOnly := dummyNode(t)
 	hostOnly.fakeExec.files[podSubnetPath] = "10.12.7\n"
@@ -932,7 +928,7 @@ func TestAPodNetworkOnTheWrongSubnetIsRefused(t *testing.T) {
 	}
 }
 
-// TestConvergeStopsWhatItNoLongerRenders: pods outlive their containers now, so that a
+// TestConvergeStopsWhatItNoLongerRenders: pods outlive their containers, so that a
 // crashed container is restarted -- which means an app that is forgotten (a first install that
 // failed) or uninstalled leaves its pod running unless converge stops it. A stale pod holds its
 // address and ports, and a reinstall would join it. Containers before their pod; what is still
