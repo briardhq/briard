@@ -16,32 +16,28 @@ import (
 	"briard.io/shared/notify"
 )
 
-// RE-PARENTING — what happens when the device the guest's L2 hangs off goes away.
+// Re-parenting: what happens when the device the guest's L2 hangs off goes away. ⚠️ qemu will not
+// tell you: the macvtap child vanishes with its parent and qemu keeps running with a dead NIC, the
+// guest alive, healthy by its own account, and unreachable from the household. So the detector
+// has to be the observe loop's network check, not the guest's exit: the guest does not exit.
 //
-// ⚠️ QEMU WILL NOT TELL YOU. When a macvtap's parent disappears the child device vanishes with it,
-// and qemu keeps running with a dead NIC: the guest is alive, healthy by its own account, and
-// unreachable from the household. So the detector has to be the observe loop's network check. It
-// cannot hang off the guest's exit, because the guest does not exit.
+// ⚠️ The trigger is the parent being gone (absent, or present without carrier) and another
+// candidate named now. Gone alone moves nothing: a cold boot with the cable out, or a pulled cable
+// on a one-NIC machine, has no successor and only waits. Never our own device's disappearance
+// alone (from our side indistinguishable from the parent going away), and never a cable coming
+// back: the parent returning cancels, and a better device appearing beside a working one waits
+// for the next cold start (network.go).
 //
-// ⚠️ THE TRIGGER IS THE PARENT BEING GONE — absent, or present without carrier — AND ANOTHER
-// CANDIDATE NAMED NOW. Gone alone moves nothing: a cold boot with the cable out, or a pulled cable
-// on a one-NIC machine, has no successor to move to and only waits. Never our own device's
-// disappearance alone (which is indistinguishable, from our side, from the parent going away).
-// And never a cable coming back: the parent returning cancels, and a better device appearing
-// beside a working one waits for the next cold start (network.go).
-//
-// And re-parenting is EXPENSIVE in a way nothing else on the tick is: a macvtap cannot be
-// re-parented, so the devices must be deleted and recreated, which invalidates the fds qemu holds
-// — which means stopping and relaunching the guest. A healthy household loses its apps for the
-// length of a boot. That is why the pacing below exists at all.
+// The move is expensive in a way nothing else on the tick is: a macvtap cannot be re-parented, so
+// the devices must be deleted and recreated, which invalidates the fds qemu holds, which means
+// stopping and relaunching the guest: a healthy household loses its apps for the length of a
+// boot. That is why the pacing below exists at all.
 
-// The tiers, and what each is paying for.
-//
-// ⚠️ THESE ARE A STARTING POINT AND ARE MEANT TO BE REVISED. What they are trading is stated so
-// that a later reader can judge them rather than guess at them: too short and an ordinary blip --
-// a switch rebooting, a laptop dock re-enumerating, a driver reloading on a kernel upgrade --
-// costs the household its apps for a boot; too long and a node whose NIC really was replaced
-// stays dark for no reason.
+// The tiers, and what each is paying for. ⚠️ They are a starting point, meant to be revised, and
+// the trade is stated so a later reader can judge them rather than guess: too short and an
+// ordinary blip (a switch rebooting, a laptop dock re-enumerating, a driver reloading on a kernel
+// upgrade) costs the household its apps for a boot; too long and a node whose NIC really was
+// replaced stays dark for no reason.
 const (
 	// reparentSameWire: the gateway MAC matches, so this is the same router on the same segment
 	// and the wire changed under us. The only unambiguous case, and the only one where waiting
@@ -49,39 +45,36 @@ const (
 	// flight", not a hedge about where we are.
 	reparentSameWire = 5 * time.Minute
 	// reparentSameSubnet: the addressing matches but the gateway MAC does not. Genuinely
-	// ambiguous in BOTH directions -- a replaced router renumbering this house looks exactly like
+	// ambiguous in both directions -- a replaced router renumbering this house looks exactly like
 	// 192.168.1.0/24 at a different one -- so the wait is long enough that a human who moved the
 	// box has time to notice and stop us, and short enough that a real router swap heals itself
 	// overnight.
 	reparentSameSubnet = 30 * time.Minute
 )
 
-// ⚠️ THERE IS NO "DIFFERENT SUBNET" DURATION, and that is the decision rather than an omission.
-// A machine on a different subnet has MOVED, and a paired node that rebuilds itself on a LAN its
-// peer is not on is a split flock -- the one outcome this whole mechanism exists to avoid. So it is
-// not a longer wait: it is an explicit operator action, `NIC` in config.env, which is already the
-// escape hatch for every other way our selection can be wrong. Any other way out belongs on the
-// directive path, never on a timer here.
-//
-// Unknown -- too little evidence to say -- takes the same answer, because "we could not tell"
-// must never be cheaper than "we could tell, and it was elsewhere".
+// ⚠️ There is no "different subnet" duration, by decision rather than omission. A machine on a
+// different subnet has moved, and a paired node that rebuilds itself on a LAN its peer is not on
+// is a split flock, the one outcome this whole mechanism exists to avoid. So it is not a longer
+// wait but an explicit operator action, `NIC` in config.env, already the escape hatch for every
+// other way our selection can be wrong; any other way out belongs on the directive path, never on
+// a timer here. Unknown (too little evidence to say) takes the same answer, because "we could not
+// tell" must never be cheaper than "we could tell, and it was elsewhere".
 
 // networkRecordName is the node-local record of the LAN this node last brought its guest up on.
-// PET state, beside the other node-local caches: it has to survive a reboot (the whole point is
+// Pet state, beside the other node-local caches: it has to survive a reboot (the whole point is
 // comparing today's LAN against the one before the power cut) and a cattle wipe of /opt.
 const networkRecordName = "network.json"
 
 // networkRecord is what is written. A struct rather than the bare fingerprint so the file can
-// grow a field without becoming ambiguous, and so a reader can see WHEN it was taken.
+// grow a field without becoming ambiguous, and so a reader can see when it was taken.
 type networkRecord struct {
 	Fingerprint nic.Fingerprint `json:"fingerprint"`
 	At          time.Time       `json:"at"`
 }
 
-// networkRecordPath puts the record beside the assignment and mesh caches -- ASSIGNMENT_CACHE's
-// directory is the node's pet state dir, and deriving from it rather than from a second config
-// key is what keeps a harness that points ASSIGNMENT_CACHE elsewhere working without being told
-// twice.
+// networkRecordPath puts the record beside the assignment and mesh caches: ASSIGNMENT_CACHE's
+// directory is the node's pet state dir, and deriving from it rather than a second config key
+// keeps a harness that points ASSIGNMENT_CACHE elsewhere working without being told twice.
 func (cfg Config) networkRecordPath() string {
 	if cfg.AssignmentCache == "" {
 		return ""
@@ -89,11 +82,10 @@ func (cfg Config) networkRecordPath() string {
 	return filepath.Join(filepath.Dir(cfg.AssignmentCache), networkRecordName)
 }
 
-// recordNetwork writes the fingerprint of the LAN this node just brought its guest up on.
-//
-// Durable, because it is a fact whose only copy is this file and a power cut must not lose it:
-// losing it turns the next re-parent decision into Unknown, which refuses -- safe, but it strands
-// a node that could have healed itself. tmp + fsync + rename is the canonical shape.
+// recordNetwork writes the fingerprint of the LAN this node just brought its guest up on. Durable
+// (tmp + fsync + rename, the canonical shape): it is a fact whose only copy is this file, and
+// losing it to a power cut turns the next re-parent decision into Unknown, which refuses: safe,
+// but it strands a node that could have healed itself.
 func (cfg Config) recordNetwork(ctx context.Context, logf func(string, ...any)) {
 	path := cfg.networkRecordPath()
 	// nil is the ordinary state on every agent that owns no network -- every rig, every lab node,
@@ -104,15 +96,13 @@ func (cfg Config) recordNetwork(ctx context.Context, logf func(string, ...any)) 
 		return
 	}
 	fp := nic.Read(ctx, cfg.net.Parent)
-	// ⚠️ AN UNUSABLE READING IS NOT RECORDED, and overwriting a good record with one is strictly
-	// worse than not writing at all: Compare answers Unknown for a fingerprint with no address,
-	// and Unknown refuses -- so a node that could have healed itself is stranded permanently by
-	// the very act meant to help it.
-	//
-	// It is a real race: the parent is chosen at start-up and recorded after BRING-UP, seconds
-	// later, and a NIC that goes away in between (unplugged while the guest boots, or renamed by a
-	// udev rule that lost a race) reads as `[eth1 mac=? addr=? gw=?/?]` -- which, recorded, refuses
-	// every re-parent for the rest of the node's life.
+	// ⚠️ An unusable reading is not recorded: overwriting a good record with one is strictly
+	// worse than not writing at all, since Compare answers Unknown for a fingerprint with no
+	// address and Unknown refuses, so the very act meant to help strands, permanently, a node
+	// that could have healed itself. It is a real race: the parent is chosen at start-up and
+	// recorded after bring-up, seconds later, and a NIC gone in between (unplugged while the guest
+	// boots, or renamed by a udev rule that lost a race) reads as `[eth1 mac=? addr=? gw=?/?]`,
+	// which, recorded, refuses every re-parent for the rest of the node's life.
 	if !fp.Usable() {
 		logf("network: not recording this LAN -- %s could not be read [%s]; keeping the previous record",
 			cfg.net.Parent, fp)
@@ -178,7 +168,7 @@ func (cfg Config) writeNetworkRecord(fp nic.Fingerprint, logf func(string, ...an
 		logf("network: could not record the LAN at %s: %v", path, err)
 		return
 	}
-	// The WHOLE fingerprint, not a friendly summary of it. What a later re-parent turns on is
+	// The whole fingerprint, not a friendly summary of it. What a later re-parent turns on is
 	// which fields were readable, so a line that omits the unreadable ones is a line that cannot
 	// explain the decision it is the input to.
 	logf("network: recorded this LAN [%s]", rec.Fingerprint)
@@ -203,16 +193,15 @@ func (cfg Config) recordedNetwork() nic.Fingerprint {
 }
 
 // reparentWait is the tier: how long to let a candidate stand before rebuilding on it. The second
-// return is false when no wait is long enough -- the machine has moved, or we cannot tell, and
-// the answer is an operator rather than a timer.
+// return is false when no wait is long enough (the machine has moved, or we cannot tell): the
+// answer is an operator rather than a timer.
 //
-// fixture collapses every tier to a fixed wait, and is a TEST FIXTURE rather than a product knob
-// (Config.ReparentTier says so). The shipped fast tier is five minutes, which a rig would
-// otherwise spend real wall-clock observing a decision the first second already made.
-//
-// ⚠️ IT SHRINKS DURATIONS AND NEVER CONVERTS A REFUSAL INTO ONE. `Elsewhere` and `Unknown` are not
-// long waits, they are "an operator decides" -- so a fixture that reached them would let a rig
-// prove a re-parent the product forbids, which is the worst thing a test knob can do.
+// fixture collapses every tier to a fixed wait; it is a test fixture, not a product knob
+// (Config.ReparentTier says so). It exists because a rig would otherwise spend the shipped fast
+// tier's five minutes of real wall-clock observing a decision the first second already made.
+// ⚠️ It shrinks durations and never converts a refusal into one: `Elsewhere` and `Unknown` are
+// not long waits but "an operator decides", so a fixture that reached them would let a rig prove
+// a re-parent the product forbids, which is the worst thing a test knob can do.
 func reparentWait(rel nic.Relation, fixture time.Duration) (time.Duration, bool) {
 	var d time.Duration
 	switch rel {
@@ -238,23 +227,21 @@ type reparenter struct {
 }
 
 // consider is the tick's whole re-parent decision. It returns the device to rebuild on, or "".
-//
-// ⚠️ IT NEVER TEARS DOWN BEFORE A NEW ANSWER EXISTS. A parent that is gone with nowhere to go is
-// a node that waits, holding the guest it still has -- the guest is unreachable either way, and
-// stopping it would only take away the one thing an operator could still look at.
-//
-// ⚠️ AND THE RECORDED DEVICE RETURNING OUTRANKS EVERY TIER. A NIC that comes back in three
-// seconds must not cost a guest restart, so the clock resets the instant the parent is there with
-// carrier again and nothing else is even considered. That is also why there is no separate "minimum
-// settle" constant: the shortest tier is five minutes, and any return inside it cancels.
+// ⚠️ It never tears down before a new answer exists: a parent gone with nowhere to go is a node
+// that waits, holding the guest it still has; the guest is unreachable either way, and stopping
+// it would only take away the one thing an operator could still look at. ⚠️ The recorded device
+// returning outranks every tier: a NIC back in three seconds must not cost a guest restart, so the
+// clock resets the instant the parent is there with carrier again and nothing else is even
+// considered. Hence no separate "minimum settle" constant: the shortest tier is five minutes, and
+// any return inside it cancels.
 func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, logf func(string, ...any)) (string, nic.Relation) {
 	if cfg.net == nil || cfg.net.Parent == "" {
 		return "", nic.Unknown // this agent does not own the network
 	}
-	// THE UPLINK IS WHAT CAN BE GONE: the parent itself, or the physical member of briard's
+	// The uplink is what can be gone: the parent itself, or the physical member of briard's
 	// Windows bridge, whose own media state is the OR with the TAP and evidence of nothing. A
-	// bridge that does not move by a member swap is the USER's (Linux): a bridge that disappears
-	// is theirs to restore -- we never created it and must not start now.
+	// bridge that does not move by a member swap is the user's (Linux): a bridge that disappears
+	// is theirs to restore, since we never created it and must not start now.
 	parent := cfg.net.Parent
 	up, swaps := nic.Uplink(parent)
 	if cfg.net.Bridge && !swaps {
@@ -264,8 +251,8 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 	if lost == "" {
 		lost = parent + "'s NIC"
 	}
-	// GONE IS ABSENT, WITHOUT CARRIER, OR (a swapping bridge) NO MEMBER BUT OURS: a pulled cable
-	// leaves the device there, up and carrying nothing. None of them alone moves anything -- the
+	// Gone is absent, without carrier, or (a swapping bridge) no member but ours: a pulled cable
+	// leaves the device there, up and carrying nothing. None of them alone moves anything: the
 	// move needs a successor in hand (below), so a cold boot with the cable out, or a one-NIC
 	// desktop with its cable pulled, only waits.
 	if up != "" && nic.Carrier(up) { // a device that is not there has no carrier, on either OS
@@ -286,13 +273,13 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 			logf("network: %s has gone away; the guest is running with a dead NIC", up)
 		}
 	}
-	// Re-SELECT, without probing yet: there is no point pacing a move onto a device that does not
-	// exist. The selection reads carrier too, so the gone uplink is not a candidate -- except as
-	// BRIARD_NIC, or in a race with its return, and either way staying put is the answer. A
+	// Re-select, without probing yet: there is no point pacing a move onto a device that does not
+	// exist. The selection reads carrier too, so the gone uplink is not a candidate, except as
+	// BRIARD_NIC or in a race with its return, and either way staying put is the answer. A
 	// swapping bridge answers as itself, with the adapter that outranks its member as SwapIn.
-	// NOTHING USABLE IS THE WAITING CASE, AND IT WAITS QUIETLY: the loss is logged above, and the
+	// Nothing usable is the waiting case, and it waits quietly: the loss is logged above, and the
 	// selection's remedy (name a device with BRIARD_NIC) is install-time advice that misleads here,
-	// where the usual cause is a link that comes back by itself -- a sleep, a radio re-associating.
+	// where the usual cause is a link that comes back by itself (a sleep, a radio re-associating).
 	sel := nic.Select(cfg.NICOverride, parent)
 	if !sel.Usable() {
 		return "", nic.Unknown
@@ -305,16 +292,15 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 		return "", nic.Unknown
 	}
 	was, seen := cfg.recordedNetwork(), nic.Read(ctx, cand)
-	// BRIARD_NIC NAMING ANOTHER DEVICE IS THE OPERATOR'S ANSWER, and it is what the refusals below
+	// BRIARD_NIC naming another device is the operator's answer, and it is what the refusals below
 	// tell them to set: no tier and no fingerprint stand between them and the move they named.
 	if sel.Override {
 		return cand, nic.Compare(was, seen)
 	}
-	// NO RECORD AT ALL is a different problem from "a different network", and saying so is worth a
-	// branch: the remedy is the same (an operator names the device) but the cause is not, and a
-	// reader told "not demonstrably the same network" about a node that simply has nothing to
-	// compare against will go looking in the wrong place. It happens on a node whose pet state was
-	// lost.
+	// No record at all is a different problem from "a different network", worth its own branch:
+	// the remedy is the same (an operator names the device) but the cause is not, and a reader
+	// told "not demonstrably the same network" about a node that simply has nothing to compare
+	// against will go looking in the wrong place. It happens on a node whose pet state was lost.
 	if was == (nic.Fingerprint{}) {
 		r.say(logf, fmt.Sprintf(
 			"network: %s is gone and there is no record of the LAN this node last served on, so "+
@@ -326,12 +312,11 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 	rel := nic.Compare(was, seen)
 	wait, ok := reparentWait(rel, cfg.ReparentTier)
 	if !ok {
-		// THE MACHINE HAS MOVED, or we cannot tell. Never automatic: a paired node that rebuilds
-		// itself on a LAN its peer is not on is a split flock.
-		//
-		// ⚠️ THE MESSAGE CARRIES BOTH FINGERPRINTS, and that is not decoration. `unknown` means a
-		// field could not be read on one side or the other, and which side it was is the entire
-		// diagnosis -- without it the reader (or the next engineer) can only guess.
+		// The machine has moved, or we cannot tell. Never automatic: a paired node that rebuilds
+		// itself on a LAN its peer is not on is a split flock. ⚠️ The message carries both
+		// fingerprints, and not as decoration: `unknown` means a field could not be read on one
+		// side or the other, and which side it was is the entire diagnosis; without it the reader
+		// (or the next engineer) can only guess.
 		r.say(logf, fmt.Sprintf(
 			"network: %s is gone and %s is not demonstrably the same network (%s) -- NOT re-parenting "+
 				"on my own. Recorded: [%s]. Now: [%s]. Set NIC=%s in %s and restart "+
@@ -348,19 +333,18 @@ func (r *reparenter) consider(ctx context.Context, cfg Config, now time.Time, lo
 }
 
 // reparent moves the guest's L2 onto dev: rebuild the devices there, restart the guest so it
-// opens the new chardevs, record the LAN we landed on, and tell the household.
+// opens the new chardevs, record the LAN we landed on, and tell the household. ⚠️ The guest
+// restart is not optional, and it is the expensive part: qemu holds an fd per macvtap, a macvtap
+// cannot be re-parented, so the devices are new devices and only a relaunch makes qemu open them.
+// `RescueGuest` is the canonical stop-and-relaunch, the same VM+channel+Manager swap the upgrade
+// legs do; a second owner of that swap would be a second way to do it (the upgrader interface
+// says so).
 //
-// ⚠️ THE GUEST RESTART IS NOT OPTIONAL and it is the expensive part. qemu holds an fd per
-// macvtap; a macvtap cannot be re-parented, so the devices are new devices, and only a relaunch
-// makes qemu open them. `RescueGuest` is the canonical stop-and-relaunch -- it performs the same
-// VM+channel+Manager swap the upgrade legs do, and a second owner of that swap would be a second
-// way to do it (the upgrader interface says so).
-//
-// ⚠️ ON LINUX NOTHING HERE TOUCHES THE HOST'S OWN ADDRESSING OR ROUTES, which is what keeps the
-// agent's path to the cloud intact across a re-parent. It is true by construction rather than by
-// care: we never move a host address anywhere, so the only devices in play are ours. A Windows
-// member swap is the exception, and cannot help it: the bridge is the host's own adapter, and it
-// re-leases under the arriving member's MAC.
+// ⚠️ On Linux nothing here touches the host's own addressing or routes, which keeps the agent's
+// path to the cloud intact across a re-parent, by construction rather than care: we never move a
+// host address anywhere, so the only devices in play are ours. A Windows member swap is the
+// exception, and cannot help it: the bridge is the host's own adapter, and it re-leases under the
+// arriving member's MAC.
 func (cfg Config) reparent(ctx context.Context, mgr upgrader, n notify.Notifier, dev string, rel nic.Relation, logf func(string, ...any)) error {
 	from := cfg.net.Parent
 	up, swaps := nic.Uplink(from)
@@ -368,11 +352,11 @@ func (cfg Config) reparent(ctx context.Context, mgr upgrader, n notify.Notifier,
 		from = up // the alert names the member that went, not the bridge that stays
 	}
 	logf("network: re-parenting the guest's L2 from %s onto %s (%s)", from, dev, rel)
-	// ONE BUDGET FOR THE WHOLE MOVE, and the watchdog rides it. The lease must cover a BOUNDED
-	// context (beat.go argues this at length): the stop leg inside RescueGuest spends a full
-	// shutdownGrace and `vm.Stop()` takes no context at all, so nothing else is watching that
-	// stretch -- and leasing the caller's root context instead would ping forever and switch the
-	// watchdog off permanently, which is the exact failure a lease is shaped to avoid.
+	// One budget for the whole move, and the watchdog rides it. The lease must cover a bounded
+	// context (beat.go): the stop leg inside RescueGuest spends a full shutdownGrace and
+	// `vm.Stop()` takes no context at all, so nothing else is watching that stretch; leasing the
+	// caller's root context instead would ping forever and switch the watchdog off permanently,
+	// the exact failure a lease is shaped to avoid.
 	budget := netTick + cfg.BringUpBudget + 3*shutdownGrace
 	if swaps {
 		budget += netSwap
@@ -381,7 +365,7 @@ func (cfg Config) reparent(ctx context.Context, mgr upgrader, n notify.Notifier,
 	defer cancel()
 	cfg.beat.Lease(mv)
 	if swaps {
-		// THE SWAP, THEN THE RESTART: the guest boots behind the new member, so its own DHCP
+		// The swap, then the restart: the guest boots behind the new member, so its own DHCP
 		// teaches every switch upstream the new port (swapBeforeLaunch). The spec is the bridge's
 		// and stays as it is.
 		if err := cfg.swapMember(mv, cfg.net.Parent, dev, logf); err != nil {
@@ -400,7 +384,7 @@ func (cfg Config) reparent(ctx context.Context, mgr upgrader, n notify.Notifier,
 	if err := mgr.RescueGuest(mv); err != nil {
 		return fmt.Errorf("re-parent onto %s: restart the guest: %w", dev, err)
 	}
-	// RECORDED AFTER the guest is back, not before: the record is what a future re-parent paces
+	// Recorded after the guest is back, not before: the record is what a future re-parent paces
 	// itself against, and recording a LAN we had not actually served on would teach the next
 	// decision something we never verified.
 	cfg.recordNetwork(ctx, logf)
@@ -409,16 +393,13 @@ func (cfg Config) reparent(ctx context.Context, mgr upgrader, n notify.Notifier,
 }
 
 // rebuildOn is the Linux re-parent's act: the guest's devices rebuilt on dev, and cfg.net with
-// them.
-//
-// Rebuild BEFORE the restart. The children went away with their parent, so there are no live
-// fds to protect; and doing it first means the guest comes back into a network that is
-// already right rather than one being assembled underneath it.
-//
-// THE SUBSTRATE IS RE-DERIVED WITH THE PARENT. A move between Wi-Fi and wire changes it
-// (ipvtap <-> macvtap), and with it the guest's NICs: their MACs and how qemu is handed them.
-// guestSpec reads both off cfg.net, which this updates, so the restart that follows launches the
-// guest the new substrate needs. The tiers decide when; this is only the what.
+// them. Rebuild before the restart: the children went away with their parent, so there are no
+// live fds to protect, and the guest comes back into a network already right rather than one
+// being assembled underneath it. The substrate is re-derived with the parent: a move between
+// Wi-Fi and wire changes it (ipvtap <-> macvtap), and with it the guest's NICs: their MACs and
+// how qemu is handed them. guestSpec reads both off cfg.net, which this updates, so the restart
+// that follows launches the guest the new substrate needs. The tiers decide when; this is only
+// the what.
 func (cfg Config) rebuildOn(ctx context.Context, dev string) error {
 	spec := cfg.netSpec(dev, nic.IsBridge(dev), nic.Wireless(dev))
 	rb, cancel := context.WithTimeout(ctx, netTick)
@@ -439,10 +420,10 @@ func (r *reparenter) say(logf func(string, ...any), msg string) {
 	}
 }
 
-// configPathForMessage names the file an operator would edit. It is the message's job to be
-// actionable, and "set NIC" is not actionable without saying where. (The key is NIC in config.env;
-// BRIARD_NIC is its name at INSTALL time, where the report card reads it -- the two are
-// one rule: every config key K is settable as BRIARD_K when the installer runs.)
+// configPathForMessage names the file an operator would edit: the message must be actionable, and
+// "set NIC" is not without saying where. (The key is NIC in config.env; BRIARD_NIC is its name at
+// install time, where the report card reads it, by the one rule that every config key K is
+// settable as BRIARD_K when the installer runs.)
 func (cfg Config) configPathForMessage() string {
 	if p := os.Getenv("BRIARD_CONFIG"); p != "" {
 		return p
@@ -450,16 +431,13 @@ func (cfg Config) configPathForMessage() string {
 	return defaultConfigFile
 }
 
-// checkMovedLAN is the one thing a re-parent cannot fix and must therefore say out loud:
-// this node's system subnet was DRAWN against the collision landscape of a
-// different network, and on a new LAN that check is simply stale.
-//
-// ⚠️ IT NEVER RENUMBERS. The subnet is flock-scoped -- re-drawing it here would break a peer that
-// still holds the old one, which is a worse failure than the collision it would be avoiding. So
-// the remedy is a human's, and this is the sentence that reaches them.
-//
-// It is also why "re-run Observe" is the right instrument rather than a fresh draw: Observe is a
-// read, and the read is what says whether the old answer is still true.
+// checkMovedLAN is the one thing a re-parent cannot fix and must therefore say out loud: this
+// node's system subnet was drawn against the collision landscape of a different network, and on a
+// new LAN that check is simply stale. ⚠️ It never renumbers: the subnet is flock-scoped, and
+// re-drawing it here would break a peer that still holds the old one, a worse failure than the
+// collision it would be avoiding. So the remedy is a human's, and this is the sentence that
+// reaches them. That is also why re-running Observe is the right instrument rather than a fresh
+// draw: Observe is a read, and the read is what says whether the old answer is still true.
 func (cfg Config) checkMovedLAN(ctx context.Context, n notify.Notifier, logf func(string, ...any)) {
 	if cfg.net == nil || cfg.SystemCIDR == "" {
 		return
@@ -501,9 +479,8 @@ func (cfg Config) checkMovedLAN(ctx context.Context, n notify.Notifier, logf fun
 	})
 }
 
-// alertReparent is sent on EVERY re-parent, unconditionally and whatever the tier.
-//
-// ⚠️ It is never a quiet self-heal. The household's apps just moved network segments, which
+// alertReparent is sent on every re-parent, unconditionally and whatever the tier. ⚠️ It is
+// never a quiet self-heal: the household's apps just moved network segments, which
 // changes which wire it is on, possibly which addresses it holds, and certainly what a support
 // conversation needs to know. A node that healed itself silently is a node whose next problem
 // starts with nobody knowing this happened.

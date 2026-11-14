@@ -1,17 +1,14 @@
 package host
 
-// THE ADDRESS MOVED. The household reaches Briard at the service address its router hands out,
-// and anything set to that address -- a bookmark, a device's settings, a private network's route
-// to it -- stops working when the address changes, with no word anywhere. So a change is said,
-// once: an Event, which changes no state and has nothing to close it.
-//
-// The last address is node-local pet state, durable, because a restart is exactly when an address
-// is most likely to change: the guest takes one at bring-up. The first address a node ever sees
-// moved from nothing, and is only remembered.
-//
-// The wording names Tailscale or NetBird when its OS service runs on this host, read and never
-// touched: those are the tools the setup page covers, and each carries a route to the old address
-// that has to be set up again.
+// The address moved. The household reaches Briard at the service address its router hands out,
+// and anything set to that address (a bookmark, a device's settings, a private network's route to
+// it) stops working when the address changes, with no word anywhere. So a change is said, once:
+// an Event, which changes no state and has nothing to close it. The last address is node-local
+// pet state, durable, because a restart is exactly when an address is most likely to change: the
+// guest takes one at bring-up. The first address a node ever sees moved from nothing, and is only
+// remembered. The wording names Tailscale or NetBird when its OS service runs on this host, read
+// and never touched: those are the tools the setup page covers, and each carries a route to the
+// old address that has to be set up again.
 
 import (
 	"context"

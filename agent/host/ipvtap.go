@@ -8,19 +8,17 @@ import (
 	"briard.io/agent/nic"
 )
 
-// THE COPY: the host duty the wireless substrate adds.
+// The copy: the host duty the wireless substrate adds. ipvlan delivers a frame from the wire to a
+// child only when its destination is an address configured on that child (nic/ipvtap.go), and the
+// guest's addresses live in the guest, so every tick the host copies the guest's live node IP and
+// VIP onto the children in nic.HoldNS, and follows the VIP when it moves. LAN reach waits on the
+// copy for at most one tick. The VIP is the host's to lease on this substrate (lease.go), and
+// every reply to the host's requests is broadcast, so the lease waits on nothing here.
 //
-// ipvlan delivers a frame from the wire to a child only when its destination is an address
-// configured on that child (nic/ipvtap.go). The guest's addresses live in the guest, so every
-// tick the host copies the guest's live node IP and VIP onto the children in nic.HoldNS, and
-// follows the VIP when it moves. LAN reach waits on the copy for at most one tick. The VIP is
-// the host's to lease on this substrate (lease.go), and every reply to the host's requests is
-// broadcast, so the lease waits on nothing here.
-//
-// ⚠️ THE GATE: NEVER COPY AN ADDRESS THE HOST HOLDS ON THE PARENT. ipvlan checks duplicates among
-// its children and never against the parent, so it accepts the copy -- and the host then drops
-// off the LAN in both directions until it is removed. Checked against the host's CURRENT
-// addresses every tick, because the host's own lease can move under it.
+// ⚠️ The gate: never copy an address the host holds on the parent. ipvlan checks duplicates among
+// its children and never against the parent, so it accepts the copy, and the host then drops off
+// the LAN in both directions until it is removed. Checked against the host's current addresses
+// every tick, because the host's own lease can move under it.
 
 // ipvtapCopier is the copy's machinery. On Config like beat, because it outlives one tick.
 type ipvtapCopier struct {

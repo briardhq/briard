@@ -15,30 +15,27 @@ import (
 // anything -- and the observe loop's watchdog threshold is sized on every call in it being bounded.
 const vipVerbTimeout = 5 * time.Second
 
-// KEEPING THE HOST'S ROUTE TO ITS OWN GUEST IN STEP WITH REALITY.
-//
-// platform/route.go says why the route exists; this says when it may be there. The rule is one
-// line and everything else follows from it: the route is present exactly when THIS node's guest
-// actually holds the VIP.
+// Keeping the host's route to its own guest in step with reality. platform/route.go says why the
+// route exists; this says when it may be there, by the one rule everything else follows from: the
+// route is present exactly when this node's guest actually holds the VIP.
 //
 // That is narrower than "this node is configured with a VIP", and the difference is the whole
-// reason this is a loop rather than a one-time setup. On a two-node flock the VIP lives on
-// one node at a time, and the host of the OTHER node reaches it perfectly well over the LAN --
-// that traffic goes out the wire to a different machine and back, which macvtap does not
-// obstruct. Routing a configured-but-not-held VIP into our own guest would take a working path
-// away and replace it with a black hole. So the route follows net.vip -- the address the guest's
-// service NIC is measured to hold -- and never cfg.VIPAddr or cfg.HealthURL, which say what we
-// asked for rather than what happened.
+// reason this is a loop rather than a one-time setup. On a two-node flock the VIP lives on one
+// node at a time, and the other node's host reaches it perfectly well over the LAN (out the wire
+// to a different machine and back, which macvtap does not obstruct); routing a
+// configured-but-not-held VIP into our own guest would replace a working path with a black hole.
+// So the route follows net.vip, the address the guest's service NIC is measured to hold, and never
+// cfg.VIPAddr or cfg.HealthURL, which say what we asked for rather than what happened.
 //
-// This OBSERVES a failover; it never drives one (CONTRIBUTING.md invariant 2). Nothing here promotes, demotes or
-// claims an address -- drbd-reactor moves the VIP and this notices afterwards.
+// This observes a failover; it never drives one (CONTRIBUTING.md invariant 2): nothing here
+// promotes, demotes or claims an address, drbd-reactor moves the VIP and this notices afterwards.
 
 // vipRouter holds the one fact the reconcile needs to remember: what it last installed. Without
 // it the agent would shell out to `ip` on every cycle to re-assert a route that has not changed.
 type vipRouter struct {
 	dev    string // the host's end of the private link (WITNESS_TAP); "" = no link, nothing to do
 	vipDev string // the guest NIC the VIP lands on (VIP_DEV); "" = this node claims no VIP
-	// The two ends of the link, in system-subnet terms. `via` is the guest's NODE IP -- resolvable
+	// The two ends of the link, in system-subnet terms. `via` is the guest's node IP -- resolvable
 	// on this device only because the agent pinned a permanent neighbour entry for it
 	// (platform.SetNodeRoute), since the guest will not ARP for an eth1 address on eth3.
 	via string // the guest's node IP
@@ -58,14 +55,12 @@ func newVIPRouter(dev, vipDev, via, src string) *vipRouter {
 	}
 }
 
-// wantVIPRoute answers what the host should route, from what the guest answered.
-//
-// A verb ERROR means no route, and that is a decision rather than a fallback. An unreachable
-// guest is certainly not serving the household from this machine, so withdrawing fails OPEN: it
-// hands the address back to the LAN, where a peer that has taken the VIP over is reachable. The
-// opposite reading -- keep the route because we cannot see well enough to change it -- keeps
-// pointing the host at a guest that may have stopped serving, which is the only harm this path
-// is capable of causing.
+// wantVIPRoute answers what the host should route, from what the guest answered. A verb error
+// means no route, as a decision rather than a fallback: an unreachable guest is certainly not
+// serving the household from this machine, so withdrawing fails open, handing the address back to
+// the LAN, where a peer that has taken the VIP over is reachable. The opposite reading (keep the
+// route because we cannot see well enough to change it) keeps pointing the host at a guest that
+// may have stopped serving, the only harm this path is capable of causing.
 func wantVIPRoute(cidr string, err error) string {
 	if err != nil {
 		return ""
@@ -75,7 +70,7 @@ func wantVIPRoute(cidr string, err error) string {
 }
 
 // reconcile brings the host's route into line with the guest's live VIP. It acts only on a
-// CHANGE, so the steady state costs no subprocess at all; r is the cycle's one answer to net.vip
+// change, so the steady state costs no subprocess at all; r is the cycle's one answer to net.vip
 // (readVIP), shared with the cycle's other owners of the address.
 // Every failure is logged and retried next cycle: the route is a convenience for the household's
 // own machine, and nothing about the node's health, quorum or serving depends on it.
@@ -85,15 +80,13 @@ func (v *vipRouter) reconcile(ctx context.Context, r guest.VIPReader, logf func(
 	if v.dev == "" || v.vipDev == "" {
 		return
 	}
-	// A SHUTDOWN IS NOT A DEMOTION, and this guard is the whole of that distinction.
-	//
-	// The guest is a DETACHED unit: it keeps serving across an agent stop, and an agent restart is
-	// exactly what a self-update is. Reading a cancelled context as "the guest did not
-	// answer" would withdraw the route on the way out, so every restart would blip the
-	// household's reachability from its own machine for a node that never stopped serving.
-	// nixosTest/agent-readopt.nix polls the VIP across a restart and asserts it never drops. The
-	// failure the fail-open rule exists for is the opposite shape: a LIVE
-	// agent seeing a DEAD channel, i.e. a guest that has gone away while a peer may hold the VIP.
+	// A shutdown is not a demotion, and this guard is the whole of that distinction. The guest is
+	// a detached unit: it keeps serving across an agent stop, and an agent restart is exactly what
+	// a self-update is. Reading a cancelled context as "the guest did not answer" would withdraw
+	// the route on the way out, so every restart would blip the household's reachability from its
+	// own machine for a node that never stopped serving (nixosTest/agent-readopt.nix polls the VIP
+	// across a restart and asserts it never drops). The fail-open rule exists for the opposite
+	// shape: a live agent seeing a dead channel, a guest gone away while a peer may hold the VIP.
 	if ctx.Err() != nil {
 		return
 	}
@@ -112,7 +105,7 @@ func (v *vipRouter) reconcile(ctx context.Context, r guest.VIPReader, logf func(
 	// The `ip` calls need their own bound -- rctx's is spent by the read above.
 	actx, acancel := context.WithTimeout(ctx, vipVerbTimeout)
 	defer acancel()
-	// Withdraw first, always -- including when the address merely MOVED (a DHCP re-lease hands
+	// Withdraw first, always -- including when the address merely moved (a DHCP re-lease hands
 	// the guest a different one). Two /32s to the same guest would both work, which is exactly
 	// why the stale one must go: it would keep answering long after the household's address had
 	// changed, and nobody would notice until a failover made it wrong.

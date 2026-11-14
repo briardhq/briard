@@ -13,21 +13,19 @@ import (
 // lets Windows see the bridge go down and come back with it (the bundled qemu turns the link into
 // the TAP's media status).
 //
-// THE ONE RULE: NEVER UP WHILE THE NIC IS DOWN. A TAP that comes up while the NIC has no carrier
-// is a media-connect with nothing behind it, and Windows drops the host's address over it. So the
+// The one rule: never up while the NIC is down. A TAP that comes up while the NIC has no carrier
+// is a media-connect with nothing behind it, and Windows drops the host's address over it; so the
 // link always follows the NIC's carrier, in both directions, and a NIC that is not there at all
-// counts as down.
-//
-// Lives for the observe loop, and starts knowing nothing: the first tick of a loop sets the link
-// whatever it is, which puts it in the NIC's state after a launch (qemu opens the TAP connected)
-// and re-asserts it under an agent that restarted beside a running guest.
+// counts as down. A linkMirror lives for the observe loop and starts knowing nothing: the loop's
+// first tick sets the link whatever it is, which puts it in the NIC's state after a launch (qemu
+// opens the TAP connected) and re-asserts it under an agent that restarted beside a running guest.
 type linkMirror struct {
 	set     *bool // the link last set this loop; nil until the first set succeeds
 	failing bool  // the last set failed: said once, until one succeeds
 }
 
 // tick sets the link to the NIC's carrier when it differs from the link last set, and reports the
-// NIC's carrier coming BACK -- an up edge after the loop's first set, the one place the edge is
+// NIC's carrier coming back -- an up edge after the loop's first set, the one place the edge is
 // known on Windows, where the lease re-asks on it (lease.go's askNow). A failed set
 // leaves the record as it was, so the next tick tries again.
 func (m *linkMirror) tick(ctx context.Context, member string, carrier bool, set func(context.Context, bool) error, logf func(string, ...any)) (back bool) {

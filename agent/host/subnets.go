@@ -13,23 +13,22 @@ import (
 	"briard.io/shared/atomicfile"
 )
 
-// THIS NODE NUMBERS ITSELF, AND THE AGENT IS WHAT DOES IT.
+// This node numbers itself, and the agent is what does it. Two of the three ranges a node needs
+// cannot be asked for: the flock subnet (the guests' node IPs and the DRBD mesh, which rides the
+// household's own L2) and the private link (the point-to-point tap between a host and its own
+// guest). The third, the pod pool, is guest-internal and never configured on the host at all. All
+// three are drawn against the collision landscape this machine can actually see (agent/subnet),
+// not constants somebody picked.
 //
-// Two of the three ranges a node needs cannot be asked for: the FLOCK SUBNET (the guests' node IPs
-// and the DRBD mesh, which rides the household's own L2) and the PRIVATE LINK (the point-to-point
-// tap between a host and its own guest). The third, the POD pool, is guest-internal and never
-// configured on the host at all. All three are drawn against the collision landscape this machine
-// can actually see (agent/subnet), rather than being constants somebody picked.
+// The draw is part of convergence, not of the install, like the rest of the network (network.go):
+// it is a decision made from what this host can see, which changes, and a decision frozen into a
+// script at install time is one no release can reach. It also wants a LAN to look at (the flock
+// draw ARP-probes its candidate on the parent device), so it belongs after a usable device has
+// been selected, a moment only the agent has.
 //
-// THE DRAW IS PART OF CONVERGENCE, not part of the install, like the rest of the network
-// (network.go): it is a decision made from what this host can see, what a host can see changes,
-// and a decision frozen into a script at install time is one no release can reach. It
-// also wants a LAN to look at -- the flock draw ARP-probes its candidate on the parent device -- so
-// it belongs after a usable device has been selected, which is a moment only the agent has.
-//
-// ⚠️ IT HAPPENS ONCE. The record below is PET state: a node that has drawn keeps what it drew,
+// ⚠️ It happens once. The record below is pet state: a node that has drawn keeps what it drew,
 // because renumbering a live node breaks every peer that still holds the old address. The re-check
-// on a node that moved networks is a READ (checkMovedLAN), never a fresh draw, and its remedy is a
+// on a node that moved networks is a read (checkMovedLAN), never a fresh draw, and its remedy is a
 // human's.
 
 // subnetsName is the node's record of what it numbers itself from, beside the other pet caches.
@@ -41,7 +40,7 @@ const subnetsName = "subnets"
 const drawBudget = 60 * time.Second
 
 // subnetsPath derives the record from ASSIGNMENT_CACHE's directory, exactly as the LAN record
-// does -- that directory IS the node's pet state dir, and deriving keeps a harness that points
+// does -- that directory is the node's pet state dir, and deriving keeps a harness that points
 // ASSIGNMENT_CACHE elsewhere working without being told twice.
 func (cfg Config) subnetsPath() string {
 	if cfg.AssignmentCache == "" {
@@ -85,12 +84,11 @@ func (cfg Config) recordedSubnets() subnet.Draw {
 
 // numberThisNode resolves the three ranges and every address derived from them, drawing whatever
 // is still missing against dev. It is idempotent: the pass after a draw finds the record and does
-// no network work at all.
-//
-// ⚠️ A CONFIG THAT ALREADY NAMES THIS NODE'S ADDRESS IS NEVER RENUMBERED. SYSTEM_CIDR is this
-// node's identity on the system subnet, so a config that states it has been numbered by somebody
-// else -- a rig that owns its own substrate, an operator, a mesh directive -- and a draw there
-// would be us overruling them. That is the whole guard, and it is one predicate on purpose.
+// no network work at all. ⚠️ A config that already names this node's address is never
+// renumbered: SYSTEM_CIDR is this node's identity on the system subnet, so a config that states it
+// has been numbered by somebody else (a rig that owns its own substrate, an operator, a mesh
+// directive), and a draw there would be us overruling them. That is the whole guard, and it is one
+// predicate on purpose.
 func (cfg Config) numberThisNode(ctx context.Context, dev string, logf func(string, ...any)) (Config, error) {
 	if cfg.SystemCIDR != "" {
 		return cfg, nil
@@ -119,15 +117,14 @@ func (cfg Config) numberThisNode(ctx context.Context, dev string, logf func(stri
 	return cfg.applyDraw(d), nil
 }
 
-// recordSubnets writes what this node ACTUALLY numbers itself from, environment overrides
-// included. Otherwise a SYSTEM_SUBNET set on one boot and forgotten on the next renumbers a live
-// node back to the drawn value in silence -- the exact failure the record exists to prevent,
-// arriving by the escape hatch instead of by the draw.
-//
-// Durable (tmp + fsync + rename) because its only copy is this file and a power cut
-// between the draw and the guest's first boot must not lose it. 0644 rather than 0600: these
-// addresses are on the wire the moment the guest comes up, so there is nothing here to keep from
-// a reader, and a rig asserting about the node's addresses reads this file.
+// recordSubnets writes what this node actually numbers itself from, environment overrides
+// included; otherwise a SYSTEM_SUBNET set on one boot and forgotten on the next renumbers a live
+// node back to the drawn value in silence, the exact failure the record exists to prevent,
+// arriving by the escape hatch instead of by the draw. Durable (tmp + fsync + rename) because its
+// only copy is this file and a power cut between the draw and the guest's first boot must not lose
+// it. 0644 rather than 0600: these addresses are on the wire the moment the guest comes up, so
+// there is nothing here to keep from a reader, and a rig asserting about the node's addresses
+// reads this file.
 func (cfg Config) recordSubnets(d subnet.Draw, logf func(string, ...any)) {
 	path := cfg.subnetsPath()
 	if path == "" {
@@ -144,24 +141,21 @@ func (cfg Config) recordSubnets(d subnet.Draw, logf func(string, ...any)) {
 		return
 	}
 	if err := atomicfile.Write(path, b.Bytes(), 0o644, 0o700); err != nil {
-		// NOT FATAL, and the node keeps the addresses it just drew for this life. The cost is a
+		// Not fatal, and the node keeps the addresses it just drew for this life. The cost is a
 		// redraw at the next start, which renumbers a node whose guest may already be serving --
 		// so it is said loudly rather than swallowed.
 		logf("network: could not record this node's subnets at %s: %v -- the next start will redraw", path, err)
 	}
 }
 
-// applyDraw derives every address the node holds from the three ranges. POSITIONAL on purpose: a
-// /24 whose addresses are read off the node-id needs no allocator, no state and no agreement
-// beyond the subnet itself. Guests take .1/.2/.3 by node-id and their hosts take the same index
-// 128 higher, so the two never collide and a glance at an address says which side of a pair it is.
-//
-// Index 0, because a fresh install is a single-node flock. A node that later JOINS one renumbers
+// applyDraw derives every address the node holds from the three ranges, positionally on purpose:
+// a /24 whose addresses are read off the node-id needs no allocator, no state and no agreement
+// beyond the subnet itself. Guests take .1/.2/.3 by node-id and their hosts the same index 128
+// higher, so the two never collide and a glance at an address says which side of a pair it is.
+// Index 0, because a fresh install is a single-node flock; a node that later joins one renumbers
 // into the adopter's subnet, and that address arrives in the pairing's mesh spec rather than from
-// here.
-//
-// Only empty fields are filled, for the reason numberThisNode's guard exists: a config that states
-// an address is a decision, not a gap.
+// here. Only empty fields are filled, for the reason numberThisNode's guard exists: a config that
+// states an address is a decision, not a gap.
 func (cfg Config) applyDraw(d subnet.Draw) Config {
 	set := func(dst *string, v string) {
 		if *dst == "" {
@@ -170,14 +164,13 @@ func (cfg Config) applyDraw(d subnet.Draw) Config {
 	}
 	if d.System != "" {
 		set(&cfg.SystemCIDR, d.System+".1/24")
-		// The HOST's own address on that subnet. It needs one because a standby has no LAN
+		// The host's own address on that subnet. It needs one because a standby has no LAN
 		// presence and must still be dialable by its guest, and because the guest needs somewhere
-		// to reply to when the host dials IT (the reboot gate).
-		//
-		// A /32 on every substrate: on the private tap under macvtap, on the bridge beside one
-		// on-link route to the guest otherwise (netSpec). Either way it reaches exactly one machine,
-		// and a /24 would claim an on-link route for the whole system subnet -- competing with the
-		// route the guest's own peers need, or sitting on the host's primary device.
+		// to reply to when the host dials it (the reboot gate). A /32 on every substrate (on the
+		// private tap under macvtap, otherwise on the bridge beside one on-link route to the guest,
+		// netSpec): either way it reaches exactly one machine, and a /24 would claim an on-link
+		// route for the whole system subnet, competing with the route the guest's own peers need,
+		// or sitting on the host's primary device.
 		set(&cfg.SystemHostCIDR, d.System+".129/32")
 	}
 	if d.Priv != "" {

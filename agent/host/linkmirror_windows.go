@@ -19,7 +19,7 @@ func (cfg Config) mirrorLink(ctx context.Context, m *linkMirror, logf func(strin
 	g := platform.Adopt(cfg.guestSpec())
 	if m.tick(ctx, member, carrier, g.SetSystemLink, logf) {
 		cfg.lease.askNow() // the carrier back: the lease re-asks (lease.go)
-		// AND THE GUEST SAYS WHERE IT IS. The bridge forgets where the guest's addresses live
+		// And the guest says where it is. The bridge forgets where the guest's addresses live
 		// when its member's media cycles (measured on a radio re-association: the host back in
 		// 3 s, the VIP dark 35-46 s to every peer that had it cached, until each one's own ARP
 		// entry expired), and the guest, holding the same addresses, sends nothing unasked.

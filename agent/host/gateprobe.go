@@ -11,19 +11,17 @@ import (
 	"briard.io/agent/guestagent/deadman"
 )
 
-// READING THE GUEST'S REBOOT GATE, from outside the VM.
+// Reading the guest's reboot gate, from outside the VM. The guest deadman publishes RebootAllowed
+// on every tick and serves it on the guest's node IP as one line of key=value text
+// (deadman/gate.go); this is the client: dial, read a line, parse, hang up. It is the only
+// question this host asks the guest over anything other than the virtio-serial control channel,
+// and it exists precisely because that channel being dead is what makes anyone ask.
 //
-// The guest deadman publishes RebootAllowed on every tick and serves it on the guest's node IP as
-// one line of key=value text (deadman/gate.go). This is the client: dial, read a line, parse, hang
-// up. It is the only question this host asks the guest over anything other than the virtio-serial
-// control channel, and it exists precisely because that channel being dead is what makes anyone
-// ask.
-//
-// EVERY failure here -- no route, refused, timeout, garbage, an unknown protocol tag, a verdict
-// too old to mean anything -- lands on the same answer: not reached, or reached but not fresh.
-// The ladder reads both as "no opinion" and proceeds with the reboot it was already going to do.
-// That is deliberate and it is what keeps this file from becoming load-bearing: a bug in here can
-// cost the guard, never cause a power cycle that would not otherwise have happened.
+// Every failure here (no route, refused, timeout, garbage, an unknown protocol tag, a verdict too
+// old to mean anything) lands on the same answer: not reached, or reached but not fresh. The
+// ladder reads both as "no opinion" and proceeds with the reboot it was already going to do. That
+// is deliberate, and it keeps this file from becoming load-bearing: a bug in here can cost the
+// guard, never cause a power cycle that would not otherwise have happened.
 
 // gateVerdict is what the host managed to learn about the guest's own view of rebooting itself.
 //
@@ -44,13 +42,12 @@ const gateTimeout = 5 * time.Second
 
 // readGate probes the guest's gate. It never returns an error: the zero verdict already says
 // "learned nothing", and every caller treats a failure and an absence identically, so an error
-// return would only be a second way to spell the same thing.
-//
-// from is the host's own system-subnet address, and the dial is bound to it rather than left to
-// the routing table: the guest answers on its node IP, and a standby with no LAN address of its own
-// can only reply to an address on its system subnet. Linux would pick it anyway (the node route
-// pins its source); Windows has no per-route source, and the address is kept out of its source
-// selection on purpose, so there the bind is the only thing that picks it. "" binds nothing.
+// return would only be a second way to spell the same thing. from is the host's own system-subnet
+// address, and the dial is bound to it rather than left to the routing table: the guest answers on
+// its node IP, and a standby with no LAN address of its own can only reply to an address on its
+// system subnet. Linux would pick it anyway (the node route pins its source); Windows has no
+// per-route source, and the address is kept out of its source selection on purpose, so there the
+// bind is the only thing that picks it. "" binds nothing.
 func readGate(ctx context.Context, addr, from string, logf func(string, ...any)) gateVerdict {
 	ctx, cancel := context.WithTimeout(ctx, gateTimeout)
 	defer cancel()

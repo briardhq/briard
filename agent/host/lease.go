@@ -20,23 +20,21 @@ import (
 	"briard.io/shared/notify"
 )
 
-// THE HOST LEASES THE FLOCK ITS ADDRESS on a single-anchor substrate.
+// The host leases the flock its address on a single-anchor substrate. On an ipvtap child of a
+// wireless station, and behind the Windows bridge, the guest's frames leave with the host's L2
+// source, and a router that keys a lease on it (or on a chaddr the bridge rewrote to it) hands the
+// guest the host's own address. So the host asks instead, under the flock's chaddr (nic/dhcp.go),
+// and pushes the answer to the guest as its VIP_ADDR; the guest's own client is never started here
+// (VIP_LEASE=host). The address is the household's router's choice, and when it leases us nothing
+// distinct the node refuses and names the remedy: we never pick an address and defend it.
 //
-// On an ipvtap child of a wireless station, and behind the Windows bridge, the guest's frames
-// leave with the host's L2 source, and a router that keys a lease on it -- or on a chaddr the
-// bridge rewrote to it -- hands the guest the host's own address. So the host asks instead, under
-// the flock's chaddr (nic/dhcp.go), and pushes the answer to the guest as its VIP_ADDR; the
-// guest's own client is never started here (VIP_LEASE=host). The address is the household's
-// router's choice, and when it leases us nothing distinct the node REFUSES and names the remedy:
-// we never pick an address and defend it.
-//
-// THE TWO RULES, both because a reply to a ciaddr or a conflict check reaches the guest:
+// Two rules, both because a reply to a ciaddr or a conflict check reaches the guest:
 //  1. The lease is kept by INIT-REBOOT only: at every bring-up, and as the renewal at T1.
 //  2. A DISCOVER is sent only while the guest holds no address of ours: from a bring-up of a
 //     fresh guest, or while refused (the guest was given none). A lease that is lost (a NAK)
 //     relaunches the guest, and its bring-up asks again.
 //
-// THE RECORD is node-local pet state, written before the guest is given the address, so a host
+// The record is node-local pet state, written before the guest is given the address, so a host
 // restart can keep the address it pushed without asking a router that may be down: a failover
 // and a power cut must not need the network, only an install may.
 
@@ -150,13 +148,11 @@ func (cfg Config) newVIPLeaser() *vipLeaser {
 }
 
 // quietVIP silences the guest's VIP (on) or gives it back (off): QMP set_link on the NIC the VIP
-// lives on -- the service NIC of an ipvtap station, the one NIC behind a Windows bridge. It is the
+// lives on (the service NIC of an ipvtap station, the one NIC behind a Windows bridge). It is the
 // probe's "drop" (renew): with the link down nothing answers for the address, so the router's
-// conflict check finds it free.
-//
-// ⚠️ NEVER UP WHILE THE UPLINK IS DOWN, the link mirror's rule (linkmirror.go): giving it back on
-// a bridge sets the link to its member's carrier, which is what the mirror holds it at, so the
-// two agree whichever ran last.
+// conflict check finds it free. ⚠️ Never up while the uplink is down, the link mirror's rule
+// (linkmirror.go): giving it back on a bridge sets the link to its member's carrier, which is what
+// the mirror holds it at, so the two agree whichever ran last.
 func (cfg Config) quietVIP(ctx context.Context, on bool) error {
 	g := platform.Adopt(cfg.guestSpec())
 	set := g.SetSystemLink
@@ -217,7 +213,7 @@ func (l *vipLeaser) acquire(ctx context.Context, s nic.Spec, fresh bool, logf fu
 		l.setRetry(l.now())
 		return rec.Addr
 	}
-	// AN EXPIRED ADDRESS IS NEVER PUSHED UN-ASKED: a fresh guest holds nothing, so rule 2 allows
+	// An expired address is never pushed un-asked: a fresh guest holds nothing, so rule 2 allows
 	// the DISCOVER, and the record's address rides it as the hint (discover). The laptop asleep for
 	// a week comes back here, through the resume's relaunch.
 	if rec.Addr != "" && rec.Until.Before(l.now()) {
@@ -348,9 +344,9 @@ func (l *vipLeaser) setRetry(t time.Time) {
 	l.mu.Unlock()
 }
 
-// refuse records why, says it once per episode, and asks again later. THE LINE the install's
-// closing wait (`install -wait`) ends on, and prints (install.go's refusedLine): keep the prefix in
-// step with it.
+// refuse records why, says it once per episode, and asks again later. Its line is the one the
+// install's closing wait (`install -wait`) ends on, and prints (install.go's refusedLine): keep the
+// prefix in step with it.
 func (l *vipLeaser) refuse(cause string, logf func(string, ...any)) {
 	l.mu.Lock()
 	first := l.why == ""
@@ -498,14 +494,13 @@ func (l *vipLeaser) renew(ctx context.Context, logf func(string, ...any)) {
 }
 
 // moved reports whether the host has moved off the VIP's network: after an INIT-REBOOT nobody
-// answered, the host's own address on the link -- read now, since the host's own lease moves with
-// the link -- is outside the VIP's subnet. A router that is silent about an address it does not
-// know is not a router that wants it kept, and nobody on this LAN can reach it.
-//
-// ⚠️ NO LAN ADDRESS IS NO EVIDENCE: a host whose own lease has not landed yet holds only
-// link-local (or nothing), and that reads false, so the address is kept and asked for again. Only
-// an address positively elsewhere moves it. The node's own system-subnet address is the agent's,
-// never the LAN's, and is not counted.
+// answered, the host's own address on the link (read now, since the host's own lease moves with
+// the link) is outside the VIP's subnet. A router silent about an address it does not know is not
+// a router that wants it kept, and nobody on this LAN can reach it. ⚠️ No LAN address is no
+// evidence: a host whose own lease has not landed yet holds only link-local (or nothing), which
+// reads false, so the address is kept and asked for again; only an address positively elsewhere
+// moves it. The node's own system-subnet address is the agent's, never the LAN's, and is not
+// counted.
 func (l *vipLeaser) moved(rec leaseRecord, logf func(string, ...any)) bool {
 	vip, err := netip.ParsePrefix(rec.Addr)
 	if err != nil {
