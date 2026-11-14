@@ -1,36 +1,29 @@
-// Command reverse-proxy is the reverse proxy at Briard's service VIP. It answers plain HTTP
-// on :80, terminates TLS on :443, and forwards each request to the app the request's
-// HOSTNAME names — completing v0's deferred half of "reachable by name with TLS" (proved
-// issuance; nothing served it).
+// Command reverse-proxy is the reverse proxy at Briard's VIP. It answers plain HTTP on :80,
+// terminates TLS on :443, and forwards each request to the app the request's HOSTNAME names.
 //
-// It is promoter-owned (runs on the DRBD primary alongside the VIP), reads its cert/key
-// from the DRBD volume — so they replicate and survive failover with the data — and
-// HOT-RELOADS them when they change on disk. That last property is what lets the renewal
-// loop drop a fresh cert in with no restart and no handshake gap: the next TLS handshake
-// picks it up. A reload that fails (a half-written cert) keeps serving the last good one,
+// It is a promoter-chain member (runs on the primary alongside the VIP), reads its cert/key from
+// the DRBD volume -- so they replicate and survive failover with the data -- and HOT-RELOADS them
+// when they change on disk: a renewed cert is served from the next TLS handshake, with no restart
+// and no handshake gap. A reload that fails (a half-written cert) keeps serving the last good one,
 // so renewal is crash-safe without needing atomic writes.
 //
-// IT ROUTES FROM A TABLE IT DOES NOT BUILD. `-routes` names the file the guest's converge
-// writes at every promotion, install and reboot (shared/routes), and this reloads it by mtime with
-// exactly the same discipline as the cert: a table that will not parse keeps the last good one,
-// because dropping every route because one write was caught half-done would take a household's
-// apps down for a file it is about to be able to read.
+// IT ROUTES FROM A TABLE IT DOES NOT BUILD. `-routes` names the file the guest's converge writes
+// at every promotion, install and reboot (shared/routes), and this reloads it by mtime with the
+// same discipline as the cert: a table that will not parse keeps the last good one, because
+// dropping every route over one half-done write would take a household's apps down for a file it
+// is about to be able to read. It does not build the table from the volume's manifests because an
+// app's ADDRESS is a rendering fact, not a manifest fact -- the manifest names a port, and what
+// host answers on it is whatever the renderer wired the pod for. So this process knows names and
+// forwards; it never knows podman.
 //
-// It does NOT build the table itself out of the volume's manifests, and the reason decides the
-// shape of everything here: an app's ADDRESS is a rendering fact, not a manifest fact — the
-// manifest names a port, and what host answers on it is whatever the renderer wired the pod for.
-// So this process knows names and forwards; it never knows podman.
-//
-// It has NO PAGE OF ITS OWN: a name it does not route — the bare IP, the node's own
-// `briard-<flock>.local`, a typo — is forwarded to the household dashboard (`-fallback`), which is a
-// separate guest unit precisely so that nothing of ours lives inside the reverse proxy and the
-// reverse proxy itself stays replaceable. /healthz is ALWAYS its own: a node with nothing routed to
-// it is *ready*, not sick, which is what keeps the host agent's health probe honest. That stays
-// true with N apps routed, and it is a deliberate reversal of what one backend used to do (forward
-// /healthz to it): with N apps there is no single answer to forward, and an app that is down must
-// alert without making the node it runs on look broken enough to fail over (converge-at-promotion:
-// an app error reports, it never demotes). Per-app health is a separate question, asked per app,
-// through this same table.
+// It has NO PAGE OF ITS OWN: a name it does not route -- the bare IP, the flock's own
+// `briard-<flock>.local`, a typo -- is forwarded to the household dashboard (`-fallback`), a
+// separate guest unit, so that nothing of ours lives inside the reverse proxy and it stays
+// replaceable. /healthz under any name it does not route is ALWAYS its own (router.ServeHTTP): a
+// node with nothing routed is *ready*, not sick, which keeps the host agent's health probe honest,
+// and with N apps there is no single answer to forward -- an app that is down must alert without
+// making the node look broken enough to fail over (converge-at-promotion: an app error reports, it
+// never demotes). Per-app health is a separate question, asked per app, through this same table.
 package main
 
 import (
@@ -99,10 +92,9 @@ func main() {
 		log.Printf("reverse-proxy: no cert yet (%v); listening, will serve once it appears", err)
 	}
 	tbl := &routeReloader{path: *routesPath}
-	// Not fatal either, and for a stronger reason than the cert's: this unit starts after
-	// briard-apps on the promoter chain, so a missing table means a node that converged to
-	// nothing — the shipped state — and refusing to start would replace "no app routed" with
-	// "no reverse proxy at all", which is the same node with nothing to tell the household.
+	// Not fatal either: this unit starts after briard-apps on the promoter chain, so a missing
+	// table means a node that converged to nothing, and refusing to start would replace "no app
+	// routed" with "no reverse proxy at all" -- the same node with nothing to tell the household.
 	if _, err := tbl.load(); err != nil {
 		log.Printf("reverse-proxy: no routing table yet (%v); forwarding to the dashboard until one appears", err)
 	}
@@ -127,13 +119,12 @@ func main() {
 	}
 	log.Printf("reverse-proxy: serving %s (plain) + %s (TLS, cert %s); routes from %s: %s",
 		*httpAddr, *listen, *certPath, *routesPath, tbl.current().describe())
-	// Either listener dying is fatal: the reverse proxy is promoter-owned, so systemd restarts
-	// it on the primary rather than leaving it half open.
-	// Bind BEFORE saying READY: the reverse proxy runs under the guest's pivot, and this
-	// unit's READY is an INPUT TO THE TRIAL -- the trial agent try-restarts this proxy and blocks
-	// on the result, so READY must mean "listening", not "started", or a pushed binary that
-	// cannot bind would pass the verdict and be committed. (The commit is the agent's, never this
-	// unit's: neither it nor the dashboard has an ExecStartPost, and neither does the agent.)
+	// Either listener dying is fatal: the unit is Restart=on-failure, so systemd restarts it on
+	// the primary rather than leaving it half open.
+	// Bind BEFORE saying READY: this unit's READY is an INPUT TO THE TRIAL -- the trial agent
+	// try-restarts this proxy and blocks on the result, so READY must mean "listening", not
+	// "started", or a pushed binary that cannot bind would pass the verdict and be committed.
+	// (The commit is the agent's, never this unit's: it has no ExecStartPost.)
 	plainLn, err := net.Listen("tcp", *httpAddr)
 	if err != nil {
 		log.Fatalf("reverse-proxy: listen %s: %v", *httpAddr, err)
@@ -142,18 +133,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("reverse-proxy: listen %s: %v", *listen, err)
 	}
-	// THE HOUSEHOLD NAME, BOUND BEFORE READY for the same reason the listeners are. A reverse proxy
+	// THE HOUSEHOLD NAME, BOUND BEFORE READY for the same reason the listeners are: a reverse proxy
 	// that cannot answer `.local` is a node a household without a `*.casa` name cannot reach at
-	// all, so the failure belongs in the promoter chain rather than in a log line nobody reads --
-	// which is exactly how the daemon this replaces went missing for two days.
-	// HAVING NOTHING TO PUBLISH IS NOT THAT FAILURE: a node whose flock has no minted name binds
-	// nothing, says nothing, and serves HTTP.
+	// all, so the failure belongs in the promoter chain rather than in a log line nobody reads
+	// (serveMDNS). HAVING NOTHING TO PUBLISH IS NOT THAT FAILURE: a node whose flock has no minted
+	// name binds nothing, says nothing, and serves HTTP.
 	ifaces, err := mdnsIfaces()
 	if err != nil {
 		log.Fatalf("reverse-proxy: %v", err)
 	}
-	// No cleanup path: the process exiting closes the sockets, so the unit.s lifetime IS the
-	// record.s lifetime -- the one property the publisher it replaces got right.
+	// No cleanup path: the process exiting closes the sockets, so the unit's lifetime IS the
+	// lifetime of the records on the wire.
 	resp := newMDNSResponder(ifaces)
 	if err := serveMDNS(context.Background(), resp, tbl); err != nil {
 		log.Fatalf("reverse-proxy: %v", err)
@@ -171,11 +161,10 @@ func main() {
 // router routes the VIP: /healthz is always Briard's own answer, a request whose Host names a
 // routed app goes to that app, and everything else is forwarded to the dashboard.
 //
-// Owning /healthz (rather than passing it through) is what kills the zombie state a fresh
-// node used to land in: the host agent probed the *payload's* port, so a node with nothing
-// installed reported unhealthy forever, and no reflex could tell that apart from a broken
-// app. The probe target is stable across zero, one and N apps — which is the whole
-// point of it not being an app's answer.
+// Owning /healthz (rather than passing it through) gives the host agent's probe a target that is
+// stable across zero, one and N apps -- which is the whole point of it not being an app's answer:
+// a node with nothing installed is not reported unhealthy, and no reflex has to tell that apart
+// from a broken app.
 type router struct {
 	routes   func() *routing
 	proxy    http.Handler
@@ -196,7 +185,7 @@ func newRouter(current func() *routing, fallback *url.URL) *router {
 			rt := r.In.Context().Value(backendKey{}).(route)
 			r.SetURL(rt.to)
 			// Keep the client's Host. It is what an app uses to build absolute URLs, and
-			// it is now also the thing that SELECTED this backend — rewriting it to 127.0.0.1
+			// it is also the thing that SELECTED this backend -- rewriting it to 127.0.0.1
 			// would hand the app a name nobody typed.
 			r.Out.Host = r.In.Host
 			// X-Forwarded-For ONLY TO AN APP THAT HAS SAID IT ACCEPTS IT (forwardTrust). We do
@@ -211,10 +200,9 @@ func newRouter(current func() *routing, fallback *url.URL) *router {
 				}
 			}
 			//
-			// THE DASHBOARD IS OURS: it is not an app that never asked for a
-			// proxy, it is built for this one, and it needs the scheme the browser used -- a
-			// Secure cookie set over plain http would never come back, and the Home Assistant
-			// origin it hands the browser must match. So the reverse proxy says https to the
+			// THE DASHBOARD IS OURS: built for this proxy, and it needs the scheme the browser
+			// used -- a Secure cookie set over plain http would never come back, and the Home
+			// Assistant origin it hands the browser must match. So X-Forwarded-Proto goes to the
 			// dashboard alone, on the forward the table did not choose.
 			if p.fallback != nil && r.Out.URL.Host == p.fallback.Host {
 				proto := "http"
@@ -231,11 +219,9 @@ func newRouter(current func() *routing, fallback *url.URL) *router {
 func (p *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	t := p.routes()
 	// THE NAME IS ASKED FIRST, AND /healthz IS NOT AN EXCEPTION TO IT. Under a name we route,
-	// every path belongs to that app — /healthz included, because that is the app's own
-	// readiness endpoint and the thing its install gate reads. Answering it ourselves would tell a
-	// client "the node is fine" to a question asked about an app, which is the same conflation
-	// the single baked backend used to make in reverse. The node's own /healthz is reached the way
-	// the node itself is: by address, or by any name that is not an app's.
+	// every path belongs to that app, /healthz included: answering it ourselves would tell a
+	// client "the node is fine" to a question asked about an app. The node's own /healthz is
+	// reached the way the node itself is: by address, or by any name that is not an app's.
 	r, ok := t.lookup(req.Host)
 	if !ok {
 		if req.URL.Path == "/healthz" {
@@ -273,21 +259,18 @@ func (p *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 // health answers the NODE's readiness, and only ever its own.
 //
-// It says what it can see — how many apps are routed — and never whether they are well. Those
+// It says what it can see -- how many apps are routed -- and never whether they are well. Those
 // are different questions with different consequences: this one is read by the OS health gate and
 // the rollback reflex, where a wrong answer costs a failover, while "is home-assistant serving" is
-// read by a household and an alert. The reverse proxy used to conflate them by forwarding /healthz
-// to its single backend, and with N apps there is no single answer to forward. Per-app health
-// is asked per app, against this same table, by the guest's own probe.
+// read by a household and an alert. Per-app health is asked per app, against this same table, by
+// the guest's own probe.
 //
-// A NODE WITH NOTHING ROUTED IS READY. That is the shipped state of a fresh install — running,
-// replicating, able to fail over — and calling it unhealthy is the zombie state this replaced.
+// A NODE WITH NOTHING ROUTED IS READY. That is the shipped state of a fresh install -- running,
+// replicating, able to fail over -- and calling it unhealthy would make it a zombie.
 //
-// It NAMES what it routes, which is new and is not a leak: those same names are published on the
-// LAN over mDNS by the node itself, so anyone who can reach this port can already enumerate them.
-// It earns its place by making the one question a human asks here answerable in one curl — "does
-// this node know about my app?" — which was previously only visible by reading a file inside
-// the guest.
+// It NAMES what it routes, which is not a leak: the node publishes those same names on the LAN
+// over mDNS, so anyone who can reach this port can already enumerate them. It makes the one
+// question a human asks here answerable in one curl: "does this node know about my app?"
 func (p *router) health(w http.ResponseWriter, t *routing) {
 	fmt.Fprintf(w, "ok: reverse proxy up, %s\n", t.describe())
 }
@@ -385,8 +368,8 @@ func (r *routeReloader) current() *routing {
 			log.Printf("reverse-proxy: routes reload failed, keeping the current table: %v", err)
 			return prev
 		}
-		// Nothing has ever loaded: an empty table, which serves Briard's page. The node is not
-		// broken, it simply has nothing to say yet.
+		// Nothing has ever loaded: an empty table, which forwards every name to the dashboard.
+		// The node is not broken, it simply has nothing to say yet.
 		return newRouting(routes.Table{})
 	}
 	return c
@@ -434,7 +417,7 @@ type certReloader struct {
 	keyTime  time.Time // key file mtime when cached
 }
 
-// GetCertificate is the tls.Config.GetCertificate hook (called per handshake): it reloads
+// getCertificate is the tls.Config.GetCertificate hook (called per handshake): it reloads
 // from disk when the cert/key mtimes changed, otherwise serves the cached cert.
 func (r *certReloader) getCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	if !r.changed() {
@@ -468,7 +451,7 @@ func (r *certReloader) held() bool {
 	return err == nil
 }
 
-// Changed reports whether the cert or key file mtime differs from the cached load (or
+// changed reports whether the cert or key file mtime differs from the cached load (or
 // nothing is cached / the files can't be stat'd -> attempt a reload).
 func (r *certReloader) changed() bool {
 	ci, cerr := os.Stat(r.certPath)
@@ -481,7 +464,7 @@ func (r *certReloader) changed() bool {
 	return r.cached == nil || !ci.ModTime().Equal(r.certTime) || !ki.ModTime().Equal(r.keyTime)
 }
 
-// Load reads the cert/key from disk and caches them with their mtimes.
+// load reads the cert/key from disk and caches them with their mtimes.
 func (r *certReloader) load() (*tls.Certificate, error) {
 	cert, err := tls.LoadX509KeyPair(r.certPath, r.keyPath)
 	if err != nil {

@@ -1,7 +1,8 @@
 package main
 
 // THE GATE: how the reverse proxy signs the user into an app that has no login of its own worth
-// trusting (a route with a Gate, shared/routes). Files is the live case.
+// trusting (a route with a Gate, shared/routes). Files (signed token) and Mealie (header) are the
+// live cases.
 //
 // THE SESSION IS THE DASHBOARD'S, carried to the app's own name. A browser arriving at a gated
 // app without the dashboard's cookie for that name is sent to the dashboard's /open/<app>, which
@@ -13,10 +14,11 @@ package main
 // THE APP IS TOLD WHO IT IS IN A SIGNATURE, NOT A HEADER IT BELIEVES. After the dashboard says the
 // token stands for this app (asked over loopback, naming the app, so the dashboard can make the
 // app ready for the user first; the answer kept for half a minute), the reverse proxy forwards the
-// request with a token signed with the app's secret (the route's Gate file) naming the user
-// by the username the dashboard answers with, valid for a minute. The app verifies it on every request, so nothing that can reach the app's
-// address -- another workload on this node, a LAN host routing to the pod network -- can sign in
-// without the key, which only root on this node can read.
+// request with a token signed with the app's secret (the route's Gate file) naming the user by
+// the username the dashboard answers with, valid for a minute. The app verifies it on every
+// request, so nothing that can reach the app's address -- another workload on this node, a LAN
+// host routing to the pod network -- can sign in without the key, which only root on this node
+// can read.
 //
 // OR BY HEADER, for an app that reads its user from a reverse proxy (Mealie): the username in
 // X-Forwarded-User and the secret itself in the route's GateHeader, which the app compares with
@@ -24,7 +26,7 @@ package main
 // as the file it is kept in, which nothing off this node reads.
 //
 // THE DASHBOARD'S TOKEN NEVER REACHES THE APP. The cookie is the household's credential for the
-// dashboard itself, so the reverse proxy takes it off every request it forwards.
+// dashboard itself, so the reverse proxy takes it off every request it forwards to a gated app.
 
 import (
 	"context"

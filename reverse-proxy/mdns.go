@@ -3,30 +3,30 @@ package main
 // The household's mDNS responder, which lives in the reverse proxy for the reason the reverse proxy
 // exists: a `.local` name means "this app is reachable here", and the reverse proxy is what "here"
 // is. It answers off the SAME routing table the router reads, so a name that is published but
-// not routed is not expressible, where a separate publisher could only assert it, because it
-// is a second reader of the same file.
+// not routed is not expressible; a separate publisher, a second reader of the same file, could
+// only assert it.
 //
 // ⚠️ IT ANSWERS QUERIES AND SAYS NOTHING UNSOLICITED. No probing, no announcements, no goodbyes.
-// That is the whole robustness argument for replacing avahi rather than a shortcut: avahi's
-// failures were a state machine we could not see into — an entry group that wedged, silently,
-// permanently, if the address moved inside its probe window or an interface appeared
-// inside it — and a responder with no probe has no such state. "What address does
-// this name have" is a field read when the answer is written.
+// That is the robustness argument, not a shortcut: a probing responder is a state machine that
+// can wedge, silently and permanently, if the address moves or an interface appears inside its
+// probe window, and a responder with no probe has no such state. "What address does this name
+// have" is a field read when the answer is written.
 //
-// ⚠️ THE COST, ACCEPTED ON THE OWNER'S CALL: a browsing client learns of a NEW app
-// on its next periodic query rather than instantly, and an uninstalled one leaves a stale PTR
-// until its TTL. Failover needs none of it — both nodes publish byte-identical records, because
-// every name points at a VIP whose address does not change when it moves.
+// ⚠️ THE COST, ACCEPTED: a browsing client learns of a NEW app on its next periodic query rather
+// than instantly, and an uninstalled one leaves a stale PTR until its TTL. Failover needs none of
+// it -- both nodes publish byte-identical records, because every name points at a VIP whose
+// address does not change when it moves.
 //
 // ⚠️ NO PROBING ALSO MEANS NO CONFLICT DETECTION, and the bare names rely on that being
 // acceptable: `briard.local` and `briard-<app>.local` are answered by every flock beside its
 // flock-scoped names, so two flocks in one house both answer them and a client gets whichever
 // replies first (routes.BareHostName). The flock-scoped names stay unambiguous, and nothing the
 // node does depends on the bare ones.
-// ⚠️ If an announcer is ever added, `nixosTest/install-macvtap`'s cold-cache assertion needs its
-// announcement-tail wait back: an announcement is the same packet as a response, so a client can
-// be answered by a multicast it never asked for, and the assertion silently becomes a cache read
-// (that is what it once hid: inbound mDNS dropped on the macvtap while egress worked perfectly).
+// ⚠️ If an announcer is ever added, `nixosTest/install-macvtap.nix`'s cold-cache assertion needs
+// an announcement-tail wait in front of it (that test's silence check fails first): an
+// announcement is the same packet as a response, so a client can be answered by a multicast it
+// never asked for, and the assertion silently becomes a cache read -- one that hides inbound mDNS
+// being dropped on the macvtap while egress works.
 
 import (
 	"context"
@@ -75,7 +75,7 @@ func mdnsWorldFor(addr, flock string, t routes.Table) mdnsWorld {
 	if addr == "" {
 		// No address is nothing to point a name at, and a name resolving to nowhere is worse
 		// than a name that does not resolve: the household gets a connection that hangs instead
-		// of one that fails. The same rule already governed the shell publisher.
+		// of one that fails.
 		return mdnsWorld{}
 	}
 	seen := map[string]bool{}
@@ -159,9 +159,8 @@ func (w mdnsWorld) describe() string {
 }
 
 // mdnsResponder holds whatever is currently answering, and nothing else. Rebuilding is the only
-// way to change the NAME set — pion fixes local names at construction — and rebuilding is cheap
-// precisely because nothing probes: the new server answers its first query, where avahi would have
-// had to re-establish an entry group.
+// way to change the NAME set -- pion fixes local names at construction -- and rebuilding is cheap
+// precisely because nothing probes: the new server answers its first query.
 type mdnsResponder struct {
 	ifaces []net.Interface
 	// ask is the one question asked of the LAN, at bring-up: who else answers the bare name.
@@ -180,19 +179,19 @@ func newMDNSResponder(ifaces []net.Interface) *mdnsResponder {
 
 // set makes the wire match w, and is a no-op when it already does.
 //
-// ⚠️ THE NEW SERVER IS OPENED BEFORE THE OLD ONE IS CLOSED. Two sockets share :5353 (they set
-// SO_REUSEADDR, which is also why the guest's avahi and Home Assistant's own python-zeroconf have
-// always coexisted there), so this leaves no window in which the name resolves nowhere — and,
-// more importantly, no window in which a rebuild can fail because the port it just released is
-// still held. For the few milliseconds both exist they answer identically for every unchanged
+// ⚠️ THE NEW SERVER IS OPENED BEFORE THE OLD ONE IS CLOSED. Two sockets share :5353 (Go sets
+// SO_REUSEADDR on a socket listening on a multicast group, which is also how Home Assistant's own
+// python-zeroconf coexists there), so this leaves no window in which the name resolves nowhere --
+// and, more importantly, no window in which a rebuild can fail because the port it just released
+// is still held. For the few milliseconds both exist they answer identically for every unchanged
 // name, which is the shadowing case mDNS defines as no conflict at all.
 //
 // THE ONE QUESTION IS ASKED AT BRING-UP, from silence to publishing, and nowhere else. It is the
 // only moment the answer is clean: this node is not yet answering, so whatever replies to the
 // bare name is somebody else. A rebuild keeps the old conn answering until the new one is up, so
-// asking then would hear ourselves. It is a question each bring-up asks, never a decision
-// made once -- a second flock installed later is heard at this node's next bring-up, and until
-// then the bare name is simply ambiguous, which it is allowed to be (routes.BareHostName).
+// asking then would hear ourselves. Each bring-up asks again -- a second flock installed later is
+// heard at this node's next bring-up, and until then the bare name is simply ambiguous, which it
+// is allowed to be (routes.BareHostName).
 func (r *mdnsResponder) set(w mdnsWorld) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -224,7 +223,7 @@ func (r *mdnsResponder) set(w mdnsWorld) error {
 // promoter chain's first synchronous pass.
 const askTimeout = time.Second
 
-// otherBriard is the pure half of the question: the answer is a stranger only when it is not
+// otherBriard asks the question and judges the answer: it is a stranger only when it is not
 // this node's own address. The old Primary of THIS flock may still answer the bare name for a
 // moment after a failover, and it answers with the same VIP -- that is a handover, not a
 // second household.
@@ -273,8 +272,7 @@ func (r *mdnsResponder) open(w mdnsWorld) (*pmdns.Conn, error) {
 		return nil, fmt.Errorf("mdns: %q is not an address to publish", w.addr)
 	}
 	// IPv4 is the one that must work: the VIP is v4, and a household that cannot reach the name
-	// over v4 cannot reach it. IPv6 is opened when it can be and skipped when it cannot, which is
-	// what avahi did here too -- it joins the v6 group when the interface has a v6 address.
+	// over v4 cannot reach it. IPv6 is opened when it can be and skipped when it cannot.
 	addr4, err := net.ResolveUDPAddr("udp4", pmdns.DefaultAddressIPv4)
 	if err != nil {
 		return nil, fmt.Errorf("mdns: resolve v4 group: %w", err)
@@ -295,8 +293,7 @@ func (r *mdnsResponder) open(w mdnsWorld) (*pmdns.Conn, error) {
 		pmdns.WithLocalAddress(ip),
 	}
 	if len(r.ifaces) > 0 {
-		// The household's NICs and nothing else -- never the interfaces podman creates, which is
-		// the exclusion avahi's allowInterfaces expressed.
+		// The household's NICs and nothing else -- never the interfaces podman creates.
 		opts = append(opts, pmdns.WithInterfaces(r.ifaces...))
 	}
 	conn, err := pmdns.NewServer(ipv4.NewPacketConn(l4), p6, opts...)
@@ -321,9 +318,8 @@ func (r *mdnsResponder) open(w mdnsWorld) (*pmdns.Conn, error) {
 	return conn, nil
 }
 
-// published is the names this node is REALLY answering for, which the host reads every observe
-// cycle. It is the set it was given: nothing renames behind our back, which is the apparatus
-// avahi's silent conflict-rename made necessary and this responder makes unnecessary.
+// published is the names this node is REALLY answering for, which writePublished records for the
+// host. It is the set it was given: this responder never conflict-renames behind our back.
 func (r *mdnsResponder) published() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -333,7 +329,7 @@ func (r *mdnsResponder) published() []string {
 }
 
 // otherHeard is the other briard the bring-up question heard, or "" -- none heard, or not
-// publishing. The host reads it every observe cycle beside published().
+// publishing. writeOther records it beside published().
 func (r *mdnsResponder) otherHeard() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -352,29 +348,29 @@ func (r *mdnsResponder) close() {
 
 // The four runtime files this reads, and the household NICs it answers on.
 //
-// ⚠️ PAIRED WITH guest-image/configuration.nix, which writes three of them and names the same
-// interfaces -- the pairing the topology word already uses ("PAIRED with the Go const
-// guestagent.topologyEnvPath"). They are constants rather than flags because nothing chooses them
-// per deployment: the image fixes the paths and names the NICs, and a flag would only be a second
-// place for the same value to be wrong.
+// ⚠️ PAIRED WITH THEIR WRITERS AND READERS: the guest agent writes vip.env (net.configure) and
+// mdns.env (net.mdnsname) and reads back mdns.published and mdns.other, under its own consts of the
+// same paths (agent/guestagent); briard-vip's script in guest-image/configuration.nix writes
+// vip.live. They are constants rather than flags because nothing chooses them per deployment, and
+// a flag would only be a second place for the same value to be wrong.
 const (
 	// vipEnvPath is the agent's configured VIP; vipLivePath is what briard-vip ACTUALLY claimed,
-	// which under DHCP is the only one that knows. Last wins, exactly as the unit's
-	// EnvironmentFile ordering did.
+	// which under DHCP is the only one that knows. The live file wins when it names an address
+	// (mdnsVIP).
 	vipEnvPath  = "/run/briard/vip.env"
 	vipLivePath = "/run/briard/vip.live"
 	// mdnsEnvPath carries FLOCK_NAME, written by the agent's net.mdnsname and never baked: it is
 	// PET identity arriving at a CATTLE image. Absent means the flock has no minted name, which
 	// is a state, not a fault.
 	mdnsEnvPath = "/run/briard/mdns.env"
-	// mdnsPublishedPath is what the host reads back every observe cycle (net.mdnspublished),
-	// BARE -- no `briard-` prefix and no `.local`. Absent means this node publishes nothing, which
-	// is the normal answer on a Secondary.
+	// mdnsPublishedPath is what the host reads back (net.mdnspublished) when something asks --
+	// its report to the controller, `briard doctor` -- BARE: no `briard-` prefix and no `.local`.
+	// Absent means this node publishes nothing, which is the normal answer on a Secondary.
 	mdnsPublishedPath = "/run/briard/mdns.published"
 	// mdnsOtherPath is the address of ANOTHER briard heard answering the bare `briard.local` when
 	// this node came up (net.mdnsother). Absent means none was heard, or this node publishes
-	// nothing. Written beside mdnsPublishedPath, read the same way, for the doctor to say "two
-	// households share this LAN; yours is briard-<flock>.local".
+	// nothing. Written beside mdnsPublishedPath, read the same way, for the doctor to warn that
+	// another briard also answers `briard.local`.
 	mdnsOtherPath = "/run/briard/mdns.other"
 	// mdnsWatch is how long a change takes to reach the wire. Lag, not a race: nothing waits on a
 	// name within a deadline, and an install prints the name from the agent's own knowledge.
@@ -382,9 +378,13 @@ const (
 )
 
 // householdNICs are the interfaces a household is on, and the exclusions are the point: never the
-// interfaces podman creates (a veth appearing mid-probe is what wedged avahi), and
-// never the host link. Whichever of these exist are used; none existing is a fault worth failing
-// on, because a responder answering on no interface is a name that resolves nowhere.
+// interfaces podman creates, and never eth0 (qemu's user-net, the guest's WAN path). eth1 and eth2
+// are both here because which one carries the VIP is not fixed (VIP_DEV); eth3, the private
+// host<->guest link, is here because the host machine cannot hear the guest's multicast over
+// macvtap, so it is the household's own machine's only path to the name -- and every answer
+// carries the VIP, never the private link's address. Whichever of these exist are used; none
+// existing is a fault worth failing on, because a responder answering on no interface is a name
+// that resolves nowhere.
 var householdNICs = []string{"eth1", "eth2", "eth3"}
 
 // mdnsIfaces resolves the household NICs that exist on this node.
@@ -443,10 +443,9 @@ func mdnsVIP(livePath, cfgPath string) string {
 //
 // ⚠️ THE FIRST PASS IS SYNCHRONOUS AND ITS ERROR IS THE CALLER'S TO ESCALATE. A reverse proxy that
 // cannot publish is a node a `.local`-only household cannot reach at all, so the failure belongs in
-// the promoter chain rather than in a log line -- which is the whole lesson of the daemon this
-// replaces (avahi died, said nothing, and the name was gone for days). Having NOTHING to
-// publish is not that failure and never fails: a node with no minted flock name serves HTTP and
-// says nothing on the LAN.
+// the promoter chain rather than in a log line: a publisher that dies saying nothing leaves the
+// name gone for days. Having NOTHING to publish is not that failure and never fails: a node with
+// no minted flock name serves HTTP and says nothing on the LAN.
 func serveMDNS(ctx context.Context, resp *mdnsResponder, tbl *routeReloader) error {
 	tick := func() error {
 		flock := envValue(mdnsEnvPath, "FLOCK_NAME")
@@ -487,8 +486,8 @@ func serveMDNS(ctx context.Context, resp *mdnsResponder, tbl *routeReloader) err
 // because absent is how a Secondary says "none" and an empty file would be a name of length zero.
 //
 // It is derived from what the responder is actually serving, never from what it was asked to
-// serve: the host reads this every cycle to answer "what name does this node really have", and
-// echoing the request would rebuild the failure the read-back exists to end.
+// serve: the host reads this to answer "what name does this node really have", and echoing the
+// request would report a name that is plausible and not necessarily the one being served.
 func writePublished(path, flock string, names []string) error {
 	want := routes.FlockHostName(flock)
 	serving := false
