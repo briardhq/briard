@@ -10,10 +10,10 @@ import (
 )
 
 // The off-site check's two reads (backup.go), from the Cloud Files API that OneDrive and other
-// sync clients are built on: the client registers its folder as a sync root under a name
-// of its own, and keeps per file whether the copy on disk is the one it holds. Both are reads of
-// what the client recorded; neither opens a file's data, so a file the client moved to the cloud
-// is not downloaded to be asked about.
+// sync clients are built on: the client registers its folder as a sync root under its own name,
+// and keeps per file whether the copy on disk is the one it holds. Both read what the client
+// recorded and neither opens a file's data, so a file the client moved to the cloud is not
+// downloaded to be asked about.
 var (
 	cldapi                      = windows.NewLazySystemDLL("cldapi.dll") // the library behind cfapi.h
 	procCfGetSyncRootInfoByPath = cldapi.NewProc("CfGetSyncRootInfoByPath")

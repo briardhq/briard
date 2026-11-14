@@ -29,21 +29,19 @@ import (
 	"briard.io/shared/dashboard"
 )
 
-// The node's half of the casa name service (shared/casa): `<flock>.briard.casa`, claimed
-// from the household's own dashboard, confirmed by an emailed link, and from then on kept by
-// this loop -- the address written directly at the Worker whenever the VIP moves, and a
-// wildcard certificate renewed at 30 days out through the cloud. Nothing periodic goes up.
+// The node's half of the casa name service (shared/casa): `<flock>.briard.casa`, claimed from the
+// household's own dashboard, confirmed by an emailed link, and from then on kept by this loop --
+// the address written directly at the Worker whenever the VIP moves, and a wildcard certificate
+// renewed at 30 days out through the cloud. Nothing periodic goes up.
 //
-// WHAT THE HOST HOLDS, AND WHY IT IS THE HOST. The claim produces two durable facts, both
-// node-scoped pet state beside the identity files: the Ed25519 key that IS this node's
-// authority over the name (generated here, never sent anywhere -- the cloud binds its public
-// half once, after the email says yes), and the claim's own state. The guest keeps nothing that
-// outlives a push: it renders what the host tells it (dashboard.Casa) and serves the certificate
-// the host writes to the volume. Identity and decisions on the host; the guest is disposable.
-//
-// Everything else here is re-derived: the address is re-written once per agent run (an
-// idempotent upsert), the certificate's expiry is read back from the volume. A restart loses
-// nothing that matters.
+// The host holds the claim's two durable facts, node-scoped pet state beside the identity files:
+// the Ed25519 key that is this node's authority over the name (generated here, never sent
+// anywhere -- the cloud binds its public half once, after the email says yes), and the claim's
+// state. The guest keeps nothing that outlives a push: it renders what the host tells it
+// (dashboard.Casa) and serves the certificate the host writes to the volume -- identity and
+// decisions on the host, the guest disposable. Everything else is re-derived (the address
+// re-written once per agent run, an idempotent upsert; the certificate's expiry read back from
+// the volume), so a restart loses nothing that matters.
 
 const (
 	casaKeyName   = "casa-key"  // the Ed25519 seed, hex, 0600
@@ -419,14 +417,14 @@ func (cfg Config) lanKey(ctx context.Context) string {
 	return fp.HostCIDR + " via " + fp.GatewayIP
 }
 
-// resolve checks, for the address last written, that the household's network finds the name,
-// and is the gate on using it (the page's link, HA's external_url): routers with DNS rebinding
-// protection drop a public answer that points at a private address, and then a valid
-// certificate opens nothing. Two steps, in order. Public DNS first (1.0.0.1, else 8.8.8.8),
-// waited on until it answers the VIP, so the local resolver is never asked early and left
-// caching a "no such name". Then the household's resolver, whose answer is final for this
-// address in this session. A step that could not tell is asked again; only a positive answer
-// is recorded. Runs off the loop and lands on a later tick, like the cloud calls.
+// resolve checks, for the address last written, that the household's network finds the name, and
+// is the gate on using it (the page's link, HA's external_url): routers with DNS rebinding
+// protection drop a public answer pointing at a private address, and then a valid certificate
+// opens nothing. Two steps, in order: public DNS (1.0.0.1, else 8.8.8.8), waited on until it
+// answers the VIP so the local resolver is never asked early and left caching a "no such name";
+// then the household's resolver, whose answer is final for this address in this session. A step
+// that could not tell is asked again; only a positive answer is recorded. Runs off the loop and
+// lands on a later tick, like the cloud calls.
 func (c *casaRunner) resolve(ctx context.Context, now time.Time, logf func(string, ...any)) {
 	if c.lastA == "" {
 		return // nothing written yet, so nothing to look for

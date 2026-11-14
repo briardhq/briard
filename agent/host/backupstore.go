@@ -19,26 +19,24 @@ import (
 	"briard.io/shared/atomicfile"
 )
 
-// THE BACKUP REPOSITORY'S STORE: restic's REST backend protocol, served to the guest over the
-// private link and written into the household's backup folder on this machine.
+// The backup repository's store: restic's REST backend protocol, served to the guest over the
+// private link and written into the household's backup folder on this machine. It is the one
+// listener that serves the guest -- every other channel is the host driving the guest -- because
+// restic runs where the volume is mounted and the folder is here; a file server over HTTP is the
+// same on every host OS, where a shared filesystem into the VM is not. It listens only on the
+// host's own private-link address and answers only the guest's node IP; what crosses it is
+// restic's ciphertext, which the repository key, not this door, protects.
 //
-// THE ONE LISTENER THAT SERVES THE GUEST. Every other channel is the host driving the guest; this
-// one the guest dials, because restic runs where the volume is mounted and the folder is here. A
-// file server over HTTP is the same on every host OS, where a shared filesystem into the VM is
-// not. It listens only on the host's own private-link address and answers only the guest's node
-// IP; what crosses it is restic's ciphertext, which the repository key -- not this door --
-// protects.
-//
-// THE FOLDER IS THE PERSON'S. Every file and directory written is given the folder's own owner, so
-// they can copy, move, delete or restore it without us; the folder's owner is the fact, so nothing
-// records a uid, and a folder moved or re-owned is followed on the next write. The folder itself is
-// never created here: a missing folder may be an unmounted disk, and creating it would write the
+// The folder is the person's: every file and directory written is given the folder's own owner,
+// so they can copy, move, delete or restore it without us. The owner is the fact, so nothing
+// records a uid, and a folder moved or re-owned is followed on the next write. The folder itself
+// is never created here: a missing one may be an unmounted disk, and creating it would write the
 // backup onto whatever is underneath.
 //
-// WRITES ARE DURABLE AND NEVER OVERWRITE. Each file lands by temp + fsync + rename with its
-// directory flushed after, so restic is told "saved" only of a file that survives a power cut.
-// Every name is a content hash, so a second write of one that exists is refused rather than
-// replacing it -- restic's own REST server answers the same.
+// Writes are durable and never overwrite: temp + fsync + rename, the directory flushed after, so
+// restic is told "saved" only of a file that survives a power cut. Every name is a content hash,
+// so a second write of one that exists is refused rather than replacing it, as restic's own REST
+// server does.
 
 // backupStorePort is the store's port on the host's private-link address.
 const backupStorePort = "7791"
@@ -111,7 +109,7 @@ func (s *backupStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := os.Stat(s.dir); err != nil {
-		// THE FOLDER IS GONE: unmounted, deleted, or a home not mounted while its user is logged
+		// The folder is gone: unmounted, deleted, or a home not mounted while its user is logged
 		// out. Say so to restic as a server error; the run fails, and the run's report says why.
 		http.Error(w, "the backup folder is not there: "+err.Error(), http.StatusServiceUnavailable)
 		return
@@ -119,12 +117,12 @@ func (s *backupStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.route(w, r, strings.Trim(r.URL.Path, "/"))
 }
 
-// THE CANDIDATE ROOT: a folder the household asked to move the backup into, served under
+// The candidate root: a folder the household asked to move the backup into, served under
 // /candidate/ while the host reads it with the household's key (backup-folder) -- restic's
-// snapshot list decrypts, so it proves whose backups are there before anything switches. READ
-// ONLY, and restic's own paths only: nothing is written into a folder the household has not
-// confirmed, and checkBackupFolder has passed it (empty, or a restic repository) before it is set.
-// Nothing is served while none is set.
+// snapshot list decrypts, so it proves whose backups are there before anything switches. Read-only
+// and restic's own paths only: nothing is written into a folder the household has not confirmed,
+// and checkBackupFolder has passed it (empty, or a restic repository) before it is set. Nothing is
+// served while none is set.
 const backupCandidateRoot = "candidate"
 
 func (s *backupStore) serveCandidate(w http.ResponseWriter, r *http.Request, p string) {
@@ -364,17 +362,14 @@ func storeError(w http.ResponseWriter, err error) {
 }
 
 // ServeBackupStore serves the repository in folder() -- read per request, "" while the backup is
-// off -- to the guest until ctx ends. Skipped -- not an error -- when there is no private link to
-// serve it on. Every failure is logged and non-fatal, as the admin socket's is: a node that cannot
-// take tonight's backup still serves the household, and the run's report says the store is
-// unreachable.
-//
-// THE BIND WAITS FOR THE ADDRESS. The network converger puts hostIP on the private link, which may
-// not exist yet when the agent starts, so the bind retries until it holds. Once held it outlives
-// the address going and coming back with a guest relaunch: a bound socket keeps its address.
-//
-// Exported for one other caller, the agent-less rig's store (nixosTest/backup-store), which
-// serves the same code with no agent around it.
+// off -- to the guest until ctx ends; skipped, not an error, with no private link to serve it on.
+// Every failure is logged and non-fatal, as the admin socket's is: a node that cannot take
+// tonight's backup still serves the household, and the run's report says the store is unreachable.
+// The bind waits for the address: the network converger puts hostIP on the private link, which may
+// not exist yet when the agent starts, so it retries until it holds; once held it outlives the
+// address going and coming back with a guest relaunch, since a bound socket keeps its address.
+// Exported for one other caller, the agent-less rig's store (nixosTest/backup-store), which serves
+// the same code with no agent around it.
 func ServeBackupStore(ctx context.Context, folder func() string, hostIP, guestIP string, logf func(string, ...any)) {
 	serveBackupStore(ctx, folder, nil, hostIP, guestIP, logf)
 }

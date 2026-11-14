@@ -13,11 +13,11 @@ import (
 	"briard.io/shared/notify"
 )
 
-// stateDiskInitial is the state disk's size when the agent makes it: THICK, paid for up front, and
+// stateDiskInitial is the state disk's size when the agent makes it: thick, paid for up front, and
 // only as big as an empty node needs -- the journal (capped at 128 MB), the boot's scratch (the
-// dressed binaries, ~30 MB) and the deadman's backoff, with room to spare. Everything an app
-// brings is charged when it arrives: an install grows the disk first (growStateDisk), so the host
-// pays at the operation that needs the space and never underneath a running guest.
+// dressed binaries, ~30 MB) and the deadman's backoff, with room to spare. What an app brings is
+// charged when it arrives: an install grows the disk first (growStateDisk), so the host pays at the
+// operation that needs the space, never underneath a running guest.
 const stateDiskInitial = reportcard.StateDiskInitialMB << 20 // the report card's line, so its floor and this agree
 
 // provisionBudget bounds the first start's allocation of both disks: the default 4 GiB data volume
@@ -29,7 +29,7 @@ const provisionBudget = 15 * time.Minute
 // small installs do not each cost a resize.
 const stateDiskStep = 1 << 30
 
-// hostDiskReserve is what a grow leaves free on the HOST's filesystem. The host's own OS keeps
+// hostDiskReserve is what a grow leaves free on the host's filesystem. The host's own OS keeps
 // writing -- its logs, its updates, the next release staged beside the running one -- and a guest
 // disk that took the last of it would move the failure out of the guest and into the machine.
 const hostDiskReserve = reportcard.HostDiskReserveMB << 20 // the report card's line, likewise
@@ -38,12 +38,12 @@ const hostDiskReserve = reportcard.HostDiskReserveMB << 20 // the report card's 
 // the running app is untouched.
 var errHostDiskFull = errors.New("not enough free space on this computer")
 
-// stateDiskGrowth decides a grow: the size the state disk FILE must reach for the guest to have
+// stateDiskGrowth decides a grow: the size the state disk file must reach for the guest to have
 // need bytes free on it, or 0 when it already has them. The range is padded by an eighth before
-// rounding, because the guest is not handed the whole of it -- ext4 keeps 5 % of a grown range
-// for root and a little more for its own tables, and a grow that came up a few MB short would
-// pass here and fail at the gate it exists to satisfy. hostFree is 0 when the host's free space
-// cannot be read; the allocation itself then refuses a host that cannot back it.
+// rounding because the guest does not get all of it -- ext4 keeps 5 % of a grown range for root
+// and a little more for its tables -- and a grow a few MB short would pass here and fail at the
+// gate it exists to satisfy. hostFree is 0 when the host's free space cannot be read; the
+// allocation itself then refuses a host that cannot back it.
 func stateDiskGrowth(guestFree, need, fileSize, hostFree int64) (int64, error) {
 	if guestFree >= need {
 		return 0, nil
@@ -93,7 +93,7 @@ func (cfg Config) growStateDisk(ctx context.Context, g stateGrower, resize func(
 	return nil
 }
 
-// diskFill is the first start's making of this node's disks (provisionDisks), run OFF the loop:
+// diskFill is the first start's making of this node's disks (provisionDisks), run off the loop:
 // started by finishInstall beside the image fetch, the other long operation of a first start and
 // independent of it, and joined by Run before bring-up (joinFill). done closes when it ends, err is
 // its result once done has, and by is the end of its budget.
@@ -127,14 +127,13 @@ func (cfg Config) startFill(logf func(string, ...any)) *diskFill {
 // during a slow disk gets the reason. A failed fill is fatal, as it is where it fails: a guest
 // launched with a `-drive` for a file nobody made is a boot that fails further from its cause.
 //
-// THE BUDGET IS A DEADLINE HERE, NOT A WATCHDOG LEASE. Off the loop a lease would ping on the
-// loop's behalf while the start goes on without it, and hide a wedge in anything the start runs
+// The budget is a deadline here, not a watchdog lease: off the loop a lease would ping on the
+// loop's behalf while the start goes on without it, hiding a wedge in anything the start runs
 // beside the fill for as long as the budget. So the loop keeps beating, and a fill past its budget
-// ends the start with the error: the write takes no context, so nothing cuts it short, and the next
-// start discards the half-written file and writes it again (platform.AllocateThick).
-//
-// An ended fill is its result whatever else is ready: a stop that arrives with it does not make
-// disks that were made into ones that were not.
+// ends the start with the error; the write takes no context, so nothing cuts it short, and the
+// next start discards the half-written file and writes it again (platform.AllocateThick). An ended
+// fill is its result whatever else is ready: a stop arriving with it does not make disks that were
+// made into ones that were not.
 func (cfg Config) joinFill(ctx context.Context, local <-chan localRequest, f *diskFill, logf func(string, ...any)) error {
 	select {
 	case <-f.done:
@@ -154,14 +153,13 @@ func (cfg Config) joinFill(ctx context.Context, local <-chan localRequest, f *di
 
 // provisionDisks makes this node's pet volumes exist, once, before the guest is launched.
 //
-// ⚠️ IT PROVISIONS ONLY WHAT IT WAS TOLD ABOUT, and that predicate is doing real work rather than
-// being defensive. An empty path is how a harness says "this node has no such disk", so a path
-// invented here would hand qemu a `-drive` for a file nobody made. Same rule as everywhere else
-// in the install layout: the installer decides the LAYOUT and writes the paths down; the agent
-// makes what those paths name.
+// ⚠️ It provisions only what it was told about, and that predicate does real work, not defence:
+// an empty path is how a harness says "this node has no such disk", so a path invented here would
+// hand qemu a `-drive` for a file nobody made. As everywhere in the install layout, the installer
+// decides the layout and writes the paths down; the agent makes what those paths name.
 //
-// Both disks are THICK, and their directory is marked no-copy-on-write before either is made
-// (platform.SetNoCOW): on a btrfs host a reservation does not cover a later overwrite otherwise.
+// Both disks are thick, and their directory is marked no-copy-on-write before either is made
+// (platform.SetNoCOW): on a btrfs host a reservation does not otherwise cover a later overwrite.
 // The guest's OS disk is not here: it is the release's image, attached read-only.
 func (cfg Config) provisionDisks(logf func(string, ...any)) error {
 	for _, p := range []string{cfg.DataDisk, cfg.StateDisk} {
@@ -220,16 +218,15 @@ func parseSize(s string) (int64, error) {
 	return n << 30, nil
 }
 
-// diskAlerter tells the household when the host disk holding this node's disks runs short --
-// BEFORE an operation is refused for it. Nothing the guest writes reaches the host's free space
-// (its OS is read-only and its disks thick), so a full host disk does not stop the guest; what it
-// stops is the next thing that needs room: an app install or upgrade (growStateDisk keeps
-// hostDiskReserve) and the next update, which stages beside the running one. Without this, the
-// first a household hears of it is that refusal.
+// diskAlerter tells the household when the host disk holding this node's disks runs short, before
+// an operation is refused for it -- otherwise that refusal is the first they hear. Nothing the
+// guest writes reaches the host's free space (its OS is read-only, its disks thick), so a full host
+// disk does not stop the guest; it stops the next thing that needs room: an app install or upgrade
+// (growStateDisk keeps hostDiskReserve) and the next update, which stages beside the running one.
 //
-// It asserts "low" under hostDiskReserve and "back" only above diskClearMB -- a margin, so a
-// host hovering at the line does not flap; in between it says nothing, and the alert store
-// keeps whichever it last said. An unreadable answer (0) changes nothing in either direction.
+// It asserts "low" under hostDiskReserve and "back" only above diskClearMB, a margin so a host
+// hovering at the line does not flap; in between it says nothing, and the alert store keeps
+// whichever it last said. An unreadable answer (0) changes nothing in either direction.
 type diskAlerter struct {
 	read func(path string) int // reportcard.DiskFreeMB in production: MB free, 0 if unreadable
 	next time.Time
@@ -275,18 +272,15 @@ func (a *diskAlerter) observe(ctx context.Context, n notify.Notifier, node, disk
 
 // smartAlerter tells the household when a disk under this node's data says it is failing, or
 // records new bad sectors -- the likeliest way a home machine dies, and otherwise the first sign
-// is the failure itself.
+// is the failure itself. It reads in the background, one read in flight at a time, and the loop
+// takes the answer at a later tick: a disk behind a slow bridge can hold smartctl in a command
+// timeout no context can cut short, and the loop must keep beating through it.
 //
-// IT READS IN THE BACKGROUND, one read in flight at a time, and the loop takes the answer at a
-// later tick: a disk behind a slow bridge can hold smartctl in a command timeout that no context
-// can cut short, and the loop must keep beating through it.
-//
-// FAILING opens at Critical, and GROWTH opens at Warning: more recorded errors than the first
-// read this agent made. A steady count opens nothing -- some disks run for years with a few
-// remapped sectors -- and an agent restarted under an open growth alert says nothing, so the
-// store keeps it. Only a disk reading clean (no verdict of failing, no errors) resolves: a
-// replaced disk, in practice. AN UNKNOWN IS NOT AN ALARM: an unreadable disk, or one asleep,
-// changes nothing.
+// Failing opens at Critical; growth (more recorded errors than this agent's first read) opens at
+// Warning. A steady count opens nothing -- some disks run for years with a few remapped sectors --
+// and an agent restarted under an open growth alert says nothing, so the store keeps it. Only a
+// disk reading clean (no failing verdict, no errors) resolves: a replaced disk, in practice. An
+// unknown is not an alarm: an unreadable disk, or one asleep, changes nothing.
 type smartAlerter struct {
 	disks func(path string) ([]string, error)                // reportcard.DataDisks in production
 	read  func(context.Context, []string) []reportcard.SMART // reportcard.ReadSMART in production

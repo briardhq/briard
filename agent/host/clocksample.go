@@ -14,30 +14,28 @@ import (
 	"briard.io/shared/notify"
 )
 
-// THE CLOCK SAMPLE: a ring member taken by the CLOCK rather than by an event,
-// whenever an app's newest member is an hour old.
+// The clock sample: a ring member taken by the clock rather than by an event, whenever an app's
+// newest member is an hour old. Every other member is taken at an app start or an operation, and a
+// stable Home Assistant can run for a month without restarting; the clock's sample still compares
+// it with an hour ago -- a detected change lands within the hour it happened, and quiet time still
+// gets its restore points -- so undo's granularity is the interval, not the uptime.
 //
-// WHY THE RING NEEDS ONE AT ALL. Every other member is taken at an app start or an operation,
-// and a stable Home Assistant can run for a month without restarting. The clock's sample is what
-// still compares it with an hour ago -- a detected change lands within the hour it happened, and
-// quiet time still gets its restore points -- so undo's granularity is the interval, not the uptime.
+// Hourly, and measured cheap: the recorder lock costs 76 ms p95 at 100 writes/s and did not break
+// under that load, and Home Assistant runs its automations with the recorder down entirely (only
+// history waits). "Unless a recent one exists": any member counts, so an app that restarts often
+// is sampled by its starts and the clock adds nothing.
 //
-// HOURLY, AND MEASURED CHEAP: the recorder lock costs 76 ms p95 at 100 writes/s and did not
-// break under that load, and Home Assistant runs its automations with the recorder
-// down entirely -- only history waits. "Unless a recent one exists": any member counts, so an
-// app that restarts often is sampled by its starts and the clock adds nothing.
+// Scheduled by the host, taken by the guest: the host owns cadence and policy, the guest owns the
+// volume and does the work. It rides the observe loop rather than its own timer because that loop
+// already runs on a cadence, knows whether this node is serving, and holds the channel -- a second
+// scheduler would need all three again.
 //
-// SCHEDULED BY THE HOST, TAKEN BY THE GUEST. The host owns cadence and policy; the
-// guest owns the volume and does the work. It rides the observe loop rather than a timer of its
-// own, because that loop already runs on a cadence, already knows whether this node is serving,
-// and already holds the channel — a second scheduler would need all three again.
-//
-// ⚠️ IT IS THE ONE MEMBER TAKEN AGAINST A RUNNING APP, so it is the one that has to ASK the
-// app to hold still — and the one whose class is decided by whether it did. Home Assistant
-// offers exactly the mechanism its own backups use (a truncating WAL checkpoint plus a held
-// transaction, agent/hass/quiesce.go); an app that offers nothing gets a member that says
-// crash-consistent, which is what it is. Shipping a member whose trustworthiness nobody can tell
-// is the thing the ring refuses, and the class is how that stays true when the asking fails.
+// ⚠️ It is the one member taken against a running app, so the one that has to ask the app to hold
+// still, and the one whose class is decided by whether it did. Home Assistant offers exactly the
+// mechanism its own backups use (a truncating WAL checkpoint plus a held transaction,
+// agent/hass/quiesce.go); an app that offers nothing gets a member that says crash-consistent,
+// which is what it is. A member whose trustworthiness nobody can tell is what the ring refuses to
+// ship, and the class keeps that true when the asking fails.
 const clockInterval = time.Hour
 
 // clockSampleBudget bounds one app's sample on the observe loop: in the guest it is the hold
@@ -49,7 +47,7 @@ const clockSampleBudget = 2 * time.Minute
 // memberTaker is the slice of the guest a member costs: read the manifest it is pinned to, ask for
 // the member, and — only when this process has forgotten — read back what the ring already holds.
 type memberTaker interface {
-	// QuiescedSnapshot takes a member of a RUNNING app, asking it to hold still across the
+	// QuiescedSnapshot takes a member of a running app, asking it to hold still across the
 	// snapshot, and answers whether it did. The guest writes that sidecar itself.
 	QuiescedSnapshot(ctx context.Context, app, dataDir, dest, sidecar string) (bool, string, error)
 	SupportsQuiescedSnapshot() bool
@@ -69,15 +67,12 @@ type clockSampler struct {
 
 func newClockSampler() *clockSampler { return &clockSampler{newest: map[string]time.Time{}} }
 
-// consider takes a clock sample for every app whose newest member is an interval old.
-//
-// SERVING ONLY. The volume is mounted on one node, and a secondary asking for a member would be
-// asking about data it does not hold.
-//
-// THE IN-MEMORY RECORD IS THE FAST PATH, NOT THE TRUTH. The guest takes members this process never
-// hears of (every start), and every observe() call starts with an empty map. So an app whose record is
-// an interval old is checked against the RING, which is the durable answer, and the map is what
-// keeps that check to about once per app per interval.
+// consider takes a clock sample for every app whose newest member is an interval old. Serving
+// only: the volume is mounted on one node, and a secondary asking for a member would be asking
+// about data it does not hold. The in-memory record is the fast path, not the truth: the guest
+// takes members this process never hears of (every start), and every observe() call starts with
+// an empty map. So an app whose record is an interval old is checked against the ring, the durable
+// answer, and the map keeps that check to about once per app per interval.
 func (cfg Config) consider(ctx context.Context, g memberTaker, c *clockSampler, apps []model.AppSpec, serving bool, now time.Time, logf func(string, ...any)) {
 	if !serving || !g.SupportsSnapshotMember() {
 		return
@@ -92,10 +87,9 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, c *clockSampler, 
 		}
 		at := cfg.takenAt()
 		member := quadlet.SnapshotMember(s.Name, quadlet.TriggerClock, at)
-		// RECORDED WHETHER OR NOT IT WORKS: a failure waits an interval rather than being retried
-		// every cycle. A volume that is having trouble is not helped by being asked again, and the
-		// next sample costs the same as this one. The ring is a convenience; the app is the
-		// product.
+		// Recorded whether or not it works: a failure waits an interval rather than being retried
+		// every cycle. A volume having trouble is not helped by being asked again, and the next
+		// sample costs the same as this one. The ring is a convenience; the app is the product.
 		c.newest[s.Name] = at
 		if err := cfg.takeRunning(ctx, g, s.Name, member, quadlet.TriggerClock, at, logf); err != nil {
 			logf("clock %s: could not take a sample (%v)", s.Name, err)
@@ -105,16 +99,14 @@ func (cfg Config) consider(ctx context.Context, g memberTaker, c *clockSampler, 
 	}
 }
 
-// takeRunning takes the clock's member of a RUNNING app, asking the app to hold
-// still if the guest can ask.
+// takeRunning takes the clock's member of a running app, asking the app to hold still if the guest
+// can ask; a guest too old to ask gets the plain take, a member that says crash-consistent, which
+// is exactly what it is.
 //
-// ⚠️ THE SIDECAR IS RENDERED SAYING `crash` EITHER WAY, and the guest upgrades it when the app
-// actually held. The host cannot see whether a lock survived — Home Assistant reports that to
-// whoever released it — so the claim is made by the only party that watched it, and every failure
+// ⚠️ The sidecar is rendered saying `crash` either way, and the guest upgrades it when the app
+// actually held. The host cannot see whether a lock survived -- Home Assistant reports that to
+// whoever released it -- so the claim is made by the only party that watched it, and every failure
 // in between leaves the member saying the weaker, true thing.
-//
-// A guest too old to ask gets the plain take: a member that says crash-consistent, which is
-// exactly what it is.
 func (cfg Config) takeRunning(ctx context.Context, g memberTaker, app, member string, tr quadlet.Trigger, at time.Time, logf func(string, ...any)) error {
 	if !g.SupportsQuiescedSnapshot() {
 		return cfg.takeMember(ctx, g, app, member, tr, quadlet.Crash, nil, at, logf)
@@ -135,7 +127,7 @@ func (cfg Config) takeRunning(ctx context.Context, g memberTaker, app, member st
 		return err
 	}
 	if !held {
-		// NOT A FAILURE, and the log line says so: the member exists and is as good as any live
+		// Not a failure, and the log line says so: the member exists and is as good as any live
 		// snapshot, which is what its class now says. The reason is worth a line because "the
 		// clock sample is crash-consistent again" is how a household would find out that Home
 		// Assistant stopped answering, or that an upgrade moved the API this leans on.
@@ -147,7 +139,7 @@ func (cfg Config) takeRunning(ctx context.Context, g memberTaker, app, member st
 // newestMember is when the ring's newest member of this app was taken, by the time in its
 // name — the check that makes an agent restart, or a start sample the guest took, count.
 //
-// A guest that cannot list says NO, and the take that follows is refused by its own capability
+// A guest that cannot list says no, and the take that follows is refused by its own capability
 // gate if it cannot happen either. Both directions are safe: the worst case is a second member of
 // bytes that have not changed, which copy-on-write makes nearly free and the next take replaces.
 func (cfg Config) newestMember(ctx context.Context, g memberTaker, app string) (time.Time, bool) {
@@ -167,19 +159,18 @@ func (cfg Config) newestMember(ctx context.Context, g memberTaker, app string) (
 	return newest, !newest.IsZero()
 }
 
-// THE NIGHTLY RECORDER CHECK, 05:30 local: after the guest-update window (03:00 plus up to two
-// hours) and Home Assistant's own 04:12 purge, so it reads the database after both have
-// finished with it. The guest does the work (agent/hass/dbcheck.go says what and why); this
-// schedules it, asks for the restore a corrupt report names, and tells the household.
+// The nightly recorder check, 05:30 local: after the guest-update window (03:00 plus up to two
+// hours) and Home Assistant's own 04:12 purge, so it reads the database after both have finished
+// with it. The guest does the work (agent/hass/dbcheck.go says what and why); this schedules it,
+// asks for the restore a corrupt report names, and tells the household.
 //
-// THE CHECK NEVER BLOCKS THIS LOOP. It reads read-only members and can take minutes, so the
-// guest runs it in the background: this starts it, then asks for the report once a cycle with an
-// ordinary short call, for as long as the guest says it is running. The walk back through the
-// copies has no deadline, because it only reads. The RESTORE runs in line, leased for its budget,
-// because it stops the app and must not overlap any other operation on it.
-//
-// ONCE A NIGHT WHATEVER HAPPENS: a failure is logged and waits a day. An agent that is down at
-// 05:30 still starts it within the window; one down for the whole window skips that night.
+// The check never blocks this loop: it reads read-only members and can take minutes, so the guest
+// runs it in the background, and while the guest says it is running one ordinary short call a
+// cycle asks for the report. The walk back through the copies has no deadline, because it only
+// reads; the restore runs in line, leased for its budget, because it stops the app and must not
+// overlap any other operation on it. Once a night whatever happens: a failure is logged and waits
+// a day; an agent down at 05:30 still starts it within the window, one down for the whole window
+// skips that night.
 const (
 	dbCheckAt       = 5*60 + 30 // minutes after local midnight
 	dbCheckWindow   = 60        // minutes after dbCheckAt a late agent may still start it
@@ -297,11 +288,9 @@ func recorderIntact(node string) notify.Alert {
 
 // recorderAlert is what the household is told when the check found damage: repaired from a copy
 // taken at `from`, or not, and why. A History row alone is not enough: nothing else would make
-// anyone look.
-//
-// Two keys, not one: a damage this host could not repair is a CONDITION (it holds until a check
-// passes or a repair lands), while a repair is an EVENT -- it carries the data-loss and undo
-// words, which must not ride on a "resolved" the reader skims past.
+// anyone look. Two keys, not one: a damage this host could not repair is a condition (it holds
+// until a check passes or a repair lands), while a repair is an event -- it carries the data-loss
+// and undo words, which must not ride on a "resolved" the reader skims past.
 func recorderAlert(node, why string, from time.Time, loc *time.Location) notify.Alert {
 	if from.IsZero() {
 		return notify.Alert{
@@ -325,9 +314,9 @@ func recorderAlert(node, why string, from time.Time, loc *time.Location) notify.
 	}
 }
 
-// THE FILES TIER'S TICK, every five minutes on the node that holds the volume: the versions'
+// The files tier's tick, every five minutes on the node that holds the volume: the versions'
 // hourly members where due, their retention, the allocation rule's cap and its valve
-// (agent/guestagent/filestier.go). It ACTS -- the cap moves as apps grow, and the valve makes
+// (agent/guestagent/filestier.go). It acts -- the cap moves as apps grow, and the valve makes
 // room before an upload meets EDQUOT -- which is what earns it a cadence. Started in the guest's
 // background and collected over later cycles, like the recorder check: the valve waits on the
 // btrfs cleaner, and nothing here may wait with it.
@@ -396,11 +385,11 @@ func (cfg Config) collectFilesTick(ctx context.Context, g filesTicker, u *filesT
 	fireAlert(ctx, n, logf, filesStorageAlert(cfg.Node, rep))
 }
 
-// filesStorageAlert is a CONDITION: open while the files tier is short of its target and the valve
-// cannot make the room without cutting into the last five days of file versions -- which includes
-// a node whose app state has grown into the room with no versions to give -- resolved once
-// there is room. It is every app's warning too: while the tier keeps its target free, no app in
-// either tier is at its cap. Asserted every tick; the store decides what is news.
+// filesStorageAlert is a condition: open while the files tier is short of its target and the valve
+// cannot make the room without cutting into the last five days of file versions (including a node
+// whose app state has grown into the room with no versions to give), resolved once there is room.
+// It is every app's warning too: while the tier keeps its target free, no app in either tier is at
+// its cap. Asserted every tick; the store decides what is news.
 func filesStorageAlert(node string, rep guestagent.FilesTickReport) notify.Alert {
 	if !rep.Short {
 		return notify.Alert{

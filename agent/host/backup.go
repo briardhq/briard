@@ -21,18 +21,17 @@ import (
 	"briard.io/shared/notify"
 )
 
-// THE NIGHTLY BACKUP, 02:00 local: before the guest-update window (03:00) and the recorder check
-// (05:30), so it copies the night's quietest hour. The guest does the work (agent/guestagent's
-// data.backup says what goes in and how, and the key is the volume's -- the household's, not
-// this node's); this schedules it and serves the repository the guest writes to (backupstore.go).
+// The nightly backup, 02:00 local: the night's quietest hour, before the guest-update window
+// (03:00) and the recorder check (05:30). The guest does the work (agent/guestagent's data.backup
+// says what goes in and how; the key is the volume's -- the household's, not this node's); this
+// schedules it and serves the repository the guest writes to (backupstore.go).
 //
-// IT NEVER BLOCKS THIS LOOP: the recorder check's shape. This starts the run in the guest's
-// background and asks for the report once a cycle with an ordinary short call, for as long as the
-// guest says it is running. A first run copies everything and may take an hour.
-//
-// ONCE A NIGHT WHATEVER HAPPENS, on the node that serves: a failure is logged and waits a day.
-// An agent that is down at 02:00 still starts it within the window; one down for the whole window
-// skips that night. A run a guest reboot cut short leaves a lock the next run's unlock clears.
+// It never blocks this loop (the recorder check's shape): the run starts in the guest's background
+// and, while the guest says it is running, one ordinary short call a cycle asks for the report. A
+// first run copies everything and may take an hour. Once a night whatever happens, on the node
+// that serves: a failure is logged and waits a day; an agent down at 02:00 still starts it within
+// the window, one down for the whole window skips that night. A run cut short by a guest reboot
+// leaves a lock the next run's unlock clears.
 const (
 	backupAt          = 2 * 60 // minutes after local midnight
 	backupWindow      = 60     // minutes after backupAt a late agent may still start it
@@ -107,7 +106,7 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 	}
 	url := "http://" + net.JoinHostPort(cfg.hostNodeIP(), backupStorePort) + "/"
 	sctx, cancel := context.WithTimeout(ctx, backupCallTimeout)
-	// THE GROUP IS THE FLOCK'S ID (guestagent.backupRequest.Group says why): shared by every node
+	// The group is the flock's ID (guestagent.backupRequest.Group says why): shared by every node
 	// of the pair, and nobody else's.
 	started, err := g.DataBackup(sctx, url, cfg.FlockID, cfg.backupHostFacts(logf))
 	cancel()
@@ -261,19 +260,19 @@ func folderSize(dir string) int64 {
 	return n
 }
 
-// THE OFF-SITE CHECK: whether the folder's sync client -- OneDrive, where Documents is OneDrive's
-// (backupFolder, on Windows) -- has uploaded the newest good night. A folder under a sync client
-// says only that the client should upload it: OneDrive syncs nothing while nobody is signed in, a
-// full plan stops it, sync can be paused. So the answer is per file, from the client's own record
-// of each (inSync), over every file the night wrote -- the files modified since it started, which
-// needs nothing recorded and survives an agent restart.
+// The off-site check: whether the folder's sync client -- OneDrive, where Documents is OneDrive's
+// (backupFolder, on Windows) -- has uploaded the newest good night. Being under a sync client says
+// only that it should upload: OneDrive syncs nothing while nobody is signed in, a full plan stops
+// it, sync can be paused. So the answer is per file, from the client's own record (inSync), over
+// every file modified since the night started -- which needs nothing recorded and survives an
+// agent restart.
 //
-// A LONG READ, OFF THE LOOP, as every long read is: a walk of the repository and a handle per new
-// file, in a goroutine the tick collects, between runs, on the node that serves. Asked once per
-// night and folder, and again every offsiteRetry while some file is waiting; not again once the
-// night is all uploaded or the folder is under no sync client. "Could not tell" -- a state that
-// could not be read, a file the client has not taken up yet, a night with no files found -- is
-// waiting, never synced.
+// A long read, so off the loop as every long read is: a walk of the repository and a handle per
+// new file, in a goroutine the tick collects, between runs, on the node that serves. Asked once
+// per night and folder, again every offsiteRetry while some file is waiting, and not again once
+// the night is all uploaded or the folder is under no sync client. "Could not tell" (an unreadable
+// state, a file the client has not taken up yet, a night with no files found) is waiting, never
+// synced.
 const offsiteRetry = 10 * time.Minute
 
 // offsiteCheck is the check's state, carried by the backup scheduler.
@@ -421,7 +420,7 @@ type backupRecord struct {
 	Documents string `json:"documents,omitempty"`
 }
 
-// backupFolder is the backup folder as it stands NOW: `config set backup-dir` turns it off and on
+// backupFolder is the backup folder as it stands now: `config set backup-dir` turns it off and on
 // at runtime, and the store and the nightly tick both read it. backupLive is atomic because the
 // store reads it from its own goroutine; nil (every unit test that does not set it) reads
 // BackupDir.
@@ -437,15 +436,13 @@ func (cfg Config) backupDir() string {
 	return cfg.BackupDir
 }
 
-// WHEREVER DOCUMENTS IS: %DOCUMENTS% at the head of BACKUP_DIR stands for the installing account's
-// Documents as it is NOW. The Windows install writes the backup folder so (install_windows.go's
-// backupFolder), because OneDrive's folder backup, turned on later, moves Documents -- the folder
-// and its backups with it -- and re-points the account's Documents at the new place; a path
-// written once would name a folder that is gone.
-//
-// The account's Documents is read from its own hive (userDocuments), which Windows loads only while
-// the account is logged on -- so it is read at every tick and the last answer kept, on this node
-// (the backup record) for an agent started while nobody is logged on. Not logged on is the last
+// %DOCUMENTS% at the head of BACKUP_DIR stands for the installing account's Documents wherever it
+// is now. The Windows install writes the backup folder so (install_windows.go's backupFolder):
+// OneDrive's folder backup, turned on later, moves Documents (the folder and its backups with it)
+// and re-points the account's Documents there, so a path written once would name a folder that is
+// gone. Documents is read from the account's own hive (userDocuments), which Windows loads only
+// while the account is logged on: read at every tick, the last answer kept on this node (the
+// backup record) for an agent started while nobody is logged on. Not logged on keeps the last
 // answer, never a guess; OneDrive moves Documents only while someone is. Never read, the value is
 // left as written: no such folder, and the run says so.
 const documentsPlaceholder = "%DOCUMENTS%"
@@ -508,11 +505,10 @@ func (cfg Config) updateBackupRecord(change func(*backupRecord)) error {
 	return atomicfile.Write(filepath.Join(cfg.stateDir(), backupRecordName), b, 0o600, 0o700)
 }
 
-// backupView is what the page is told: the folder (the one in use, or the one it returns to), the
-// record, and the key with the household's word on it -- read from the volume through the guest,
-// which mints it the first time it is asked (so the page can ask the household to save it from
-// its first open). Where the volume is not mounted there is no key to show and no page to show
-// it on: the view goes without it.
+// backupView is what the page is told: the folder (in use, or the one it returns to), the record,
+// and the key with the household's word on it -- read from the volume through the guest, which
+// mints it when first asked, so the page can ask to save it from its first open. With the volume
+// not mounted there is no key and no page to show it on: the view goes without it.
 func (cfg Config) backupView(ctx context.Context, g backupViewGuest) dashboard.Backup {
 	rec := cfg.readBackupRecord()
 	v := dashboard.Backup{Folder: cfg.backupFolder(), On: cfg.backupFolder() != "", Previous: rec.Previous, Nights: rec.Nights}
@@ -567,18 +563,18 @@ func (cfg Config) pushBackupView(ctx context.Context, r any, b *backupScheduler,
 	*pushed = string(raw)
 }
 
-// THE BACKUP'S THREE SETTINGS, through `config set` -- the one runtime writer -- so the page and the
-// CLI change them the same way. Applied in place: the store and the tick read backupFolder() at
-// every use, so nothing restarts, and the guest is not involved.
+// The backup's three settings, through `config set` -- the one runtime writer -- so the page and
+// the CLI change them the same way. Applied in place: the store and the tick read backupFolder()
+// at every use, so nothing restarts, and the guest is not involved.
 //
-//   - backup-dir: "" turns the nightly backup off (BACKUP_DIR="", the existing backups are left
-//     where they are); the folder it last used -- or, with none, the agent's own -- turns it on
-//     again; any other folder moves it there, once checkBackupFolder has passed it.
+//   - backup-dir: "" turns it off (BACKUP_DIR="", existing backups left where they are); the
+//     folder it last used (with none, the agent's own) turns it on again; any other folder moves
+//     it there, once checkBackupFolder has passed it.
 //   - backup-key-saved: "yes" records that the household has the key somewhere else -- on the
-//     volume, beside the key, through the guest: the household's word is the household's.
+//     volume beside the key, through the guest: the household's word is the household's.
 //   - backup-adopt: the key that opens the backup already in the folder; the household's own key
-//     is added to it (the guest's data.backup.adopt) and a run starts now. The typed key is the
-//     payload of this one directive and is kept nowhere.
+//     is added to it (the guest's data.backup.adopt) and a run starts now. The typed key is this
+//     one directive's payload and is kept nowhere.
 const (
 	settingBackupDir      = "backup-dir"
 	settingBackupKeySaved = "backup-key-saved"
@@ -655,7 +651,7 @@ func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any
 		logf("backup: adopted the backup in %s; a run starts now", folder)
 		return done("the backup in %s is now this household's; tonight's copy is being made now", folder)
 	}
-	// RAW AND RESOLVED: the value is kept as given -- %DOCUMENTS% and all, so it keeps following
+	// Raw and resolved: the value is kept as given -- %DOCUMENTS% and all, so it keeps following
 	// Documents -- and every check is of the folder it names now.
 	rawNow, now := cfg.backupDir(), cfg.backupFolder()
 	want := s.Value
@@ -684,10 +680,10 @@ func (cfg Config) applyBackupSetting(ctx context.Context, d api.Directive, r any
 	if err := setConfigKey(path, "BACKUP_DIR", want, false); err != nil {
 		return failed("could not record it in %s: %v", path, err)
 	}
-	// MOVED, NOT CARRIED: the earlier backups stay where they are, the household's to keep or
-	// delete, and the next night opens the repository already in the new folder -- one the
-	// household moved there itself -- or starts one, with the same key. Off, the folder is
-	// remembered as it was written, so on comes back to it.
+	// Moved, not carried: the earlier backups stay where they are, the household's to keep or
+	// delete; the next night opens the repository already in the new folder (one the household
+	// moved there itself) or starts one, with the same key. Off, the folder is remembered as
+	// written, so on comes back to it.
 	if err := cfg.updateBackupRecord(func(r *backupRecord) {
 		if want == "" {
 			r.Folder = cmp.Or(rawNow, r.Folder)
@@ -718,13 +714,13 @@ func backupWord(dir string) string {
 // checkBackupFolder is what a folder must be before the host, as root, writes the backup into it
 // -- and before it serves what is in it to the guest, which may be the one asking:
 //
-//   - a full path to a folder that EXISTS. Never created here: a missing folder may be a disk not
+//   - a full path to a folder that exists. Never created here: a missing folder may be a disk not
 //     mounted, and creating it would write onto whatever is underneath.
 //   - owned by a person, not root: every file is given the folder's owner, so it stays theirs, and
-//     no system directory qualifies. Linux only: on Windows the folder's inherited ACL is what
-//     makes the files a person's, and OwnerUID says ErrUnsupported.
-//   - EMPTY, or already a restic repository -- these backups, moved there by the household, which
-//     the next night continues. Hidden files (a sync client's marker) do not count. Anything else
+//     no system directory qualifies. Linux only: on Windows the folder's inherited ACL makes the
+//     files a person's, and OwnerUID says ErrUnsupported.
+//   - empty, or already a restic repository (these backups, moved there by the household, which
+//     the next night continues). Hidden files (a sync client's marker) do not count. Anything else
 //     is refused: the store answers `GET /config` from the folder, so a folder holding some other
 //     `config` (~/.kube, ~/.ssh) would hand that file to whoever asks for the backup's.
 //   - writable: a read-only mount is found now, not at 02:00.
@@ -783,13 +779,12 @@ type backupRestorer interface {
 }
 
 // applyBackupRestore puts one app back to one night of the backup: the night's copy becomes a
-// ring member (the guest's data.backup.restore), and the member is restored as any member is
-// (applyAppRestore) -- so the images, the undo point, the stop, the swap, the manifest and the
-// converge are the one path History already has, and the restore is a row that can be undone.
-//
-// THE MATERIALISATION COSTS NOTHING THE HOUSEHOLD CAN SEE: the app keeps running while the
-// night is read in, and a night that cannot be read leaves the ring as it was. Everything that can
-// refuse, refuses before applyAppRestore stops anything.
+// ring member (the guest's data.backup.restore), restored as any member is (applyAppRestore) -- so
+// the images, the undo point, the stop, the swap, the manifest and the converge are the one path
+// History already has, and the restore is a row that can be undone. The materialisation costs
+// nothing the household can see: the app keeps running while the night is read in, a night that
+// cannot be read leaves the ring as it was, and everything that can refuse refuses before
+// applyAppRestore stops anything.
 func (cfg Config) applyBackupRestore(ctx context.Context, g appInstaller, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
@@ -839,9 +834,9 @@ func (cfg Config) applyBackupList(ctx context.Context, g backupLister, d api.Dir
 	if cfg.backupFolder() == "" || cfg.hostNodeIP() == "" {
 		return failed("the backup is turned off on this machine, so there is no repository to list")
 	}
-	// A FOLDER WITH NO REPOSITORY YET holds no backup: the first run makes it, so a new install's
-	// folder is empty until then, and restic would answer that with "repository does not exist".
-	// Read off the folder this host serves, before the guest is asked.
+	// A folder with no repository yet holds no backup: the first run makes it, so a new install's
+	// folder is empty until then, and restic would answer "repository does not exist". Read off the
+	// folder this host serves, before the guest is asked.
 	if !isResticRepository(cfg.backupFolder()) {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "[]"}
 	}
@@ -874,15 +869,13 @@ func (cfg Config) backupCandidateDir() string {
 	return ""
 }
 
-// THE FOLDER MOVE, READ FIRST (api.DirectiveBackupFolder): the Backup page's Change asks what the
+// The folder move, read first (api.DirectiveBackupFolder): the Backup page's Change asks what the
 // folder holds, says it, and moves only once the household has confirmed -- a folder of another
 // key's backups with that key, so the switch and the adoption happen together and the backup is
-// never left in a folder this household cannot open.
-//
-// THE READ IS WITH THIS HOUSEHOLD'S KEY: restic's snapshot list decrypts, so it proves whose
-// backups are there. The guest's own list (data.backup.list), pointed at the store's read-only
-// candidate root, which is set for the read alone and cleared after it. One read at a time: a
-// second is refused rather than handed the first one's folder.
+// never left in a folder this household cannot open. The read is with this household's key
+// (restic's snapshot list decrypts, so it proves whose backups are there): the guest's own list
+// (data.backup.list), pointed at the store's read-only candidate root, set for the read alone and
+// cleared after it. One read at a time: a second is refused rather than handed the first's folder.
 func (cfg Config) applyBackupFolder(ctx context.Context, d api.Directive, r any, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(format string, a ...any) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: fmt.Sprintf(format, a...)}
@@ -963,8 +956,8 @@ func (cfg Config) applyBackupFolder(ctx context.Context, d api.Directive, r any,
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: fmt.Sprintf("backups are now stored in %s", req.Folder)}
 	}
 	if out := set(settingBackupAdopt, key); out.State != api.OutcomeDone {
-		// NOT LEFT IN A FOLDER IT CANNOT OPEN: back where it was -- as it was written, so %DOCUMENTS% keeps
-		// following -- the record as it was.
+		// Not left in a folder it cannot open: back where it was -- as written, so %DOCUMENTS%
+		// keeps following -- and the record as it was.
 		if back := set(settingBackupDir, rawNow); back.State != api.OutcomeDone {
 			logf("backup: could not go back to %q after the adoption failed: %s", rawNow, back.Detail)
 		}
@@ -1017,14 +1010,12 @@ func sizeWords(n int64) string {
 const backupNowBudget = 90 * time.Minute
 
 // applyBackupNow is `briard backup`: the nightly run, now -- the newest History snapshot of every
-// app, into the folder, as at 02:00 -- answered once it has ended. It KICKS THE SCHEDULER rather
+// app, into the folder, as at 02:00 -- answered once it has ended. It kicks the scheduler rather
 // than starting a run itself: the run, its report and its record stay the scheduler's, so this and
 // the night's are never two runs at once (asked during one, it waits for that one, then runs).
-// Like an adoption's kick, it does not count as the night: the night still runs.
-//
-// THE PAGE ASKS AND DOES NOT WAIT (api.BackupNowStart): a run may take an hour, far past any
-// page request's timeout. It follows the run in the view instead -- the run going, then how it
-// ended (pushBackupView).
+// Like an adoption's kick, it does not count as the night: the night still runs. The page asks and
+// does not wait (api.BackupNowStart), since a run may take an hour, far past any page request's
+// timeout; it follows the run in the view -- the run going, then how it ended (pushBackupView).
 func (cfg Config) applyBackupNow(ctx context.Context, d api.Directive) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}

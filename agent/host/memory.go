@@ -13,17 +13,15 @@ import (
 
 // The guest's memory: how far it may grow, and growing it.
 //
-// The guest starts small and GROWS, one platform.MemoryStepMB at a time, because no size chosen
-// at install is right: sized for the worst case it hoards the household's RAM, sized for the
-// common case it is OOM-killed, and "the common case" cannot be measured before the household has
-// installed anything.
-//
-// GROWTH LASTS UNTIL THE NEXT LAUNCH, AND NO LONGER. Every launch boots at its boot size
+// The guest starts small and grows, one platform.MemoryStepMB at a time, because no size chosen at
+// install is right: sized for the worst case it hoards the household's RAM, for the common case it
+// is OOM-killed, and the common case cannot be measured before the household has installed
+// anything. Growth lasts until the next launch and no longer: every launch boots at its boot size
 // (bootMemoryMB) and grows again if it needs to. A DIMM cannot reliably be taken back from a
-// running guest, so a relaunch is the one moment memory returns to the host -- and making every
-// relaunch that moment is what keeps a rare leak, or a one-off burst, from being carried into
-// every boot after it. What it costs is a guest that genuinely needs more re-growing after a
-// restart, one window at a time, in zram meanwhile rather than out of memory.
+// running guest, so a relaunch is the one moment memory returns to the host, and making every
+// relaunch that moment keeps a rare leak or a one-off burst from being carried into every boot
+// after it. The cost: a guest that genuinely needs more re-grows after a restart, one window at a
+// time, in zram meanwhile rather than out of memory.
 
 // hostMemoryReserveMB is what the guest may never grow into: the host's own OS, the agent and
 // QEMU's overhead. The report card refuses a host below 4 GB (3584 MB as the OS reports it), so
@@ -108,17 +106,17 @@ func growGuestMemoryTo(ctx context.Context, needMB, hostMB int, size func(contex
 // When the guest grows. Two conditions, each a number the resources verb already reports, each
 // sustained so a spike is absorbed (by zram, by the kernel) rather than answered:
 //
-//   - LEVEL: MemAvailable below max(memLowFloorMB, memLowShare of MemTotal) for memLowFor. It
-//     already reflects zram -- parking cold memory RAISES it by the compression saving -- so it
+//   - Level: MemAvailable below max(memLowFloorMB, memLowShare of MemTotal) for memLowFor. It
+//     already reflects zram -- parking cold memory raises it by the compression saving -- so it
 //     falls only once zram stops keeping up: slow growth, a new app settling in.
-//   - PRESSURE: memory PSI "some" (avg60) above memPressurePct for memPressureFor. The case the
+//   - Pressure: memory PSI "some" (avg60) above memPressurePct for memPressureFor -- what the
 //     level cannot see: a working set that does not fit, swapping in and out of zram while
 //     MemAvailable looks fine.
 //
-// A step restarts both windows, so each later decision is measured on the guest AFTER its last
-// step; memGrowCooldown then bounds how often a step can come at all, which is what paces the
-// pressure rule (its window is shorter). Page cache never triggers either: it counts as available
-// and it stalls nothing.
+// A step restarts both windows, so each later decision is measured on the guest after its last
+// step; memGrowCooldown bounds how often a step can come at all, which paces the pressure rule
+// (its window is shorter). Page cache never triggers either: it counts as available and stalls
+// nothing.
 const (
 	memLowFloorMB   = 256
 	memLowShare     = 0.15
@@ -177,10 +175,10 @@ const memoryAlertFactor = 2.5
 
 // memoryAlert is what the guest's size says about it, asserted after each growth decision
 // (atCeiling when the guest needed a step and the host had none left): unusual at
-// memoryAlertFactor, critical at the ceiling, and fine below the threshold -- which a relaunch
-// brings about by handing the memory back (the observe loop asserts memoryReturned when it next
-// reads the VM's size, on the clock reader's cadence). The alert store turns the assertions into
-// one alert per change: growing, then out, then back.
+// memoryAlertFactor, critical at the ceiling, fine below the threshold -- which a relaunch brings
+// about by handing the memory back (the observe loop asserts memoryReturned when it next reads the
+// VM's size, on the clock reader's cadence). The alert store makes one alert per change: growing,
+// then out, then back.
 func memoryAlert(node string, sizeMB, bootMB, ceilingMB int, atCeiling bool) notify.Alert {
 	threshold := int(float64(bootMB) * memoryAlertFactor)
 	if !atCeiling && sizeMB < threshold {

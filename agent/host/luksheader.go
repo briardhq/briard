@@ -9,20 +9,18 @@ import (
 	"briard.io/shared/atomicfile"
 )
 
-// THE DATA VOLUME'S LUKS HEADER, KEPT BESIDE THE VOLUME.
+// The data volume's LUKS header, kept beside the volume: ~16 MB whose loss is the loss of
+// everything on the volume, and it sits below DRBD, so unlike the data it does not replicate --
+// losing it costs one node and a resync on a flock, and a lone anchor everything. LUKS2 already
+// keeps a redundant second header with checksums and recovers from the primary's loss on its own,
+// so this defends against the rest: the whole prefix gone, or a disk that came back with its first
+// megabytes zeroed.
 //
-// ~16 MB whose loss is the loss of everything on the volume, and it sits BELOW DRBD, so unlike
-// the data it does not replicate: losing it costs one node and a resync on a flock, and costs a
-// lone anchor everything. LUKS2 already keeps a redundant SECOND header with checksums and
-// recovers from the primary's loss on its own, so what this defends against is the rest -- the
-// whole prefix gone, or a disk that came back with its first megabytes zeroed.
-//
-// WHY THE HOST DOES IT, rather than the guest running `cryptsetup luksHeaderBackup` and handing
-// the file over. A header backup IS the prefix of the volume from byte 0 to the data offset, and
-// the data offset is not something we inherit -- the guest's storage seam PINS it at luksFormat
-// (`--offset`), so it is a stated product constant, restated here the way /run/briard's paths
-// are. Copying it host-side needs no new channel verb, no cryptsetup on a Windows box, and no
-// guest that is up at the moment the copy is wanted.
+// The host does it, rather than the guest running `cryptsetup luksHeaderBackup` and handing the
+// file over, because a header backup is the volume's prefix from byte 0 to the data offset, and
+// that offset is not inherited: the guest's storage seam pins it at luksFormat (`--offset`), a
+// stated product constant restated here the way /run/briard's paths are. Copying host-side needs
+// no new channel verb, no cryptsetup on a Windows box, and no guest up when the copy is wanted.
 const (
 	// luksHeaderSize is the pinned data offset: everything before it is header + keyslots.
 	// It must equal luksDataOffset (32768 512-byte sectors) in agent/guestagent/nodestorage.go,
@@ -34,19 +32,16 @@ const (
 )
 
 // luksMagic is LUKS2's on-disk magic at offset 0. Reading it is how the host knows whether this
-// node is encrypted at all WITHOUT asking anyone: a node whose CPU had no AES runs its volume in
+// node is encrypted at all without asking anyone: a node whose CPU had no AES runs its volume in
 // the clear (the AES axis), and there is no header there to keep.
 var luksMagic = []byte{'L', 'U', 'K', 'S', 0xba, 0xbe}
 
-// backupLUKSHeader copies the data image's LUKS header beside it, ONCE.
-//
-// ONCE, and deliberately never re-taken: the header changes only when a keyslot does, and a
-// keyslot changes only when a node is ARMED, and arming owns re-taking it. Re-copying on
-// every bring-up would give a torn live header a route over a good backup, which is the one thing
-// a backup must not have.
-//
-// Best-effort and never fatal to bring-up: a node that refuses to serve because it could not
-// write a backup file is a worse node than one that serves and says so. It says so loudly.
+// backupLUKSHeader copies the data image's LUKS header beside it, once, and deliberately never
+// re-takes it: the header changes only when a keyslot does, a keyslot only when a node is armed,
+// and arming owns re-taking it. Re-copying on every bring-up would give a torn live header a route
+// over a good backup, the one thing a backup must not have. Best-effort and never fatal to
+// bring-up: a node that refuses to serve because it could not write a backup file is a worse node
+// than one that serves and says so, loudly.
 func backupLUKSHeader(dataDisk string, logf func(string, ...any)) {
 	if dataDisk == "" {
 		return // no data image (a witness, or a harness that supplies its own disks)

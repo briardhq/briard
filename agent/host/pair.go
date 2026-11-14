@@ -26,11 +26,11 @@ type guestMesher interface {
 	BringUp(ctx context.Context, spec guestagent.BringUpSpec) error
 }
 
-// guestRebooter is the one act a topology transition needs from the host: stop the
-// guest cleanly and bring it back up, so the bring-up re-reads the recorded membership and
-// node-storage runs the spec × disk table. Both transitions -- a lone node's first pairing, and
-// a flock ending -- are declarative and cost exactly this. *osUpgrade satisfies it (RebootGuest);
-// a fake records the call in tests.
+// guestRebooter is the one act a topology transition needs from the host: stop the guest cleanly
+// and bring it back up, so the bring-up re-reads the recorded membership and node-storage runs the
+// spec × disk table. Both transitions -- a lone node's first pairing, a flock ending -- are
+// declarative and cost exactly this. *osUpgrade satisfies it (RebootGuest); a fake records the
+// call in tests.
 type guestRebooter interface {
 	RebootGuest(ctx context.Context) error
 }
@@ -74,10 +74,10 @@ func (cfg Config) applyPair(ctx context.Context, g guestMesher, w witnessStarter
 
 // reconcileMesh makes this node's DRBD match the target mesh. Both sides first take a
 // routable replication-subnet address (a lone node has none: it runs no DRBD). Then:
-//   - the existing serving primary (Join=false) ADJUSTS the running resource in place -- its disk
-//     stays attached and UpToDate, quorum just widens as the joiners connect; a LONE primary has
+//   - the existing serving primary (Join=false) adjusts the running resource in place -- its disk
+//     stays attached and UpToDate, quorum just widens as the joiners connect; a lone primary has
 //     no resource to adjust and converts through a guest reboot instead (below);
-//   - a blank joiner (Join=true) BRINGS UP fresh as a NON-seed, so it attaches its fresh replica
+//   - a blank joiner (Join=true) brings up fresh as a non-seed, so it attaches its fresh replica
 //     and resyncs from the primary as SyncTarget (never declares itself UpToDate -- no split-brain).
 //
 // The node finds its own placement (disk vs diskless) by matching cfg.Node to a peer stanza, so a
@@ -99,7 +99,7 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 			PrivDev: cfg.privDev(), PrivHostIP: cfg.hostNodeIP(),
 			// And the service identity, the same as bring-up's call: this call re-renders the
 			// guest's network, and the guest re-asserts the MAC on an eth2 that already exists.
-			// serviceMAC derives from THIS node's own FlockID -- a MeshSpec carries no flock id.
+			// serviceMAC derives from this node's own FlockID -- a MeshSpec carries no flock id.
 			VIPParent: cfg.VIPParent, VIPMAC: cfg.serviceMAC(),
 		}); err != nil {
 			return fmt.Errorf("pair: configure %s: %w", spec.SystemDev, err)
@@ -110,9 +110,9 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 
 	// A forwarded cloud witness needs its host-side hop up before DRBD tries the connection: address
 	// the guest's private witness NIC (eth3) and start this host's witness-forwarder. Disk anchors
-	// only -- the diskless witness is provisioned out of band, never reached through a
-	// forwarder itself. Done before Adjust/BringUp so the path exists when DRBD dials it (DRBD's
-	// connect retries, so this is belt-and-braces ordering, not a hard race).
+	// only -- the diskless witness is provisioned out of band, never reached through a forwarder
+	// itself. Before Adjust/BringUp so the path exists when DRBD dials it (DRBD's connect retries,
+	// so this is belt-and-braces ordering, not a hard race).
 	if spec.Witness != nil && !diskless {
 		if err := cfg.bringUpWitness(ctx, g, w, spec.Peers, spec.Witness, logf); err != nil {
 			return err
@@ -125,7 +125,7 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 
 	if spec.Join {
 		logf("pair: joining as %s (diskless=%t) -- fresh bring-up + resync from the primary", cfg.Node, diskless)
-		// NEVER seed a joiner: attach + resync as SyncTarget, which is what the false says.
+		// Never seed a joiner: attach + resync as SyncTarget, which is what the false says.
 		storage, err := cfg.StorageSpec(target, diskless, false)
 		if err != nil {
 			return err
@@ -139,14 +139,13 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 		return cfg.cacheMesh(spec, logf)
 	}
 
-	// A LONE NODE JOINING ITS FIRST PEER CONVERTS: it runs no DRBD to adjust. The
-	// transition is declarative and costs one guest reboot -- record the membership, reboot, and
-	// bring-up runs the spec × disk table (node-storage's convert row: create-md on the metadata
-	// LV the layout reserved, this copy UpToDate before any peer connects, no mkfs). Recorded
-	// BEFORE the reboot, against cacheMesh's usual order, because here the record IS the
-	// instruction: a reboot that fails leaves a node whose next bring-up retries the same
-	// conversion, which is the idempotence a re-delivered directive relies on anyway. The
-	// witness hop above is re-established by bring-up on its own (restoreWitnessHop).
+	// A lone node joining its first peer converts, as it runs no DRBD to adjust: declaratively, for
+	// one guest reboot -- record the membership, reboot, and bring-up runs the spec × disk table
+	// (node-storage's convert row: create-md on the metadata LV the layout reserved, this copy
+	// UpToDate before any peer connects, no mkfs). Recorded before the reboot, against cacheMesh's
+	// usual order, because here the record is the instruction: a failed reboot leaves a node whose
+	// next bring-up retries the same conversion, the idempotence a re-delivered directive relies on
+	// anyway. Bring-up re-establishes the witness hop above on its own (restoreWitnessHop).
 	if cfg.Resource.DiskfulPeers() < 2 {
 		logf("pair: %s runs no DRBD; converting to the %d-peer mesh through a guest reboot", cfg.Node, len(target.Peers))
 		if err := cfg.cacheMesh(spec, logf); err != nil {
@@ -155,7 +154,7 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 		return rb.RebootGuest(ctx)
 	}
 
-	// The existing serving primary: apply the wider mesh to the RUNNING resource -- no create-md,
+	// The existing serving primary: apply the wider mesh to the running resource -- no create-md,
 	// no restart, the disk is never touched (Adjust asserts exactly `drbdadm adjust`).
 	logf("pair: adjusting the serving primary %s in place to the %d-peer mesh", cfg.Node, len(target.Peers))
 	req := guestagent.ProvisionRequest{Resource: target.Name, ResConfig: target.Config()}
@@ -176,11 +175,11 @@ func (cfg Config) reconcileMesh(ctx context.Context, g guestMesher, w witnessSta
 //     -- record the mesh, assert the one-shot convert-disable intent, reboot the guest;
 //     node-storage's disable row wipes the metadata and the chain comes up from its target.
 //
-// THE PRECONDITION IS THE WHOLE SAFETY: this node must be serving and UpToDate, or the removal
-// would make a stale (or absent) copy the only one. Refused otherwise, with the cluster's own
-// words. And the intent is written HERE and nowhere else: it is the one thing that lets a node
-// found alone with metadata wipe it rather than refuse, so it must come from an asserted
-// removal, never from a bring-up's own reading of the disk.
+// The precondition is the whole safety: this node must be serving and UpToDate, or the removal
+// would make a stale (or absent) copy the only one; refused otherwise, in the cluster's own words.
+// The intent is written here and nowhere else: it is the one thing that lets a node found alone
+// with metadata wipe it rather than refuse, so it must come from an asserted removal, never from
+// a bring-up's own reading of the disk.
 func (cfg Config) applyUnpair(ctx context.Context, g guestMesher, sr statusReader, rb guestRebooter, d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
@@ -278,7 +277,7 @@ func (cfg Config) clearConvertIntent() error {
 }
 
 // meshTarget renders a MeshSpec into this node's DRBD resource and returns its own index in the
-// peer list. Split out of reconcileMesh because the RESTORE path needs the identical derivation:
+// peer list. Split out of reconcileMesh because the restore path needs the identical derivation:
 // a cached spec has to become the same .res the pairing produced, and a second rendering of the
 // same fact is a second thing that can drift.
 func meshTarget(spec api.MeshSpec, node string) (drbd.Resource, int, error) {
@@ -287,7 +286,7 @@ func meshTarget(spec api.MeshSpec, node string) (drbd.Resource, int, error) {
 	for i, p := range spec.Peers {
 		peer := drbd.Peer{Name: p.Name, NodeID: p.NodeID, Address: p.Address, Disk: p.Disk}
 		// A forwarded cloud-witness mesh (spec.Witness set) reaches the diskless voter through
-		// this node's OWN host forwarder, so every DISK anchor carries a witness-side local
+		// this node's own host forwarder, so every disk anchor carries a witness-side local
 		// address distinct from its LAN mesh Address -- which flips drbd.Config to the explicit-
 		// connection form. The witness peer itself gets none (it is the diskless target).
 		if spec.Witness != nil && p.Disk != "" {
@@ -304,27 +303,24 @@ func meshTarget(spec api.MeshSpec, node string) (drbd.Resource, int, error) {
 	return target, self, nil
 }
 
-// cacheMesh records the mesh this node has just been reconciled to, node-locally and durably.
+// cacheMesh records the mesh this node has just been reconciled to, node-locally and durably --
+// after the apply, never before: the cache means "what this node is in", so a pairing that failed
+// halfway must not leave a mesh the next bring-up would converge to (the same rule and reason as
+// cacheApp writing only past the health gate).
 //
-// AFTER the apply, never before: the cache's meaning is "what this node IS in", so a pairing that
-// failed halfway must not leave a mesh the next bring-up would converge to. Same rule and the same
-// reason as cacheApp writing only past the health gate.
+// A write failure fails the pairing. A warning looks right -- the guest has already applied the
+// mesh -- but a pairing that is not persisted is not applied: the guest's copy lives until the next
+// bring-up rewrites it from cfg.Resource, so an uncached pairing is a node that will silently
+// un-mesh itself on its next reboot, the defect the host-held mesh cache exists to end. Failed is
+// honest: the pairing is idempotent, so a re-delivery re-applies to the same target mesh and
+// retries this write; a retry that can fix it beats a success that hides it. It deliberately does
+// not undo the guest-side apply: there is no clean un-mesh, and a half-undone pairing would be
+// worse than either outcome. The node is meshed and serving while the directive says it did not
+// take, and the error says exactly that so nobody reads it as "nothing happened".
 //
-// A WRITE FAILURE FAILS THE PAIRING. A warning looks right -- the guest has already applied the
-// mesh -- but **a pairing that is not persisted is not applied.** The guest's copy lives until
-// the next bring-up rewrites it from cfg.Resource, so an uncached pairing is a node that will
-// silently un-mesh itself on its next reboot: the defect the host-held mesh cache exists to end.
-// FAILED is honest: the pairing is idempotent, so a re-delivery re-applies to the same target
-// mesh and retries this write. A retry that can fix it beats a success that hides it.
-//
-// It does NOT try to undo the guest-side apply. There is no clean un-mesh, and a half-undone pairing
-// would be worse than either outcome; the node is meshed and serving while the directive says it did
-// not take, and the error says exactly that so nobody reads it as "nothing happened".
-//
-// An empty MeshCache is the documented "off" convention rather than a failure, and it is
-// unreachable from ConfigFromEnv -- env() falls back to the default even for an explicitly empty
-// MESH_CACHE, so in production this is always configured. It exists for tests that drive the pairing
-// path without a filesystem.
+// An empty MeshCache is the documented "off" convention rather than a failure, for tests that
+// drive the pairing path without a filesystem; it is unreachable from ConfigFromEnv, where env()
+// falls back to the default even for an explicitly empty MESH_CACHE, so production always has one.
 func (cfg Config) cacheMesh(spec api.MeshSpec, logf func(string, ...any)) error {
 	if cfg.MeshCache == "" {
 		return nil
@@ -345,13 +341,12 @@ func (cfg Config) cacheMesh(spec api.MeshSpec, logf func(string, ...any)) error 
 
 // cachedMesh rebuilds this node's DRBD resource from the last pairing it applied. ok is false when
 // nothing has ever been paired -- the shipped single-node state, where PEERS (or its self-peer
-// default) is the right answer and this file is correctly absent.
-//
-// An unusable cache is reported and treated as absent, matching installedApps: bringing up on
-// the env mesh is the conservative fallback, not a new failure mode (warnIfMeshForgotten alerts
-// if the guest is in a mesh after all). A spec that no longer names this node is the same case
-// (a rename, or a cache carried onto another node) and says so distinctly, because "your mesh does
-// not know you" is a different thing to go looking for than "your mesh will not parse".
+// default) is the right answer and this file is correctly absent. An unusable cache is reported
+// and treated as absent, matching installedApps: bringing up on the env mesh is the conservative
+// fallback, not a new failure mode (warnIfMeshForgotten alerts if the guest is in a mesh after
+// all). A spec that no longer names this node (a rename, a cache carried onto another node) is the
+// same case but says so distinctly: "your mesh does not know you" is a different thing to go
+// looking for than "your mesh will not parse".
 func (cfg Config) cachedMesh(logf func(string, ...any)) (api.MeshSpec, drbd.Resource, bool) {
 	if cfg.MeshCache == "" {
 		return api.MeshSpec{}, drbd.Resource{}, false
@@ -373,24 +368,19 @@ func (cfg Config) cachedMesh(logf func(string, ...any)) (api.MeshSpec, drbd.Reso
 	return spec, target, true
 }
 
-// warnIfMeshForgotten alerts when the GUEST is in a mesh the HOST cannot re-push.
+// warnIfMeshForgotten alerts when the guest is in a mesh the host cannot re-push: a node with a
+// countdown on it. Bring-up rewrites the guest's `.res` from cfg.Resource every time, so this node
+// replicates now and will come back a mesh-of-one on its next guest reboot -- a deadman pass, a
+// kernel panic, an OS upgrade -- and nothing else notices: the peer keeps a full mesh and its own
+// redundancy alert fires, but on this node the redundancy alerter is never built, since Run gates
+// it on `len(cfg.Resource.Peers) - 1 > 0`, exactly what is wrong here. So the state is silent
+// locally, and silence is the whole problem. Checked once at every agent start (Run).
 //
-// That combination is a node with a countdown on it: bring-up rewrites the guest's `.res` from
-// cfg.Resource every time, so this node replicates now and will come back a mesh-of-one on its next
-// guest reboot -- a deadman pass, a kernel panic, an OS upgrade. Nothing else notices. The peer
-// keeps a full mesh and its own redundancy alert fires, but on THIS node the redundancy alerter is
-// never built: Run gates it on `len(cfg.Resource.Peers) - 1 > 0`, which is exactly the thing that
-// is wrong here. So the state is silent locally, and silence is the whole problem. Checked once
-// at every agent start (Run).
-//
-// A REAL ALERT AND NOT A LOG LINE: an alert is recorded in the node's store and, on a paid node,
-// pushed; a plain logf is findable by neither, which for a fault whose whole nature is "nobody
-// notices" is the wrong choice at any price.
-//
-// Reachable through a corrupt cache, or a node paired before the cache existed -- not through a
-// failed cache WRITE, which fails the pairing outright (cacheMesh).
-//
-// An unreadable cluster says nothing. This runs at every start, including on a guest that is still
+// A real alert, not a log line: an alert is recorded in the node's store and, on a paid node,
+// pushed; a plain logf is findable by neither, the wrong choice at any price for a fault whose
+// whole nature is "nobody notices". Reachable through a corrupt cache, or a node paired before the
+// cache existed -- not through a failed cache write, which fails the pairing outright (cacheMesh).
+// An unreadable cluster says nothing: this runs at every start, including on a guest still
 // settling, and "I could not ask" must never be reported as "your mesh is gone".
 func (cfg Config) warnIfMeshForgotten(ctx context.Context, r statusReader, n notify.Notifier, logf func(string, ...any)) {
 	if len(cfg.Resource.Peers) > 1 {
@@ -428,30 +418,27 @@ func meshRecorded(node string) notify.Alert {
 }
 
 // restoreWitnessHop re-establishes this anchor's host-side path to the cloud witness at bring-up.
-//
-// THE FORWARDER IS A TRANSIENT UNIT ON PURPOSE (systemd-run, detached from the agent's cgroup so an
-// agent restart leaves the hop serving), so a HOST reboot ends it, and the cloud sends a pair
-// directive on demand rather than on registration. Without this, the restored `.res` would name a
+// The forwarder is a transient unit on purpose (systemd-run, detached from the agent's cgroup so an
+// agent restart leaves the hop serving), so a host reboot ends it, and the cloud sends a pair
+// directive on demand rather than on registration; without this, the restored `.res` would name a
 // witness address nothing is listening on. It also re-addresses the guest's eth3 (bringUpWitness),
 // which is the agent's to address, not baked into the image.
 //
-// BEFORE WaitQuorate, which is why this is a step in bring-up rather than a call after it. With the
-// peer anchor up the node reaches 2/3 without the witness and the placement would not matter; it
-// matters in exactly the case the witness exists for -- peer also down -- where a forwarder started
-// after bring-up returns is one started after WaitQuorate has already burned the whole
-// BringUpBudget waiting for the quorum this hop was going to supply.
+// It runs before WaitQuorate, which is why it is a step in bring-up rather than a call after it.
+// With the peer anchor up the node reaches 2/3 without the witness and the placement would not
+// matter; it matters in exactly the case the witness exists for -- peer also down -- where a
+// forwarder started after bring-up returns is started after WaitQuorate has already burned the
+// whole BringUpBudget waiting for the quorum this hop was going to supply.
 //
-// LOUD BUT NEVER FATAL, deliberately the opposite of the promoter gate's "absence of configuration
-// is an error". A node that cannot start its forwarder can still serve on 2/3 with its peer, and
+// Loud but never fatal, deliberately the opposite of the promoter gate's "absence of configuration
+// is an error": a node that cannot start its forwarder can still serve on 2/3 with its peer, and
 // failing bring-up would take down a node that works. Nor is the failure silent: DRBD reports the
 // witness connection down, so it lands in NodeStatus's connected count and the redundancy alerter
-// fires on the channel that already exists.
-//
-// Idempotent: StartForwarder probes is-active first, so a hop already serving is left alone and this
-// costs nothing on an agent restart or a re-adopted guest.
+// fires on the channel that already exists. Idempotent: StartForwarder probes is-active first, so
+// a hop already serving is left alone, costing nothing on an agent restart or a re-adopted guest.
 func (cfg Config) restoreWitnessHop(ctx context.Context, g guestMesher, w witnessStarter, logf func(string, ...any)) {
 	if cfg.Mesh.Witness == nil || cfg.Diskless {
-		return // no cloud witness in this mesh, or this node IS the diskless voter
+		return // no cloud witness in this mesh, or this node is the diskless voter
 	}
 	if err := cfg.bringUpWitness(ctx, g, w, cfg.Mesh.Peers, cfg.Mesh.Witness, logf); err != nil {
 		logf("WARNING: could not restore the witness hop (%v); this node comes up WITHOUT its cloud "+
