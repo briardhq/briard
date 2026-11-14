@@ -1,9 +1,9 @@
 package main
 
 // The household's name on its page: `<flock>.briard.casa`, with a real certificate,
-// claimed by typing an email and clicking the link it receives. The first thing the page
-// offers, and skippable -- the anonymous install stays first-class, and "Skip" is the whole of
-// what that costs.
+// claimed by typing an email and clicking the link it receives. A step the home page offers once
+// the first app is on its way, and skippable -- the anonymous install stays first-class, and
+// "Skip" is the whole of what that costs.
 //
 // The page decides nothing. What it shows is the host's view, pushed into dashboard.CasaPath
 // through the guest (the host holds the key and the claim; the guest is disposable), and what

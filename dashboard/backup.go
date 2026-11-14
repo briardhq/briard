@@ -6,9 +6,9 @@ package main
 //
 // The page decides nothing, as with the name. What it shows is the host's view, pushed into
 // dashboard.BackupPath through the guest (the host holds the key and runs the backup; the guest is
-// disposable), and what it asks for goes through the admin port -- the backup off or on and "I
-// have saved the key" as config-sets, a run now, a folder read and then moved -- which the host
-// applies and answers.
+// disposable), and what it asks for goes through the admin port -- the backup off or on, "I have
+// saved the key" and a found backup's key adopted as config-sets, a run now, a folder read and
+// then moved, the list and a restore -- which the host applies and answers.
 //
 // THE KEY IS THE POINT. A backup whose key died with the machine is worse than none: the household
 // believed it was covered. So the key is on the page, and until the household says it has a copy

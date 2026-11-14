@@ -1,11 +1,12 @@
 package main
 
-// The dashboard's end of the host's admin port, and the one thing it asks for.
+// The dashboard's end of the host's admin port, and the app installs it asks for.
 //
-// "Set up Home Assistant" is a host directive pressed from inside the guest. The dashboard opens
-// the second virtio-serial port (shared/dashboard.AdminPortDev), writes the directive as one JSON
-// line -- the protocol `briard` speaks to the host's admin socket -- and reads the outcome back.
-// It relays; it decides nothing. The host answers through the same dispatch the CLI and the cloud
+// Every act the page asks of the host -- an install, an undo, a backup's run or setting, a name
+// claim, a wish, a Dismiss -- is a host directive pressed from inside the guest. The dashboard
+// opens the second virtio-serial port (shared/dashboard.AdminPortDev), writes the directive as one
+// JSON line -- the protocol `briard` speaks to the host's admin socket -- and reads the outcome
+// back. It relays; it decides nothing. The host answers through the same dispatch the CLI and the cloud
 // go through, and accepts from this port only what stays inside the guest.
 
 import (

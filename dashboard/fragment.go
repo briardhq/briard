@@ -1,8 +1,9 @@
 package main
 
 // THE MOVING PARTS: a card that is on its way -- an install or an update, a Home Assistant still
-// starting, a name claim waiting on its link or its check, an undo in flight -- polls itself through htmx,
-// the one script on the page, and nothing else on the page polls at all. The template puts the
+// starting, a name claim waiting on its link or its check, an undo or a restore in flight, a backup
+// running, a Storage card still measuring -- polls itself through htmx, the one script the page
+// loads, and nothing else on the page polls at all. The template puts the
 // hx-get on the card only while its part moves, and the fragment answers with the same partial
 // over the same view, so the page and its poll cannot disagree. When the part has stopped
 // moving the page's shape may have changed around it -- an install became an app card and a

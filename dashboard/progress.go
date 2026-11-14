@@ -31,7 +31,7 @@ type pullPaths struct {
 	records string // where the host's pull records land (shared/dashboard.Dir)
 	layers  string // podman's overlay-layers/layers.json
 	// tmp is the directory the pull unit's PrivateTmp roots under. /var/tmp, not /tmp: a pull
-	// stages through /var/tmp/container_images_storage<random> (measured), and
+	// stages through /var/tmp/container_images_storage<random>, and
 	// PrivateTmp gives the unit its own of BOTH, each under its own systemd-private-* root.
 	tmp string
 }
@@ -44,9 +44,10 @@ type progressView struct {
 	Percent     int
 	DoneGB      string
 	TotalGB     string
-	// Received: every byte is in. The pull goes on unpacking the last layers -- a layer's file
-	// stays in the unit's tmp, counted, until it is unpacked -- so the card stops showing a
-	// fraction here rather than holding at its last percent.
+	// Received: the count has reached 99%, the bar's ceiling -- the bytes are in, or all but the
+	// last percent. The pull goes on unpacking the last layers -- a layer's file stays in the
+	// unit's tmp, counted, until it is unpacked -- so the card stops showing a fraction here
+	// rather than holding at its last percent.
 	Received bool
 }
 

@@ -1,8 +1,8 @@
 // Command dashboard is the HOUSEHOLD DASHBOARD: the page a home opens at its own name,
 // served from the guest at the VIP behind the reverse proxy, which forwards to it every name it
-// does not route. It is the first-open slice of the household auth design -- the one-time code, a
-// trusted device, and "Open Home Assistant" landing on Home Assistant's own onboarding page, logged
-// in.
+// does not route. It is how the household gets in (the one-time code, trusted devices), opens its
+// apps ("Open Home Assistant" lands on Home Assistant's own onboarding page, logged in), and asks
+// the host for everything else it does: installs, undo, backup, the name, alerts.
 //
 // WHAT AUTHENTICATES A BROWSER IS THE CODE THE HOST MINTED, and nothing else. Proof of identity is
 // proof of access to the `briard` CLI (whoever can drive it owns the node), so the CLI has the
@@ -15,13 +15,14 @@
 // login. Unauthenticated, that is a LAN race -- whoever reaches the URL first during the install
 // window owns the household's Home Assistant. The code closes it.
 //
-// It is promoter-owned and a chain member like the reverse proxy, because the registry lives on the
-// volume and only the primary has it. It reads the routing table the guest's converge writes,
+// It is a promoter-chain member like the reverse proxy, because the registry lives on the volume
+// and only the primary has it. It reads the routing table the guest's converge writes,
 // which is how it finds Home Assistant -- the same way the reverse proxy does, so the two cannot
 // disagree about where an app is.
 //
-// DELIBERATELY PLAIN: templates, one stylesheet and one script (htmx, which polls a card while
-// it moves), built ahead of time (static/build.sh) and embedded, nothing fetched from anywhere
+// DELIBERATELY PLAIN: templates, one stylesheet and one loaded script (htmx, which polls a card
+// while it moves) beside two inline lines (fragment.go), built ahead of time (static/build.sh) and
+// embedded, nothing fetched from anywhere
 // at run time -- it has to render on a node with no internet, and it is a supervisor next to
 // Home Assistant, not a rival to it.
 package main
@@ -162,12 +163,13 @@ func main() {
 	log.Fatalf("dashboard: %v", srv.Serve(ln))
 }
 
-// app is the dashboard: four files it reads and one directory it owns.
+// app is the dashboard: the files it reads, the directory it owns (statePath), and what it holds
+// in memory between requests.
 type app struct {
 	routesPath, handoffPath, statePath, tokenPath string
 	now                                           func() time.Time
-	// mu serialises the things that must not race: consuming the code, writing the registry,
-	// and the pending quick-connect requests. Everything else is read-mostly.
+	// mu serialises consuming the code and writing the registry, and guards every in-memory map
+	// and field below: pending, hops, installs, restores, the casa asks and the backup's.
 	mu sync.Mutex
 	// pending is quick-connect: the devices asking to be let in, by the code each
 	// one shows. In memory on purpose -- a request outlives neither its five minutes nor this
@@ -180,11 +182,12 @@ type app struct {
 	// app, from the click until the routes table lists the app.
 	port     adminPort
 	installs map[string]*install
-	// restores is the picker's half (history.go): one restore in flight per app, from
-	// the confirmation until the host answers. In memory for the same reason installs is.
+	// restores is every undo (history.go) and restore from the backup (backup.go) this page asked
+	// for: one in flight per app, from the confirmation until the page has said how it ended. In
+	// memory for the same reason installs is.
 	restores map[string]*restoreOp
-	// pulls is where a pull's progress is read from: podman's layer store and the
-	// pull units' private tmp.
+	// pulls is where a pull's progress is read from: the host's pull records, podman's layer
+	// store and the pull units' private tmp.
 	pulls pullPaths
 	// casaPath is the host's view of the household's name (casa.go); casaAsked the
 	// last claim asked from this page, until the host's view moves past it.
@@ -207,8 +210,8 @@ type app struct {
 	// snapshotsPath is the volume's History directory, whose names say what an uninstall kept
 	// (uninstall.go).
 	snapshotsPath string
-	// viewWait is how long a backup setting's answer waits for the host to push the view it
-	// changed (awaitView): a few of the host's ticks.
+	// viewWait is how long an act's answer waits for the host to push the view it changed
+	// (awaitView, awaitCatalog, awaitDismissed): a few of the host's ticks.
 	viewWait time.Duration
 	// mealieMu holds a second check of Mealie while the first reads or takes over its accounts
 	// (mealie.go), so the two never race through its password change; mealieExec runs a command in
@@ -524,7 +527,7 @@ func (a *app) deviceOf(tok string) (device, bool) {
 }
 
 // registry is the trusted-device list, on the volume so it follows the VIP. Tokens are stored
-// hashed: the file replicates and gets backed up, and a hash is all a check needs.
+// hashed: the file replicates, and a hash is all a check needs.
 type registry struct {
 	Devices []device `json:"devices"`
 }
@@ -565,9 +568,10 @@ func (a *app) addDevice(tok, agent, replaces string) error {
 	return a.writeState(devicesFile, reg)
 }
 
-// revoke takes a device out of the registry, and out of nothing else: the Home Assistant session that device already holds is HA's to end, in HA's own
-// profile -- a minted code becomes a refresh token that carries no per-device handle, so there
-// is nothing here to look it up by, and the page says so next to the list. A device revoking
+// revoke takes a device out of the registry, and out of nothing else: the Home Assistant session
+// that device already holds is HA's to end, in HA's own profile -- a minted code becomes a refresh
+// token that carries no per-device handle, so there is nothing here to look it up by, and the page
+// says so next to the list. A device revoking
 // ITSELF is a sign-out: the cookie goes with it. The last device may go too -- an empty
 // registry is the state the install starts in, and `briard open` is the way back.
 func (a *app) revoke(w http.ResponseWriter, r *http.Request) {
@@ -871,10 +875,9 @@ type view struct {
 	// Stage is where the home is: "choose" before any app, "installing" while one is on its
 	// way, "running" once one is. It decides what the home page's one act is.
 	Stage string
-	// Apps is every app the page has a card for: the catalog's index in its order -- the first
-	// is the common one, preselected by being the filled button -- then anything installed
-	// that the index does not list, each with what the routes table and, for Home Assistant,
-	// its own API say about it. InstalledCount is how many are installed. Catalog says whether
+	// Apps is every app the page has a card for: the catalog's index in its order, then anything
+	// installed that the index does not list, each with what the routes table and, for Home
+	// Assistant, its own API say about it. InstalledCount is how many are installed. Catalog says whether
 	// the host has pushed an index at all: before it has, the page shows what is installed
 	// and nothing it could add.
 	Apps           []*appView
@@ -896,7 +899,8 @@ type view struct {
 	Secure string
 }
 
-// stepsView is tier 2: each step one line and one act, shown only while it is owed.
+// stepsView is the steps only the household can do: each one line and one act, shown only while
+// it is owed.
 type stepsView struct {
 	// Address: the name is not yet the household's -- offered, refused, expired, its link
 	// pending -- or it is and the router blocks it; every state the household's own act moves.
@@ -1203,7 +1207,7 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 //   - user step not done: create the first user from the user's record (account.go), mark
 //     analytics done with the control channel's token (the user's code is single-use and
 //     belongs to the browser), and send the browser to HA's onboarding page with that code --
-//     it resumes at the location step, then discovered devices, then logs in (measured);
+//     it resumes at the location step, then discovered devices, then logs in;
 //   - user step done: MINT a login for HA's owner through the in-HA integration and
 //     send the browser to HA's own auth callback -- its front page once onboarding is done,
 //     the onboarding page (which resumes) while it is not. Minted at click time, so the code's
@@ -1273,7 +1277,7 @@ func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 
 // openAsOwner is every open after the first: a code minted for HA's owner, and HA's own callback.
 // A refusal is SURFACED, with the plain address as the way in: the minter mints for the owner
-// and nobody else, so with no owner (deleted -- measured) the household logs in
+// and nobody else, so with no owner (it can be deleted) the household logs in
 // by hand, and a Home Assistant our integration did not load on gets its own login screen.
 func (a *app) openAsOwner(ctx context.Context, w http.ResponseWriter, r *http.Request, ha *homeAssistant, origin, access string, done bool) {
 	landing := origin + "/onboarding.html"
@@ -1309,8 +1313,9 @@ func scheme(r *http.Request) string {
 	return "http"
 }
 
-// newPassword is a starting credential: 20 characters from a set with no look-alikes, shown to
-// the household and meant to be changed. Never invented-and-hidden.
+// newPassword is a password briard generates and forgets -- Home Assistant's first user's, and the
+// one that replaces Mealie's shipped password (mealie.go): 20 characters from a set with no
+// look-alikes. Nothing signs in with it; the household sets its own inside the app.
 func newPassword() (string, error) {
 	const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
 	var b [20]byte

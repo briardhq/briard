@@ -3,8 +3,7 @@ package main
 // THE HISTORY: what happened to an app, and undoing it.
 //
 // It is the dashboard's half of the ring, and it relays exactly like the install button does —
-// `app-members` to list, `app-restore` to act, both already on the host's guest-may-ask
-// allowlist because their blast radius is one app's data and code on this node. The CLI's
+// `app-members` to list, `app-restore` to act, both on the host's guest-may-ask allowlist because their blast radius is one app's data and code on this node. The CLI's
 // `briard app history` / `app undo` are the same two directives typed, and neither front end
 // decides anything the other does not: the rows are quadlet.History's.
 //

@@ -1,7 +1,7 @@
 package main
 
-// THE GATE'S DASHBOARD HALF (reverse-proxy/gate.go is the reverse proxy's). A gated app -- Files --
-// has no login of its own; the household reaches it with this dashboard's session, carried to the
+// THE GATE'S DASHBOARD HALF (reverse-proxy/gate.go is the reverse proxy's). A gated app -- Files,
+// Mealie -- has no login of its own; the household reaches it with this dashboard's session, carried to the
 // app's own name the way the hop carries it between the dashboard's names:
 //
 //   - GET /open/<app>, on a browser this dashboard trusts, mints a one-time code for the device's
@@ -131,7 +131,7 @@ func (a *app) gateRedeem(w http.ResponseWriter, r *http.Request) {
 // reverse proxy names: 200 with the username the reverse proxy signs into the app -- Files' one
 // fixed name (agent/files), or the one Mealie's accounts say (mealie.go); 401 not a trusted device;
 // 409 a trusted device with no record, which only an open writes and Mealie's first account takes
-// its name from; 503 an app with no account of the user's to open.
+// its name from; 503 an app still starting, or with no account of the user's to open.
 func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 	if viaProxy(r) {
 		http.NotFound(w, r)
