@@ -1,23 +1,21 @@
 // Package hass is the one place Home Assistant's operational knowledge lives.
 //
-// A curated catalog is not a smaller app store — it is the licence to encode
-// app-specific knowledge in the product. Briard restricts itself to a handful of
-// apps precisely so it can know how each one is operated, and the first thing it
-// has to know about Home Assistant is how to TALK to it: HA's config-entry states are
-// what the S1 health gate reads to tell "the container answers" from "half the house's
-// integrations are dead", and reading them needs an authenticated, admin-scoped API.
+// A curated catalog is the licence to encode app-specific knowledge in the product, and the
+// first thing Briard has to know about Home Assistant is how to TALK to it: HA's config-entry
+// states are what the S1 health gate reads to tell "the container answers" from "half the
+// house's integrations are dead", and reading them needs an authenticated API.
 //
-// So this package delivers two capabilities, and the line between them is what each one
-// can only do from where it stands. The first is an authenticated HA API available to
-// the guest from the moment HA starts, for consumers OUTSIDE Home Assistant. The second
-// is briard's own integration, running INSIDE it: everything that wants a
-// running Home Assistant rather than a stopped one — offering the node's broker today,
-// restore intent and entities next — belongs in a process that already holds `hass`,
-// not in a stopped-window script talking HTTP to a process it is inside of.
+// So this package delivers two capabilities, split by what each can only do from where it
+// stands. The first is an authenticated HA API available to the guest from the moment HA
+// starts, for consumers OUTSIDE Home Assistant. The second is briard's own integration, running
+// INSIDE it: everything that wants a running Home Assistant rather than a stopped one (offering
+// the node's broker, the apps' update entities, Repairs issues for the node's alerts, the owner's
+// login, the recorder's lock) belongs in a process that already holds `hass`, not in a
+// stopped-window script talking HTTP to a process it is inside of.
 //
-// The two share no credential, which is what keeps them one mechanism and not two. The
-// integration never mints: it needs no token to act in-process, so the mint stays where
-// only it can be done, and the token goes on serving the outside.
+// The two share no credential. The integration never mints the control token: it needs no token
+// to act in-process, so the mint stays where only it can be done, and the token serves the
+// outside.
 //
 // THE MECHANISM, and why every part of it is where it is:
 //
@@ -80,11 +78,11 @@ const Name = "home-assistant"
 // every converge. Nothing here is replicated and nothing survives a guest reboot —
 // deliberately, since the token rotates per boot and the extracted script must match
 // the digest THIS node is running.
-// ⚠️ NAMED FOR THE APP, not for this package (it was /run/briard/hass). The agent
-// resolves an inbound caller by reading the run directory and taking a DIRECTORY NAME as the
-// app, so a directory named after the Go package would resolve to an app that does not
-// exist. agent/mosquitto already followed the convention; this was the one exception.
-// TestAppDirMatchesTheRegistry asserts the two agree.
+//
+// ⚠️ NAMED FOR THE APP, not for this package. The agent resolves an inbound caller by taking a
+// DIRECTORY NAME in the run directory as the app, so a directory named after the Go package
+// would resolve to an app that does not exist. TestAppDirMatchesTheRegistry (agent/apps)
+// asserts the two agree.
 const Dir = "/run/briard/home-assistant"
 
 // TokenPath is the refresh token, 0600 on tmpfs. It is the guest-side half of the
@@ -246,16 +244,16 @@ type Executor interface {
 //
 // The manifest schema cannot express a host bind, and that is not an oversight to work
 // around: capability comes by omission there, so that a catalog entry cannot ask for
-// the host. These two binds are the product's own knowledge about one app, applied
+// the host. These binds are the product's own knowledge about one app, applied
 // on the node — which is exactly where the readiness registry puts app-specific
 // knowledge too. Render stays a pure function of the manifest: the same manifest
 // renders the same units on every node.
 //
-// ⚠️ THE DIRECTORY MOUNT IS NOT HERE ANY MORE: one directory per app, read-only at
-// /briard, is the product's general shape rather than this app's arrangement, so
-// agent/apps writes it for every app that has one. What stays is the half that IS Home
-// Assistant knowledge — our s6 wrapper shadow-mounted over the image's own `run`, at a path only
-// this image has. Both sources still live outside /config, so HA's restore wipe never sees them.
+// The app's own directory (read-only at /briard) is not here: it is the product's general
+// shape, so agent/apps adds it for every app that has one. What is here IS Home Assistant
+// knowledge: our s6 wrapper shadow-mounted over the image's own `run`, at a path only this image
+// has, and the node's alerts for the integration. Both sources live outside /config, so HA's
+// restore wipe never sees them.
 func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	if m.Name != Name || !c.Primary {
 		return nil
@@ -301,18 +299,14 @@ const RestoreMarker = ".HA_RESTORE"
 // is about to exec. A rename swaps the directory entry, so a container that is already
 // running keeps the inode it started with and the next start gets the new one.
 //
-// FAILURE MUST NOT BE SURVIVED SILENTLY, and the caller is what decides how loudly. The
-// rendered units name bind sources this writes, and MEASURED (docker 29.6.2 / runc, the
-// same OCI bind semantics podman drives) a missing bind source is CREATED as a root-owned
-// directory, after which the container refuses to start — "not a directory: Are you trying
-// to mount a directory onto a file" — and the path is poisoned for the next attempt, since
-// a file has to go where a directory now sits. So a caller that ignores this error and
-// starts the container anyway gets an app that can never run again.
+// FAILURE MUST NOT BE SURVIVED SILENTLY. The rendered units name bind sources this writes, and
+// (measured on runc, the OCI bind semantics podman drives) a missing bind source is CREATED as a
+// root-owned directory, after which the container refuses to start — "not a directory: Are you
+// trying to mount a directory onto a file" — and the path is poisoned for the next attempt,
+// since a file has to go where a directory now sits. So a caller that ignores this error and
+// starts the container anyway gets an app that can never run again. Converge declines to start
+// THIS app and lets the others promote (argued at its call site in agent/guestagent).
 //
-// What converge does with it is NOT to fail the whole node: it declines to start THIS
-// app and lets the others promote, which is the only safe use of the error and is
-// argued at its call site. Never starting the unit is what keeps podman from creating the
-// bad source in the first place.
 // mqttPort is the broker's port, passed in by the registry (agent/apps) because it belongs
 // to the OTHER app. Zero means "this build knows of no broker", and the integration is then
 // materialised with nothing to dial -- it still loads, and its own socket check is what stops it.
@@ -350,7 +344,7 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest, mqttPort int)
 
 // ensureToken mints this boot's value once and keeps it.
 //
-// ENSURE, NOT ROTATE: converge runs on every install and every promotion, and a value
+// ENSURE, NOT ROTATE: converge runs on every install, promotion and guest boot, and a value
 // that changed under a container that is already running would break every consumer
 // until something restarted HA. Rotation comes from tmpfs instead — a guest reboot
 // clears /run, and nothing is running then either.
@@ -464,15 +458,13 @@ func write(ctx context.Context, x Executor, path, content, mode string) error {
 // /config, and the implementation it delegates to, staged outside /config where no restore and
 // no backup can reach it.
 //
-// The broker's port is substituted in, because it arrives from the registry: it belongs to the
-// other app, and a second copy of it here would be a second thing to keep in step with the
-// catalog. The alert copy's path and the dashboard's address are substituted for the same reason.
+// Every placeholder is substituted rather than restated in the integration: each value has one
+// definition elsewhere (the tokens' comments above say where).
 //
-// THE SUBSTITUTION IS CHECKED BOTH WAYS, and the before-check is the half that actually bites: a
-// Replace of a token that is not there is a silent no-op, so a check only AFTER it catches a
-// SECOND placeholder and never a MISSING one -- and a missing one is the case that installs an
-// integration dialling a port named "@MQTT_PORT@", failing forever and silently, at every Home
-// Assistant start in the fleet.
+// THE SUBSTITUTION IS CHECKED BOTH WAYS, and the before-check is the half that bites: a Replace
+// of a token that is not there is a silent no-op, so a check only AFTER it catches a SECOND
+// placeholder and never a MISSING one -- and a missing one installs an integration dialling a
+// port named "@MQTT_PORT@", failing silently at every Home Assistant start in the fleet.
 func writeIntegration(ctx context.Context, x Executor, mqttPort int) error {
 	src := implSource
 	for _, t := range [][2]string{

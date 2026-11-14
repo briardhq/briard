@@ -13,8 +13,8 @@ import (
 //
 // WHY HOME ASSISTANT DOES THE LOCKING AND NOT US. The recorder's SQLite database is the one part
 // of /config that a snapshot of a RUNNING app can catch mid-write, and Home Assistant already
-// has the exact mechanism its own backups use (`recorder/util.py`, measured against the pinned
-// 2026.7.1): a `PRAGMA wal_checkpoint(TRUNCATE)` followed by a held `BEGIN IMMEDIATE`. Taking that
+// has the exact mechanism its own backups use (`recorder/util.py`): a
+// `PRAGMA wal_checkpoint(TRUNCATE)` followed by a held `BEGIN IMMEDIATE`. Taking that
 // lock ourselves over a second connection would work and would also be worse in three ways —
 // it needs sqlite in the guest image's tool profile, it makes the recorder THREAD collide with us
 // (its writes fail and retry, in a household's log, while we hold the row), and it cannot tell us
@@ -30,14 +30,15 @@ import (
 // ⚠️ THE API IS INTERNAL, and that is a deliberate acceptance rather than an oversight. It is not
 // a documented integration surface, so a future Home Assistant may rename it — but it is what
 // Home Assistant's OWN backup depends on, so it cannot quietly stop existing, and the fallback
-// when it does is a member tagged `crash` rather than a member that lies. The nixosTest asserts
-// the clock sample comes out `quiesced` against the pinned image, so a rename lands as a red rig.
+// when it does is a member tagged `crash` rather than a member that lies.
+// nixosTest/hass-payload.nix asserts the clock sample comes out `quiesced` against the pinned
+// image, so a rename lands as a red rig.
 //
 // TWO CALLS, NOT A CALLBACK. Home Assistant holds the lock across an operation that happens
 // outside it — exactly as it does for its own backups, which lock, copy the file and unlock. The
 // alternative (our integration calling back into the agent to ask for the snapshot while it holds)
-// needs a new verb on the inbound channel that a titled member would let a compromised custom
-// component call at will, and puts the decision inside the container. The objection to holding a
+// needs a new verb on the inbound channel, which a compromised custom component could call at
+// will, and puts the decision inside the container. The objection to holding a
 // lock across an outside step is the one Home Assistant already answered: if we die between the
 // two calls, its own backlog check breaks the lock in about ten seconds and says so loudly.
 const quiescePath = "/api/briard/quiesce"

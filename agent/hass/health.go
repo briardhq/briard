@@ -32,7 +32,8 @@ const (
 
 // Health is Home Assistant's app health: whether the APP works, which its own
 // `/manifest.json` cannot say. Recovery mode — a configuration that does not parse — keeps that
-// answering 200 while every integration is down; `/api/config` reports it (measured by probe).
+// answering 200 while every integration is down; `/api/config` reports it (measured by
+// nixosTest/hass-health-probe.nix).
 //
 //   - `state` RUNNING and `recovery_mode` false is healthy; `recovery_mode` true is unhealthy;
 //     NOT_RUNNING or STARTING is starting (still booting, and nothing else); any other state is

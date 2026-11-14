@@ -12,10 +12,10 @@ import (
 )
 
 // Entry is one Home Assistant config entry's identity and setup state — the triple the S1
-// readiness gate reasons over (agent/guest/entrygate). It is also the WIRE shape of the
-// app.home-assistant.readiness verb, which is why it carries HA's own JSON names: the guest decodes HA's
-// answer straight into it and the host decodes the verb's answer into the same type, so there is
-// one spelling of this triple in the tree rather than one per hop.
+// readiness gate is fed. It is also the WIRE shape of the app.home-assistant.readiness verb,
+// which is why it carries HA's own JSON names: the guest decodes HA's answer straight into it and
+// the host decodes the verb's answer into the same type, so both hops share one spelling. The
+// host maps it onto the gate's own entrygate.Entry (agent/host/readiness.go).
 //
 // The rest of HA's config-entry JSON (titles, flags, subentry counts) is ignored on purpose. The
 // gate's signal is which entries were loaded and which stopped being loaded; nothing else in that
@@ -44,7 +44,8 @@ var client = &http.Client{Timeout: 10 * time.Second}
 // is how you TALK to Home Assistant: where the token is, that a refresh token has to be exchanged
 // for an access token first, which path lists config entries, and which three fields of the
 // answer mean anything. What the samples MEAN — which regressions are the upgrade's fault, how
-// long to let them settle, and whether to roll back — is the host's, in agent/guest/entrygate.
+// long to let them settle, and whether to roll back — is the host's (agent/host/readiness.go,
+// agent/guest/entrygate).
 //
 // The port is the manifest's, passed in rather than assumed: the catalog names it once, and the
 // health gate already builds its URL from the same field.
@@ -60,10 +61,9 @@ func Readiness(ctx context.Context, x Executor, port int) ([]Entry, error) {
 // minted, and trade it for an access token at the Home Assistant on this guest's loopback. The
 // base URL comes back too, because the port it is built from is the caller's.
 //
-// SHARED BY BOTH DIRECTIONS on purpose — the sample the readiness gate pulls out (above) and the
-// one-bit signal Nudge pushes in (nudge.go). There is one control channel and one way to open it;
-// a second copy of these lines would be a second place for the exchange to drift from what Home
-// Assistant documents.
+// SHARED BY EVERY USE on purpose — Readiness, Health, Nudge, Hold/Release and SystemAccess. There
+// is one control channel and one way to open it; a second copy of these lines would be a second
+// place for the exchange to drift from what Home Assistant documents.
 func connect(ctx context.Context, x Executor, port int) (string, string, error) {
 	if port < 1 || port > 65535 {
 		return "", "", fmt.Errorf("hass: port %d out of range: %w", port, errNoChannel)
@@ -90,9 +90,9 @@ func connect(ctx context.Context, x Executor, port int) (string, string, error) 
 // exchange trades the long-lived refresh token for a short-lived access token — HA's documented
 // flow, with client_id omitted (a system token has none, and sending one is refused).
 //
-// Per use, never cached: an access token lives 30 minutes and the two samples this package is
-// asked for are taken minutes apart across an app restart. Holding one would trade a
-// negligible saving for a class of bug where the gate reads a stale credential.
+// Per use, never cached: an access token lives 30 minutes, and uses come minutes apart (the
+// readiness samples straddle an app restart). Holding one would trade a negligible saving for a
+// class of bug where a caller presents a stale credential.
 func exchange(ctx context.Context, base, token string) (string, error) {
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {token}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/auth/token", strings.NewReader(form.Encode()))
@@ -106,9 +106,8 @@ func exchange(ctx context.Context, base, token string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// A 400 here is the interesting one: it means HA does not know our token, i.e. the mint
-		// did not stick. Worth naming, because the caller degrades to floor-only either way and
-		// the log line is the only place the difference is visible.
+		// A 400 here means HA does not know our token, i.e. the mint did not stick. Returned as
+		// httpStatus so Health can tell our login failing (4xx) from Home Assistant failing (5xx).
 		return "", httpStatus{"hass: exchange token", resp.StatusCode}
 	}
 	var out struct {

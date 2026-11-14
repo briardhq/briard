@@ -30,7 +30,7 @@ import (
 //
 //   - a `*.corrupt.*` file new since the previous sample. Home Assistant found a store or its
 //     database undecodable, renamed it aside and started empty — silent data loss that no health
-//     signal sees, and undo is its remedy (measured by hass-health-probe).
+//     signal sees, and undo is its remedy (measured by nixosTest/hass-health-probe.nix).
 
 // signalYAML maps each top-level YAML signal to the phrase a change to it reads as.
 var signalYAML = map[string]string{

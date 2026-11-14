@@ -224,9 +224,10 @@ func callbackQuery(origin, authCode string) url.Values {
 	return q
 }
 
-// ErrNoOwner is MintLogin's answer when Home Assistant has no owner account: the minter mints for
-// the owner and nobody else, and the owner can be deleted (measured). The
-// caller says so; it never asks for a different user.
+// ErrNoOwner is MintLogin's answer when Home Assistant has no owner account, or an owner with no
+// credential to log in with (the integration's 409): the minter mints for the owner and nobody
+// else, and the owner can be deleted (measured). The caller says so; it never asks for a
+// different user.
 var ErrNoOwner = errors.New("hass: Home Assistant has no owner account")
 
 // ErrNoMinter is MintLogin's answer when the integration is not answering at all (a Home

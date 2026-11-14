@@ -32,8 +32,9 @@ import (
 // THE RESTORE IS GATED ON TWO POSITIVE READS (a destructive act needs a positive confirmation):
 // the copy checked clean, and its schema version is not newer than the live database's. The
 // recorder migrates any older schema forward on start, one version at a time, and refuses only a
-// newer one. Either read failing means no restore, and both are read again when the restore runs
-// (Restorable), because the check that named the copy ran earlier.
+// newer one. Either read failing means no restore. When the restore runs, Restorable reads the
+// copy's clean record and both schema versions again, because the check that named the copy ran
+// earlier.
 //
 // THE CHECK IS A READ, THE RESTORE A WRITE, and they run apart: the check takes minutes on a big
 // database and runs in the background beside everything else, while the restore stops the app

@@ -30,10 +30,10 @@ const EventReconsider = "briard_reconsider"
 //
 // THE TRANSPORT IS HOME ASSISTANT'S OWN INBOUND API and nothing new: POST /api/events/<type> is
 // how anything outside HA puts something on its bus, our system user is already an admin (which
-// that view requires), and the token and the loopback are the ones the readiness gate uses. There
-// is no new mount, no socket into the container, nothing listening. The alternative shapes — a
-// file the integration watches, a callback socket back to the guest agent — each add a mechanism
-// to carry the same single bit.
+// that view requires), and the token and the loopback are the ones the readiness gate uses. It
+// adds no mount, no socket and no listener. The alternative shapes — a file the integration
+// watches, a callback socket back to the guest agent — each add a mechanism to carry the same
+// single bit.
 //
 // FIRE AND FORGET, one way. A 200 says HA put the event on its bus, never that the integration
 // acted on it, and asking for more would need a return channel this deliberately does not have.
@@ -42,8 +42,8 @@ const EventReconsider = "briard_reconsider"
 //
 // IN THE GUEST for the same reason as Readiness: the token is on this node's tmpfs and Home
 // Assistant listens on the guest's loopback, which the host cannot reach at all under macvtap.
-// Still dumb hands — WHEN a running Home Assistant is worth telling is the host's decision
-// (agent/host/app.go), and nothing about it is encoded here.
+// Still dumb hands — WHEN a running Home Assistant is worth telling is the host's decision (it
+// fires this after every install and uninstall), and nothing about it is encoded here.
 func Nudge(ctx context.Context, x Executor, port int) error {
 	base, access, err := connect(ctx, x, port)
 	if err != nil {
@@ -51,8 +51,7 @@ func Nudge(ctx context.Context, x Executor, port int) error {
 	}
 	// An empty JSON OBJECT, not an empty body: HA's view parses whatever body it is given and
 	// refuses anything that is not an object, so `{}` is the encoding of "no data" that cannot be
-	// mistaken for one. It is also the shape a payload would take if this ever needed one, which
-	// keeps that door open without walking through it.
+	// mistaken for one.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/events/"+EventReconsider, strings.NewReader("{}"))
 	if err != nil {
 		return fmt.Errorf("hass nudge: build event request: %w", err)
