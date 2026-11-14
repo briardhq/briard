@@ -185,8 +185,8 @@ func TestHealthPropagatesControlError(t *testing.T) {
 	}
 }
 
-// When the guest supports the app-health verb, readiness follows the IN-GUEST probe, NOT a host-side
-// GET of the VIP — so the health-gate works under a substrate where the host can't reach the VIP
+// When the guest supports the app-health verb, readiness follows the in-guest probe, not a
+// host-side GET of the VIP — so the health-gate works where the host can't reach the VIP
 // (macvtap). A failable pair: the host URL always says the opposite of the verb.
 func TestHealthPrefersInGuestProbe(t *testing.T) {
 	// Host-side GET of this URL would 200, but the in-guest verb says sick: Ready must be false.
@@ -203,10 +203,9 @@ func TestHealthPrefersInGuestProbe(t *testing.T) {
 	}
 }
 
-// AwaitReady must poll on a context detached from the upgrade deadline. Otherwise a
-// deadline that fires *inside* a control-channel call closes the channel mid-call, and the
-// rollback that reuses that channel then fails to restore. Assert the ctx AppActive
-// receives does not observe the upgrade ctx's cancellation.
+// AwaitReady must poll on a context detached from the upgrade deadline: a deadline firing inside
+// a control-channel call closes the channel mid-call, and the rollback reusing that channel then
+// fails to restore. Asserts the ctx AppActive receives does not see the upgrade ctx's cancel.
 func TestAwaitReadyPollsOnDetachedContext(t *testing.T) {
 	srv := codeServer(t, http.StatusServiceUnavailable) // running but never ready → keep polling
 	f := &fakeControl{active: true}
@@ -231,12 +230,11 @@ func TestAwaitReadyPollsOnDetachedContext(t *testing.T) {
 	}
 }
 
-// THE OS-UPGRADE SEQUENCE IS NOT TESTED HERE: it is agent/host's (osupgrade.go), because an
-// OS upgrade rolls back to a snapshot of the OS disk and only the host can take or restore one.
-//
-// What is here is what the guest owns and this file can fail on: the health floor (including
-// the zero-app case), the OS gates (OSReady, OSReadyServing), the S1 gate's verdicts and the
-// primitives the APP upgrade uses -- {image + data} rolling back together.
+// The OS-upgrade sequence is not tested here: it is agent/host's (osupgrade.go), because it rolls
+// back to a snapshot of the OS disk, which only the host can take or restore. This file covers
+// what the guest owns: the health floor (zero-app case included), the OS gates (OSReady,
+// OSReadyServing), the S1 gate's verdicts and the primitives the app upgrade uses -- {image +
+// data} rolling back together.
 
 // fakeAssessor drives the differential S1 gate: a canned verdict + a record of how often it
 // was consulted and which baseline Assess was handed.
@@ -260,12 +258,10 @@ func (a *fakeAssessor) Assess(_ context.Context, base Baseline) (Verdict, string
 	return a.verdict, string(a.verdict) + "-reason", a.assessErr
 }
 
-// The S1 gate's verdicts, driven on the pair the app-install path calls -- capture a
-// baseline while the old code still serves, then judge once the floor has passed -- so the
-// semantics are asserted once, here.
-//
-// A non-nil error means "roll back"; everything else keeps the upgrade. The degrade cases are
-// the load-bearing ones: S1 must never revert a node because its own telemetry broke.
+// The S1 gate's verdicts, asserted once, on the pair the app-install path calls: capture a
+// baseline while the old code serves, judge once the floor has passed. A non-nil error means
+// "roll back"; everything else keeps the upgrade. The degrade cases carry the weight: S1 must
+// never revert a node because its own telemetry broke.
 func TestAssessVerdicts(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -300,10 +296,9 @@ func TestAssessVerdicts(t *testing.T) {
 	}
 }
 
-// A ZERO-APP node -- the shipped state -- must health-gate on the reverse
-// proxy alone. Without hasApp, the empty spec names no unit, systemd says "inactive", and
-// Ready is false forever, while the same node reports Healthy: true to the cloud
-// (cfg.snapshot takes the probe's answer with no such conjunct).
+// A zero-app node -- the shipped state -- must health-gate on the reverse proxy alone. Without
+// hasApp, the empty spec names no unit, systemd says "inactive", and Ready is false forever while
+// the node reports Healthy: true to the cloud (cfg.snapshot takes the probe's answer alone).
 func TestHealthZeroAppGatesOnTheReverseProxyAlone(t *testing.T) {
 	srv := codeServer(t, http.StatusOK)
 	f := &fakeControl{active: false} // no app unit exists, so it cannot be active
@@ -321,9 +316,9 @@ func TestHealthZeroAppGatesOnTheReverseProxyAlone(t *testing.T) {
 	}
 }
 
-// The converse, so the above is not "always ready": a zero-app node whose REVERSE PROXY is
-// down is NOT ready. This is exactly the failure the rollback demo breaks deliberately, so if this
-// went vacuous the broken-generation test would too.
+// The converse, so the above is not "always ready": a zero-app node whose reverse proxy is down is
+// not ready. The rollback demo breaks exactly this deliberately, so if this went vacuous the
+// broken-generation test would too.
 func TestHealthZeroAppUnreadyWhenTheReverseProxyIsDown(t *testing.T) {
 	srv := codeServer(t, http.StatusServiceUnavailable)
 	m := newManager(&fakeControl{}, srv.URL)
@@ -336,7 +331,7 @@ func TestHealthZeroAppUnreadyWhenTheReverseProxyIsDown(t *testing.T) {
 	}
 }
 
-// An app-bearing node still needs the unit active AND the probe passing. Without this,
+// An app-bearing node still needs the unit active and the probe passing. Without this,
 // dropping the conjunct entirely would pass the zero-app tests above.
 func TestHealthWithAAppStillRequiresTheUnitActive(t *testing.T) {
 	srv := codeServer(t, http.StatusOK)
@@ -350,17 +345,15 @@ func TestHealthWithAAppStillRequiresTheUnitActive(t *testing.T) {
 	}
 }
 
-// The end-to-end half -- a zero-app node must COMMIT an OS upgrade rather than roll it
-// back -- belongs to agent/host with the sequence. The OS path takes no spec at all, so
-// "no app" is not a case it can get wrong. The Health-level halves above stay here, where
-// the conjunct they guard lives.
+// The end-to-end half -- a zero-app node must commit an OS upgrade, not roll it back -- belongs
+// to agent/host with the sequence; the OS path takes no spec, so "no app" is not a case it can get
+// wrong. The Health-level halves above stay here, where their conjunct lives.
 
 // ── ResolveHealthURL: what we probe, decided per call ──────────────────────────────
 //
-// Handing the service address to the LAN takes it away from build time and gives it to the LAN, so "what do we
-// probe?" stops being config and becomes a question. It is asked on the ROLLBACK PATH (the OS
-// health gate), which is why the whole predicate is enumerated here rather than sampled: a wrong
-// answer does not fail loudly, it reverts a healthy node.
+// With the service address the LAN's rather than build time's, "what do we probe?" is a question,
+// not config. It is asked on the rollback path (the OS health gate), so the whole predicate is
+// enumerated rather than sampled: a wrong answer does not fail loudly, it reverts a healthy node.
 func TestResolveHealthURL(t *testing.T) {
 	const configured = "http://192.168.1.100/healthz"
 	for _, tc := range []struct {
@@ -372,8 +365,8 @@ func TestResolveHealthURL(t *testing.T) {
 		vipErr     error
 		want       string
 	}{
-		// A witness probes nothing, whatever else is true. This is the ONLY "" that means
-		// "health follows quorum", and role is what says so.
+		// A witness probes nothing, whatever else is true: the only "" that means "health
+		// follows quorum", and role is what says so.
 		{"witness probes nothing", true, "eth2", configured, "192.168.9.50/24", nil, ""},
 
 		// An address we set is the address we probe: reading it back could only differ, and
@@ -384,18 +377,18 @@ func TestResolveHealthURL(t *testing.T) {
 		{"reported lease is the target", false, "eth2", "", "192.168.9.50/24", nil, "http://192.168.9.50/healthz"},
 		{"a bare address needs no prefix", false, "eth2", "", "192.168.9.50", nil, "http://192.168.9.50/healthz"},
 
-		// Holding no address is "nothing to probe yet" -- a Secondary, or a promotion in
-		// flight. It reads as not-ready, never as healthy.
+		// Holding no address is "nothing to probe yet" (a Secondary, or a promotion in flight):
+		// not-ready, never healthy.
 		{"no address held", false, "eth2", "", "", nil, ""},
 
-		// A device we did not NAME is a device we know nothing about: with VIP_DEV unset this
-		// node claims no VIP, so there is no address to ask about. (Never a guessed eth1: in
-		// the agent-less harnesses it also carries the DRBD address, so "the first address on
-		// eth1" would be the replication link.)
+		// A device we did not name is one we know nothing about: with VIP_DEV unset this node
+		// claims no VIP and there is no address to ask about. Never a guessed eth1: in the
+		// agent-less harnesses it also carries the DRBD address, so its first address would be
+		// the replication link.
 		{"never ask about an unnamed device", false, "", configured, "192.168.9.50/24", nil, configured},
 
-		// An old guest predating net.vip is one that still has a baked address to fall back
-		// to -- the same compatibility posture probeReady takes for the app-health verb.
+		// A guest predating net.vip still has a baked address to fall back to -- the posture
+		// probeReady takes for the app-health verb.
 		{"verb error falls back", false, "eth2", configured, "", errors.New("unknown verb"), configured},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -408,10 +401,9 @@ func TestResolveHealthURL(t *testing.T) {
 	}
 }
 
-// A data node that holds no service address is NOT ready -- it is the node nobody in the house
-// can reach. The assertion is that it does not probe at all: an
-// empty URL handed to a probe is a request that fails for an incidental reason, and this must
-// fail for the reason it actually has.
+// A data node holding no service address is not ready: nobody in the house can reach it. It must
+// not probe at all -- an empty URL fails for an incidental reason, and this must fail for the
+// reason it actually has.
 func TestHealthOnANodeWithNoAddressDoesNotProbe(t *testing.T) {
 	f := &fakeControl{healthVerb: true, health: true, active: true}
 	m := NewManager(f, Config{VIPDev: "eth2"}) // no configured URL, guest reports none
@@ -430,10 +422,9 @@ func TestHealthOnANodeWithNoAddressDoesNotProbe(t *testing.T) {
 
 // ── OSReady: the OS-upgrade gate ───────────────────────────────────────────────────
 //
-// Not HealthURL: that is the VIP, which a SECONDARY does not own. Its peer answers, so a
-// Secondary gated on it certifies its own upgrade against another machine's reverse proxy and
-// commits a broken generation. The table below is the whole predicate, enumerated, and the
-// Secondary rows are the ones that guard against that.
+// Not HealthURL: that is the VIP, which a Secondary does not own. Its peer answers, so a Secondary
+// gated on it certifies its upgrade against another machine's reverse proxy and commits a broken
+// generation. The table is the whole predicate; the Secondary rows guard against that.
 func TestOSReadyAsksEachNodeAboutTheJobItHolds(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -446,14 +437,13 @@ func TestOSReadyAsksEachNodeAboutTheJobItHolds(t *testing.T) {
 		{"primary with a dead reverse proxy", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true}}, false, false},
 
 		// Diskful ∧ quorate ⇒ UpToDate. A Secondary is judged on being a viable failover
-		// target, and NOT on the reverse proxy — the row that would pass by asking the peer.
+		// target, not on the reverse proxy — the row that would pass by asking the peer.
 		{"secondary uptodate, reverse proxy dead", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true, UpToDate: true}}, false, true},
 		{"secondary NOT uptodate", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true}}, true, false},
 
-		// The vacuous rows, and they are correct rather than tolerated: a node with no present
-		// obligation cannot fail one. Both shapes MUST stay upgradable — in particular a degraded
-		// node may need the update to RECOVER, so gating on quorum would deadlock exactly the
-		// case that needs fixing.
+		// The vacuous rows, correct rather than tolerated: a node with no present obligation
+		// cannot fail one. Both must stay upgradable — a degraded node may need the update to
+		// recover, so gating on quorum would deadlock exactly the case that needs fixing.
 		{"diskless witness (never UpToDate by design)", model.Cluster{QuorumState: model.QuorumState{Quorate: true}}, false, true},
 		{"non-quorate anchor (may need the update to recover)", model.Cluster{QuorumState: model.QuorumState{Diskful: true}}, false, true},
 	} {
@@ -480,18 +470,18 @@ func TestOSReadyAsksEachNodeAboutTheJobItHolds(t *testing.T) {
 	}
 }
 
-// A Secondary must not consult the reverse proxy AT ALL — not merely reach the right verdict by
+// A Secondary must not consult the reverse proxy at all — not merely reach the right verdict by
 // coincidence. The probe goes to the VIP, which the peer answers, so any reverse-proxy result
 // read on a Secondary is a statement about a different machine.
 func TestOSReadySecondaryNeverProbesTheReverseProxy(t *testing.T) {
 	var probes int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		probes++
-		w.WriteHeader(http.StatusOK) // the PEER's reverse proxy, healthy — the trap
+		w.WriteHeader(http.StatusOK) // the peer's reverse proxy, healthy — the trap
 	}))
 	defer srv.Close()
 	f := &fakeControl{cluster: model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true}}} // not UpToDate
-	m := NewManager(f, Config{Resource: "r0", HealthURL: srv.URL})                                          // a configured ANCHOR
+	m := NewManager(f, Config{Resource: "r0", HealthURL: srv.URL})                                          // a configured anchor
 
 	ok, err := m.OSReady(context.Background())
 	if err != nil {
@@ -516,11 +506,11 @@ func TestOSReadyUnreadableClusterIsNotReady(t *testing.T) {
 	}
 }
 
-// The lone holder of the house must come back SERVING, not merely unobliged. This is the row
-// OSReady passes vacuously and OSReadyServing must not: a node whose reverse proxy failed after
-// the boot and which its own failure handling has already demoted (start-limit-hit -> OnFailure
-// -> promotion hold -> Secondary, measured at 14 s, before the gate looks). Nobody else could be
-// serving, so a Secondary here is a dark house.
+// The lone holder of the house must come back serving, not merely unobliged: the row OSReady
+// passes vacuously and OSReadyServing must not -- a node whose reverse proxy failed after the boot
+// and which its own failure handling already demoted (start-limit-hit -> OnFailure -> promotion
+// hold -> Secondary, measured at 14 s, before the gate looks). Nobody else could be serving, so a
+// Secondary here is a dark house.
 func TestOSReadyServingRefusesADemotedHolder(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

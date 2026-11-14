@@ -39,7 +39,7 @@ func TestStageNextWritesExecutableCandidateAtomically(t *testing.T) {
 	}
 }
 
-// The load-bearing property: staging does NOT touch the committed binary. A power loss (or a
+// The load-bearing property: staging does not touch the committed binary. A power loss (or a
 // failed trial) after staging leaves systemd running the committed agent — .next is inert.
 func TestStageNextLeavesCommittedBinaryUntouched(t *testing.T) {
 	l := newLayout(t)
@@ -56,7 +56,7 @@ func TestStageNextLeavesCommittedBinaryUntouched(t *testing.T) {
 	if string(b) != "COMMITTED" {
 		t.Errorf("committed agent changed on a mere stage: got %q — power-loss safety broken", b)
 	}
-	// And agent.next is on the SAME directory (so the swap is an atomic same-fs rename).
+	// And agent.next is in the same directory (so the swap is an atomic same-fs rename).
 	if filepath.Dir(l.NextPath()) != filepath.Dir(l.AgentPath()) {
 		t.Errorf("agent.next (%s) not colocated with agent (%s) — commit rename would cross fs",
 			l.NextPath(), l.AgentPath())
@@ -244,7 +244,7 @@ func TestResultIsReadNotTaken(t *testing.T) {
 	}
 }
 
-// The bundle siblings: net-wrap stages beside the agent, qemu stages as a RELATIVE
+// The bundle siblings: net-wrap stages beside the agent, qemu stages as a relative
 // link to a tree under Base (replacing an earlier one), a link to anything else
 // is refused, and the two resolve back to absolute tree paths.
 func TestBundleStagesNetWrapAndAQEMULink(t *testing.T) {
@@ -419,11 +419,11 @@ func TestFailureMessageIsTakenOnce(t *testing.T) {
 	}
 }
 
-// A HELD .old DOES NOT TURN A COMMIT INTO A REVERT. A command still running the agent an earlier
-// commit parked aside holds that file: it can be neither deleted nor renamed over. A non-empty
+// A held .old does not turn a commit into a revert. A command still running the agent an earlier
+// commit parked aside holds that file, so it can be neither deleted nor renamed over; a non-empty
 // directory under the fixed name stands in for it here, failing both the same way on every OS.
-// The commit must still take the trial marker away -- under its own name -- and leave the held
-// one for later, or the next run reads a working update as interrupted and reverts it.
+// The commit must still take the trial marker away, under its own name, and leave the held one
+// for later, or the next run reads a working update as interrupted and reverts it.
 func TestACommitWithAHeldOldStillCommits(t *testing.T) {
 	l := newLayout(t)
 	seed(t, l)
@@ -473,10 +473,10 @@ func TestACommitSweepsEarlierOlds(t *testing.T) {
 	}
 }
 
-// A RUNNING TRAY DOES NOT FAIL A COMMIT. The tray runs the program the swap displaced until it moves
-// onto the new one, and Windows refuses to delete a running program but renames it -- a non-empty
-// directory stands in for it, refusing the delete the same way on every OS. The commit sets it
-// aside under its own .old and finishes; it goes at a later commit, once nothing runs it.
+// A running tray does not fail a commit. The tray runs the displaced program until it moves onto
+// the new one, and Windows refuses to delete a running program but renames it; a non-empty
+// directory stands in for it here, refusing the delete the same way on every OS. The commit sets
+// it aside under its own .old and finishes; it goes at a later commit, once nothing runs it.
 func TestACommitWithARunningTrayStillCommits(t *testing.T) {
 	l := newLayout(t)
 	seed(t, l)

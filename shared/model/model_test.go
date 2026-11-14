@@ -3,10 +3,9 @@ package model
 import "testing"
 
 // ServingUnit is the one definition of "which unit is this app?". An app names its
-// quadlet-rendered container explicitly, and anything else names NOTHING — never a unit assembled
-// from the app name: for an empty one that is "podman-.service", which systemd reports
-// "inactive" forever. The name-only case is asserted because it is the one a derivation would be
-// tempted to answer.
+// quadlet-rendered container explicitly, and anything else names nothing — never a unit assembled
+// from the app name (for an empty one, "podman-.service", which systemd reports "inactive"
+// forever). The name-only case is asserted because a derivation would be tempted to answer it.
 func TestServingUnit(t *testing.T) {
 	cases := []struct {
 		name string

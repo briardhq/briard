@@ -49,10 +49,10 @@ func TestParseGood(t *testing.T) {
 	}
 }
 
-// TestIdentityIsTheBytes: identity is the hash of the EXACT bytes given, not of a re-marshalling.
-// Two documents that differ only in whitespace are different signed artifacts and must not
-// collide, or a re-encode anywhere in the chain silently mints a new identity for the same
-// app (or, worse, the same identity for two different ones).
+// TestIdentityIsTheBytes: identity is the hash of the exact bytes given, not of a re-marshalling.
+// Documents differing only in whitespace are different signed artifacts and must not collide, or a
+// re-encode anywhere in the chain silently mints a new identity for the same app (or, worse, the
+// same identity for two different ones).
 func TestIdentityIsTheBytes(t *testing.T) {
 	compact := raw(t, good())
 	spaced := append(append([]byte(nil), compact...), '\n')
@@ -140,10 +140,10 @@ func TestValidateRejects(t *testing.T) {
 }
 
 // TestValidateRejectsUnitInjection is the sharpest edge of the boundary. The renderer writes INI,
-// so a newline smuggled through ANY rendered field would let a catalog entry append its own
-// directives — "PodmanArgs=--privileged" — and grant by injection exactly the capability the
-// schema withholds by omission. If this test ever goes green with the check removed, the
-// "inexpressible" property is gone and only the wording survives.
+// so a newline smuggled through any rendered field lets a catalog entry append its own directives
+// ("PodmanArgs=--privileged"), granting by injection exactly what the schema withholds by
+// omission. If this ever goes green with the check removed, the "inexpressible" property is gone
+// and only the wording survives.
 func TestValidateRejectsUnitInjection(t *testing.T) {
 	const inject = "x\nPodmanArgs=--privileged"
 	for _, tc := range []struct {
@@ -166,9 +166,9 @@ func TestValidateRejectsUnitInjection(t *testing.T) {
 	}
 }
 
-// TestAcceptsRealWorldRegistryForms: the shapes a real catalog entry actually carries. The ported
-// form is a REGRESSION TEST — a digest pattern with no `:` in it silently refuses every registry
-// on a non-default port, which otherwise only an integration test running one would find.
+// TestAcceptsRealWorldRegistryForms: the shapes a real catalog entry carries. The ported form is a
+// regression test: a digest pattern with no `:` silently refuses every registry on a non-default
+// port, which otherwise only an integration test running one would find.
 func TestAcceptsRealWorldRegistryForms(t *testing.T) {
 	for _, image := range []string{
 		"ghcr.io/home-assistant/home-assistant@sha256:" + hex64,
@@ -235,10 +235,10 @@ func TestMultiContainerPod(t *testing.T) {
 	}
 }
 
-// THE NETWORK FIELD IS A CLOSED ENUM AND ITS SILENCE MEANS PRIVATE. Both halves are
-// load-bearing: silence yielding the LESS capable shape is property 2 working as stated, and
-// refusing an unrecognised word is what stops a misspelled `"network":"hostt"` from installing,
-// running, and finding no devices with nothing anywhere saying why.
+// The network field is a closed enum and its silence means private. Both halves carry weight:
+// silence yielding the less capable shape is property 2 working as stated, and refusing an
+// unrecognised word stops a misspelled `"network":"hostt"` from installing, running, and finding
+// no devices with nothing anywhere saying why.
 func TestNetworkIsAClosedEnumDefaultingToPrivate(t *testing.T) {
 	base := func(network string) Manifest {
 		m := Manifest{Name: "svc", Version: "1", Network: network, Containers: []Container{{

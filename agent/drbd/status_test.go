@@ -69,10 +69,10 @@ func TestParseCluster(t *testing.T) {
 			"node2":   {Name: "node2", NodeID: 1, Connected: false, Role: "Unknown", Diskful: false, UpToDate: false},
 			"witness": {Name: "witness", NodeID: 2, Connected: false, Role: "Unknown", Diskful: false, UpToDate: false},
 		}, false},
-		// THE DISCRIMINATING CASE: one anchor holding the data, one connected witness. This
-		// node is Primary and fully quorate, and there is still nobody to take over. It is the
-		// only fixture where "quorate" and "has a successor" disagree, which is what makes it
-		// the one that proves the predicate is not a quorum test wearing a different name.
+		// The discriminating case: one anchor holding the data, one connected witness. Primary
+		// and fully quorate, yet nobody can take over -- the only fixture where "quorate" and
+		// "has a successor" disagree, so the one proving the predicate is not a quorum test
+		// under another name.
 		{"status-lone-anchor.json", map[string]model.PeerState{
 			"witness": {Name: "witness", NodeID: 2, Connected: true, Role: "Secondary", Diskful: false, UpToDate: false},
 		}, false},
@@ -136,7 +136,7 @@ func TestPeerCanTakeOverIsNotVacuous(t *testing.T) {
 		})
 	}
 
-	// ...and the same shape with none of those defects DOES pass, or the three
+	// ...and the same shape with none of those defects does pass, or the three
 	// negatives above would be proving nothing.
 	healthy := []byte(`[{"name":"r0","role":"Primary","devices":[{"quorum":true}],"connections":[` +
 		`{"name":"peer","connection-state":"Connected","peer-role":"Secondary","peer_devices":[` +
@@ -201,7 +201,7 @@ func TestPeerCounts(t *testing.T) {
 	}
 
 	// Quorum lost — the input to the gate's "already failed, nothing to protect" clause. Folded
-	// per-device: ANY volume without quorum makes the node non-quorate, since DRBD refuses writes.
+	// per-device: any volume without quorum makes the node non-quorate, since DRBD refuses writes.
 	noQuorum := []byte(`[{"name":"r0","role":"Primary","devices":[{"quorum":true},{"quorum":false}],` +
 		`"connections":[{"connection-state":"StandAlone"},{"connection-state":"StandAlone"}]}]`)
 	if _, _, quorate, err = PeerCounts(noQuorum); err != nil || quorate {
@@ -219,13 +219,11 @@ func TestPeerCounts(t *testing.T) {
 	}
 }
 
-// This node's OWN disk, read from the same sample as everyone else's. Not cosmetic: without
-// these fields a node can say whether a PEER is a viable failover target but not whether IT is,
-// and a Secondary's OS-upgrade gate has nothing node-local to ask -- the VIP it could probe
-// instead is answered by its peer.
-//
-// The witness row is the one that makes the fold matter. A diskless node reports disk-state
-// "Diskless", so a `!= "UpToDate"` test alone would call it not-UpToDate AND leave Diskful true —
+// This node's own disk, read from the same sample as everyone else's. Without these fields a node
+// can say whether a peer is a viable failover target but not whether it is itself, and a
+// Secondary's OS-upgrade gate has nothing node-local to ask -- the VIP it could probe is answered
+// by its peer. The witness row makes the fold matter: a diskless node reports disk-state
+// "Diskless", so a `!= "UpToDate"` test alone would call it not-UpToDate and leave Diskful true,
 // and `diskful ∧ quorate ⇒ UpToDate` would then fail every witness upgrade, undoing.
 func TestParseClusterReadsThisNodesOwnDisk(t *testing.T) {
 	for _, tc := range []struct {

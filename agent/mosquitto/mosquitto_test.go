@@ -82,9 +82,9 @@ func TestPrepareMaterialisesTheConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("%s was not written (files: %v)", confPath, f.files)
 	}
-	// The embedded template with the bind substituted -- the ONE thing Prepare does to it. Asserted
-	// as "equal to the template with the token replaced" rather than "equal to the template", so a
-	// second silent substitution could not hide here.
+	// The embedded template with the bind substituted -- the one thing Prepare does to it --
+	// asserted as equal to the template with the token replaced, so a second silent substitution
+	// cannot hide here.
 	if want := strings.Replace(confSource, bindToken, bindAddress(broker()), 1); got != want {
 		t.Error("the written config is not the embedded one with the bind substituted")
 	}
@@ -97,8 +97,8 @@ func TestPrepareMaterialisesTheConfig(t *testing.T) {
 	if !f.ran("mkdir", "-p", Dir) {
 		t.Errorf("%s was never created (runs: %v)", Dir, f.runs)
 	}
-	// 0644 and not 0600: the broker runs as an unprivileged user inside the container and has to
-	// read this file. A tightened mode here is a container that cannot start.
+	// 0644, not 0600: the broker runs as an unprivileged user in the container and must read this
+	// file; a tightened mode is a container that cannot start.
 	if !f.ran("chmod", "0644", confPath+".new") {
 		t.Errorf("the config was not made readable (runs: %v)", f.runs)
 	}
@@ -158,13 +158,12 @@ func TestVolumesBindTheConfigReadOnly(t *testing.T) {
 }
 
 // TestConfigAgreesWithWhatEveryNodeIsToldToProbe — the pairing this package's constants exist
-// for. The config is what OPENS the management listener and what places the persistence file;
-// the manifest is what every node PROBES and what it BINDS. An edit to one without the other is
-// a health gate that can never pass, or retained state written outside the replicated volume.
+// for: the config opens the management listener and places the persistence file; the manifest is
+// what every node probes and binds. Editing one without the other is a health gate that never
+// passes, or retained state written outside the replicated volume.
 func TestConfigAgreesWithWhatEveryNodeIsToldToProbe(t *testing.T) {
-	// The management listener. The ADDRESS is the templated half -- it follows the pod's
-	// networking (see bindToken) -- so what this asserts is the port and the token, which is the
-	// part the manifest has to agree with.
+	// The management listener's address is templated (it follows the pod's networking, see
+	// bindToken), so this asserts the port and the token, the part the manifest must agree with.
 	if want := fmt.Sprintf("listener %d %s", HealthPort, bindToken); !strings.Contains(confSource, want) {
 		t.Errorf("config does not open the management listener as %q", want)
 	}
@@ -185,9 +184,9 @@ func TestConfigAgreesWithWhatEveryNodeIsToldToProbe(t *testing.T) {
 	}
 }
 
-// THE BIND FOLLOWS THE POD, and getting it backwards is a LAN exposure rather than a bug: under
-// host networking the pod IS the guest, so 0.0.0.0 there is every interface the household can see.
-// The two modes are asserted together because each is only meaningful against the other.
+// The bind follows the pod, and getting it backwards is a LAN exposure rather than a bug: under
+// host networking the pod is the guest, so 0.0.0.0 is every interface the household can see. The
+// two modes are asserted together because each is only meaningful against the other.
 func TestTheManagementBindFollowsTheNetworkMode(t *testing.T) {
 	private := broker()
 	private.Network = manifest.NetworkPrivate
@@ -223,10 +222,10 @@ func TestTheManagementBindFollowsTheNetworkMode(t *testing.T) {
 	}
 }
 
-// TestPrepareRefusesAConfigThatLostItsPlaceholder — the guard that the before-check exists for.
-// Without it a template that stopped carrying @BIND@ would be installed verbatim, and the broker
-// would listen wherever the leftover literal said. The check after the Replace cannot catch it:
-// a Replace of an absent token is a silent no-op.
+// TestPrepareRefusesAConfigThatLostItsPlaceholder — what the before-check exists for: without it
+// a template no longer carrying @BIND@ is installed verbatim and the broker listens wherever the
+// leftover literal says. The check after the Replace cannot catch it: a Replace of an absent
+// token is a silent no-op.
 func TestPrepareRefusesAConfigThatLostItsPlaceholder(t *testing.T) {
 	saved := confSource
 	t.Cleanup(func() { confSource = saved })

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// execFake models `podman exec` closely enough to test the probe's SEQUENCE: what each command
+// execFake models `podman exec` closely enough to test the probe's sequence: what each command
 // returns, in what order they ran, and which of them failed.
 type execFake struct {
 	runs [][]string
@@ -59,7 +59,7 @@ func serving(extra map[string]string) *execFake {
 	return &execFake{answers: answers}
 }
 
-// TestWriteIsPublishedRetainedAndThenPersisted. The ORDER is the assertion: asking the broker to
+// TestWriteIsPublishedRetainedAndThenPersisted. The order is the assertion: asking the broker to
 // write its database before the token is published would flush everything except the one fact the
 // gate is about.
 func TestWriteIsPublishedRetainedAndThenPersisted(t *testing.T) {
@@ -101,10 +101,9 @@ func TestAReadWritesNothing(t *testing.T) {
 	}
 }
 
-// TestAnEmptyTopicIsAnAnswerNotAnError — the whole reason the control read exists. A broker that
-// came back with nothing must produce a SAMPLE saying so, because that is the finding; turning it
-// into an error would make total data loss look like the gate failing, which is the one thing
-// that never rolls back.
+// TestAnEmptyTopicIsAnAnswerNotAnError — the reason the control read exists. A broker that came
+// back with nothing must produce a sample saying so, because that is the finding; an error would
+// make total data loss look like the gate failing, the one thing that never rolls back.
 func TestAnEmptyTopicIsAnAnswerNotAnError(t *testing.T) {
 	f := serving(nil) // control answers, probe topic does not
 	s, err := Probe(context.Background(), f, "briard-mosquitto-broker", "")
@@ -151,9 +150,9 @@ func TestAFailedWriteIsAnError(t *testing.T) {
 	}
 }
 
-// TestArgumentsAreRefusedRatherThanExecuted. Both of these become podman arguments, and the
-// schema's whole discipline is that nothing a catalogued app carries can reach past its own
-// box — so they are checked before they are run with, not after.
+// TestArgumentsAreRefusedRatherThanExecuted. Both become podman arguments, and the schema's
+// discipline is that nothing a catalogued app carries reaches past its own box, so they are
+// checked before they are run with, not after.
 func TestArgumentsAreRefusedRatherThanExecuted(t *testing.T) {
 	f := serving(nil)
 	if _, err := Probe(context.Background(), f, "briard-mosquitto-broker; rm -rf /", "tok"); err == nil {

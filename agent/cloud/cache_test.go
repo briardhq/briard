@@ -30,14 +30,11 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
-// A failed save must leave the PREVIOUS cache intact. Blocking the temp path with a directory is
-// the cheap way to make the write fail after the caller has committed to it.
-//
-// STATED PLAINLY, because the point of these tests is not to flatter the diff: this one does NOT
-// cover the fsync -- it passes just as well against a temp-file write without one. Durability is
-// not observable from userspace without cutting power mid-write, so the fsync is checked by
-// reading the code and by a power-cut rig if it is ever built, not here. What this locks down is
-// the atomicity the fsync sits on top of.
+// A failed save must leave the previous cache intact; a directory blocking the temp path is the
+// cheap way to fail the write after the caller committed to it. This does not cover the fsync --
+// it passes as well against a temp-file write without one. Durability is not observable from
+// userspace without cutting power mid-write, so the fsync is checked by reading the code (and a
+// power-cut rig if one is ever built), not here; this locks down the atomicity it sits on.
 func TestSaveAssignmentFailureKeepsThePriorCache(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "assignment.json")
 	prior := api.Assignment{Tenant: "default", Role: model.RoleAnchor}

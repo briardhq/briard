@@ -32,9 +32,9 @@ func (n *noopExec) Run(context.Context, string, ...string) ([]byte, error) { n.r
 func (n *noopExec) WriteFile(string, []byte) error                         { return nil }
 func (n *noopExec) ReadFile(string) ([]byte, error)                        { return nil, nil }
 
-// TestAnUnknownAppGetsNothing — the registry's default, and the property that keeps adding an
-// entry from being able to change what every other app gets. An app the product has never
-// heard of must render, prepare and read exactly as it did before this package existed.
+// TestAnUnknownAppGetsNothing — the registry's default, which keeps a new entry from changing
+// what every other app gets: an unknown app renders, prepares and reads as if this package did
+// not exist.
 func TestAnUnknownAppGetsNothing(t *testing.T) {
 	m := svc("something-else", 8080)
 	if v := Volumes(m, m.Containers[0]); v != nil {
@@ -47,19 +47,17 @@ func TestAnUnknownAppGetsNothing(t *testing.T) {
 	if x.runs != 0 {
 		t.Errorf("an unknown app ran %d command(s) on the node", x.runs)
 	}
-	// The app's OWN name on the reverse proxy's :80, not the flock name and a port.
+	// The app's own name on the reverse proxy's :80, not the flock name and a port.
 	if got := Reach(m, "home"); got != "reach it at http://briard-something-else.local/" {
 		t.Errorf("Reach = %q", got)
 	}
 }
 
-// TestRestoreMarkersAreHomeAssistantsAlone: the registry's default is nothing, and a
-// marker list that leaked to another app would have the restore path unlinking a file inside
-// somebody else's data on the strength of a name Home Assistant chose.
-//
-// RELATIVE TO THE DATA ROOT, with the config directory in the path: the guest resolves them against a
-// live subvolume and the restore against a staged copy, so an absolute path here would make that
-// verb able to unlink anywhere on the volume.
+// TestRestoreMarkersAreHomeAssistantsAlone: the default is nothing; a marker list leaked to
+// another app would have the restore path unlinking a file in its data on the strength of a name
+// Home Assistant chose. Markers are relative to the data root, config directory included: the
+// guest resolves them against a live subvolume and the restore against a staged copy, so an
+// absolute path would let that verb unlink anywhere on the volume.
 func TestRestoreMarkersAreHomeAssistantsAlone(t *testing.T) {
 	ha := svc(hass.Name, 8123)
 	ha.Containers[0].Mounts[0].Path = "/config"
@@ -179,12 +177,12 @@ func TestOnlyHomeAssistantGetsRawSockets(t *testing.T) {
 	}
 }
 
-// TestReachNamesMQTTForTheBroker, because the manifest's port is the broker's MANAGEMENT endpoint
-// and it is bound inside the guest, off the LAN. Printing it would hand the household a dead link
-// for an app that is working perfectly — which is the failure the reach line exists to prevent.
+// TestReachNamesMQTTForTheBroker, because the manifest's port is the broker's management endpoint,
+// bound inside the guest, off the LAN: printing it would hand the household a dead link for a
+// working app, the failure the reach line exists to prevent.
 func TestReachNamesMQTTForTheBroker(t *testing.T) {
-	// The port comes from the MANIFEST, not from a constant in this package: what a household
-	// reaches is what the catalog publishes, so a change there moves this sentence with it.
+	// The port comes from the manifest, not a constant here: what a household reaches is what the
+	// catalog publishes, so a change there moves this sentence with it.
 	mq := svc(mosquitto.Name, mosquitto.HealthPort)
 	mq.Network = manifest.NetworkPrivate
 	mq.Ports = []int{mosquitto.MQTTPort}
@@ -195,9 +193,9 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 	if !strings.Contains(got, "1883") {
 		t.Errorf("the reach line does not name the MQTT port: %q", got)
 	}
-	// THE PROTOCOL, not just the port -- the assertion this test is named for. A port and a name
-	// both survive a protocol going missing, so without this check a sentence generalised off
-	// mosquitto can drop the word "MQTT" while every other check here passes.
+	// The protocol, not just the port -- the assertion this test is named for. A port and a name
+	// both survive a protocol going missing, so without it a sentence generalised off mosquitto
+	// can drop "MQTT" while every other check passes.
 	if !strings.Contains(got, mosquitto.Protocol) {
 		t.Errorf("the reach line does not say what a client must speak to the port: %q", got)
 	}
@@ -213,17 +211,17 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 	}
 }
 
-// TestOnlyTheBrokerIsNotFronted — the reverse proxy's exposure decision, keyed on the catalog name
-// like everything else here. It is a security property: mosquitto's manifest port is its
-// management API, which mosquitto.conf deliberately binds where only the guest reaches it (the
-// pod's own namespace, or 127.0.0.1 under host networking), and the reverse proxy runs inside that
-// same guest — so fronting it would republish a guest-only endpoint on the LAN
-// through a mechanism that never mentions the bind.
+// TestOnlyTheBrokerIsNotFronted — the reverse proxy's exposure decision, keyed on the catalog
+// name, and a security property: mosquitto's manifest port is its management API, which
+// mosquitto.conf deliberately binds where only the guest reaches it (the pod's own namespace, or
+// 127.0.0.1 under host networking). The reverse proxy runs in that same guest, so fronting it
+// would republish a guest-only endpoint on the LAN through a mechanism that never mentions the
+// bind.
 func TestOnlyTheBrokerIsNotFronted(t *testing.T) {
 	if Fronted(svc(mosquitto.Name, mosquitto.HealthPort)) {
 		t.Error("the broker is fronted; its loopback-bound management API would reach the LAN")
 	}
-	// The default is the reverse proxy: an ordinary app's primary port IS what a household opens.
+	// The default is the reverse proxy: an ordinary app's primary port is what a household opens.
 	for _, m := range []manifest.Manifest{svc(hass.Name, 8123), svc("something-else", 8080)} {
 		if !Fronted(m) {
 			t.Errorf("%s is not fronted; the default must be that an app is reachable by name", m.Name)
@@ -232,12 +230,10 @@ func TestOnlyTheBrokerIsNotFronted(t *testing.T) {
 }
 
 // TestOnlyTheBrokerAnnouncesItself — the registry's third exposure decision, keyed on the catalog
-// name like Fronted and Reach.
-//
-// It is the inverse of Fronted's question rather than the same one: Fronted asks what the REVERSE
-// PROXY may serve, this asks what the household's other DEVICES may find. mosquitto is false for
-// one and true for the other, which is the whole point -- a broker's clients are appliances that
-// browse, and its image advertises nothing on its own (agent/mosquitto).
+// name like Fronted and Reach, and the inverse of Fronted's question: Fronted asks what the
+// reverse proxy may serve, this asks what the household's other devices may find. mosquitto is
+// false for one and true for the other, which is the point: a broker's clients are appliances
+// that browse, and its image advertises nothing on its own (agent/mosquitto).
 func TestOnlyTheBrokerAnnouncesItself(t *testing.T) {
 	mq := svc(mosquitto.Name, mosquitto.HealthPort)
 	mq.Network = manifest.NetworkPrivate
@@ -249,9 +245,9 @@ func TestOnlyTheBrokerAnnouncesItself(t *testing.T) {
 	if got[0].Type != "_mqtt._tcp" {
 		t.Errorf("the broker is announced under %q, which no device browses for", got[0].Type)
 	}
-	// THE MQTT PORT, NEVER THE MANIFEST'S. The manifest names the management endpoint the health
-	// floor probes, bound inside the pod -- announcing it would send every device on the LAN to a
-	// port that refuses them, for a broker that is working perfectly.
+	// The MQTT port, never the manifest's: that is the management endpoint the health floor probes,
+	// bound inside the pod, and announcing it would send every device on the LAN to a port that
+	// refuses them, for a working broker.
 	if got[0].Port != mosquitto.MQTTPort {
 		t.Errorf("the announcement carries port %d, want MQTT's %d", got[0].Port, mosquitto.MQTTPort)
 	}
@@ -273,12 +269,10 @@ func TestOnlyTheBrokerAnnouncesItself(t *testing.T) {
 }
 
 // TestInboundBindIsReadWriteAndOnlyForHomeAssistant: connect(2) on a unix socket needs write
-// permission on the socket file, so a read-only bind would make the channel unreachable from
-// inside the container rather than merely read-only -- a failure that looks like "the agent is
-// not listening" and is not.
-//
-// And it is OPT-IN: every container that gets this socket widens what a compromised app can
-// reach, so an app with no in-container restart boundary gets nothing.
+// permission on the socket file, so a read-only bind makes the channel unreachable, not merely
+// read-only -- a failure that looks like "the agent is not listening" and is not. The bind is
+// opt-in: every container that gets it widens what a compromised app can reach, so an app with
+// no in-container restart boundary gets nothing.
 func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 	ha := manifest.Manifest{Name: "home-assistant", Containers: []manifest.Container{
 		{Name: "app", Primary: true}, {Name: "sidecar"},
@@ -306,9 +300,9 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 	if !strings.HasPrefix(bind, InboundSocket()+":") {
 		t.Errorf("bind = %q, want the one shared socket", bind)
 	}
-	// THE TOKEN HAS NO BIND OF ITS OWN, and that is the point of the per-app directory: it is
-	// simply one of the things in it, arriving read-only with everything else briard hands this
-	// app. A bind here would be a third mount buying nothing.
+	// The token has no bind of its own, which is the point of the per-app directory: it arrives in
+	// it, read-only, with everything else briard hands this app. A bind would be a third mount
+	// buying nothing.
 	for _, v := range primary {
 		if strings.HasPrefix(v, InboundTokenPath("home-assistant")+":") {
 			t.Errorf("the token was given its own bind (%q); it should ride the app directory", v)
@@ -323,8 +317,8 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 	if dir != AppDir("home-assistant")+":"+AppMount+":ro" {
 		t.Fatalf("app directory bind = %q, want this app's own directory, read-only", dir)
 	}
-	// And the two agree: the token's path on the node is inside the directory that is mounted, so
-	// the container really does see it where InboundTokenMount says.
+	// The token's node path is inside the mounted directory, so the container sees it where
+	// InboundTokenMount says.
 	if !strings.HasPrefix(InboundTokenPath("home-assistant"), AppDir("home-assistant")+"/") {
 		t.Errorf("the token at %q is not inside the mounted directory %q", InboundTokenPath("home-assistant"), AppDir("home-assistant"))
 	}
@@ -336,8 +330,8 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 			t.Errorf("a non-primary container got the inbound socket: %q", v)
 		}
 	}
-	// The broker has no in-container restart boundary, so it gets no channel. This is the
-	// registry's default-is-nothing rule applied to the sharpest thing it hands out.
+	// The broker has no in-container restart boundary, so no channel: the default-is-nothing rule
+	// applied to the sharpest thing the registry hands out.
 	mq := manifest.Manifest{Name: "mosquitto", Containers: []manifest.Container{{Name: "broker", Primary: true}}}
 	for _, v := range Volumes(mq, mq.Containers[0]) {
 		if strings.Contains(v, InboundMount) {
@@ -352,20 +346,17 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 	}
 }
 
-// TestPrepareMintsAFreshInboundToken: the token is what the agent resolves a caller by, so it has
-// to exist before the container that will present it starts -- and Prepare is the one step that
-// runs on every converge, which is exactly the set of moments the mount it lands in is remade.
-//
-// FRESH EVERY CONVERGE, where the HA control token next to it is kept for the boot: both live on
-// /run, which is tmpfs, so a value cannot outlive the boot that minted it and a token read out of
-// a backup or a snapshot is worth nothing.
+// TestPrepareMintsAFreshInboundToken: the agent resolves a caller by the token, so it must exist
+// before the container presenting it starts, and Prepare is the one step that runs on every
+// converge -- exactly the moments its mount is remade. Fresh every converge, where the HA control
+// token beside it is kept for the boot; both live on tmpfs /run, so neither outlives its boot and
+// a token read out of a backup or snapshot is worth nothing.
 func TestPrepareMintsAFreshInboundToken(t *testing.T) {
 	ha := manifest.Manifest{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/config"}}}}}
 	f := &tokenExec{files: map[string]string{}}
-	// Prepare's own per-app work fails on this stub fixture, and that is deliberately not
-	// what is asserted: the mint runs AHEAD of the switch on the app name, so an app whose
-	// own preparation fails still leaves nothing half-identified behind. Its container never
-	// starts either -- converge skips it -- so the unused token simply rotates next time.
+	// Prepare's per-app work fails on this stub, deliberately unasserted: the mint runs ahead of
+	// the switch on the app name, so a failed preparation leaves nothing half-identified. Converge
+	// never starts that container either, so the unused token simply rotates next time.
 	_ = Prepare(context.Background(), f, ha)
 	first := f.files[InboundTokenPath("home-assistant")]
 	if len(first) < 32 {
@@ -387,7 +378,7 @@ func TestPrepareMintsAFreshInboundToken(t *testing.T) {
 }
 
 // tokenExec records writes and commands; hass.Prepare's own steps fail harmlessly on it, which is
-// fine because this test is about what happens BEFORE the switch on the app name.
+// fine: the test is about what happens before the switch on the app name.
 type tokenExec struct {
 	files map[string]string
 	runs  [][]string
@@ -424,15 +415,13 @@ func (f *tokenExec) ran(want ...string) bool {
 	return false
 }
 
-// TestNoBindNestsInsideAnother: a bind whose destination sits inside another bind's destination
-// makes the runtime create that destination under an already-mounted parent. When the parent is
-// READ-ONLY -- which /briard is, for Home Assistant -- that is EROFS and the container never
-// starts; and podman having created a root-owned directory where a file belongs poisons the path
-// for every later attempt, which is the failure Prepare's own comment describes.
-//
-// /briard/inbound.* for the inbound socket and token would sit inside exactly that read-only
-// mount. Asserting the PROPERTY rather than the two paths is what keeps the next mount out of the
-// same hole -- the temptation to group things under /briard is obvious and will recur.
+// TestNoBindNestsInsideAnother: a bind nested in another bind's destination makes the runtime
+// create it under an already-mounted parent. Under a read-only parent (/briard, for Home
+// Assistant) that is EROFS and the container never starts, and podman's root-owned directory where
+// a file belongs poisons the path for every later attempt (the failure Prepare's comment
+// describes). /briard/inbound.* for the socket and token would sit in exactly that mount; asserting
+// the property rather than two paths keeps the next mount out too -- the temptation to group
+// things under /briard will recur.
 func TestNoBindNestsInsideAnother(t *testing.T) {
 	for _, m := range []manifest.Manifest{
 		{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/config"}}}}},
@@ -448,8 +437,8 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 				}
 				dests = append(dests, parts[1])
 			}
-			// The container's own mounts count too: they are destinations like any other. Only
-			// they may nest, in each other, because the renderer orders them parent first.
+			// The container's own mounts are destinations too; only they may nest, in each other,
+			// because the renderer orders them parent first.
 			product := len(dests)
 			for _, mt := range c.Mounts {
 				dests = append(dests, mt.Path)
@@ -468,14 +457,12 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 	}
 }
 
-// TestAppDirMatchesTheRegistry: agent/hass declares its own directory as a const, because it
-// cannot import this package (this one imports it). So two definitions have to agree, and the
-// agreement is load-bearing in a way that is easy to miss: the agent resolves an inbound caller
-// by reading the run directory and taking a DIRECTORY NAME as an app name. A directory named
-// for the Go package rather than the app would resolve to an app that does not exist, and
-// every call from that container would come back "unknown caller" with nothing pointing at why.
-//
-// The directory is named for the app, as agent/mosquitto's is.
+// TestAppDirMatchesTheRegistry: agent/hass declares its directory as a const because it cannot
+// import this package (this one imports it), so two definitions must agree -- and it matters: the
+// agent resolves an inbound caller by taking a directory name in the run directory as an app name.
+// A directory named for the Go package rather than the app resolves to no app, and every call
+// from that container comes back "unknown caller" with nothing pointing at why. Each directory is
+// named for the app, as agent/mosquitto's is.
 func TestAppDirMatchesTheRegistry(t *testing.T) {
 	for _, c := range []struct{ name, dir string }{
 		{hass.Name, hass.Dir},

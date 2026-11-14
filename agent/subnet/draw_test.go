@@ -8,10 +8,9 @@ import (
 	"testing"
 )
 
-// cycler is a deterministic entropy stand-in: it hands out the given octets over and over, so a
-// test can say exactly which candidates the draw is offered and in which order. Never returns an
-// error, so an exhausted draw exhausts on COLLISIONS rather than on running out of bytes -- which
-// is the failure this file is about.
+// cycler is a deterministic entropy stand-in: it repeats the given octets, so a test says exactly
+// which candidates the draw is offered and in which order. It never errors, so an exhausted draw
+// exhausts on collisions, the failure this file is about, not on running out of bytes.
 type cycler struct {
 	b []byte
 	i int
@@ -68,8 +67,8 @@ func TestPoolsAreStructurallyDisjoint(t *testing.T) {
 
 func TestPickRejectsWhatTheHostAlreadyHas(t *testing.T) {
 	// A corporate VPN that named 10.173.0.0/16, plus this machine's own LAN at 10.11.71.0/24 --
-	// the L3 collision that made the LINK's subnet need a draw of its own: it never
-	// touches the LAN, but the host's routing table is shared.
+	// the L3 collision that gives the link's subnet a draw of its own: the link never touches the
+	// LAN, but the host's routing table is shared.
 	obs := Observed{
 		Prefixes: []netip.Prefix{
 			netip.MustParsePrefix("10.173.0.0/16"),
@@ -118,7 +117,7 @@ func TestPickProbesTheFlockSubnetOnly(t *testing.T) {
 	}
 }
 
-// Exhaustion must REFUSE, not invent: a host that really has 10/8 carved up gets a message naming
+// Exhaustion must refuse, not invent: a host that really has 10/8 carved up gets a message naming
 // the variable, which is the existing posture for the VIP.
 func TestPickRefusesWhenEveryCandidateCollides(t *testing.T) {
 	all := Observed{Prefixes: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}}
@@ -192,10 +191,9 @@ func TestReportIsTheFormatInstallShParses(t *testing.T) {
 	}
 }
 
-// THE THREE POOLS ARE STRUCTURALLY DISJOINT, not checked against each other -- the flock pool
-// excludes both of the others by table, so no ordering between the draws can make them collide.
-// Asserted over many draws rather than argued, because "they cannot overlap" is exactly the kind
-// of claim that stays true until someone adds a fourth pool.
+// The three pools are structurally disjoint, not checked against each other: the flock pool
+// excludes both others by table, so no draw order can make them collide. Asserted over many draws
+// rather than argued, because "they cannot overlap" stays true until someone adds a fourth pool.
 func TestTheThreePoolsCannotOverlap(t *testing.T) {
 	for i := range 200 {
 		d, err := Pick(Observed{}, rand.Reader, nil)
@@ -211,18 +209,18 @@ func TestTheThreePoolsCannotOverlap(t *testing.T) {
 		if !strings.HasPrefix(d.Pod, "10.12.") {
 			t.Errorf("pod pool %q is outside its pool", d.Pod)
 		}
-		// The flock subnet is the one that has to miss both, because it is the one on the
-		// household's L2 and the one whose /24 the host holds on-link.
+		// The flock subnet must miss both: it is on the household's L2, and its /24 is the one
+		// the host holds on-link.
 		if strings.HasPrefix(d.System, "10.11.") || strings.HasPrefix(d.System, "10.12.") {
 			t.Errorf("flock subnet %q landed in one of our own pools", d.System)
 		}
 	}
 }
 
-// The pod pool is GUEST-INTERNAL, which is the property the host must never contradict: nothing in
-// the installer or the agent may put an address or a route in it. Asserted as a grep rather than a
-// runtime check, because the guarantee is the ABSENCE of configuration -- there is no code path to
-// test, and a test that ran one would be testing the wrong thing.
+// The pod pool is guest-internal, which the host must never contradict: nothing in the installer
+// or the agent may put an address or a route in it. Asserted as a grep, not a runtime check: the
+// guarantee is the absence of configuration, so there is no code path to test, and running one
+// would test the wrong thing.
 func TestNothingConfiguresThePodPoolOnTheHost(t *testing.T) {
 	for _, f := range []string{"../../scripts/install.sh", "../platform/route.go"} {
 		raw, err := os.ReadFile(f)

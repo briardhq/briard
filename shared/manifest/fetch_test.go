@@ -31,7 +31,7 @@ type served struct {
 	line App    // the list's line for the app
 	file []byte // the bytes served at <name>/<version>.json
 	sign bool   // serve the list's signature
-	// tamper mutates the served LIST after signing, to model a compromised mirror.
+	// tamper mutates the served list after signing, to model a compromised mirror.
 	tamper func([]byte) []byte
 }
 
@@ -116,7 +116,7 @@ func TestFetchRefusesAFileTheListDoesNotName(t *testing.T) {
 	}
 }
 
-// TestFetchRefusesTamperedList: the mirror served a valid signature over the ORIGINAL list and a
+// TestFetchRefusesTamperedList: the mirror served a valid signature over the original list and a
 // modified one. Verification is over the raw bytes, so this must fail.
 func TestFetchRefusesTamperedList(t *testing.T) {
 	body := raw(t, good())

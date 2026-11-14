@@ -29,9 +29,9 @@ func TestParseIPRoutes(t *testing.T) {
 			t.Errorf("parseIPRoutes lost %s, which is a range something on this host named", want)
 		}
 	}
-	// THE PREFIX CUT. A VPN pushing the whole of 10/8 must not veto the entire pool, or an
-	// employee's laptop can never install -- while 10.96.0.0/12 above must survive, which is why
-	// the cut is /12 and not the more obvious /16.
+	// The prefix cut: a VPN pushing the whole of 10/8 must not veto the entire pool, or an
+	// employee's laptop can never install, while 10.96.0.0/12 above must survive -- hence /12,
+	// not the more obvious /16.
 	if _, ok := got[netip.MustParsePrefix("10.0.0.0/8")]; ok {
 		t.Error("parseIPRoutes honoured a 10.0.0.0/8 catch-all; nothing could then be drawn")
 	}
@@ -76,7 +76,7 @@ func TestWorthHonouringIsTheCut(t *testing.T) {
 		want bool
 	}{
 		{"10.0.0.0/8", false},  // the whole-RFC1918 catch-all a VPN pushes
-		{"10.0.0.0/11", false}, // still too broad to be somebody NAMING a range
+		{"10.0.0.0/11", false}, // still too broad to be somebody naming a range
 		{"10.96.0.0/12", true}, // Kubernetes' service CIDR -- a genuine collision
 		{"10.11.9.0/24", true},
 		{"10.11.9.1/32", true},

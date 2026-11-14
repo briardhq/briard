@@ -89,9 +89,9 @@ func TestResourceConfigForwardedWitness(t *testing.T) {
 	}
 }
 
-// The forwarded-witness form must NOT fall through to connection-mesh, and its `on` blocks must
-// carry no address (addresses live in the connections). These are the two ways a fall-through to
-// the plain renderer would show up — assert against both, so the check can fail.
+// The forwarded-witness form must not fall through to connection-mesh, and its `on` blocks carry
+// no address (addresses live in the connections): the two ways a fall-through to the plain
+// renderer would show, both asserted so the check can fail.
 func TestForwardedWitnessAvoidsMeshForm(t *testing.T) {
 	got := forwardedWitnessResource().Config()
 	if strings.Contains(got, "connection-mesh") {
@@ -106,7 +106,7 @@ func TestForwardedWitnessAvoidsMeshForm(t *testing.T) {
 	}
 }
 
-// A diskless witness WITHOUT any WitnessLocal is the plain LAN-witness case: it must stay on
+// A diskless witness without any WitnessLocal is the plain LAN-witness case: it must stay on
 // the connection-mesh path, unchanged. Guards the split predicate against over-triggering.
 func TestLANWitnessStaysMesh(t *testing.T) {
 	got := witnessResource().Config()
@@ -175,17 +175,14 @@ func TestResourceConfigDisklessWitness(t *testing.T) {
 }
 
 func TestReactorConfigStartOrder(t *testing.T) {
-	// TWO layer lines are asserted LITERALLY here, and both are bugs of ABSENCE -- the promoter
-	// defaults do the wrong thing for us, so a missing key is the defect, not a missing feature.
-	//
-	// adjust-resource-on-start: the promoter must NOT attach the backing device, because the guest
-	// agent brings the resource up via drbd@<res>.target and reads the result.
-	//
-	// target-as: the default `Requires` makes the target react to a member being restarted --
-	// including the auto-restart `Restart=` schedules -- so one crash of the reverse proxy demotes
-	// the node and hands the resource to a peer in 2 of 5 tries. `Wants` keeps the
-	// target STARTING every member and stops it reacting to them; giving up is signalled by each
-	// member's OnFailure= instead.
+	// Two layer lines are asserted literally, and both are bugs of absence: the promoter defaults
+	// do the wrong thing for us, so a missing key is the defect, not a missing feature.
+	//   - adjust-resource-on-start: the promoter must not attach the backing device; the guest
+	//     agent brings the resource up via drbd@<res>.target and reads the result.
+	//   - target-as: the default `Requires` makes the target react to a member being restarted,
+	//     `Restart=` schedules included, so one reverse-proxy crash demotes the node and hands the
+	//     resource to a peer in 2 of 5 tries. `Wants` keeps the target starting every member
+	//     without reacting to them; giving up is signalled by each member's OnFailure= instead.
 	const want = `[[promoter]]
 [promoter.resources.r0]
 adjust-resource-on-start = false

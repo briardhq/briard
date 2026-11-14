@@ -66,14 +66,12 @@ func TestNotifyUnreachableSocketErrors(t *testing.T) {
 	}
 }
 
-// Adopt takes the socket OUT of the environment while keeping it usable from this process: the
-// agent goes on signalling, and the children it execs inherit nothing (`systemctl`
-// reports its own EXIT_STATUS=0 to any notify socket it finds, and systemd logs the refusal on
-// every start).
-//
-// The assertion that must be able to fail is os.Environ(): that slice IS what exec.Cmd hands a
-// child when Cmd.Env is nil, so checking it checks the mechanism rather than a proxy for it.
-// Revert Adopt's Unsetenv and this test goes red on that check and on the real child below.
+// Adopt takes the socket out of the environment while keeping it usable from this process: the
+// agent goes on signalling, and the children it execs inherit nothing (`systemctl` reports its own
+// EXIT_STATUS=0 to any notify socket it finds, and systemd logs the refusal on every start). The
+// assertion that must be able to fail is os.Environ(): that slice is what exec.Cmd hands a child
+// when Cmd.Env is nil, so it checks the mechanism, not a proxy. Revert Adopt's Unsetenv and this
+// goes red on that check and on the real child below.
 func TestAdoptKeepsTheSocketFromChildrenAndKeepsSignalling(t *testing.T) {
 	sock := filepath.Join(testsock.Dir(t), "notify.sock")
 	ln, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: sock, Net: "unixgram"})
@@ -84,7 +82,7 @@ func TestAdoptKeepsTheSocketFromChildrenAndKeepsSignalling(t *testing.T) {
 	t.Setenv("NOTIFY_SOCKET", sock)
 	t.Cleanup(func() { adopted.Store(nil) }) // package state outlives t.Setenv's restore
 
-	// Non-vacuity: the variable has to be visible BEFORE Adopt, or "gone after" proves nothing.
+	// Non-vacuity: the variable has to be visible before Adopt, or "gone after" proves nothing.
 	if os.Getenv("NOTIFY_SOCKET") != sock {
 		t.Fatalf("precondition: NOTIFY_SOCKET = %q, want %q", os.Getenv("NOTIFY_SOCKET"), sock)
 	}

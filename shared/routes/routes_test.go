@@ -14,10 +14,10 @@ func svc(name, host string, port string) App {
 	}
 }
 
-// The name shape is the one measured constraint the whole design turns on: ONE label
-// before `.local`, because `mdns4_minimal` -- the resolver in Debian/Ubuntu's nsswitch -- handles
-// exactly one. A hierarchical `home-assistant.briard-brave-elf.local` would publish fine and
-// resolve nowhere, which is the failure that is invisible from the publishing side.
+// The one measured constraint the design turns on: one label before `.local`, because
+// `mdns4_minimal` (the resolver in Debian/Ubuntu's nsswitch) handles exactly one. A hierarchical
+// `home-assistant.briard-brave-elf.local` would publish fine and resolve nowhere -- invisible from
+// the publishing side.
 func TestHostNameIsASingleLabel(t *testing.T) {
 	got := HostName("brave-elf", "home-assistant")
 	if got != "briard-brave-elf-home-assistant.local" {
@@ -54,7 +54,7 @@ func TestLookupNormalisesWhatClientsSend(t *testing.T) {
 	}
 }
 
-// An IPv6 literal has colons of its own, so the port must come off the LAST one and only when the
+// An IPv6 literal has colons of its own, so the port must come off the last one and only when the
 // address is not bare -- a naive split truncates every v6 Host to "[".
 func TestNormaliseKeepsIPv6Literals(t *testing.T) {
 	for in, want := range map[string]string{
@@ -69,9 +69,9 @@ func TestNormaliseKeepsIPv6Literals(t *testing.T) {
 	}
 }
 
-// ONE ADDRESS PER APP, spliced into every host-less spec. An app is one pod and a pod is one
-// network namespace, so the address is an app fact and the endpoints carry only ports -- which
-// is what makes the private-network flip change one field rather than every URL in the file.
+// One address per app, spliced into every host-less spec: an app is one pod, a pod one network
+// namespace, so the address is an app fact and endpoints carry only ports -- the private-network
+// flip changes one field rather than every URL in the file.
 func TestResolveSplicesTheServiceAddress(t *testing.T) {
 	s := App{Name: "x", Address: "10.89.0.7", Health: "http://:9883/api/v1/listeners",
 		Routes: []Route{{Listen: ListenName, To: "http://:9001"}}}
@@ -95,10 +95,10 @@ func TestResolveSplicesTheServiceAddress(t *testing.T) {
 	}
 }
 
-// THE HOST-LESS RULE IS A SECURITY BOUNDARY, not a spelling convention: the only address that can
-// ever be spliced in is the app's own, so no table -- however written -- can aim the reverse
-// proxy at another machine. Validate is where that becomes true of the document rather than of the
-// code that happens to read it.
+// The host-less rule is a security boundary, not a spelling convention: the only address ever
+// spliced in is the app's own, so no table, however written, can aim the reverse proxy at another
+// machine. Validate makes that true of the document rather than of whatever code happens to read
+// it.
 func TestValidateRefusesATargetThatNamesAHost(t *testing.T) {
 	for _, tbl := range []Table{
 		{Apps: []App{{Name: "x", Address: "127.0.0.1",
@@ -137,9 +137,9 @@ func TestValidateHoldsAGateHeaderToAHeaderBesideAGate(t *testing.T) {
 	}
 }
 
-// An unknown listener is REFUSED, never skipped. A route the reverse proxy silently drops is an app
-// that is unreachable with nothing saying why -- the failure mode that looks like a user error.
-// This is also what makes adding `tls:<port>` a change nobody can half-deploy.
+// An unknown listener is refused, never skipped: a route the reverse proxy silently drops is an
+// app unreachable with nothing saying why, which looks like a user error. It also makes adding
+// `tls:<port>` a change nobody can half-deploy.
 func TestValidateRefusesAnUnimplementedListener(t *testing.T) {
 	tbl := Table{Apps: []App{{Name: "mosquitto", Address: "127.0.0.1",
 		Routes: []Route{{Listen: "tls:8883", To: "http://:1883"}}}}}
@@ -150,15 +150,13 @@ func TestValidateRefusesAnUnimplementedListener(t *testing.T) {
 	}
 }
 
-// The table is written by one process and read by two, so it has to survive the round trip exactly
-// -- and refuse a field this build does not understand rather than route on a table it only partly
-// read.
+// The table is written by one process and read by two: it must survive the round trip exactly,
+// and refuse a field this build does not understand rather than route on a partly read table.
 func TestMarshalParseRoundTripAndRefusesUnknownFields(t *testing.T) {
 	in := Table{Apps: []App{
 		svc("home-assistant", "briard-brave-elf-home-assistant.local", "8123"),
-		// The broker: named and probed, with NO route. Absence is how "the reverse proxy may not
-		// serve this" is said -- there is no address here for the reverse proxy to be trusted not
-		// to use.
+		// The broker: named and probed, with no route. Absence says "the reverse proxy may not
+		// serve this" -- no address here for the reverse proxy to be trusted not to use.
 		{Name: "mosquitto", Hosts: []string{"briard-brave-elf-mosquitto.local"},
 			Address: "127.0.0.1", Health: "http://:9883/api/v1/listeners"},
 	}}
@@ -180,7 +178,7 @@ func TestMarshalParseRoundTripAndRefusesUnknownFields(t *testing.T) {
 	if r, ok := ha.Route(ListenName); !ok || r.To != "http://:8123" {
 		t.Errorf("route = %+v %v, want the host-less target", r, ok)
 	}
-	// The broker's name is OURS -- it matches -- and there is nothing to serve under it. Both
+	// The broker's name is ours -- it matches -- and there is nothing to serve under it. Both
 	// halves matter: the reverse proxy needs the match to say so instead of 404ing.
 	mq, ok := out.Lookup("briard-brave-elf-mosquitto.local")
 	if !ok {
@@ -197,10 +195,9 @@ func TestMarshalParseRoundTripAndRefusesUnknownFields(t *testing.T) {
 	}
 }
 
-// TestInstanceNameIsTheHostNameWithoutTheDomain — the instance label and the SRV target it points
-// at must be the same name, and the way to guarantee that is to derive one from the other. A
-// second composition would drift silently: the record would resolve nowhere while both halves
-// looked plausible in the file.
+// TestInstanceNameIsTheHostNameWithoutTheDomain — the instance label and its SRV target must be
+// the same name, guaranteed by deriving one from the other. A second composition would drift
+// silently: the record resolves nowhere while both halves look plausible in the file.
 func TestInstanceNameIsTheHostNameWithoutTheDomain(t *testing.T) {
 	host := HostName("brave-elf", "mosquitto")
 	name := InstanceName("brave-elf", "mosquitto")
@@ -217,10 +214,10 @@ func TestInstanceNameIsTheHostNameWithoutTheDomain(t *testing.T) {
 	}
 }
 
-// TestValidateRefusesAnAnnouncementWithNothingToPointAt — the record's SRV target is the app's
-// own name, so an announcement without one is a record aimed nowhere. Refused rather than
-// published against the guest's hostname, which is node-scoped: on a failover every device that
-// had browsed for the broker would keep dialling the machine that just demoted.
+// TestValidateRefusesAnAnnouncementWithNothingToPointAt — the SRV target is the app's own name,
+// so an announcement without one is aimed nowhere. Refused rather than published against the
+// node-scoped guest hostname: after a failover every device that browsed for the broker would
+// keep dialling the machine that just demoted.
 func TestValidateRefusesAnAnnouncementWithNothingToPointAt(t *testing.T) {
 	tbl := Table{Apps: []App{{Name: "mosquitto", Address: "10.12.9.3",
 		Announce: []Announcement{{Name: "briard-brave-elf-mosquitto", Type: "_mqtt._tcp", Port: 1883}}}}}
@@ -290,11 +287,10 @@ func TestCasaHostNameIsTheAppUnderTheFlock(t *testing.T) {
 	}
 }
 
-// The bare names are what a household types and what every print site shows; the flock-scoped
-// names stay the identity. HostNames is the one place the order is decided, and Hosts[0] must
-// remain the flock-scoped name because it is the SRV target announcements point at -- two flocks
-// aiming their broker records at one shared `briard-mosquitto.local` would send a device to
-// whichever flock answered first.
+// The bare names are what a household types and every print site shows; the flock-scoped names
+// stay the identity. HostNames alone decides the order, and Hosts[0] must stay flock-scoped: it
+// is the SRV target announcements point at, and two flocks aiming broker records at one shared
+// `briard-mosquitto.local` would send a device to whichever answered first.
 func TestBareNamesRideBesideTheFlockScopedOnes(t *testing.T) {
 	if got := BareHostName("home-assistant"); got != "briard-home-assistant.local" {
 		t.Errorf("BareHostName = %q", got)

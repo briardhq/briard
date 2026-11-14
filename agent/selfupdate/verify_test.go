@@ -73,7 +73,7 @@ func TestVerifyRefusesUnsignedArtifact(t *testing.T) {
 	}
 }
 
-// Fail CLOSED: an empty ring must refuse everything, never fail-open to "no key = allow".
+// Fail closed: an empty ring must refuse everything, never fail-open to "no key = allow".
 func TestVerifyEmptyKeyringRefusesEverything(t *testing.T) {
 	kr, err := NewKeyring()
 	if err != nil {
@@ -89,7 +89,7 @@ func TestVerifyEmptyKeyringRefusesEverything(t *testing.T) {
 	}
 }
 
-// Additive rotation: a ring holding several keys accepts an artifact signed by ANY of them
+// Additive rotation: a ring holding several keys accepts an artifact signed by any of them
 // (so a new signer can be trusted before the old one is retired — no flag-day).
 func TestVerifyAcceptsAnyKeyInTheRing(t *testing.T) {
 	pub1, _ := genKey(t)
