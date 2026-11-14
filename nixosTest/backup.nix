@@ -1,24 +1,22 @@
-# THE NIGHTLY BACKUP, END TO END ON ONE NODE: the guest's own backup reads a real ring member off
+# The nightly backup, end to end on one node: the guest's own backup reads a real ring member off
 # the replicated volume and writes it, through the real store, into a folder a person owns.
 #
-# The parts are unit-tested on both sides -- the guest's command lines against a fake executor,
-# the store against the real restic client in a Go test. This is what only a real node can say:
-# that a read-only btrfs member bind-mounts at its stable path, that the snapshot holds the data
-# beside its manifest and the volume's facts, that HA's own tarballs stay out, that a root
-# process leaves every file the folder's owner's, that the folder opens on its own as a standard
-# repository, that the second night adds only what changed and restores what changed, and that
-# an earlier household's nights in the same repository survive this one's retention -- and that a
-# night comes back out of the repository as a read-only ring member holding that night's data,
-# labelled with the manifest it was written under, which is what the host's restore then puts
-# back exactly as it puts back any member -- and that a folder holding a backup under another key
-# is named as such rather than written, and is this household's to write once that key has added
-# ours -- and that the household's files go in as a snapshot of their own, tagged and on their own
-# path, which a "latest" restore of an app passes over and the next night builds on.
+# The parts are unit-tested (the guest's command lines against a fake executor, the store against
+# the real restic client, in a Go test). Only a real node can say that a read-only btrfs member
+# bind-mounts at its stable path; the snapshot holds the data beside its manifest and the volume's
+# facts, with HA's own tarballs out; a root process leaves every file the folder's owner's; the
+# folder opens on its own as a standard repository; the second night adds only what changed and
+# restores it; an earlier household's nights in the repository survive this one's retention; a
+# night comes back as a read-only ring member holding its data, labelled with its manifest, which
+# the host's restore puts back exactly as any member; a folder under another key is named as such
+# rather than written, and is ours to write once that key has added ours; and the household's
+# files go in as a snapshot of their own, tagged and on their own path, which a "latest" app
+# restore passes over and the next night builds on.
 #
-# Agent-less, as every lib.nix mkNode rig is: `briard-guest-agent --backup` runs the guest's
-# backup in line (the product starts it through the host's verb, in the background), and
-# `backup-store` serves agent/host's store with no agent around it, on loopback. The 02:00
-# schedule, the key's rules and the host's facts are unit-tested.
+# Agent-less, as every lib.nix mkNode rig is: `briard-guest-agent --backup` runs the backup in line
+# (the product starts it in the background through the host's verb), and `backup-store` serves
+# agent/host's store on loopback with no agent around it. The 02:00 schedule, the key's rules and
+# the host's facts are unit-tested.
 { pkgs, guestModule, fixture }:
 
 let
@@ -70,11 +68,10 @@ pkgs.testers.runNixOSTest {
     def sample(payload):
         # What the app wrote, and a member of the ring taken after it.
         node1.succeed(f"echo {payload} > ${live}/payload.txt")
-        # A member's name carries its second, and two members in one second are unordered. The
-        # app's start took one as it came up -- an instant ago, and empty. The product's clock can
-        # never land beside it (it waits an hour from the ring's newest member); this in-line take
-        # can, and the backup would then read "the newest member" off the alphabet. Let that
-        # second pass: a take after a full second is in a later one.
+        # A member's name carries its second, and two in one second are unordered. The app's start
+        # took one an instant ago, empty; the product's clock never lands beside it (it waits an
+        # hour from the newest member), but this in-line take can, and the backup would then read
+        # "the newest member" off the alphabet. A full second later is a later second.
         time.sleep(1)
         node1.succeed("briard-guest-agent --clock=${fixture.name}")
 
@@ -90,14 +87,14 @@ pkgs.testers.runNixOSTest {
         return rep
 
     def plain(cmd, repo="'${folder}'"):
-        # THE EXIT GUARANTEE: the folder on its own, opened with nothing but restic and the key --
-        # the one the volume holds, which the dashboard shows the household.
+        # The exit guarantee: the folder opens with nothing but restic and the key the volume
+        # holds, which the dashboard shows the household.
         return node1.succeed(f"RESTIC_PASSWORD=\"$(cat /var/lib/briard/.backup-key)\" restic --no-cache -r {repo} {cmd}")
 
     # ---- the first night ----
-    # WEIGHT, so the sizes below mean something: 4 MiB of the app's own data (random, so it
-    # neither compresses nor dedups) and 8 MiB of tarball in its unversioned area, where Home Assistant
-    # keeps its own backups -- an area of its own, never in a member, so never in the backup.
+    # Weight, so the sizes below mean something: 4 MiB of app data (random: no compression or
+    # dedup) and 8 MiB of tarball in its unversioned area, where Home Assistant keeps its own
+    # backups -- never in a member, so never in the backup.
     node1.succeed("head -c 4M /dev/urandom > ${live}/big.bin")
     unversioned = "/var/lib/briard/unversioned/${fixture.name}"
     node1.succeed(f"mkdir -p $(dirname {unversioned}) && btrfs subvolume create {unversioned} && mkdir {unversioned}/backups")
@@ -125,8 +122,8 @@ pkgs.testers.runNixOSTest {
     strangers = node1.succeed("find '${folder}' ! -user ana -o ! -group users").strip()
     assert strangers == "", f"files the folder's owner does not own:\n{strangers}"
     assert int(node1.succeed("find '${folder}' -type f | wc -l")) > 0, "the folder is empty"
-    # Whoever finds the folder is told what it is and how to restore it -- and the README beside
-    # the repository did not stop plain restic opening it (the `ls` and `dump` above).
+    # Whoever finds the folder is told what it is and how to restore it; the README beside the
+    # repository did not stop plain restic opening it (the `ls` and `dump` above).
     node1.succeed("grep -q 'restic -r' '${folder}/README.txt'")
 
     # Nothing of the run is left behind: no mount, no copies (the host's secrets ride those), no password.
@@ -147,9 +144,9 @@ pkgs.testers.runNixOSTest {
     plain("check --read-data")
 
     # ---- an earlier household's nights are not this one's to prune ----
-    # Three snapshots under another group, through the same store, as a previous install of this
-    # folder would have left them; one more night here; the policy keeps 2 daily + 1 weekly of OUR
-    # group and touches nothing of theirs.
+    # Three snapshots under another group, as a previous install of this folder would leave them,
+    # then one more night here: the policy keeps 2 daily + 1 weekly of our group only and touches
+    # nothing of theirs.
     for n in range(3):
         node1.succeed(f"echo earlier-{n} > /tmp/earlier.txt")
         plain("backup --host earlier-house /tmp/earlier.txt", repo="rest:${url}")
@@ -163,9 +160,9 @@ pkgs.testers.runNixOSTest {
     assert len(ours) == 2, f"our group holds {len(ours)}, want 2: three nights on one day, the policy applied to us"
 
     # ---- a night comes back as a ring member ----
-    # The FIRST night, by id (it is the one the retention would prune next, so a stale id must
-    # still name it while it is there), into the ring: a read-only subvolume with that night's
-    # payload and the sidecar that names the manifest, beside the members the ring took itself.
+    # The first night, by id (the next the retention would prune, so a stale id must still name
+    # it while it is there): a read-only subvolume in the ring with that night's payload and the
+    # sidecar naming its manifest, beside the members the ring took itself.
     member = node1.succeed(f"briard-guest-agent --backup-restore=${url} -app ${fixture.name} -snapshot {first['snapshot']}").strip()
     assert member.startswith("/var/lib/briard/data/.snapshots/${fixture.name}-from-backup-"), f"member {member}"
     got = node1.succeed(f"cat {member}/${fixture.dataDir}/payload.txt").strip()
@@ -201,9 +198,9 @@ pkgs.testers.runNixOSTest {
     assert len(json.loads(plain("snapshots --json", repo="'${folder2}'"))) == 1, "the volume's key does not open the adopted folder"
 
     # ---- the household's files: a snapshot of their own, after the apps' ----
-    # The app's files area as a product install makes it -- this rig installs the fixture by hand,
-    # without one -- born into the app's files group, with 3 MiB of the household's own in it, and a
-    # version as the hourly tick takes one: read-only, into the same group.
+    # The files area a product install makes (this rig installs by hand, without one), born into
+    # the app's files group with 3 MiB of the household's own in it, and a version as the hourly
+    # tick takes one: read-only, into the same group.
     import hashlib
     app, area = "${fixture.name}", "/var/lib/briard/files/${fixture.name}"
     ugroup = f"1/{2 << 40 | int.from_bytes(hashlib.sha256(app.encode()).digest()[:5], 'big')}"
@@ -229,8 +226,8 @@ pkgs.testers.runNixOSTest {
     node1.succeed(f"test -s /tmp/readme-apps/run/briard/backup/data/{app}/${fixture.dataDir}/payload.txt")
     plain("restore latest --tag files --target /tmp/readme-files", repo="'${folder2}'")
     node1.succeed(f"cmp {area}/photo.jpg /tmp/readme-files/run/briard/backup/files/{app}/photo.jpg")
-    # "latest" is the newest DATA snapshot, though the files' is newer: the restore gets the app's
-    # data as that snapshot holds it.
+    # "latest" is the newest data snapshot, though the files one is newer: the restore gets the
+    # app data as that snapshot holds it.
     member = node1.succeed(f"briard-guest-agent --backup-restore=${url} -app {app} -snapshot latest").strip()
     got = node1.succeed(f"cat {member}/${fixture.dataDir}/payload.txt").strip()
     want = plain(f"dump {asnap['id']} /run/briard/backup/data/{app}/${fixture.dataDir}/payload.txt", repo="'${folder2}'").strip()

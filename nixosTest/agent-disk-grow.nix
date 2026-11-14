@@ -1,21 +1,20 @@
-# The host agent GROWS its guest's state disk when an install needs the space -- and refuses the
+# The host agent grows its guest's state disk when an install needs the space, and refuses the
 # install, touching nothing, when the host cannot pay for it.
 #
-# The state disk starts THICK and small (1 GiB): the host pays for what an app brings when the
-# app arrives, never underneath a running guest. The fixture here declares sizes no fresh disk
-# holds (2 GB installed, 0.5 GB downloading), so installing it must run the whole grow: the file
-# extended thick, QEMU's block_resize, the guest's resize2fs online -- and only then the pull.
+# The state disk starts thick and small (1 GiB): the host pays for what an app brings when it
+# arrives, never underneath a running guest. The fixture declares sizes no fresh disk holds (2 GB
+# installed, 0.5 GB downloading), so installing it runs the whole grow: the file extended thick,
+# QEMU's block_resize, the guest's resize2fs online -- and only then the pull.
 #
-# THE FAILABLE CONTROL COMES FIRST. With the host's own disk filled until it cannot pay for the
-# grow and keep its reserve, the install must be refused by name and the disk left exactly as it
-# was; a grow that ignored the host, or an install that ignored the grow, fails here. Then the
-# filler goes and the same install must succeed, with the file grown, every byte of it allocated,
-# and the guest's kernel and filesystem both seeing the new size.
+# The failable control comes first: with the host disk filled until it cannot pay for the grow
+# and keep its reserve, the install must be refused by name and the disk left exactly as it was
+# (a grow that ignored the host, or an install that ignored the grow, fails here). Then, filler
+# gone, the same install must succeed, the file grown and every byte allocated, the guest kernel
+# and filesystem both seeing the new size.
 #
-# THEN THE IMAGE AN UPGRADE MOVES OFF, which is what keeps that grow from accruing: v0 -> v1 keeps
-# v0, because the OS image carries it (staged, loaded again at every boot), and v1 -> v0 REMOVES
-# v1, which arrived at runtime the way a pull leaves an image -- each said in the agent's log and
-# checked in the guest's own store.
+# Then the image an upgrade moves off, which keeps that grow from accruing: v0 -> v1 keeps v0,
+# which the OS image carries (staged, loaded again at every boot); v1 -> v0 removes v1, which came
+# at runtime as a pull leaves an image -- each said in the agent log and checked in the guest store.
 { pkgs, guestDisk, agent, netWrap, dressBase, fixture }:
 pkgs.testers.runNixOSTest {
   name = "agent-disk-grow";
@@ -47,8 +46,8 @@ pkgs.testers.runNixOSTest {
     host.succeed("ln -s ${guestDisk}/nixos.qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
-    # The fixture's signed catalog, served the way the lab serves its own -- from a copy, because
-    # publishing a version is replacing what it serves (every version is signed by one key).
+    # The fixture's signed catalog, served from a copy as the lab serves its own: publishing a
+    # version replaces what is served (every version is signed by one key).
     def publish(src):
         host.succeed(f"mkdir -p /srv/catalog && cp -rf {src}/. /srv/catalog/ && chmod -R u+w /srv/catalog")
     publish("${fixture}/catalog")
@@ -82,14 +81,14 @@ pkgs.testers.runNixOSTest {
         b, unit = host.succeed("stat -c '%b %B' /tmp/state.img").split()
         return int(b) * int(unit)
 
-    # THICK FROM THE START: the agent made it at 1 GiB with every byte reserved.
+    # Thick from the start: the agent made it at 1 GiB with every byte reserved.
     size0 = size()
     assert size0 == gib, f"the state disk was made at {size0} bytes, not 1 GiB"
     assert allocated() >= size0, f"the fresh state disk is sparse: {allocated()} of {size0} bytes allocated"
 
-    # === THE CONTROL: a host that cannot pay refuses the install and grows nothing. ===
-    # Fill the host's filesystem until it has 3 GiB free (Bfree, what the agent reads): the grow
-    # this install needs is 3 GiB, plus the 2 GiB the host keeps for itself.
+    # === The control: a host that cannot pay refuses the install and grows nothing. ===
+    # The host filesystem filled to 3 GiB free (Bfree, what the agent reads): this grow needs
+    # 3 GiB, plus the 2 GiB the host keeps for itself.
     f, s = host.succeed("stat -f -c '%f %S' /tmp").split()
     free_now = int(f) * int(s)
     host.succeed(f"fallocate -l {free_now - 3 * gib} /tmp/filler")
@@ -100,7 +99,7 @@ pkgs.testers.runNixOSTest {
     assert size() == size0, f"a refused install still grew the state disk to {size()}"
     host.succeed("rm /tmp/filler")
 
-    # === THE GROW: the same install, with room on the host. ===
+    # === The grow: the same install, with room on the host. ===
     rc, out = host.execute("briard-agent app install ${fixture.appName} 2>&1")
     print(f"install: rc={rc}\n{out}")
     print(host.succeed("journalctl -u briard-agent -o cat | grep -E 'state disk|app install' || true"))
@@ -125,7 +124,7 @@ pkgs.testers.runNixOSTest {
     assert dev == size1, f"the guest's kernel sees {dev} bytes, the file is {size1}"
     print(f"guest: disk {dev}, filesystem {fs}")
 
-    # === THE SUPERSEDED IMAGE: dropped when an upgrade commits, unless the OS image carries it. ===
+    # === The superseded image: dropped when an upgrade commits, unless the OS image carries it. ===
     v0 = host.succeed("cat ${fixture}/ref").strip()
     v1 = host.succeed("cat ${fixture}/variants/v1/ref").strip()
 
@@ -141,13 +140,12 @@ pkgs.testers.runNixOSTest {
         return m.group(1) == "0"
 
     def install(label):
-        # THE LOOP KEEPS TICKING WHILE AN INSTALL RUNS. An app install leaves the observe loop
-        # (agent/host/acts.go), so the status line -- every STATUS_EVERY=2s here -- keeps coming
-        # between the moment the directive is submitted and the moment the install says it is
-        # serving; an install that held the loop would log nothing in between (and a guest frozen
-        # inside a pull would go unnoticed until the budget expired). The window is real
-        # by construction -- the app is ready 3 s after its start and the health gate polls every
-        # 5 s -- and asserted as such: an install that spans no tick fails here too.
+        # The loop keeps ticking while an install runs: an app install leaves the observe loop
+        # (agent/host/acts.go), so the status line (every STATUS_EVERY=2s here) keeps coming
+        # between submit and "serving". An install that held the loop would log nothing in
+        # between, and a guest frozen inside a pull would go unnoticed until the budget expired.
+        # The window is real by construction (the app is ready 3 s after start, the health gate
+        # polls every 5 s) and asserted: an install that spans no tick fails here too.
         cursor = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
         rc, out = host.execute("briard-agent app install ${fixture.appName} 2>&1")
         print(f"install {label}: rc={rc}\n{out}")
@@ -159,17 +157,17 @@ pkgs.testers.runNixOSTest {
         assert ticks >= 1, f"install {label}: no status line between submit and serving ({last - first} lines) -- the install held the loop:\n" + "\n".join(lines[first:last + 1])
         print(f"install {label}: {ticks} status lines while it ran")
 
-    # v1 arrives the way a pull would leave it: loaded at runtime, so NOT one the OS image carries.
+    # v1 arrives as a pull would leave it: loaded at runtime, so not one the OS image carries.
     guest("podman load -i /etc/briard-test/v1.tar", wait=20)
     assert resident(v1), "v1 was not loaded into the guest"
 
-    # v0 -> v1. v0 is STAGED (baked into the guest image), so the commit keeps it -- and says so.
+    # v0 -> v1. v0 is staged (baked into the guest image), so the commit keeps it, and says so.
     publish("${fixture}/variants/v1/catalog")
     install("v1")
     host.succeed(f"journalctl -u briard-agent -o cat | grep -q 'superseded images: kept {v0}'")
     assert resident(v0), "the baked v0 image was removed"
 
-    # v1 -> v0. v1 came at runtime, so once v0 is committed nothing pins it and it is GONE.
+    # v1 -> v0. v1 came at runtime, so once v0 is committed nothing pins it and it is removed.
     publish("${fixture}/catalog")
     install("v0 again")
     host.succeed(f"journalctl -u briard-agent -o cat | grep -q 'superseded images: removed {v1}'")
@@ -177,21 +175,21 @@ pkgs.testers.runNixOSTest {
     assert resident(v0), "the running v0 image went missing"
     print(host.succeed("journalctl -u briard-agent -o cat | grep 'superseded images'"))
 
-    # === NO CORE DUMPS: a crash is logged, its core is never written. ===
-    # A process killed by SIGSEGV goes through systemd-coredump, which with Storage=none and
-    # ProcessSizeMax=0 records the crash in the journal and writes nothing -- on its default
-    # (external storage) the core would land in /var/lib/systemd/coredump on the state disk.
+    # === No core dumps: a crash is logged, its core never written. ===
+    # A SIGSEGV goes through systemd-coredump, which with Storage=none and ProcessSizeMax=0 records
+    # the crash in the journal and writes nothing; on its default (external storage) the core would
+    # land in /var/lib/systemd/coredump on the state disk.
     out = guest("sleep 300 & p=$!; sleep 1; kill -SEGV $p; sleep 3; echo CORES=$(ls /var/lib/systemd/coredump 2>/dev/null | wc -l); journalctl -b -o cat | grep \"(sleep) of user 0\"; echo LOGGED=$(journalctl -b -o cat | grep -c \"(sleep) of user 0\")", wait=10)
     print(out)
     assert re.search(r"CORES=0\b", out), f"a core was written:\n{out}"
     m = re.search(r"LOGGED=(\d+)", out)
     assert m and int(m.group(1)) > 0, f"the crash was not logged:\n{out}"
 
-    # === THE DATA VOLUME IS MOUNTED COMPRESSED (zstd:1) ===
+    # === The data volume is mounted compressed (zstd:1) ===
     out = guest("echo MNT=$(findmnt -no OPTIONS /var/lib/briard)")
     assert re.search(r"MNT=\S*compress=zstd:1", out), f"the data volume is not mounted compressed:\n{out}"
 
-    # === THE HOUSEHOLD HEARS ABOUT A SHORT HOST DISK BEFORE A REFUSAL DOES IT FOR THEM ===
+    # === The household hears about a short host disk before a refusal does it for them ===
     # Under the 2 GB the agent keeps for the host, it warns once (it reads once a minute); back
     # above the margin, it says so.
     f, s = host.succeed("stat -f -c '%f %S' /tmp").split()

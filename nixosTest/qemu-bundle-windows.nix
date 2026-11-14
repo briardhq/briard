@@ -1,27 +1,25 @@
 # The Windows qemu bundle: QEMU built here, from a pinned stable release, for Windows.
 #
-# THE RECIPE is the one the de-facto Windows QEMU builds use (qemu.weilnetz.de's GitHub workflow):
-# a mingw cross gcc on Linux, MSYS2's prebuilt Windows libraries as the sysroot, then QEMU's own
-# `configure --cross-prefix`. We build it rather than repackage someone's installer for one reason
-# above the rest: a Windows node has to be able to take a QEMU point release the day it needs one,
-# and those installers are built from master, not from bugfix releases.
+# The recipe of the de-facto Windows QEMU builds (the GitHub workflow of qemu.weilnetz.de): a
+# mingw cross gcc on Linux, the prebuilt Windows libraries of MSYS2 as the sysroot, then
+# QEMU's own `configure --cross-prefix`. Built rather than repackaged from an installer chiefly
+# because a Windows node must be able to take a QEMU point release the day it needs one, and
+# those installers are built from master, not from bugfix releases.
 #
-# WHY NOT `pkgsCross.*.qemu`: nixpkgs would cross-build glib and libslirp too, and through them a
-# Python for mingw that nixpkgs marks broken. Here Python runs only on the build machine, and glib,
-# libslirp and the rest of the library closure are MSYS2's own signed CI builds, pinned by hash.
+# Not `pkgsCross.*.qemu`: nixpkgs would cross-build glib and libslirp too, and through them a
+# mingw Python that nixpkgs marks broken. Here Python runs only on the build machine, and the
+# library closure is the signed CI builds of MSYS2, pinned by hash. UCRT64, not the older msvcrt
+# `mingw64` environment: that one does not carry libslirp, and the UCRT is part of Windows 10+.
 #
-# UCRT64, not MSYS2's older msvcrt `mingw64` environment: that one does not carry libslirp, and
-# the UCRT is part of Windows 10 and later.
+# What our signature means: the QEMU binaries are built by us from the pinned source, with the
+# patches in qemu-windows-patches/ (each says what it fixes and on what host); the DLLs beside
+# them are MSYS2 binaries and the toolchain runtime, pinned and unmodified.
 #
-# WHAT OUR SIGNATURE MEANS HERE: the QEMU binaries are built by us from the pinned source below,
-# with the patches in qemu-windows-patches/ applied (each one says what it fixes and on what host);
-# the DLLs beside them are MSYS2's binaries and the toolchain's runtime, pinned and unmodified.
+# GPL: QEMU is GPL-2.0 and several libraries are LGPL; the corresponding source is the pinned
+# QEMU release tarball plus the MSYS2 source package of each pinned library (THIRD-PARTY.md).
 #
-# GPL: QEMU is GPL-2.0 and several of the libraries are LGPL. The corresponding source is the QEMU
-# release tarball pinned below plus MSYS2's source package for each pinned library (THIRD-PARTY.md).
-#
-# THE ASSERTION IS NOT IN CI: a Linux runner cannot run a Windows binary. What the derivation CAN
-# assert about a Windows tree, it does, below; the rest is a real boot on a Windows machine.
+# Not in CI: a Linux runner cannot run a Windows binary. The derivation asserts what it can about
+# a Windows tree, below; the rest is a real boot on a Windows machine.
 { pkgs }:
 
 let
@@ -95,7 +93,7 @@ let
     postUnpack = unpackSysroot;
     preConfigure = ''
       patchShebangs .
-      # stdenv exports the NATIVE toolchain, and QEMU's configure prefers $CC over --cross-prefix:
+      # stdenv exports the native toolchain, and QEMU's configure prefers $CC over --cross-prefix:
       # left set, meson configures for Linux and fails on WHPX.
       unset CC CXX LD AR AS NM RANLIB STRIP OBJCOPY OBJDUMP WINDRES CPP READELF SIZE STRINGS
       export PKG_CONFIG=pkg-config
@@ -127,15 +125,14 @@ let
     '';
   };
 
-  # The two binaries the product runs: qemu-system-x86_64 boots the guest, qemu-img makes the
-  # install-time overlay. The same two QEMU binaries as the Linux bundle, for the same reasons
-  # (the Linux bundle also carries smartctl; this one does not).
+  # qemu-system-x86_64 boots the guest, qemu-img makes the install-time overlay: the QEMU pair of
+  # the Linux bundle, for the same reasons (that bundle also carries smartctl; this one does not).
   qemuBins = [ "qemu-system-x86_64.exe" "qemu-img.exe" ];
 
-  # The x86 firmware allowlist. It is the Linux bundle's list plus efi-e1000.rom: QEMU adds a
-  # default e1000 NIC to any launch that names no netdev and then wants its option ROM. Every
-  # installed node names one, so this is the bundle being wider than the product needs -- but a
-  # bundle that only works for the launches we happen to make is a trap for whoever makes another.
+  # The Linux bundle's firmware allowlist plus efi-e1000.rom: QEMU adds a default e1000 NIC, and
+  # wants its option ROM, on any launch naming no netdev. Every installed node names one, so this
+  # is wider than the product needs -- but a bundle that works only for the launches we happen to
+  # make is a trap for whoever makes another.
   firmware = [
     "bios-256k.bin" "bios.bin"
     "kvmvapic.bin" "linuxboot_dma.bin" "pvh.bin"
@@ -155,12 +152,11 @@ let
     chmod -R u+w pool
     mkdir -p "$out/share/qemu"
 
-    # THE DLL SET IS THE PE IMPORT CLOSURE, not "every DLL in the pool" -- the same doctrine the
-    # Linux bundle applies with ldd, and objdump reads a PE import table as readily as an ELF
-    # NEEDED. A DLL not in the pool is Windows' own (KERNEL32, the api-ms-win-crt-* UCRT set).
-    #
-    # ⚠️ The same gap the Linux bundle names applies here: an import table does not capture a
-    # runtime LoadLibrary, so the honest check is a real boot on Windows.
+    # The DLL set is the PE import closure, not "every DLL in the pool" -- the doctrine the Linux
+    # bundle applies with ldd; objdump reads a PE import table as readily as an ELF NEEDED. A DLL
+    # not in the pool is Windows' own (KERNEL32, the api-ms-win-crt-* UCRT set). ⚠️ The gap the
+    # Linux bundle names applies too: an import table does not capture a runtime LoadLibrary, so
+    # the honest check is a real boot on Windows.
     cd pool
     queue="$bins"
     seen=""
@@ -184,7 +180,7 @@ let
         { echo "firmware blob missing from the build: $f" >&2; exit 1; }
     done
 
-    # Build-time assertions -- the ones a Linux builder CAN make about a Windows tree.
+    # Build-time assertions: the ones a Linux builder can make about a Windows tree.
     for b in $bins; do
       [ -s "$out/$b" ] || { echo "missing binary: $b" >&2; exit 1; }
     done

@@ -1,21 +1,20 @@
-# A PLANNED handover: `drbd-reactorctl evict` moves the work to a peer.
+# A planned handover: `drbd-reactorctl evict` moves the work to a peer.
 #
-# Every other failover proof here is a FAILURE (drbd-failover crashes the primary, drbd-fence
-# partitions it). The upgrade path needs the opposite: a node that is perfectly healthy giving
-# the work up deliberately, so it can reboot into a new generation while its peer serves. That
-# is a different operation with different risks — nothing is broken, so nothing forces the move,
-# and the question is whether it happens at all, cleanly, and how fast.
+# Every other failover proof here is a failure (drbd-failover crashes the primary, drbd-fence
+# partitions it). The upgrade path needs the opposite: a perfectly healthy node giving the work up
+# deliberately, to reboot into a new generation while its peer serves -- a different operation
+# with different risks: nothing is broken, so nothing forces the move; the question is whether it
+# happens at all, cleanly, and how fast.
 #
-# WHY THE CLI AND NOT A DEMOTE DANCE. drbd-reactor ships `drbd-reactorctl evict`, which
-# runtime-masks the promoter target, stops it so a peer can promote, then unmasks. Writing our
-# own stop-and-hope against the promoter would be reimplementing it with less knowledge of its
-# own state machine. But we have prior form with this CLI — `drbd-reactorctl disable`'s systemctl
-# reload proved flaky and is not used (guestagent.go) — so `evict` is PROVEN here, beneath the
-# host's handover (agent/host/handover.go) that drives it.
+# The CLI, not a demote dance: `drbd-reactorctl evict` runtime-masks the promoter target, stops it
+# so a peer can promote, then unmasks; our own stop-and-hope would reimplement it with less
+# knowledge of its state machine. But this CLI has prior form (the systemctl reload of
+# `drbd-reactorctl disable` proved flaky and is not used, guestagent.go), so `evict` is proven
+# here, beneath the host's handover (agent/host/handover.go) that drives it.
 #
-# It also produces the number a roll needs: how long a clean eviction takes to move the
-# VIP. The post-*failure* timing is unmeasured; this is the planned case, which ought
-# to be faster and more deterministic, and "ought to" is not a measurement.
+# It also measures what a roll needs: how long a clean eviction takes to move the VIP. The
+# post-failure timing is unmeasured; the planned case ought to be faster and more deterministic,
+# and "ought to" is not a measurement.
 { pkgs, guestModule, fixture }:
 
 let
@@ -59,9 +58,9 @@ pkgs.testers.runNixOSTest {
     for m in machines:
         m.succeed("systemctl start drbd-reactor.service")
 
-    # The reverse proxy answers before anything is installed -- the shipped state -- and the app
-    # then goes onto the volume from whichever node promoted. Every later handover renders it
-    # again from there, which is what an eviction is really moving.
+    # The reverse proxy answers before anything is installed (the shipped state); the app then
+    # goes onto the volume from whichever node promoted, and every later handover renders it again
+    # from there -- what an eviction really moves.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
 
     def role(m):
@@ -74,32 +73,31 @@ pkgs.testers.runNixOSTest {
     assert first is not None, "no primary was elected"
     dataroot = install_fixture(first)
     first.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
-    # Let the dummy's counter climb so "the data came with it" is decisive rather than
-    # coincidental — a re-formatted volume restarts near zero, far below this.
+    # A climbed counter makes "the data came with it" decisive, not coincidental: a re-formatted
+    # volume restarts near zero.
     first.wait_until_succeeds(f"[ $(grep -oE '[0-9]+' {dataroot}/app/state.json) -ge 3 ]")
     t1 = int(json.loads(first.succeed("curl -fsS http://192.168.1.100:8080/state"))["ticks"])
     print(f"### primary before the eviction: {first.name} (tick {t1})")
 
-    # ---- ACT 1: the eviction moves the work, and the address follows ----------------------
+    # ---- Act 1: the eviction moves the work, and the address follows ----------------------
     #
-    # Timed from the far side: the useful number is not how long the command takes to return
-    # but how long the HOUSE is without an answer at its address, which is what a household notices
-    # and what a roll has to be sized against.
+    # Timed from the far side: the useful number is how long the house is without an answer at
+    # its address (what a household notices, and what a roll is sized against), not how long the
+    # command takes to return.
     others = [m for m in machines if m != first]
     t_start = time.monotonic()
     first.succeed("drbd-reactorctl evict")
 
-    # Some node other than the evicted one now serves. wait_until_succeeds polls, so the
-    # elapsed time is an upper bound at its granularity, not a stopwatch — good enough to
-    # tell "seconds" from "minutes", which is the decision it feeds.
+    # wait_until_succeeds polls, so the elapsed time is an upper bound at its granularity, not a
+    # stopwatch -- enough to tell "seconds" from "minutes", the decision it feeds.
     others[0].wait_until_succeeds("curl -fsS --max-time 2 http://192.168.1.100:8080/healthz")
     elapsed = time.monotonic() - t_start
     print(f"### VIP answered again {elapsed:.1f}s after the eviction")
 
     second = primary_of(others)
     assert second is not None, "no peer promoted after the eviction"
-    # THE assertion of this test: the work actually left. An evict that no-oped would still
-    # leave a healthy fleet serving a healthy VIP, and every other check here would pass.
+    # The assertion of this test: the work actually left. An evict that no-oped would leave a
+    # healthy fleet serving a healthy VIP, and every other check here would pass.
     assert role(first) != "Primary", f"{first.name} is still Primary after evicting itself"
     print(f"### primary after the eviction: {second.name}")
 
@@ -107,20 +105,20 @@ pkgs.testers.runNixOSTest {
     primaries = [m.name for m in machines if role(m) == "Primary"]
     assert len(primaries) == 1, f"expected exactly one primary, got {primaries}"
 
-    # The data came with it (protocol C), same claim as the crash path -- a planned move must
-    # be at least as safe as an unplanned one.
+    # The data came with it (protocol C), as on the crash path: a planned move must be at least
+    # as safe as an unplanned one.
     t2 = int(json.loads(second.succeed("curl -fsS http://192.168.1.100:8080/state"))["ticks"])
     assert t2 >= t1 - 2, f"data lost across a PLANNED handover: t1={t1} t2={t2}"
 
-    # ---- ACT 2: a plain evict does not exile the node ------------------------------------
+    # ---- Act 2: a plain evict does not exile the node ------------------------------------
     #
-    # `evict` unmasks the target again on its way out, so the evicted node is immediately
-    # eligible to hold the resource once more. That is what makes a hand-back possible at all
-    # -- and it is exactly why the reboot path needs --keep-masked (act 3): without it, a node
-    # rebooting for its own upgrade could take the work back before anyone verified it.
+    # `evict` unmasks the target on its way out, so the evicted node is immediately eligible
+    # again. That makes a hand-back possible at all, and is exactly why the reboot path needs
+    # --keep-masked (act 3): without it, a node rebooting for its own upgrade could take the work
+    # back before anyone verified it.
     first.succeed("systemctl show -p LoadState --value drbd-services@r0.target | grep -qv masked")
 
-    # Hand it BACK, which is the second half of the roll (a roll ends where it started).
+    # Hand it back: the second half of the roll (a roll ends where it started).
     t_start = time.monotonic()
     second.succeed("drbd-reactorctl evict")
     first.wait_until_succeeds("curl -fsS --max-time 2 http://192.168.1.100:8080/healthz")
@@ -130,12 +128,11 @@ pkgs.testers.runNixOSTest {
     assert third is not None, "nobody holds the resource after the hand-back"
     print(f"### primary after the hand-back: {third.name}")
 
-    # ---- ACT 3: --keep-masked keeps the node out until we say otherwise -------------------
+    # ---- Act 3: --keep-masked keeps the node out until we say otherwise -------------------
     #
-    # The reboot path's requirement. A runtime mask does NOT survive a reboot, which is the
-    # trap: this proves the mask holds the node out while it is up, and `-u` releases it. What
-    # a reboot does to it is the roll sequencer's problem, not this mechanism's, and is
-    # recorded rather than assumed here.
+    # The requirement of the reboot path. The trap: a runtime mask does not survive a reboot.
+    # This proves the mask holds the node out while it is up and `-u` releases it; what a reboot
+    # does to it is the roll sequencer's problem, recorded here rather than assumed.
     holder = primary_of(machines)
     rest = [m for m in machines if m != holder]
     holder.succeed("drbd-reactorctl evict --keep-masked")

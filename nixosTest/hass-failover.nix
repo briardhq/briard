@@ -1,13 +1,11 @@
 # Kill the primary, HA fails over with config intact at the same VIP.
 #
-# drbd-failover proves the mechanism (3-node majority, kill-primary → VIP + data
-# move) for the deterministic dummy; this proves the *differentiated claim* on the
-# real app: real HA state survives a takeover. The dummy's tick counter stands
-# in for "committed data crossed the DRBD link"; HA's equivalent is its **sacred
-# `.storage`** — so we create the owner user through HA's own (no-auth)
-# onboarding API, which writes `.storage/auth*`, and after the kill assert that
-# account is still there on the promoted survivor. That is config-intact: the
-# config HA durably wrote replicated under protocol C and HA re-adopted it.
+# drbd-failover proves the mechanism (3-node majority, kill-primary → VIP + data move) on the
+# deterministic dummy, whose tick counter stands in for "committed data crossed the DRBD link".
+# This proves the differentiated claim on the real app: HA state survives a takeover. The owner
+# user, created through the (no-auth) onboarding API, lands in the sacred `.storage/auth*`; after
+# the kill it must still be there on the promoted survivor -- config HA durably wrote, replicated
+# under protocol C and re-adopted.
 #
 # Heavy (two HA cold starts + the 2.4 GB image), so it lives in the `ha` tag.
 { pkgs, guestModule, fixture }:
@@ -24,15 +22,15 @@ let
       { name = "node3"; id = 2; }
     ];
   };
-  # Every node is HA-capable (any can be promoted), so all get the memory + disk
-  # HA needs — the 2.4 GB image is resident from its prebuilt store on every node.
+  # Any node can be promoted, so all get the memory and disk HA needs; the 2.4 GB image is
+  # resident from its prebuilt store on every node.
   node =
     { ... }:
     {
       imports = [ baseNode ];
-      # 2048 per node, MEASURED: three guests each grow page cache into what they are given, so
-      # at 3072 this trio is 9498 MB resident of 9216 declared -- the heaviest test in the tier by
-      # far -- and at 2048 it is 6426 MB of 6144, in 140s rather than 155s.
+      # 2048 per node, measured: each guest grows page cache into what it is given, so at 3072
+      # the trio is 9498 MB resident of 9216 declared (by far the heaviest in the tier), at 2048
+      # 6426 MB of 6144, in 140s rather than 155s.
       virtualisation.memorySize = 2048;
       virtualisation.diskSize = 10240;
     };
@@ -58,20 +56,18 @@ pkgs.testers.runNixOSTest {
     start_all()
     for m in machines:
         m.wait_for_unit("multi-user.target")
-        # The 2.4 GB image is resident on EVERY node before anything promotes -- warm standby is
-        # what makes an offline failover possible, and it is asserted again just before the kill.
+        # The 2.4 GB image is resident on every node before anything promotes: warm standby makes
+        # an offline failover possible (asserted again just before the kill).
         m.wait_for_unit("briard-test-fixture-install.service", timeout=900)
         m.succeed("modprobe drbd")
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
 
-    # Offline failover — the crux for HA: an outage that triggers failover
-    # often kills WAN, and the 2.4 GB image must never be pulled at promotion (warm
-    # standby). Prove offline *without* probing a public IP: a curl to e.g.
-    # 1.1.1.1 is a bad control — it can fail for unrelated reasons (an upstream
-    # firewall) and the nixosTest sandbox has no WAN egress anyway, so it passes
-    # vacuously. Instead sever any default route and assert it's gone (a local
-    # routing fact), and prove image warmth before the kill (below). The diagnostic
-    # records pre-cut reachability of a known-good host to document the offline sandbox.
+    # Offline failover, the crux for HA: an outage that triggers failover often kills WAN, so the
+    # 2.4 GB image must never be pulled at promotion. A curl to a public IP (1.1.1.1) is a bad
+    # control: it can fail for unrelated reasons (an upstream firewall), and the sandbox has no
+    # WAN egress anyway, so it passes vacuously. Instead: sever any default route and assert it
+    # is gone (a local routing fact), and prove image warmth before the kill. The print documents
+    # pre-cut reachability of a known-good host to document the offline sandbox.
     print("pre-cut reach 1.0.0.1:", node1.execute("curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://1.0.0.1 || echo UNREACHABLE")[1].strip())
     for m in machines:
         m.succeed("ip route del default 2>/dev/null || true")
@@ -86,18 +82,17 @@ pkgs.testers.runNixOSTest {
     def role(m):
         return m.execute("drbdadm role r0")[1].strip()
 
-    # The reverse proxy comes up on the elected primary with nothing installed, then HA is installed
-    # onto the volume that node holds. The SURVIVOR never runs an install: it renders HA from the
-    # same volume when it promotes, which is the half this test is about.
+    # The reverse proxy comes up on the elected primary with nothing installed, then HA is
+    # installed onto its volume. The survivor never runs an install: it renders HA from the same
+    # volume when it promotes, the half this test is about.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
     primary = next(m for m in machines if role(m) == "Primary")
     print(f"primary={primary.name}")
     dataroot = install_fixture(primary)
     node1.wait_until_succeeds(f"curl -fsS -o /dev/null {VIP}${fixture.healthPath}", timeout=300)
 
-    # Write real, durable HA config: the owner user, via the no-auth onboarding
-    # step (first step, available as soon as the onboarding API is up). This lands
-    # in the sacred `.storage/auth*`.
+    # Real, durable HA config: the owner user, via the no-auth first onboarding step (available
+    # as soon as the onboarding API is up), into `.storage/auth*`.
     primary.wait_until_succeeds(f"curl -fsS -o /dev/null {VIP}/api/onboarding", timeout=60)
     primary.succeed(
         "curl -fsS -X POST -H 'Content-Type: application/json' "
@@ -105,24 +100,22 @@ pkgs.testers.runNixOSTest {
         '"password":"briard-test-pw","language":"en"}\' '
         f"{VIP}/api/onboarding/users"
     )
-    # HA persisted it; flush the guest page cache so the bytes are on the DRBD
-    # device (→ replicated under protocol C) before the abrupt kill.
+    # Once HA persisted it, flush the page cache so the bytes are on the DRBD device (replicated
+    # under protocol C) before the abrupt kill.
     primary.wait_until_succeeds(f"grep -rq {USER} {dataroot}/${fixture.dataDir}/.storage")
     primary.succeed("sync")
 
-    # Warm standby is what makes offline failover possible: every node — the
-    # survivor included — already has the 2.4 GB image in local podman storage, so a
-    # promotion never pulls. Prove it before the kill (the load runs at boot). This
-    # is the real positive proof, rather than the vacuous "can't reach the internet".
+    # Warm standby, the positive proof (rather than the vacuous "can't reach the internet"): every
+    # node, the survivor included, holds the 2.4 GB image in local podman storage (loaded at boot),
+    # so a promotion never pulls.
     for m in machines:
-        # By the DIGEST the manifest pins, not a tag: that is the ref `Pull=never` resolves, and a
+        # By the digest the manifest pins, not a tag: that is the ref `Pull=never` resolves, and a
         # tag could match an image the manifest does not name.
         m.succeed('podman image exists "$(cat /run/briard/fixture/ref)"')
 
-    # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
-    # real, so a replica is a SyncTarget until that initial resync completes -- and a
-    # SyncTarget cannot promote. "Replicated" is
-    # the claim under test, so assert the disk state before removing the only UpToDate copy.
+    # The crash must find an UpToDate replica. The seed path syncs a joiner for real, so a replica
+    # is a SyncTarget, which cannot promote, until the initial resync completes; "replicated" is
+    # the claim under test, so the disk state is asserted before the only UpToDate copy goes.
     for m in machines:
         if m != primary:
             m.wait_until_succeeds("drbdadm dstate r0 | grep -qE '^(UpToDate|Diskless)'", timeout=300)
@@ -130,21 +123,21 @@ pkgs.testers.runNixOSTest {
     primary.crash()
     survivors = [m for m in machines if m != primary]
 
-    # The two survivors keep quorum, promote one of their own, reload the HA image
-    # and boot HA, and the VIP answers again — same address, moved by gratuitous ARP.
+    # The survivors keep quorum, promote one of their own, reload the HA image and boot HA; the
+    # VIP answers again at the same address, moved by gratuitous ARP.
     survivors[0].wait_until_succeeds(f"curl -fsS -o /dev/null {VIP}${fixture.healthPath}", timeout=400)
 
-    # Config intact: the owner user crossed the DRBD link and the new primary's HA
-    # re-adopted the replicated `.storage`. Assert on whichever survivor is now primary.
+    # Config intact, on whichever survivor is now primary: the owner user crossed the DRBD link
+    # and HA there re-adopted the replicated `.storage`.
     new_primary = next(m for m in survivors if role(m) == "Primary")
     new_primary.succeed(f"grep -rq {USER} {dataroot}/${fixture.dataDir}/.storage")
 
-    # HA started INSIDE this promotion (briard-apps is a chain member), and it reads its network
-    # once, at boot: the interface it advertises and answers mDNS on, and the address it builds its
-    # own URL from, are where the kernel sends 224.0.0.251. The chain claims the VIP -- and
-    # briard-vip routes multicast out of the VIP's NIC -- BEFORE the apps start, so the HA that
-    # booted here saw the household LAN. Started the other way round it would race the claim, and
-    # on losing it advertise qemu's user-net address until its next restart.
+    # HA started inside this promotion (briard-apps is a chain member) and reads its network once,
+    # at boot: the interface it advertises and answers mDNS on, and the address of its own URL,
+    # are where the kernel sends 224.0.0.251. The chain claims the VIP (briard-vip routes
+    # multicast out of the VIP NIC) before the apps start, so this HA saw the household LAN; the
+    # other way round it would race the claim and, on losing, advertise the qemu user-net address
+    # until its next restart.
     import json as _zj
     advert = _zj.loads(new_primary.succeed(
         "podman exec -i briard-home-assistant-app python3 - < ${h.haAdvertProbe}"
@@ -153,10 +146,9 @@ pkgs.testers.runNixOSTest {
     assert "192.168.1.100" in advert["addresses"], f"HA booted at promotion does not advertise the VIP: {advert}"
     assert "10.0.2.15" not in advert["addresses"], f"HA booted at promotion advertises the user-net address: {advert}"
 
-    # The recorder SQLite rode the same volume and HA re-opened it intact on
-    # the survivor — not quarantined as `.corrupt.<ts>` (the silent-history-loss
-    # symptom warns of, which an abrupt crash on a torn DB would trigger). This
-    # is the specific SQLite-on-DRBD risk the spike exists to retire.
+    # The recorder SQLite rode the same volume and HA re-opened it intact, not quarantined as
+    # `.corrupt.<ts>` (the silent-history-loss symptom an abrupt crash on a torn DB would
+    # trigger): the specific SQLite-on-DRBD risk the spike exists to retire.
     new_primary.succeed(f"test -f {dataroot}/${fixture.dataDir}/home-assistant_v2.db")
     new_primary.fail(f"ls {dataroot}/${fixture.dataDir}/home-assistant_v2.db.corrupt.*")
 

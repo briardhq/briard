@@ -1,27 +1,27 @@
 # Mealie: the recipe manager, signed in by the reverse proxy by header, on a lone node.
 #
-# WHAT THIS EXISTS TO CATCH, none of which a unit test can see, because each is a property of the
-# real app rather than of our code:
+# What this catches, none of which a unit test can see, each being a property of the real app
+# rather than of our code:
 #
-#   1. MEALIE TAKES WHAT BRIARD TELLS IT FROM FILES: the settings agent/mealie writes into the
-#      directory bound at /run/secrets are in effect -- the password form off, the header sign-in
-#      on -- and Mealie's uid can read them;
-#   2. THE FIRST ACCOUNT IS OPEN UNTIL THE FIRST OPEN, and closed after it: the password every
-#      Mealie ships with works on its API before, and neither it nor anything else does after;
-#   3. THE USER GETS IN WITH THE DASHBOARD'S SESSION AND NOTHING ELSE: a stranger is sent to the
-#      dashboard, a request at the pod without the reverse proxy's secret is refused, and a trusted
-#      browser is signed in as Mealie's first account -- an admin, keeping its username, with the
-#      record's name and placeholder email -- on the `.local` name and on the casa name, into the
+#   1. Mealie takes what briard tells it from files: the settings agent/mealie writes into the
+#      directory bound at /run/secrets are in effect (password form off, header sign-in on), and
+#      the Mealie uid can read them;
+#   2. the first account is open until the first open, and closed after: the password every Mealie
+#      ships with works on its API before, and neither it nor anything else does after;
+#   3. the user gets in with the dashboard session and nothing else: a stranger is sent to the
+#      dashboard, a pod request without the reverse proxy secret is refused, and a trusted browser
+#      is signed in as the first account of Mealie -- an admin, keeping its username, with the
+#      record's name and placeholder email -- on the `.local` and the casa name, into one account;
+#   4. the email is the user's to change: changed inside Mealie, the next sign-in lands on the
 #      same account;
-#   4. THE EMAIL IS THE USER'S TO CHANGE: changed inside Mealie, the next sign-in lands on the same
-#      account;
-#   5. NEVER LOCKED IN: the same data, under a plain Mealie with none of briard's settings, gives
+#   5. never locked in: the same data under a plain Mealie with none of briard's settings gives
 #      the user a working admin account with Mealie's own recovery script;
-#   6. A MEALIE BACK AT ITS FIRST ACCOUNT IS TAKEN OVER AGAIN without an open from the dashboard:
+#   6. a Mealie back at its first account is taken over again without an open from the dashboard:
 #      a browser that kept its cookie is signed in, and the shipped password is shut again;
-#   7. A RENAME INSIDE MEALIE IS FOLLOWED: the reverse proxy signs in whoever Mealie's accounts say;
-#   8. BRIARD'S OWN ACCOUNT IS MADE AGAIN WHENEVER IT IS GONE, an admin by Mealie's own tool run in
-#      its container -- the one thing here no fake can stand in for.
+#   7. a rename inside Mealie is followed: the reverse proxy signs in whoever the Mealie accounts
+#      say;
+#   8. briard's own account is made again whenever it is gone, an admin by Mealie's own tool run
+#      in its container -- the one thing here no fake can stand in for.
 { pkgs, guestModule, mealieFixture }:
 
 let
@@ -103,17 +103,17 @@ pkgs.testers.runNixOSTest {
     def seed_login(user="admin", password="MyPassword"):
         return at_pod("/api/auth/token", f"-X POST -d username={user} -d password={password}")[0]
 
-    # (1) THE SETTINGS, from the files, as Mealie reports them.
+    # (1) The settings, from the files, as Mealie reports them.
     about = json.loads(at_pod("/api/app/about")[1])
     assert about["allowPasswordLogin"] is False and about["enableReverseProxyAuth"] is True, about
     node1.succeed("test $(stat -c %u:%a /run/briard/mealie/settings/REVERSE_PROXY_AUTH_SECRET) = 911:400")
 
-    # (2) BEFORE THE FIRST OPEN, the first account answers the shipped password -- the window the
+    # (2) Before the first open, the first account answers the shipped password -- the window the
     # takeover closes -- and Mealie says it is a first login.
     assert seed_login() == 200, "Mealie's first account did not answer its shipped password"
     assert json.loads(at_pod("/api/app/about/startup-info")[1])["isFirstLogin"] is True
 
-    # (3) THE WAY IN. Around the reverse proxy, a header without the secret is refused.
+    # (3) The way in. Around the reverse proxy, a header without the secret is refused.
     code, _ = at_pod("/api/auth/reverse-proxy", "-H 'X-Forwarded-User: admin'")
     assert code == 401, f"the pod signed in a header without the reverse proxy's secret: {code}"
     # Through the reverse proxy with no session: sent to the dashboard to open it.
@@ -152,12 +152,12 @@ pkgs.testers.runNixOSTest {
     assert (me["username"], me["fullName"], me["email"], me["admin"], me["authMethod"]) == ("admin", "Kostas", "kostas@briard.local", True, "Mealie"), me
     first_id = me["id"]
 
-    # (2) AFTER IT: the shipped password does not open the first account by its username (its
+    # (2) After it: the shipped password does not open the first account by its username (its
     # shipped email is not tried), and the first-login wizard is over.
     assert seed_login() == 401, "the first account still answers the shipped password"
     assert json.loads(at_pod("/api/app/about/startup-info")[1])["isFirstLogin"] is False
 
-    # (4) THE EMAIL IS A FIELD: changed inside Mealie, the next sign-in is the same account.
+    # (4) The email is a field: changed inside Mealie, the next sign-in is the same account.
     me["email"] = "kostas@example.org"
     body = shlex.quote(json.dumps(me))
     code, _, out = through_proxy(MEALIE, f"/api/users/{first_id}", app_cookie, f"-X PUT -H 'Authorization: Bearer {tok}' -H 'Content-Type: application/json' -d {body}")
@@ -165,7 +165,7 @@ pkgs.testers.runNixOSTest {
     again, _, _ = sign_in("briard.local", MEALIE, session)
     assert again["id"] == first_id and again["email"] == "kostas@example.org", again
 
-    # (3) ON THE CASA NAME: its own session on the dashboard's casa name, the same account.
+    # (3) On the casa name: its own session on the dashboard's casa name, the same account.
     handoff("feed" * 16)
     code, hd, _ = through_proxy(CASA, "/?code=" + "feed" * 16, https=True)
     casa_session = header(hd, "Set-Cookie").split(";")[0]
@@ -173,7 +173,7 @@ pkgs.testers.runNixOSTest {
     casa_me, _, _ = sign_in(CASA, MEALIE_CASA, casa_session, https=True)
     assert casa_me["id"] == first_id and casa_me["username"] == "admin", casa_me
 
-    # (5) NEVER LOCKED IN: briard's Mealie stopped, the same image on the same data with nothing of
+    # (5) Never locked in: briard's Mealie stopped, the same image on the same data with nothing of
     # briard's, and Mealie's own recovery script gives the account a password.
     image = node1.succeed("podman inspect briard-mealie-app --format '{{.ImageName}}'").strip()
     for unit in fixture_units(node1, app="mealie"):
@@ -188,18 +188,18 @@ pkgs.testers.runNixOSTest {
     me = json.loads(node1.succeed(f"curl -fsS -H 'Authorization: Bearer {tok}' http://127.0.0.1:9000/api/users/self"))
     assert me["id"] == first_id and me["admin"] is True, me
 
-    # (6) BACK AT THE FIRST ACCOUNT -- an undo to before the takeover, a reinstall without the data
-    # -- and a browser that kept its cookie, never opening from the dashboard: the reverse proxy's
-    # next check takes the account over again, so the user is signed in and the shipped password
-    # is shut.
+    # (6) Back at the first account (an undo to before the takeover, a reinstall without the data),
+    # with a browser that kept its cookie and never opens from the dashboard: the next check of the
+    # reverse proxy takes the account over again, signing the user in and shutting the shipped
+    # password.
     node1.succeed("podman rm -f plain && find /var/lib/briard/data/mealie/app -mindepth 1 -delete")
     for unit in fixture_units(node1, app="mealie"):
         node1.succeed(f"systemctl start {unit}")
     node1.wait_until_succeeds(f"curl -fsS http://{pod}/api/app/about", timeout=300)
     assert json.loads(at_pod("/api/app/about/startup-info")[1])["isFirstLogin"] is True, "the emptied Mealie is not at its first account"
-    # The reverse proxy may still hold its last answer, `admin`, for half a minute, and that name is
-    # the new first account's too: a sign-in in that window lands on it before the takeover, which
-    # the next check makes. So: signed in, and taken over, by requests the browser keeps making.
+    # The reverse proxy may hold its last answer, `admin`, for half a minute, and the new first
+    # account has that name too: a sign-in in that window lands on it before the takeover, which
+    # the next check makes. So: signed in and taken over by requests the browser keeps making.
     deadline = time.monotonic() + 120
     while True:
         code, _, body = through_proxy(MEALIE, "/api/auth/reverse-proxy", app_cookie)
@@ -236,7 +236,7 @@ pkgs.testers.runNixOSTest {
     # (6) and nothing else was made on the way: the first account and briard's own.
     assert sorted(accounts(tok)) == ["admin", "briard-admin"], sorted(accounts(tok))
 
-    # (7) A RENAME INSIDE MEALIE IS FOLLOWED: the reverse proxy's next check reads the user's
+    # (7) A rename inside Mealie is followed: the next check of the reverse proxy reads the user's
     # account off Mealie, so the kept cookie lands on the same account under its new name.
     me["username"] = "kchatzi"
     body = shlex.quote(json.dumps(me))
@@ -245,9 +245,9 @@ pkgs.testers.runNixOSTest {
     me, tok = signed_in_as(me["id"])
     assert me["username"] == "kchatzi" and me["admin"] is True, me
 
-    # (8) BRIARD'S OWN ACCOUNT IS MADE AGAIN WHENEVER IT IS GONE: deleted by the user, the next check
-    # signs in as it, which makes it an ordinary account, and Mealie's own admin tool, run in its
-    # container, makes it an admin again -- and the user is signed in throughout.
+    # (8) Briard's own account is made again whenever it is gone: deleted by the user, the next
+    # check signs in as it, making an ordinary account, and Mealie's own admin tool, run in its
+    # container, makes it an admin again -- the user signed in throughout.
     own = accounts(tok)["briard-admin"]
     code, _, out = through_proxy(MEALIE, f"/api/admin/users/{own['id']}", app_cookie, f"-X DELETE -H 'Authorization: Bearer {tok}'")
     assert code == 200, f"deleting briard's own account answered {code}: {out}"

@@ -1,21 +1,20 @@
 # Files: the household's window onto every app's directories, as a catalogued app.
 #
-# WHAT THIS EXISTS TO CATCH, none of which a unit test can see, because each is a property of the
-# kernel, podman or the real app rather than of our code:
+# What this catches, none of which a unit test can see, each being a property of the kernel,
+# podman or the real app rather than of our code:
 #
-#   1. THE VIEW REACHES THE RUNNING CONTAINER: the guest agent binds an app's directories under
+#   1. the view reaches the running container: the guest agent binds an app's directories under
 #      /run/briard/files-view after Files started, and slave propagation carries them in;
-#   2. THE TIERS KEEP THEIR MODES: data and unversioned are the household's to edit, files and
-#      its Versions are read-only -- refused by the kernel, through the real app;
-#   3. A RESTORE UNDERNEATH IS SEEN AT ONCE, without Files restarting: the area is swapped the
-#      way a restore swaps it, converge binds the new one, and what Files reads is the restored
-#      copy -- the stale bind is where an edit would otherwise vanish;
-#   4. A VERSION APPEARS under its absolute name;
-#   5. THE HOUSEHOLD GETS IN WITH THE DASHBOARD'S SESSION AND NOTHING ELSE: from the other
-#      machine, through the reverse proxy -- a stranger is sent to the dashboard, a trusted browser
-#      is signed in with no login of the app's own -- while a forged token is refused both at the
-#      pod and at the reverse proxy;
-#   6. THE VIEW LETS GO OF THE VOLUME when the chain stops.
+#   2. the tiers keep their modes: data and unversioned are the household's to edit, files and
+#      its Versions read-only -- refused by the kernel, through the real app;
+#   3. a restore underneath is seen at once, without Files restarting: the area is swapped as a
+#      restore swaps it, converge binds the new one, and Files reads the restored copy (a stale
+#      bind is where an edit would otherwise vanish);
+#   4. a version appears under its absolute name;
+#   5. the household gets in with the dashboard session and nothing else, from the other machine
+#      through the reverse proxy: a stranger is sent to the dashboard, a trusted browser is signed
+#      in with no login of the app's own, and a forged token is refused at the pod and the proxy;
+#   6. the view lets go of the volume when the chain stops.
 #
 # node2 is the household's other machine: every browser request is made from it, to the VIP.
 { pkgs, guestModule, fixture, filesFixture }:
@@ -74,7 +73,7 @@ pkgs.testers.runNixOSTest {
     primary.wait_until_succeeds(f"curl -fsS http://{pod}/health", timeout=180)
     files_started = primary.succeed("systemctl show -p ActiveEnterTimestampMonotonic briard-files-app.service").strip()
 
-    # (1)+(2) THE VIEW, as the container sees it: a folder per app, its manifest's directories in
+    # (1)+(2) The view, as the container sees it: a folder per app, its manifest's directories in
     # it, each tier in its mode -- read from inside the running container, where the claim lives.
     primary.succeed("echo hello > /var/lib/briard/data/dummy/app/hello.txt")
     primary.succeed("echo kept > /var/lib/briard/unversioned/dummy/keep/kept.txt")
@@ -88,7 +87,7 @@ pkgs.testers.runNixOSTest {
     top = primary.succeed("podman exec briard-files-app ls -1 /srv").split()
     assert top == ["Dummy"], f"the view's top is {top}; Files shows every app but itself"
 
-    # (5) THE WAY IN, from the other machine. A browser with no session for Files' name is sent to
+    # (5) The way in, from the other machine. A browser with no session for Files' name is sent to
     # the dashboard to open it, and nothing reaches the app.
     files_host = "briard-files.local"
     def curl(host, path, cookie="", extra=""):
@@ -139,7 +138,7 @@ pkgs.testers.runNixOSTest {
     # proxy signs.
     assert me["username"] == "owner" and me["permissions"]["admin"], me
 
-    # (2) THROUGH THE APP: an edit to the data lands on the volume; one to the files tier is refused.
+    # (2) Through the app: an edit to the data lands on the volume; one to the files tier is refused.
     hd = curl(files_host, "/api/resources?source=Apps&path=/Dummy/app/hello.txt&override=true", files_cookie, "-X POST --data-binary edited")
     assert status(hd) == 200, hd
     primary.succeed("grep -qx edited /var/lib/briard/data/dummy/app/hello.txt")
@@ -147,7 +146,7 @@ pkgs.testers.runNixOSTest {
     assert status(hd) != 200, hd
     primary.succeed("grep -qx media /var/lib/briard/files/dummy/media/song.txt")
 
-    # (3) A RESTORE UNDERNEATH, the way the product swaps an area: the restore point snapshotted
+    # (3) A restore underneath, the way the product swaps an area: the restore point snapshotted
     # into place beside the live one, the live one deleted, the copy renamed over it -- then the
     # converge every restore ends with. Files reads the restored copy, and was never restarted.
     primary.succeed("mkdir -p /var/lib/briard/data/.snapshots")
@@ -163,7 +162,7 @@ pkgs.testers.runNixOSTest {
     assert primary.succeed("systemctl show -p ActiveEnterTimestampMonotonic briard-files-app.service").strip() == files_started, \
         "Files was restarted to see the restore"
 
-    # (4) A VERSION, under the name a person reads: the member as the clock takes it, read-only.
+    # (4) A version, under the name a person reads: the member as the clock takes it, read-only.
     primary.succeed("mkdir -p /var/lib/briard/files/.snapshots")
     primary.succeed("btrfs subvolume snapshot -r /var/lib/briard/files/dummy /var/lib/briard/files/.snapshots/dummy-clock-20261105T130000Z")
     primary.succeed("briard-guest-agent --converge")
@@ -171,7 +170,7 @@ pkgs.testers.runNixOSTest {
     primary.succeed(f"podman exec briard-files-app cat {shlex.quote('/srv/Dummy/Versions/' + name + '/media/song.txt')} | grep -qx media")
     primary.fail(f"podman exec briard-files-app touch {shlex.quote('/srv/Dummy/Versions/' + name + '/media/x')}")
 
-    # (6) THE CHAIN STOPS, AND THE VIEW LETS GO: no bind under the view holds the volume.
+    # (6) The chain stops, and the view lets go: no bind under the view holds the volume.
     primary.succeed("systemctl stop briard-apps.service")
     primary.fail(f"grep -q ' {VIEW}/' /proc/self/mountinfo")
   '';

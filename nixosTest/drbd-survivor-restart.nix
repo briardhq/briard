@@ -1,28 +1,26 @@
-# — can a survivor RESTART while its peer is gone? No host agent, no upgrade path.
+# Can a survivor restart while its peer is gone? No host agent, no upgrade path.
 #
-# This exists because a finding measured through the host agent, the fleet's containers and an
-# upgrade path ("the survivor cannot come back") could be any of those rather than DRBD. Here
-# there is no host agent, no qemu-in-qemu, no upgrade — three ordinary test VMs running the
-# guest's own storage bring-up and promoter, with the SAME resource options the product ships
-# (quorum majority, on-no-quorum io-error, one diskless witness).
+# A finding measured through the host agent, the fleet's containers and an upgrade path ("the
+# survivor cannot come back") could be any of those rather than DRBD. Here there is none of them,
+# no qemu-in-qemu either: three ordinary test VMs running the guest's own storage bring-up and
+# promoter, with the same resource options the product ships (quorum majority, on-no-quorum
+# io-error, one diskless witness).
 #
-# TWO ACTS, deliberately juxtaposed, because they are different events that are easy to conflate:
+# Two acts, deliberately juxtaposed, because they are different events easy to conflate:
 #
-#   ACT 1 — the documented win, and the control: crash the PRIMARY, and the survivor promotes.
-#           It never lost quorum (it was quorate, and the diskless tiebreaker KEEPS quorum when
-#           the peer vanishes), so promotion is allowed. This is what drbd-witness.nix already
-#           proves and what makes 2-node homes HA; it is repeated here so that if it ever stops
-#           being true, this test says so in the same breath as act 2.
+#   Act 1 -- the documented win, and the control: crash the primary, the survivor promotes. It
+#           never lost quorum (the diskless tiebreaker keeps quorum when the peer vanishes), so
+#           promotion is allowed. drbd-witness.nix already proves this, and it makes 2-node homes
+#           HA; repeated here so that if it ever stops being true, this test says so beside act 2.
 #
-#   ACT 2 — the case under investigation: with the peer STILL absent, the survivor itself
-#           restarts. Runtime quorum state is gone, so it must GAIN quorum rather than keep it —
-#           and LINBIT's implementation notes say "a partition of half of the nodes with storage
-#           can never gain quorum when it establishes connections to diskless nodes".
+#   Act 2 -- the case under investigation: with the peer still absent, the survivor itself
+#           restarts. Runtime quorum state is gone, so it must gain quorum rather than keep it,
+#           and the implementation notes of LINBIT say "a partition of half of the nodes with
+#           storage can never gain quorum when it establishes connections to diskless nodes".
 #
-# The test ASSERTS the outcome we want in act 2b, the crash (the node comes back and serves); act
-# 2a, the clean reboot, is printed, not asserted. If DRBD really
-# cannot do that, this test fails — and that failure is the finding, stated in the one place that
-# cannot be blamed on our own plumbing.
+# Act 2b, the crash, asserts the outcome we want (the node comes back and serves); act 2a, the
+# clean reboot, is printed, not asserted. If DRBD really cannot do that, this test fails -- the
+# finding, stated in the one place that cannot be blamed on our own plumbing.
 { pkgs, guestModule, fixture }:
 
 let
@@ -64,14 +62,14 @@ pkgs.testers.runNixOSTest {
         # from the volume when it takes over and must not need a pull to do it.
         m.wait_for_unit("briard-test-fixture-install.service")
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
-    # The witness has no tier to build and still needs its `.res` and its attach --
-    # briard-node-storage runs on EVERY node, which is why one call covers both.
+    # The witness has no tier to build but still needs its `.res` and its attach:
+    # briard-node-storage runs on every node, so one call covers both.
     witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
     for m in disk_nodes:
         m.succeed("systemctl start drbd-reactor.service")
-    # Nothing is installed yet, so the reverse proxy answers for itself; then the promoted node puts
-    # the app on the volume, which is what the restarted survivor later converges from.
+    # With nothing installed the reverse proxy answers for itself; then the promoted node puts the
+    # app on the volume, which the restarted survivor later converges from.
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz")
     install_fixture(next(m for m in disk_nodes if m.execute("drbdadm role r0")[1].strip() == "Primary"))
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
@@ -80,8 +78,7 @@ pkgs.testers.runNixOSTest {
         return m.execute("drbdadm role r0")[1].strip()
 
     def quorum(m):
-        # `drbdsetup status --json` carries the per-device quorum flag; this is the same
-        # field the agent reports upward, read here without the agent.
+        # The per-device quorum flag: the field the agent reports upward, read without the agent.
         code, out = m.execute("drbdsetup status --json r0")
         return "true" if '"quorum": true' in out else ("false" if out else "?")
 
@@ -89,11 +86,10 @@ pkgs.testers.runNixOSTest {
     survivor = next(m for m in disk_nodes if m != primary)
     print(f"### primary={primary.name} survivor={survivor.name}")
 
-    ### ACT 1 — the control: the primary crashes, the survivor keeps quorum and promotes.
-    # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
-    # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
-    # cannot promote. "Replicated" is the claim under test, so assert the disk state before
-    # removing the only UpToDate copy.
+    ### Act 1 — the control: the primary crashes, the survivor keeps quorum and promotes.
+    # The crash must find an UpToDate replica. The seed path syncs a joiner for real, so a replica
+    # is a SyncTarget, which cannot promote, until the initial resync completes; "replicated" is
+    # the claim under test, so the disk state is asserted before the only UpToDate copy goes.
     survivor.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
     primary.crash()
     survivor.wait_until_succeeds("drbdadm role r0 | grep -q Primary")
@@ -104,17 +100,17 @@ pkgs.testers.runNixOSTest {
     def bring_drbd_back(m):
         m.wait_for_unit("multi-user.target")
         m.succeed("modprobe drbd")
-        # The SAME storage bring-up as the first time, which is the point: it activates the VG,
-        # opens the volume if it is encrypted, and then meets its own metadata -- the drbdmeta
-        # probe finds it, so the replica is attached rather than re-seeded. If this
-        # attaches, the replica survived (the storage seam made that one unit's job).
+        # The same storage bring-up as the first time, which is the point: it activates the VG,
+        # opens the volume if encrypted, and meets its own metadata -- the drbdmeta probe finds
+        # it, so the replica is attached rather than re-seeded. If this attaches, the replica
+        # survived (the storage seam made that one unit's job).
         m.succeed("briard-test-storage")
         m.succeed("systemctl start drbd-reactor.service")
 
-    ### ACT 2a — a CLEAN reboot of the survivor, peer still absent.
-    # DRBD 9.2.7 added "Preserve tiebreaker quorum over a reboot of the last node", which works by
-    # recording MDF_HAVE_QUORUM + prev_members at shutdown and restoring it at attach. A clean
-    # shutdown can write that; this act is what says whether it does.
+    ### Act 2a — a clean reboot of the survivor, peer still absent.
+    # DRBD 9.2.7 added "Preserve tiebreaker quorum over a reboot of the last node": MDF_HAVE_QUORUM
+    # + prev_members recorded at shutdown, restored at attach. A clean shutdown can write that;
+    # this act says whether it does.
     survivor.shutdown()
     survivor.start()
     bring_drbd_back(survivor)
@@ -124,7 +120,7 @@ pkgs.testers.runNixOSTest {
     print(survivor.succeed("drbdsetup status r0"))
     print(survivor.succeed("journalctl -k --no-pager | grep -iE 'quorum|nodes visible|Restored' | tail -5 || true"))
 
-    ### ACT 2b — a CRASH of the survivor (a power cut), peer still absent.
+    ### Act 2b — a crash of the survivor (a power cut), peer still absent.
     # Same node, same topology, one variable changed: nothing gets the chance to record anything.
     survivor.crash()
     survivor.start()
@@ -136,9 +132,9 @@ pkgs.testers.runNixOSTest {
     print(survivor.succeed("drbdsetup status r0"))
     print(survivor.succeed("journalctl -k --no-pager | grep -iE 'quorum|nodes visible|Restored' | tail -10 || true"))
 
-    # THE ASSERTION. A node that rebooted while its only diskful peer is absent should be able to
-    # come back and serve — the witness is connected, and the absent peer demonstrably cannot have
-    # quorum (it is off, and the witness is here). If this fails, it is not the host agent.
+    # The assertion: a node rebooted while its only diskful peer is absent should come back and
+    # serve -- the witness is connected, and the absent peer demonstrably cannot have quorum (it is
+    # off, and the witness is here). If this fails, it is not the host agent.
     survivor.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=120)
     survivor.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=60)
     print(f">>> ACT 2b PASS: {survivor.name} regained quorum after a CRASH (quorum={quorum(survivor)})")
