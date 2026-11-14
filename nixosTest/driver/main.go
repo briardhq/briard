@@ -1,11 +1,11 @@
 // Command driver is the nixosTest host driver -- NOT the product agent.
-// It boots the real guest disk via QEMU and drives DRBD bring-up over the
+// It boots the real guest disk via QEMU and drives one bring-up over the
 // virtio-serial channel, exercising the SAME platform + guestagent code the agent
-// uses (only the config source differs: env here, cloud enrollment in prod). The
-// nixosTest testScript sets the env and prepares the (writable) disks.
+// uses; what it lacks is the agent's standing observe loop. Its caller sets the env
+// and prepares the (writable) disks.
 //
-// It launches the guest, brings up a single-node resource, waits for the reactor
-// to promote it, prints CONVERGED, then holds the guest alive until signalled.
+// It launches the guest, brings up a lone node (one diskful member, so no DRBD),
+// waits until it serves, prints CONVERGED, then holds the guest alive until signalled.
 package main
 
 import (
@@ -27,7 +27,7 @@ import (
 	"briard.io/shared/nodestorage"
 )
 
-// vipHealth is where the app answers on the harness L2 (guest-image bakes the VIP).
+// vipHealth is where the app answers on the harness L2, at the VIP 192.168.1.100.
 const vipHealth = "http://192.168.1.100:8080/healthz"
 
 func env(k, def string) string {
@@ -51,15 +51,14 @@ func main() {
 	defer stop()
 
 	// The guest unit's ExecStop, which is THIS binary: platform.launchArgs writes that line as
-	// `/proc/self/exe --guest-shutdown=<monitor socket>`, and under this harness /proc/self/exe
-	// is the driver rather than the agent. So the driver has to answer the flag the agent
-	// answers, and for the same reasons -- including NEVER being fatal, since a non-zero exit
-	// here makes systemd report the guest unit as having failed to stop.
+	// the running binary's own path (os.Executable) plus `--guest-shutdown=<QMP socket>`, and
+	// under this harness that binary is the driver rather than the agent. So the driver has to
+	// answer the flag the agent answers, and for the same reasons -- including NEVER being fatal,
+	// since a non-zero exit here makes systemd report the guest unit as having failed to stop.
 	//
-	// It is load-bearing rather than tidy, because an unanswered flag here is IGNORED and not
-	// rejected: systemd then runs a second whole driver as the stop job of the unit it is
-	// stopping, and that driver re-enters platform.Launch from inside the very invocation
-	// holding the unit's name.
+	// Load-bearing rather than tidy: a driver that ignored the flag would run as a second whole
+	// driver in the stop job of the unit it is stopping, re-entering platform.Launch from inside
+	// the very invocation holding the unit's name.
 	guestShutdown := flag.String("guest-shutdown", "",
 		"power the guest at this QMP socket off cleanly -- the guest unit's ExecStop, not an operator command")
 	flag.Parse()
@@ -80,7 +79,7 @@ func main() {
 		MemoryMB:    atoi(os.Getenv("MEMORY_MB"), 2048),
 		Cores:       atoi(os.Getenv("CORES"), 2),
 		DiskImage:   os.Getenv("GUEST_IMAGE"), // the guest image, attached read-only
-		DataDisk:    os.Getenv("DATA_DISK"),   // raw backing for the DRBD volume -> guest /dev/vdb
+		DataDisk:    os.Getenv("DATA_DISK"),   // raw backing for the data volume -> guest /dev/vdb
 		ControlSock: sock,
 		ServiceTap:  os.Getenv("SERVICE_TAP"), // host tap -> guest eth1 (the VIP NIC)
 		// SERVICE_MAC pins the guest NIC's MAC. Empty is fine on bridge (qemu's default MAC is
@@ -89,14 +88,12 @@ func main() {
 		// never reach the guest. The real agent derives it (deriveMAC); a driver-based test sets it.
 		ServiceMAC: os.Getenv("SERVICE_MAC"),
 		// Net substrate: "" (bridge) opens SERVICE_TAP by name; "macvtap" attaches it as a
-		// macvtap chardev via the NET_WRAP_BIN fd-passing wrapper. Every driver-based test now
-		// sets macvtap (the migration is finished); the passthrough stays so a bridge spike
-		// can still be run by unsetting NET_MODE, for as long as the fallback is supported.
+		// macvtap chardev via the NET_WRAP_BIN fd-passing wrapper.
 		NetMode:    os.Getenv("NET_MODE"),
 		NetWrapBin: os.Getenv("NET_WRAP_BIN"),
 		SerialLog:  os.Getenv("GUEST_SERIAL"), // capture guest console for debugging (empty = discard)
-		// Arm the boot selector for this launch only (SMBIOS type-11 -> grub).
-		QMPSock: os.Getenv("QMP_SOCK"), // empty = no monitor, as for every other test
+		// The VM's monitor socket, which also gives the guest unit its clean ExecStop.
+		QMPSock: os.Getenv("QMP_SOCK"), // empty = no monitor
 	})
 	if err != nil {
 		log.Fatalf("launch: %v", err)
@@ -106,7 +103,8 @@ func main() {
 	node := env("NODE", "guest")
 	res := drbd.Resource{
 		Name: "r0", Device: "/dev/drbd0",
-		// Single node: majority-of-1 is quorate, so the reactor promotes.
+		// One diskful member: a lone node, so StorageSpec renders no DRBD and the guest
+		// starts its chain target instead of drbd-reactor.
 		Peers: []drbd.Peer{{Name: node, NodeID: 0, Address: "127.0.0.1:7789", Disk: drbd.DataDevice}},
 	}
 	// THE PRODUCT'S OWN RENDERER. The storage spec is the host's to compose, and
@@ -123,18 +121,14 @@ func main() {
 	}
 	spec := guestagent.BringUpSpec{
 		Storage: storage,
-		// The ordered unit: data mount -> converge -> VIP claim. The same three units on every
-		// node whatever is installed -- what a node runs comes off the VOLUME at
-		// promotion, so the chain has nothing to vary with.
+		// On a lone node only its being non-empty matters: the guest's chain target carries
+		// its own member list (shared/chain.Members). See promoterUnits.
 		Promoter: promoterUnits(),
 	}
 
-	// One persistent control connection for the whole guest session -- bring-up AND the
-	// managed upgrade -- matching the product host agent (agent/host dials once and reuses
-	// it for upgrades). The guest agent serves a single connection then exits on its EOF;
-	// the old pattern (BringUpGuest closes its conn, then the upgrade dials a fresh one)
-	// forced the agent to exit + restart and raced that under nested KVM, hanging the
-	// upgrade's reactor.pause (-- a test-harness artifact, not a product bug).
+	// One persistent control connection for the whole guest session, as the host agent holds
+	// one. The guest agent serves a single connection then exits on its EOF, so a connection
+	// closed early would restart it under the session.
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
 		log.Fatalf("control dial: %v", err)
@@ -158,8 +152,7 @@ func main() {
 // bounded returns a helper that runs one guest call under its own deadline, derived from
 // ctx. Every control-channel call wants a bound of its own -- a hung guest must surface as a
 // failed step, not a hung driver -- and the bound differs per call (a read is seconds, a
-// fetch is minutes). It was a closure inside runStage until the staged broken upgrade needed
-// the same thing.
+// fetch is minutes).
 func bounded(ctx context.Context) func(time.Duration, func(context.Context) error) error {
 	return func(d time.Duration, f func(context.Context) error) error {
 		c, cancel := context.WithTimeout(ctx, d)
@@ -168,11 +161,10 @@ func bounded(ctx context.Context) func(time.Duration, func(context.Context) erro
 	}
 }
 
-// promoterUnits is the ordered promoter chain. It mirrors nixosTest/lib.nix's promoterSnippet
-// and the host agent's promoterUnits, both of which are the same constant: the apps a node
-// runs are read off the volume by briard-apps AFTER promotion, so no member varies with
-// them. The reverse proxy is not a member -- it rides briard-vip (wantedBy + partOf), so it tracks
-// the primary regardless.
+// promoterUnits is the promoter list the bring-up spec carries. The product's chain is
+// shared/chain.Members(), which the host agent's promoterUnits returns and nixosTest/lib.nix's
+// promoterSnippet copies; this list holds only its first three members. It would reach
+// drbd-reactor only on a replicated node, and this driver brings up a lone one.
 func promoterUnits() []string {
 	return []string{"briard-primary-storage.service", "briard-vip.service", "briard-apps.service"}
 }

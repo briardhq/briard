@@ -2,9 +2,8 @@
 //
 // It runs the REAL guest-side probe — agent/mosquitto's, the one the S1 gate's assessor drives
 // over the app.mosquitto.probe verb — against a container on this node, and prints what it
-// found. The
-// point is that a rig asserting "the token survived the upgrade" is asserting it about the code
-// that ships, rather than about a shell pipeline that happens to resemble it.
+// found. The point is that a rig asserting "the token survived the upgrade" is asserting it
+// about the code that ships, rather than about a shell pipeline that happens to resemble it.
 //
 // What it deliberately does NOT do is judge. The verdict is the host's (agent/host/readiness.go)
 // and is unit-tested there; a lib.nix rig cannot run the host's install path at all, so the split
@@ -26,8 +25,8 @@ import (
 )
 
 // runner is the smallest Executor that satisfies agent/mosquitto: run a command, return its
-// combined output. The guest agent's own executor is not exported, and copying its three lines
-// beats widening a product package for a test.
+// combined output. Run is the guest's own (agent/guestfirmware's NewOSExecutor), copied rather
+// than linking the guest firmware into a test helper.
 type runner struct{}
 
 func (runner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {

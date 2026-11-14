@@ -1,14 +1,15 @@
-// Command quadlet-render is a TEST HELPER (nixosTest/app-install.nix), not a product binary.
+// Command quadlet-render is a TEST HELPER (nixosTest/lib.nix, app-install.nix,
+// cold-converge-pull.nix), not a product binary.
 //
-// It exists so the integration test drives the REAL renderer rather than a hand-written copy of
-// its output — the mistake the quadlet spike deliberately accepted ("here they stand in for that
-// output, so the spike tests the mechanism and not our renderer") and which this test exists to
-// close. Everything downstream of it — podman, quadlet, systemd, drbd-reactor — is real.
+// It runs the REAL renderer so a rig reads the layout the product decides rather than restating
+// it. The units a node runs are not taken from here: converge renders them in the guest, off
+// the manifest on the volume. What a rig uses is the sidecars, the .image unit it warms ahead of
+// converge, and the rendered files to print when an install misbehaves.
 //
-// It stands in for the host agent's orchestration, which cannot run here: the install path drives
+// A rig needs it because the host agent's orchestration cannot run here: the install path drives
 // the guest over the virtio-serial channel, and in the hermetic harness the node IS the guest with
-// no host on the other end. That orchestration is unit-tested (agent/host/app_test.go); what
-// this test adds is that the renderer's output is valid quadlet a real promoter can drive.
+// no host on the other end, so the rig does the install's Primary-only half by hand from these
+// sidecars. That orchestration is unit-tested (agent/host/app_test.go).
 //
 //	quadlet-render <manifest.json> <outdir>
 //
@@ -66,9 +67,9 @@ func main() {
 			fatal("write %s: %v", name, err)
 		}
 	}
-	// The app's units, in start order. NOT a promoter chain: since converge-at-promotion the chain is
-	// static (data -> vip -> apps) and these are not members of it -- briard-apps starts
-	// them, which is what keeps a crashed container from demoting the node.
+	// The app's units, in start order. NOT promoter chain members: the chain is static
+	// (shared/chain.Members) and briard-apps starts these, which is what keeps a crashed
+	// container from demoting the node.
 	write("units", r.Units)
 	write("images", r.ImageUnits)
 	write("identity", []string{string(id)})

@@ -1,8 +1,8 @@
 // Command hass-nudge is a TEST HELPER (nixosTest/hass-payload.nix), not a product binary.
 //
 // It runs the REAL push half of the Home Assistant control channel — agent/hass's Nudge, the one
-// the install path drives over the app.home-assistant.nudge verb — against the Home Assistant
-// on this node, and says whether it was taken.
+// the host drives over the app.home-assistant.nudge verb after every install and uninstall —
+// against the Home Assistant on this node, and says whether it was taken.
 //
 // It exists for the same reason app-probe does: the rig that proves this has to prove it about
 // the code that ships. Everything the unit tests assert about the request is asserted against a
@@ -12,7 +12,7 @@
 //
 //	hass-nudge <port>
 //
-// Exits 0 when Home Assistant took the event.
+// Exits 0, printing `fired=<event>`, when Home Assistant took the event.
 package main
 
 import (
@@ -27,7 +27,7 @@ import (
 
 // runner is the smallest Executor agent/hass needs for this call: Nudge only ever reads the token
 // off tmpfs, but the interface is the package's one Executor and the other two methods have to be
-// there. Three lines, copied rather than exporting the guest agent's own.
+// there. Three lines, copied rather than linking the guest firmware for its NewOSExecutor.
 type runner struct{}
 
 func (runner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {

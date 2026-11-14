@@ -14,8 +14,8 @@
 //	    crash      exit 1 immediately → the start fails → the updater reverts
 //	    hang       block WITHOUT sending READY → TimeoutStartSec trips → the updater reverts
 //
-// As the HARNESS it drives the REAL briard.io/agent/selfupdate + briard.io/shared/sdnotify
-// against a live HTTP server and $NOTIFY_SOCKET (the unit tests only use fakes):
+// As the HARNESS it stands in for the release signer and the release host; the update itself is
+// the real agent's `--update`:
 //
 //	keygen <privOut> <pubPemOut>          write an Ed25519 seed + the PKIX-PEM release keyring
 //	sign   <privPath> <artifactPath>      print base64(Ed25519 sign(artifact)) — the release signer
@@ -111,8 +111,9 @@ func keygen(a []string) {
 	must(os.WriteFile(a[1], pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0o644))
 }
 
-// sign prints the base64 detached Ed25519 signature over the artifact bytes — the warm signer
-// blessing a release. The test feeds this straight to `fetch`.
+// sign prints the base64 detached Ed25519 signature over the artifact bytes — the release
+// signer. The test signs each release's manifest.json with it and decodes the output into
+// manifest.json.sig.
 func sign(a []string) {
 	if len(a) != 2 {
 		fatal("sign <privPath> <artifactPath>")

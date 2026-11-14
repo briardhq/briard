@@ -1,14 +1,15 @@
-// Command dummy-app is Briard's stateful test fixture (V0).
+// Command dummy-app is Briard's stateful test fixture.
 //
 // It stands in for Home Assistant on the failover/upgrade path with HA's shape
-// minus its quirks: it persists state to a fixed data dir (the DRBD volume in
-// the unit), serves /healthz, and starts slowly so start-ordering and
-// the health-gate get exercised. Its monotonic tick counter, fsync'd on every
+// minus its quirks: it persists state to a fixed data dir (the app's data area on
+// the replicated volume, mounted into its container), serves /healthz, and starts
+// slowly so start-ordering and the health-gate get exercised. Its monotonic tick counter, fsync'd on every
 // write, is what lets the failover tests assert the last record survives a
 // takeover (the data crossed the DRBD link before the primary died).
 //
-// Decisions are baked in, not configured (CONTRIBUTING.md: no new flags): the data dir is the DRBD
-// mount point and the listen address is fixed.
+// Decisions are baked in, not configured (CONTRIBUTING.md: no new flags): the data dir is the
+// path the fixture's manifest mounts at (nixosTest/fixture-app.nix) and the listen address is
+// fixed.
 package main
 
 import (
@@ -23,11 +24,11 @@ import (
 )
 
 const (
-	dataDir      = "/var/lib/briard/dummy" // the app's data subvolume on the DRBD volume
+	dataDir      = "/var/lib/briard/dummy" // in the container: where the manifest mounts the data area
 	listenAddr   = ":8080"
 	startupDelay = 3 * time.Second // "slow start" — enough to exercise the health-gate; kept short for test speed
 	tickInterval = 1 * time.Second
-	// PoisonTicks marks a broken upgrade's write (BRIARD_BROKEN). It is far above
+	// poisonTicks marks a broken upgrade's write (BRIARD_BROKEN). It is far above
 	// any value the good app reaches, so if it survives a rollback the data was NOT
 	// restored from the pre-upgrade snapshot.
 	poisonTicks = 999_999_999

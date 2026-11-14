@@ -9,23 +9,24 @@
 //
 // WHY IT EXISTS. A harness that wants an app installed the way a USER installs one cannot
 // shortcut the catalog: `fetchManifest` fails CLOSED with no keyring, and verifies the signature
-// over the raw bytes of the list before parsing it. Both are deliberate, so the honest way to give the lab
-// fleet an app is to give it a real signed catalog rather than to weaken the path under test.
-// (Seeding the node-local manifest cache instead was tried and is NOT equivalent: it reproduces
+// over the raw bytes of the list before parsing it. Both are deliberate, so the honest way to
+// give the lab fleet an app is to give it a real signed catalog rather than to weaken the path
+// under test. Seeding the node-local manifest cache instead is NOT equivalent: it reproduces
 // what an install RECORDS but not what it DOES -- no data subvolume, so the container cannot
-// start. Measured on a fleet run, 2026-08-27.)
+// start.
 //
 // THE KEY IS GENERATED PER BUILD, and is a lab key with no relationship to the release keyring.
 // Generating beats committing one: a private key in the tree is a private key in the tree, even
 // a worthless one, and a reader has to stop and work out which it is. Ed25519 keys do not
-// expire, so this carries none of the build-time-artifact staleness that bit a cert minted in a
-// derivation.
+// expire, so a key minted in a build cannot go stale in a warm store the way a build-time cert
+// does.
 //
 // SEVERAL CATALOGS, ONE KEY, and that is what the pair form is for. A version ROTATION publishes
-// a second manifest for the SAME app name over the first, and the node that fetches it holds
-// exactly one keyring -- given to it, out of band, before any of this (the fleet and
-// soak rigs rotate it). So each catalog gets its own directory (each has its own `latest.json`), copied
-// over the served one to publish it, and they all verify against the same trust root. The private key never leaves this process.
+// a second manifest for the SAME app name over the first (the fleet and soak rigs rotate
+// versions this way), and the node that fetches it holds exactly one keyring, given to it out of
+// band before any of this. So each catalog gets its own directory (each has its own
+// `latest.json`), copied over the served one to publish it, and they all verify against the same
+// trust root. The private key never leaves this process.
 //
 //	catalog-sign <manifest.json> <outdir> [<manifest.json> <outdir>]...
 //
