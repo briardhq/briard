@@ -2,9 +2,9 @@
 # the overlaid pkgs (so the nodes get our drbd/drbd-reactor), nixpkgs, and the
 # overlay, returns { tags; artifacts; }.
 #
-# These are the Tier-1 **hermetic nixosTests** (the `integration` pair drives a *nested* guest). They boot throwaway QEMU VMs,
-# assert convergence, and vanish — no external state. They are NOT the lab/ soak fleet
-# (Tier 2, driven by cmd/soak, never `nix build`).
+# These are the Tier-1 **hermetic nixosTests** (the `integration` tag drives a *nested* guest).
+# They boot throwaway QEMU VMs, assert convergence, and vanish — no external state. They are NOT
+# the lab/ soak fleet (Tier 2, driven by cmd/soak, never `nix build`).
 #
 # `tags` groups the tests. A group is DATA, never a build target: flake.nix turns these
 # into `.#test-manifest` (name lists + per-test cost), and one test at a time is what you build.
@@ -28,15 +28,13 @@
 # The app catalog (the flake input): the fixtures of the catalogued apps are its entries.
 , catalog }:
 let
-  # THE GUEST AS SHIPPED, and now the only one the framework tests boot. There used
-  # to be two: this one, which zero-app alone used, and a `dummy-guest` that baked the fixture
-  # into a build-time payload slot for everything else. The slot is deleted, so a test that needs a
-  # workload INSTALLS one -- the same way a shipped node gets one -- and the guest under test is
-  # the guest that ships.
+  # THE GUEST AS SHIPPED, the only one the framework tests boot. It has no build-time payload
+  # slot, so a test that needs a workload INSTALLS one -- the same way a shipped node gets one --
+  # and the guest under test is the guest that ships.
   guestModule = ../guest-image/configuration.nix;
   # The dummy fixture as a CATALOGUED app: a digest-pinned manifest plus the tarball it names.
-  # This is how a test gets a workload onto a node (converge-at-promotion deleted the build-time slot that
-  # was the alternative) — the same fixture, delivered the way a shipped node actually gets one.
+  # This is how a test gets a workload onto a node
+  # — the same fixture, delivered the way a shipped node actually gets one.
   fixture = import ./fixture-app.nix { inherit pkgs; };
   # HOME ASSISTANT AS A CATALOGUED APP: a signed manifest naming a digest-pinned image,
   # installed onto the volume after promotion -- exactly what a user's app is. Read from its
@@ -46,7 +44,7 @@ let
   # The upgrade PAIR, as two published versions of one app: 2025.11.0 (recorder schema 51)
   # with 2025.12.0 (schema 53) as a variant. Installing the variant IS the upgrade -- same name,
   # new manifest, converge bounces the container onto it -- which is the shape a household's HA
-  # update has, where the old test drove an image re-pin no user could produce.
+  # update has.
   hassPairFixture = import ./fixture-app.nix {
     inherit pkgs;
     name = "home-assistant";
@@ -76,11 +74,12 @@ let
   };
 
 
-  # THE BROKER AS A CATALOGUED APP -- the second real entry, and the one that proves
+  # THE BROKER AS A CATALOGUED APP -- a second real entry, and one that proves
   # "N apps" rather than "one app, twice". Its manifest differs from HA's in the way that
   # matters: `port` is the broker's HTTP MANAGEMENT endpoint (the only thing the liveness floor can
-  # probe -- MQTT is not HTTP), bound to the guest's loopback by the config the product renders
-  # for it (agent/mosquitto), while the port a household uses is 1883. Read from its catalog
+  # probe -- MQTT is not HTTP), kept off the LAN by the config the product renders for it
+  # (agent/mosquitto: inside its private pod, never published), while the port a household
+  # uses is 1883. Read from its catalog
   # entry, so the tests run the private, MQTT-only pod households run.
   mosquittoFixture = import ./catalog-fixture.nix { inherit pkgs catalog; app = "mosquitto"; };
   # The same app published twice, 2.1.1 with 2.1.2 as a variant: installing the variant IS the
@@ -158,7 +157,7 @@ let
   luksConvert = import ./luks-convert.nix { inherit pkgs guestModule fixture; };
 
   # A real HA upgrade (2025.11.0 → 2025.12.0) carrying a real recorder schema
-  # migration (v52 unit_class) through the pipeline, its data intact.
+  # migration (schema 51 → 53) through the pipeline, its data intact.
   hassUpgrade = import ./hass-upgrade.nix { inherit pkgs guestModule; fixture = hassPairFixture; };
 
   # The forced-failure half — a real regressed migration (briard_canary) trips
@@ -194,10 +193,9 @@ let
 
   # THE LAYOUT A RIG'S HOST DRESSES FROM. install.sh lays this on every install, so a
   # host without it is not a product state -- and since the image bakes no reverse proxy, a guest
-  # launched by a host that holds no bundle tree can never serve. The five rigs that launch a REAL
-  # guest (agent-bringup/readopt/recover/watchdog, guest-rescue) copy this to UPDATE_BASE and let
-  # the host dress the guest exactly as the product does; before the layout existed they leaned on
-  # the image's baked reverse proxy instead, which is why they needed nothing. Copied, not linked:
+  # launched by a host that holds no bundle tree can never serve. Every rig here that launches a
+  # REAL guest under a host agent (the `integration` tag and the app edge tests) copies this to
+  # UPDATE_BASE and lets the host dress the guest exactly as the product does. Copied, not linked:
   # the host writes `guest.good` beside the tree.
   rigGuestRelease = "v3.20260908.rig00000";
   dressBase = pkgs.runCommand "briard-rig-dress-base" { } ''
@@ -326,42 +324,41 @@ let
 
   # The maintenance-mode contract suite — the FULL pause/poke/resume contract
   # (non-destructive, promoter-inert-while-paused, mount survives, clean resume). Nightly.
-  # HERMETIC since V3.17e4: it drives the lifecycle from the test shell on a lib.nix node
+  # HERMETIC: it drives the lifecycle from the test shell on a lib.nix node
   # instead of through the agent's verbs on a nested guest — see the file's header.
   maintenanceContract = import ./maintenance-contract.nix { inherit pkgs fixture guestModule; };
 
-  # ⚠️ A HERMETIC NODE DOES NOT REPRODUCE THE SHUTDOWN DEADLOCK, measured while chasing the shutdown deadlock:
+  # ⚠️ A HERMETIC NODE DOES NOT REPRODUCE THE SHUTDOWN DEADLOCK, measured:
   # a lib.nix node converged the same way — DRBD Primary, volume mounted, app serving, VIP up,
   # the reactor's `Before=` drop-in present — powered itself off in 1.5s while the SHIPPED guest
-  # sat in that deadlock for 90s. The throwaway harness that showed this is not kept: it was green
-  # against a broken product, which is the most expensive kind of test to leave lying around.
+  # sat in that deadlock for 90s. So no lib.nix rig gates it: a harness that is green against a
+  # broken product is the most expensive kind of test to leave lying around.
   # The gate lives on the real artifact instead: guest-rescue asserts the agent route was taken
   # and that no unit held the guest's shutdown, and its `integration` tag is in the nightly.
   #
-  # THE ISOLATED HARNESS IS GONE FOR THE SAME REASON, 2026-08-30. `reactor-pause-deadlock` timed a
-  # bare stop on a lib.nix node and asserted <10s. Measured with the unit's whole ExecStop defusal
-  # deleted and the `Before=` drop-in verified armed: it stopped in 28ms and PASSED. So it could
-  # not tell a defused reactor from an armed one -- the 391ms it used to report was the cost of
-  # the defusal running, not the absence of a deadlock. A guard that cannot fail when its subject
-  # is removed is not a guard, and this is the same trap the throwaway harness above fell into.
+  # A bare stop timed on a lib.nix node cannot gate it either. Measured with the unit's whole
+  # ExecStop defusal deleted and the `Before=` drop-in verified armed: it stopped in 28ms, under
+  # any bound such a test would assert. So it cannot tell a defused reactor from an armed one. A
+  # guard that cannot fail when its subject is removed is not a guard.
 
   # A whole cluster running NOTHING -- the state every node is in until something is installed.
-  # Every other test here now boots the same guest, so what this one still owns is the assertion
+  # Every other test here boots the same guest, so what this one owns is the assertion
   # that a node with no apps is a WORKING node: volume mounted, chain complete, VIP up, reverse
   # proxy answering for itself.
   zeroApp = import ./zero-app.nix { inherit pkgs guestModule; };
 
   # Put an app ONTO the shipped (zero-app) node at runtime — a real digest-pinned
-  # TLS pull from a registry the test runs, our real renderer's quadlet output, and the promoter
-  # chain it emits driving the pod up behind the reverse proxy.
+  # TLS pull from a registry the test runs, our real renderer's quadlet output, and the static
+  # promoter chain whose briard-apps converges the app up behind the reverse proxy.
   quadletRenderPkg = pkgs.callPackage ./quadlet-render-pkg.nix { };
   appInstall = import ./app-install.nix {
     inherit pkgs;
     inherit guestModule;
     quadletRender = quadletRenderPkg;
   };
-  # The failure half — upgrade to a broken manifest, gate trips, {code+data} rollback to the
-  # prior app. Reuses the whole hermetic scaffolding above (registry, CA, renderer, DRBD).
+  # The failure half — upgrade to a broken manifest, the health gate would trip (the host-side
+  # gate itself does not run here), {code+data} rollback to the prior app. Reuses the whole
+  # hermetic scaffolding above (registry, CA, renderer, DRBD).
   appInstallBroken = import ./app-install.nix {
     inherit pkgs;
     inherit guestModule;
@@ -405,8 +402,8 @@ let
 
   # On the DEFAULT macvtap substrate: the whole free-local `curl | sh` install
   # -> green, proven by an OFF-BOX LAN client reaching the app at the VIP, using the bundled
-  # qemu (no distro qemu) + a nested guest; plus the cattle/pet reinstall. It carries that
-  # mode-independent chain here from the bridge test, so the default substrate carries it.
+  # qemu (no distro qemu) + a nested guest; plus the cattle/pet reinstall. It carries the
+  # mode-independent chain, so the default substrate is the one that proves it.
   installMacvtap = import ./install-macvtap.nix {
     # selfupdateStub serves the signed release channel over HTTP so the install runs the REAL
     # network path (fetch + verify + expand) rather than the BRIARD_ARTIFACTS escape hatch.
@@ -419,30 +416,30 @@ in
   # The hermetic mechanism tests, grouped into tags. flake.nix turns each group into a name list
   # in `.#test-manifest` + a flat `.#tests.<name>`; a tag is not itself buildable.
   tags = {
-    # The DRBD failover net (7 topologies): bring-up, promote, failover, fence,
-    # witness, and minority-refuses-to-promote (quorum). The fast mechanism core.
+    # The DRBD failover net: bring-up, promote, failover, fence,
+    # witness, and minority-refuses-to-promote (quorum), with the other promoter and storage
+    # mechanisms on lib.nix nodes. The fast mechanism core.
     drbd = {
       guest-drbd9 = import ./guest-drbd9.nix { inherit pkgs guestModule; };
       drbd-replicate = import ./drbd-replicate.nix { inherit pkgs guestModule; };
       drbd-promote = import ./drbd-promote.nix { inherit pkgs fixture guestModule; };
       drbd-failover = import ./drbd-failover.nix { inherit pkgs fixture guestModule; };
-      reactor-evict = import ./reactor-evict.nix { inherit pkgs fixture guestModule; }; # V3.17c2-iv-6: a PLANNED handover
+      reactor-evict = import ./reactor-evict.nix { inherit pkgs fixture guestModule; }; # a PLANNED handover
       drbd-fence = import ./drbd-fence.nix { inherit pkgs fixture guestModule; };
       drbd-witness = import ./drbd-witness.nix { inherit pkgs fixture guestModule; };
       drbd-witness-loss = import ./drbd-witness-loss.nix { inherit pkgs fixture guestModule; };
       single-node-chain = import ./single-node-chain.nix { inherit pkgs fixture guestModule; }; # a lone node runs no DRBD
       app-memory-limit = import ./app-memory-limit.nix { inherit pkgs guestModule; }; # a leak is OOM-killed inside its own app
       backup = import ./backup.nix { inherit pkgs fixture guestModule; }; # a ring member, through the real store, into a folder a person owns
-      # The exit assertion of the lone node running no DRBD, a guard since the lone node stopped running DRBD: one bad
-      # sector under a data file costs ONE file, and the node keeps serving. (The media-error spike
-      # this grew out of measured the DRBD answer -- whole-volume outage -- and is history at the
-      # item; the flock's companion spike stays in `debug` below.)
+      # The exit assertion of the lone node running no DRBD: one bad
+      # sector under a data file costs ONE file, and the node keeps serving. (Under DRBD on a lone
+      # node the same sector measured as a whole-volume outage; the flock's companion spike is in
+      # `debug` below.)
       media-error-lone = import ./media-error-lone.nix { inherit pkgs fixture guestModule; };
       runtime-join = import ./runtime-join.nix { inherit pkgs fixture guestModule; }; # a lone node converts to a 3-node mesh, and the survivor back to alone
       drbd-loopback-path = import ./drbd-loopback-path.nix { inherit pkgs guestModule; }; # loopback-path gating experiment
-      # The maintenance-mode contract (pause → poke → resume). It sat in `integration`
-      # while it drove the agent's verbs over a nested guest's channel; V3.17e4 made it
-      # hermetic, so it belongs with the other one-node promoter mechanisms. Nightly either way.
+      # The maintenance-mode contract (pause → poke → resume). Hermetic, so it belongs with the
+      # other one-node promoter mechanisms. Nightly.
       maintenance-contract = maintenanceContract;
       # The chain-member contract: what a unit in the promoter start-list may
       # and may not do to the promotion. Two nodes, because rule 2 needs a race loser and
@@ -451,15 +448,13 @@ in
       chain-member-contract = import ./chain-member-contract.nix { inherit pkgs fixture guestModule; };
       luks-convert = luksConvert;
       # `witness-proxy` + `witness-tap-link` join this tag from outputs-private.nix —
-      # both build the cloud witness. The three tests above mention the cloud only in prose.
+      # both build the cloud witness. The tests above mention the cloud only in prose.
     };
 
-    # Version-change + TLS-serving mechanisms. `app-install` is the version change now
-    # (the baked slot is gone): the three tests that used to live here drove the baked slot's image re-pin,
-    # which no longer exists. Their subjects did not go with them — `app-install`'s upgrade
-    # half is the in-place version change, its broken half is the health-gated rollback, and its
-    # reboot half is converge-at-promotion (a node that renders from the volume, having been told
-    # nothing).
+    # Version-change + TLS-serving mechanisms. The version change itself is `app-install`'s (in
+    # `install`): its upgrade half is the in-place version change, its broken half is the
+    # health-gated rollback, and its reboot half is converge-at-promotion (a node that renders
+    # from the volume, having been told nothing).
     upgrade = {
       tls-serving = tlsServing;
     };
@@ -498,8 +493,6 @@ in
       hass-upgrade = hassUpgrade; # real recorder schema migration through the upgrade
       hass-upgrade-rollback = hassUpgradeRollback; # real regression trips the gate → {code+data} rollback
       hass-recorder-check = hassRecorderCheck;
-      # The storage seam under all of them: arming a node is a pvmove and disarming it is the
-      # same move back, neither of which HA notices.
     };
 
     # Agent-in-the-loop: the agent drives a real guest under *nested*
@@ -533,7 +526,7 @@ in
     install = {
       zero-app = zeroApp; # what a fresh install actually gives you — no app
       app-install = appInstall; # and putting something on it at runtime
-      app-install-broken = appInstallBroken; # broken upgrade -> gate trips -> {code+data} rollback
+      app-install-broken = appInstallBroken; # broken upgrade -> gate would trip -> {code+data} rollback
       qemu-bundle = qemuBundle.test;
       report-card = reportCard;
       install-macvtap = installMacvtap; # DEFAULT substrate: curl|sh -> green, off-box VIP reach, cattle/pet reinstall
@@ -616,7 +609,8 @@ in
   };
 
   # Build artifacts (NOT tests): the product agent binary, the bootable guest qcow2,
-  # and the nested-test driver. Consumed by the fleet (flake fleetArgs) + demo scripts,
+  # the nested-test driver and the Windows arms. Consumed by the fleet (the farm flake's
+  # fleetArgs) + demo scripts,
   # so they stay reachable by name (`.#artifacts.<name>`).
   artifacts = {
     guest-disk = guestDisk;

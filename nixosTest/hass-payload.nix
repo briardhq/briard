@@ -9,13 +9,12 @@
 #
 # It also carries the zeroconf claim (b), the one measurement that needs real HA and a real announcement in
 # one place: whether HA's OWN zeroconf library, inside HA's own container, sees a record the
-# guest published. The broker is installed alongside for exactly that, and for nothing else.
+# guest published. The broker is installed alongside for that, and for the claims that wire
+# Home Assistant to it, (c) and (d).
 #
-# HA reachable THROUGH the reverse proxy under its own name is asserted again, at the bottom of this
-# file (the routing table landed it). It was lost when the build-time app slot went
-# -- the reverse proxy's `-backend` came from that slot, so with the slot gone no node routed
-# to an app at all -- and it comes back keyed on the APP's name rather than on there being
-# exactly one thing to forward to, which is what the table changed.
+# HA reachable THROUGH the reverse proxy under its own name is asserted too (THROUGH THE REVERSE
+# PROXY, below), keyed on the APP's name in the routing table rather than on there being
+# exactly one thing to forward to.
 { pkgs, guestModule, fixture, mosquitto }:
 
 let
@@ -109,9 +108,9 @@ let
   '';
 
   node = h.mkNode {
-    # The broker rides along for ONE claim -- (b), at the bottom of this file: whether
-    # HA's own zeroconf stack sees what the guest announces. It needs a real service record on
-    # the LAN, and the product publishes exactly one.
+    # The broker rides along for claim (b): whether HA's own zeroconf stack sees what the guest
+    # announces. It needs a real service record on the LAN, and the product publishes exactly
+    # one. Claims (c) and (d) then wire HA to it.
     fixtures = [
       fixture
       mosquitto
@@ -298,7 +297,7 @@ pkgs.testers.runNixOSTest {
     # The signal the S1 readiness gate reads, through the token: HA's per-config-entry
     # setup states. WAITED FOR, not sampled — /manifest.json goes 200 while HA is still
     # setting up default_config, so the list is legitimately EMPTY for a few seconds after
-    # the door opens (measured: the first run of this assertion failed on `[]`). Waiting is
+    # the door opens (measured: a sample taken then reads `[]`). Waiting is
     # also the stronger claim: the entries appear and stay readable.
     node1.wait_until_succeeds(
         f"curl -fsS -H 'Authorization: Bearer {access}' "
@@ -322,8 +321,8 @@ pkgs.testers.runNixOSTest {
     #
     # ⚠️ AFTER THE WAIT ABOVE, and this is the trap the entries assertion already records: a
     # briard view exists only once the integration's async_setup has run, which is LATER than
-    # /manifest.json answering. Measured (L0 run 35833646953): the take landed a second after
-    # "We found a custom integration briard" and got a 404, which is the product's fallback
+    # /manifest.json answering. Measured: a take landing a second after
+    # "We found a custom integration briard" gets a 404, which is the product fallback
     # working correctly and the rig asking too early.
     #
     # The view's own readiness is waited for on top, because a config entry is not the same
@@ -437,7 +436,7 @@ pkgs.testers.runNixOSTest {
 
     # WAIT FOR THE TRANSITION, DO NOT ASSUME IT. HA's in-process restart is not instant and
     # /manifest.json keeps answering from the OLD process for a moment after the call is accepted
-    # -- measured here at 0.04s, which is how this raced. A single-shot check at that instant reads
+    # -- measured here at 0.04s. A single-shot check at that instant reads
     # the PRE-restart token state and fails a working mint. Waiting on the rotated value itself is
     # the honest form: it was proven REFUSED four lines above, so this is the boundary being
     # crossed, with a deadline rather than a hope.
@@ -463,11 +462,9 @@ pkgs.testers.runNixOSTest {
 
     # ── THROUGH THE REVERSE PROXY ───────────────────────────────────────────────────────
     #
-    # THE ASSERTION THIS FILE OWED BACK. The reverse proxy once forwarded to a backend
-    # baked at guest-build time; deleting that slot left, for two epochs, no node routing
-    # to a runtime-installed app at all -- an installed HA answered only on :8123 while the
-    # VIP's :80 served Briard's own page. It comes back keyed on the app's NAME, from the table
-    # the guest's converge wrote.
+    # Routing to a runtime-installed app, keyed on the app NAME, from the table the guest
+    # converge wrote. Without it an installed HA answers only on :8123 while :80 on the VIP
+    # serves only the page of Briard itself.
     host = routed_host(node1, "home-assistant")
     assert host == "briard-brave-elf-home-assistant.local", f"the node composed {host}"
 
@@ -490,13 +487,13 @@ pkgs.testers.runNixOSTest {
         assert svc in node_health, f"the node's /healthz does not name what it routes: {node_health!r}"
 
     # ONE LIST, so "published but not routed" is no longer something to assert — it is not
-    # expressible. The mDNS publisher reads this same table with jq; there is no flattened second
-    # copy for it to read while stale, and this is the assertion that keeps it that way.
+    # expressible. The mDNS responder in the reverse proxy reads this same table; there is no
+    # flattened second copy for it to read while stale (the routes.hosts check below).
 
     # ── (b) DOES HA'S OWN ZEROCONF SEE WHAT THE GUEST ANNOUNCES? ────────
     #
-    # THE GATE, and it is a MEASUREMENT rather than a feature: an earlier design sketched an in-HA
-    # integration discovered over zeroconf and left two legs unverified, of which this is one --
+    # THE GATE, and it is a MEASUREMENT rather than a feature: an in-HA integration discovered
+    # over zeroconf needs one leg nothing else verifies --
     # that HA's zeroconf sees the guest's mDNS FROM INSIDE THE CONTAINER. It decides the integration's
     # reach into HA, (d)'s worth, and Music Assistant's wiring, and it is cheap, so it is measured
     # rather than reasoned. The reasoning said it SHOULD work -- python-zeroconf sets
@@ -520,7 +517,7 @@ pkgs.testers.runNixOSTest {
     # service types some manifest declares (`async_get_zeroconf`), and `_mqtt._tcp` appears NOWHERE in
     # home-assistant/core. So Home Assistant will not act on this record until (d) teaches mqtt to
     # ask for it. What is proven is the TRANSPORT -- that a record the guest publishes is visible
-    # to HA's stack -- which is the leg an earlier spike could not verify.
+    # to HA's stack.
     import json as _zj
     host_mq = routed_host(node1, "${mosquitto.name}")
     want = next(
@@ -542,8 +539,9 @@ pkgs.testers.runNixOSTest {
     # Home Assistant picks the interface it advertises and answers mDNS on -- and the address it
     # builds its own URL from, which every integration hands to LAN devices -- by the source
     # address the kernel gives it for 224.0.0.251. Left to the default route that is eth0, qemu's
-    # user-net, which nothing on the LAN can reach (measured, before the fix: the advert carried
-    # only 10.0.2.15). briard-vip routes multicast out of the VIP's NIC. (HA is installed after the
+    # user-net, which nothing on the LAN can reach (measured without the route: the advert
+    # carried only 10.0.2.15). briard-vip routes multicast out of the VIP's NIC. (HA is
+    # installed after the
     # promotion here, so this proves the route, not the chain order; hass-failover starts HA during
     # a promotion.)
     node1.succeed("ip route show 224.0.0.0/4 | grep -q dev")
@@ -562,7 +560,7 @@ pkgs.testers.runNixOSTest {
     # A household that installs the broker should not then have to tell Home Assistant about it.
     # The wiring is driven through HA's OWN config-flow API -- so `async_validate_broker_settings`
     # runs on submit and a dead broker yields an error instead of an entry pointing at nothing --
-    # and it is now driven IN-PROCESS, by briard's own integration, which needs no
+    # and it is driven IN-PROCESS, by briard's own integration, which needs no
     # token, no HTTP and no waiting for HA to serve because it IS the serving HA.
     #
     # WHAT THE PLACEMENT COSTS AND WHY IT IS ASSERTED HERE. Only a stub lands in /config; the
@@ -759,11 +757,11 @@ pkgs.testers.runNixOSTest {
     # a household pointing HA at their own broker must never find their one slot taken by a
     # localhost entry they did not ask for.
     #
-    # THE WHOLE START IS REPEATED, which is what changed with in-process wiring: the wiring is no longer a
+    # THE WHOLE START IS REPEATED: the wiring is not a
     # script that can be re-run on its own, it is what the integration does when Home Assistant
     # starts, so the honest way to run it twice is to start Home Assistant twice.
     #
-    # ⚠️ WAIT FOR THE FIRST START TO FINISH BEFORE ASKING FOR THE SECOND. Measured on the wirer:
+    # ⚠️ WAIT FOR THE FIRST START TO FINISH BEFORE ASKING FOR THE SECOND. Measured:
     # restarting seconds after a previous restart had `/api/services` answer 4xx while HA was
     # still coming back, failing the test for a reason unrelated to the guard under test.
     # `/api/config` reports HA's own state, so "RUNNING" is that boundary rather than a sleep.
@@ -1001,8 +999,8 @@ pkgs.testers.runNixOSTest {
     # ran (their setup wants the internet this VM does not have; that is not the claim). The
     # third, `met`, is THE MEASUREMENT: its onboarding flow aborts `no_home` while the home
     # coordinates are unset or still HA's own default (met/config_flow.py, 2026.7.1) -- which they
-    # are here, because nobody ran the location page first. MEASURED 2026-09-04: the first run of
-    # this claim waited 120s for a `met` entry that was never going to come. That absence is the
+    # are here, because nobody ran the location page first. MEASURED: a 120s wait for a `met`
+    # entry here runs out, because none ever comes. That absence is the
     # cost of completing core_config by API instead of handing the browser to HA's location page,
     # and it is why the install does the latter. The negative is not vacuous: all
     # three flows start in the same loop and `met`'s abort has no await before it, so once both
@@ -1048,8 +1046,8 @@ pkgs.testers.runNixOSTest {
         owner = [u["id"] for u in store["users"] if u.get("is_owner")][0]
         return owner, [t for t in store["refresh_tokens"] if t.get("client_id") == client_id]
     # The baseline is WAITED FOR: two codes exchanged above (`first`, `final`) mean two tokens for
-    # this client_id, and the store lands them on a debounce ((f)8) -- read too early it held
-    # one, and the later open then looked like two.
+    # this client_id, and the store lands them on a debounce -- read too early it holds
+    # one, and the later open then looks like two.
     node1.wait_until_succeeds(f"[ $(grep -c '\"client_id\": \"{client_id}\"' {auth_store}) -ge 2 ]", timeout=30)
     owner_id, before = owner_tokens()
     assert len(before) == 2, f"tokens for {client_id} before the later open: {len(before)}, want the two exchanged above"

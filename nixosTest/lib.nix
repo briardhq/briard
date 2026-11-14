@@ -1,4 +1,4 @@
-# Shared scaffolding for the DRBD failover nixosTests. Each test supplies
+# Shared scaffolding for the nixosTests that boot guest nodes. Each test supplies
 # its topology (a node list) and its own testScript; this builds the resource
 # config and the per-node NixOS module they all share.
 #
@@ -11,19 +11,19 @@ let
   inherit (pkgs.lib) concatMapStringsSep mkIf;
   inherit (pkgs) lib;
 
-  # The REAL renderer, as a helper binary. Shared with app-install.nix so a fixture installed
-  # by the harness is rendered by the same code the agent runs.
+  # The REAL renderer, as a helper binary: the package app-install.nix is handed too, so the
+  # sidecars a fixture is installed from come from the same code the agent runs.
   quadletRender = pkgs.callPackage ./quadlet-render-pkg.nix { };
 
   # The promoter's ordered unit: the same units everywhere, on every node, whatever is installed.
   # `briard-apps` is what converges this node to the manifests on the volume
-  # once the mount exists, which is why the apps themselves are not members. The reverse proxy and
-  # the two mDNS publishers ARE members: on a node with no `.casa` domain those names
+  # once the mount exists, which is why the apps themselves are not members. The reverse proxy,
+  # which also publishes the mDNS names, IS a member: on a node with no `.casa` domain those names
   # are the ONLY way to reach an app and the reverse proxy is the only thing that answers them, so a
   # node that cannot publish or cannot serve should hand the resource on rather than look healthy
-  # while reaching nobody. This mirrors what the host agent writes in production
-  # (host.promoterUnits), which also takes no arguments any more, and the two lists are kept in
-  # step BY HAND.
+  # while reaching nobody. This copies shared/chain.Members, what the host agent writes in
+  # production (host.promoterUnits); Nix cannot import Go, so internal/arch
+  # TestRigPromoterSnippetMatchesTheChain holds the two lists equal, member for member and in order.
   promoterSnippet =
     let
       units = [
@@ -44,7 +44,7 @@ let
 
   # R0 over the node list. Per-node volume form so a witness can be `disk none`;
   # the production safety config. new-current-uuid then needs the
-  # volume id (r0/0) — the one testScript quirk of this form.
+  # volume id (r0/0), which briard-node-storage passes.
   #
   # A diskful node's backing is `/dev/mapper/briardvol-data` on every node in the product and in
   # every rig, with DRBD's metadata beside it on `briardvol-metadata`: the
@@ -85,35 +85,31 @@ let
   # A test-only unit that PREWARMS a catalogued fixture: assert its image is resident in local
   # podman storage and lay down the manifest the harness will later install from.
   #
-  # It used to do far more — run the renderer, copy the units into the quadlet directory and write
-  # the promoter chain from the renderer's output. Converge-at-promotion takes all of that away from the
-  # harness and gives it to the PRODUCT: `briard-apps` renders from the volume at promotion,
-  # from a static chain the harness no longer writes. So what is left here is exactly the part a
-  # test legitimately stands in for — the bytes a host agent would have fetched from the catalog
-  # and warmed onto the node before anything promoted.
+  # Rendering, unit files and the promoter chain are the PRODUCT's: `briard-apps` renders from
+  # the volume at promotion, from a static chain the harness does not write. So what is here is
+  # exactly the part a test legitimately stands in for — the bytes a host agent would have fetched
+  # from the catalog and warmed onto the node before anything promoted.
   #
-  # This is what replaced the baked payload slot. The slot put a container in the
-  # guest image at BUILD time through `oci-containers` — a mechanism no user has, since a shipped
-  # node installs at runtime from a manifest. Tests riding the slot therefore proved a path nobody
-  # ships; tests riding this one prove the path everyone does.
+  # No container is put in the guest image at BUILD time (`oci-containers`) — a mechanism no user
+  # has, since a shipped node installs at runtime from a manifest. Tests riding this unit prove the
+  # path everyone runs.
   #
-  # What still cannot run in a hermetic harness is the host agent's ORCHESTRATION — the node IS
+  # What cannot run in a hermetic harness is the host agent's ORCHESTRATION — the node IS
   # the guest, with no host on the other end — so `install_fixture` below performs the Primary-only
   # half by hand (fetch, verify and health-gate are unit-tested in agent/host/app_test.go).
-  # Everything under it is now the real thing: the real renderer, in the product's own binary,
+  # Everything under it is the real thing: the real renderer, in the product's own binary,
   # reading the product's own volume layout.
   #
   # NO REGISTRY, and that is measured rather than assumed — see fixture-app.nix for the three
   # facts. The image arrives already loaded: each fixture ships the podman store its archive was
-  # loaded into, and mkNode attaches it as a read-only additional image store (what used to be a
-  # `podman load` here, on every node at every boot, at ~8 GB of host writes for the HA image).
+  # loaded into, and mkNode attaches it as a read-only additional image store, so no node runs a
+  # `podman load` at boot.
   # ONE UNIT, N FIXTURES. A node may carry more than one catalogued app, because the
   # coordination is plural and a harness that can stage only one can only ever prove the singular
-  # case — which is exactly how "N apps" stayed a fixture-shaped claim.
+  # case.
   #
   # Each fixture is staged under /run/briard/fixtures/<app name>, and /run/briard/fixture is a
-  # symlink to the FIRST one: that is the path every single-app test and every helper default
-  # already reads, so adding the plural form changed no existing test.
+  # symlink to the FIRST one: the path every single-app test and every helper default reads.
   fixturesInstall = fixtures: config: {
     description = "Prewarm ${lib.concatMapStringsSep " + " (f: f.name) fixtures} onto this node (test harness)";
     wantedBy = [ "multi-user.target" ];
@@ -147,9 +143,10 @@ let
       # podman records a RepoDigest for a loaded archive, and resolves it from an additional store.
       podman image exists "$(cat ${fixture}/ref)"
 
-      # The manifest, plus the RENDERER's sidecars (`dataroot`, `subdirs`, `units`, `identity`)
-      # that install_fixture reads. The sidecars exist so a test never restates the layout the
-      # product decides; no unit file is copied anywhere, because converge writes those itself.
+      # The manifest, plus the RENDERER's sidecars (`dataroot`, `subdirs`, `units`, `identity`);
+      # install_fixture reads the first two, fixture_units the third. They exist so a test never
+      # restates the layout the product decides; no unit file is copied anywhere, because
+      # converge writes those itself.
       mkdir -p /run/briard/fixtures/${fixture.appName}
       quadlet-render ${fixture}/manifest.json /run/briard/fixtures/${fixture.appName}
       cp ${fixture}/manifest.json /run/briard/fixtures/${fixture.appName}/manifest.json
@@ -173,7 +170,8 @@ let
     '';
   };
 
-  # The singular form every existing test is written against.
+  # The singular form. No rig calls it or fixturesInstall directly: they reach both through
+  # mkNode, as `fixture` / `fixtures`.
   fixtureInstall = fixture: fixturesInstall [ fixture ];
 
   # testScript helpers for a node built with `fixture`. Prepend to a test's script.
@@ -257,9 +255,8 @@ let
   # A test node: the unit image + a backing disk (unless diskless) + its private
   # DRBD address + the resource. `promoter` adds the promoter snippet; the tests provision DRBD,
   # then start drbd-reactor by hand -- which is what the PRODUCT does too (the
-  # agent arms the promoter at bring-up), so this file no longer has to force it off. That
-  # divergence was the last one between the disk-image guest and these nodes, and it was the
-  # divergence the guest-parity bugs fell into.
+  # agent arms the promoter at bring-up), so nothing here forces it off. Divergence between the
+  # disk-image guest and these nodes is where the guest-parity bugs lived.
   mkNode =
     {
       resource,
@@ -277,23 +274,23 @@ let
       tierDevice ? "/dev/vdb",
       # A catalogued fixture (nixosTest/fixture-app.nix) prewarmed onto the node at boot; the
       # test then installs it onto the volume with install_fixture once something has promoted.
-      # This is the ONLY way a test node gets a workload (converge-at-promotion deleted the build-time app
+      # This is the ONLY way a test node gets a workload (the image has no build-time app
       # slot), and it is the way a shipped node gets one, which is the point: a test that put a
       # container on a node by a mechanism no user has proves a path nobody runs.
       fixture ? null,
-      # SEVERAL catalogued apps on one node. `fixture` is the one-app spelling
-      # and stays exactly as it was; anything listed here is staged beside it, each under its own
+      # SEVERAL catalogued apps on one node. `fixture` is the one-app spelling;
+      # anything listed here is staged beside it, each under its own
       # name, so a test can prove what the plural coordination actually does — that installing or
       # upgrading one app leaves the others alone.
       fixtures ? [ ],
     }:
     let
       allFixtures = lib.optional (fixture != null) fixture ++ fixtures;
-      # THE HARNESS'S SERVICE ADDRESS, stated once and consumed twice -- see the briard-vip
-      # override below for why the harness states it at all. briard-vip takes it as unit
-      # Environment; the mDNS publishers read it out of the file the agent would have written
-      # (they have no Environment override, and requiring one per consumer is how the two halves
-      # would drift). One value, so they cannot disagree.
+      # THE HARNESS'S SERVICE ADDRESS, stated once -- see THE FRAMEWORK DECLARES ITS OWN
+      # SERVICE ADDRESS below for why the harness states it at all. It reaches the node only as
+      # the file the agent would have written (vip.env, the tmpfiles rule below): briard-vip
+      # reads it as its EnvironmentFile, and the reverse proxy reads it for the address its mDNS
+      # answers carry. One value, so they cannot disagree.
       vipDev = "eth1";
       vipAddr = "192.168.1.100/24";
       vipEnvFile = pkgs.writeText "vip.env" "VIP_DEV=${vipDev}\nVIP_ADDR=${vipAddr}\n";
@@ -301,11 +298,10 @@ let
       # ── THE HARNESS AS THE HOST'S STAND-IN, FOR STORAGE ───────────────────────────────────
       # Storage policy is the host's, pushed at bring-up as /run/briard/node-storage.json, and
       # briard-node-storage.service carries it out. These nodes have no host, so the harness
-      # writes the spec and starts the unit -- which is the WHOLE POINT of the re-cut: a rig used
-      # to hand-roll `modprobe drbd; create-md --force; drbd@r0.target; new-current-uuid; touch
-      # data.format`, a harness re-implementing the product, and the divergence is what hid
-      # the encrypted-blank-device bug from every hermetic test (their `--force` could
-      # not meet the probe that broke).
+      # writes the spec and starts the unit -- never a hand-rolled `modprobe drbd; create-md
+      # --force; drbd@r0.target; new-current-uuid; touch data.format`, a harness re-implementing
+      # the product: that divergence hides bugs like the encrypted-blank-device one from every
+      # hermetic test (a `--force` cannot meet the probe the product runs).
       #
       # freshInit is FALSE here and set per node by the script below, because the seed is a
       # per-node decision the module cannot make: every machine in a rig shares one module, and
@@ -332,7 +328,7 @@ let
         }
       );
       # A COMMAND RATHER THAN A testScript HELPER, so a rig needs no preamble to reach it: every
-      # test already runs shell on its nodes, and half of them do not import fixtureHelpers.
+      # test already runs shell on its nodes, and some of them do not import fixtureHelpers.
       #   briard-test-storage            bring this node up as a joiner (never seeds)
       #   briard-test-storage --seed     ...as the seed of a new flock
       #   briard-test-storage --mode off ...formatted in the clear, whatever the CPU can do
@@ -382,10 +378,10 @@ let
     {
       # HOW LONG A NODE REFUSES TO PROMOTE after one of its chain members gave up. A field node
       # runs the agent's own 300s (agent/guestagent/units.go defaultHoldSecs); this
-      # option exists for exactly one reason and always did -- the contract rigs drive the whole
+      # option exists for exactly one reason -- the contract rigs drive the whole
       # hold lifecycle and cannot wait five minutes. It is declared HERE rather than in the
-      # product module, because the unit is the agent's now and an option the image
-      # no longer reads would be a lie. What it configures is the renderer's environment, below.
+      # product module, because the unit is the agent's and an option the image
+      # does not read would be a lie. What it configures is the renderer's environment, below.
       imports = [
         guestModule
         {
@@ -404,14 +400,14 @@ let
         briard-guest-agent = "${config.briard.agentPackage}/bin/briard-guest-agent";
       };
       # ── THE HARNESS AS THE HOST'S STAND-IN, FOR UNITS ─────────────────────────────────────
-      # The image no longer defines the units the agent owns; the pushed agent writes them into
+      # The image does not define the units the agent owns; the pushed agent writes them into
       # /run/systemd/system as the first thing `run --guest` does. These machines run no
       # `run --guest` -- there is no host on the other end of a control channel -- so the unit
       # files would never appear and every rig that starts one would fail on a unit that does
       # not exist.
       #
       # IT RUNS THE PRODUCT'S OWN RENDERER rather than declaring the units here, and that is the
-      # same rule the storage stand-in below follows: a harness that re-implements the thing
+      # same rule the storage stand-in above follows: a harness that re-implements the thing
       # under test cannot notice the product changing it. What the harness supplies is the
       # TRIGGER the host would have supplied, and nothing else.
       #
@@ -470,48 +466,40 @@ let
       environment.systemPackages = [ pkgs.curl pkgs.lvm2.bin pkgs.cryptsetup testStorage ]
         ++ lib.optionals (allFixtures != [ ]) [ pkgs.btrfs-progs config.briard.agentPackage ];
       # THE FRAMEWORK DECLARES ITS OWN SERVICE ADDRESS. The guest image bakes
-      # none any more: unset means DHCP, and there is no DHCP server on a nixosTest's synthetic
+      # none: unset means DHCP, and there is no DHCP server on a nixosTest's synthetic
       # L2. So the harness states the address it is going to curl, rather than inheriting one
-      # from the product image -- which is the point of the change and not merely its cost. A
-      # baked default that every test happens to agree with is how the original defect stayed
-      # invisible: nothing disagreed with it, so nothing revealed it.
+      # from the product image. A baked default that every test happens to agree with hides a
+      # defect: nothing disagrees with it, so nothing reveals it.
       #
       # eth1 here, not eth2: these guests are agent-less and have one service NIC, which is also
-      # where their private DRBD address lives. That co-location is the reason briard-vip only
-      # takes the NIC down when the address came from DHCP.
+      # where their private DRBD address lives. That co-location is why vip.env here carries no
+      # SYSTEM_DEV: without one, briard-vip-down takes the NIC down only when the address came
+      # from DHCP, which this static one never does.
       #
-      # ⚠️ IT IS STATED ONCE NOW, in the tmpfiles symlink below. briard-vip used to
-      # carry a `serviceConfig.Environment` override of the same two values beside it, because
-      # the unit was a NixOS one this file could reach; it is written by the agent at runtime
-      # now and cannot be. Nothing is lost -- the override was already redundant with the file,
-      # which the product REQUIRES as an EnvironmentFile and which the mDNS
-      # publishers read anyway -- and one statement of an address is one fewer thing that can
-      # disagree with itself.
+      # ⚠️ IT IS STATED ONCE, in the tmpfiles symlink below. briard-vip is written by the agent at
+      # runtime, so this file has no unit to put an override on; the file is the one statement,
+      # and the product REQUIRES it as an EnvironmentFile anyway.
       # /etc/drbd.conf is the one file drbdadm looks for at a path we do not choose, so the harness
       # states it here (the shipped image states the identical glob in disk-image.nix, which these
       # nodes do not import).
       environment.etc."drbd.conf".text = ''include "/run/briard/drbd.d/*.res";'';
-      # BOTH agent-written files are on TMPFS in the product now, so neither can be
-      # declared through environment.etc any more. tmpfiles symlinks put the same store files at the
+      # The agent-written files the harness states (vip.env, the reactor snippet) are on TMPFS in
+      # the product, under /run/briard, so they cannot be declared through environment.etc.
+      # tmpfiles symlinks put store files at the
       # exact paths the agent would write, which keeps the harness stating its own configuration
       # while running the product's own layout -- and drbd-reactor reads a symlinked snippet
-      # identically (the etc form was a store symlink too, which is why `drbd-reactorctl evict`
-      # never minded). Paths that match the product are the point: the divergence between these
+      # identically (`drbd-reactorctl evict` does not mind a store symlink). Paths that match the
+      # product are the point: the divergence between these
       # nodes and the disk-image guest is where the guest-parity bugs lived.
       systemd.tmpfiles.rules = [
-        # The VIP configuration at the path the AGENT would have written it. briard-vip has the
-        # Environment override above and does not need this; the two mDNS publishers do, because
-        # they read the same file and have no override -- without it they fail on a missing
-        # EnvironmentFile and restart forever, which is how a rig produces 47 failed starts while
-        # every assertion in it still passes. Only a test that names its flock ever starts them
-        # (ConditionPathExists on mdns.env), so the noise was invisible until one asserted mDNS.
+        # The VIP configuration at the path the AGENT would have written it. briard-vip requires
+        # it as its EnvironmentFile (without it the unit fails), and the reverse proxy reads it
+        # for the address its mDNS answers carry.
         "d /run/briard 0755 root root -"
         "L+ /run/briard/vip.env - - - - ${vipEnvFile}"
-        # ⚠️ THE `.res` IS NOT DECLARED HERE ANY MORE. It used to be a tmpfiles
-        # symlink to a store file, which was right while the harness SUPPLIED it and nothing
-        # wrote it. briard-node-storage writes the `.res` itself now, exactly as the product
-        # does -- and writing through a store symlink is `read-only file system`, which is how
-        # this was found (the lone-node rig, run 34395428265). The directory stays; what goes
+        # ⚠️ THE `.res` IS NOT DECLARED HERE. briard-node-storage writes the `.res` itself,
+        # exactly as the product does -- and writing through a tmpfiles symlink to a store file
+        # fails with `read-only file system`. The directory stays; what goes
         # in it is the unit's, from the spec above.
         "d /run/briard/drbd.d 0755 root root -"
       ]
@@ -605,11 +593,10 @@ in
     # Two rigs ask what HA advertises: one where HA is installed after promotion, one where it
     # starts inside a promotion.
     haAdvertProbe
-    # Exported because two rigs write their OWN reactor snippet -- runtime-join needs
-    # no baked r0.res, app-install installs one from the testScript -- and both restated the
-    # chain by hand. That was survivable while every non-member rode briard-vip on wantedBy; it is
-    # not now that the reverse proxy and the publishers are MEMBERS, because a rig whose list is
-    # short does not merely differ, it never starts them. One definition, three consumers.
+    # Exported because app-install writes its OWN reactor snippet from the testScript, and takes
+    # the chain from here rather than restating it: a rig whose list is short does not merely
+    # differ, it never starts the missing members. One definition: mkNode bakes it, app-install
+    # installs it, and internal/arch holds it to shared/chain.
     promoterSnippet
     ;
 }
