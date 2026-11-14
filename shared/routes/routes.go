@@ -16,10 +16,11 @@
 // So it lives in /run: node-local, tmpfs, re-derived by every converge rather than replicated,
 // exactly like the quadlet units it is written beside.
 //
-// A HOSTNAME APPEARS HERE AND NOWHERE ELSE. These entries are what the mDNS publisher claims on
-// the LAN and what the proxy matches on, so a name that is published but not routed — or routed
-// but not published — is not expressible. That is why the names are composed once, here
-// (HostName), rather than independently by the reverse proxy and by the publisher.
+// A HOSTNAME APPEARS HERE AND NOWHERE ELSE. These entries are what the reverse proxy's mDNS
+// responder answers for on the LAN and what its router matches on, so a `.local` name that is
+// published but not routed — or routed but not published — is not expressible. That is why the
+// names are composed once, here (HostNames), rather than independently by the router and the
+// responder.
 package routes
 
 import (
@@ -35,9 +36,9 @@ import (
 	"briard.io/shared/casa"
 )
 
-// Path is where converge writes the table, the proxy reads it, and the mDNS publisher reads it.
-// One file: the publisher parses it with jq rather than being handed a pre-flattened projection,
-// because a second file is a second thing that can be stale.
+// Path is where converge writes the table and the reverse proxy (router and mDNS responder) and
+// the dashboard read it. One file, because a second, pre-flattened projection is a second thing
+// that can be stale.
 const Path = "/run/briard/routes.json"
 
 // Table is the reverse proxy's whole routing, as one file. Ordered by app name, because converge
@@ -57,18 +58,16 @@ type App struct {
 	// `<app>.<flock>.briard.casa` name CasaHostName composes, which resolves only once the
 	// household has claimed its name and is harmless in the table until then.
 	//
-	// MATERIALISED RATHER THAN DERIVED, though both forms are computable from (flock, slug). The
-	// reason is the mDNS publisher: it is a shell script, and if it composed names itself the
-	// naming rule would live in two languages — one more each time a name form is added. Stored,
-	// the publisher stays permanently dumb: it claims whatever this list says, and every rule for
-	// building a name stays in HostName.
+	// MATERIALISED RATHER THAN DERIVED, though every form is computable from (flock, slug):
+	// stored, the mDNS responder composes nothing — it answers whatever this list says — and
+	// every rule for building a name stays in this package (HostNames).
 	//
 	// EMPTY IS A REAL STATE: a node whose flock has no minted name publishes nothing rather than
 	// a guess (net.mdnsname), so it routes nothing either. The app is still installed and
 	// still reachable on any port it publishes; it simply has no name yet.
 	Hosts []string `json:"hosts,omitempty"`
-	// Address is the host this app answers on — the guest's own loopback while the pod shares
-	// the guest's network namespace, the pod's address once it does not. A bare host,
+	// Address is the host this app answers on — the guest's own loopback under host networking,
+	// the pod's address under a private pod network. A bare host,
 	// with no port: an app is ONE pod and a pod is ONE network namespace, so one address serves
 	// every port it listens on, and Health and Routes below carry only the port.
 	//
@@ -97,10 +96,9 @@ type App struct {
 	// these exist for the apps that do not speak it -- but the node's, because the page and `briard
 	// app install` have to be able to say where an app actually is.
 	//
-	// It stayed out of this table until a manifest could declare exposure, and the reason is worth
-	// keeping: under host networking every port a container listens on is reachable at the
-	// service address, and the manifest names only the primary's -- so any list written then would have
-	// been partial, and the page would have printed it as though it were the whole truth.
+	// They are the manifest's DECLARED exposure (its `ports`), never inferred: under host
+	// networking every port a container listens on is reachable at the service address, and the
+	// manifest's primary port alone would be a partial list printed as the whole truth.
 	Ports []int `json:"ports,omitempty"`
 	// Announce are the mDNS SERVICE records this app wants on the household LAN -- what a
 	// device looking for a broker browses for, as opposed to Hosts, which are names something has
@@ -111,9 +109,9 @@ type App struct {
 	// publisher declaring its own type would be claiming a well-known name on a household's LAN.
 	// The catalog names a port; what protocol answers there is ours to say.
 	//
-	// MATERIALISED, for the same reason Hosts is: the publisher is a shell script, so every rule
-	// for composing a name lives in this package (InstanceName) and the script stays permanently
-	// dumb. Each record is pointed at the app's OWN name -- the first of Hosts -- which is why
+	// MATERIALISED, for the same reason Hosts is: every rule for composing a name lives in this
+	// package (InstanceName) and the responder composes nothing. Each record is pointed at the
+	// app's OWN name -- the first of Hosts -- which is why
 	// Validate refuses an announcement on an app that has none. An SRV record needs a target,
 	// and the only other candidate is the guest's own hostname, which is node-scoped and would
 	// send every device on the LAN to a machine that just stopped being the Primary.
@@ -173,7 +171,7 @@ const ListenName = "name"
 // Debian/Ubuntu's nsswitch, handles exactly ONE label before `.local`. So the flock-scoped
 // `briard-picked-hornet-home-assistant.local` resolves on a stock client and the prettier
 // `home-assistant.briard-picked-hornet.local` would publish fine and resolve nowhere — the same
-// trap measured for the flock name itself, one level down.
+// trap as for the flock name itself, one level down.
 //
 // FLOCK-SCOPED, because this is the app's IDENTITY on the LAN: the SRV target every
 // announcement points at, and the name that stays unambiguous when two flocks share a house.
@@ -181,14 +179,14 @@ const ListenName = "name"
 // node relies on, the bare name is what it prints.
 //
 // Never bare `home-assistant.local` in either form: that is the name every Home Assistant tutorial
-// uses and the one thing a household might already own. Measured 2026-08-23: two avahi
-// publishers of the same `-a` record BOTH report Established, with no conflict, no rename and no
-// log — the later silently shadows the earlier — and the household most likely to already own
+// uses and the one thing a household might already own. Measured: two avahi publishers of the
+// same `-a` record BOTH report Established, with no conflict, no rename and no log — the later
+// silently shadows the earlier — and the household most likely to already own
 // that name is the one migrating from an HAOS box. Claiming a name we can only lose silently is
 // worse than a longer one nobody contests.
 //
 // An empty flock name yields no name at all, deliberately: `briard--home-assistant.local` is worse
-// than silence, and the same rule already governs the flock's own publisher.
+// than silence, and FlockHostName follows the same rule.
 func HostName(flock, app string) string {
 	if flock == "" || app == "" {
 		return ""
@@ -311,14 +309,13 @@ func (t Table) Validate() error {
 
 // serviceType is an RFC 6763 service type: an underscore-prefixed application protocol label of
 // at most 15 characters, then `._tcp` or `._udp`. Narrow because these strings become arguments
-// to a publisher on a household's LAN, and because a type that avahi refuses would be a record
-// that silently never appears.
+// to a responder on a household's LAN, and because a malformed type would be a record that
+// silently never appears.
 var serviceType = regexp.MustCompile(`^_[a-z0-9]([a-z0-9-]{0,13}[a-z0-9])?\._(tcp|udp)$`)
 
-// check is the announcement half of Validate, and every rule in it is load-bearing rather than
-// tidy. The publisher reads these fields out of jq as tab-separated words, so a tab or a newline
-// in a name would not be a bad label but a shifted line -- a port read as a type. Refusing them
-// here is the same discipline shared/manifest applies to every string that reaches a unit file.
+// check is the announcement half of Validate. These fields become records on a household's LAN,
+// so a name carrying a tab or a newline is refused here -- the same discipline shared/manifest
+// applies to every string that reaches a unit file.
 func (a Announcement) check(s App) error {
 	if a.Name == "" {
 		return fmt.Errorf("routes: app %q announces %q with no instance name", s.Name, a.Type)
@@ -452,8 +449,8 @@ func Normalise(host string) string {
 // does: every rule for building a name belongs to one function, so a second name form is one
 // change rather than one per language.
 //
-// The publisher composes nothing: it claims the names this package builds, so the reverse proxy and
-// the agent cannot disagree about what a flock is called.
+// The reverse proxy's mDNS responder composes nothing: it answers the names this package builds,
+// so it and the agent (the doctor) cannot disagree about what a flock is called.
 //
 // An empty flock name yields no name at all, the same rule HostName follows: a node with no minted
 // name publishes nothing rather than `briard-.local`, which is worse than silence.
