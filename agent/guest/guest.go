@@ -355,7 +355,7 @@ func (m *Manager) await(ctx context.Context, ready func(context.Context) bool) e
 // OSReady answers "is this node healthy with respect to an OS upgrade?": one precondition and two
 // implications, each asking the node about the job it actually holds:
 //
-//	DRBD ANSWERS AT ALL              (the replication layer came back)
+//	DRBD answers at all              (the replication layer came back)
 //	diskful ∧ quorate ⇒ UpToDate     (…and I am a viable failover target)
 //	serving           ⇒ /healthz     (…and if I am serving, I am serving)
 //
