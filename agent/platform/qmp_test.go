@@ -119,7 +119,7 @@ func TestShutdownWithoutMonitorFails(t *testing.T) {
 
 // QMP is unrestricted control of the VM and QEMU creates the socket 0755, so the directory
 // is the containment. Launch applies it before starting qemu; here we assert the primitive,
-// including that it TIGHTENS an existing loose directory rather than trusting it.
+// including that it tightens an existing loose directory rather than trusting it.
 func TestSecureQMPDirIsOwnerOnly(t *testing.T) {
 	dir := filepath.Join(testsock.Dir(t), "run")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -141,7 +141,7 @@ func TestSecureQMPDirIsOwnerOnly(t *testing.T) {
 	}
 }
 
-// fakeVM serves QMP the way QEMU does but over MANY connections, because ShutdownVM dials
+// fakeVM serves QMP the way QEMU does but over many connections, because ShutdownVM dials
 // repeatedly (a reachability probe, the command, then one probe per poll). It also models the
 // part that matters: when told to power down, the VM eventually goes away -- listener closed and
 // socket unlinked, exactly as QEMU does at exit. dies=false leaves it running forever, which is
@@ -192,7 +192,7 @@ func fakeVM(t *testing.T, dies bool, linger time.Duration) (path string, powered
 }
 
 // The happy path, and the one that would be vacuous if it judged the VM by its systemd unit:
-// ShutdownVM must press the power button AND wait for QEMU to actually be gone. The linger is
+// ShutdownVM must press the power button and wait for QEMU to actually be gone. The linger is
 // what makes the wait non-trivial -- a version that returned as soon as the command was accepted
 // would pass an "asked?" check while the guest was still writing.
 func TestShutdownVMWaitsForTheVMToGo(t *testing.T) {
@@ -214,7 +214,7 @@ func TestShutdownVMWaitsForTheVMToGo(t *testing.T) {
 	}
 }
 
-// A guest that ignores the power button is a real outcome and must be REPORTED, not waited out
+// A guest that ignores the power button is a real outcome and must be reported, not waited out
 // silently -- the caller (systemd's ExecStop) has a harder measure to fall back on.
 func TestShutdownVMReportsAGuestThatIgnoresIt(t *testing.T) {
 	path, powered := fakeVM(t, false, 0)
@@ -243,17 +243,14 @@ func TestShutdownVMOnAnAbsentVMIsSuccess(t *testing.T) {
 	}
 }
 
-// A QEMU that accepts the connection and then says nothing must not hold the caller for the
-// caller's whole budget. This is the frozen-QEMU case (SIGSTOP: the socket is still in the
-// listen backlog, so the connect succeeds and the greeting never comes), and it is exactly
-// what both recovery paths meet -- the recovery ladder's ACPI attempt and the rollback leg's,
-// each of which budgets minutes for stop-plus-relaunch and would otherwise spend all of it
-// inside the greeting Decode before it could fall back to a forced stop.
-//
-// The listener here accepts and holds the connection WITHOUT writing a greeting, which is the
-// whole fixture. The assertion is the elapsed time, not the error: the call fails either way,
-// but without the setup/command deadline split it would fail after the context's minutes rather
-// than after qmpTimeout.
+// A QEMU that accepts the connection and then says nothing must not hold the caller for its whole
+// budget. This is the frozen-QEMU case (SIGSTOP: the socket is still in the listen backlog, so the
+// connect succeeds and the greeting never comes), which both recovery paths meet: the recovery
+// ladder's ACPI attempt and the rollback leg's each budget minutes for stop-plus-relaunch and
+// would otherwise spend all of it inside the greeting Decode before falling back to a forced stop.
+// The fixture is a listener that accepts and holds the connection without a greeting. The
+// assertion is the elapsed time, not the error: the call fails either way, but without the
+// setup/command deadline split it would fail after the context's minutes, not after qmpTimeout.
 func TestDialQMPDoesNotWaitOutALongCallerDeadlineForTheGreeting(t *testing.T) {
 	// testsock.Dir, not t.TempDir: this test's name is long enough that a CI runner's TMPDIR
 	// plus the test-name-derived directory clears sun_path's 108 bytes, and the kernel reports
@@ -299,11 +296,11 @@ func TestDialQMPDoesNotWaitOutALongCallerDeadlineForTheGreeting(t *testing.T) {
 	}
 }
 
-// THE CONSOLE SOCKET LIVES BESIDE THE MONITOR, derived from it and never configured
-// on its own. Launch makes the QMP directory 0700 root, so a socket placed there inherits that
-// containment; the same socket somewhere world-reachable would be an open door onto an autologin
-// root shell. This asserts there is exactly one input and that nothing can pull the two apart --
-// the property `briard debug shell` keeps by taking no -qmp flag.
+// The console socket lives beside the monitor, derived from it and never configured on its own.
+// Launch makes the QMP directory 0700 root, so a socket there inherits that containment; the same
+// socket somewhere world-reachable would be an open door onto an autologin root shell. This
+// asserts exactly one input and that nothing can pull the two apart, the property `briard debug
+// shell` keeps by taking no -qmp flag.
 func TestDebugConsolePathIsBesideTheMonitor(t *testing.T) {
 	for _, tc := range []struct{ qmp, want string }{
 		{"/run/briard/qmp/guest.sock", "/run/briard/qmp/" + DebugConsoleName},
@@ -397,7 +394,7 @@ func TestMemoryMBSumsBootAndPlugged(t *testing.T) {
 	}
 }
 
-// set_link must name the NETDEV, not the NIC: only a set on the backend reaches the tap-win32
+// set_link must name the netdev, not the NIC: only a set on the backend reaches the tap-win32
 // link hook, while a set on the NIC changes the guest's view alone. And the netdev it names is
 // the one the launch gives the system tap.
 func TestSetSystemLinkSetsTheSystemNetdev(t *testing.T) {
@@ -457,7 +454,7 @@ func TestSetSystemLinkSetsTheSystemNetdev(t *testing.T) {
 	}
 }
 
-// announce-self REQUIRES its four timings -- qemu refuses the command without them -- so the call
+// announce-self requires its four timings -- qemu refuses the command without them -- so the call
 // must state every one; and a guest without a monitor is an error, as for set_link.
 func TestAnnounceSelfStatesItsTimings(t *testing.T) {
 	path := filepath.Join(testsock.Dir(t), "qmp.sock")

@@ -71,7 +71,7 @@ func TestSmokeTestRefusesABrokenTier1(t *testing.T) {
 }
 
 // Tier 2 refusals: a machine that dies before it runs, and one that hangs without ever
-// serving its monitor -- the hang is caught by the test's OWN timeout (so the agent can still
+// serving its monitor -- the hang is caught by the test's own timeout (so the agent can still
 // write the failure down), not by systemd's.
 func TestSmokeTestRefusesAMachineThatDiesOrHangs(t *testing.T) {
 	shortSmoke(t)
@@ -97,7 +97,7 @@ func TestSmokeTestRefusesAMachineThatDiesOrHangs(t *testing.T) {
 	}
 }
 
-// The staged tree's OWN loader is what runs its qemu: the bundle bakes its interpreter to the
+// The staged tree's own loader is what runs its qemu: the bundle bakes its interpreter to the
 // committed prefix, so a direct exec would pair the new libc with the old loader. Prove the
 // bypass by giving the tree a "loader" that records how it was invoked.
 func TestSmokeTestRunsThroughTheTreesOwnLoader(t *testing.T) {

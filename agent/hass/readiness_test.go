@@ -113,7 +113,7 @@ func TestReadinessTrimsTheTokenFile(t *testing.T) {
 }
 
 // TestReadinessEmptyIsNotAnError: Home Assistant answers its HTTP stack before default_config has
-// finished setting entries up, so an early sample is legitimately empty — measured. An empty PRE
+// finished setting entries up, so an early sample is legitimately empty — measured. An empty pre
 // sample simply excludes everything, which is the safe direction; treating it as a failure would
 // make the gate flap on every fast node.
 func TestReadinessEmptyIsNotAnError(t *testing.T) {

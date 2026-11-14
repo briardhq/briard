@@ -11,9 +11,9 @@ import (
 // so the allocator's two dangerous properties are asserted directly: it reserves what it says, and
 // it never writes over something that is already there.
 
-// Thick means the space is RESERVED, not merely declared. A sparse file passes a size check and
-// fails months later as ENOSPC under a replicated filesystem, so the size check is not the
-// assertion -- the blocks on disk are.
+// Thick means the space is reserved, not merely declared. A sparse file passes a size check and
+// fails months later as ENOSPC under a replicated filesystem, so the assertion is the blocks on
+// disk, not the size.
 func TestAllocateThickReservesTheSpace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.img")
 	const size = 8 << 20 // 8 MiB: enough to be several blocks, small enough to be instant
@@ -36,11 +36,10 @@ func TestAllocateThickReservesTheSpace(t *testing.T) {
 	}
 }
 
-// ⚠️ THE DESTRUCTIVE CASE. A data volume that is already there is never written over --
-// and the guard has to hold for "present but unstat-able" too, which is why the publish itself (a
-// hard link) is the proof of absence rather than a check before it. Here the file is present and
-// readable, which is the case a stat WOULD catch; the link is what makes the unreadable one safe
-// as well.
+// ⚠️ The destructive case: a data volume already there is never written over, and the guard must
+// hold for "present but unstat-able" too, which is why the publish itself (a hard link) is the
+// proof of absence rather than a check before it. Here the file is present and readable, the case
+// a stat would catch; the link is what makes the unreadable one safe as well.
 func TestAllocateThickNeverOverwrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.img")
 	body := []byte("a household's app data")
@@ -50,7 +49,7 @@ func TestAllocateThickNeverOverwrites(t *testing.T) {
 	if err := AllocateThick(path, 8<<20); err != nil {
 		t.Fatalf("AllocateThick over an existing volume: %v, want it to leave the disk alone", err)
 	}
-	// Compared by SIZE first. An overwrite makes this file the whole allocation, and a %q of eight
+	// Compared by size first. An overwrite makes this file the whole allocation, and a %q of eight
 	// million zero bytes is a failure message nobody can read.
 	fi, err := os.Stat(path)
 	if err != nil || fi.Size() != int64(len(body)) {
@@ -106,7 +105,7 @@ func TestAllocateThickDropsTheSecondNameOfAMadeVolume(t *testing.T) {
 }
 
 // Growing is the one change a disk that exists may undergo, and it carries both properties above:
-// the new range is RESERVED (blocks, not a size), and what was already in the file is untouched.
+// the new range is reserved (blocks, not a size), and what was already in the file is untouched.
 func TestExtendThickReservesTheNewRangeAndKeepsTheOld(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.img")
 	const before, after = 4 << 20, 12 << 20

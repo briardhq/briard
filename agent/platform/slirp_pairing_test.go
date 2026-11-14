@@ -7,14 +7,12 @@ import (
 	"testing"
 )
 
-// TestSlirpAddressingMatchesGuestImage guards a pairing that exists because the guest runs no
-// DHCP client on eth0: the host tells qemu what the SLIRP network is, and the
-// guest configures eth0 statically from the same numbers. Nothing at runtime reconciles them --
-// that is the point, since a system dhcpcd as the reconciler would hijack the VIP's own
-// client -- so a change on one side and not the other yields a guest with an address on
-// a network qemu is not running, i.e. no WAN, i.e. no image pulls, discovered late and far away.
-//
-// Same cheap mechanism as TestVolumePathsMatchGuestImage: read both sides, no build step.
+// TestSlirpAddressingMatchesGuestImage guards a pairing that exists because the guest runs no DHCP
+// client on eth0: the host tells qemu the SLIRP network, and the guest configures eth0 statically
+// from the same numbers. Nothing at runtime reconciles them, deliberately (a system dhcpcd as the
+// reconciler would hijack the VIP's own client), so a one-sided change yields a guest addressed on
+// a network qemu is not running: no WAN, no image pulls, discovered late and far away. Same cheap
+// mechanism as TestVolumePathsMatchGuestImage: read both sides, no build step.
 func TestSlirpAddressingMatchesGuestImage(t *testing.T) {
 	raw, err := os.ReadFile("../../guest-image/disk-image.nix")
 	if err != nil {

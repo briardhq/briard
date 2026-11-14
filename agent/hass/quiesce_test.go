@@ -12,7 +12,7 @@ import (
 
 // quiesceStub is Home Assistant's side of the hold: the token exchange the channel starts with,
 // and the view the pair calls. It records what arrived, because each field is load-bearing against
-// the real view — the path, the admin-gated Bearer, and a body whose `hold` is a BOOLEAN, which
+// the real view — the path, the admin-gated Bearer, and a body whose `hold` is a boolean, which
 // the view refuses if it is anything else.
 type quiesceStub struct {
 	code   int  // non-200 to refuse
@@ -44,9 +44,9 @@ func (q *quiesceStub) start(t *testing.T) int {
 		q.holds = append(q.holds, *body.Hold)
 		if q.code != 0 {
 			w.WriteHeader(q.code)
-			// ⚠️ A BODY THAT PARSES, deliberately. Home Assistant's own json_message answers an
-			// error with JSON, and a stub that sent nothing would let the DECODER catch every
-			// refusal — leaving the status check able to be deleted with every case still green.
+			// ⚠️ A body that parses, deliberately: Home Assistant's json_message answers an error
+			// with JSON, and a stub that sent nothing would let the decoder catch every refusal,
+			// so the status check could be deleted with every case still green.
 			w.Write([]byte(`{"held":true,"message":"refused"}`))
 			return
 		}
@@ -92,17 +92,17 @@ func TestQuiesceHoldsAndReleasesThroughTheSameToken(t *testing.T) {
 	if q.bearer != "Bearer acc" {
 		t.Errorf("Authorization = %q, want the exchanged access token", q.bearer)
 	}
-	// THE ORDER AND THE SHAPE: a hold then a release, never two holds, and each carrying the
-	// boolean the view reads.
+	// The order and the shape: a hold then a release, never two holds, each carrying the boolean
+	// the view reads.
 	if len(q.holds) != 2 || !q.holds[0] || q.holds[1] {
 		t.Errorf("the calls were %v, want [true false]", q.holds)
 	}
 }
 
 // TestReleaseReportsALockThatDidNotHold is the whole reason this is a pair rather than a fire and
-// forget. Home Assistant breaks its own lock if the events it is buffering pile up, and
-// it says so on the release — a member taken under a broken lock is crash-consistent, and the
-// caller may only learn that here.
+// forget. Home Assistant breaks its own lock if the events it buffers pile up and says so on the
+// release: a member taken under a broken lock is crash-consistent, and the caller may only learn
+// that here.
 func TestReleaseReportsALockThatDidNotHold(t *testing.T) {
 	q := &quiesceStub{held: false}
 	port := q.start(t)
@@ -121,9 +121,8 @@ func TestReleaseReportsALockThatDidNotHold(t *testing.T) {
 
 // TestQuiesceReportsARefusal: a Home Assistant too old for the view (404), one whose recorder is
 // absent (501), a lock that timed out (503), or one already held (409) must not read as a
-// successful hold. The caller's
-// fallback is the same either way — take the member unquiesced — but a silent success would label
-// that member as something it is not.
+// successful hold. The caller's fallback is the same either way (take the member unquiesced), but
+// a silent success would label that member as something it is not.
 func TestQuiesceReportsARefusal(t *testing.T) {
 	for _, code := range []int{http.StatusNotFound, http.StatusNotImplemented, http.StatusServiceUnavailable, http.StatusConflict} {
 		q := &quiesceStub{code: code}

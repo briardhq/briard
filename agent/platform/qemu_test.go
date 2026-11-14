@@ -110,13 +110,13 @@ func TestQEMUArgsMacvtap(t *testing.T) {
 			t.Errorf("macvtap qemuArgs missing %q\ngot: %s", want, got)
 		}
 	}
-	// Macvtap mode must NOT open the service/system taps by name.
+	// Macvtap mode must not open the service/system taps by name.
 	if strings.Contains(got, "ifname=") {
 		t.Errorf("macvtap mode must not use ifname=:\n%s", got)
 	}
 }
 
-// Even under NetMacvtap, the witness NIC stays a PLAIN tap (ifname=), never fd=: it
+// Even under NetMacvtap, the witness NIC stays a plain tap (ifname=), never fd=: it
 // is the private guest<->host link and macvtap would isolate it.
 func TestQEMUArgsMacvtapWitnessStaysTap(t *testing.T) {
 	got := strings.Join(qemuArgs(QEMUSpec{
@@ -297,21 +297,20 @@ func TestQEMUArgsMinimal(t *testing.T) {
 	}
 }
 
-// The guest unit's STOP contract, which is the half of the unit with no observable effect until
-// the machine is going down -- and so the half that can go missing silently. Stopping the unit
-// SIGTERMs QEMU, which the guest experiences as a power cut; systemd stops every unit on a host
-// reboot; so without an ExecStop, a user rebooting their own host power-cuts the appliance.
+// The guest unit's stop contract: the half of the unit with no observable effect until the machine
+// goes down, so the half that can go missing silently. Stopping the unit SIGTERMs QEMU, a power cut
+// to the guest, and systemd stops every unit on a host reboot, so without an ExecStop a user
+// rebooting their own host power-cuts the appliance. Three assertions, each failing differently
+// in the field:
 //
-// Three things are asserted and each one fails differently in the field:
-//
-//   - ExecStop names this binary's --guest-shutdown mode against THIS guest's monitor socket.
-//     A wrong socket would power down someone else's VM, or nothing at all, and look identical.
-//   - Both properties land BEFORE the "--" separator. After it they are not properties at all,
-//     they are extra argv for qemu -- the unit would launch (qemu ignores nothing, it would
-//     fail) or, worse, start fine and stop dirty. This ordering is invisible in review.
-//   - TimeoutStopSec exceeds the grace the ExecStop itself waits. The other order puts
-//     systemd's SIGKILL through the middle of a shutdown still making progress, i.e. it
-//     manufactures the power cut the whole mechanism exists to prevent.
+//   - ExecStop names this binary's --guest-shutdown mode against this guest's monitor socket; a
+//     wrong socket powers down someone else's VM, or nothing, and looks identical.
+//   - Both properties land before the "--" separator. After it they are extra qemu argv: the unit
+//     would launch and qemu fail (it ignores nothing) or, worse, start fine and stop dirty. The
+//     ordering is invisible in review.
+//   - TimeoutStopSec exceeds the grace the ExecStop itself waits. The other order puts systemd's
+//     SIGKILL through a shutdown still making progress: it manufactures the power cut the
+//     mechanism exists to prevent.
 func TestLaunchArgsCleanStopContract(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the systemd unit's ExecStop contract; on Windows the agent stops the guest itself, on preshutdown")
@@ -393,7 +392,7 @@ func TestUnitAtRest(t *testing.T) {
 	}
 }
 
-// A unit NAME is free only once systemctl has forgotten the unit: systemd-run refuses a name
+// A unit name is free only once systemctl has forgotten the unit: systemd-run refuses a name
 // that is still loaded, and a unit stays loaded through its whole stop and past it, until the
 // corpse is collected. Reading "not running" as "free" spends the relaunch attempts within a
 // second on a guest that is still stopping.
@@ -434,14 +433,11 @@ func TestWaitUnitFreeGivesUpAndNamesTheState(t *testing.T) {
 	}
 }
 
-// insideUnit must be able to say YES, or the guard it feeds is decoration -- and the guard is
-// the only thing standing between a stop job that asks for its own unit's name and a wait that
-// cannot end.
-//
-// The positive case needs a real invocation to point at, so it BORROWS one that is already
-// running on this machine rather than inventing a fixture: an id we made up would prove only
-// that two strings compare equal, which is not the claim. No systemd, or no running systemd service to
-// borrow from, is a skip -- the honest answer for a machine that cannot host the question.
+// insideUnit must be able to say yes, or the guard it feeds is decoration, and that guard is the
+// only thing between a stop job asking for its own unit's name and a wait that cannot end. The
+// positive case borrows a real invocation already running on this machine: a made-up id would
+// prove only that two strings compare equal. No systemd, or no running systemd service to borrow
+// from, is a skip, the honest answer for a machine that cannot host the question.
 func TestInsideUnitRecognisesItsOwnInvocation(t *testing.T) {
 	unit, id := borrowedInvocation(t)
 
@@ -449,7 +445,7 @@ func TestInsideUnitRecognisesItsOwnInvocation(t *testing.T) {
 	if !insideUnit(unit) {
 		t.Errorf("insideUnit(%s) = false while holding that unit's own INVOCATION_ID %s", unit, id)
 	}
-	// The same environment must not claim membership of a DIFFERENT unit: a guard that answers
+	// The same environment must not claim membership of a different unit: a guard that answers
 	// yes to everything would refuse every legitimate wait, which is the expensive direction.
 	if insideUnit("briard-test-nonexistent-unit.service") {
 		t.Error("insideUnit claimed membership of a unit that does not exist")
@@ -487,7 +483,7 @@ func borrowedInvocation(t *testing.T) (unit, id string) {
 	return "", ""
 }
 
-// The state disk is attached by SERIAL -- the guest mounts /dev/disk/by-id/virtio-
+// The state disk is attached by serial -- the guest mounts /dev/disk/by-id/virtio-
 // briard-state, never a bus position -- and the machine UUID rides -uuid; neither appears when
 // unset.
 func TestQemuArgsStateDiskAndMachineUUID(t *testing.T) {
@@ -525,7 +521,7 @@ func TestQemuArgsDisksAreOrderedExplicitDevices(t *testing.T) {
 	if strings.Contains(got, "if=virtio") {
 		t.Errorf("a shorthand if=virtio drive survived; it would enumerate after every explicit device:\n%s", got)
 	}
-	// The two thick disks REPORT a host write error to the guest rather than pausing the VM; the
+	// The two thick disks report a host write error to the guest rather than pausing the VM; the
 	// read-only root never writes.
 	for _, want := range []string{"file=/d.img,if=none,format=raw,cache=none,werror=report,id=briard-data", "file=/s.img,if=none,format=raw,cache=none,werror=report,id=briard-state", "-device virtio-blk-pci,drive=briard-data,iothread=briard-io", "-object iothread,id=briard-io"} {
 		if !strings.Contains(got, want) {
@@ -534,11 +530,10 @@ func TestQemuArgsDisksAreOrderedExplicitDevices(t *testing.T) {
 	}
 }
 
-// BOTH SERIAL PORTS, ALWAYS, AND ttyS1 SECOND. The guest numbers its ports by -serial position:
-// ttyS0 is the capture `briard logs` reads and ttyS1 is the debug console the guest binds an
-// autologin getty to. If the first port is ever dropped -- the risk whenever SerialLog is empty,
-// which a launch without a capture is -- the debug console silently becomes ttyS0 and the getty
-// binds to a device that is now the log file.
+// Both serial ports, always, ttyS1 second. The guest numbers its ports by -serial position: ttyS0
+// is the capture `briard logs` reads, ttyS1 the debug console the guest binds an autologin getty
+// to. If the first port is dropped (the risk whenever SerialLog is empty, as on a launch without a
+// capture), the debug console silently becomes ttyS0 and the getty binds to the log file.
 func TestQEMUArgsSerialPortsAlwaysBothInOrder(t *testing.T) {
 	for _, tc := range []struct {
 		name, serialLog, wantFirst string
@@ -563,7 +558,7 @@ func TestQEMUArgsSerialPortsAlwaysBothInOrder(t *testing.T) {
 	}
 }
 
-// The debug console ships DISCONNECTED. Nothing about a launch may create a path into the
+// The debug console ships disconnected. Nothing about a launch may create a path into the
 // guest: the port is null-backed until `briard debug shell` arms it over QMP, so a socket path
 // appearing on this command line would mean every node in the field was born open.
 func TestQEMUArgsDebugConsoleIsNullBacked(t *testing.T) {

@@ -28,7 +28,7 @@ func man(chain, platform, version string) Manifest {
 	return Manifest{Chain: chain, Platform: platform, Version: version, Artifacts: []Entry{{Name: "briard-agent"}}}
 }
 
-// The comparison rules of the update verb, one row each, including the ones that must REFUSE.
+// The comparison rules of the update verb, one row each, including the ones that must refuse.
 func TestDecide(t *testing.T) {
 	host := func(v string) *Manifest { m := man(ChainBriard, PlatformHost, v); return &m }
 	hostFloor := func(v, floor string) *Manifest {
@@ -66,9 +66,9 @@ func TestDecide(t *testing.T) {
 		{"exact whose manifest names another version is refused", next, *host(cur), host(old), stable, false, ErrManifest},
 		{"a crossed chain is refused, not compared", TargetStable, *host(next), func() *Manifest { m := man(ChainVM, PlatformVM, "vm.20260901.x"); return &m }(), nil, false, ErrWrongChain},
 		{"a non-numeric date field is refused", TargetStable, *host("v3.dirty"), host(cur), nil, false, ErrManifest},
-		// THE UPGRADE FLOOR. The floor is a fact about (installed, offered), not
-		// about the target word, so all three targets are floored -- the release cannot complete
-		// the upgrade whichever word asked for it. A fresh install has no past to be too old for.
+		// The upgrade floor is a fact about (installed, offered), not the target word, so all three
+		// targets are floored: the release cannot complete the upgrade whichever word asked for it.
+		// A fresh install has no past to be too old for.
 		{"the floor refuses an older installed release on stable", TargetStable, *hostFloor(next, cur), host(old), nil, false, ErrTooOldToUpgrade},
 		{"the floor refuses on latest too -- no target crosses it", TargetLatest, *hostFloor(next, cur), host(old), nil, false, ErrTooOldToUpgrade},
 		{"the floor refuses an exact pin too", next, *hostFloor(next, cur), host(old), stable, false, ErrTooOldToUpgrade},
@@ -77,7 +77,7 @@ func TestDecide(t *testing.T) {
 		{"a fresh install is never floored", TargetStable, *hostFloor(next, cur), nil, nil, true, nil},
 		{"no floor declared is the normal state", TargetStable, *host(next), host(old), nil, true, nil},
 		{"a floor with no date field is a malformed manifest, not a refusal", TargetStable, *hostFloor(next, "v3.dirty"), host(old), nil, false, ErrManifest},
-		// THE TWO FORMS OF THE DATE FIELD. A commit's YYMMDDHH sits above every older YYYYMMDD, so
+		// The two forms of the date field: a commit's YYMMDDHH sits above every older YYYYMMDD, so
 		// an agent on the old form takes the first new id as newer, a second release the same day
 		// orders after the first, and a floor or stable on the old form never blocks the new one.
 		{"a YYMMDDHH stable installs over a YYYYMMDD of the same day", TargetStable, *host("v3.26090514.eeeeeee"), host("v3.20260905.bbbbbbb"), nil, true, nil},
@@ -108,8 +108,8 @@ func TestDecide(t *testing.T) {
 	}
 }
 
-// fakeAgent stands in for the agent's OS service the updater stops and starts and for the qemu smoke test:
-// it records every call, and fails where a test tells it to.
+// fakeAgent stands in for the agent's OS service the updater stops and starts and for the qemu
+// smoke test: it records every call, and fails where a test tells it to.
 type fakeAgent struct {
 	stops    []time.Duration // the patience of each stop, in order
 	starts   int
@@ -483,7 +483,7 @@ func TestUpdateIsANoOpAtTheTarget(t *testing.T) {
 	assertNothingStaged(t, l)
 }
 
-// The stable path orders on the date: an installed release NEWER than stable (a pin) is left
+// The stable path orders on the date: an installed release newer than stable (a pin) is left
 // alone, an older one is moved forward.
 func TestUpdateStableOrdersOnTheDate(t *testing.T) {
 	c := goodChannel(t)
@@ -515,7 +515,7 @@ func TestUpdateStableOrdersOnTheDate(t *testing.T) {
 // An exact pin below stable is refused loudly, with nothing staged — the floor.
 func TestUpdateRefusesAPinBelowStable(t *testing.T) {
 	c := goodChannel(t)
-	// stable = the fixture's release; publish an OLDER exact version beside it.
+	// stable = the fixture's release; publish an older exact version beside it.
 	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
 		c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformHost+"/"+n] = c.bodies[pointerPath(n)]
 	}
@@ -533,7 +533,7 @@ func TestUpdateRefusesAPinBelowStable(t *testing.T) {
 	}
 	assertNothingStaged(t, l)
 
-	// The failable control: with stable MOVED to the old version, the same pin is accepted.
+	// The failable control: with stable moved to the old version, the same pin is accepted.
 	c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformHost+"/"+ManifestName] = mb
 	c.bodies[ChainBriard+"/"+TargetStable+"/"+PlatformHost+"/"+ManifestName+sigSuffix] = ed25519.Sign(c.priv, mb)
 	if _, err := u.Run(context.Background(), oldV); err != nil {
@@ -568,8 +568,7 @@ func TestUpdateRefusesAnUnknownPin(t *testing.T) {
 }
 
 // bundleChannel is a release of the briard bundle without its guest bundle: an agent, a net-wrap,
-// and a real (tiny)
-// qemu-bundle.tar.zst whose tree holds bin/qemu-system-x86_64 and PROVENANCE.
+// and a real (tiny) qemu-bundle.tar.zst whose tree holds bin/qemu-system-x86_64 and PROVENANCE.
 func bundleChannel(t *testing.T, provenance string) *channel {
 	t.Helper()
 	agent := []byte("the briard-agent static binary")
@@ -674,7 +673,7 @@ func TestUpdateSwapsTheWholeBundle(t *testing.T) {
 	assertNoOrphans(t, l)
 }
 
-// Download only what changed: an installed manifest pinning net-wrap and qemu at the SAME
+// Download only what changed: an installed manifest pinning net-wrap and qemu at the same
 // hashes as the target means neither is fetched -- proven by making both 404, which the run
 // must never notice -- and neither is staged; the agent alone moves.
 func TestUpdateFetchesOnlyWhatChanged(t *testing.T) {
@@ -704,7 +703,7 @@ func TestUpdateFetchesOnlyWhatChanged(t *testing.T) {
 }
 
 // A stale bundle candidate -- qemu.next and net-wrap.next left by a run that never swapped
-// -- is dropped before a release that does NOT change them is staged; otherwise the swap
+// -- is dropped before a release that does not change them is staged; otherwise the swap
 // would pair this agent with that qemu, a combination nothing tested.
 func TestUpdateDropsAStaleBundleCandidate(t *testing.T) {
 	c := bundleChannel(t, "same")
@@ -767,7 +766,7 @@ func TestUpdateReusesAnExtractedQEMUTree(t *testing.T) {
 	}
 }
 
-// Refuse-and-stay covers the bundle: a tampered qemu tarball (fetched AFTER the agent) leaves
+// Refuse-and-stay covers the bundle: a tampered qemu tarball (fetched after the agent) leaves
 // no agent.next, no net-wrap.next, no qemu.next, no tree and nothing swapped. And a tarball that
 // verifies but will not unpack is refused the same way.
 func TestUpdateRefusesATamperedOrBrokenBundle(t *testing.T) {
@@ -908,14 +907,12 @@ func TestWriteManifestPairingFields(t *testing.T) {
 	}
 }
 
-// install.sh is an ORDINARY ARTIFACT of the briard chain's linux arm, hashed and
-// mode-recorded like every other file in the directory.
-//
-// This looks tautological -- WriteManifest walks the directory, so of course it is included --
-// and that is exactly why it is worth pinning. The excluded set is a hand-written map, and
-// "tidying" the installer out of the manifest would break the one property the unsigned root
-// copy has. `verify` asserts the root equals these bytes, so no hash here means
-// nothing at all ties what a stranger curls to a release we signed.
+// install.sh is an ordinary artifact of the briard chain's linux arm, hashed and mode-recorded like
+// every other file in the directory. Tautological-looking (WriteManifest walks the directory),
+// which is why it is pinned: the excluded set is a hand-written map, and "tidying" the installer
+// out would break the one property the unsigned root copy has. `verify` asserts the root equals
+// these bytes, so with no hash here nothing at all ties what a stranger curls to a release we
+// signed.
 func TestWriteManifestCarriesTheInstaller(t *testing.T) {
 	stage := t.TempDir()
 	os.WriteFile(filepath.Join(stage, "briard-agent"), []byte("agent"), 0o755)
@@ -947,28 +944,26 @@ func TestWriteManifestCarriesTheInstaller(t *testing.T) {
 	}
 }
 
-// THE KIND IS A STRING THE JOURNAL AND A HUMAN BOTH READ, so its VALUE is pinned
-// here and not only its identifier. Every Go call site names the constant, which means a changed
-// value compiles, passes every table above, and breaks exactly two things this suite cannot see:
-// `briard directive <kind>` typed by hand at a node, and the fleet tests that wait on
-// `directive update-vm …` lines by text.
-// Those waits fail by TIMEOUT, so without this the cheapest signal for a one-character slip is a
-// fleet run measured in tens of minutes.
+// The kind is a string the journal and a human both read, so its value is pinned, not only its
+// identifier. Every Go call site names the constant, so a changed value compiles, passes every
+// table above, and breaks exactly two things this suite cannot see: `briard directive <kind>`
+// typed by hand at a node, and the fleet tests that wait on `directive update-vm …` lines by text.
+// Those waits fail by timeout, so without this a one-character slip costs a fleet run of tens of
+// minutes to find.
 func TestUpdateVMDirectiveKindIsWhatTheJournalSays(t *testing.T) {
 	if DirectiveUpdateVM != "update-vm" {
 		t.Fatalf("DirectiveUpdateVM = %q — the fleet tests wait on `directive update-vm` by text", DirectiveUpdateVM)
 	}
 }
 
-// THE FLOOR IS A FACT ABOUT THE TREE, so the binary that writes a manifest is the one that
-// answers it -- there is no flag and nothing for a publish to remember. Briard chain
-// only: the VM image is replaced whole and has no past of its own to be too old for.
+// The floor is a fact about the tree, so the binary that writes a manifest answers it: no flag,
+// nothing for a publish to remember. Briard chain only: the VM image is replaced whole and has no
+// past of its own to be too old for.
 //
 // ⚠️ The test sets the floor itself rather than reading the tree's value: a wiring assertion
-// against a value that never varies could not fail, and the failure it exists
-// to catch is exactly the silent one -- a manifest published with no floor on a release that
-// declared one, which refuses nothing and is indistinguishable from a release that declared
-// nothing.
+// against a value that never varies could not fail, and the failure it catches is the silent one:
+// a manifest published with no floor on a release that declared one (it refuses nothing and is
+// indistinguishable from a release that declared nothing).
 func TestWriteManifestCarriesTheTreesFloor(t *testing.T) {
 	was := MinUpgradeFrom
 	t.Cleanup(func() { MinUpgradeFrom = was })
@@ -1006,11 +1001,10 @@ func TestWriteManifestCarriesTheTreesFloor(t *testing.T) {
 	}
 }
 
-// THE REFUSAL IS A PRODUCT SURFACE, not just an error value. A node that cannot be
-// upgraded any further has exactly one remedy under the alpha's reinstall-only policy, and the
-// refusal is where its owner finds that out -- so the words are asserted, not just the sentinel.
-// Both ids appear because "too old" is meaningless without the pair: what is installed, and what
-// it would have to be.
+// The refusal is a product surface, not just an error value: a node that cannot be upgraded further
+// has exactly one remedy under the alpha's reinstall-only policy, and the refusal is where its
+// owner learns it, so the words are asserted, not just the sentinel. Both ids appear because "too
+// old" is meaningless without the pair: what is installed, and what it would have to be.
 func TestUpgradeFloorRefusalNamesTheRemedyAndBothIds(t *testing.T) {
 	want := man(ChainBriard, PlatformHost, "v3.20260921.bbb2222")
 	want.MinUpgradeFrom = "v3.20260920.aaa1111"
@@ -1026,14 +1020,12 @@ func TestUpgradeFloorRefusalNamesTheRemedyAndBothIds(t *testing.T) {
 	}
 }
 
-// THE NO-OP LINE IS A PRODUCT SURFACE. A bare `briard update` resolves `stable`, so the stable
+// The no-op line is a product surface. A bare `briard update` resolves `stable`, so the stable
 // branch is the one an up-to-date node meets, and it must print the shared "already at <id>":
-// host-agent rigs assert that wording, and an hour of VM suite is a slow way to catch a string,
-// which is why it is asserted here.
-//
-// The distinction is worth keeping, not flattening: EQUAL means nothing is owed and reads as
-// "already at X" (what agent/cli/cli.go's help row promises the verb prints); genuinely PAST
-// stable is a pin, and saying so is the point.
+// host-agent rigs assert that wording, and an hour of VM suite is a slow way to catch a string.
+// The distinction is worth keeping, not flattening: equal means nothing is owed and reads "already
+// at X" (what agent/cli/cli.go's help row promises the verb prints); genuinely past stable is a
+// pin, and saying so is the point.
 func TestStableNoOpSaysAlreadyAtWhenTheInstalledReleaseIsTheTarget(t *testing.T) {
 	at := man(ChainBriard, PlatformHost, "v3.20260906.aaaaaaa")
 	d, err := Decide(TargetStable, at, &at, nil)
@@ -1043,7 +1035,7 @@ func TestStableNoOpSaysAlreadyAtWhenTheInstalledReleaseIsTheTarget(t *testing.T)
 	if !strings.Contains(d.Reason, "already at "+at.Version) {
 		t.Errorf("an up-to-date node reads %q, want `already at %s`", d.Reason, at.Version)
 	}
-	// A node PAST stable is a pin, and keeps the line that says so.
+	// A node past stable is a pin, and keeps the line that says so.
 	pinned := man(ChainBriard, PlatformHost, "v3.20260910.ccccccc")
 	d, err = Decide(TargetStable, at, &pinned, nil)
 	if err != nil || d.Install {
@@ -1054,18 +1046,17 @@ func TestStableNoOpSaysAlreadyAtWhenTheInstalledReleaseIsTheTarget(t *testing.T)
 	}
 }
 
-// THE FLOOR THIS TREE ACTUALLY DECLARES. Pinned as a literal so
-// that raising or clearing it is a deliberate edit with a failing test beside it, never a drift:
-// the value decides whether every installed node below it is told to reinstall, which is the
-// loudest thing this product says to an owner.
+// The floor this tree actually declares, pinned as a literal so raising or clearing it is a
+// deliberate edit with a failing test beside it, never a drift: the value decides whether every
+// installed node below it is told to reinstall, the loudest thing this product says to an owner.
 //
-// WHY THIS VALUE. The data volume is formatted with simple quotas and every subvolume is born into
+// Why this value: the data volume is formatted with simple quotas and every subvolume is born into
 // the quota tree, which an existing volume cannot be converted to; its areas sit tier first
 // (data/, files/, cache/, unversioned/), the installed manifests in .apps/, on the VG briardvol;
 // and the guest's verbs are app.*. No earlier release's volume or guest can be carried across
-// that, so a floor turns the attempt into one refusal that names the remedy, with the node still
-// serving its old release. Comparison is on the DATE: every release from 26110216 on can upgrade
-// among themselves; everything older must reinstall.
+// that, so the floor turns the attempt into one refusal naming the remedy, the node still serving
+// its old release. Comparison is on the date: every release from 26110216 on can upgrade among
+// themselves; everything older must reinstall.
 func TestTheTreeDeclaresTheFloorItMeansTo(t *testing.T) {
 	const want = "v3.26110216.07bf1e6"
 	if MinUpgradeFrom != want {
@@ -1094,10 +1085,10 @@ func armOf(chain string) string {
 	return PlatformHost
 }
 
-// A NODE THE USER STOPPED IS NOT UPDATED: the run ends on the deferral -- an answer, so nothing
-// alerts -- having stopped, started and staged nothing, so the guest is not brought back. A
-// running or crashed node (Stopped false) updates, and so does one whose state could not be read:
-// the update may be its fix.
+// A node the user stopped is not updated: the run ends on the deferral (an answer, so nothing
+// alerts) having stopped, started and staged nothing, so the guest is not brought back. A running
+// or crashed node (Stopped false) updates, and so does one whose state could not be read: the
+// update may be its fix.
 func TestUpdateDefersOnAStoppedNode(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -1148,7 +1139,7 @@ func holdAgent(t *testing.T, l selfupdate.Layout) (release func()) {
 	return func() { os.RemoveAll(l.AgentPath()) }
 }
 
-// A REVERT THAT MISSES ONCE IS RETRIED, not left for the next night. The candidate does not
+// A revert that misses once is retried, not left for the next night. The candidate does not
 // start; as its stop ends, something restarts it and holds the agent's name. The revert's first
 // pass misses, the run stops the agent again (which frees it) and the second pass puts the
 // committed agent back and starts it.

@@ -65,10 +65,8 @@ func (e *eventStub) start(t *testing.T) int {
 
 // TestNudgeFiresTheEventThroughTheSameToken is the push direction end to end, minus Home
 // Assistant: read the token off tmpfs, exchange it, and POST briard's one event with the access
-// token it got back.
-//
-// EVERY FIELD IS ASSERTED because every one of them is load-bearing against the real view, and
-// three of them fail SILENTLY if they drift — a wrong path fires an event nothing listens for, a
+// token it got back. Every field is asserted because each is load-bearing against the real view,
+// and three fail silently if they drift: a wrong path fires an event nothing listens for, a
 // missing Bearer is a 401 on an admin-gated view, and a body that is not a JSON object is a 400.
 func TestNudgeFiresTheEventThroughTheSameToken(t *testing.T) {
 	e := &eventStub{}
@@ -91,7 +89,7 @@ func TestNudgeFiresTheEventThroughTheSameToken(t *testing.T) {
 	if e.ctype != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", e.ctype)
 	}
-	// THE SIGNAL CARRIES NOTHING, which is the design and not an omission: the integration
+	// The signal carries nothing, by design and not by omission: the integration
 	// re-derives its world when it wakes, so there is no state here that could be stale or wrong.
 	if e.body != "{}" {
 		t.Fatalf("the event carried %q, want the empty object", e.body)
@@ -99,7 +97,7 @@ func TestNudgeFiresTheEventThroughTheSameToken(t *testing.T) {
 }
 
 // TestNudgeReportsARefusedEvent. The caller treats a failure as "Home Assistant will pick this up
-// at its next start" and carries on, so the ONE thing this owes is not to report success — a
+// at its next start" and carries on, so the one thing this owes is not to report success — a
 // silent 403 (our system user no longer admin) would look exactly like a delivered nudge.
 func TestNudgeReportsARefusedEvent(t *testing.T) {
 	e := &eventStub{code: http.StatusForbidden}
@@ -123,10 +121,10 @@ func TestNudgeWithoutAControlTokenSaysSo(t *testing.T) {
 }
 
 // TestBothEndsSpellTheEventTheSameWay. The name is the whole contract between a Go package and a
-// Python module that never see each other, and a rename on either side is SILENT: the event is
-// fired, Home Assistant accepts it, nothing listens, and the only symptom is a broker that
-// quietly stops being offered. The port next door is substituted for exactly this reason; the
-// event name is ours on both sides, so a test is the cheaper guard than a placeholder.
+// Python module that never see each other, and a rename on either side is silent: the event is
+// fired and accepted, nothing listens, and the only symptom is a broker that quietly stops being
+// offered. The port next door is substituted for exactly this reason; the event name is ours on
+// both sides, so a test is a cheaper guard than a placeholder.
 func TestBothEndsSpellTheEventTheSameWay(t *testing.T) {
 	if !strings.Contains(implSource, `EVENT_RECONSIDER = "`+EventReconsider+`"`) {
 		t.Fatalf("the integration does not define %s as %q", "EVENT_RECONSIDER", EventReconsider)

@@ -58,7 +58,7 @@ func TestDetectNamesEachSignal(t *testing.T) {
 	}
 }
 
-// TestDetectSaysWhenACustomIntegrationIsNotLoadedYet: a sample taken while Home Assistant RUNS sees
+// TestDetectSaysWhenACustomIntegrationIsNotLoadedYet: a sample taken while Home Assistant runs sees
 // an update or a removal on disk while the old code still runs, and an install as it is.
 func TestDetectSaysWhenACustomIntegrationIsNotLoadedYet(t *testing.T) {
 	prev := sig("custom_components/frigate/manifest.json", `{"name":"Frigate","version":"1"}`,

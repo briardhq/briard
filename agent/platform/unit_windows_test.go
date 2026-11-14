@@ -13,7 +13,7 @@ import (
 )
 
 // The property the Windows backend exists for, against the real kernel: a unit started by one
-// process is still found BY NAME once that process holds no handle to it -- the agent restart.
+// process is still found by name once that process holds no handle to it -- the agent restart.
 // Without the unit's own process holding a handle, the job's name dies with the launcher's
 // handle while the job and its process live on: the regression this catches.
 // Runs on a Windows host: the cross-compiled test binary, as an administrator.
@@ -70,7 +70,7 @@ func TestUnitIsFoundByNameAfterTheLauncherLetsGo(t *testing.T) {
 	}
 }
 
-// DOWN AND STAYING DOWN is STOPPED by a clean exit. A non-zero exit -- the agent's own error, a
+// Down and staying down is Stopped by a clean exit. A non-zero exit -- the agent's own error, a
 // process ended outright -- is a failure the recovery restarts 5 s later, and a service on its way
 // up or down is neither. A service never started since its install is down too: nothing restarts it.
 func TestOnlyACleanlyStoppedServiceIsStopped(t *testing.T) {

@@ -191,11 +191,11 @@ func TestShortTokenIsReplaced(t *testing.T) {
 	}
 }
 
-// TestPrepareFailsLoudly: the alternative to an error here is a rendered unit naming a bind
-// source that does not exist. Measured: the runtime CREATES the missing source as a root-owned
-// directory and then refuses to start the container onto a file — which also poisons the path
-// for the next Prepare, since a file has to go where a directory now sits. A converge that fails
-// is strictly better than one that half-succeeds and cannot recover.
+// TestPrepareFailsLoudly: the alternative to an error is a rendered unit naming a bind source that
+// does not exist. Measured: the runtime creates the missing source as a root-owned directory, then
+// refuses to start the container onto a file, and the path stays poisoned for the next Prepare (a
+// file has to go where a directory now sits). A failed converge is strictly better than one that
+// half-succeeds and cannot recover.
 func TestPrepareFailsLoudly(t *testing.T) {
 	f := &fake{fail: func(name string, args []string) error {
 		if name == "podman" && len(args) > 0 && args[0] == "cp" {
@@ -214,9 +214,9 @@ func TestPrepareFailsLoudly(t *testing.T) {
 
 // TestVolumesAreTheImageSpecificBinds: the half of Home Assistant's binds that is Home Assistant
 // knowledge -- the s6 wrapper over a path only this image has, and the node's alert copy for the
-// integration's Repairs mirror. The app directory at /briard is the PRODUCT's general shape
-// and agent/apps writes it, so it must not appear here. Every source is outside /config, so
-// HA's restore wipe — which clears the config directory wholesale — never sees them.
+// integration's Repairs mirror. The app directory at /briard is the product's general shape and
+// agent/apps writes it, so it must not appear here. Every source is outside /config, so HA's
+// restore wipe (which clears the config directory wholesale) never sees them.
 func TestVolumesAreTheImageSpecificBinds(t *testing.T) {
 	got := Volumes(ha(), ha().Containers[0])
 	want := []string{
@@ -243,9 +243,9 @@ func TestVolumesAreTheImageSpecificBinds(t *testing.T) {
 	}
 }
 
-// TestWrapperHandsOverToTheImagesOwnScript: the wrapper must exec the EXTRACTED original, never a
-// copy of Home Assistant's launch line written by us. Authoring one is the failure mode
-// to avoid — it drifts the day upstream moves the s6 furniture, and it drifts on every node at once.
+// TestWrapperHandsOverToTheImagesOwnScript: the wrapper must exec the extracted original, never a
+// copy of Home Assistant's launch line written by us: a copy drifts the day upstream moves the s6
+// furniture, on every node at once.
 func TestWrapperHandsOverToTheImagesOwnScript(t *testing.T) {
 	if !strings.Contains(wrapperSource, "exec "+mountPoint+"/run.original") {
 		t.Fatalf("the wrapper does not hand over to the extracted original:\n%s", wrapperSource)
@@ -266,7 +266,7 @@ func TestWrapperHandsOverToTheImagesOwnScript(t *testing.T) {
 }
 
 // TestMintAsksForAdminAndPrunes: the two properties of the mint that are not obvious from
-// reading it run. Admin is what makes the token able to ACT — measured, reading config entries
+// reading it run. Admin is what makes the token able to act — measured, reading config entries
 // does not need it, but `/api/services/...` returns 401 without it — and a system user is only
 // admin through that group. The prune is what revokes a token resurrected by a backup restore.
 func TestMintAsksForAdminAndPrunes(t *testing.T) {
@@ -281,20 +281,17 @@ func TestMintAsksForAdminAndPrunes(t *testing.T) {
 	if !strings.Contains(scriptSource, "EVENT_HOMEASSISTANT_FINAL_WRITE") {
 		t.Fatal("the mint does not flush the auth store; nothing would be persisted")
 	}
-	// THE BOOTSTRAP IS BORROWED, NOT COPIED, and this is the assertion that keeps it that way.
-	// This package necessarily spans two Home Assistant releases -- an upgrade mints under the old
-	// image to take the readiness baseline and under the new one afterwards -- and the setup HA
-	// needs before its auth store will load DIFFERS between them: from 2026 the store's own load
-	// requires a device_registry.async_setup, and releases before that have no such function. A
-	// hand-written copy therefore raises AttributeError on one end of the range and RuntimeError
-	// on the other. Running
-	// HA's own `scripts/auth.run_command` and passing our mint as its callback makes the
-	// version-sensitive part someone else's to maintain, and leaves this file with no version
-	// branch at all.
+	// The bootstrap is borrowed, not copied, and this assertion keeps it so. An upgrade mints under
+	// the old image (the readiness baseline) and under the new one, and the setup HA needs before
+	// its auth store loads differs between them: from 2026 the load requires a
+	// device_registry.async_setup that earlier releases lack, so a hand-written copy raises
+	// AttributeError on one end of the range and RuntimeError on the other. Passing our mint as the
+	// callback of HA's own `scripts/auth.run_command` makes the version-sensitive part someone
+	// else's to maintain and leaves this file no version branch at all.
 	if !strings.Contains(scriptSource, "ha_auth.run_command(") {
 		t.Fatal("the mint no longer borrows HA's own bootstrap; a copy of it drifts per release")
 	}
-	// Checked on the IMPORTS, not on prose: the script's docstring names the symbols a copy would
+	// Checked on the imports, not on prose: the script's docstring names the symbols a copy would
 	// use, so a substring search over the whole file would match its own explanation.
 	for _, copied := range []string{
 		"from homeassistant.auth import auth_manager_from_config",
@@ -307,11 +304,11 @@ func TestMintAsksForAdminAndPrunes(t *testing.T) {
 	}
 }
 
-// TestExtractionRefusesWhatIsNotAScript: `podman cp` copies a DIRECTORY as happily as a file, and
-// a native s6-rc service IS a directory holding a `run`. So a layout change that turned this path
-// into a directory would otherwise mount a directory over Home Assistant's run script — the same
-// unstartable container a missing bind source produces. Anything that does not read back as a
-// non-empty file is refused.
+// TestExtractionRefusesWhatIsNotAScript: `podman cp` copies a directory as happily as a file, and
+// a native s6-rc service is a directory holding a `run`, so a layout change that turned this path
+// into a directory would otherwise mount a directory over Home Assistant's run script: the same
+// unstartable container a missing bind source produces. Anything not read back as a non-empty file
+// is refused.
 func TestExtractionRefusesWhatIsNotAScript(t *testing.T) {
 	for _, tc := range []struct{ name, extracted string }{
 		{"nothing readable", ""},
@@ -328,12 +325,12 @@ func TestExtractionRefusesWhatIsNotAScript(t *testing.T) {
 	}
 }
 
-// TestExtractionFailureNamesTheLayout is the whole of the breadth this package has, and it is
-// DIAGNOSTIC, never adaptive. The bind path is fixed when the unit is rendered, before this code
-// can look at anything, and an upstream layout change is meant to fail a blessed image in catalog
-// CI rather than be papered over on a household's node. What the search buys is that the CI
-// failure names the layout the image actually has — including the native s6-rc tree that a
-// migration off the legacy one would use — instead of an errno.
+// TestExtractionFailureNamesTheLayout is the whole of this package's breadth, and it is diagnostic,
+// never adaptive: the bind path is fixed when the unit is rendered, before this code can look at
+// anything, and an upstream layout change is meant to fail a blessed image in catalog CI, not be
+// papered over on a household's node. The search makes that CI failure name the layout the image
+// actually has (including the native s6-rc tree a migration off the legacy one would use) instead
+// of an errno.
 func TestExtractionFailureNamesTheLayout(t *testing.T) {
 	f := &fake{}
 	// The image answers the layout probe but not the script itself: the shape of an s6 service that
@@ -353,15 +350,15 @@ func TestExtractionFailureNamesTheLayout(t *testing.T) {
 			t.Fatalf("the error does not report %s, so a layout change reads as an errno: %v", root, err)
 		}
 	}
-	// And it must have LOOKED rather than guessed.
+	// And it must have looked rather than guessed.
 	if !f.ran("podman", "cp", extractCtr+":/etc/s6-overlay/s6-rc.d", Dir+"/layout") {
 		t.Fatalf("the native s6-rc tree was never probed; ran: %v", f.runs)
 	}
 }
 
 // TestPrepareMaterialisesTheIntegration — briard's own integration is delivered the same way the
-// mint is, and the broker's port is SUBSTITUTED rather than hardcoded. The port belongs
-// to the other app, so it arrives from the registry; what this checks is that it lands.
+// mint is, and the broker's port is substituted rather than hardcoded: it belongs to the other
+// app, so it arrives from the registry, and this checks that it lands.
 func TestPrepareMaterialisesTheIntegration(t *testing.T) {
 	f := withImage()
 	if err := Prepare(context.Background(), f, ha(), 1883); err != nil {
@@ -413,9 +410,9 @@ func TestPrepareMaterialisesTheIntegration(t *testing.T) {
 			t.Errorf("%s was not staged; the planter would copy a missing file", p)
 		}
 	}
-	// THE STUB AND THE IMPLEMENTATION AGREE ON THE PATH, and nothing else checks it: the stub
-	// carries it as a literal because it is a permanent ABI that outlives the briard that wrote
-	// it, so a change on this side that did not reach it would silently stop resolving.
+	// The stub and the implementation agree on the path, and nothing else checks it: the stub
+	// carries it as a literal (a permanent ABI that outlives the briard that wrote it), so a change
+	// on this side that did not reach it would silently stop resolving.
 	if !strings.Contains(stubSource, mountPoint+"/integration") {
 		t.Errorf("the stub does not look for the implementation where Prepare mounts it")
 	}
@@ -440,9 +437,9 @@ func TestPrepareRefusesAnIntegrationThatLostItsPlaceholder(t *testing.T) {
 
 // TestStubDelegatesAndSurvivesAnAbsentImplementation — the stub is the one artifact that outlives
 // the briard that wrote it: a household's backup carries it, and restoring that backup onto a
-// Home Assistant with no briard brings this exact file back. So it must do one thing and it must
-// not fail when the implementation is not mounted — an integration that raises would be a red
-// error in a house briard does not even manage.
+// Home Assistant with no briard brings this exact file back. So it must do one thing and not fail
+// when the implementation is not mounted: an integration that raises would be a red error in a
+// house briard does not even manage.
 func TestStubDelegatesAndSurvivesAnAbsentImplementation(t *testing.T) {
 	if !strings.Contains(stubSource, "except ImportError:") {
 		t.Error("the stub does not survive an absent implementation")
@@ -450,7 +447,7 @@ func TestStubDelegatesAndSurvivesAnAbsentImplementation(t *testing.T) {
 	if !strings.Contains(stubSource, "return await impl.async_setup(hass, config)") {
 		t.Error("the stub does not delegate async_setup")
 	}
-	// OFF THE LOOP: Home Assistant flags an import made on its event loop at every start,
+	// Off the loop: Home Assistant flags an import made on its event loop at every start,
 	// and refuses some blocking calls from custom integrations outright.
 	if strings.Contains(stubSource, "impl = importlib.import_module(") || !strings.Contains(stubSource, "async_add_import_executor_job") {
 		t.Error("the stub imports the implementation on the event loop")
@@ -467,27 +464,25 @@ func TestStubDelegatesAndSurvivesAnAbsentImplementation(t *testing.T) {
 	if strings.Contains(stubManifest, "config_flow") {
 		t.Errorf("the stub declares a config flow; it would be UI-visible and deletable:\n%s", stubManifest)
 	}
-	// A custom integration with no `version` is BLOCKED FROM LOADING by HA's loader, with an
-	// error and no other symptom.
+	// HA's loader blocks a custom integration with no `version` from loading, with an error and no
+	// other symptom.
 	if !strings.Contains(stubManifest, `"version"`) {
 		t.Errorf("the stub's manifest has no version; HA blocks it from loading:\n%s", stubManifest)
 	}
 }
 
-// TestWrapperIsAWellFormedScript — the cheapest possible guard on the file we mount over Home
-// Assistant's own `run`. Without a shebang every other Go test still passes, and s6 answers with
-// `unable to spawn ./run (waiting 60 seconds): Exec format error` and retries forever, so HA
-// never starts at all.
-//
-// Asserted on the EMBEDDED source rather than on what Prepare wrote, because the defect is in the
-// file as shipped: by the time it reaches a node it is already too late to be a unit test.
+// TestWrapperIsAWellFormedScript — the cheapest guard on the file we mount over Home Assistant's
+// own `run`. Without a shebang every other Go test still passes, and s6 answers `unable to spawn
+// ./run (waiting 60 seconds): Exec format error` and retries forever, so HA never starts. Asserted
+// on the embedded source, not on what Prepare wrote: the defect is in the file as shipped, and on
+// a node it is too late to be a unit test.
 func TestWrapperIsAWellFormedScript(t *testing.T) {
 	if !strings.HasPrefix(wrapperSource, "#!") {
 		t.Fatalf("the wrapper has no shebang; s6 cannot spawn it at all:\n%.80s", wrapperSource)
 	}
-	// It must END by handing over to the image's own run -- at the path the CONTAINER sees, which
-	// is the mount point and not the node's. Anything after the exec is dead code, and anything
-	// instead of it is briard authoring HA's bootstrap rather than relaying it.
+	// It must end by handing over to the image's own run, at the path the container sees (the mount
+	// point, not the node's). Anything after the exec is dead code; anything instead of it is
+	// briard authoring HA's bootstrap rather than relaying it.
 	handover := "exec " + mountPoint + "/run.original"
 	if !strings.HasSuffix(strings.TrimSpace(wrapperSource), handover) {
 		t.Errorf("the wrapper does not end with %q; it would not hand over", handover)
@@ -497,9 +492,9 @@ func TestWrapperIsAWellFormedScript(t *testing.T) {
 	if !strings.Contains(wrapperSource, mountPoint+"/plant.py") {
 		t.Error("the wrapper does not run the planter")
 	}
-	// THE NOTIFIER IS FIRST, and the ORDER is the property: the two steps after it
-	// write into /config, so a rollback point taken after them already contains briard's own
-	// edits. Asserted by position rather than by presence.
+	// The notifier is first, and the order is the property: the two steps after it write into
+	// /config, so a rollback point taken after them already contains briard's own edits. Asserted
+	// by position, not presence.
 	ni := strings.Index(wrapperSource, mountPoint+"/notify.py")
 	if ni < 0 {
 		t.Fatal("the wrapper does not tell the agent the app is starting")
@@ -509,9 +504,9 @@ func TestWrapperIsAWellFormedScript(t *testing.T) {
 			t.Errorf("%s runs before the notifier; the member would contain our own writes", later)
 		}
 	}
-	// EVERY STEP IS UNFAILABLE. The wrapper may never cost a household its Home Assistant, which
-	// is what `|| true` on each buys -- and the notifier is the likeliest to fail of the three,
-	// since it alone depends on something outside the container answering.
+	// Every step is unfailable (`|| true`): the wrapper may never cost a household its Home
+	// Assistant. The notifier is the likeliest of the three to fail, since it alone depends on
+	// something outside the container answering.
 	for _, line := range strings.Split(wrapperSource, "\n") {
 		if strings.HasPrefix(line, "python3 ") && !strings.HasSuffix(strings.TrimSpace(line), "|| true") {
 			t.Errorf("a wrapper step can fail the app: %q", line)
@@ -557,7 +552,7 @@ func TestExternalURLOnlyForAResolvingName(t *testing.T) {
 	}
 }
 
-// THE CONFIG DIRECTORY IS THE DATA MOUNT AT /config, whatever else is mounted and in whatever
+// The config directory is the data mount at /config, whatever else is mounted and in whatever
 // order: its backups mounted inside it are not it, and /config from any tier but the data's is
 // not a directory the History holds.
 func TestConfigDirIsTheDataMountAtConfig(t *testing.T) {

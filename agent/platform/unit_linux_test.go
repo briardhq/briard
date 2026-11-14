@@ -2,7 +2,7 @@ package platform
 
 import "testing"
 
-// DOWN AND STAYING DOWN is "inactive" alone. A failed unit needs someone, and one waiting out its
+// Down and staying down is "inactive" alone. A failed unit needs someone, and one waiting out its
 // RestartSec reads "activating" -- both are on their way back or broken, and the update must
 // still reach them (it may be the fix), so neither reads as a node the user stopped.
 func TestOnlyAnInactiveUnitIsStopped(t *testing.T) {

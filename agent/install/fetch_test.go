@@ -151,7 +151,7 @@ func stagedFresh(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "staging")
 }
 
-// assertRefused checks that a negative path both returned the wanted error AND left nothing
+// assertRefused checks that a negative path both returned the wanted error and left nothing
 // behind: dest absent and no orphaned .briard-stage- temp dir (the all-or-nothing property).
 func assertRefused(t *testing.T, dest string, err, want error) {
 	t.Helper()
@@ -211,11 +211,11 @@ func TestFetchVerifiedStagesTheSignedSet(t *testing.T) {
 }
 
 // The load-bearing negatives (each able to fail): each one
-// must refuse AND leave the staging dest pristine.
+// must refuse and leave the staging dest pristine.
 
 func TestFetchVerifiedRefusesTamperedArtifact(t *testing.T) {
 	c := goodChannel(t)
-	// Serve DIFFERENT bytes for the guest image than the (correctly signed) manifest pins.
+	// Serve different bytes for the guest image than the (correctly signed) manifest pins.
 	c.bodies[releasePath("nixos.qcow2")] = append(c.bodies[releasePath("nixos.qcow2")], []byte("EVIL PAYLOAD")...)
 	dest := stagedFresh(t)
 	assertRefused(t, dest, c.fetchLatest(dest), ErrArtifactMismatch)
@@ -223,7 +223,7 @@ func TestFetchVerifiedRefusesTamperedArtifact(t *testing.T) {
 
 func TestFetchVerifiedRefusesTamperedManifest(t *testing.T) {
 	c := goodChannel(t)
-	// The manifest bytes were signed; now serve a DIFFERENT manifest body under the same name,
+	// The manifest bytes were signed; now serve a different manifest body under the same name,
 	// so the (still-served) signature no longer verifies it.
 	c.bodies[pointerPath(ManifestName)] = append(c.bodies[pointerPath(ManifestName)], ' ')
 	dest := stagedFresh(t)
@@ -243,7 +243,7 @@ func TestFetchVerifiedFailsClosedWithoutKeyring(t *testing.T) {
 	f := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: PlatformHost, Keyring: nil} // no ring wired
 	assertRefused(t, dest, f.FetchVerified(context.Background(), TargetLatest, dest), ErrNoKeyring)
 
-	// An EMPTY (but non-nil) ring is equally fail-closed.
+	// An empty (but non-nil) ring is equally fail-closed.
 	empty, err := selfupdate.NewKeyring()
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +253,7 @@ func TestFetchVerifiedFailsClosedWithoutKeyring(t *testing.T) {
 	assertRefused(t, dest2, f2.FetchVerified(context.Background(), TargetLatest, dest2), ErrNoKeyring)
 }
 
-// A genuine, correctly signed manifest for the OTHER chain is refused: the signature proves the
+// A genuine, correctly signed manifest for the other chain is refused: the signature proves the
 // bytes are ours, the chain field proves they are the wrong release line, and a fetch that
 // accepted them would install a briard bundle where the VM image was expected (or compare a
 // vm version against a briard one and silently no-op, which is the failure the update verb exists
@@ -336,9 +336,9 @@ func TestFetchVerifiedRefusesPreexistingDest(t *testing.T) {
 
 // ---- compressed artifacts (.zst) --------------------------------------------------------
 //
-// The big two ship compressed and are expanded HERE, after the signed-hash check. These tests
-// pin both halves of that: the expansion happens at all, and it happens only downstream of
-// verification — a tampered .zst must be refused without ever reaching the decoder.
+// The big two ship compressed and are expanded here, after the signed-hash check. These tests pin
+// both halves: the expansion happens at all, and only downstream of verification (a tampered .zst
+// is refused without ever reaching the decoder).
 
 // zstdOf compresses b the way the release pipeline does.
 func zstdOf(t *testing.T, b []byte) []byte {
@@ -410,7 +410,7 @@ func TestFetchVerifiedExpandsCompressedArtifacts(t *testing.T) {
 	}
 }
 
-// The ordering assertion: corrupt the COMPRESSED bytes and the fetch must die on the hash, with
+// The ordering assertion: corrupt the compressed bytes and the fetch must die on the hash, with
 // nothing expanded and nothing committed. If expansion ever moved upstream of verification this
 // is the test that fails.
 func TestFetchVerifiedRefusesTamperedCompressedArtifact(t *testing.T) {
@@ -444,10 +444,10 @@ func TestFetchVerifiedRefusesUndecodableCompressedArtifact(t *testing.T) {
 
 // ---- the writer/reader round trip -------------------------------------------------------
 //
-// The point of WriteManifest existing at all: the bytes the release publishes are described by
-// the same code that later reads them. This drives the REAL writer over a staging dir, signs its
-// output, serves it, and runs the REAL FetchVerified against it — so a format change that breaks
-// the contract fails here rather than at a stranger's first install.
+// WriteManifest exists so the bytes the release publishes are described by the same code that
+// reads them. This runs the real writer over a staging dir, signs and serves its output, and runs
+// the real FetchVerified against it, so a format change that breaks the contract fails here rather
+// than at a stranger's first install.
 
 func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	stage := t.TempDir()
@@ -483,7 +483,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	if len(man.Artifacts) != 2 {
 		t.Fatalf("manifest lists %d artifacts, want 2: %+v", len(man.Artifacts), man.Artifacts)
 	}
-	// The mode round-trips as a NUMBER the reader applies, and is omitted at the 0644 default.
+	// The mode round-trips as a number the reader applies, and is omitted at the 0644 default.
 	for _, a := range man.Artifacts {
 		if a.Name == "briard-agent" && a.Mode != 0o755 {
 			t.Errorf("agent mode = %o, want 0755", a.Mode)
@@ -492,7 +492,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 			t.Errorf("0644 artifact emitted a mode (%o); want omitted", a.Mode)
 		}
 	}
-	// Running the writer AGAIN over its own output must not list the manifest as an artifact
+	// Running the writer again over its own output must not list the manifest as an artifact
 	// of itself -- the one file a release directory holds that the manifest cannot name.
 	if err := WriteManifest(stage, ChainBriard, PlatformHost, testVersion, "", "", "", ""); err != nil {
 		t.Fatalf("WriteManifest (second pass): %v", err)
@@ -570,7 +570,7 @@ func TestWriteManifestRefusesUnusableIds(t *testing.T) {
 // and it is an anti-substitution property: a signed manifest says where its own bytes live.
 func TestFetchVerifiedResolvesArtifactsAgainstTheManifestVersion(t *testing.T) {
 	c, guest := compressedChannel(t)
-	// The channel as published: artifacts ONLY under the versioned directory. (The pointer
+	// The channel as published: artifacts only under the versioned directory. (The pointer
 	// serves the manifest, which is how the fixture is built.)
 	dest := stagedFresh(t)
 	if err := c.fetchLatest(dest); err != nil {
@@ -584,7 +584,7 @@ func TestFetchVerifiedResolvesArtifactsAgainstTheManifestVersion(t *testing.T) {
 		t.Error("image fetched from the versioned directory differs")
 	}
 
-	// The failable control: move every artifact to sit BESIDE the pointer's manifest and away
+	// The failable control: move every artifact to sit beside the pointer's manifest and away
 	// from the versioned directory. A fetcher that resolved against the fetched path would now
 	// succeed; the real one must fail, because the manifest says the bytes live elsewhere.
 	moved := map[string][]byte{}
@@ -659,7 +659,7 @@ func TestFetchVerifiedHandlesTheVMChain(t *testing.T) {
 	}
 }
 
-// THE SKIP-WHAT-IS-VERIFIED RULE: a release whose vm pair is the image already installed fetches
+// The skip-what-is-verified rule: a release whose vm pair is the image already installed fetches
 // the briard chain alone, and dest carries no vm set -- the install keeps the image it has. Any
 // other installed image, or none, fetches the pair.
 func TestFetchReleaseSkipsTheInstalledImage(t *testing.T) {

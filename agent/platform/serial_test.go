@@ -6,12 +6,10 @@ import (
 	"testing"
 )
 
-// prepareSerialLog is a disk-fill guard and a permission guard on a file qemu opens, and both
-// halves are things a node only finds out about months later -- so they are asserted here rather
-// than left to the one rig that boots a guest.
-//
-// Its whole contract is: bound the capture, own the mode, and NEVER be a reason a guest does not
-// launch.
+// prepareSerialLog is a disk-fill guard and a permission guard on a file qemu opens, both things a
+// node finds out about only months later, so they are asserted here rather than left to the one
+// rig that boots a guest. Its whole contract: bound the capture, own the mode, and never be a
+// reason a guest does not launch.
 
 // A capture past the cap rolls to .prev, and the file the next boot writes to starts empty. One
 // generation, so the pair costs at most 2x the cap.
@@ -38,7 +36,7 @@ func TestPrepareSerialLogRollsPastTheCap(t *testing.T) {
 	}
 }
 
-// ⚠️ A capture UNDER the cap is left alone, and this is the assertion that keeps the guard from
+// ⚠️ A capture under the cap is left alone, and this is the assertion that keeps the guard from
 // eating the evidence: rolling on every launch would discard the boot before the one that failed,
 // which is the exact loss appending exists to prevent (serialArgs).
 func TestPrepareSerialLogLeavesASmallCaptureAlone(t *testing.T) {
@@ -58,7 +56,7 @@ func TestPrepareSerialLogLeavesASmallCaptureAlone(t *testing.T) {
 	}
 }
 
-// The mode is OURS, on every launch. A guest console carries the household's hostnames and
+// The mode is ours, on every launch. A guest console carries the household's hostnames and
 // addresses: not secret, not public. Asserted on a file that already exists with a looser mode,
 // because that is the case a one-shot pre-create at install time would never reach -- a file an
 // earlier release left, or anything else that touched it.
@@ -92,9 +90,9 @@ func TestPrepareSerialLogWithNoCaptureCreatesNothing(t *testing.T) {
 	}
 }
 
-// ⚠️ NEVER A REASON A GUEST DOES NOT LAUNCH. A host with a read-only or absent /var/log is a host
-// whose logging convenience fails; it is not a host that should refuse to run its apps, so the
-// property is pinned rather than assumed.
+// ⚠️ Never a reason a guest does not launch: a host with a read-only or absent /var/log has lost a
+// logging convenience, not a reason to refuse to run its apps, so the property is pinned rather
+// than assumed.
 func TestPrepareSerialLogSurvivesAnUnwritablePath(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "ro")
 	if err := os.Mkdir(dir, 0o500); err != nil {
@@ -104,10 +102,10 @@ func TestPrepareSerialLogSurvivesAnUnwritablePath(t *testing.T) {
 	prepareSerialLog(filepath.Join(dir, "console.log"))
 }
 
-// THE LAST WORDS. The ladder decides on silence and then reads the logs to say why; what it
-// reads has to be the lines that carry the cause -- the end of the file, speaking lines only, in
-// order, with a console's carriage returns and escapes dropped and a runaway line cut -- and it
-// has to cost one small read however large the capture has grown.
+// The last words. The ladder decides on silence, then reads the logs to say why, so it must read
+// the lines carrying the cause (the end of the file, speaking lines only, in order, a console's
+// carriage returns and escapes dropped, a runaway line cut) at the cost of one small read however
+// large the capture has grown.
 func TestLastLinesKeepsTheSpeakingTail(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "console.log")
