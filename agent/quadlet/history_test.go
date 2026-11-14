@@ -304,7 +304,7 @@ func TestRetentionWaitsForEvaluation(t *testing.T) {
 	}
 }
 
-// TestHistoryCaptionsUnhealthy (owner, 2026-09-27): `unhealthy` is never in a title. A row that
+// TestHistoryCaptionsUnhealthy: `unhealthy` is never in a title. A row that
 // carries it gets the red caption, alone or beside other reasons, and no other row does.
 func TestHistoryCaptionsUnhealthy(t *testing.T) {
 	alone := anchor(TriggerClock, 3*time.Hour, ReasonUnhealthy, time.Hour, "")
@@ -371,7 +371,7 @@ func TestTheRecorderRestoreSampleIsABeforeSample(t *testing.T) {
 	if !ok || svc != "home-assistant" || tr != TriggerHassDBRestoreBefore || !got.Equal(at) {
 		t.Fatalf("parsed %q %q %v %t", svc, tr, got, ok)
 	}
-	// The older trigger whose name it contains still parses as itself.
+	// The trigger it shares `restore-before` with still parses as itself.
 	if _, tr, _, _ := ParseSnapshotMember(SnapshotMember("home-assistant", TriggerHassRestoreBefore, at)); tr != TriggerHassRestoreBefore {
 		t.Fatalf("hass-restore-before parsed as %q", tr)
 	}
@@ -379,7 +379,8 @@ func TestTheRecorderRestoreSampleIsABeforeSample(t *testing.T) {
 
 // TestAMemberFromTheBackupIsABeforeSampleAndTheNewest: nothing is compared against it (the app
 // never ran on it), its name reads back, and -- stamped when it was materialised -- it is the
-// newest member, which is what keeps the prune off it until the restore has used it.
+// newest member, so the prune leaves it. Being the newest is not what carries it through its
+// restore (the undo point taken next is newer): the from-backup rule does that, tested below.
 func TestAMemberFromTheBackupIsABeforeSampleAndTheNewest(t *testing.T) {
 	if !TriggerFromBackup.Before() {
 		t.Fatal("from-backup is not a *-before sample")

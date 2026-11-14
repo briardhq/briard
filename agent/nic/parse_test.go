@@ -7,11 +7,11 @@ import (
 
 // THE FORMAT HANDLING, AGAINST REAL OUTPUT.
 //
-// Every fixture below is a verbatim capture from a running kernel (brie, 2026-09-21) rather than
-// something written to match the parser -- which is the point of the split these tests exist to
-// pay for. The readers above them do one os.ReadFile each and nothing else, so what is left to be
-// wrong is here, where a test can reach it: the hex encodings, the completeness flag, and the
-// depth of a symlink.
+// The kernel fixtures below (procNetRoute, procNetARP, the interface flags) are verbatim captures
+// from a running kernel rather than something written to match the parser -- which is the point
+// of the split these tests exist to pay for. The readers in link_linux.go do one file read (or
+// readlink) each and nothing else, so what is left to be wrong is here, where a test can reach
+// it: the hex encodings, the completeness flag, and the depth of a symlink.
 
 // procNetRoute as the kernel renders it: the machine's default is on eno1, and three other
 // devices hold connected routes. Note the trailing whitespace the kernel pads each row with.
@@ -142,7 +142,7 @@ func TestParseARPMAC(t *testing.T) {
 	}
 }
 
-// The flag values are captures from a real macvtap child on brie, taken at each step of the
+// The flag values are captures from a real macvtap child, taken at each step of the
 // sequence ensureMacvtap performs.
 func TestParseIfFlags(t *testing.T) {
 	for _, tc := range []struct {
@@ -173,8 +173,8 @@ func TestParseIfFlags(t *testing.T) {
 // THE SYMLINK'S DEPTH VARIES, and that is the bug this test is here for: a port whose
 // own sysfs node is virtual sits one level from its bridge, a physical NIC several. A prefix trim
 // of a single `../` answers the first shape and silently mangles the second, so Converged would
-// have answered false forever on a bridge parented by a real card -- and the tick would have
-// re-converged on every pass.
+// answer false forever on a bridge parented by a real card -- and the tick would re-converge on
+// every pass.
 func TestParseMaster(t *testing.T) {
 	for _, tc := range []struct{ name, link, want string }{
 		{"a virtual port, one level", "../b153br", "b153br"},
@@ -188,7 +188,7 @@ func TestParseMaster(t *testing.T) {
 }
 
 // THE ARGV, PINNED. Each of these carries a detail that cannot be inferred by reading the call
-// site, and until now only a 12-minute rig would have noticed one change.
+// site, and without this only a 12-minute rig would notice one change.
 func TestIPArgv(t *testing.T) {
 	// `mode bridge` is the macvtap mode that lets the guest's two children talk to each other. It
 	// is not `mode private` (which would isolate them from one another) and not a bridge device.
@@ -287,7 +287,7 @@ func TestParseHostRoute(t *testing.T) {
 
 // THE RANKING BOTH OSES SHARE, over the Windows shape: briard's bridge (its carrier the
 // member's, as DefaultRoute reads it) beside a standalone adapter that keeps its default route
-// with its cable out. The cases measured on a two-uplink desktop: a pulled standalone outranking
+// with its cable out. The cases a two-uplink desktop shows: a pulled standalone outranking
 // the bridge on metric, and a 25/25 tie read in either row order.
 func TestRankDefaults(t *testing.T) {
 	const br, eth2 = "Briard bridge", "Ethernet 2"

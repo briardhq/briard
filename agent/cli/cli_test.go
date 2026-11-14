@@ -196,7 +196,7 @@ func TestHandoverUsageErrors(t *testing.T) {
 }
 
 // A refused handover exits non-zero, like every other verb -- the property that makes the CLI
-// scriptable, which the drill script depends on.
+// scriptable, which the rigs' host.succeed calls depend on (install-macvtap, install-bridge).
 func TestHandoverExitsNonZeroWhenRefused(t *testing.T) {
 	sock, _ := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeFailed, Detail: "no peer"})
 	var out, errOut bytes.Buffer
@@ -208,8 +208,9 @@ func TestHandoverExitsNonZeroWhenRefused(t *testing.T) {
 	}
 }
 
-// `briard rescue` WITHOUT -yes must not reach the agent. This is the only destructive verb in the
-// CLI -- everything else here is reversible or health-gated -- so the guard is asserted on the
+// `briard rescue` WITHOUT -yes must not reach the agent. This is the only destructive verb Main
+// dispatches -- everything else it runs is reversible or health-gated; `uninstall` is main()'s,
+// not Main's -- so the guard is asserted on the
 // wire, not on the exit code: a version that printed the warning and submitted anyway would still
 // exit non-zero on a refusing fake and look correct.
 func TestRescueWithoutConfirmationSubmitsNothing(t *testing.T) {
@@ -259,9 +260,9 @@ func TestRescueRefusedExitsNonZero(t *testing.T) {
 	}
 }
 
-// TestNoArgsIsHelp: `briard` alone prints the help and SUCCEEDS. It used to start the privileged
-// host agent — a bare word away from the CLI, and the one invocation a curious user is
-// most likely to try first. The daemon is `briard run` now, and nothing reaches this path
+// TestNoArgsIsHelp: `briard` alone prints the help and SUCCEEDS. It must never start the
+// privileged host agent — a bare word away from the CLI, and the one invocation a curious user is
+// most likely to try first. The daemon is `briard run`, and nothing reaches this path
 // expecting a process to stay up.
 func TestNoArgsIsHelp(t *testing.T) {
 	var bare, explicit, errOut bytes.Buffer
@@ -280,14 +281,14 @@ func TestNoArgsIsHelp(t *testing.T) {
 }
 
 // TestEveryCommandIsDocumented pins the user-visible surface to a list written HERE, not read
-// from `commands`. That distinction is the whole test: dispatch and the help are one table now,
+// from `commands`. That distinction is the whole test: dispatch and the help are one table,
 // so they cannot disagree with each other — but they can both be wrong together, and a test that
 // iterates the table would pass while a verb quietly vanished from the product. Declaring the
 // expected set independently is the repo's own rule (CONTRIBUTING, "tests declare their own
 // values"): a test that inherits the product's list cannot see that list being wrong.
 //
-// Verified to fail: deleting the `logs` row from `commands` reds this test. The earlier draft,
-// which walked `commands` at both ends, stayed green through exactly that deletion.
+// Deleting the `logs` row from `commands` reds this test; a version that walked `commands` at
+// both ends would stay green through exactly that deletion.
 func TestEveryCommandIsDocumented(t *testing.T) {
 	want := map[string]string{
 		"alerts":    groupEveryday,
@@ -360,7 +361,7 @@ func TestEveryCommandIsDocumented(t *testing.T) {
 
 // TestHelpForACommandPrintsItsOwnOptions: `help <cmd>` must show the flags the verb ACTUALLY
 // parses. It gets them by running the verb's own flag set rather than restating them, so this
-// asserts the delegation works — a hand-written option list is the drift this whole item is about.
+// asserts the delegation works — a hand-written option list is the drift this guards against.
 func TestHelpForACommandPrintsItsOwnOptions(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if code := Main(context.Background(), []string{"help", "rescue"}, &out, &errOut); code != 0 {
@@ -379,8 +380,8 @@ func TestHelpForACommandPrintsItsOwnOptions(t *testing.T) {
 // TestAppInstallPrintsWhereToReachIt: the CLI relays the agent's address line verbatim. It
 // does NOT re-derive the URL -- the agent owns the manifest's port and the node's published name,
 // so there is exactly one place the address can be wrong. The empty-Detail case is the contract
-// with an older agent (and with a witness, which promises no URL): print the outcome, skip the
-// line, never print a bare "reach it at".
+// with an agent that sends no address line: print the outcome, skip the line, never print a bare
+// "reach it at".
 func TestAppInstallPrintsWhereToReachIt(t *testing.T) {
 	for _, tc := range []struct {
 		name, detail, want, absent string
@@ -457,7 +458,7 @@ func TestAccountLang(t *testing.T) {
 
 // `briard update -vm` is the vm chain's human trigger: it submits the local
 // update-vm directive with the target, and reports the upgrade's outcome -- a refusal
-// (rolled back, node serving) distinguished from a breakage, as `os upgrade` once did.
+// (rolled back, node serving) distinguished from a breakage.
 func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
 	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "now running vm.20260910.n"})
 	var out, errOut bytes.Buffer
@@ -484,7 +485,7 @@ func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
 			t.Errorf("%s stderr = %q, want %q and the detail", c.state, errOut.String(), c.want)
 		}
 	}
-	// `os upgrade` is gone: the primitive it was sugar over remains as `directive upgrade-system`.
+	// There is no `os upgrade` verb: the primitive is `directive upgrade-system`.
 	var out2, errOut2 bytes.Buffer
 	if code := Main(context.Background(), []string{"os", "upgrade", "/nix/store/x"}, &out2, &errOut2); code == 0 {
 		t.Error("`briard os upgrade` still exists")
@@ -495,10 +496,9 @@ func TestUpdateGuestSubmitsTheTarget(t *testing.T) {
 // asserted here rather than read off the flag declaration. The default is the only thing between
 // an admin typing three words and a release nothing has promoted -- `latest` exists to be proven
 // by a canary that names it on purpose. And the alpha ships no aliases (it is
-// reinstall-only), so every retired positional -- `host`/`guest`, then
-// `self`/`vm` -- has to fail loudly rather than quietly keep working: a rename nobody can observe
-// is a rename that did not happen. The chain is the FLAG now, and a positional word is refused
-// whatever it spells.
+// reinstall-only), so the positional words -- `host`, `guest`, `self`, `vm` -- have to fail
+// loudly rather than quietly keep working: a rename nobody can observe is a rename that did not
+// happen. The chain is the FLAG, and a positional word is refused whatever it spells.
 func TestUpdateDefaultsToStableAndTheOldVerbsAreGone(t *testing.T) {
 	sock, seen := fakeAgent(t, api.DirectiveOutcome{State: api.OutcomeDone, Detail: "already running vm.20260910.n"})
 	var out, errOut bytes.Buffer

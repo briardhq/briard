@@ -8,9 +8,8 @@ import (
 	"briard.io/agent/host"
 )
 
-// ⚠️ THE PIN, same discipline as the unit names and alertMarker above: the CLI reads the app
-// cache the AGENT writes, so the two must name the same directory. A test may import agent/host
-// where the shipped code may not.
+// ⚠️ THE PIN, same discipline as the console and config-file pins in logs_linux_test.go: the CLI
+// reads the app cache the AGENT writes, so the two must name the same directory.
 func TestAppCacheDirMatchesTheAgents(t *testing.T) {
 	os.Unsetenv("APP_CACHE")
 	t.Setenv("BRIARD_CONFIG", filepath.Join(t.TempDir(), "no-such-config.env"))
@@ -20,9 +19,8 @@ func TestAppCacheDirMatchesTheAgents(t *testing.T) {
 }
 
 // The cache holds each app's manifest VERBATIM, so the name comes from the manifest's own
-// parser rather than from a second reader of the format. install.sh used to `grep -o` for
-// `"name":"..."` and take the first match, which is a different implementation of a format whose
-// identity is its content hash.
+// parser rather than from a second reader of the format: a `grep -o` for `"name":"..."` taking the
+// first match would be a different implementation of a format whose identity is its content hash.
 func TestInstalledAppsReadsTheManifests(t *testing.T) {
 	dir := t.TempDir()
 	write := func(file, body string) {
@@ -55,9 +53,8 @@ func TestInstalledAppsReadsTheManifests(t *testing.T) {
 	}
 }
 
-// The sentence, including the empty case -- which is empty ON PURPOSE. A fresh node hears "no
-// app is installed yet" from the installer, where it is news; a household running the verb a
-// month later does not need telling twice.
+// The sentence, including the empty case -- which is empty ON PURPOSE: with no apps
+// `briard open` prints only the link.
 func TestInstalledLine(t *testing.T) {
 	for _, c := range []struct {
 		in   []string

@@ -58,7 +58,7 @@ func TestBridgeAfterRestart(t *testing.T) {
 		}
 	}
 	// The bridge keeps the household NIC's MAC across the restart -- without the pin it takes the
-	// TAP's and the desktop leases a new address (measured).
+	// TAP's and the desktop leases a new address.
 	as := adapters()
 	br, _ := byName(as, BridgeName)
 	m, _ := byName(as, member)
@@ -99,7 +99,7 @@ func TestDestroyBridge(t *testing.T) {
 		t.Errorf("a bridge named %q survived DestroyBridge", BridgeName)
 	}
 	// The device removal is asynchronous: the adapter table lists the TAP for a moment after
-	// pnputil returns (measured: a read straight after still showed it; the next did not).
+	// pnputil returns (a read straight after can still show it; the next does not).
 	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(time.Second) {
 		_, ok := byName(adapters(), TapName)
 		if !ok {

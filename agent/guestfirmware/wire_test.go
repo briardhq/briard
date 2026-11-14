@@ -293,11 +293,11 @@ func TestMissesCountOnlyInsideTheWindow(t *testing.T) {
 // A REPLY ALREADY BEING WRITTEN SURVIVES CANCELLATION, which is what makes EOF mean "the agent
 // died" rather than "the agent answered and we threw the answer away".
 //
-// The verb that forced this is `os.poweroff`: the shutdown it starts is what SIGTERMs the guest
-// agent, so its reply is ALWAYS the one in flight when the context is cancelled. Losing it looked
-// exactly like a crashed agent, and the host escalated to the ACPI power button on a guest that
-// had shut itself down as asked. Here the handler blocks until the context is cancelled
-// and only then returns, so the close and the reply are in the order that used to lose.
+// The verb that needs this is `os.poweroff`: the shutdown it starts is what SIGTERMs the guest
+// agent, so its reply is ALWAYS the one in flight when the context is cancelled. Lost, it would
+// look exactly like a crashed agent, and the host would escalate to the ACPI power button on a
+// guest that is shutting itself down as asked. Here the handler blocks until the context is
+// cancelled and only then returns, so the close and the reply are in the order that would lose it.
 func TestServeFinishesInFlightReplyOnCancel(t *testing.T) {
 	cconn, sconn := net.Pipe()
 	defer cconn.Close()
@@ -334,8 +334,8 @@ func TestServeFinishesInFlightReplyOnCancel(t *testing.T) {
 // On a reconnect the still-open virtio-serial stream can carry a stale in-flight reply from the
 // *dropped* session ahead of the handshake reply (QEMU keeps the guest port open across a host
 // re-dial). A reply whose id nothing waits on is dropped, never a failure -- otherwise a
-// reconnect never recovers (the observed agent-bringup freeze/thaw failure). The handshake is
-// where it shows, being the first call after a (re)connect.
+// reconnect never recovers. The handshake is where it shows, being the first call after a
+// (re)connect.
 func TestCallDropsAStaleFrame(t *testing.T) {
 	cc, sc := net.Pipe()
 	c := NewConn(cc)

@@ -32,8 +32,11 @@ func TestCompare(t *testing.T) {
 			SameWire,
 		},
 		{
-			// Case-insensitive, because iproute2 and sysfs do not agree on how to spell a MAC and
-			// a fingerprint that missed a match here would wait thirty minutes for no reason.
+			// Compare matches MACs case-insensitively, because iproute2 and sysfs do not agree on
+			// how to spell a MAC and a fingerprint that missed a match here would wait thirty
+			// minutes for no reason. This case is a DIFFERENT MAC in upper case, which stays
+			// different; the next case spells the same MAC in lower case, as home does, so no case
+			// here exercises the case-insensitive match itself.
 			"the same gateway, spelled in upper case",
 			Fingerprint{Parent: "eth1", HostCIDR: "192.168.1.77/24", GatewayMAC: "11:22:33:44:55:AA",
 				GatewayIP: "192.168.1.1"},
@@ -84,7 +87,7 @@ func TestCompare(t *testing.T) {
 	}
 }
 
-// A node with NO record -- first boot after the feature landed, or a lost pet file -- must reach
+// A node with NO record -- a first boot, or a lost pet file -- must reach
 // the cautious answer rather than match anything. The record is the thing a tier is measured
 // against, so its absence cannot be permission.
 func TestCompareWithNoRecordIsUnknown(t *testing.T) {

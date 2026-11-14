@@ -183,8 +183,9 @@ func (s *systemctlFake) run(name string, args []string) ([]byte, error) {
 
 // mark models what restarting a promoter chain member actually does: that member AND everything
 // ordered after it go down and come back in the same transaction, each through its own picker.
-// A fake without this cannot show why restarting the web units in the wrong order cancels a start
-// job -- which is the demote this item measured.
+// A fake without this cannot tell a loop that restarts every web unit from one that restarts the
+// earliest and verifies what it carried -- and the second restart is the one that cancels a start
+// job and demotes the node.
 func (s *systemctlFake) mark(bin, what string) {
 	if s.run_ == "" {
 		return
@@ -227,10 +228,10 @@ func clearMarkers(t *testing.T, run string) {
 	}
 }
 
-// THE VERDICT: a trial start try-restarts each web unit that is running and passes only
-// if every one comes back active; on a secondary (nothing running) it passes at once. A web unit
-// that fails refuses the trial -- and the trial agent restarts nothing itself: the failed
-// web unit's own auto-restart is the revert.
+// THE VERDICT: a trial start try-restarts the earliest running web unit (which carries the rest)
+// and passes only if every running one comes back active on its staged copy; on a secondary
+// (nothing running) it passes at once. A web unit that fails refuses the trial -- and the trial
+// agent restarts nothing itself: the failed web unit's own auto-restart is the revert.
 func TestBinStartupTrialVerdict(t *testing.T) {
 	dir, run := binDirs(t)
 	stageSet(t, dir)
@@ -270,7 +271,7 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 	// EARLIEST member of the chain: restarting it carries everything ordered after it in the same
 	// transaction, so the dashboard is verified where it stands rather than restarted again. Two
 	// restarts across an ordered chain are how a start job gets cancelled, and a cancelled start
-	// job fires OnFailure= -- which demoted a node mid-upgrade when this loop ran dashboard-first
+	// job fires OnFailure= -- a loop that runs dashboard-first demotes a node mid-upgrade this way
 	// (install-macvtap). And the budget reset must precede the restart it pays for.
 	clearMarkers(t, run)
 	arm()
@@ -311,7 +312,7 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 		t.Errorf("the trial agent discarded the set itself: %v", got)
 	}
 
-	// THE TRAP THE FIRST RIG RUN FOUND: the staged reverse proxy fails, systemd's own auto-restart
+	// THE TRAP: the staged reverse proxy fails, systemd's own auto-restart
 	// puts the unit back on the committed binary, and the restart job reports SUCCESS -- active,
 	// exit 0. Only the picker's marker says the reverse proxy is running what it ran before, and
 	// the verdict must refuse on it, or the set commits a reverse proxy that has already reverted.
@@ -326,9 +327,7 @@ func TestBinStartupTrialVerdict(t *testing.T) {
 
 // THE HANDSHAKE REPORTS THE COMMITTED RELEASE, and that is the whole rule: the
 // commit runs before the port is served, so every handshake a host can read is taken after it.
-// This used to prefer RELEASE.next on a trial start, because the host could get in between READY
-// and the ExecStartPost commit and reading the committed file there handed it the OLD id -- a
-// good dress recorded as a permanent revert. The window is gone; so is the inversion.
+// A staged id is never reported: what has not been committed is not what this guest runs.
 func TestRunningBundleReportsTheCommittedRelease(t *testing.T) {
 	_, run := binDirs(t)
 	exe, err := os.Executable()
@@ -351,8 +350,8 @@ func TestRunningBundleReportsTheCommittedRelease(t *testing.T) {
 	if got := runningBundle(); got != "v3.20260901.old00000" {
 		t.Errorf("an ordinary start reports %q, want the committed release", got)
 	}
-	// A staged id present and the marker still saying trial -- the state the old inversion keyed
-	// off. It must make no difference: what has not been committed is not what this guest runs.
+	// A staged id present and the marker still saying trial -- a trial start before its commit.
+	// It must make no difference: what has not been committed is not what this guest runs.
 	if err := os.WriteFile(filepath.Join(run, "briard-guest-agent.ran"), []byte("trial\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +480,7 @@ func TestBinStartupAftermathDiscardsAStaleSet(t *testing.T) {
 	}
 	// ONE restart, at the earliest chain member. It carries the dashboard with it, and the loop
 	// stops there rather than restarting the dashboard too -- a second restart across an ordered
-	// chain is what cancelled a start job and demoted a node mid-upgrade.
+	// chain is what cancels a start job and demotes a node mid-upgrade.
 	want := [][]string{
 		{"systemctl", "is-active", "briard-reverse-proxy.service"},
 		{"systemctl", "reset-failed", "briard-reverse-proxy.service"},

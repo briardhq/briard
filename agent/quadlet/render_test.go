@@ -58,8 +58,8 @@ func TestRenderShape(t *testing.T) {
 // TestPromotionNeverPulls is the failover-critical trap. A .container that names its image as
 // `Image=foo.image` gains an AUTOMATIC dependency on the pull unit, which turns promotion into a
 // multi-GB cold load on exactly the path warm-standby exists to protect. The
-// container must name the digest and set Pull=never, so a cold node fails fast instead of
-// fetching — the same refusal briard-converge already makes.
+// container must name the digest and set Pull=never, so starting it never fetches: a missing
+// image is converge's to pull, by digest, before it starts the units (AppWarm/warmImage).
 func TestPromotionNeverPulls(t *testing.T) {
 	r := mustRender(t, ha())
 	c := r.Files["briard-home-assistant-ha.container"]
@@ -73,8 +73,8 @@ func TestPromotionNeverPulls(t *testing.T) {
 
 // TestContainerSupervisesItself: the app units are NOT promoter chain members,
 // so drbd-reactor neither restarts nor watches them. A container that dies must be brought back
-// by its own unit or it stays dead with nothing noticing — the recovery the promoter used to
-// provide, in the only place left to put it.
+// by its own unit or it stays dead with nothing noticing — the recovery the promoter gives its
+// chain members, in the only place left to put it.
 //
 // `always`, not `on-failure`: an app container has no legitimate exit, so exiting 0 is exactly
 // as dead as exiting 1. Asserting the exact value rather than mere presence is the point — the
@@ -107,15 +107,12 @@ func TestNoAutoUpdate(t *testing.T) {
 
 // TestNothingAutoStarts: NO rendered unit may carry [Install]. A pod or container with one would
 // start itself on a SECONDARY node — two nodes writing the same replicated volume is the one
-// outcome the whole single-primary design exists to prevent. An .image unit with one is the
-// regression the 2026-08-29 nightly caught: starting it is an unconditional `podman image pull`,
-// so systemd warming it behind our back
+// outcome the whole single-primary design exists to prevent. An .image unit with one is no
+// safer: starting it is an unconditional `podman image pull`, so systemd warming it behind our back
 // pulls an image that is already local, fails on a node with no registry, and makes the next
 // `switch-to-configuration switch` exit 4 — which the agent reads as a failed OS upgrade.
 //
-// This test was the inverse until 2026-08-29 (it REQUIRED [Install] on .image), which is why it
-// held while the nightly's os-reboot and os-upgrade both rolled back. Warming is a caller's job,
-// guarded by `podman image exists`; see AppWarm/warmImage.
+// Warming is a caller's job, guarded by `podman image exists`; see AppWarm/warmImage.
 func TestNothingAutoStarts(t *testing.T) {
 	r := mustRender(t, ha())
 	for name, body := range r.Files {
@@ -123,7 +120,7 @@ func TestNothingAutoStarts(t *testing.T) {
 			t.Fatalf("%s carries [Install] — systemd, not a guarded caller, would start it:\n%s", name, body)
 		}
 	}
-	// The pre-warm unit must still EXIST and name its image: it is what AppWarm starts when
+	// The pre-warm unit must still EXIST and name its image: it is what AppWarm restarts when
 	// the guard says the image is genuinely absent.
 	img := r.Files["briard-home-assistant-ha.image"]
 	if !strings.Contains(img, "[Image]") || !strings.Contains(img, "Image=") {
@@ -158,7 +155,7 @@ func TestImagePullIsBounded(t *testing.T) {
 	}
 	// SIZED BY THE MANIFEST: an entry that says its download gets the allowance plus
 	// the bytes at the floor bitrate -- Home Assistant's 622 MB is ~22 minutes, a 10 MB broker
-	// the allowance plus 16 seconds -- and never less than the allowance, which is what keeps a
+	// the allowance plus 15 seconds -- and never less than the allowance, which is what keeps a
 	// small image from being given seconds for a pull that is mostly registry round-trips.
 	sized := ha()
 	sized.Size, sized.InstalledSize = 621628919, 2486168064
@@ -186,13 +183,11 @@ func TestImagePullIsBounded(t *testing.T) {
 	}
 }
 
-// TestUnitOrder: the pod, then its members. Naming the members explicitly is required — the
-// quadlet spike proved that starting the pod's systemd service does not start its containers.
+// TestUnitOrder: the pod, then its members. Naming the members explicitly is required —
+// starting the pod's systemd service does not start its containers.
 //
-// This used to assert a promoter start-list (data -> pod -> members -> VIP), which converge-at-promotion
-// retired along with the function that built it: the chain is static and these units are not
-// members of it. What survives is the property that actually mattered — the order converge starts
-// them in.
+// The promoter chain is static and these units are not members of it; what is asserted is the
+// order converge starts them in.
 func TestUnitOrder(t *testing.T) {
 	m := ha()
 	m.Containers = append(m.Containers, manifest.Container{Name: "cache", Image: digestB, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "cache", Path: "/data"}}})
@@ -232,7 +227,7 @@ func TestStatelessContainerGetsNoVolume(t *testing.T) {
 }
 
 // TestControlChannelIsKeyedOnTheAppName: Home Assistant's primary container gets the two
-// binds its control channel needs (agent/hass), and nothing else does.
+// binds its control channel needs (agent/hass) and its capabilities, and nothing else does.
 //
 // The manifest cannot ask for a host bind — the schema refuses them so a catalog entry cannot
 // reach the host — so these come from the product, keyed on the catalog name. The negative half
@@ -350,7 +345,7 @@ func TestRenderRefusesInvalid(t *testing.T) {
 	}
 }
 
-// TestBrokerRendersItsConfigAndItsData: the second catalogued app renders as a plain unit
+// TestBrokerRendersItsConfigAndItsData: mosquitto renders as a plain unit
 // plus the one bind the product holds for it — its config, read-only, over the image's baked one.
 // The negative half is the same one the control channel gets: the same manifest under
 // another name renders without it.
@@ -417,9 +412,8 @@ func TestFilesRendersAsRootOverTheView(t *testing.T) {
 	}
 }
 
-// THE POD'S NETWORKING IS THE ONE DECISION THIS PACKAGE MAKES, and until an app asked for a private network it was made the
-// same way for everyone. These are the three shapes it can take, asserted on the rendered bytes
-// because that is what podman reads.
+// THE POD'S NETWORKING IS THE ONE DECISION THIS PACKAGE MAKES. These are the three shapes it can
+// take, asserted on the rendered bytes because that is what podman reads.
 func TestPodNetworkingFollowsTheManifest(t *testing.T) {
 	svc := func(network string) manifest.Manifest {
 		return manifest.Manifest{Name: "svc", Version: "1", Network: network, Containers: []manifest.Container{{
@@ -495,9 +489,9 @@ func TestImagesNeedsNoAddress(t *testing.T) {
 //
 // Three properties, each load-bearing. The trigger is in the name, so a human scanning
 // `.snapshots` can tell an update point from a clock one without opening a sidecar. The
-// timestamp is UTC and fixed-width, so lexical order is chronological order and the picker needs
-// no parsing to sort. And the whole thing is one path element — a member is a btrfs subvolume,
-// and a `/` would put it somewhere else entirely.
+// timestamp is UTC and fixed-width, so within one trigger lexical order is chronological order
+// (across triggers it is not: TestSnapshotMemberTimeIsTheOrder). And the whole thing is one
+// path element — a member is a btrfs subvolume, and a `/` would put it somewhere else entirely.
 func TestSnapshotMemberNamesTheSeries(t *testing.T) {
 	at := time.Date(2026, 9, 22, 10, 30, 5, 0, time.UTC)
 	got := SnapshotMember("home-assistant", TriggerAppUpdateBefore, at)
@@ -521,11 +515,11 @@ func TestSnapshotMemberNamesTheSeries(t *testing.T) {
 
 // TestSnapshotMemberTimeIsTheOrder, and ⚠️ the NAME is not.
 //
-// This test asserted the opposite -- that lexical order over member names is chronological order
-// -- and it passed, because every case it compared shared one trigger. Across triggers the claim
-// is false and the format makes it false: the trigger sits between the app and the stamp, so
-// every `-clock-` member sorts before every `-start-` one whatever their times. A reader that
-// took the lexically last member as the newest got an old start's age instead.
+// Lexical order over member names is chronological only within one trigger, so a test comparing
+// cases that share one trigger would "prove" the false rule. Across triggers the format makes it
+// false: the trigger sits between the app and the stamp, so every `-clock-` member sorts before
+// every `-start-` one whatever their times. A reader that took the lexically last member as the
+// newest would get an old start's age instead.
 //
 // So what is asserted is what readers may actually rely on: the STAMP orders within a trigger,
 // SnapshotMemberTime orders across them, and the two disagree.
@@ -624,7 +618,8 @@ func TestDataContainerTakesARingMemberAtStart(t *testing.T) {
 
 // TestThePodOutlivesItsContainers: with quadlet's default exit policy a crashed container
 // takes its pod down, systemd stops the container unit as the pod's dependent, and that stop
-// suppresses Restart=always -- a crashed Home Assistant stayed down. Every network shape gets it.
+// suppresses Restart=always -- a crashed Home Assistant would stay down. Every network shape gets
+// it.
 func TestThePodOutlivesItsContainers(t *testing.T) {
 	for _, network := range []string{manifest.NetworkHost, ""} {
 		m := manifest.Manifest{Name: "svc", Version: "1", Network: network, Containers: []manifest.Container{{

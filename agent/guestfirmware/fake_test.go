@@ -10,7 +10,7 @@ import (
 )
 
 // fakeExec records the commands the firmware shells out to and returns canned output; stands in
-// for the guest. runFn, if set, overrides output/err (the systemctl fakes below use it).
+// for the guest. runFn, if set, overrides output/err (bin_test.go's systemctlFake uses it).
 type fakeExec struct {
 	files    map[string]string
 	runs     [][]string
