@@ -317,13 +317,13 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// as it arrives, and deletes the downloads only when the whole pull completes; a killed
 		// pull leaves them, and podman never comes back for them (measured: three interrupted pulls
 		// left three directories). Each expiry would strand up to the whole download (622 MB for
-		// Home Assistant) on the guest's OS disk, where /var/tmp lives (the graph root is on the
-		// state disk), and the households that hit the timeout hit it repeatedly; a completed pull
+		// Home Assistant) in /var/tmp, the per-boot scratch on the state disk (the graph root is on
+		// the same disk), and the households that hit the timeout hit it repeatedly; a completed pull
 		// peaks at both at once (622 MB in /var/tmp beside 2.28 GB unpacked, for Home Assistant).
 		// systemd removes the unit's own /var/tmp however it stops, where an ExecStopPost cleanup
 		// is skipped by a SIGKILL; measured both ways, an interrupted pull leaves 0 KB and a
 		// successful one lands in the graph root untouched. The private /var/tmp is disk-backed
-		// (systemd-private-*-briard-…-image.service-* on the root filesystem), so it does not trade
+		// (systemd-private-*-briard-…-image.service-* under that same /var/tmp), so it does not trade
 		// the leak for an OOM on the first multi-GB image. Only the .image unit gets it, since it
 		// pulls and exits; the .container unit runs the app and is deliberately left alone.
 		out.Files[unit+".image"] = join(

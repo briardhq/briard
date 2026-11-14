@@ -3487,7 +3487,7 @@ type BringUpSpec struct {
 func (g *Client) BringUp(ctx context.Context, spec BringUpSpec) error {
 	res := spec.Storage.Resource.Name
 	// Every block-level step in one call: the tiers, the `.res`, create-md, the attach and, on a
-	// true first init only, new-current-uuid and the one-time format marker. One unit holds both
+	// true first init only, new-current-uuid and the format. One unit holds both
 	// "this run created the LVs" and "this node is the seed", so no host-side gate has to infer
 	// freshness.
 	if err := g.NodeStorage(ctx, spec.Storage); err != nil {

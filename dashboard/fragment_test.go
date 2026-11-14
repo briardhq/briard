@@ -159,7 +159,7 @@ func TestThePageCarriesOneScriptAndAPolicyThatAllowsNothingElse(t *testing.T) {
 // The browser's half, which no string test can see: in a real browser a pending claim's card
 // polls, and when the host registers the name the fragment's refresh reloads the page, which then
 // shows the name, not the step. Skipped unless DASHBOARD_BROWSER names a chromium (a test tool's
-// switch, like the gallery's); the lab's gallery script runs it.
+// switch, like the gallery's).
 func TestTheCardPollsAndThePageReloadsInABrowser(t *testing.T) {
 	chromium := os.Getenv("DASHBOARD_BROWSER")
 	if chromium == "" {

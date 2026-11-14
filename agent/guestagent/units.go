@@ -210,11 +210,11 @@ ExecStart=` + agent + ` --node-storage
 `
 
 	// The hand-over, and the refusal to take it straight back. One unit owns the whole sequence
-	// because the order is the design: mask before demoting. Measured on a lone node,
-	// drbd-reactor re-promotes about 2s after a demote completes, so a hold bolted on after the
-	// demote loses that race. Masking first means the promotion is refused rather than undone:
-	// `systemctl start drbd-services@r0.target` fails outright, drbd-promote@ never runs, DRBD's
-	// role never moves, and there is no second mount/unmount cycle to pay for.
+	// because the order is the design: mask before demoting. Measured on a one-node DRBD
+	// resource, drbd-reactor re-promotes about 2s after a demote completes, so a hold bolted on
+	// after the demote loses that race. Masking first means the promotion is refused rather than
+	// undone: `systemctl start drbd-services@r0.target` fails outright, drbd-promote@ never runs,
+	// DRBD's role never moves, and there is no second mount/unmount cycle to pay for.
 	//
 	// Each step is an image-side tool taking this agent's chain list as arguments. The topology
 	// dispatch, the mask, the shim and the unmount are the image's -- they name store paths and

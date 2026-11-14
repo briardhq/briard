@@ -10,7 +10,7 @@
 #   nix build .#tests.<name> -L                            (one test, e.g. drbd-fence)
 #   cat $(nix build --no-link --print-out-paths .#test-manifest)/tags/drbd
 # A whole tag runs under an explicit `--max-jobs` cap (CONTRIBUTING.md has the recipe; the
-# nightly scheduler, farm `lab/scripts/tier-concurrency.sh`, admits by measured cost).
+# tier scheduler of the private sibling repo admits by measured cost).
 # `nix flake check` stays light: it evaluates the flake and builds the config closures, but boots
 # no VM tests.
 #
@@ -369,8 +369,9 @@ let
   reportCard = import ./report-card.nix { inherit pkgs; agent = agentPkg; };
 
   # Bridge mode (Windows' official L2 shape, and its Linux testing clone), a pure delta over
-  # installMacvtap: the NIC enslave, the host-IP move, and a clean abort at that irreversible
-  # step. Nothing mode-independent lives here; that chain is installMacvtap's.
+  # installMacvtap: the substrate derived from the user bridge, joined with one tap and left
+  # untouched, and a clean refusal that leaves it as found. Nothing mode-independent lives here;
+  # that chain is installMacvtap's.
   installBridge = import ./install-bridge.nix {
     inherit pkgs guestDisk guestBundle;
     agent = agentPkg;
@@ -518,7 +519,7 @@ in
       qemu-bundle = qemuBundle.test;
       report-card = reportCard;
       install-macvtap = installMacvtap; # default substrate: curl|sh -> green, off-box VIP reach, cattle/pet reinstall
-      install-bridge = installBridge; # bridge mode (Windows' shape): NIC enslave + host-IP move
+      install-bridge = installBridge; # bridge mode (Windows' shape): joins the user bridge, one tap
       install-wifi = installWifi; # a wireless station: ipvtap, single-anchor, over a real access point
       install-wifi-refuse = installWifiRefuse; # ...whose router leases the flock nothing: refused, then the remedy
     };
@@ -550,8 +551,9 @@ in
       # Also red by design, the mirror of the one above. That is the gain side of the tiebreaker
       # guard (a restarted survivor has no runtime `quorum[NOW]`, so it can never gain quorum from
       # a diskless node); this is the keep side: a broken link between the two anchors leaves
-      # `quorum[NOW]` true on both, so both keep quorum, both may write, and the household's data
-      # forks into a permanent StandAlone. The one fault shape `block()`/`crash()` cannot express:
+      # `quorum[NOW]` true on both, so both keep quorum (by design), and a demote landing during
+      # the split licenses the stale survivor to promote, forking the pair into a permanent
+      # StandAlone. The one fault shape `block()`/`crash()` cannot express:
       # nothing leaves the cluster, only the edge between the data nodes fails, and the witness
       # stays reachable from both.
       drbd-link-split = import ./drbd-link-split.nix { inherit pkgs guestModule; };
@@ -595,7 +597,7 @@ in
   };
 
   # Build artifacts, not tests: the product agent binary, the bootable guest qcow2, the
-  # nested-test driver and the Windows arms. Consumed by the fleet (the farm flake's fleetArgs)
+  # nested-test driver and the Windows arms. Consumed by the fleet of the private sibling repo
   # + demo scripts, so they stay reachable by name (`.#artifacts.<name>`).
   artifacts = {
     guest-disk = guestDisk;

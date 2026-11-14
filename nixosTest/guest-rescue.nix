@@ -28,8 +28,8 @@
 # needs real app data in the volume (the catalogued fixture the data tests install): worth
 # building, and deliberately not smuggled in here as an assertion that looks stronger than it is.
 #
-# Heavy (a nested VM + the shipped guest disk) -> the `integration` tag. Run on the L0:
-#   gh workflow run vm-test.yml -f test=guest-rescue
+# Heavy (a nested VM + the shipped guest disk) -> the `integration` tag.
+# Run: nix build .#tests.guest-rescue -L
 { pkgs, guestDisk, agent, netWrap, dressBase, stub, channel, nextSystem }:
 pkgs.testers.runNixOSTest {
   name = "guest-rescue";
@@ -121,7 +121,7 @@ pkgs.testers.runNixOSTest {
     qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*nixos.qcow2'").strip().splitlines()[0]
 
     # The data disk carries the opposite assertion: it must be the same file afterwards, same size,
-    # still holding DRBD's metadata.
+    # same LUKS2 volume UUID.
     data_inode = host.succeed("stat -c %i /tmp/data.img").strip()
     data_size = host.succeed("stat -c %s /tmp/data.img").strip()
 
