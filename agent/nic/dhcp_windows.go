@@ -25,10 +25,10 @@ import (
 // in all of them, which is also why a cable swap changes nothing.
 //
 // Three sockets, all SO_REUSEADDR (Windows' own DHCP client holds 68): the sender on the
-// bridge's LAN address (openDHCP says which) and an ephemeral port, which picks the interface a limited broadcast leaves
-// by; a socket holding <bridge>:68, which sends the decoy and is where Windows hands a broadcast
-// reply (to the most specific port-68 socket -- its own client's, were this one absent); and the
-// wildcard 0.0.0.0:68. All three are read.
+// bridge's LAN address (openDHCP says which) and an ephemeral port, which picks the interface a
+// limited broadcast leaves by; a socket holding <bridge>:68, which sends the decoy and is where
+// Windows hands a broadcast reply (to the most specific port-68 socket -- its own client's, were
+// this one absent); and the wildcard 0.0.0.0:68. All three are read.
 
 type udpConn struct {
 	ctx          context.Context
@@ -44,9 +44,9 @@ type udpConn struct {
 // /32, then the LAN's address back. A socket bound to either of the first two sends from an
 // address the household's LAN has no business seeing, and the broadcast reply goes to whichever
 // port-68 socket the stack finds more specific -- measured: a socket bound once to the /32 sent
-// all five tries from it, the router answered, and the lease came only with a fresh socket on the
-// LAN address 23 s after the radio was back. So the address is LANAddr's (the gateway's subnet,
-// nothing else), read before each send, and a try with none sends nothing and waits its turn.
+// every try from it, the router answered, and no lease came until a fresh socket was bound to the
+// LAN address. So the address is LANAddr's (the gateway's subnet, nothing else), read before each
+// send, and a try with none sends nothing and waits its turn.
 func openDHCP(ctx context.Context, dev string) (dhcpConn, error) {
 	c := &udpConn{ctx: ctx, dev: dev, got: make(chan []byte, 16)}
 	if err := c.bind(LANAddr(dev)); err != nil {

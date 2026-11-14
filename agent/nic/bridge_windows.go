@@ -18,9 +18,9 @@ import (
 // port on it. On Windows there is no bridge to find, and the guest's one tap has to be a member of
 // one, so the agent builds it -- but as an ACT the installer sequences, not as drift the tick
 // restores: a Windows bridge carries a TAP member only if the bridge object was CREATED with it,
-// and only after the machine restarts (measured on the rig: six other levers left the member
-// inert). So a bridge somebody deleted is not rebuilt by the tick; it is a degraded node that says
-// so, exactly as a missing user bridge is on Linux.
+// and only after the machine restarts (measured: six other levers left the member inert). So a
+// bridge somebody deleted is not rebuilt by the tick; it is a degraded node that says so, exactly
+// as a missing user bridge is on Linux.
 
 // The names a person sees in Network Connections. An unexplained adapter on a stranger's desktop
 // is exactly what a helpful relative deletes, so ours say whose they are.
@@ -34,8 +34,8 @@ const (
 const checksumOffload = "*IPChecksumOffloadIPv4"
 
 // BuildBridge bridges member (the household's NIC, by name) with the TAP adapter, and returns what
-// it changed on member. Idempotent: a bridge that already holds both is left as it is and reported with a
-// zero Offload. It refuses a bridge that exists without them -- Windows allows one bridge, and a
+// it changed on member. Idempotent: our bridge already holding member is left as it is and
+// reported with a zero Offload. It refuses any other bridge -- Windows allows one bridge, and a
 // bridge the user made is theirs.
 //
 // The caller owes the machine a RESTART before the guest's frames will cross the bridge, and
@@ -372,7 +372,7 @@ func TapInstalled() bool {
 // LinkChanges is a channel that receives when Windows reports a change to an IP interface. A
 // bridge member has no IP binding, so its carrier is never reported itself: what is reported is
 // the bridge's, whose link speed is the sum of its members and so moves on every edge of a
-// member's carrier (measured on the rig: four notifications per edge, within milliseconds of the
+// member's carrier (measured: four notifications per edge, within milliseconds of the
 // member's own state). A receive therefore says only "look again"; the reader reads the member.
 //
 // Registered once per process and never cancelled: a callback made by windows.NewCallback is

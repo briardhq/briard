@@ -6,8 +6,8 @@
 // of the machine on the day it is asked and machines change.
 //
 // ONE SELECTOR, ONE PROBE, AND A MESSAGE. The selector is the default route and nothing else. The
-// probe does not select — it validates the selection by creating the very thing the install will
-// create. And the message is the whole safety margin between the two, because every way this can
+// probe does not select — it validates the selection by creating the very thing the agent will
+// build. And the message is the whole safety margin between the two, because every way this can
 // be wrong ends with a guest that boots and is unreachable, which is the failure a user cannot
 // diagnose from inside the house.
 package nic
@@ -40,8 +40,8 @@ var (
 )
 
 // probeDev is the throwaway child. A fixed name rather than a random one so a leaked device
-// (killed mid-probe) is recognisable and reclaimable, and one that cannot collide with the two
-// the install really creates.
+// (killed mid-probe) is recognisable and reclaimable, and one that cannot collide with the taps
+// the agent builds.
 const probeDev = "briard-probe0"
 
 // Selection is what this host answered. It is plain data: the report card's Assess is pure, and
@@ -76,9 +76,9 @@ type Selection struct {
 }
 
 // Choose makes the selection and VALIDATES it — for a caller that is about to create devices on
-// the answer. override is BRIARD_NIC — kept under that name (widened: it may now
-// name a bridge) because renaming it would cost a sweep of every rig that sets it and buy nothing.
-// prefer is the parent last served on, which wins a tie (DefaultRoute); "" for a caller with none.
+// the answer. override is BRIARD_NIC, which may name a bridge -- kept under that name because
+// renaming it would cost a sweep of every rig that sets it and buy nothing. prefer is the parent
+// last served on, which wins a tie (DefaultRoute); "" for a caller with none.
 func Choose(ctx context.Context, override, prefer string) Selection {
 	s := Select(override, prefer)
 	// THE PROBE VALIDATES, IT DOES NOT SELECT. There is no second heuristic above it: no
@@ -99,8 +99,8 @@ func Choose(ctx context.Context, override, prefer string) Selection {
 
 // Select names the device without validating it — for a caller that is NOT about to create
 // anything on the answer, and must not pay for a probe to find out where its existing devices
-// hang. The agent's live rule is exactly that: it asks every tick whether a gone parent has a
-// successor, and probing every ten seconds would be a netlink write to answer a question nobody
+// hang. The agent's live rule is exactly that: it asks at every network check whether a gone
+// parent has a successor, and a probe there would be a netlink write to answer a question nobody
 // asked -- the move that follows builds on the answer, and that build is the validation.
 func Select(override, prefer string) Selection {
 	s := Selection{Candidates: Candidates()}
@@ -164,8 +164,8 @@ func (s Selection) Usable() bool { return s.Dev != "" && s.Err == nil }
 // the override, and the devices to choose from. It is rendered here rather than at each caller
 // so the refusal a user meets before the install and the degraded status they meet after it say
 // the same thing. No copy-pasteable example: a device picked for the example is a device this
-// selection could not vouch for (a tunnel holding a default route was offered once), and who
-// sets BRIARD_NIC knows how.
+// selection could not vouch for (it could be a tunnel holding a default route), and who sets
+// BRIARD_NIC knows how.
 func (s Selection) Fix() string {
 	var b strings.Builder
 	switch {
@@ -189,8 +189,8 @@ func (s Selection) Fix() string {
 	return b.String()
 }
 
-// Probe validates dev by creating the very thing the install creates — a macvtap child, or an
-// ipvtap child on a wireless station — and deleting it. It turns a wrong selection into a clean
+// Probe validates dev by creating the very thing Converge builds — a macvtap child, or an ipvtap
+// child on a wireless station — and deleting it. It turns a wrong selection into a clean
 // refusal instead of a guest that boots and is unreachable, which is the one failure mode a
 // household cannot diagnose.
 //
@@ -201,7 +201,7 @@ func Probe(ctx context.Context, dev string) error {
 	// A leaked probe device from a run killed between create and delete would make every later
 	// probe fail with EEXIST -- i.e. would condemn a perfectly good NIC. Clear it first.
 	_, _ = ip(ctx, "link", "del", probeDev)
-	// THE SAME ARGV THE INSTALL USES, from the same builders -- that identity is the whole claim
+	// THE SAME ARGV CONVERGE USES, from the same builders -- that identity is the whole claim
 	// this probe makes, so it is shared rather than restated.
 	kind, args := "macvtap", macvtapAddArgs(probeDev, dev)
 	if Wireless(dev) {
@@ -382,10 +382,10 @@ func (o Offload) settings() [3][2]string {
 
 // The receive segment coalescing settings the bridge needs off on the member too. A member that
 // coalesces received segments hands the bridge frames larger than the MTU, and the bridge drops
-// them -- measured on a virtio NIC, whose hypervisor coalesces on the member's behalf: every
-// download crawled at tens of kilobytes a second until RSC was off. Windows already reports RSC as
-// not operational on a bridge member, so turning it off costs nothing on any NIC; what it buys is a
-// driver that stops asking its hardware, or its hypervisor, for coalesced frames.
+// them -- measured on a virtio NIC, whose hypervisor coalesces on the member's behalf: downloads
+// crawl at tens of kilobytes a second with RSC on. Windows already reports RSC as not operational
+// on a bridge member, so turning it off costs nothing on any NIC; what it buys is a driver that
+// stops asking its hardware, or its hypervisor, for coalesced frames.
 const (
 	rscOffloadIPv4 = "*RscIPv4"
 	rscOffloadIPv6 = "*RscIPv6"

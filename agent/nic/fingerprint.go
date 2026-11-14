@@ -24,7 +24,8 @@ import (
 // specific segment. A replaced router renumbers what is unquestionably the same LAN, which is why
 // the subnet alone cannot be trusted in the other direction either.
 
-// Fingerprint is what this host could see of its LAN at the moment it last brought the guest up.
+// Fingerprint is what this host could see of its LAN at the moment it last brought the guest up
+// (the agent fills in a gateway MAC that bring-up could not read once the gateway answers).
 // Recorded then rather than sampled now, because its whole job is to be compared against a later
 // reading.
 type Fingerprint struct {
@@ -35,9 +36,9 @@ type Fingerprint struct {
 	GatewayMAC string `json:"gateway_mac"` // the STRONG signal: a specific box on a specific segment
 }
 
-// Usable reports whether this fingerprint can pace anything. HostCIDR is the criterion because it
-// is exactly what Compare needs before it can say anything but Unknown -- a reading with no
-// address is not a description of a network, it is the absence of one.
+// Usable reports whether this fingerprint can pace anything. HostCIDR is the criterion because
+// without it Compare can say only SameWire or Unknown -- a reading with no address is not a
+// description of a network, it is the absence of one.
 func (f Fingerprint) Usable() bool { return f.HostCIDR != "" }
 
 // String renders the fingerprint for a human. It exists because the interesting failure is a
@@ -71,9 +72,9 @@ func Read(ctx context.Context, dev string) Fingerprint {
 	f.HostCIDR = hostCIDR(dev, f.GatewayIP)
 	if f.GatewayIP != "" {
 		// The gateway is by definition something this host has been talking to, so its neighbour
-		// entry is normally already resolved. ARP it if not, exactly as the VIP check does -- a
-		// fingerprint taken at bring-up with an empty gateway MAC is a fingerprint that cannot
-		// pace anything later.
+		// entry is normally already resolved. ARP it if not (neighbourMAC) -- a fingerprint with
+		// an empty gateway MAC can never compare as SameWire, the one relation that makes a
+		// rebuild unambiguously right.
 		f.GatewayMAC = neighbourMAC(ctx, dev, f.GatewayIP)
 	}
 	return f

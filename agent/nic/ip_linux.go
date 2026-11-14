@@ -5,10 +5,10 @@ import (
 	"os/exec"
 )
 
-// ip is the iproute2 runner for this package -- the one per-OS thing in it. Everything above it
-// (which device, what the message says, what the spec is) is shared and testable; a Windows host
-// owes its own runner and its own Spec builder, because nothing about `ip link add ... type
-// macvtap` translates to tap-windows6 and a bridge.
+// ip is the iproute2 runner for this package. Everything above it (which device, what the
+// message says, what the spec is) is shared and testable; on Windows it is unsupported
+// (ip_windows.go) and the writers are netsh (link_windows.go), because nothing about `ip link add
+// ... type macvtap` translates to tap-windows6 and a bridge.
 //
 // It is this package's own rather than agent/platform's: platform's runIP is unexported and
 // exporting it would invite arbitrary `ip` calls from anywhere, which is the thing keeping it

@@ -12,31 +12,18 @@ import (
 	"time"
 )
 
-// The host's side of the guest's L2, built by the AGENT.
+// The host's side of the guest's L2, built and kept by the AGENT -- never by a script the
+// installer writes, which no release can fix once it is installed, nor by a unit of its own: a
+// macvtap cannot be re-parented, only deleted and recreated, which invalidates the fd handed to
+// qemu, so only the thing that runs the guest can sequence it (agent/host/network.go).
 //
-// It used to be a shell script the installer generated -- `net-up.sh`, with this host's NIC,
-// device names, addresses and gateway baked into a heredoc, run once inline and again at every
-// boot from a oneshot unit. Two things were wrong with that and neither was the shell.
-//
-// THE FIRST IS THAT NO RELEASE COULD REACH IT. A bug in those lines shipped a fix that landed on
-// no installed node. ALLMULTI is the example: without it the guest announces its name fine and
-// answers unicast, so every client caches the record and the household name resolves -- until
-// that cached record expires, after which the name is dead. An install looks correct at the
-// moment it finishes and only fails later, off-box.
-//
-// THE SECOND IS THAT A ONESHOT CANNOT ADAPT. A macvtap cannot be re-parented: you delete and
-// recreate, which invalidates the fd handed to qemu, which means relaunching the guest. Only the
-// thing that runs the guest can sequence that. And `Requires=briard-net.service` meant a failed
-// network unit stopped the agent from starting at all -- a cable out at boot took the node fully
-// dark, with nothing left running to report, retry or answer `briard status`.
-//
-// EVERYTHING HERE IS CHECK-FIRST. Convergence runs on the ordinary status tick, so the common
-// case is "already right" and must cost a few reads and change nothing. It is also what makes
-// this safe to run beside a rig that built its own devices: a tap that exists, is up and has its
-// flags is converged, whoever made it.
+// EVERYTHING HERE IS CHECK-FIRST. Convergence runs at every network check of the agent's observe
+// loop, so the common case is "already right" and must cost a few reads and change nothing. It
+// is also what makes this safe to run beside a rig that built its own devices: a tap that exists,
+// is up and has its flags is converged, whoever made it.
 
 // ifAllmulti is IFF_ALLMULTI in /sys/class/net/<dev>/flags. Read rather than set-and-hope,
-// because setting it on every tick would be a netlink write per device per 10 seconds forever.
+// because setting it at every network check would be a netlink write per device per check forever.
 const ifAllmulti = 0x200
 
 // THE ARGV AND THE ONE PATH, RENDERED PURELY (the shape agent/platform/route.go already
@@ -79,7 +66,8 @@ type Spec struct {
 	// the spec is macvtap's. Never true together with Bridge: a managed station is no bridge.
 	Ipvtap bool
 	// SystemTap is the guest's eth1 -- its node IP, and where DRBD binds. Built on every
-	// substrate: a macvtap child of Parent, or a plain tap enslaved to it.
+	// substrate: a macvtap child of Parent, an ipvtap child of it in HoldNS, or a plain tap
+	// enslaved to it.
 	SystemTap string
 	// ServiceTap is the guest's eth2, where the VIP lives. EMPTY on a bridge, where the guest
 	// makes its own service identity as a macvlan child inside -- Windows admits one
@@ -139,12 +127,10 @@ func (s Spec) built(ctx context.Context) bool {
 //     on a device it manages, when a connection reactivates. That is a value being reconciled away
 //     underneath us. An `ip link set X down` is not drift; it is an act, by an operator or a test.
 //   - A REAL partition is carrier-down, not admin-down, and an admin-up device with no carrier is
-//     still IFF_UP -- so this never fought a cable being pulled, and must not fight the stand-in
-//     for one either.
-//   - It also over-reached what it replaced: `net-up.sh` ran once at boot. Re-asserting link state
-//     every ten seconds was strictly more aggressive than the script whose job this took over, and
-//     the fleet found it -- `fault_partition` downs `sys-<node>`, which IS a node's SYSTEM_TAP, so
-//     the agent healed the partition within a tick and DRBD never saw a peer drop.
+//     still IFF_UP -- so this never fights a cable being pulled, and must not fight the stand-in
+//     for one either: a partition test downs a node's SystemTap, and an agent that re-upped it
+//     would heal the partition within a check, so DRBD would never see the peer drop
+//     (nixosTest/install-macvtap.nix asserts the downed tap stays down).
 
 // Converge makes the host's side of the guest's L2 match s, and returns the first thing it could
 // not do. It is idempotent by construction and safe to call on every tick.
@@ -167,11 +153,9 @@ func Converge(ctx context.Context, s Spec) error {
 		}
 	}
 	if s.Bridge {
-		// ONE PORT ON A BRIDGE WE DID NOT MAKE. Nothing is enslaved, nothing is moved, and the
-		// host's own LAN identity is never touched -- which is the whole point: the
-		// sequence that took a NIC away from NetworkManager, moved the address and the default
-		// route onto a bridge of ours, and armed a watchdog to undo it if we cut the operator's
-		// own SSH session, does not exist any more. The user owns the bridge; we add a port.
+		// ONE PORT ON A BRIDGE WE DID NOT MAKE. No host NIC is enslaved or taken from
+		// NetworkManager, no address or default route is moved, and the host's own LAN identity
+		// is never touched. The user owns the bridge; we add a port.
 		if err := ensureTap(ctx, s.SystemTap); err != nil {
 			return err
 		}
@@ -202,9 +186,9 @@ func Converge(ctx context.Context, s Spec) error {
 		// The guest's two NIC macvtaps on the parent, created with the kernel's random MAC; the
 		// launch wrapper (briard-net-wrap) pins the agent-derived per-node MAC at guest start.
 		//
-		// ⚠️ ORDER DOES NOT MATTER, whatever the old script's comment claimed. briard-net-wrap
-		// takes <dev> <mac> <fd> triples from the AGENT's argv and the guest's ethN follows
-		// qemu's -netdev order, not the order the devices were created in.
+		// ⚠️ ORDER DOES NOT MATTER. briard-net-wrap takes <dev> <mac> <fd> triples from the
+		// AGENT's argv and the guest's ethN follows qemu's -netdev order, not the order the
+		// devices were created in.
 		for _, t := range []string{s.SystemTap, s.ServiceTap} {
 			if t == "" {
 				continue
@@ -329,7 +313,8 @@ func Converged(s Spec) bool {
 	}
 	var held map[string][]string
 	if s.Ipvtap {
-		// Bounded: a check that is every cycle's first step may not wait on `ip` indefinitely.
+		// Bounded: a check that is every network check's first step may not wait on `ip`
+		// indefinitely.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		held = holdLinks(ctx)
 		cancel()
@@ -353,10 +338,9 @@ func Converged(s Spec) bool {
 			return false
 		}
 		// The two flags on a macvtap child that are not kernel defaults. BOTH are checked, and
-		// the IPv6 one is the whole of the repair path: a device that already exists is
-		// never re-created, so if this is not the question the tick asks, a host installed before
-		// the fix keeps autoconfiguring on the guest's MAC forever -- and every reachability
-		// check still passes, which is why it went unnoticed the first time.
+		// the IPv6 one is the whole of the repair path: a device that already exists is never
+		// re-created, so unless the tick asks this, a child autoconfiguring on the guest's MAC
+		// keeps doing so forever -- and every reachability check still passes.
 		if !s.Bridge && t != s.PrivTap && (flags(t)&ifAllmulti == 0 || !ipv6Disabled(t)) {
 			return false
 		}
@@ -412,7 +396,7 @@ func ensureMacvtap(ctx context.Context, dev, parent string) error {
 	// net.ipv6.conf.default.accept_ra=1 and every new device inherits the "default" values, so
 	// that is what happens unless we say otherwise. On a fresh device this runs before
 	// it is up, so no advertisement can be accepted at all; on a device that already exists the
-	// write FLUSHES what it already picked up, which is how an upgraded install gets repaired.
+	// write FLUSHES what it already picked up, which is how one that came up without it is repaired.
 	//
 	// A procfs write rather than sysctl(8), because this runs on stock hosts and on NixOS alike.
 	if p := disableIPv6Path(dev); exists(p) {
@@ -428,16 +412,17 @@ func ensureMacvtap(ctx context.Context, dev, parent string) error {
 			return err
 		}
 	}
-	// ALLMULTI, or inbound multicast never reaches the guest. The guest's avahi joins 224.0.0.251
-	// on its VIRTIO NIC inside the VM, and nothing carries that join out to this device: qemu
-	// only emits a NIC_RX_FILTER_CHANGED event, and the code that acts on it is libvirt's, gated
-	// on trustGuestRxFilters, and we run qemu directly. So this macvtap's multicast list holds
-	// only the all-hosts group, and macvlan_broadcast() drops every inbound mDNS query on its
-	// per-child test_bit(hash, vlan->mc_filter). ALLMULTI is what fills that bitmap.
+	// ALLMULTI, or inbound multicast never reaches the guest. The guest's mDNS responder (in the
+	// reverse proxy) joins 224.0.0.251 on its VIRTIO NIC inside the VM, and nothing carries that
+	// join out to this device: qemu only emits a NIC_RX_FILTER_CHANGED event, and the code that
+	// acts on it is libvirt's, gated on trustGuestRxFilters, and we run qemu directly. So this
+	// macvtap's multicast list holds only the all-hosts group, and macvlan_broadcast() drops every
+	// inbound mDNS query on its per-child test_bit(hash, vlan->mc_filter). ALLMULTI is what fills
+	// that bitmap.
 	//
-	// Egress does not need it, and that asymmetry is the trap: without this the guest still
-	// ANNOUNCES its name fine and answers unicast queries, so every client caches the record and
-	// the household name resolves -- until that cached record expires, after which nothing can
+	// Egress does not need it, and that asymmetry is the trap: without this the guest's answers
+	// still leave and unicast queries still reach it, so a client that holds the record keeps
+	// resolving the household name -- until that cached record expires, after which nothing can
 	// query the guest and the name is dead.
 	//
 	// THE CHILD, NOT THE PARENT: adding the group to the parent's own multicast list does not
@@ -486,8 +471,8 @@ func ensureUp(ctx context.Context, dev string) error {
 	return nil
 }
 
-// ensureAddr puts one address on one device. `addr replace` rather than `add`, so a prefix that
-// changed (the macvtap /32 vs the bridge substrate's /24) converges rather than collides.
+// ensureAddr puts one address on one device. addAddr replaces rather than adds on Linux, so a
+// prefix that changed converges rather than collides.
 func ensureAddr(ctx context.Context, a Addr) error {
 	if a.CIDR == "" || a.Dev == "" || hasAddr(a.Dev, a.CIDR) {
 		return nil
