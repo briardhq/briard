@@ -12,8 +12,8 @@ import (
 // bare disk has no table to reload, and inserting a seam later means DRBD must close and reopen.
 //
 // Defined here so the agent and the cloud's pairing directive name one value, and RESTATED (never
-// shared) by the nixosTest harness, which builds the VG this points into and cannot import Go.
-// Two sides of one contract, the way /run/briard's paths already are.
+// shared) by the nixosTest harness (nixosTest/lib.nix), which builds the VG this points into and
+// cannot import Go.
 const (
 	// DataVG, DataLV and MetaLV are the volume group and the two logical volumes the seam
 	// builds. They are the parts, and the device paths are composed from them rather than
@@ -23,8 +23,9 @@ const (
 	DataVG = "briardvol"
 	DataLV = "data"
 	// MetaLV holds DRBD's EXTERNAL metadata, at the end of the PV at a computed size
-	// -- DRBD's own internal-metadata placement, spelled in LVM so the data LV can carry a
-	// filesystem that fills it and still be attached later without shrinking anything.
+	// (agent/guestagent/nodestorage.go) -- DRBD's own internal-metadata placement, spelled in LVM
+	// so the data LV can carry a filesystem that fills it and still be attached later without
+	// shrinking anything.
 	MetaLV = "metadata"
 	// DataDevice is the mapper path the data LV appears at, and what a `.res` names as its
 	// backing; MetaDevice is the metadata LV's, and what it names as `meta-disk`.
@@ -54,7 +55,7 @@ const (
 // cloud witness through its OWN host's forwarder, so the witness path needs a
 // per-connection local address distinct from the anchor's LAN mesh Address, which
 // connection-mesh (one address per node) cannot express. Empty = the plain
-// single-node / LAN-witness case, rendered as before.
+// single-node / LAN-witness case, rendered as a connection-mesh.
 type Peer struct {
 	Name         string
 	NodeID       int
@@ -111,7 +112,7 @@ func (r Resource) Config() string {
 	return b.String()
 }
 
-// WriteOn renders one node's `on` block. withAddr controls the `address` line:
+// writeOn renders one node's `on` block. withAddr controls the `address` line:
 // connection-mesh puts each node's address here; the explicit-connection form
 // keeps addresses in the connections (a node's two links use different locals).
 func (r Resource) writeOn(b *strings.Builder, p Peer, withAddr bool) {
@@ -132,8 +133,8 @@ func (r Resource) writeOn(b *strings.Builder, p Peer, withAddr bool) {
 	b.WriteString("\t}\n")
 }
 
-// WriteMesh is the plain form: each node carries its address, connection-mesh
-// wires every pair. Unchanged from the older renderer.
+// writeMesh is the plain form: each node carries its address, connection-mesh
+// wires every pair.
 func (r Resource) writeMesh(b *strings.Builder) {
 	hosts := make([]string, len(r.Peers))
 	for i, p := range r.Peers {
@@ -143,9 +144,9 @@ func (r Resource) writeMesh(b *strings.Builder) {
 	fmt.Fprintf(b, "\tconnection-mesh {\n\t\thosts %s;\n\t}\n", strings.Join(hosts, " "))
 }
 
-// WriteExplicit is the forwarded-witness form (the witness-proxy shape): addresses live in the connections. The disk anchors
-// interconnect directly on their LAN addresses; each anchor reaches the diskless
-// witness through its OWN host forwarder (WitnessLocal → witness.Address). Targets
+// writeExplicit is the forwarded-witness form (the witness-proxy shape): addresses live in the
+// connections. The disk anchors interconnect directly on their LAN addresses; each anchor reaches
+// the diskless witness through its OWN host forwarder (WitnessLocal → witness.Address). Targets
 // the 2-anchor home — the anchor interconnect is a single pairwise `connection`.
 func (r Resource) writeExplicit(b *strings.Builder, witness Peer, anchors []Peer) {
 	for _, p := range r.Peers {
@@ -164,11 +165,11 @@ func (r Resource) writeExplicit(b *strings.Builder, witness Peer, anchors []Peer
 	}
 }
 
-// WitnessSplit recognises a forwarded-witness mesh: exactly one diskless
+// witnessSplit recognises a forwarded-witness mesh: exactly one diskless
 // peer and every disk anchor carrying a WitnessLocal. Returns the witness + the
 // disk anchors so Config renders explicit connections. Otherwise ok=false and the
-// resource renders as a plain connection-mesh — so single-node and the paired
-// LAN-witness case (a diskless peer but no WitnessLocal) are unchanged.
+// resource renders as a plain connection-mesh — single-node and the paired
+// LAN-witness case (a diskless peer but no WitnessLocal) included.
 func (r Resource) witnessSplit() (witness Peer, anchors []Peer, ok bool) {
 	var diskless []Peer
 	for _, p := range r.Peers {
@@ -191,42 +192,31 @@ func (r Resource) witnessSplit() (witness Peer, anchors []Peer, ok bool) {
 
 // ReactorConfig renders the drbd-reactor promoter snippet: the ordered unit that
 // runs on the primary only, in start order (reverse on demote). drbd-reactor —
-// not this code — drives that lifecycle. start lists the systemd
-// units in the order they must come up (workload → VIP).
+// not this code — drives that lifecycle. start lists the systemd units in the
+// order they must come up (shared/chain.Members: storage → VIP → apps → reverse
+// proxy → dashboard).
 //
-// ⚠️ `adjust-resource-on-start = false` DRAWS THE LAYER LINE, and omitting it cost a real defect
-// once. drbd-reactor's promoter defaults it to TRUE, which makes the reactor run its own
-// `drbdadm adjust` -- i.e. ATTACH the backing device -- the moment it reads this snippet. But
-// attaching is not the promoter's job here: the agent fires the stock `drbd@<res>.target`
-// (drbd-utils' own "(Re)configure DRBD resource" unit) and reads its result, because a supervisor
-// that cannot tell whether bring-up succeeded is not supervising. With both enabled the two race,
-// and the loser says
+// ⚠️ `adjust-resource-on-start = false` DRAWS THE LAYER LINE. drbd-reactor's promoter defaults it
+// to TRUE, which makes the reactor run its own `drbdadm adjust` -- i.e. ATTACH the backing device
+// -- the moment it reads this snippet. But attaching is not the promoter's job here: the guest's
+// node-storage step starts the stock `drbd@<res>.target` (drbd-utils' own "(Re)configure DRBD
+// resource" unit, agent/guestagent/nodestorage.go) and reads its result, because a supervisor that
+// cannot tell whether bring-up succeeded is not supervising. With both enabled the two race
+// (~250ms apart, so it lands about half the time), and the loser fails with
 //
 //	0: Failure: (124) Device is attached to a disk (use detach first)
-//	'drbdsetup attach 0 /dev/vdb /dev/vdb internal' terminated with exit code 10
 //
-// which fails drbd@<res>.service, fails the target, and takes the host agent with it -- it exits
-// non-zero on bring-up failure and systemd restarts it. Measured margin between the two: ~250ms,
-// so it lands about half the time, and never in a harness, where the config is baked and no agent
+// which fails drbd@<res>.service, fails the target, and fails bring-up -- the host agent exits
+// non-zero and systemd restarts it. A harness never shows it: its config is baked and no agent
 // races it. Upstream provides this key for exactly this split: the promoter promotes, the drbd@
 // chain configures.
 //
-// ⚠️ `target-as = Wants` IS THE OTHER LAYER LINE, and it cost a measured outage class.
-// The promoter's default is `Requires`, which reactor writes onto the TARGET pointing at each
-// member. `Requires=` is a JOB-level dependency: systemd consults it when a stop or restart job is
-// enqueued on a member, never against a member's state. And `Restart=` enqueues its auto-restart
-// with job mode JOB_RESTART_DEPENDENCIES, which propagates a TRY_RESTART up to the target, which
-// stops drbd-promote@ (PartOf) -- so ONE crash of the reverse proxy unmounted the data volume and
-// demoted the node, taking the resource away from a live peer in 2 of 5 tries. Nothing about that
-// was the maintenance bracket's doing, and no bracket could have covered it.
-//
-// `Wants` removes that edge entirely: the target still STARTS every member (which is all this
-// list was ever meant to express), and a member that stops, crashes or is restarted no longer
-// reaches the promotion. What replaces it is a state-level hook rather than a dependency --
-// `OnFailure=drbd-demote-or-escalate@<res>.service` on each member, paired with
-// `RestartMode=direct` so it fires only when a member exhausts its start limit and has genuinely
-// given up (guest-image/configuration.nix, chainMemberFailure). Deliberate action stays cheap;
-// giving up still hands the resource on.
+// ⚠️ `target-as = Wants` IS THE OTHER LAYER LINE. The promoter's default, `Requires`, would demote
+// the node on ONE crash of a member (the job-level propagation is spelled out at chainMemberFailure,
+// agent/guestagent/units.go). `Wants` removes that edge: the target still STARTS every member, and
+// a member that stops, crashes or is restarted no longer reaches the promotion. A member that has
+// genuinely given up still hands the resource on, through a state-level hook rather than a
+// dependency: chainMemberFailure's `OnFailure=briard-promotion-hold.service` on every member.
 func ReactorConfig(resource string, start []string) string {
 	quoted := make([]string, len(start))
 	for i, u := range start {

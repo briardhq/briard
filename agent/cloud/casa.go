@@ -17,8 +17,8 @@ import (
 // the claim and the certificate, and the Worker for the address. A surface of its own beside
 // the managed channel (CloudClient), because a casa node is not a managed one -- it opens a
 // claim, polls it, asks for a certificate at 30 days out, and writes its own address; nothing
-// periodic goes up, and no bearer token exists: every request after the claim is signed by the
-// node with the key the cloud bound at registration.
+// periodic goes up, and no bearer token exists: the certificate and address requests are signed
+// by the node with the key the cloud bound at registration (a poll carries only the claim's id).
 type Casa struct {
 	base   string // the cloud's public origin, e.g. https://api.briard.io
 	worker string // the Worker's origin, e.g. https://casa.briard.io

@@ -7,8 +7,9 @@ import (
 	"strings"
 )
 
-// MemTotalMB is the machine's installed RAM (MemTotal), in MB; 0 when it cannot be read. The host
-// agent sizes its guest's growth ceiling from the same number the report card grades.
+// MemTotalMB is the machine's RAM as the OS reports it (MemTotal, below the DIMMs' size), in MB; 0
+// when it cannot be read. The host agent sizes its guest's growth ceiling from the same number the
+// report card grades.
 func MemTotalMB() int {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {

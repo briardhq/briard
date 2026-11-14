@@ -6,9 +6,9 @@ import (
 	"briard.io/shared/api"
 )
 
-// OverlayProvider is the seam to the WireGuard overlay (NetBird now, others
-// later). Real impls live in subpackages (e.g. overlay/netbird); this package
-// holds only the interface + a stub, so core stays provider-free.
+// OverlayProvider is the seam to the WireGuard overlay. Real impls live in
+// subpackages (overlay/netbird); this package holds only the interface + a stub,
+// so core stays provider-free.
 type OverlayProvider interface {
 	EnrollNode(ctx context.Context, req api.EnrollRequest) (api.NodeIdentity, error)
 	NodeName(ctx context.Context) (string, error)
@@ -24,7 +24,7 @@ type Health struct {
 	PeersUp int
 }
 
-// Stub is a no-op OverlayProvider for core tests and v0 wiring.
+// Stub is a no-op OverlayProvider.
 type Stub struct{ Name string }
 
 func (s Stub) EnrollNode(context.Context, api.EnrollRequest) (api.NodeIdentity, error) {

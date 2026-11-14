@@ -53,9 +53,8 @@ func ParseCluster(raw []byte, resource string) (model.Cluster, error) {
 		}
 		// Quorum is per-device; any volume without quorum means this node cannot
 		// write (on-no-quorum=io-error) — treat the whole node as non-quorate.
-		// This node's own storage, folded exactly like the peer fold below and for the
-		// identical reason: a node with no devices at all must not come out
-		// diskful-and-UpToDate by vacuous truth.
+		// Disk state folds the same way as the peer fold below: a node with no
+		// devices at all must not come out quorate, diskful or UpToDate by vacuous truth.
 		quorate := len(r.Devices) > 0
 		diskful := len(r.Devices) > 0
 		uptodate := len(r.Devices) > 0
@@ -116,7 +115,7 @@ func ParseCluster(raw []byte, resource string) (model.Cluster, error) {
 // PeerCounts reads `drbdsetup status --json` for the first resource and returns the three inputs
 // to the deadman's reboot gate: how many peers are CONFIGURED (connected or not — DRBD lists
 // every configured connection), how many are currently CONNECTED, and whether THIS node is
-// quorate. v0 is single-resource, so the first resource is the one; it errors if the status is
+// quorate. A node runs one resource, so the first resource is the one; it errors if the status is
 // empty. It only reads (CONTRIBUTING.md invariant 2).
 //
 // Quorate is folded exactly as ParseCluster folds it, and must stay that way: quorum is

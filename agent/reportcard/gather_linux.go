@@ -15,15 +15,15 @@ import (
 )
 
 // The Linux eyes: Gather, and every reader beneath it that opens /proc, /sys, /etc or looks for
-// a binary. The pure verdict and the readers both OSes share stay in gather.go.
+// a binary. The pure verdict stays in reportcard.go, the readers both OSes share in gather.go.
 //
 // Gather reads the real host into HostFacts (Linux /proc + /sys + /dev). Thin + best-effort: a
 // read that fails reads as "absent/false", which flows into a Refuse/Warn with a fix -- never a
 // crash. All the verdict logic lives in the pure Assess (this is just the eyes).
 //
-// The NIC is selected ONCE here and every NIC-derived fact hangs off that one answer.
-// It used to be re-read per fact from the default route, which quietly judged a different device
-// than the install would use whenever BRIARD_NIC was set.
+// The NIC is selected ONCE here and every NIC-derived fact hangs off that one answer. Re-reading
+// it per fact from the default route would quietly judge a different device than the install
+// uses whenever BRIARD_NIC is set.
 func Gather(ctx context.Context) HostFacts {
 	sel := nic.Choose(ctx, os.Getenv("BRIARD_NIC"), "")
 	return HostFacts{
@@ -44,10 +44,9 @@ func Gather(ctx context.Context) HostFacts {
 		KeptDataDisk:  exists(petDir + "/data.img"),
 		KeptStateDisk: exists(petDir + "/state.img"),
 		HostCIDR:      nic.HostCIDR(sel.Dev),
-		// The address the install is about to hand the guest. install.sh already computes it
-		// (BRIARD_VIP_ADDR, CIDR form) and passes it here the same way it passes NET_MODE -- the card
-		// cannot judge an address it is not told about, and this is the last gate before a VM
-		// boots holding it.
+		// The address the install is about to hand the guest: BRIARD_VIP_ADDR (CIDR form), which
+		// `briard-agent install` sets as VIP_ADDR before it runs the card -- the card cannot judge
+		// an address it is not told about, and this is the last gate before a VM boots holding it.
 		VIPAddr: os.Getenv("VIP_ADDR"),
 		// Is that address already somebody's? Probed here rather than inside the check so the
 		// verdict logic stays pure. Only meaningful when an address was named -- under DHCP the
@@ -70,9 +69,8 @@ func Gather(ctx context.Context) HostFacts {
 // answer out of the kernel's own neighbour table. No raw sockets, no CAP_NET_RAW, no shelling out.
 //
 // A false is "nothing answered", which includes "we could not ask". That asymmetry is deliberate:
-// this gate turns evidence-of-use into a refusal, and must never turn absence-of-evidence into
-// permission -- a sleeping device will not answer, and the install proceeds, as it did before this
-// check existed.
+// this gate turns evidence-of-use into a refusal, and absence of evidence proves nothing -- a
+// sleeping device will not answer, and the install proceeds.
 func AddressAnswers(cidr string) bool {
 	ip, _, err := net.ParseCIDR(cidr)
 	if err != nil || ip.To4() == nil {
@@ -143,17 +141,16 @@ func hostHasLease(dev string) bool {
 	return false
 }
 
+// petDir is where the node's pet volumes live (agent/host/config_linux.go's stateDir).
+const petDir = "/var/lib/briard"
+
 // installRoot is the filesystem the install will land on. /opt and /var/lib can be separate
 // mounts, so measure the deepest existing ancestor of the prefix rather than assuming "/": on a
 // reinstall /opt/briard already exists and is the honest thing to measure, and on a fresh host the
 // walk ends at / anyway.
 //
 // The prefix is a CONSTANT, not a knob: the qemu bundle bakes it into its own ELF
-// interpreter, so an install anywhere else produces a qemu that cannot execute. This used to read
-// BRIARD_PREFIX, which nothing set and which could not have worked if anything had.
-// petDir is where install.sh puts the node's pet volumes (STATE in install.sh).
-const petDir = "/var/lib/briard"
-
+// interpreter, so an install anywhere else produces a qemu that cannot execute.
 func installRoot() string {
 	p := "/opt/briard"
 	for p != "/" && p != "." {
@@ -255,7 +252,7 @@ func cpuHasFlag(want string) bool {
 }
 
 // tunModuleAvailable reports whether the tun driver is loaded, built-in, or present as a module the
-// installer can load -- so a not-yet-loaded-but-loadable tun still passes (the installer modprobes).
+// agent can load -- so a not-yet-loaded-but-loadable tun still passes (the agent loads it).
 func tunModuleAvailable() bool {
 	if exists("/sys/module/tun") { // already loaded
 		return true

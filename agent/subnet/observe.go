@@ -15,10 +15,6 @@ import (
 // Observe reads what this host can already see of the address space: the addresses on its own
 // NICs, and the routes it holds. Thin and best-effort throughout -- a read that fails contributes
 // nothing, which draws freely rather than refusing (see Observed).
-//
-// This is the cheap half of the open unknown-LAN validation, and it costs nothing new:
-// the report card already reads the host's interfaces to judge the VIP, so the machine was
-// already being looked at.
 func Observe(ctx context.Context) Observed {
 	obs := Observed{Where: map[netip.Prefix]string{}}
 	obs.add(hostAddrs())
@@ -42,7 +38,7 @@ type seenPrefix struct {
 }
 
 // hostAddrs reads the networks this machine's own NICs sit on. The NETWORK, not the address: a
-// host at 10.9.9.5/24 occupies the whole /24 as far as a draw is concerned, because that is what
+// host at 10.173.94.5/24 occupies the whole /24 as far as a draw is concerned, because that is what
 // its on-link route claims.
 //
 // Down interfaces count too. A NIC that is down today is a NIC that comes up tomorrow -- and the
@@ -177,7 +173,7 @@ func devOf(f []string) string {
 // which is a genuine collision. Anything more specific than a /8 is somebody NAMING a range;
 // treat it as real.
 //
-// Non-10/8 prefixes are dropped here too: they cannot collide with either pool, and carrying them
+// Non-10/8 prefixes are dropped here too: they cannot collide with any pool, and carrying them
 // only makes a refusal's message longer.
 func worthHonouring(p netip.Prefix) bool {
 	return p.Addr().Is4() && p.Bits() >= 12 && p.Addr().As4()[0] == 10

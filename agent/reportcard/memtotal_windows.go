@@ -15,7 +15,7 @@ type memoryStatusEx struct {
 
 var procGlobalMemoryStatusEx = windows.NewLazySystemDLL("kernel32.dll").NewProc("GlobalMemoryStatusEx")
 
-// MemTotalMB is the machine's installed RAM, in MB; 0 when it cannot be read.
+// MemTotalMB is the machine's RAM as the OS reports it (TotalPhys), in MB; 0 when it cannot be read.
 func MemTotalMB() int {
 	m := memoryStatusEx{Length: uint32(unsafe.Sizeof(memoryStatusEx{}))}
 	if r, _, _ := procGlobalMemoryStatusEx.Call(uintptr(unsafe.Pointer(&m))); r == 0 {

@@ -27,7 +27,7 @@ type CloudClient interface {
 }
 
 // HTTP is the real CloudClient: it speaks the shared/api seam to the control plane over
-// HTTP. Node-initiated (outbound POST), so it works from behind NAT -- the v2-cloud shape.
+// HTTP. Node-initiated (outbound POST), so it works from behind NAT.
 type HTTP struct {
 	reportURL   string
 	registerURL string
@@ -49,7 +49,7 @@ func NewHTTP(base, token string) *HTTP {
 	}
 }
 
-// Auth sets the bearer header on req when a token is configured.
+// auth sets the bearer header on req when a token is configured.
 func (h *HTTP) auth(req *http.Request) {
 	if h.token != "" {
 		req.Header.Set("Authorization", "Bearer "+h.token)
@@ -139,7 +139,7 @@ func (h *HTTP) ReportMetrics(ctx context.Context, node string, aggs []api.Metric
 	return nil
 }
 
-// Stub is an in-memory CloudClient for tests and standalone wiring: Report returns its
+// Stub is an in-memory CloudClient for tests: Report returns its
 // canned directives and drops the status; Register returns its canned Assignment;
 // ReportMetrics records the last uploaded batch so tests can assert on it.
 type Stub struct {

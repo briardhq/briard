@@ -1,4 +1,4 @@
-// Package drbd generates the drbd-reactor config and ordered units and
-// reads their status into NodeStatus. It never drives the failover lifecycle —
-// drbd-reactor inside the VM does.
+// Package drbd renders a resource's `.res` and its drbd-reactor promoter snippet,
+// names the storage seam's devices, and parses `drbdsetup status` into the node's
+// quorum view. It never drives the failover lifecycle — drbd-reactor inside the VM does.
 package drbd

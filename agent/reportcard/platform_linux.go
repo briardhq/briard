@@ -35,12 +35,11 @@ func platformChecks(f HostFacts) []Check {
 
 	// SYSTEMD -- and it is here, with the other hard requirements, because it is one.
 	//
-	// install.sh writes unit files and runs `systemctl daemon-reload`/`enable`/`start`; there is no
-	// non-systemd path and none is planned (we do not own the host's init). It had a
-	// guard already, but the LAST branch of the script: a box booted with OpenRC or runit passed
-	// every gate, downloaded and unpacked ~400 MB into /opt/briard, created taps, formatted the
-	// data volume, wrote units nothing would ever read -- and only then heard "no systemd". Every
-	// other hard requirement refuses before anything is written; this is the one that did not.
+	// The install writes unit files and runs `systemctl daemon-reload`/`enable`/`start`; there is no
+	// non-systemd path and none is planned (we do not own the host's init). Like every other hard
+	// requirement it refuses before anything is written -- a guard any later would let an OpenRC or
+	// runit box download and unpack ~400 MB, create taps and write units nothing will ever read
+	// before hearing "no systemd".
 	//
 	// BOOTED, not merely installed. `systemctl` on PATH is the weaker question: a host with the
 	// binary present but another init as PID 1 answers yes and then fails at daemon-reload, which

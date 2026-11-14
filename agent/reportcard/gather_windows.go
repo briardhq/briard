@@ -42,7 +42,7 @@ func Gather(ctx context.Context) HostFacts {
 	}
 }
 
-// petDir is where the node's pet volumes live on Windows (config_windows.go's stateDir).
+// petDir is where the node's pet volumes live on Windows (agent/host/config_windows.go's stateDir).
 const petDir = `C:\ProgramData\briard\state`
 
 // installRoot is the volume the install lands on.

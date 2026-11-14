@@ -28,8 +28,8 @@ func hostRoutes(ctx context.Context) []seenPrefix {
 }
 
 // LANProbe returns the flock draw's second question: is another flock already living on this
-// candidate subnet? It asks the household's own L2 by ARP -- the same mechanism already
-// used for validating BRIARD_VIP_ADDR, so this adds a caller rather than a mechanism.
+// candidate subnet? It asks the household's own L2 by ARP through reportcard.AddressAnswers, the
+// probe that validates a named VIP -- a second caller rather than a second mechanism.
 //
 // ⚠️ THE TEMPORARY ROUTE IS WHY THIS WORKS AT ALL. A candidate subnet is by construction one this
 // host has no address in, so a datagram to it leaves by the default route -- to the router's MAC,

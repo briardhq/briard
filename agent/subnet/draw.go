@@ -1,26 +1,26 @@
-// Package subnet draws the two private IPv4 ranges a briard node needs and cannot ask anyone
+// Package subnet draws the three private IPv4 ranges a briard node needs and cannot ask anyone
 // for: the FLOCK SUBNET (the system subnet -- the guests' node IPs and the DRBD mesh,
-// which rides the household's own L2 by design) and the PRIVATE LINK (the point-to-point tap
-// between a host and its own guest, the guest's eth3).
+// which rides the household's own L2 by design), the PRIVATE LINK (the point-to-point tap
+// between a host and its own guest, the guest's eth3) and the POD pool (the guest's private app
+// networks, see Draw.Pod).
 //
-// WHY DRAW RATHER THAN HARDCODE. Both used to be constants -- 10.0.0.0/24 and 10.11.9.0/24 --
-// and 10.0.0.0/24 is one of the most common real household subnets there is: every Xfinity
-// gateway ships it. Two subnets with the same numbers on one L2 is not a degraded install, it is
-// an install that cannot talk to half the house, and giving a lone node a system address made
-// it live rather than latent (before that, a lone node had no system address at all). The
-// link's collision is quieter and just as real: it never touches the LAN, so it cannot collide at
-// L2 -- but the HOST'S ROUTING TABLE is shared, so a household on 10.11.9.0/24 gives the host two identical on-link /24s and
-// Linux picks between them by metric and insertion order. Both directions then break, and which
-// one is not ours to say.
+// WHY DRAW RATHER THAN HARDCODE. Any fixed range is somebody's: 10.0.0.0/24 is one of the most
+// common real household subnets there is (every Xfinity gateway ships it). Two subnets with the
+// same numbers on one L2 is not a degraded install, it is an install that cannot talk to half the
+// house -- and every node, a lone one included, holds a system address. The link's collision is
+// quieter and just as real: it never touches the LAN, so it cannot collide at L2 -- but the HOST'S
+// ROUTING TABLE is shared, so a household on the link's /24 gives the host two identical on-link
+// /24s and Linux picks between them by metric and insertion order. Both directions then break, and
+// which one is not ours to say.
 //
 // THE SHAPE OF THE ANSWER: draw with real entropy, exclude the ranges convention has already
 // spoken for, and check the draw against what this host can actually see. That turns "unlikely to
 // collide" into "observed not to" for the collisions we can observe, and leaves the rest to the
-// ~59,000 candidates the pool holds. What it deliberately does NOT solve is the LATE collision --
-// a user who joins a VPN or adds a router after us -- because renumbering a live node is a
-// renumber, and the flock subnet is flock-scoped, so it moves the whole flock.
+// ~59,600 candidates the flock pool holds. What it deliberately does NOT solve is the LATE
+// collision -- a user who joins a VPN or adds a router after us -- because renumbering a live node
+// is a renumber, and the flock subnet is flock-scoped, so it moves the whole flock.
 //
-// Pick is PURE (a reader, an observation, a probe function in; two subnets out), so every
+// Pick is PURE (a reader, an observation, a probe function in; three subnets out), so every
 // rejection path is unit-tested against a fabricated host; Observe and LANProbe (observe.go) are
 // the thin impure halves.
 package subnet
@@ -31,10 +31,10 @@ import (
 	"net/netip"
 )
 
-// Draw is the pair an install commits to, each as the first three octets ("10.173.94") -- the
-// form install.sh writes and the only form anything downstream needs, because the addresses in a
-// /24 are positional: guests take .1/.2/.3 by node-id and their hosts take the same index 128
-// higher.
+// Draw is the set a node commits to, each as the first three octets ("10.173.94") -- the form
+// its record holds (Report) and the only form anything downstream needs, because the addresses in
+// a /24 are positional: guests take .1/.2/.3 by node-id and their hosts take the same index 128
+// higher (agent/host applyDraw).
 type Draw struct {
 	System string // the flock subnet -- LAN-scoped, shared by every node in the flock
 	Priv   string // the private host<->guest link -- node-private, never on the LAN
@@ -59,24 +59,24 @@ func (d Draw) Complete() bool { return d.System != "" && d.Priv != "" && d.Pod !
 // attempts bounds each draw. Statistically absurd as a bound on bad luck -- the conventional
 // exclusions reject under 10% of the pool, so sixteen consecutive rejections by chance is a
 // number with more zeros than this comment -- which is the point: reaching it means the host
-// really does have 10/8 carved up, and then we must REFUSE rather than invent. That is the
-// posture the VIP already takes ("no DHCP server and no BRIARD_VIP_ADDR -> refuse, naming the
-// variable"), and the alternative is a node that installs green and cannot serve half the house.
+// really does have 10/8 carved up, and then we must REFUSE rather than invent, naming the
+// variable that pins the range. The alternative is a node that installs green and cannot serve
+// half the house.
 //
 // It is also a wall-clock bound, because the flock draw ARP-probes each surviving candidate:
 // ~750ms of unanswered probe each, so sixteen is ~12s worst case and one probe (~750ms) in every
 // realistic case.
 const attempts = 16
 
-// Pick draws both subnets.
+// Pick draws all three subnets.
 //
 // rnd is the entropy source (crypto/rand.Reader in production, a fixed reader in tests). obs is
 // what this host can already see of 10/8; answers asks the LAN whether a candidate flock subnet's
 // .1 is already somebody's, and may be nil where nobody can be asked.
 //
-// The two draws are structurally disjoint rather than checked against each other: the flock pool
-// excludes 10.11.x, which is the whole of the link pool. So a link can never land on its own
-// flock's subnet, and no ordering between the two draws can make it.
+// The draws are structurally disjoint rather than checked against each other: the flock pool
+// excludes 10.11.x and 10.12.x, the whole of the link and pod pools, which are themselves
+// disjoint. So no range can land on another, and no ordering between the draws can make it.
 func Pick(obs Observed, rnd io.Reader, answers func(netip.Addr) bool) (Draw, error) {
 	sys, err := draw(rnd, systemCandidate, func(p netip.Prefix) string {
 		if where := obs.Occupied(p); where != "" {
@@ -107,7 +107,7 @@ func Pick(obs Observed, rnd io.Reader, answers func(netip.Addr) bool) (Draw, err
 	return Draw{System: three(sys), Priv: three(priv), Pod: three(pod)}, nil
 }
 
-// draw is the loop both pools share: propose, reject with a reason, stop at the bound. reject
+// draw is the loop every pool shares: propose, reject with a reason, stop at the bound. reject
 // returns "" for a candidate it accepts and the reason otherwise -- a string rather than a bool
 // so the refusal can say what the machine actually looked like, which is the difference between
 // a user who can act on it and one who files a bug.
@@ -155,22 +155,23 @@ func systemCandidate(rnd io.Reader) (netip.Prefix, error) {
 
 // privCandidate proposes a private link: 10.11.R.0/24, one octet random.
 //
-// 256 candidates is plenty here, and ~65,000 is wanted for the flock, because the two have
-// different scopes. The link is node-private -- a point-to-point wire on one host -- so two nodes
-// in one flock may draw the SAME 10.11.R without conflict; they are separate wires that never
-// meet. The flock subnet must miss every OTHER flock on the same LAN as well as the LAN itself.
+// 256 candidates is plenty here, and tens of thousands are wanted for the flock, because the two
+// have different scopes. The link is node-private -- a point-to-point wire on one host -- so two
+// nodes in one flock may draw the SAME 10.11.R without conflict; they are separate wires that
+// never meet. The flock subnet must miss every OTHER flock on the same LAN as well as the LAN
+// itself.
 //
-// 10.11.x DELIBERATELY, and not the 10.9.x the code used all along: renaming the pool off its
-// historical value means any surviving `10.9.` in either tree is provably a leftover rather than
-// a judgement call, which turns a class of rogue use into one grep.
+// 10.11.x DELIBERATELY, and not the historical 10.9.x: any surviving `10.9.` in either tree is
+// then provably a leftover rather than a judgement call, which turns a class of rogue use into
+// one grep.
 //
 // ⚠️ THE POOL IS L2 SUBSTRATE AND NO BRIARD CODE MAY REFERENCE IT. On Linux, macvtap leaves host
 // and guest unable to route each other's subnets directly, and these addresses on eth3 are what
 // both routing tables hang that routing off -- so the pool is permanent, whatever else stops using
-// it (scripts/install.sh's PRIV_HOST_CIDR note). It does not exist at all on a Windows host, which
-// is what makes the rule a rule rather than a preference: anything that dials this range cannot
-// run where the link was never built. A product network that needs addresses of its own draws its
-// own pool and excludes it below, exactly as this one is excluded from the flock's.
+// it. It does not exist at all on a Windows host, which is what makes the rule a rule rather than
+// a preference: anything that dials this range cannot run where the link was never built. A
+// product network that needs addresses of its own draws its own pool and excludes it below,
+// exactly as this one is excluded from the flock's.
 func privCandidate(rnd io.Reader) (netip.Prefix, error) {
 	var o [1]byte
 	if _, err := io.ReadFull(rnd, o[:]); err != nil {
@@ -189,10 +190,10 @@ func privCandidate(rnd io.Reader) (netip.Prefix, error) {
 // household: eth2 sits on the household LAN, which can itself be 10.x, and a pool that collided
 // with it would leave an app unable to reach the devices it exists to talk to.
 //
-// 10.12 rather than spare room inside 10.11 — the cost was measured, not guessed: excluding
-// another /16 costs 256 of 59,900 free /24s in the flock pool, 0.43%. Borrowing from 10.11 would
-// have cost nothing there and broken the rule that no briard code may reference the link pool
-// (see privCandidate), which is worth more than 0.43%.
+// 10.12 rather than spare room inside 10.11: excluding another /16 costs the flock pool 256 of
+// its ~59,900 other free /24s, 0.43%. Borrowing from 10.11 would cost nothing there and break the
+// rule that no briard code may reference the link pool (see privCandidate), which is worth more
+// than 0.43%.
 func podCandidate(rnd io.Reader) (netip.Prefix, error) {
 	var o [1]byte
 	if _, err := io.ReadFull(rnd, o[:]); err != nil {
@@ -207,7 +208,7 @@ func podCandidate(rnd io.Reader) (netip.Prefix, error) {
 //
 // The collisions cluster on ROUND, LOW, MEMORABLE numbers, because that is what humans and vendor
 // defaults pick -- which is also why a random pair like 10.173.94.0/24 is nearly safe by
-// construction, and why the belt at the end (10.1/10.10/10.100/10.200) is hand-picked rather than
+// construction, and why the round-number belt (10.1/10.10/10.100/10.200) is hand-picked rather than
 // sourced: nobody documents "operators like round numbers", but every network engineer has met it.
 //
 // Each sourced entry was verified rather than recalled, because a table of remembered constants is
@@ -248,8 +249,7 @@ func conventional(p netip.Prefix) string {
 //
 // AN EMPTY Observed DRAWS FREELY, and that asymmetry is deliberate -- the same one the report
 // card's VIP probe uses. This check turns evidence-of-use into a redraw and must never turn
-// absence-of-evidence into a refusal: a host we could not read is a host that installs, exactly
-// as it did before this existed.
+// absence-of-evidence into a refusal: a host we could not read is a host that installs.
 type Observed struct {
 	// Prefixes is every range this host has an address in or a route to, already cut to the
 	// prefix lengths worth honouring (see Observe).
@@ -262,8 +262,9 @@ type Observed struct {
 // Occupied names what already holds p, or "" if nothing this host can see does.
 //
 // It knows nothing of the conventional table on purpose: that exclusion belongs to the flock
-// POOL (systemCandidate applies it when proposing) and not to the link's, whose whole pool is one
-// of the table's entries. Folding the two together here would reject every link candidate.
+// POOL (systemCandidate applies it when proposing) and not to the link's or the pod's, each of
+// whose whole pool is one of the table's entries. Folding the two together here would reject
+// every link and pod candidate.
 func (o Observed) Occupied(p netip.Prefix) string {
 	for _, q := range o.Prefixes {
 		if q.Overlaps(p) {
@@ -276,7 +277,7 @@ func (o Observed) Occupied(p netip.Prefix) string {
 	return ""
 }
 
-// slash24 builds 10.a.b.0/24 -- the only shape either pool produces.
+// slash24 builds a.b.c.0/24 -- the only shape any pool produces.
 func slash24(a, b, c byte) netip.Prefix {
 	return netip.PrefixFrom(netip.AddrFrom4([4]byte{a, b, c, 0}), 24)
 }
@@ -285,7 +286,7 @@ func slash24(a, b, c byte) netip.Prefix {
 // this node will take if the draw stands.
 func nodeIP(p netip.Prefix) netip.Addr { return p.Addr().Next() }
 
-// three renders a /24 the way install.sh spells it -- first three octets, no prefix.
+// three renders a /24 the way the record spells it -- first three octets, no prefix.
 func three(p netip.Prefix) string {
 	o := p.Addr().As4()
 	return fmt.Sprintf("%d.%d.%d", o[0], o[1], o[2])

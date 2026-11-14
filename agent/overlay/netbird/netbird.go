@@ -1,13 +1,13 @@
-// Package netbird implements overlay.OverlayProvider against NetBird (hosted
-// netbird.io in v1; self-hosted is the v2 cloud piece). It drives the netbird
+// Package netbird implements overlay.OverlayProvider against NetBird, hosted
+// (netbird.io, the default ManagementURL) or self-hosted. It drives the netbird
 // client CLI against a per-node daemon (the system service owns the daemon
 // lifecycle; this Provider issues up/status/down against it), so one Provider
 // manages one node's overlay membership.
 //
-// Enrollment is coordinator-mediated: the cloud/controller mints the setup key
-// (it holds the management token; the node never does -- the same stance as
-// cert issuance, docs cloud-issues-certs-not-node) and hands it to the node,
-// which only *consumes* it here via EnrollNode.
+// Enrollment is coordinator-mediated: the coordinator mints the setup key (it
+// holds the management token; the node never does -- the same stance as cert
+// issuance) and hands it to the node, which only *consumes* it here via
+// EnrollNode.
 package netbird
 
 import (
@@ -36,7 +36,7 @@ type Config struct {
 	DaemonAddr    string // unix:///run/netbird/sock -- the daemon's CLI socket
 	Interface     string // WireGuard iface name (default "wt0")
 	Hostname      string // this node's name on the overlay
-	DisableDNS    bool   // skip host DNS config (set in the netns test fleet)
+	DisableDNS    bool   // skip host DNS config (test rigs set it)
 }
 
 const (
@@ -135,8 +135,8 @@ func (p *Provider) Health(ctx context.Context) (overlay.Health, error) {
 		Up:      s.Management.Connected && s.Signal.Connected,
 		PeersUp: connected,
 		// Relayed when every connected peer is on relay (no direct path at all).
-		// A single direct peer flips it false. On hosted netbird.io behind the
-		// fleet's shared outer NAT this is the norm.
+		// A single direct peer flips it false. Behind a shared outer NAT this is
+		// the norm.
 		Relayed: connected > 0 && relayed == connected,
 	}, nil
 }
@@ -166,7 +166,7 @@ func (p *Provider) identity(ctx context.Context) (api.NodeIdentity, error) {
 	return api.NodeIdentity{Name: s.Fqdn, Address: addr}, nil
 }
 
-// Args appends the daemon socket to a subcommand's flags when configured.
+// args appends the daemon socket to a subcommand's flags when configured.
 func (p *Provider) args(base ...string) []string {
 	if p.cfg.DaemonAddr != "" {
 		base = append(base, "--daemon-addr", p.cfg.DaemonAddr)
