@@ -135,8 +135,8 @@ func setBackup(cfg Config, g *fakeBackup, key, value string) api.DirectiveOutcom
 }
 
 // Off writes BACKUP_DIR= (the decision, not the default), takes effect at once and leaves the
-// folder remembered; on returns there; any other folder is refused; and the key's
-// acknowledgement is recorded.
+// folder remembered; on returns there; a folder the new-folder check refuses is refused; and the
+// key's acknowledgement is recorded.
 func TestTheBackupTurnsOffAndBackOn(t *testing.T) {
 	folder := filepath.Join(t.TempDir(), "Briard Backup")
 	cfg, g := liveBackup(t, folder)
@@ -797,8 +797,9 @@ func TestTheBackupListIsTheGuestsReadOfTheRepository(t *testing.T) {
 	}
 }
 
-// TestThePageMayRestoreFromTheBackup: the Backup page's restore and its list are the page's to
-// ask, as an undo and an install are; the backup's other local-only acts and the node's own are not.
+// TestThePageMayRestoreFromTheBackup: the Backup page's restore, its list, its run-now and its
+// folder change are the page's to ask, as an undo and an install are; the node's own local-only
+// acts are not.
 func TestThePageMayRestoreFromTheBackup(t *testing.T) {
 	for _, kind := range []string{api.DirectiveBackupRestore, api.DirectiveBackupList, api.DirectiveBackupNow, api.DirectiveBackupFolder} {
 		if !guestMayAsk(api.Directive{Kind: kind}) {
@@ -918,8 +919,9 @@ func askFolder(cfg Config, g any, req api.BackupFolder) (api.DirectiveOutcome, d
 
 // A FOLDER IS READ BEFORE THE BACKUP MOVES: empty says so with no read; one holding backups is
 // read with this household's key through the candidate root -- set for the read, cleared after --
-// and counted, this household's and an earlier install's; one another key made says so; anything
-// checkBackupFolder refuses is refused before the guest is asked. Nothing moves without Confirm.
+// and counted, this household's and an earlier install's; one another key made says so; the
+// folder in use, anything checkBackupFolder refuses, and a second read while one goes are refused
+// before the guest is asked. Nothing moves without Confirm.
 func TestAFolderIsReadBeforeTheBackupMoves(t *testing.T) {
 	old := filepath.Join(t.TempDir(), "Briard Backup")
 	fakeRepo(t, old)

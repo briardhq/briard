@@ -162,8 +162,8 @@ func TestServeLocalReplacesAStaleSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed a stale socket: %v", err)
 	}
-	stale.Close()                       // leaves the file behind (Close unlinks only its own)
-	if err := touch(sock); err != nil { // ensure the path exists either way
+	stale.Close()                       // Close unlinks the path it bound...
+	if err := touch(sock); err != nil { // ...so a file is put back there as the leftover
 		t.Fatalf("touch: %v", err)
 	}
 

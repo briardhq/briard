@@ -127,8 +127,8 @@ func TestSleepConditionResolvesFromTheStore(t *testing.T) {
 }
 
 // The rig's sequence: an agent started on a machine that has not slept since boot primes on that
-// answer, and the FIRST sleep after it is told -- reading "no sleep yet" as unknown made the first
-// sleep the priming reading, and it went untold (measured on the Windows rig).
+// answer, and the FIRST sleep after it is told -- reading "no sleep yet" as unknown would make the
+// first sleep the priming reading, and it would go untold.
 func TestSleepAlerterFirstSleepAfterBoot(t *testing.T) {
 	ctx := context.Background()
 	t0 := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)

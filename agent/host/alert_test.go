@@ -186,9 +186,9 @@ func TestRedundancyAlerterSaysWhichCopyWentAway(t *testing.T) {
 	}
 }
 
-// The edge this item exists for. A node already reported as reduced that then loses its last
-// usable copy must say so: under the old two-state machine that transition was "more of what
-// we already told you", which is how a pair could stop being a pair in silence.
+// A node already reported as reduced that then loses its last usable copy must say so: with
+// only two states that transition reads as "more of what we already told you", and a pair
+// stops being a pair in silence.
 func TestRedundancyAlerterFiresOnReducedToAlone(t *testing.T) {
 	fn := &fakeNotifier{}
 	a := newRedundancyAlerter(testStore(t, fn), "n1", 3, func(string, ...any) {})
@@ -295,7 +295,8 @@ func TestClockAlerter(t *testing.T) {
 	}
 }
 
-// A host that never answers (Windows, no timedatectl) never alerts.
+// A host whose answer can never be read (no timedatectl, an unreadable W32Time setting) never
+// alerts.
 func TestClockAlerterUnknownNeverFires(t *testing.T) {
 	fn := &fakeNotifier{}
 	c := &clockAlerter{read: func(context.Context) string { return "" }}

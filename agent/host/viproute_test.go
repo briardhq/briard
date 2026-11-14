@@ -31,14 +31,14 @@ func newTestRouter(dev, vipDev string) (*vipRouter, *routeRecorder) {
 	rr := &routeRecorder{}
 	// The two ends in system-subnet terms: the guest's node IP and the host's own address on the
 	// same subnet. Written out here rather than defaulted, so the test states the topology it is
-	// asserting about (these used to be package constants on a private 10.11.9.0/24).
+	// asserting about.
 	v := &vipRouter{dev: dev, vipDev: vipDev, via: "10.0.0.1", src: "10.0.0.129", set: rr.set, clear: rr.clear}
 	return v, rr
 }
 
 // The steady-state path, and the two properties that make it correct: the route points at the
-// address the guest ACTUALLY holds, via the guest's end of the private link (never on-link), and
-// a second cycle with nothing changed touches the network at all.
+// address the guest ACTUALLY holds, via the guest's node IP over the private link (never
+// on-link), and a second cycle with nothing changed does not touch the network at all.
 func TestVIPRouter_InstallsThenIsQuiet(t *testing.T) {
 	v, rr := newTestRouter("briard-priv0", "eth2")
 	r := fakeStatus{vip: "192.168.9.225/24"}

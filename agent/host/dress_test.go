@@ -93,8 +93,8 @@ func TestDressGuestPushesWhenTheBundleDiffers(t *testing.T) {
 	}
 
 	// THE CHEAP GATE: a staged copy that fails its test launch refuses the dress before
-	// anything is armed -- and the refusal is recorded like a trial's, so the release is never
-	// pushed again and the good tree (none here) is what a later launch gets.
+	// anything is armed -- and the caller records the refusal like a trial's, so the release is
+	// never pushed again and the good tree (none here) is what a later launch gets.
 	g = &fakeDresser{push: true, bundle: "v3.20260901.old0000", testErr: io.ErrUnexpectedEOF}
 	if got := cfg.dressGuest(context.Background(), g, logf); got != dressRefused || g.activate != nil {
 		t.Errorf("failed test launch: outcome %v, activated %v", got, g.activate)

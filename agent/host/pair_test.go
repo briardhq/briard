@@ -119,7 +119,7 @@ func TestReconcileMeshBlankAnchorJoinsAndResyncs(t *testing.T) {
 	if len(f.broughtUp.Promoter) == 0 {
 		t.Error("a disk-bearing anchor runs the promoter (it can be promoted on failover)")
 	}
-	// The mesh reaches the guest as the rendered `.res` now, not as a peer slice,
+	// The mesh reaches the guest as the rendered `.res`, not as a peer slice,
 	// so the assertion reads the document the guest will actually attach with.
 	res := f.broughtUp.Storage.Resource.Config
 	for _, want := range []string{"on anchorA", "on anchorB", "on w"} {
@@ -293,12 +293,12 @@ func TestApplyPairOutcome(t *testing.T) {
 // Failable by construction rather than by timing. The "after the reboot" half rebuilds Config the
 // way ConfigFromEnv does on a fresh process -- PEERS unset, so the single-node self-peer -- and
 // then applies the restore. Without cacheMesh/cachedMesh the restore is a no-op and the assertions
-// below see 127.0.0.1 and one peer, which is exactly what the field would have seen.
+// below see 127.0.0.1 and one peer, which is what a restarted node would write.
 func TestPairedMeshSurvivesAnAgentRestart(t *testing.T) {
 	dir := t.TempDir()
 	cache := filepath.Join(dir, "mesh.json")
 
-	// Before: this node knows only what install.sh gave it -- no PEERS, so a mesh of one on
+	// Before: this node knows only what the install gave it -- no PEERS, so a mesh of one on
 	// loopback. This is the shipped single-node state, and the thing that must NOT come back.
 	lone := drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{
 		{Name: "anchorA", NodeID: 0, Address: "127.0.0.1:7789", Disk: drbd.DataDevice},
@@ -347,7 +347,7 @@ func TestPairedMeshSurvivesAnAgentRestart(t *testing.T) {
 }
 
 // A cache that cannot be used is not a failure mode of its own: the node falls back to the mesh its
-// environment describes, which is what it did before a cache existed. Loud, never fatal.
+// environment describes. Loud, never fatal.
 func TestCachedMeshFallsBackWhenUnusable(t *testing.T) {
 	dir := t.TempDir()
 	for _, tc := range []struct{ name, body string }{
@@ -379,12 +379,12 @@ func TestCachedMeshFallsBackWhenUnusable(t *testing.T) {
 }
 
 // THE HOST WITNESS-FORWARDER IS RE-CREATED AT BRING-UP. It is a transient systemd unit
-// on purpose, so a HOST reboot ends it -- and applyPair was the only thing that ever started one,
-// while the cloud sends a pair directive on demand rather than on registration. A mesh restored from
-// the cache would then name a witness address nothing was listening on.
+// on purpose, so a HOST reboot ends it -- and without this restore applyPair is the only thing that
+// starts one, while the cloud sends a pair directive on demand rather than on registration. A mesh
+// restored from the cache would then name a witness address nothing listens on.
 //
 // Driven through restoreWitnessHop rather than bringUp, which launches qemu: this is the decision
-// (does this node need a hop, and what does it start), and it is the whole of what changed.
+// (does this node need a hop, and what does it start).
 func TestWitnessHopIsRestoredAtBringUp(t *testing.T) {
 	dir := t.TempDir()
 	cache := filepath.Join(dir, "mesh.json")
@@ -478,11 +478,11 @@ func TestWitnessHopFailureIsLoudNotFatal(t *testing.T) {
 	}
 }
 
-// A PAIRING THAT CANNOT BE PERSISTED IS A FAILED PAIRING. This warned once, on
-// the reasoning that the guest had already applied the mesh -- but an uncached pairing is not a
-// meshed node, it is a node that un-meshes itself on its next guest reboot, which is the defect
-// the host-held mesh cache exists to end. The outcome the cloud sees must say so, because Pair is idempotent and a
-// re-delivery is the thing that fixes it.
+// A PAIRING THAT CANNOT BE PERSISTED IS A FAILED PAIRING, not a warning, though the guest has
+// already applied the mesh: an uncached pairing is not a meshed node, it is a node that un-meshes
+// itself on its next guest reboot, which is the defect the host-held mesh cache exists to end.
+// The outcome the cloud sees must say so, because Pair is idempotent and a re-delivery is the
+// thing that fixes it.
 func TestPairFailsWhenTheMeshCannotBePersisted(t *testing.T) {
 	// A cache path whose parent cannot be created: MkdirAll over a regular file is ENOTDIR. A
 	// deterministic write failure with no permissions games, so it behaves the same as root.
@@ -557,9 +557,6 @@ func (m meshReader) VIP(context.Context, string) (string, error)     { return ""
 // serving and replicating right now, and will come back a mesh-of-one on its next guest reboot,
 // because bring-up rewrites the .res from cfg.Resource. Nothing else on this node reports it: the
 // redundancy alerter is gated on the very peer count that is missing, so it is not even built.
-//
-// This replaced RescueGuest's paired-node refusal, which guarded one destructive verb instead of
-// the condition itself.
 func TestForgottenMeshAlerts(t *testing.T) {
 	// The host's view: a lone node, which is what an absent/corrupt mesh cache leaves behind.
 	cfg := Config{Node: "anchorA", Resource: drbd.Resource{Name: "r0", Peers: []drbd.Peer{{Name: "anchorA"}}}}
@@ -637,7 +634,7 @@ func pairedRes() drbd.Resource {
 func TestReconcileMeshLonePrimaryConvertsThroughAReboot(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, MeshCache: filepath.Join(dir, "mesh.json"),
-		Resource: demoRes()} // a mesh of one: no DRBD today
+		Resource: demoRes()} // a mesh of one: no DRBD running
 	spec := api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Peers: threePeerMesh(), Join: false, SystemDev: "eth1", SystemCIDR: "10.0.0.1/24"}
 	f, rb := &fakeMesher{}, &fakeRebooter{}
 	if err := cfg.reconcileMesh(context.Background(), f, &fakeWitness{}, rb, spec, func(string, ...any) {}); err != nil {
@@ -677,7 +674,7 @@ func TestApplyUnpair(t *testing.T) {
 		}
 	}
 
-	// Still a flock after the removal (3 -> 2 diskful): adjust in place, no reboot, no intent.
+	// Still a flock after the removal (two diskful remain): adjust in place, no reboot, no intent.
 	two, _ := json.Marshal(api.MeshSpec{Resource: "r0", Device: "/dev/drbd0", Join: false, Peers: threePeerMesh()[:2]})
 	f, rb := &fakeMesher{}, &fakeRebooter{}
 	o := cfg.applyUnpair(context.Background(), f, fakeStatus{qs: serving}, rb, api.Directive{ID: "u2", Kind: api.DirectiveUnpair, Payload: string(two)}, logf)

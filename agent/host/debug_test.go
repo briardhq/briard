@@ -11,9 +11,9 @@ import (
 
 // THE GATE, AND IT MUST FAIL IF SOMEBODY WIDENS IT. Every local-only kind is refused
 // when it arrives on the cloud's down-channel and accepted on the local admin door. Enumerating
-// localOnlyKinds rather than naming the two by hand is deliberate: a third local-only verb added
-// to that table without a thought about the cloud edge gets this assertion for free, and one
-// added to dispatch but NOT to the table fails the companion test below.
+// localOnlyKinds rather than naming them by hand is deliberate: a local-only verb added to that
+// table without a thought about the cloud edge gets this assertion for free. A verb added to
+// dispatch but NOT to the table is caught only if the companion test below names it.
 //
 // The acceptance half matters as much as the refusal: a gate that refused both origins would
 // pass a refusal-only test while having broken the verb outright.
@@ -23,9 +23,9 @@ func TestLocalOnlyKindsAreRefusedFromTheCloud(t *testing.T) {
 	}
 	// No QMPSock, so the act itself also fails -- with a message of its own. THE STATE IS
 	// THEREFORE NOT THE DISCRIMINATOR: a refused directive and an attempted one both come back
-	// Failed here, so a test checking only State would still pass with the gate deleted
-	// (measured, by deleting it). What separates "the cloud may not ask" from "this node has no
-	// guest to open" is the Detail and the journal line, and those carry the claim.
+	// Failed here, so a test checking only State would still pass with the gate deleted. What
+	// separates "the cloud may not ask" from "this node has no guest to open" is the Detail and
+	// the journal line, and those carry the claim.
 	cfg := Config{}
 	for kind := range localOnlyKinds {
 		var logged strings.Builder
@@ -45,8 +45,8 @@ func TestLocalOnlyKindsAreRefusedFromTheCloud(t *testing.T) {
 			t.Errorf("kind %q refused from the cloud without a journal line: %q", kind, logged.String())
 		}
 
-		// Same kind, local door: it reaches the handler. It fails here for want of a monitor,
-		// which is the point -- it got PAST the gate to a different failure.
+		// Same kind, local door: it reaches the handler. It may fail here for want of a guest or
+		// a monitor, which is the point -- it got PAST the gate to a different outcome.
 		o = cfg.dispatch(context.Background(), api.Directive{ID: "d1", Kind: kind}, originLocal, nil, nil, nil, nil, nil, nil, logf)
 		if strings.Contains(o.Detail, "local admin socket") {
 			t.Errorf("kind %q was refused on the LOCAL door too: %q", kind, o.Detail)
@@ -56,8 +56,9 @@ func TestLocalOnlyKindsAreRefusedFromTheCloud(t *testing.T) {
 
 // A kind in the table that dispatch does not handle would be a refusal protecting nothing, and
 // the reverse -- a local-only verb dispatch handles but the table does not name -- is the
-// dangerous direction: it would be quietly reachable from the cloud. Every local-only kind is
-// asserted present by name, so deleting one from the table fails here rather than in the field.
+// dangerous direction: it would be quietly reachable from the cloud. The debug, doctor and status
+// kinds are asserted present by name, so deleting one of them from the table fails here rather
+// than in the field.
 func TestDebugKindsAreClassifiedLocalOnly(t *testing.T) {
 	for _, kind := range []string{api.DirectiveDebugArm, api.DirectiveDebugDisarm, api.DirectiveDoctor, api.DirectiveStatus} {
 		if !localOnlyKinds[kind] {

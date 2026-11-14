@@ -87,7 +87,7 @@ func TestStorageSpecDiskful(t *testing.T) {
 }
 
 // Every mode the host may hold has to survive the trip, Adiantum included -- carrying it is the
-// whole reason this document exists (a boot unit could not build it for want of a channel).
+// whole reason this document exists (a boot unit cannot build it for want of a channel).
 func TestStorageSpecCarriesEveryMode(t *testing.T) {
 	for _, m := range []nodestorage.Mode{nodestorage.ModeAuto, nodestorage.ModeOff, nodestorage.ModeAdiantum} {
 		cfg := Config{Node: "n1", DataEncryption: m}

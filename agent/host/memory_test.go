@@ -13,9 +13,9 @@ import (
 
 func TestGuestMemoryCeiling(t *testing.T) {
 	for _, c := range []struct{ host, want int }{
-		{0, 0},       // unreadable (a Windows host today): no growth, not a guess
+		{0, 0},       // unreadable: no growth, not a guess
 		{2048, 0},    // nothing above the reserve
-		{4096, 2048}, // the smallest host the report card admits
+		{4096, 2048}, // a 4 GB host, the report card's floor
 		{16384, 14336},
 	} {
 		if got := guestMemoryCeilingMB(c.host); got != c.want {

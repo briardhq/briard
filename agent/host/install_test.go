@@ -56,8 +56,8 @@ func testRoots(t *testing.T) installRoots {
 }
 
 // THE TREE THE LOCAL STAGING PATH LAYS DOWN, file by file: what a node's first start reads, where
-// install.sh used to put it. The proof against the shipped installer is the install rigs; this
-// pins the shape so a regression is a unit-test failure first.
+// it reads it. The proof against the shipped installer is the install rigs; this pins the shape
+// so a regression is a unit-test failure first.
 func TestInstallLaysTheStagingDirDown(t *testing.T) {
 	t.Setenv("SUDO_USER", "")
 	src, r := stagingDir(t), testRoots(t)

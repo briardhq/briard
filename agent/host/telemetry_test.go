@@ -14,7 +14,7 @@ import (
 	"briard.io/shared/telemetry"
 )
 
-// Telemetry off is the SHIPPED state (install.sh sets no TELEMETRY_PATH), so the nil writer is
+// Telemetry off is the SHIPPED state (the install writes no TELEMETRY_PATH), so the nil writer is
 // the ordinary path and not an edge case. A Config that never started one -- which is every
 // caller of observe in these tests -- must be silently fine.
 func TestWriteTelemetryOffIsANoOp(t *testing.T) {
@@ -52,19 +52,18 @@ func TestWriteTelemetryPublishesTheSample(t *testing.T) {
 	}
 }
 
-// THE ONE THAT CARRIES B.87. A TELEMETRY_PATH whose .tmp sibling is a reader-less FIFO blocks
-// open(2) forever -- uninterruptibly, with no ctx to honour and no deadline that could reach it,
-// which is precisely why the fix is a goroutine rather than a timeout. The caller must not
-// notice: writeTelemetry hands off or drops, and returns either way.
+// A TELEMETRY_PATH whose .tmp sibling is a reader-less FIFO blocks open(2) forever --
+// uninterruptibly, with no ctx to honour and no deadline that could reach it, which is precisely
+// why the write runs on a goroutine rather than under a timeout. The caller must not notice:
+// writeTelemetry hands off or drops, and returns either way.
 //
-// This is the mutation check for the whole change. Put the write back inline (or make the send
-// blocking) and this test hangs on the FIRST call, which is exactly what it used to do to the
-// observe loop -- and to the node's supervisor with it.
+// This is the mutation check. Put the write back inline (or make the send blocking) and this
+// test hangs on the FIRST call, as the observe loop would -- and the node's supervisor with it.
 //
 // The FIFO is a stand-in for the realistic trigger, a hung mount under TELEMETRY_PATH: an NFS or
 // FUSE path gone unresponsive, which is not exotic on a box where someone pointed telemetry at
 // shared storage. A full or read-only filesystem needs no test here -- WriteFile returns an
-// error there and always did.
+// error there.
 func TestWriteTelemetryDoesNotBlockOnAHungPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry.json")
 	if err := mkFifo(path + ".tmp"); err != nil {

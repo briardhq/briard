@@ -417,7 +417,7 @@ func TestLeaseProbe(t *testing.T) {
 		if !slices.Equal(r.quiet, []bool{true, false}) {
 			t.Errorf("link levers %v", r.quiet)
 		}
-		// THE SECOND GATE: the next renewal, a minute on, does not probe again.
+		// THE SECOND GATE: the next renewal, inside leaseProbeEvery, does not probe again.
 		r.wire.sent, r.quiet = nil, nil
 		r.l.renew(context.Background(), r.logf)
 		if len(r.quiet) != 0 || slices.Contains(r.wire.sent, "DISCOVER hint 192.168.7.120") {

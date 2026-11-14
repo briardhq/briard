@@ -116,8 +116,9 @@ func metaOf(t *testing.T, raw string) quadlet.SnapshotMeta {
 }
 
 // TestClockSampleIsCrashConsistentWhenTheAppCannotHoldStill: it is the ONE member taken against a
-// running app, and the picker and the snapshot-integrity supervisor are entitled to know that before trusting it. A Home
-// Assistant that is down, too old for the view, or whose lock broke all land here.
+// running app, and the undo picker and the recorder check are entitled to know that before
+// trusting it. A Home Assistant that is down, too old for the view, or whose lock broke all land
+// here.
 func TestClockSampleIsCrashConsistentWhenTheAppCannotHoldStill(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
 	f.held = false

@@ -75,7 +75,7 @@ func TestParseSize(t *testing.T) {
 		{"4.5G", 0, false}, // not a whole number
 		{"0G", 0, false},   // a zero-byte data volume is not a smaller one, it is a broken node
 		{"-4G", 0, false},  // likewise
-		{"", 0, false},     // unset reaches here only if somebody wrote DATA_SIZE= on purpose
+		{"", 0, false},     // ConfigFromEnv turns an empty DATA_SIZE= into 4G; refused all the same
 		{"lots", 0, false}, //
 	} {
 		got, err := parseSize(c.in)

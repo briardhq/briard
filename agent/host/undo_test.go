@@ -28,7 +28,7 @@ func crashedUpgrade(t *testing.T) (*fakeInstaller, string, string) {
 	return f, priorRaw, string(staged)
 }
 
-// THE PROMISE THIS ITEM EXISTS FOR: an install nobody is running any more is undone from the
+// THE PROMISE THE UNDO EXISTS FOR: an install nobody is running any more is undone from the
 // volume alone, by the same procedure a failed gate uses -- stop, put the data back from the
 // recorded point, discard the stage, converge to the accepted manifest -- in that order.
 func TestAStagedInstallIsUndoneFromTheVolumeAlone(t *testing.T) {

@@ -178,7 +178,8 @@ func TestApplyDirectiveOutcome(t *testing.T) {
 }
 
 // RescueGuest records the call; the fake never touches a disk. The real one is proven by
-// nixosTest/guest-rescue.nix, which is the only place a rebuilt overlay can be observed.
+// nixosTest/guest-rescue.nix, which is the only place a guest restarted on its image can be
+// observed.
 func (f *fakeUpgrader) RescueGuest(context.Context) error {
 	if f.hold != nil {
 		if err := f.hold(); err != nil {
@@ -189,10 +190,10 @@ func (f *fakeUpgrader) RescueGuest(context.Context) error {
 	return f.err
 }
 
-// A rescue directive drives RescueGuest and needs NOTHING else: no payload (the node rescues
-// itself from its own disk, so there is nothing for a caller to name or get wrong) and no
-// AppSpec (an OS-disk rebuild is a property of the node, and a fresh install carries the zero
-// spec -- the same trap that once made the shipped node un-upgradable, DirectiveUpgradeSystem).
+// A rescue directive drives RescueGuest and needs NOTHING else: no payload (the node restarts
+// its guest on its own image, so there is nothing for a caller to name or get wrong) and no
+// AppSpec (a restart on the image is a property of the node, and a fresh install carries the
+// zero spec, so a verb that needed one could never run on a shipped node).
 func TestApplyDirectiveRescue(t *testing.T) {
 	up := &fakeUpgrader{}
 	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveRescue},
@@ -205,8 +206,7 @@ func TestApplyDirectiveRescue(t *testing.T) {
 	}
 }
 
-// A node with no guest refuses rather than pretending. There is no rollback past a rescue -- the
-// old overlay is gone -- so "failed" has to be reachable and honest.
+// A node with no guest refuses rather than pretending: "failed" has to be reachable and honest.
 func TestApplyDirectiveRescueRefusesWithoutAGuest(t *testing.T) {
 	o := applyDirective(context.Background(), api.Directive{Kind: api.DirectiveRescue},
 		nil, nil, nil, nil, func(string, ...any) {}, testUpgradeBudget, nil)
@@ -215,8 +215,8 @@ func TestApplyDirectiveRescueRefusesWithoutAGuest(t *testing.T) {
 	}
 }
 
-// The node's reason reaches the caller verbatim: this verb's refusals ("not an overlay", "the
-// backing image is not readable") are the operator's only guidance, and a dispatch that swallowed
+// The node's reason reaches the caller verbatim: this verb's failures (a guest that would not
+// stop, a bring-up that failed) are the operator's only guidance, and a dispatch that swallowed
 // them would leave `briard rescue` saying only that something went wrong.
 func TestApplyDirectiveRescueSurfacesTheReason(t *testing.T) {
 	up := &fakeUpgrader{err: errors.New("not an overlay")}

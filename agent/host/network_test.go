@@ -13,7 +13,7 @@ import (
 	"briard.io/shared/model"
 )
 
-// macvtapCfg is what install.sh writes: the shape every Linux node ships in.
+// macvtapCfg is the shape every Linux node ships in: the default tap names and its drawn subnets.
 func macvtapCfg() Config {
 	return Config{
 		SystemTap: "briard-drbd0", ServiceTap: "briard0", WitnessTap: "briard-priv0",
@@ -79,9 +79,9 @@ func TestNetSpecAndSubstrateOnABridge(t *testing.T) {
 }
 
 // ...and on anything that is not a bridge, nothing is narrowed and the fd-passing substrate is
-// selected. install.sh no longer writes NET_MODE at all, so this default is the only thing
-// standing between a shipped node and qemu opening taps by name, which would silently give the
-// guest a NIC with no wire behind it.
+// selected. The install writes no NET_MODE, so this default is the only thing standing between a
+// shipped node and qemu opening taps by name, which would silently give the guest a NIC with no
+// wire behind it.
 func TestApplySubstrateMacvtapDefaultsTheMode(t *testing.T) {
 	cfg := macvtapCfg().applySubstrate(false)
 	if cfg.NetMode != platform.NetMacvtap {
@@ -93,8 +93,8 @@ func TestApplySubstrateMacvtapDefaultsTheMode(t *testing.T) {
 	// A rig that set NET_MODE itself keeps it -- the environment still wins where the substrate
 	// is not the thing deciding. Only a NON-EMPTY value can say so, and that is not
 	// a gap: platform.NetBridge IS the empty string, so "configured as by-name" and "not
-	// configured" are the same value and always were. Unset now means DERIVE, and on a
-	// non-bridge parent the derivation is macvtap -- which is what the assertion above pins.
+	// configured" are the same value. Unset means DERIVE, and on a non-bridge parent the
+	// derivation is macvtap -- which is what the assertion above pins.
 	pinned := macvtapCfg()
 	pinned.NetMode = platform.NetMacvtap
 	if got := pinned.applySubstrate(false).NetMode; got != platform.NetMacvtap {
@@ -106,8 +106,8 @@ func TestApplySubstrateMacvtapDefaultsTheMode(t *testing.T) {
 //
 // This is a failable assertion about an UNBOUNDED LOOP, which is why it carries a deadline of its
 // own: awaitNetwork's exit condition is a successful Converge, and Converge on a spec with no
-// SystemTap can never succeed -- so without the guard this call never returns. It hung every
-// agent/host test that drives Run(), and it would hang any real node configured that way.
+// SystemTap can never succeed -- so without the guard this call never returns, which hangs every
+// agent/host test that drives Run() and any real node configured that way.
 func TestAwaitNetworkReturnsWhenThereIsNoNetworkToOwn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -151,8 +151,8 @@ func TestNetworkRecordRoundTrip(t *testing.T) {
 	// AN UNUSABLE READING NEVER OVERWRITES A GOOD RECORD. The parent is chosen at start-up and
 	// recorded after BRING-UP, seconds later, so a NIC that goes away in between reads as nothing
 	// -- and writing that would answer Unknown forever, stranding a node that could have healed
-	// itself. Caught by install-macvtap (run 35029767682), where the agent replaced a complete
-	// fingerprint with `[eth1 mac=? addr=? gw=?/?]` and then refused to re-parent for good.
+	// itself: without this, the agent replaces a complete fingerprint with
+	// `[eth1 mac=? addr=? gw=?/?]` and then refuses to re-parent for good.
 	//
 	// Re-recorded first, because the corruption above deliberately emptied the file and comparing
 	// nothing against nothing would pass whatever the code did.
@@ -202,8 +202,8 @@ func discard(string, ...any) {}
 
 // THE GATEWAY MAC IS A PROPERTY OF THE LAN, NOT OF THE MOMENT. A bring-up with the cable out or a
 // gateway slow to answer ARP reads none, and the record must neither forget one it had for the
-// same LAN nor stay without one once the gateway answers: the tick completes it. The rig caught
-// the first half (a restart during an outage wrote `gw=192.168.78.1/?` over a complete record).
+// same LAN nor stay without one once the gateway answers: the tick completes it. Without the first
+// half, a restart during an outage writes `gw=192.168.78.1/?` over a complete record.
 func TestNetworkRecordLearnsTheGatewayMAC(t *testing.T) {
 	complete := nic.Fingerprint{Parent: "eth0", ParentMAC: "aa:bb:cc:dd:ee:01", HostCIDR: "192.168.1.50/24", GatewayIP: "192.168.1.1", GatewayMAC: "11:22:33:44:55:66"}
 	blind := complete

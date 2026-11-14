@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// The agent must be able to tell a bug reporter which build it is. The id was
-// always stamped (buildVersion, via -ldflags) and threaded into NodeStatus, but was
-// never surfaced to a human -- so the first triage question had no answer the reporter
-// could reach. These pin the two cases that matter for that purpose.
+// The agent must be able to tell a bug reporter which build it is. The id is stamped
+// (buildVersion, via -ldflags) and threaded into NodeStatus, but only the banner puts it
+// in front of a human, so it is the answer to the first triage question. These pin the
+// two cases that matter for that purpose.
 func TestVersionBanner(t *testing.T) {
 	t.Run("stamped build names the version", func(t *testing.T) {
 		got := versionBanner("1.4.2-abc123")

@@ -16,7 +16,7 @@ func idCfg(t *testing.T) Config {
 	t.Helper()
 	// The rigs name NODE; clear it so these tests exercise the SHIPPED path unless they say
 	// otherwise. os.Unsetenv rather than t.Setenv("") -- an explicitly empty entry is a different
-	// thing everywhere else in this file's neighbourhood, and here it would read as "named".
+	// thing to the config loader (it wins over config.env), and the shipped path has no entry.
 	os.Unsetenv("NODE")
 	t.Cleanup(func() { os.Unsetenv("NODE") })
 	return Config{AssignmentCache: filepath.Join(t.TempDir(), "assignment.json")}
@@ -73,12 +73,12 @@ func TestMintIdentityNeverRemints(t *testing.T) {
 	}
 }
 
-// ⚠️ THE GUARD EVERY RIG DEPENDS ON, and the same predicate the subnet draw uses: NODE in the
+// ⚠️ THE GUARD EVERY RIG DEPENDS ON, the same shape as the subnet draw's: NODE in the
 // environment means a harness owns this node's identity, so NOTHING is minted -- not the id it
 // named, and not the two it did not.
 //
 // Minting a flock id beside a named node would give every agent-* rig a random service MAC where
-// today it derives from the node name, and a random mDNS name where today it publishes nothing.
+// it derives one from the node name, and a random mDNS name where it publishes none.
 // Neither rig asks for either, and neither would notice until an assertion about a MAC moved.
 func TestMintIdentityLeavesANamedNodeAlone(t *testing.T) {
 	cfg := idCfg(t)
@@ -98,7 +98,7 @@ func TestMintIdentityLeavesANamedNodeAlone(t *testing.T) {
 }
 
 // The records are the node's answer on every later start, ConfigFromEnv included -- which is how
-// the value reaches DRBD, the VM UUID and the dashboard now that config.env does not carry it.
+// the value reaches DRBD, the VM UUID and the dashboard, since config.env does not carry it.
 func TestConfigFromEnvReadsTheRecordedIdentity(t *testing.T) {
 	dir := t.TempDir()
 	for name, v := range map[string]string{
@@ -130,8 +130,8 @@ func TestConfigFromEnvReadsTheRecordedIdentity(t *testing.T) {
 	}
 }
 
-// A node told nothing and holding no record is still the literal every install answered to before
-// each got its own. That fallback is what keeps a hand-run agent and the unit tests working.
+// A node told nothing and holding no record answers to the literal defaultNodeName. That fallback
+// is what keeps a hand-run agent and the unit tests working.
 func TestConfigFromEnvFallsBackToTheDefaultNodeName(t *testing.T) {
 	os.Unsetenv("NODE")
 	t.Cleanup(func() { os.Unsetenv("NODE") })

@@ -53,19 +53,16 @@ func TestResourcesGuestErrorDegradesToAgentOnly(t *testing.T) {
 	}
 }
 
-// A ZERO-APP node still reads the appliance, and this test used to assert the opposite.
+// A ZERO-APP node still reads the appliance.
 //
-// It was written for a witness -- "no payload, so skip the guest read" -- but the gate it asserted
-// was "is there exactly one app?", which is equally true of the shipped zero-app anchor:
-// what install.sh leaves behind, and the whole free tier. Those nodes have a guest, and load
-// average, journal size, podman-store size and the guest's KERNEL ERRORS are node-scoped facts
-// that need neither a unit nor a data dir. Skipping the read lost all of them, so a zero-app
-// anchor's kernel problems were invisible to the soak oracle. Same bug as the per-app gate
-// that hid zero-app nodes, one layer out, and the same lesson: the test had encoded it.
+// A gate on the app count ("no payload, so skip the guest read", meant for a witness) is equally
+// true of the shipped zero-app anchor: what the install leaves behind, and the whole free tier.
+// Those nodes have a guest, and load average, journal size, podman-store size and the guest's
+// KERNEL ERRORS are node-scoped facts that need neither a unit nor a data dir. Skipping the read
+// loses all of them, so a zero-app anchor's kernel problems would be invisible to the soak oracle.
 //
-// Rewritten to assert the read HAPPENS and carries the node-scoped series, with no per-app
-// entries because there are no apps. Confirmed to fail against the old gate before it passed
-// against the new one.
+// So this asserts the read HAPPENS and carries the node-scoped series, with no per-app entries
+// because there are no apps.
 func TestResourcesZeroAppNodeStillReadsTheAppliance(t *testing.T) {
 	cfg := Config{} // the empty set: nothing installed, the shipped state
 	r := &recordingReader{fakeStatus: fakeStatus{res: telemetry.NodeResources{Load1: 0.4, LogSizeKB: 900, KernelErrors: []string{"oops"}}}}
@@ -120,8 +117,8 @@ func TestResourcesAsksForSoakReadsOnlyUnderASoak(t *testing.T) {
 }
 
 // The probe must ask about the unit that actually serves. An app's units come from the quadlet
-// renderer, so rebuilding "podman-<name>.service" here named nothing and every metric -- including
-// the crash-loop counter -- read zero for exactly the apps users install.
+// renderer, so rebuilding "podman-<name>.service" here would name nothing and every metric --
+// including the crash-loop counter -- would read zero for exactly the apps users install.
 func TestResourcesProbesTheServingUnit(t *testing.T) {
 	cfg := Config{Apps: []model.AppSpec{{
 		Name:    "home-assistant",
