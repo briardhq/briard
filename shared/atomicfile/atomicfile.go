@@ -1,12 +1,12 @@
-// Package atomicfile writes a file atomically AND durably: a temp file in the same directory,
+// Package atomicfile writes a file atomically and durably: a temp file in the same directory,
 // fsynced, renamed into place, and the directory fsynced so the rename itself survives.
 //
-// WHY DURABLE AND NOT MERELY ATOMIC, which is the part that is easy to drop. Every caller writes a
-// fact whose ONLY copy is the file, read on a path that exists for a power cut. Atomic but
-// unflushed means the write returns, the caller believes the fact is recorded, and a crash in the
-// next commit interval takes it -- so the one boot the file is for is the boot that finds it
-// missing. The directory fsync is part of the same guarantee: on a first write the file is NEW, so
-// the rename that publishes it lives only in the parent's dirent until the parent is flushed.
+// Durable, not merely atomic, is the part that is easy to drop. Every caller writes a fact whose
+// only copy is the file, read on a path that exists for a power cut. Atomic but unflushed means
+// the write returns, the caller believes the fact is recorded, and a crash in the next commit
+// interval takes it, so the one boot the file is for is the boot that finds it missing. The
+// directory fsync is part of the same guarantee: on a first write the file is new, so the rename
+// that publishes it lives only in the parent's dirent until the parent is flushed.
 //
 // It is deliberately a few small functions and no type: callers own their paths, their permissions
 // and their encoding. This is the durable-write convention, not a second one.
@@ -37,7 +37,7 @@ func Write(path string, data []byte, perm, dirPerm os.FileMode) error {
 		os.Remove(tmp)
 		return err
 	}
-	if err := f.Sync(); err != nil { // durable BEFORE the rename publishes it
+	if err := f.Sync(); err != nil { // durable before the rename publishes it
 		f.Close()
 		os.Remove(tmp)
 		return err

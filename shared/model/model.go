@@ -19,34 +19,33 @@ const (
 	StorageBulk     StorageClass = "bulk"     // NAS/SMB, weaker, isolated SPOF
 )
 
-// QuorumState is this node's SERVING state -- is it the write authority for the home's data
-// right now, and is it allowed to be -- read as ground truth. The agent follows it; it never
-// overrides it. On a flock it is DRBD's view (role and quorum, `drbdsetup status`), which is
-// where the names come from. It is computed in ONE place, the guest's node-status verb
-// (`drbd.status`), and readers ask Serving() for "does this node hold the house" rather than
-// spelling the answer from the fields -- so a node that runs no DRBD (a lone anchor) is made to
-// read as Primary (its chain target active) and quorate by that verb alone, and no reader learns
-// a second shape.
+// QuorumState is this node's serving state (is it the write authority for the home's data right
+// now, and is it allowed to be), read as ground truth: the agent follows it and never overrides
+// it. On a flock it is DRBD's view (role and quorum, `drbdsetup status`), hence the names. It is
+// computed in one place, the guest's node-status verb (`drbd.status`), and readers ask Serving()
+// for "does this node hold the house" rather than spelling the answer from the fields, so a node
+// that runs no DRBD (a lone anchor) is made to read as Primary (its chain target active) and
+// quorate by that verb alone, and no reader learns a second shape.
 type QuorumState struct {
 	Primary   bool `json:"primary"`   // is this node the write authority (on a flock: the DRBD primary)?
 	Quorate   bool `json:"quorate"`   // is it allowed to write (on a flock: does it have quorum)?
 	Connected int  `json:"connected"` // peers connected right now
-	// This node's OWN storage, in the same terms PeerState reports for everyone else: what lets
-	// a node say whether IT is a viable failover target, not only whether a peer is. The
-	// OS-upgrade gate asks a Secondary this rather than the VIP, which on a Secondary the peer
-	// answers. Same sample, same parse.
+	// This node's own storage, in the same terms PeerState reports for everyone else: whether it
+	// is itself a viable failover target, not only whether a peer is. The OS-upgrade gate asks a
+	// Secondary this rather than the VIP, which on a Secondary the peer answers. Same sample, same
+	// parse.
 	Diskful  bool `json:"diskful"`  // carries real storage — false for a diskless witness
 	UpToDate bool `json:"uptodate"` // every volume this node carries is UpToDate
 }
 
 // Serving reports whether this node holds the house right now: it is the write authority and
-// allowed to write. THE predicate for "is this node serving": readers ask here rather than
-// spelling Primary ∧ Quorate or reading Primary alone to mean it, so the answer is derived once
-// and the lone-node branch lives in the verb that fills the fields, never at a call site.
+// allowed to write. It is the one predicate for "is this node serving": readers ask here rather
+// than spelling Primary ∧ Quorate or reading Primary alone to mean it, so the answer is derived
+// once and the lone-node branch lives in the verb that fills the fields, never at a call site.
 // A Primary that has lost quorum is not serving: DRBD refuses its writes (on-no-quorum=io-error)
 // and the reactor demotes it. Narrower questions stay on the fields: Quorate alone is
 // participation (a standby's whole job), Diskful/UpToDate are what the node carries, and
-// Primary alone is the role -- what single-primary and minority-refuses are invariants OF.
+// Primary alone is the role, which single-primary and minority-refuses are invariants of.
 func (q QuorumState) Serving() bool { return q.Primary && q.Quorate }
 
 // PeerState is one peer as *this* node sees it, read from the same
@@ -68,22 +67,18 @@ type PeerState struct {
 // like a successor: an unreachable one cannot promote, a *diskless* one has no data
 // to serve (a 1-data + 2-witness flock is quorate without us and yet has no
 // successor — demoting into it is an outage), and an out-of-date one would serve
-// stale data. Deliberately NOT "am I still quorate without me": quorum is about
+// stale data. Deliberately not "am I still quorate without me": quorum is about
 // who may write, not about who can take the work.
 func (p PeerState) CanTakeOver() bool { return p.Connected && p.Diskful && p.UpToDate }
 
-// Cluster is this node's whole view of its DRBD resource: its own QuorumState plus
-// its peers. One sample, one call — the demote decision compares "am I Primary" with
-// "can a peer take over", so reading the two halves from separate calls would tear
-// across exactly the state change being decided about.
-//
-// QuorumState is embedded, not nested, so its wire keys are top-level as in a bare
-// QuorumState: this rides the drbd.status verb, and an agent on either side of a version
-// skew reads what it knows and ignores the rest.
-//
-// Peers deliberately do NOT ride the cloud wire — shared/api's NodeStatus carries the
-// QuorumState alone. This is an input to a local decision, not product-health
-// telemetry, and widening the closed allowlist is a visible act.
+// Cluster is this node's whole view of its DRBD resource: its own QuorumState plus its peers, one
+// sample from one call. The demote decision compares "am I Primary" with "can a peer take over",
+// so reading the two halves from separate calls would tear across exactly the state change being
+// decided about. QuorumState is embedded, not nested, so its wire keys are top-level as in a bare
+// QuorumState: this rides the drbd.status verb, and an agent on either side of a version skew
+// reads what it knows and ignores the rest. Peers deliberately do not ride the cloud wire
+// (shared/api's NodeStatus carries the QuorumState alone): this is an input to a local decision,
+// not product-health telemetry, and widening the closed allowlist is a visible act.
 type Cluster struct {
 	QuorumState
 	Peers []PeerState `json:"peers,omitempty"`
@@ -106,21 +101,19 @@ type AppSpec struct {
 	DataDir string // path on the DRBD volume
 
 	// Units is the app's systemd units in start order, as the quadlet renderer produced them:
-	// the pod first, then its members, because starting a pod unit does NOT start its
+	// the pod first, then its members, because starting a pod unit does not start its
 	// containers.
 	Units []string
 	// Unit is the single unit Start/Stop/Health act on — the container that actually serves, so
 	// "is the app up?" keeps one answer even when the pod has several members.
 	Unit string
 
-	// Manifest is the identity of the signed manifest this app was installed from --
-	// sha256 over the exact bytes (shared/manifest.Identity).
-	//
-	// It rides the spec rather than being re-read at report time because the bytes it hashes are
-	// already in hand wherever a spec is built -- installedApps parses them at bring-up and
-	// the install path holds them -- and re-reading the cache once per report cycle to recompute
-	// a value that cannot change without an install would be a file read per node per cycle for
-	// nothing.
+	// Manifest is the identity of the signed manifest this app was installed from: sha256 over
+	// the exact bytes (shared/manifest.Identity). It rides the spec rather than being re-read at
+	// report time because the bytes it hashes are already in hand wherever a spec is built
+	// (installedApps parses them at bring-up, the install path holds them), and re-reading the
+	// cache to recompute a value that cannot change without an install would be a file read per
+	// node per report cycle for nothing.
 	Manifest string
 	// Version is that manifest's upstream version, for people: what a page says the app runs
 	// and what an offered update moves it from.
@@ -131,11 +124,9 @@ type AppSpec struct {
 }
 
 // ServingUnit is the systemd unit that answers "is this app up?", and therefore the one to
-// measure an app's footprint from.
-//
-// The app names it explicitly: its units come from the quadlet renderer
-// (briard-<app>-<container>.service, plus a pod unit) and the SERVING container is the one
-// whose state is the app's state. The zero spec names nothing, which is the honest answer —
+// measure an app's footprint from. The app names it explicitly: its units come from the quadlet
+// renderer (briard-<app>-<container>.service, plus a pod unit) and the serving container is the
+// one whose state is the app's state. The zero spec names nothing, which is the honest answer:
 // asking systemd about a unit assembled from an empty name reports "inactive" forever.
 //
 // A method rather than a bare field read so that no caller rebuilds the name: a guessed

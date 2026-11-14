@@ -5,15 +5,14 @@
 // name, signs the CSR), and the Worker that holds the zone (verifies the node's signed
 // address writes -- in JavaScript, held to this file by a golden the cloud's tests mint).
 //
-// What the node holds is one long-term Ed25519 keypair, generated on the host at claim
-// time and never sent anywhere; the cloud binds its public key to the name once, at
-// registration, and from then on the node authenticates by SIGNING requests rather than by
-// presenting a secret. Two verifiers, and one of them is the cloud itself: a bearer token
-// shown to the cloud on every request would let a compromised cloud impersonate any node to
-// the Worker, which is the one thing keeping the zone token in the Worker, not the cloud,
-// exists to prevent. A signature is bound to one request (the name, what it asks, and when), so a
-// captured request is not an owned name, and nothing stored in the cloud or the Worker is a
-// secret.
+// The node holds one long-term Ed25519 keypair, generated on the host at claim time and never
+// sent anywhere; the cloud binds its public key to the name once, at registration, and from
+// then on the node authenticates by signing requests, not by presenting a secret. Of the two
+// verifiers one is the cloud itself: a bearer token shown to the cloud on every request would
+// let a compromised cloud impersonate any node to the Worker, which is the one thing keeping
+// the zone token in the Worker, not the cloud, exists to prevent. A signature is bound to one
+// request (the name, what it asks, and when), so a captured request is not an owned name, and
+// nothing stored in the cloud or the Worker is a secret.
 //
 // The canonical forms are deliberately three lines, not JSON: JSON canonicalization is a
 // place two languages disagree, and a newline-joined tuple is not.

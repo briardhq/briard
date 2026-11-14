@@ -1,12 +1,12 @@
-// The curated word lists a flock name is drawn from. FROZEN AND APPEND-ONLY -- see the package
+// The curated word lists a flock name is drawn from. Frozen and append-only: see the package
 // doc in flockname.go for why, and TestListsAreAppendOnly for the assertion that enforces it.
 //
 // Derived from dustinkirkland/golang-petname (Apache-2.0), snapshotted 2026-08-08 at 449+449
-// words and curated down to 422+424. Vendored rather than imported DELIBERATELY: upstream
-// regenerates these lists as part of its release process, and an upstream word REMOVAL would
+// words and curated down to 422+424. Vendored rather than imported, deliberately: upstream
+// regenerates these lists as part of its release process, and an upstream word removal would
 // orphan every install that had already chosen it. A dependency that is allowed to shrink
-// cannot back an append-only contract, and the value here is the curation, not the code --
-// the code is one modulo.
+// cannot back an append-only contract, and the value here is the curation, not the code (one
+// modulo).
 //
 // What the curation dropped, and why:
 //   - 27 adjectives that do not read as adjectives before an animal: prepositions and particles
@@ -14,13 +14,13 @@
 //     master, star, game, key, top, tops, mint, square, sound, still, fit, fine, first, next).
 //     They produced names like `briard-up-dog.local` and `briard-boss-man.local`.
 //   - 25 "names" that are not animals (man, kid, lab, imp, stud, javelin, sunbeam), are a
-//     CATEGORY rather than an animal (insect, mammal, feline, primate, reptile, rodent), read
+//     category rather than an animal (insect, mammal, feline, primate, reptile, rodent), read
 //     as their non-animal sense first (molly, racer, glider, monitor, monarch), or are
 //     unsettling rather than friendly (ghost, ghoul, goblin, troll, monster, satyr, yeti).
 //
-// What it deliberately KEPT: `elf` and `alien` (short and good-humoured), and
-// the five breeds `dane`, `akita`, `corgi`, `bengal`, `kodiak`, because they are real animals
-// and the list keeps sixteen other breeds (labrador, poodle, beagle, collie, husky, whippet,
+// What it deliberately kept: `elf` and `alien` (short and good-humoured), and the five breeds
+// `dane`, `akita`, `corgi`, `bengal`, `kodiak`, because they are real animals and the list
+// keeps sixteen other breeds (labrador, poodle, beagle, collie, husky, whippet,
 // mastiff, spaniel, terrier, shepherd, bulldog, malamute, doberman, airedale, foxhound,
 // sheepdog) -- dropping only these five would have been arbitrary.
 

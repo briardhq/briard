@@ -1,39 +1,36 @@
-// Command catalog-sign is a TEST/LAB HELPER (nixosTest/fixture-app.nix), not a product binary.
+// Command catalog-sign is a test/lab helper (nixosTest/fixture-app.nix), not a product binary.
 //
-// It builds the smallest possible SIGNED CATALOG: a list naming one app version, a detached
+// It builds the smallest possible signed catalog: a list naming one app version, a detached
 // Ed25519 signature over exactly the list's bytes, the manifest beside it as the version file the
 // list names by its hash, and the PEM keyring that verifies the list. That is the whole
 // published-catalog contract (shared/manifest.Catalog.Fetch): `latest.json`, `latest.json.sig`,
 // `<name>/<version>.json`, and a trust root the node is given out of band; a node's CATALOG_URL
 // is the served directory's `latest.json`.
 //
-// WHY IT EXISTS. A harness that wants an app installed the way a USER installs one cannot
-// shortcut the catalog: `fetchManifest` fails CLOSED with no keyring, and verifies the signature
-// over the raw bytes of the list before parsing it. Both are deliberate, so the honest way to
-// give the lab fleet an app is to give it a real signed catalog rather than to weaken the path
-// under test. Seeding the node-local manifest cache instead is NOT equivalent: it reproduces
-// what an install RECORDS but not what it DOES -- no data subvolume, so the container cannot
-// start.
+// Why it exists: a harness that wants an app installed the way a user installs one cannot
+// shortcut the catalog. `fetchManifest` deliberately fails closed with no keyring and verifies
+// the signature over the list's raw bytes before parsing it, so the honest way to give the lab
+// fleet an app is a real signed catalog, not a weakened path under test. Seeding the node-local
+// manifest cache instead is not equivalent: it reproduces what an install records but not what
+// it does (no data subvolume, so the container cannot start).
 //
-// THE KEY IS GENERATED PER BUILD, and is a lab key with no relationship to the release keyring.
+// The key is generated per build, a lab key with no relationship to the release keyring.
 // Generating beats committing one: a private key in the tree is a private key in the tree, even
 // a worthless one, and a reader has to stop and work out which it is. Ed25519 keys do not
-// expire, so a key minted in a build cannot go stale in a warm store the way a build-time cert
-// does.
+// expire, so a key minted in a build cannot go stale in a warm store as a build-time cert does.
 //
-// SEVERAL CATALOGS, ONE KEY, and that is what the pair form is for. A version ROTATION publishes
-// a second manifest for the SAME app name over the first (the fleet and soak rigs rotate
-// versions this way), and the node that fetches it holds exactly one keyring, given to it out of
-// band before any of this. So each catalog gets its own directory (each has its own
-// `latest.json`), copied over the served one to publish it, and they all verify against the same
-// trust root. The private key never leaves this process.
+// The pair form is for several catalogs under one key. A version rotation publishes a second
+// manifest for the same app name over the first (the fleet and soak rigs rotate versions this
+// way), and the fetching node holds exactly one keyring, given to it out of band beforehand. So
+// each catalog gets its own directory (its own `latest.json`), copied over the served one to
+// publish it, all verifying against the same trust root. The private key never leaves this
+// process.
 //
 //	catalog-sign <manifest.json> <outdir> [<manifest.json> <outdir>]...
 //
-// Each outdir also gets `<name>.identity` -- the manifest's content hash, which is what the cloud
-// confirms an app rollout against (shared/manifest.Identity). It is written here because it is
-// a property of the exact bytes signed here, and re-deriving it in a shell script is how the two
-// drift.
+// Each outdir also gets `<name>.identity`, the manifest's content hash, which the cloud confirms
+// an app rollout against (shared/manifest.Identity). It is written here because it is a property
+// of the exact bytes signed here; re-deriving it in a shell script is how the two drift.
 package main
 
 import (
@@ -76,9 +73,9 @@ func sign(src, out string, priv ed25519.PrivateKey, keyring []byte) {
 	if err != nil {
 		fatal("read manifest: %v", err)
 	}
-	// Parse to learn the NAME and VERSION the catalog serves it under -- and, incidentally, to
-	// refuse here what the node would refuse later. A catalog that publishes an invalid manifest
-	// is a slower way to discover the same thing.
+	// Parse to learn the name and version the catalog serves it under, and incidentally to refuse
+	// here what the node would refuse later: a catalog publishing an invalid manifest is a slower
+	// way to discover the same thing.
 	m, id, err := manifest.Parse(raw)
 	if err != nil {
 		fatal("parse manifest: %v", err)
@@ -104,8 +101,8 @@ func sign(src, out string, priv ed25519.PrivateKey, keyring []byte) {
 			fatal("write %s: %v", name, err)
 		}
 	}
-	// The version file is the bytes as READ, never a re-marshalling: the manifest's content hash
-	// IS the app's identity, so serving anything else would serve a different app than the one
+	// The version file is the bytes as read, never a re-marshalling: the manifest's content hash
+	// is the app's identity, so serving anything else would serve a different app than the one
 	// the list names.
 	write(filepath.Join(m.Name, m.Version+".json"), raw)
 	write(listName, list)

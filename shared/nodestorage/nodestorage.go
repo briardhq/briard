@@ -1,23 +1,21 @@
-// Package nodestorage is the node's block-storage spec: the document the HOST renders and the
+// Package nodestorage is the node's block-storage spec: the document the host renders and the
 // guest's briard-node-storage.service reads to build every tier this node holds.
 //
-// IT EXISTS BECAUSE STORAGE POLICY IS THE HOST'S (a node-scoped fact the host holds
-// durably and pushes at bring-up). A BOOT unit whose only inputs are facts it can read off the
-// machine (/proc/cpuinfo) cannot carry a decision anybody made -- do not encrypt this node; use
-// Adiantum; here is a key -- and an install-time choice has no other channel to the guest. This
-// document is that channel, and the unit that reads it is started by the host rather than by
-// multi-user.target.
+// It exists because storage policy is the host's (a node-scoped fact the host holds durably and
+// pushes at bring-up). A boot unit whose only inputs are facts it can read off the machine
+// (/proc/cpuinfo) cannot carry a decision anybody made (do not encrypt this node; use Adiantum;
+// here is a key), and an install-time choice has no other channel to the guest. This document is
+// that channel, and the unit that reads it is started by the host, not by multi-user.target.
 //
-// THE PRECEDENT IS shared/routes: one JSON document under /run that one side writes and another
-// reads, node-local and on tmpfs, so it cannot outlive the boot it describes. It is a LIST of
-// tiers because a node holds tiers -- one today (the data volume), a bulk/NAS tier later -- and a
-// per-tier document is the shape that does not have to be re-cut when the second one arrives.
+// The precedent is shared/routes: one JSON document under /run that one side writes and another
+// reads, node-local and on tmpfs, so it cannot outlive the boot it describes. It is a list of
+// tiers because a node holds tiers (one today, the data volume; a bulk/NAS tier later), and a
+// per-tier document is the shape that need not be re-cut when the second one arrives.
 //
-// WHAT IS DELIBERATELY NOT HERE: the drbd-reactor promoter snippet. Arming the promoter is its
-// own verb and deliberately the LAST act of bring-up, so a document named node-storage that also
-// carried the promotion chain would be exactly the drift the seam's own fence exists to catch.
-// Storage brings the resource up to `/dev/drbd0 attached` (on a lone node, the data LV) and stops
-// there.
+// Deliberately not here: the drbd-reactor promoter snippet. Arming the promoter is its own verb
+// and deliberately the last act of bring-up, so a node-storage document that also carried the
+// promotion chain would be exactly the drift the seam's own fence exists to catch. Storage brings
+// the resource up to `/dev/drbd0 attached` (on a lone node, the data LV) and stops there.
 package nodestorage
 
 import (
@@ -28,7 +26,7 @@ import (
 )
 
 // Path is where the host writes the spec and briard-node-storage.service reads it. Under /run,
-// which is tmpfs: the spec describes THIS boot's storage, and a stale one surviving a reboot is a
+// which is tmpfs: the spec describes this boot's storage, and a stale one surviving a reboot is a
 // node building a layout nobody asked for on this launch.
 const Path = "/run/briard/node-storage.json"
 
@@ -43,7 +41,7 @@ type Mode string
 const (
 	// ModeAuto is the shipped default: encrypt with AES-XTS where the guest's CPU has `aes`,
 	// run in the clear where it does not, and say which in the report card. Auto is resolved
-	// INSIDE THE GUEST and cannot be resolved here, which is the whole reason it is a mode
+	// inside the guest and cannot be resolved here, which is the whole reason it is a mode
 	// rather than a boolean the host computes: the guest's view of the CPU is not the host's.
 	// `-cpu max` passes the host's own CPU through under KVM and does not under TCG or WHPX,
 	// and qemu's default qemu64 hides `aes` outright -- so the one place where silicon,
@@ -53,10 +51,10 @@ const (
 	// statement as auto-on-an-AES-less-box: that one is hardware reporting a fact, this one is
 	// somebody deciding.
 	ModeOff Mode = "off"
-	// ModeAdiantum encrypts with a cipher that does not need AES instructions -- the AES-less
-	// fallback. NEVER PROMOTED: it is a documented opt-in for hardware that has no
-	// acceleration, not a second default. A fleet that splits on the AES axis splits on something hardware-determined and
-	// reportable; a fleet that splits on taste does not.
+	// ModeAdiantum encrypts with a cipher that does not need AES instructions: the AES-less
+	// fallback. Never promoted: it is a documented opt-in for hardware that has no acceleration,
+	// not a second default. A fleet that splits on the AES axis splits on something
+	// hardware-determined and reportable; a fleet that splits on taste does not.
 	ModeAdiantum Mode = "adiantum"
 )
 
@@ -75,16 +73,15 @@ func (m Mode) Valid() bool {
 // per Mode), and its two LVs -- the data LV DRBD attaches to and the metadata LV it keeps its
 // external metadata on.
 //
-// THE LINEAR LV IS THE SEAM. The data LV's table is one `linear` line,
-// so the backing can be moved onto an encrypted PV and back with `pvmove` while the device object
-// above it never closes. Anything that adds a second dm layer here (striped, cached, thin) stops
-// the seam being free, which is why the oracle fences the shape rather than trusting this
-// document.
+// The linear LV is the seam: the data LV's table is one `linear` line, so the backing can be
+// moved onto an encrypted PV and back with `pvmove` while the device object above it never
+// closes. Anything that adds a second dm layer here (striped, cached, thin) stops the seam being
+// free, which is why the oracle fences the shape rather than trusting this document.
 type Tier struct {
 	// Name is what this tier is called in logs, the report card and later specs -- "data" for
 	// the data volume every diskful node has today. Unique within a spec.
 	Name string `json:"name"`
-	// Device is the raw block device the tier is built on, e.g. /dev/vdb. A HARDWARE FACT of
+	// Device is the raw block device the tier is built on, e.g. /dev/vdb. A hardware fact of
 	// the VM the host builds, which is why it can be stated here rather than discovered.
 	Device string `json:"device"`
 	// VG and LV name the volume group and the data logical volume inside it. Both are
@@ -93,13 +90,13 @@ type Tier struct {
 	// opinion about the same string.
 	VG string `json:"vg"`
 	LV string `json:"lv"`
-	// MetaLV names the SECOND logical volume in the VG: DRBD's external metadata.
-	// It sits at the END of the PV at a size computed from the data LV (MetadataBytes), which
-	// is DRBD's own internal-metadata placement spelled in LVM -- and what makes a filesystem
-	// that already fills the data LV convertible to a replicated one in place: `create-md`
-	// writes here and never has to shrink anything.
+	// MetaLV names the second logical volume in the VG: DRBD's external metadata. It sits at the
+	// end of the PV at a size computed from the data LV (MetadataBytes), which is DRBD's own
+	// internal-metadata placement spelled in LVM, and what makes a filesystem that already fills
+	// the data LV convertible to a replicated one in place: `create-md` writes here and never has
+	// to shrink anything.
 	MetaLV string `json:"metaLV"`
-	// Mode is this tier's encryption policy. Per tier because LUKS sits UNDER DRBD, so the
+	// Mode is this tier's encryption policy. Per tier because LUKS sits under DRBD, so the
 	// choice is a node-local one -- which is also what makes the AES axis free.
 	Mode Mode `json:"mode"`
 }
@@ -107,11 +104,11 @@ type Tier struct {
 // Mapper is the path the LV appears at once the VG is active, and therefore what a resource
 // config must name as its backing.
 //
-// ⚠️ THE DASH IS THE TRAP, and Validate refuses it rather than encoding it here: device-mapper
-// escapes a dash in a VG or LV name by DOUBLING it, so a VG called `br-iard` appears at
+// ⚠️ The dash is the trap, and Validate refuses it rather than encoding it here: device-mapper
+// escapes a dash in a VG or LV name by doubling it, so a VG called `br-iard` appears at
 // /dev/mapper/br--iard-data and this concatenation would quietly name a device that does not
 // exist. Refusing the character keeps one rule instead of two implementations of an escaping
-// scheme -- and our names have never had one.
+// scheme, and our names have never had one.
 func (t Tier) Mapper() string { return "/dev/mapper/" + t.VG + "-" + t.LV }
 
 // MetaMapper is the metadata LV's path, and therefore what a resource config names as
@@ -121,14 +118,14 @@ func (t Tier) MetaMapper() string { return "/dev/mapper/" + t.VG + "-" + t.MetaL
 // MetadataBytes is how much external metadata DRBD needs for a data device of dataBytes with
 // room for maxPeers peers -- the size the metadata LV is created at.
 //
-// THE FORMULA IS DRBD's, restated so the LV can be carved before drbdmeta ever runs: the bitmap
-// keeps one bit per 4 KiB block PER PEER (so dataBytes/32768 bytes a peer), plus the activity log
+// The formula is DRBD's, restated so the LV can be carved before drbdmeta ever runs: the bitmap
+// keeps one bit per 4 KiB block per peer (so dataBytes/32768 bytes a peer), plus the activity log
 // (32 KiB at the default stripe) and the superblock. The trailing MiB covers those two and rounds
 // the answer away from "byte-tight": `drbdmeta` refuses a device that is too small and is content
 // with one that is too large, so erring up is free and erring down is a conversion that fails at
 // the one moment it must not. The caller rounds up to whole extents and adds one more.
 //
-// ⚠️ maxPeers IS BAKED INTO THE METADATA at create-md and cannot be changed without recreating it
+// ⚠️ maxPeers is baked into the metadata at create-md and cannot be changed without recreating it
 // (a full resync), which is why it is carried in the spec and passed explicitly rather than left
 // to drbdadm's default of "however many peers the .res names today".
 func MetadataBytes(dataBytes int64, maxPeers int) int64 {
@@ -149,25 +146,25 @@ type Resource struct {
 	// layer was built from rather than restating a constant beside it.
 	Device string `json:"device"`
 	// Replicated says the resource is real: DRBD runs on this node, the .res is written, the
-	// metadata is created and attached, and Device is the DRBD device. False is a LONE node:
-	// a home with one diskful member runs btrfs on the data LV directly -- no DRBD,
-	// no metadata, no promoter, since with no second copy DRBD only turns a bad block into a
-	// dead node -- and Device names that LV. The host decides it from the mesh (two or more
-	// DISKFUL members; a witness beside one anchor holds no copy), the guest carries it out at
-	// bring-up and reads it back for everything that would otherwise key on DRBD state. A joiner
-	// and a witness are always replicated.
+	// metadata is created and attached, and Device is the DRBD device. False is a lone node: a
+	// home with one diskful member runs btrfs on the data LV directly (no DRBD, no metadata, no
+	// promoter, since with no second copy DRBD only turns a bad block into a dead node) and
+	// Device names that LV. The host decides it from the mesh (two or more diskful members; a
+	// witness beside one anchor holds no copy); the guest carries it out at bring-up and reads it
+	// back for everything that would otherwise key on DRBD state. A joiner and a witness are
+	// always replicated.
 	Replicated bool `json:"replicated,omitempty"`
-	// Convert is the ONE-SHOT intent that lifts the refuse cell: a node whose spec says
-	// alone but whose metadata LV holds DRBD metadata is refused, because that is what a forgotten
-	// flock looks like -- unless the host ASSERTS, from the removal verb and nowhere else, that
-	// the flock ended and the metadata is to be wiped. ConvertDisable is the only value; enable
-	// needs no intent (converting adds a copy and never loses one). The host writes it for one
-	// bring-up and clears it once that bring-up has converged.
+	// Convert is the one-shot intent that lifts the refuse cell: a node whose spec says alone but
+	// whose metadata LV holds DRBD metadata is refused, because that is what a forgotten flock
+	// looks like, unless the host asserts, from the removal verb and nowhere else, that the flock
+	// ended and the metadata is to be wiped. ConvertDisable is the only value; enable needs no
+	// intent (converting adds a copy and never loses one). The host writes it for one bring-up and
+	// clears it once that bring-up has converged.
 	Convert string `json:"convert,omitempty"`
 	// MaxPeers is the number of peer slots the metadata is created with (`create-md
 	// --max-peers`). A product constant the host states, because it is baked into the metadata
 	// and the .res at creation time names fewer peers than a flock will ever have: a mesh of one
-	// would otherwise get ONE slot, and the second anchor's join would need new metadata.
+	// would otherwise get one slot, and the second anchor's join would need new metadata.
 	MaxPeers int `json:"maxPeers,omitempty"`
 	// Config is the rendered drbd.d/<name>.res, straight from drbd.Resource.Config(). The host
 	// renders it because the mesh is the host's knowledge -- peers, addresses, witness
@@ -177,15 +174,13 @@ type Resource struct {
 	// storage bring-up is the .res and the attach alone. A diskless spec carries no tiers, and
 	// Validate insists on that rather than tolerating tiers nothing will build.
 	Diskless bool `json:"diskless,omitempty"`
-	// FreshInit is the host's half of the first-init decision: THIS node is the designated seed
-	// of a NEW flock, so once its metadata is created the resource may be declared UpToDate
-	// (skip the initial sync) and the volume formatted once. A joiner is hard-wired false.
-	//
-	// It is only half. The other half, "did we just create this LV", is known in-process: one
-	// program runs both `lvcreate` and `create-md`, so no marker carries the fact between
-	// components. It must never be inferred from `drbdadm create-md`'s blank-probe: dm-crypt
-	// returns ciphertext for sectors nobody has written, so the probe finds "some data" on every
-	// fresh encrypted node.
+	// FreshInit is the host's half of the first-init decision: this node is the designated seed
+	// of a new flock, so once its metadata is created the resource may be declared UpToDate (skip
+	// the initial sync) and the volume formatted once. A joiner is hard-wired false. The other
+	// half, "did we just create this LV", is known in-process: one program runs both `lvcreate`
+	// and `create-md`, so no marker carries the fact between components. It must never be
+	// inferred from `drbdadm create-md`'s blank-probe: dm-crypt returns ciphertext for sectors
+	// nobody has written, so the probe finds "some data" on every fresh encrypted node.
 	FreshInit bool `json:"freshInit,omitempty"`
 }
 
@@ -206,12 +201,11 @@ func (s Spec) Tier(name string) (Tier, bool) {
 	return Tier{}, false
 }
 
-// Parse decodes and validates a spec. Unknown fields are REFUSED, for the same reason
-// shared/routes and shared/manifest refuse them: the host that writes this and the pushed agent
-// that reads it ship together, so a field this build does not understand means the two
-// have drifted -- and the operation on the other side of this document is destructive. Building
-// storage from a document you only partly understand is the one failure mode worth refusing to
-// boot over.
+// Parse decodes and validates a spec. Unknown fields are refused, for the reason shared/routes
+// and shared/manifest refuse them: the host that writes this and the pushed agent that reads it
+// ship together, so a field this build does not understand means the two have drifted, and the
+// operation on the other side of this document is destructive. Building storage from a document
+// you only partly understand is the one failure mode worth refusing to boot over.
 func Parse(raw []byte) (Spec, error) {
 	var s Spec
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -240,7 +234,7 @@ func (s Spec) Marshal() ([]byte, error) {
 
 // Validate enforces the rules that are not style. Every one of them is a way this document could
 // name a device that does not exist or a layout nobody decided on -- and the unit that reads it
-// runs luksFormat and lvcreate, so a spec that is merely PLAUSIBLE is not good enough.
+// runs luksFormat and lvcreate, so a spec that is merely plausible is not good enough.
 func (s Spec) Validate() error {
 	if s.Resource.Name == "" {
 		return fmt.Errorf("node storage: the spec names no resource")
@@ -303,11 +297,11 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("node storage: tier %s: %q is not an encryption mode", t.Name, t.Mode)
 		}
 	}
-	// ★ A LONE NODE MOUNTS THE DATA LV, AND THE DOCUMENT MUST SAY SO IN ONE PLACE. Replicated
+	// ★ A lone node mounts the data LV, and the document must say so in one place. Replicated
 	// and Device are two fields describing one fact, so they are held to agree here rather than
 	// left for the mount to discover: "alone" with /dev/drbd0 would mount a device nothing
-	// attached, and "replicated" with the LV would mount underneath a resource a peer is
-	// writing to.
+	// attached, and "replicated" with the LV would mount underneath a resource a peer is writing
+	// to.
 	if !s.Resource.Replicated {
 		data, ok := s.Tier(TierData)
 		if !ok {

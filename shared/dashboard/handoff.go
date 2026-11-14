@@ -1,17 +1,15 @@
-// Package dashboard is the host→guest HANDOFF behind the household dashboard's one-time code:
-// the file the host writes onto the guest's tmpfs through the `dashboard.handoff`
-// verb, and the dashboard consumes exactly once.
+// Package dashboard is the host→guest handoff behind the household dashboard's one-time code:
+// the file the host writes onto the guest's tmpfs through the `dashboard.handoff` verb, and the
+// dashboard consumes exactly once.
 //
 // The code is the whole of the dashboard's bootstrap authentication. Proof of identity is proof
-// of access to the `briard` CLI -- whoever can drive it already owns the node --
-// so the CLI asks the agent to mint a code, the agent hands it to the guest here, and the browser
-// that presents it becomes a trusted device. Nothing about a person is authenticated beyond that,
-// on purpose: there is no briard password to invent, hide or reset, and `briard open` IS the
-// reset.
+// of access to the `briard` CLI (whoever can drive it already owns the node), so the CLI asks the
+// agent to mint a code, the agent hands it to the guest here, and the browser that presents it
+// becomes a trusted device. Nothing about a person is authenticated beyond that, on purpose:
+// there is no briard password to invent, hide or reset, and `briard open` is the reset.
 //
-// It also carries what the host knows about the OS account, because that is where the account
-// is visible: it seeds the user's record, from which the dashboard creates Home Assistant's first
-// user.
+// It also carries what the host knows about the OS account, because the account is visible
+// there: it seeds the user's record, from which the dashboard creates Home Assistant's first user.
 //
 // Beside the handoff, the package holds the rest of the host→guest contract for the page: the
 // files the host keeps the dashboard told through (catalog, casa, backup, alerts, a pull in
@@ -156,7 +154,7 @@ const (
 // PullPath is where the host records an app install's pull for the dashboard: the
 // manifest's Size and InstalledSize and when the pull started, written through `app.pulling`
 // before the first byte moves and removed once the image is present. The manifest itself lands on
-// the volume only AFTER the pull, so this is the one place a total exists while a bar is wanted.
+// the volume only after the pull, so this is the one place a total exists while a bar is wanted.
 func PullPath(app string) string { return Dir + "/pull-" + app + ".json" }
 
 // Pull is that file's content.

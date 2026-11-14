@@ -1,11 +1,10 @@
-// Command driver is the nixosTest host driver -- NOT the product agent.
-// It boots the real guest disk via QEMU and drives one bring-up over the
-// virtio-serial channel, exercising the SAME platform + guestagent code the agent
-// uses; what it lacks is the agent's standing observe loop. Its caller sets the env
-// and prepares the (writable) disks.
+// Command driver is the nixosTest host driver, not the product agent. It boots the real guest
+// disk via QEMU and drives one bring-up over the virtio-serial channel, exercising the same
+// platform + guestagent code the agent uses, without the agent's standing observe loop. Its
+// caller sets the env and prepares the (writable) disks.
 //
-// It launches the guest, brings up a lone node (one diskful member, so no DRBD),
-// waits until it serves, prints CONVERGED, then holds the guest alive until signalled.
+// It launches the guest, brings up a lone node (one diskful member, so no DRBD), waits until it
+// serves, prints CONVERGED, then holds the guest alive until signalled.
 package main
 
 import (
@@ -50,15 +49,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	// The guest unit's ExecStop, which is THIS binary: platform.launchArgs writes that line as
-	// the running binary's own path (os.Executable) plus `--guest-shutdown=<QMP socket>`, and
-	// under this harness that binary is the driver rather than the agent. So the driver has to
-	// answer the flag the agent answers, and for the same reasons -- including NEVER being fatal,
-	// since a non-zero exit here makes systemd report the guest unit as having failed to stop.
-	//
-	// Load-bearing rather than tidy: a driver that ignored the flag would run as a second whole
-	// driver in the stop job of the unit it is stopping, re-entering platform.Launch from inside
-	// the very invocation holding the unit's name.
+	// The guest unit's ExecStop is this binary: platform.launchArgs writes that line as the
+	// running binary's own path (os.Executable) plus `--guest-shutdown=<QMP socket>`, and under
+	// this harness that binary is the driver rather than the agent. So the driver must answer the
+	// flag as the agent does, for the same reasons, and is never fatal: a non-zero exit makes
+	// systemd report the guest unit as having failed to stop. Load-bearing, not tidy: a driver
+	// that ignored the flag would run as a second whole driver in the stop job of the unit it is
+	// stopping, re-entering platform.Launch from inside the very invocation holding the unit's name.
 	guestShutdown := flag.String("guest-shutdown", "",
 		"power the guest at this QMP socket off cleanly -- the guest unit's ExecStop, not an operator command")
 	flag.Parse()
@@ -83,7 +80,7 @@ func main() {
 		ControlSock: sock,
 		ServiceTap:  os.Getenv("SERVICE_TAP"), // host tap -> guest eth1 (the VIP NIC)
 		// SERVICE_MAC pins the guest NIC's MAC. Empty is fine on bridge (qemu's default MAC is
-		// unique enough single-node), but macvtap REQUIRES it: the wrapper pins the macvtap device
+		// unique enough single-node), but macvtap requires it: the wrapper pins the macvtap device
 		// to this MAC so it matches qemu's mac=, else inbound frames to the device's (random) MAC
 		// never reach the guest. The real agent derives it (deriveMAC); a driver-based test sets it.
 		ServiceMAC: os.Getenv("SERVICE_MAC"),
@@ -107,11 +104,10 @@ func main() {
 		// starts its chain target instead of drbd-reactor.
 		Peers: []drbd.Peer{{Name: node, NodeID: 0, Address: "127.0.0.1:7789", Disk: drbd.DataDevice}},
 	}
-	// THE PRODUCT'S OWN RENDERER. The storage spec is the host's to compose, and
-	// this driver is the harness standing in for the host -- so it calls host.StorageSpec rather
-	// than assembling a spec of its own, and a rig therefore exercises the real composition.
-	// DATA_ENCRYPTION reaches it the same way it reaches the agent, which is what lets a rig ask
-	// for `off` or `adiantum` without a second code path.
+	// The product's own renderer: the storage spec is the host's to compose and this driver stands
+	// in for the host, so it calls host.StorageSpec rather than assembling a spec of its own, and a
+	// rig exercises the real composition. DATA_ENCRYPTION reaches it as it reaches the agent, which
+	// lets a rig ask for `off` or `adiantum` without a second code path.
 	storage, err := host.Config{
 		Node:           node,
 		DataEncryption: nodestorage.Mode(env("DATA_ENCRYPTION", string(nodestorage.ModeAuto))),

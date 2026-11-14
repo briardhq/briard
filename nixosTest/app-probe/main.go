@@ -1,14 +1,14 @@
-// Command app-probe is a TEST HELPER (nixosTest/apps-pair.nix), not a product binary.
+// Command app-probe is a test helper (nixosTest/apps-pair.nix), not a product binary.
 //
-// It runs the REAL guest-side probe — agent/mosquitto's, the one the S1 gate's assessor drives
-// over the app.mosquitto.probe verb — against a container on this node, and prints what it
-// found. The point is that a rig asserting "the token survived the upgrade" is asserting it
-// about the code that ships, rather than about a shell pipeline that happens to resemble it.
+// It runs the real guest-side probe (agent/mosquitto's, which the S1 gate's assessor drives over
+// the app.mosquitto.probe verb) against a container on this node and prints what it found, so a
+// rig asserting "the token survived the upgrade" asserts it about the code that ships, not about
+// a shell pipeline that happens to resemble it.
 //
-// What it deliberately does NOT do is judge. The verdict is the host's (agent/host/readiness.go)
-// and is unit-tested there; a lib.nix rig cannot run the host's install path at all, so the split
-// here is the same one hass-upgrade-rollback.nix makes: drive the real signal, assert on the real
-// signal, leave the decision to the tests that can run it.
+// It deliberately does not judge: the verdict is the host's (agent/host/readiness.go), unit-tested
+// there. A lib.nix rig cannot run the host's install path at all, so the split is the one
+// hass-upgrade-rollback.nix makes: drive and assert on the real signal, leave the decision to the
+// tests that can run it.
 //
 //	app-probe <container> [token]     # token given => write it first
 //

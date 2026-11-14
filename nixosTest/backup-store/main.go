@@ -1,6 +1,6 @@
-// Command backup-store is a TEST HELPER (nixosTest/backup.nix), not a product binary.
+// Command backup-store is a test helper (nixosTest/backup.nix), not a product binary.
 //
-// It serves the REAL backup store -- agent/host's, the one the host agent serves the guest on the
+// It serves the real backup store -- agent/host's, the one the host agent serves the guest on the
 // private link -- with no agent around it, so an agent-less rig can back its guest up into a real
 // folder through the code that ships.
 //

@@ -1,14 +1,14 @@
-// Command hass-nudge is a TEST HELPER (nixosTest/hass-payload.nix), not a product binary.
+// Command hass-nudge is a test helper (nixosTest/hass-payload.nix), not a product binary.
 //
-// It runs the REAL push half of the Home Assistant control channel — agent/hass's Nudge, the one
-// the host drives over the app.home-assistant.nudge verb after every install and uninstall —
-// against the Home Assistant on this node, and says whether it was taken.
+// It runs the real push half of the Home Assistant control channel (agent/hass's Nudge, which the
+// host drives over the app.home-assistant.nudge verb after every install and uninstall) against
+// the Home Assistant on this node, and says whether it was taken.
 //
-// It exists for the same reason app-probe does: the rig that proves this has to prove it about
-// the code that ships. Everything the unit tests assert about the request is asserted against a
-// stub of Home Assistant's event view — the path, the Bearer, the JSON object body — and a stub is
-// exactly where a wrong belief about somebody else's API survives. Here it meets the real view, on
-// the pinned image, with the token the node actually minted.
+// It exists for the same reason app-probe does: the rig must prove this about the code that
+// ships. Everything the unit tests assert about the request (the path, the Bearer, the JSON
+// object body) is asserted against a stub of Home Assistant's event view, and a stub is exactly
+// where a wrong belief about somebody else's API survives; here it meets the real view, on the
+// pinned image, with the token the node actually minted.
 //
 //	hass-nudge <port>
 //

@@ -1,20 +1,20 @@
-// Command briard-selfupdate-stub is a TEST-ONLY harness for the self-update and the
+// Command briard-selfupdate-stub is a test-only harness for the self-update and the
 // signed-channel serving (nixosTest/agent-selfupdate.nix), built by nixosTest/selfupdate-stub.nix.
-// It is not shipped with the product — it exists only so the mechanism can be exercised
+// It is not shipped with the product; it exists only so the mechanism can be exercised
 // hermetically, without a full nested-VM guest bring-up.
 //
-// It has two roles. As the CANDIDATE binary it stands in for the one piece of *agent* code the
-// update depends on — whether it signals systemd readiness, and how it stops:
+// It has two roles. As the candidate binary it stands in for the one piece of *agent* code the
+// update depends on: whether it signals systemd readiness, and how it stops.
 //
-//	ready [id]     send READY=1 (from THIS pid, so NotifyAccess=main accepts it, exactly as the
+//	ready [id]     send READY=1 (from this pid, so NotifyAccess=main accepts it, exactly as the
 //	               real agent does at loop entry) then block → the updater's start succeeds →
 //	               the swap is committed
 //	slowstop [id]  as ready, but on SIGTERM it takes a few seconds to finish (an act in flight)
 //	               and leaves /run/briard/drained-<id> before exiting cleanly
 //	    crash      exit 1 immediately → the start fails → the updater reverts
-//	    hang       block WITHOUT sending READY → TimeoutStartSec trips → the updater reverts
+//	    hang       block without sending READY → TimeoutStartSec trips → the updater reverts
 //
-// As the HARNESS it stands in for the release signer and the release host; the update itself is
+// As the harness it stands in for the release signer and the release host; the update itself is
 // the real agent's `--update`:
 //
 //	keygen <privOut> <pubPemOut>          write an Ed25519 seed + the PKIX-PEM release keyring

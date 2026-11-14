@@ -1,5 +1,5 @@
 // Package telemetry holds the node's resource-footprint telemetry -- the numeric input to
-// the soak's *trend* oracle. It lives outside shared/api deliberately: this data does NOT
+// the soak's *trend* oracle. It lives outside shared/api deliberately: this data does not
 // cross the host↔cloud wire (shared/api is the closed, audited allowlist of what leaves the
 // house -- privacy-as-schema). It rides only the internal paths: the host↔guest control
 // channel (the guest returns it to the host) and the host→lab collector file the soak reads
@@ -8,11 +8,10 @@
 // field by field into shared/api's MetricsReport by the host's dashboardMetrics allowlist.
 package telemetry
 
-// NodeResources is the resource telemetry a node measures each observe cycle -- the
-// numeric input to the soak's *trend* oracle: a leak or unbounded growth shows as
-// a rising post-warmup slope or a crossed ceiling across a run, on a build aged this way. It
-// is a *signal*, never a gate -- every field is best-effort (0 means unread this cycle, never
-// a hard failure of the observe loop).
+// NodeResources is the resource telemetry a node measures each observe cycle, for the trend
+// oracle: a leak or unbounded growth shows as a rising post-warmup slope or a crossed ceiling
+// across a run, on a build aged this way. It is a *signal*, never a gate: every field is
+// best-effort (0 means unread this cycle, never a hard failure of the observe loop).
 //
 // Two scopes in one struct: the Agent* fields are the host-side product daemon's own
 // footprint (measured in-process via /proc/self on every node, witness included -- the "does
@@ -23,10 +22,10 @@ type NodeResources struct {
 	AgentFDs   int   `json:"agent_fds,omitempty"`    // host agent open file descriptors
 
 	// Payloads is one entry per app the node runs, in the node's own app order. Per app, never
-	// summed: a node holds a SET of apps, and the three numbers are per-app facts, so a sum
-	// would be a different measurement -- a crash-loop in one of N dilutes into a small climb in
-	// the total, which is exactly the signal NRestarts exists to make loud. Empty on a witness and on the shipped
-	// zero-app node; the fields BELOW are node-scoped and come back regardless.
+	// summed: a node holds a set of apps and the three numbers are per-app facts, so a sum would
+	// be a different measurement; a crash-loop in one of N dilutes into a small climb in the
+	// total, which is exactly the signal NRestarts exists to make loud. Empty on a witness and on
+	// the shipped zero-app node; the fields below are node-scoped and come back regardless.
 	//
 	// Widening here is cheap in a way NodeStatus is not: telemetry is the internal host->lab
 	// channel, never the closed cloud allowlist. Only volume_used_kb and load1 cross to the cloud,
@@ -44,7 +43,7 @@ type NodeResources struct {
 	// available and knows nothing of swap. Anon is what only swap can reclaim. The zram pair is
 	// what is parked there (uncompressed) and what parking it costs in RAM; neither appears in
 	// /proc/meminfo, and SwapUsed would overstate the cost by the compression ratio. PswpIn/Out are
-	// cumulative, and a climbing PswpIn is parked memory coming BACK -- a working set that does not
+	// cumulative, and a climbing PswpIn is parked memory coming back -- a working set that does not
 	// fit, which zram's own fill level barely shows. The PSI pair is the share of the last minute
 	// tasks spent stalled on memory, the cost of all of the above in the one unit users feel.
 	MemTotalKB     int64   `json:"mem_total_kb,omitempty"`
@@ -65,16 +64,14 @@ type NodeResources struct {
 	// scan). Complements the soak's own probes of the host/L1 layer (qemu OOM, KVM).
 	KernelErrors []string `json:"kernel_errors,omitempty"` // recent guest kernel warning+ lines
 
-	// DMTargets is every device-mapper table line the guest holds, as `<name>: <table>`. It is
-	// the input to the storage-seam invariant: the data LV must be exactly one
-	// `linear` segment, and nothing else may have appeared under it. A VG of linear LVs is free
-	// precisely because it IS dm-linear -- the moment something turns it striped, cached or thin,
-	// or inserts a layer nobody decided on, the seam stops being free and a `pvmove` conversion
-	// stops being a table reload. That is invisible in every other signal here, which is why it
-	// is reported rather than inferred.
-	//
-	// Mechanism only, like KernelErrors: the guest reports the tables, the oracle applies the
-	// policy. Empty on a node whose data disk has no seam (a diskless witness).
+	// DMTargets is every device-mapper table line the guest holds, as `<name>: <table>`: the
+	// input to the storage-seam invariant that the data LV must be exactly one `linear` segment
+	// and nothing else may have appeared under it. A VG of linear LVs is free precisely because it
+	// is dm-linear; the moment something turns it striped, cached or thin, or inserts a layer
+	// nobody decided on, the seam stops being free and a `pvmove` conversion stops being a table
+	// reload. That is invisible in every other signal here, which is why it is reported rather
+	// than inferred. Mechanism only, like KernelErrors: the guest reports the tables, the oracle
+	// applies the policy. Empty on a node whose data disk has no seam (a diskless witness).
 	DMTargets []string `json:"dm_targets,omitempty"`
 
 	// QuotaMode and Qgroups are the replicated volume's quota tree, the input to the invariant
@@ -87,7 +84,7 @@ type NodeResources struct {
 }
 
 // AppResources is one app's footprint inside the appliance. Name is the app's own
-// name, so the oracle can say WHICH app leaked or crash-looped rather than that something on
+// name, so the oracle can say which app leaked or crash-looped rather than that something on
 // the node did -- the reason these are per app rather than summed.
 type AppResources struct {
 	Name     string `json:"name"`

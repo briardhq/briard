@@ -18,7 +18,7 @@ import (
 )
 
 // Kind is what an alert does to the state of the thing its Key names. A key is either a
-// CONDITION (something with state: its alerts are Open and Resolved) or an EVENT (something that
+// condition (something with state: its alerts are Open and Resolved) or an event (something that
 // happens: its alerts are all Event) -- never both, so a reader that keeps the latest alert per
 // key can never mistake an event for the end of a condition.
 type Kind string
@@ -29,11 +29,10 @@ const (
 	Event    Kind = "event"    // happened; changes no state
 )
 
-// Severity is how loud an alert is -- on the alert rather than the key, because one key can
-// span two (reduced redundancy is a warning; no second copy is critical). A Resolved has none.
-//
-// It decides whether an alert asks for the household: Warning and above needs attention -- the
-// dashboard's tile, the tray's count -- until it resolves or is dismissed (Attention); Info is
+// Severity is how loud an alert is: on the alert rather than the key, because one key can span
+// two (reduced redundancy is a warning; no second copy is critical). A Resolved has none. It
+// decides whether an alert asks for the household: Warning and above needs attention (the
+// dashboard's tile, the tray's count) until it resolves or is dismissed (Attention); Info is
 // history only and interrupts nobody. A warning here is one the household should see, as in any
 // alerting system, not a log line's warning that nobody reads.
 type Severity string

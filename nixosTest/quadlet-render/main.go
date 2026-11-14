@@ -1,13 +1,13 @@
-// Command quadlet-render is a TEST HELPER (nixosTest/lib.nix, app-install.nix,
+// Command quadlet-render is a test helper (nixosTest/lib.nix, app-install.nix,
 // cold-converge-pull.nix), not a product binary.
 //
-// It runs the REAL renderer so a rig reads the layout the product decides rather than restating
-// it. The units a node runs are not taken from here: converge renders them in the guest, off
-// the manifest on the volume. What a rig uses is the sidecars, the .image unit it warms ahead of
-// converge, and the rendered files to print when an install misbehaves.
+// It runs the real renderer so a rig reads the layout the product decides rather than restating
+// it. The units a node runs do not come from here (converge renders them in the guest, off the
+// manifest on the volume); a rig uses the sidecars, the .image unit it warms ahead of converge,
+// and the rendered files to print when an install misbehaves.
 //
 // A rig needs it because the host agent's orchestration cannot run here: the install path drives
-// the guest over the virtio-serial channel, and in the hermetic harness the node IS the guest with
+// the guest over the virtio-serial channel, and in the hermetic harness the node is the guest with
 // no host on the other end, so the rig does the install's Primary-only half by hand from these
 // sidecars. That orchestration is unit-tested (agent/host/app_test.go).
 //
@@ -67,7 +67,7 @@ func main() {
 			fatal("write %s: %v", name, err)
 		}
 	}
-	// The app's units, in start order. NOT promoter chain members: the chain is static
+	// The app's units, in start order. Not promoter chain members: the chain is static
 	// (shared/chain.Members) and briard-apps starts these, which is what keeps a crashed
 	// container from demoting the node.
 	write("units", r.Units)
