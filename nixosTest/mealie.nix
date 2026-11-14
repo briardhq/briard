@@ -152,8 +152,8 @@ pkgs.testers.runNixOSTest {
     assert (me["username"], me["fullName"], me["email"], me["admin"], me["authMethod"]) == ("admin", "Kostas", "kostas@briard.local", True, "Mealie"), me
     first_id = me["id"]
 
-    # (2) AFTER IT: the shipped password opens nothing, under either name, and the first-login
-    # wizard is over.
+    # (2) AFTER IT: the shipped password does not open the first account by its username (its
+    # shipped email is not tried), and the first-login wizard is over.
     assert seed_login() == 401, "the first account still answers the shipped password"
     assert json.loads(at_pod("/api/app/about/startup-info")[1])["isFirstLogin"] is False
 

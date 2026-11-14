@@ -1,6 +1,6 @@
 # A PLANNED handover: `drbd-reactorctl evict` moves the work to a peer.
 #
-# Every failover proof we have is a FAILURE (drbd-failover crashes the primary, drbd-fence
+# Every other failover proof here is a FAILURE (drbd-failover crashes the primary, drbd-fence
 # partitions it). The upgrade path needs the opposite: a node that is perfectly healthy giving
 # the work up deliberately, so it can reboot into a new generation while its peer serves. That
 # is a different operation with different risks — nothing is broken, so nothing forces the move,
@@ -10,10 +10,10 @@
 # runtime-masks the promoter target, stops it so a peer can promote, then unmasks. Writing our
 # own stop-and-hope against the promoter would be reimplementing it with less knowledge of its
 # own state machine. But we have prior form with this CLI — `drbd-reactorctl disable`'s systemctl
-# reload proved flaky and was deferred (guestagent.go) — so `evict` is PROVEN here before
-# anything sequences it.
+# reload proved flaky and is not used (guestagent.go) — so `evict` is PROVEN here, beneath the
+# host's handover (agent/host/handover.go) that drives it.
 #
-# It also produces the number (c2-iv-6) is missing: how long a clean eviction takes to move the
+# It also produces the number a roll needs: how long a clean eviction takes to move the
 # VIP. The post-*failure* timing is unmeasured; this is the planned case, which ought
 # to be faster and more deterministic, and "ought to" is not a measurement.
 { pkgs, guestModule, fixture }:
@@ -84,7 +84,7 @@ pkgs.testers.runNixOSTest {
     #
     # Timed from the far side: the useful number is not how long the command takes to return
     # but how long the HOUSE is without an answer at its address, which is what a household notices
-    # and what (c2-iv-6) has to size a roll against.
+    # and what a roll has to be sized against.
     others = [m for m in machines if m != first]
     t_start = time.monotonic()
     first.succeed("drbd-reactorctl evict")
@@ -120,7 +120,7 @@ pkgs.testers.runNixOSTest {
     # rebooting for its own upgrade could take the work back before anyone verified it.
     first.succeed("systemctl show -p LoadState --value drbd-services@r0.target | grep -qv masked")
 
-    # Hand it BACK, which is the second half of the roll (c2-iv-6 ends where it started).
+    # Hand it BACK, which is the second half of the roll (a roll ends where it started).
     t_start = time.monotonic()
     second.succeed("drbd-reactorctl evict")
     first.wait_until_succeeds("curl -fsS --max-time 2 http://192.168.1.100:8080/healthz")
@@ -134,7 +134,7 @@ pkgs.testers.runNixOSTest {
     #
     # The reboot path's requirement. A runtime mask does NOT survive a reboot, which is the
     # trap: this proves the mask holds the node out while it is up, and `-u` releases it. What
-    # a reboot does to it is the (c2-iv-6) sequencer's problem, not this mechanism's, and is
+    # a reboot does to it is the roll sequencer's problem, not this mechanism's, and is
     # recorded rather than assumed here.
     holder = primary_of(machines)
     rest = [m for m in machines if m != holder]

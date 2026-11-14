@@ -28,10 +28,11 @@
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
 
-  # THE NODE IS lib.nix's, NOT A COPY OF IT: a rig that quietly diverges from the shared node is
-  # how two earlier bugs (the firmware-only guest and the missing mDNS chain members) got in. Every machine carries the three-node `.res` in
+  # THE NODE IS lib.nix's, NOT A COPY OF IT: a rig that quietly diverges from the shared node
+  # lets bugs in that the shared node would catch (a firmware-only guest, missing mDNS chain
+  # members). Every machine carries the three-node `.res` in
   # its spec; the lone anchor's bring-up ignores it (it writes no `.res` alone) and its conversion
-  # writes it, which is the whole point -- there is no mesh-of-one config to grow from any more.
+  # writes it, which is the whole point -- there is no mesh-of-one config to grow from.
   threeRes = h.mkResource [
     { name = "anchor1"; id = 0; }
     { name = "anchor2"; id = 1; }

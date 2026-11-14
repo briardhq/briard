@@ -1,19 +1,15 @@
-# TLS termination that serves the cert, and survives failover. Completes v0's
-# deferred half of "reachable by name WITH TLS" (proved issuance; nothing served it).
+# TLS termination that serves the cert, and survives failover: the serving half of
+# "reachable by name WITH TLS".
 # briard-reverse-proxy terminates HTTPS at the VIP; its cert/key live on the DRBD volume, so they
-# replicate and a survivor serves the SAME cert at the SAME VIP after a failover (the deferred
-# "TLS survives failover", folded in here).
+# replicate and a survivor serves the SAME cert at the SAME VIP after a failover.
 #
-# Nothing runs behind the reverse proxy, deliberately: routing the reverse proxy to a
-# runtime-installed app is deferred, so a test that put one there would prove the
-# reverse proxy forwards to nothing in particular. Termination, replication and hot-reload are the
-# layers under test, and none of them needs a backend.
+# Nothing runs behind the reverse proxy, deliberately: termination, replication and hot-reload
+# are the layers under test, and none of them needs a backend.
 #
 # Also covers the DELIVERY end: dropping a renewed cert on the vol is hot-reloaded live
 # (no restart), and the survivor serves the renewed cert after failover. The certs are
-# build-time self-signed (the controller-side renewal SCHEDULER
-# is unit-tested in controller/renew_test.go) — this proves the SERVING + delivery layers
-# hermetically.
+# build-time self-signed (the renewal SCHEDULER is the controller's, not this repo's)
+# — this proves the SERVING + delivery layers hermetically.
 { pkgs, guestModule }:
 
 let
@@ -90,8 +86,8 @@ pkgs.testers.runNixOSTest {
     primary.succeed("cp ${testCert}/fullchain.pem ${testCert}/key.pem /var/lib/briard/tls/")
     primary.succeed("sync")
 
-    # briard-reverse-proxy (woven into the promoter chain via briard-vip) hot-reloads the cert
-    # and serves HTTPS at the VIP, proxying to the app — https://<name> is now true.
+    # briard-reverse-proxy (a promoter chain member, after briard-vip) hot-reloads the cert
+    # and serves HTTPS at the VIP — https://<name> is true.
     primary.wait_until_succeeds("curl -fsS --cacert ${testCert}/fullchain.pem https://192.168.1.100/healthz")
     print("HTTPS served at the VIP, terminated by briard-reverse-proxy")
     # The reverse proxy also answers PLAIN http on :80 — the only door a free node has,
@@ -103,7 +99,7 @@ pkgs.testers.runNixOSTest {
 
     # ---- renewal delivery: drop a NEW cert on the vol -> hot-reloaded, no restart ----
     # This is what a controller-pushed DirectiveCert lands (here via a direct write; the
-    # cert.write verb + the whole controller->agent->guest path are unit-tested).
+    # cert.write verb + the agent->guest path are unit-tested).
     primary.succeed("cp ${testCertB}/fullchain.pem ${testCertB}/key.pem /var/lib/briard/tls/")
     primary.succeed("sync")
     # Now cert B is served (hot-reload) and cert A no longer validates — no restart.
@@ -113,8 +109,8 @@ pkgs.testers.runNixOSTest {
 
     # ---- TLS survives failover: the RENEWED cert (replicated), same VIP, on the survivor ----
     # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
-    # real -- the hand-rolled `--clear-bitmap` these rigs used to run with every peer connected
-    # declared them all UpToDate without one -- and a SyncTarget cannot promote. "Replicated" is
+    # real, so a replica is a SyncTarget until that initial resync completes -- and a
+    # SyncTarget cannot promote. "Replicated" is
     # the claim under test, so assert the disk state before removing the only UpToDate copy.
     survivor.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
     primary.crash()

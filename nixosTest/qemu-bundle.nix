@@ -61,7 +61,7 @@ let
         fi
       done
     done
-    # The dynamic loader itself (identical for both binaries).
+    # The dynamic loader itself (identical for every binary: one glibc).
     loader=$(patchelf --print-interpreter "${baseQemu}/bin/qemu-system-x86_64")
     cp -Ln "$loader" "$out/lib/$(basename "$loader")" 2>/dev/null || true
 

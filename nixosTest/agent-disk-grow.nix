@@ -144,8 +144,8 @@ pkgs.testers.runNixOSTest {
         # THE LOOP KEEPS TICKING WHILE AN INSTALL RUNS. An app install leaves the observe loop
         # (agent/host/acts.go), so the status line -- every STATUS_EVERY=2s here -- keeps coming
         # between the moment the directive is submitted and the moment the install says it is
-        # serving; an install that held the loop logged nothing in between (the 2026-09-01 shape:
-        # a guest frozen inside a pull, unnoticed until the budget expired). The window is real
+        # serving; an install that held the loop would log nothing in between (and a guest frozen
+        # inside a pull would go unnoticed until the budget expired). The window is real
         # by construction -- the app is ready 3 s after its start and the health gate polls every
         # 5 s -- and asserted as such: an install that spans no tick fails here too.
         cursor = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()

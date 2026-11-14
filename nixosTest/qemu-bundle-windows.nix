@@ -10,7 +10,7 @@
 # Python for mingw that nixpkgs marks broken. Here Python runs only on the build machine, and glib,
 # libslirp and the rest of the library closure are MSYS2's own signed CI builds, pinned by hash.
 #
-# UCRT64, not MSYS2's older msvcrt `mingw64` environment: that one no longer carries libslirp, and
+# UCRT64, not MSYS2's older msvcrt `mingw64` environment: that one does not carry libslirp, and
 # the UCRT is part of Windows 10 and later.
 #
 # WHAT OUR SIGNATURE MEANS HERE: the QEMU binaries are built by us from the pinned source below,
@@ -128,7 +128,8 @@ let
   };
 
   # The two binaries the product runs: qemu-system-x86_64 boots the guest, qemu-img makes the
-  # install-time overlay. Same pair as the Linux bundle, for the same reasons.
+  # install-time overlay. The same two QEMU binaries as the Linux bundle, for the same reasons
+  # (the Linux bundle also carries smartctl; this one does not).
   qemuBins = [ "qemu-system-x86_64.exe" "qemu-img.exe" ];
 
   # The x86 firmware allowlist. It is the Linux bundle's list plus efi-e1000.rom: QEMU adds a

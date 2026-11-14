@@ -1,13 +1,13 @@
 # drbd-reactor's promoter runs the ordered failover unit on the primary.
 #
 # Steady-state only (no kill): bring r0 up on both nodes, then let drbd-reactor
-# promote exactly one and start the ordered unit {promote → data mount → apps
-# → VIP} there. Assert it converges on the primary and runs nowhere else.
+# promote exactly one and start the ordered unit {promote → data mount → VIP
+# → apps → reverse proxy → dashboard} there. Assert it converges on the primary and runs
+# nowhere else.
 #
 # The app in that chain is a RUNTIME-INSTALLED one: the fixture arrives as a
-# catalogued manifest, is rendered by the real renderer at boot, and its units are what the
-# promoter starts. It used to be a build-time payload slot -- a mechanism no shipped node had --
-# so the chain this test drove was one no user could produce (the slot is deleted).
+# catalogued manifest, is rendered by the real renderer, and its units are what the
+# promoter chain starts -- the chain a user can produce, with no build-time payload slot.
 { pkgs, guestModule, fixture }:
 
 let
@@ -50,9 +50,10 @@ pkgs.testers.runNixOSTest {
     print(f"app units the renderer produced: {service_units}")
 
     node1.wait_until_succeeds("drbdadm cstate r0 | grep -q Connected")
-    # Skip the initial sync so the resource is promotable without force-promotion.
+    # The seed declared its own disk UpToDate in its bring-up (no initial sync for it), so the
+    # resource is promotable without force-promotion while the joiner resyncs.
 
-    # Hand off to the promoter: with r0 provisioned and UpToDate, start
+    # Hand off to the promoter: with r0 provisioned and the seed UpToDate, start
     # drbd-reactor on both nodes. It promotes exactly one (quorum-gated, no
     # --force) and runs the ordered unit there.
     for m in machines:
@@ -65,16 +66,15 @@ pkgs.testers.runNixOSTest {
 
     # ⚠️ WAIT FOR A COMPLETED PROMOTION, NOT FOR A ROLE.
     #
-    # This used to be `wait_until_succeeds("drbdadm role r0 | grep -qE 'Primary|Secondary'")`,
-    # which is VACUOUS: a node is always one or the other, so it returned on the first poll having
-    # waited for nothing. The role was then read out of the middle of the promotion race.
+    # A wait on `drbdadm role r0 | grep -qE "Primary|Secondary"` is VACUOUS: a node is always one
+    # or the other, so it returns on the first poll having waited for nothing, and the role is
+    # read out of the middle of the promotion race.
     #
     # And being Primary is not the same as having promoted. A node can hold the role for exactly
-    # as long as it takes its chain to fail and hand the resource on -- which is what happened on
-    # the 2026-09-16 nightly: node1 was Primary when this line looked, a failed chain member took
-    # it down, node2 took over, and every assertion below ran against the node that was no longer
-    # serving. What it printed ("briard-apps inactive") was a symptom on the wrong machine and
-    # said nothing about the cause.
+    # as long as it takes its chain to fail and hand the resource on: node1 Primary when this line
+    # looks, a failed chain member takes it down, node2 takes over, and every assertion below runs
+    # against the node that is no longer serving -- printing a symptom ("briard-apps inactive")
+    # on the wrong machine that says nothing about the cause.
     #
     # The promoter's TARGET is the honest signal: it is active only where the whole ordered chain
     # came up.
@@ -104,7 +104,7 @@ pkgs.testers.runNixOSTest {
     dataroot = install_fixture(primary)
 
     # Reaching the VIP's /healthz proves the whole chain converged on the primary
-    # (promote → mount → app past its slow start → VIP claimed).
+    # (promote → mount → VIP claimed → app past its slow start).
     primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
     primary.succeed("systemctl is-active drbd-promote@r0.service")  # stock promote ran

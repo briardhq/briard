@@ -3,14 +3,13 @@
 # with nothing installed is a working node: the volume mounts, the promoter chain completes,
 # the VIP comes up, and the reverse proxy answers there.
 #
-# It is the counterpart to every other test in this directory, which INSTALL the dummy fixture as
-# a catalogued app after promoting. Nothing bakes a workload into a guest any more
-# (the build-time slot is gone), so this shape is no longer one test's careful arrangement — it is what every node
-# boots as, and what the others then add something to.
+# It is the counterpart to the tests in this directory that INSTALL an app (a catalogued fixture)
+# after promoting. Nothing bakes a workload into a guest, so this shape is not one test's careful
+# arrangement — it is what every node boots as, and what the others then add something to.
 #
-# The failure it guards against is specific and was real: with a workload unit unconditionally in
-# the promoter chain, a node with nothing installed named a unit that does not exist, drbd-reactor
-# failed the whole ordered unit, and the VIP never came up. A node that installs cleanly and then
+# The failure it guards against is specific: with a workload unit unconditionally in the
+# promoter chain, a node with nothing installed names a unit that does not exist, drbd-reactor
+# fails the whole ordered unit, and the VIP never comes up. A node that installs cleanly and then
 # serves nothing at all.
 { pkgs, guestModule }:
 
@@ -72,15 +71,16 @@ pkgs.testers.runNixOSTest {
     print(f"primary={primary.name} survivor={survivor.name}")
 
     # CONVERGE RAN AND CONVERGED TO NOTHING. briard-apps is a chain member on
-    # every data node now, so a failure there would take the VIP down on the one node shape every
+    # every data node, so a failure there would take the VIP down on the one node shape every
     # stranger installs — precisely the failure this test exists to guard, arriving via a new unit.
     # Succeeding against an empty volume is the shipped state, not a degraded one.
     primary.succeed("systemctl is-active briard-apps.service")
     left = primary.succeed("ls -A /run/containers/systemd 2>/dev/null || true").strip()
     assert left == "", f"converge wrote app units on a node with nothing installed: {left!r}"
 
-    # The node reports itself READY, not sick. A fresh install used to sit unhealthy forever
-    # because the health probe pointed at an app port nobody was listening on.
+    # The node reports itself READY, not sick. Without the reverse proxy answering /healthz
+    # itself, a fresh install would sit unhealthy forever, its health probe pointed at an app port
+    # nobody is listening on.
     health = primary.succeed("curl -fsS http://192.168.1.100/healthz")
     assert "no apps routed" in health, f"/healthz on an empty node said: {health!r}"
 
@@ -89,11 +89,10 @@ pkgs.testers.runNixOSTest {
     # not route, so it forwards to the household dashboard, which refuses a browser with no
     # session: 401, one instruction, no inventory. Reaching the VIP is not authentication.
     #
-    # This used to assert the node's own page here ("Nothing is installed"), and that page is gone
-    # by design rather than by accident -- an unauthenticated reader learning what a node runs is
-    # the thing the dashboard's session gate removed. `-f` is dropped because 401 is now the expected answer and would
-    # make curl itself fail; the code is asserted instead, so "the VIP is down" and "the VIP
-    # refused me" stay distinguishable, which is the whole content of the original claim.
+    # The VIP does not serve a node page ("Nothing is installed") to an unauthenticated reader:
+    # learning what a node runs is the thing the session gate of the dashboard withholds. No `-f`,
+    # because 401 is the expected answer and would make curl itself fail; the code is asserted
+    # instead, so "the VIP is down" and "the VIP refused me" stay distinguishable.
     refused = primary.succeed("curl -sS -o /tmp/vip.html -w '%{http_code}' http://192.168.1.100/").strip()
     page = primary.succeed("cat /tmp/vip.html")
     assert refused == "401" and "not yet trusted" in page, f"the VIP served {refused}: {page!r}"
@@ -111,7 +110,7 @@ pkgs.testers.runNixOSTest {
     primary.fail("test -e /run/briard/routes.hosts")  # one file: the publisher reads the table itself
 
     # The data volume is mounted and genuinely empty of app data — the substrate is up,
-    # waiting for something to run. (.snapshots is the ladder's own directory, not an app.)
+    # waiting for something to run. (data/.snapshots holds History members, not an app.)
     primary.succeed("mountpoint -q /var/lib/briard")
     primary.fail("ls -d /var/lib/briard/.apps/*.json >/dev/null 2>&1")
 
@@ -122,7 +121,7 @@ pkgs.testers.runNixOSTest {
     # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
     # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
     # cannot promote. "Replicated" is the claim under test, so assert the disk state before
-    # removing the only UpToDate copy. This rig is the most exposed of the eight that crash a
+    # removing the only UpToDate copy. This rig is the most exposed of the rigs that crash a
     # primary, because it installs nothing: the crash arrives seconds after the initial full
     # resync starts, with no install standing between the two to hide it.
     survivor.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
@@ -141,7 +140,7 @@ pkgs.testers.runNixOSTest {
     # this is the one rig that already pays for one.
     primary.start()
     primary.wait_for_unit("multi-user.target")
-    # The unit is started by the HOST now, never at boot -- so the harness starts
+    # The unit is started by the HOST, never at boot -- so the harness starts
     # it, exactly as it did the first time, and the node opens its own volume from the token on
     # it. Re-running is the assertion: nothing here supplies a key.
     primary.succeed("briard-test-storage")

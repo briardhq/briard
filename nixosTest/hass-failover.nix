@@ -9,7 +9,7 @@
 # account is still there on the promoted survivor. That is config-intact: the
 # config HA durably wrote replicated under protocol C and HA re-adopted it.
 #
-# Heavy (two HA cold starts + the 2.4 GB image), so it lives in the `heavy` tier.
+# Heavy (two HA cold starts + the 2.4 GB image), so it lives in the `ha` tag.
 { pkgs, guestModule, fixture }:
 
 let
@@ -31,8 +31,8 @@ let
     {
       imports = [ baseNode ];
       # 2048 per node, MEASURED: three guests each grow page cache into what they are given, so
-      # this trio sat at 9498 MB resident of 9216 declared -- the heaviest test in the tier by
-      # far -- and sits at 6426 MB of 6144, in 140s rather than 155s.
+      # at 3072 this trio is 9498 MB resident of 9216 declared -- the heaviest test in the tier by
+      # far -- and at 2048 it is 6426 MB of 6144, in 140s rather than 155s.
       virtualisation.memorySize = 2048;
       virtualisation.diskSize = 10240;
     };
@@ -59,7 +59,7 @@ pkgs.testers.runNixOSTest {
     for m in machines:
         m.wait_for_unit("multi-user.target")
         # The 2.4 GB image is resident on EVERY node before anything promotes -- warm standby is
-        # what makes an offline failover possible, and it is asserted again below the kill.
+        # what makes an offline failover possible, and it is asserted again just before the kill.
         m.wait_for_unit("briard-test-fixture-install.service", timeout=900)
         m.succeed("modprobe drbd")
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
@@ -77,7 +77,7 @@ pkgs.testers.runNixOSTest {
         m.succeed("ip route del default 2>/dev/null || true")
         m.fail("ip route show default | grep -q .")
 
-    # Each node reaches both peers, then we skip the initial sync once.
+    # Each node reaches both peers; the initial sync runs for real (awaited before the crash).
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
 
     for m in machines:
@@ -113,15 +113,15 @@ pkgs.testers.runNixOSTest {
     # Warm standby is what makes offline failover possible: every node — the
     # survivor included — already has the 2.4 GB image in local podman storage, so a
     # promotion never pulls. Prove it before the kill (the load runs at boot). This
-    # is the real positive proof, replacing the vacuous "can't reach the internet".
+    # is the real positive proof, rather than the vacuous "can't reach the internet".
     for m in machines:
         # By the DIGEST the manifest pins, not a tag: that is the ref `Pull=never` resolves, and a
         # tag could match an image the manifest does not name.
         m.succeed('podman image exists "$(cat /run/briard/fixture/ref)"')
 
     # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
-    # real -- the hand-rolled `--clear-bitmap` these rigs used to run with every peer connected
-    # declared them all UpToDate without one -- and a SyncTarget cannot promote. "Replicated" is
+    # real, so a replica is a SyncTarget until that initial resync completes -- and a
+    # SyncTarget cannot promote. "Replicated" is
     # the claim under test, so assert the disk state before removing the only UpToDate copy.
     for m in machines:
         if m != primary:
@@ -143,8 +143,8 @@ pkgs.testers.runNixOSTest {
     # once, at boot: the interface it advertises and answers mDNS on, and the address it builds its
     # own URL from, are where the kernel sends 224.0.0.251. The chain claims the VIP -- and
     # briard-vip routes multicast out of the VIP's NIC -- BEFORE the apps start, so the HA that
-    # booted here saw the household LAN. Started the other way round it raced the claim, and on
-    # losing it advertised qemu's user-net address until its next restart.
+    # booted here saw the household LAN. Started the other way round it would race the claim, and
+    # on losing it advertise qemu's user-net address until its next restart.
     import json as _zj
     advert = _zj.loads(new_primary.succeed(
         "podman exec -i briard-home-assistant-app python3 - < ${h.haAdvertProbe}"

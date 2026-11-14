@@ -1,13 +1,14 @@
 # Acts (a)+(b) — WHAT ONE BAD SECTOR DOES TO A NODE THAT HAS A PEER.
 #
 # The companion to media-error-lone, and the acts are the same fault in the topology where DRBD
-# has somewhere to turn. Two questions, and the first one is the whole reason the agent's media-error policy exists:
+# has somewhere to turn. Two questions, and the first one is the whole case for a media-error
+# policy:
 #
 #   (a) `on-io-error detach` + a live peer -> the node drops its disk and keeps serving over the
 #       network. Predicted: the APPLICATION SEES NOTHING AT ALL -- even the read of the broken
 #       sector succeeds, because DRBD retries it on the peer. No error, no role change, no quorum
 #       change, no failing unit. That is the silent fallback in its purest form, and it is what
-#       the agent's media-error policy exists to stop being silent.
+#       a media-error policy would have to stop being silent (the agent has none).
 #       Then, on re-attach: IS THE RESYNC BITMAP-PARTIAL OR FULL? That question is still open,
 #       and the whole economics of "repair rather than rebuild" rests on it.
 #   (b) `on-io-error pass_on` + a live peer -> the device stays attached and the disk goes
@@ -20,8 +21,8 @@
 # has no host -- the node IS the guest. That defect is a `model.Cluster` away from a Go unit test
 # and belongs in one; this rig proves the DRBD-side facts the alerter would have to read.
 #
-# Injector and layering as in media-error-lone: dm-dust straight under DRBD, no LVM, no LUKS, no
-# promoter, no agent.
+# Injector as in media-error-lone (dm-dust); the layering is this rig's own: dm-dust straight
+# under DRBD, no LVM, no LUKS, no promoter, no agent.
 { pkgs, guestModule }:
 
 let
@@ -68,10 +69,10 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     # ⚠️ BAD SITS FAR FROM ANYTHING THE TEST WRITES, and that placement IS the experiment.
-    # At sector 2048 (1 MiB) it fell INSIDE the 4 MiB written while diskless, so the re-attach
-    # resync covered it for a reason that had nothing to do with it being broken -- and dm-dust,
-    # which models remap-on-write faithfully ("removed from badblocklist by write"), duly healed
-    # it. That measured the rig, not DRBD. At ~97 MiB it is outside every region this test writes,
+    # Inside the 4 MiB written while diskless (sector 2048, say), the re-attach resync would cover
+    # it for a reason that has nothing to do with it being broken -- and dm-dust, which models
+    # remap-on-write faithfully ("removed from badblocklist by write"), would duly heal it,
+    # measuring the rig, not DRBD. At ~97 MiB it is outside every region this test writes,
     # so if the resync still covers it, that is DRBD tracking the DAMAGE rather than the WINDOW.
     BAD = 200000        # made unreadable on node1 only; ~97 MiB in, well past anything written
     GOOD = 8            # never bad -- the control
@@ -131,7 +132,8 @@ pkgs.testers.runNixOSTest {
     assert bad_read, "(a) the read of the BROKEN sector must succeed -- served from the peer"
     assert good_read, "(a) good sectors must still read -- served from the peer"
     # `client` separates the witness's INTENTIONAL disklessness from this accidental one
-    # (the media-error policy tells them apart); if this comes back true the predicate that policy rests on is wrong.
+    # (a media-error policy would tell them apart by it); if this comes back true the predicate
+    # that policy would rest on is wrong.
     assert client_a == "false", f"(a) accidental diskless must report client=false, got {client_a}"
     print("VERDICT (a): CONFIRMED -- silent network fallback; only a status field records it")
 
@@ -139,10 +141,10 @@ pkgs.testers.runNixOSTest {
     # Write while diskless, so there IS a known amount to bring back: 4 MiB of the 16.
     node1.succeed("dd if=/dev/urandom of=/dev/drbd0 bs=1M count=4 conv=fsync")
 
-    # ⚠️ RE-ATTACH WITH THE SECTOR STILL BROKEN. The first version of this rig cleared the bad
-    # block first, which quietly assumed the disk had been replaced -- and so never asked the
+    # ⚠️ RE-ATTACH WITH THE SECTOR STILL BROKEN. Clearing the bad block first would quietly
+    # assume the disk had been replaced -- and so never ask the
     # question that decides whether `detach` can recover at all: does the re-attach resync REWRITE
-    # the bad block? Predicted no, and for a reason measured earlier in this thread: under `detach`
+    # the bad block? Predicted no, for this reason: under `detach`
     # the out-of-sync bit is set AFTER the device is already Failed with its bitmap freed
     # (`drbd_sender.c:351` runs before `__req_mod` at `:362`), so nothing records that the sector
     # is suspect. The re-attach resync then covers only what the PEER tracked as written while we
@@ -153,7 +155,7 @@ pkgs.testers.runNixOSTest {
     print(f"VERDICT (a2): after re-attach disk={dev(node1, 'disk-state')} -- read the KB figure above:")
     print("             ~16 MB on a 256 MB device means bitmap-partial; ~the whole device means a rebuild")
 
-    # ⚠️ THE READ RESULT IS THE WRONG PREDICATE HERE, and the first version of this act used it.
+    # ⚠️ THE READ RESULT IS THE WRONG PREDICATE HERE.
     # With a peer present the read ALWAYS succeeds -- that is act (a)'s whole finding -- so it says
     # nothing about whether the sector was repaired. The disk STATE after the read is the answer:
     # if the device detached again, the resync did not rewrite the block.
@@ -201,13 +203,13 @@ pkgs.testers.runNixOSTest {
     # (`consider_resync`, drbd_receiver.c) -- so drive it and see whether the marked block
     # comes back. On real hardware that write is what makes the controller remap the sector.
     node1.succeed(f"dmsetup message dusty 0 removebadblock {BAD}")
-    # ⚠️ MEASURED 2026-09-10 (run 34466966604): DRBD REFUSES this disconnect on a live Primary --
+    # ⚠️ MEASURED: DRBD REFUSES this disconnect on a live Primary --
     # `State change failed: Need access to UpToDate data (-2)`, exit 17, the same refusal a lone
-    # node gives when asked to promote an Inconsistent disk. It is the kernel enforcing the hazard
-    # the thread had only reasoned about: with the disk Inconsistent, the peer is the ONLY source
+    # node gives when asked to promote an Inconsistent disk. It is the kernel enforcing the hazard:
+    # with the disk Inconsistent, the peer is the ONLY source
     # for the marked blocks, so dropping the connection would strand a serving Primary. The repair
     # therefore CANNOT be driven on the node that is serving -- it has to hand over first, which is
-    # exactly the media-error policy's eviction, arrived at from the other direction.
+    # exactly the eviction a media-error policy would do, arrived at from the other direction.
     demote_rc, demote_out = node1.execute("drbdadm secondary r0 2>&1")
     print(f"VERDICT (b1): demote before repair rc={demote_rc} out={demote_out!r} role={role(node1)}")
     node1.succeed("drbdadm disconnect r0")

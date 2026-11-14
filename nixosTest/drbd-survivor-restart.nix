@@ -1,11 +1,10 @@
-# — can a survivor RESTART while its peer is gone? Vanilla DRBD, no briard machinery.
+# — can a survivor RESTART while its peer is gone? No host agent, no upgrade path.
 #
-# This exists because a lab finding was doubted, correctly: everything we had was measured through
-# the agent, the fleet's containers and an upgrade path, so "the survivor cannot come back" could
-# have been any of those rather than DRBD. Here there is no agent, no qemu-in-qemu, no upgrade —
-# three ordinary test VMs, the SAME resource options the product ships (quorum majority,
-# on-no-quorum io-error, one diskless witness), and the config BAKED into the image so even the
-# runtime-config variable is gone.
+# This exists because a finding measured through the host agent, the fleet's containers and an
+# upgrade path ("the survivor cannot come back") could be any of those rather than DRBD. Here
+# there is no host agent, no qemu-in-qemu, no upgrade — three ordinary test VMs running the
+# guest's own storage bring-up and promoter, with the SAME resource options the product ships
+# (quorum majority, on-no-quorum io-error, one diskless witness).
 #
 # TWO ACTS, deliberately juxtaposed, because they are different events that are easy to conflate:
 #
@@ -20,7 +19,8 @@
 #           and LINBIT's implementation notes say "a partition of half of the nodes with storage
 #           can never gain quorum when it establishes connections to diskless nodes".
 #
-# The test ASSERTS the outcome we want in act 2 (the node comes back and serves). If DRBD really
+# The test ASSERTS the outcome we want in act 2b, the crash (the node comes back and serves); act
+# 2a, the clean reboot, is printed, not asserted. If DRBD really
 # cannot do that, this test fails — and that failure is the finding, stated in the one place that
 # cannot be blamed on our own plumbing.
 { pkgs, guestModule, fixture }:
@@ -105,8 +105,8 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("multi-user.target")
         m.succeed("modprobe drbd")
         # The SAME storage bring-up as the first time, which is the point: it activates the VG,
-        # opens the volume if it is encrypted, and then meets its own metadata -- create-md
-        # WITHOUT --force refuses, so the replica is attached rather than re-seeded. If this
+        # opens the volume if it is encrypted, and then meets its own metadata -- the drbdmeta
+        # probe finds it, so the replica is attached rather than re-seeded. If this
         # attaches, the replica survived (the storage seam made that one unit's job).
         m.succeed("briard-test-storage")
         m.succeed("systemctl start drbd-reactor.service")
@@ -138,7 +138,7 @@ pkgs.testers.runNixOSTest {
 
     # THE ASSERTION. A node that rebooted while its only diskful peer is absent should be able to
     # come back and serve — the witness is connected, and the absent peer demonstrably cannot have
-    # quorum (it is off, and the witness is here). If this fails, that is in vanilla DRBD.
+    # quorum (it is off, and the witness is here). If this fails, it is not the host agent.
     survivor.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=120)
     survivor.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=60)
     print(f">>> ACT 2b PASS: {survivor.name} regained quorum after a CRASH (quorum={quorum(survivor)})")

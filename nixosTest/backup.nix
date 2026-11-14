@@ -15,7 +15,7 @@
 # ours -- and that the household's files go in as a snapshot of their own, tagged and on their own
 # path, which a "latest" restore of an app passes over and the next night builds on.
 #
-# Agent-less, as every rig that runs an app is: `briard-guest-agent --backup` runs the guest's
+# Agent-less, as every lib.nix mkNode rig is: `briard-guest-agent --backup` runs the guest's
 # backup in line (the product starts it through the host's verb, in the background), and
 # `backup-store` serves agent/host's store with no agent around it, on loopback. The 02:00
 # schedule, the key's rules and the host's facts are unit-tested.
