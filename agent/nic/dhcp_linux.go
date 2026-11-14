@@ -13,21 +13,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// THE LINUX TRANSPORT: a packet socket on an ipvtap child, opened inside HoldNS.
+// The Linux transport: a packet socket on an ipvtap child, opened inside HoldNS. The child carries
+// the station's MAC, so a frame sent on it leaves the radio as the station's own -- the one L2
+// source an access point carries -- with the flock's chaddr inside. ipvlan hands the child every
+// broadcast that reaches the parent, which is how the reply comes back (every message asks for a
+// broadcast reply). The socket belongs to the namespace it was opened in, so only the open crosses
+// into HoldNS; the exchange runs on any thread.
 //
-// The child carries the station's MAC, so a frame sent on it leaves the radio as the station's own
-// -- the one L2 source an access point carries -- with the flock's chaddr inside. ipvlan hands the
-// child every broadcast that reaches the parent, which is how the reply comes back (every message
-// asks for a broadcast reply). The socket belongs to the namespace it was opened in, so only the
-// open crosses into HoldNS; the exchange runs on any thread.
-//
-// ETH_P_ALL, not ETH_P_IP, and that is not a preference: the child's rx_handler hands every frame to
-// the guest's tap and consumes it, and a protocol-specific packet socket is only offered a frame
-// AFTER that handler. An ETH_P_ALL tap is offered it before, which is how tcpdump sees a tap too.
+// ETH_P_ALL, not ETH_P_IP, of necessity: the child's rx_handler hands every frame to the guest's
+// tap and consumes it, and a protocol-specific packet socket is only offered a frame after that
+// handler; an ETH_P_ALL tap is offered it before, which is how tcpdump sees a tap too.
 //
 // SOCK_DGRAM: the kernel writes the ethernet header (the child's MAC to ff:ff:ff:ff:ff:ff), and
-// this writes the IP and UDP ones -- from 0.0.0.0, to 255.255.255.255, 68 to 67 -- because the
-// asking address is nobody's yet.
+// this writes the IP and UDP ones -- 0.0.0.0 to 255.255.255.255, 68 to 67 -- because the asking
+// address is nobody's yet.
 
 type packetConn struct {
 	fd      int

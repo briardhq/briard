@@ -11,7 +11,7 @@ import (
 )
 
 // The link facts, read from sysfs and procfs. They are the per-OS half of this package: what a
-// device IS (there, up, a bridge, a station, whose port) and which one holds the default route.
+// device is (there, up, a bridge, a station, whose port) and which one holds the default route.
 // Everything that decides on the answers is shared.
 
 // Exists reports whether this host has a device named dev, up or not.
@@ -47,7 +47,7 @@ func master(dev string) string {
 	return parseMaster(l)
 }
 
-// DefaultRoute reads the guest's parent from /proc/net/route -- the MAIN table, which is the
+// DefaultRoute reads the guest's parent from /proc/net/route -- the main table, which is the
 // point (see Select) -- by parseDefaultRouteDev's rule, with prefer winning a tie. "" if none.
 func DefaultRoute(prefer string) string {
 	return parseDefaultRouteDev(readText(procRoute), Carrier, prefer)
@@ -134,7 +134,7 @@ func substrateBuildable(Spec) error { return nil }
 // it rather than condemning the host for an EPERM.
 func canProbe() bool { return os.Geteuid() == 0 }
 
-// THE PROCFS AND SYSFS READERS. Each reads one small kernel file whole and hands the text to a
+// The procfs and sysfs readers. Each reads one small kernel file whole and hands the text to a
 // pure parser in the shared files, so the format handling is unit-tested from any OS and only
 // the read is Linux's.
 
@@ -144,17 +144,15 @@ const procRoute = "/proc/net/route"
 
 // procARP is the kernel's IPv4 neighbour table as text.
 //
-// ⚠️ IPv4-ONLY, and legacy. It is the right file while addressing is v4 (by design it
+// ⚠️ IPv4-only, and legacy. It is the right file while addressing is v4 (by design it
 // stays); the day it is not, this reader is the first thing that moves.
 const procARP = "/proc/net/arp"
 
-// readText reads a small procfs or sysfs file whole. An unreadable file reads as "", which is the
-// answer every caller in this package wants: absence is "no evidence" here, never an error to
-// propagate (see Read's best-effort rule), and there is nothing a caller could do with the error
-// that "" does not already say.
-//
-// Reading whole rather than scanning is what lets the parser above it be pure: these
-// files are a few hundred bytes, and the split is what makes the format handling testable.
+// readText reads a small procfs or sysfs file whole. An unreadable file reads as "", the answer
+// every caller in this package wants: absence is "no evidence" here, never an error to propagate
+// (Read's best-effort rule), and a caller could do nothing with the error that "" does not already
+// say. Reading whole rather than scanning lets the parser above it be pure: these files are a few
+// hundred bytes, and the split is what makes the format handling testable.
 func readText(path string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -167,10 +165,9 @@ func readText(path string) string {
 // /proc/net/route -- the same file and the same table DefaultRoute uses, for the same reason.
 func defaultGateway(dev string) string { return parseDefaultGateway(readText(procRoute), dev) }
 
-// arpWait bounds the fingerprint's neighbour resolution. A gateway is by definition something
-// this host has been talking to, so its entry is usually already in the table; this is the budget
-// for provoking one that is not, and it is short because a fingerprint must never be able to
-// delay a bring-up.
+// arpWait bounds the fingerprint's neighbour resolution: the gateway's entry is usually already in
+// the table (Read says why), and this is the budget for provoking one that is not, short because a
+// fingerprint must never be able to delay a bring-up.
 const arpWait = 750 * time.Millisecond
 
 // neighbourMAC resolves ip's link address on dev. It provokes the kernel the same way the
@@ -197,22 +194,20 @@ func neighbourMAC(ctx context.Context, dev, ip string) string {
 	return ""
 }
 
-// arpTableMAC reads a RESOLVED entry for ip on dev out of /proc/net/arp.
+// arpTableMAC reads a resolved entry for ip on dev out of /proc/net/arp.
 func arpTableMAC(dev, ip string) string { return parseARPMAC(readText(procARP), dev, ip) }
 
 // disableIPv6Path names the procfs knob that stops a device autoconfiguring. See ensureMacvtap for
-// why the host must not autoconfigure on a device carrying the GUEST's MAC.
+// why the host must not autoconfigure on a device carrying the guest's MAC.
 func disableIPv6Path(dev string) string {
 	return "/proc/sys/net/ipv6/conf/" + dev + "/disable_ipv6"
 }
 
-// ipv6Disabled reports whether dev is set not to autoconfigure. A host whose kernel has no IPv6
-// at all publishes no such file, and there is nothing to disable -- that reads as satisfied, so
-// the tick does not chase a knob the machine does not have.
-//
-// It reads with os.ReadFile rather than through readText because here the ERROR is the
-// answer: "no such file" means satisfied, while readText flattens an unreadable file and an empty
-// one to the same "".
+// ipv6Disabled reports whether dev is set not to autoconfigure. A host whose kernel has no IPv6 at
+// all publishes no such file and has nothing to disable, which reads as satisfied, so the tick does
+// not chase a knob the machine does not have. It uses os.ReadFile rather than readText because
+// here the error is the answer: "no such file" means satisfied, while readText flattens an
+// unreadable file and an empty one to the same "".
 func ipv6Disabled(dev string) bool {
 	b, err := os.ReadFile(disableIPv6Path(dev))
 	if err != nil {

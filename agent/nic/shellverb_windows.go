@@ -15,13 +15,13 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// THE BRIDGE WHERE NETSH HAS NO BRIDGE COMMANDS. Windows 10's `netsh bridge` context offers
-// install/uninstall/set/show/dump and nothing that makes, changes or removes a bridge; netsh is
-// still the way wherever it has the command. Without it, the bridge is reached the way a person
-// reaches it -- the Network Connections folder's own commands ("Bridge Connections", "Add to
-// Bridge", "Remove from Bridge") -- through the documented Shell interfaces (IShellFolder,
-// IContextMenu), by the commands' language-independent verbs. COM by hand through the system
-// DLLs: a dozen calls do not earn a library.
+// The bridge where netsh has no bridge commands. Windows 10's `netsh bridge` context offers
+// install/uninstall/set/show/dump and nothing that makes, changes or removes a bridge; netsh stays
+// the way wherever it has the command. Without it, the bridge is reached the way a person reaches
+// it -- the Network Connections folder's own commands, "Bridge Connections", "Add to Bridge" and
+// "Remove from Bridge" -- through the documented Shell interfaces (IShellFolder, IContextMenu), by
+// the commands' language-independent verbs. COM by hand through the system DLLs: a dozen calls do
+// not earn a library.
 //
 // Measured on Windows 10 22H2:
 //   - createbridge binds the selection in its order, and the first member's binding creates the
@@ -29,14 +29,14 @@ import (
 //     resets its link, and a reset during that install tears the adapter down under it: the
 //     install fails, Windows shows "An unexpected error occurred while configuring the Network
 //     Bridge", the other member is never bound, and every later attempt fails the same way until
-//     a restart. Ethernet first failed that way in every traced trial; the TAP first -- whose link
-//     never drops -- never did. So the TAP is always selected first.
+//     a restart. Ethernet first failed that way in every traced trial; the TAP first, whose link
+//     never drops, never did -- so the TAP is always selected first.
 //   - changing a NIC's advanced properties (the member's offload, turned off for the bridge)
 //     removes and re-adds its miniport, and the network stack re-binds it; a member doing that
-//     while createbridge or addtobridge binds it is never bound, with the same error. So on this
+//     while createbridge or addtobridge binds it is never bound, with the same error, so on this
 //     path the member's offload is turned off after it is in the bridge, never just before.
-//   - that error is a modal dialog, and createbridge returns only once it is dismissed: in
-//     session 0 (a service, a SYSTEM task) no one can, so createbridge is refused there rather
+//   - that error is a modal dialog, and createbridge returns only once it is dismissed, which no
+//     one can do in session 0 (a service, a SYSTEM task): createbridge is refused there rather
 //     than started.
 //   - removefrombridge and addtobridge return within seconds in session 0, with no UI.
 //   - removing a bridge's last member removes the bridge, which is how it is destroyed here: the

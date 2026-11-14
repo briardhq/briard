@@ -12,15 +12,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// THE WINDOWS BRIDGE IS BUILT, ONCE, AT INSTALL -- never by convergence.
-//
-// On Linux the agent never creates a bridge: a bridge parent is the user's, and the guest gets a
-// port on it. On Windows there is no bridge to find, and the guest's one tap has to be a member of
-// one, so the agent builds it -- but as an ACT the installer sequences, not as drift the tick
-// restores: a Windows bridge carries a TAP member only if the bridge object was CREATED with it,
-// and only after the machine restarts (measured: six other levers left the member inert). So a
-// bridge somebody deleted is not rebuilt by the tick; it is a degraded node that says so, exactly
-// as a missing user bridge is on Linux.
+// The Windows bridge is built once, at install -- never by convergence. On Linux the agent never
+// creates a bridge: a bridge parent is the user's, and the guest gets a port on it. On Windows
+// there is no bridge to find and the guest's one tap has to be a member of one, so the agent
+// builds it -- but as an act the installer sequences, not drift the tick restores: a Windows bridge
+// carries a TAP member only if the bridge object was created with it, and only after the machine
+// restarts (measured: six other levers left the member inert). So a bridge somebody deleted is not
+// rebuilt by the tick; it is a degraded node that says so, exactly as a missing user bridge is on
+// Linux.
 
 // The names a person sees in Network Connections. An unexplained adapter on a stranger's desktop
 // is exactly what a helpful relative deletes, so ours say whose they are.
@@ -38,7 +37,7 @@ const checksumOffload = "*IPChecksumOffloadIPv4"
 // reported with a zero Offload. It refuses any other bridge -- Windows allows one bridge, and a
 // bridge the user made is theirs.
 //
-// The caller owes the machine a RESTART before the guest's frames will cross the bridge, and
+// The caller owes the machine a restart before the guest's frames will cross the bridge, and
 // persists the returned record before anything else can lose it.
 func BuildBridge(ctx context.Context, member string) (Offload, error) {
 	as := adapters()
@@ -62,13 +61,13 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 		return Offload{}, tapAmbiguity(tapCandidates(as))
 	}
 	// Where netsh cannot create a bridge, Network Connections does, by name, only on a desktop, and
-	// with the member's offload turned off AFTER it is bound rather than before (shellverb_windows.go).
+	// with the member's offload turned off after it is bound rather than before (shellverb_windows.go).
 	shell := netshLacks("create")
 	if shell && sessionZero() {
 		return Offload{}, errors.New("this Windows has no `netsh bridge create`, and builds a bridge only for a " +
 			"signed-in user: run the installer from your desktop, as an administrator")
 	}
-	// 1. THE RECORD, FIRST: after the change there is nothing left to read.
+	// 1. The record, first: after the change there is nothing left to read.
 	var rec Offload
 	var err error
 	if !shell {
@@ -83,7 +82,7 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 			return rec, fmt.Errorf("naming the TAP adapter: %w", err)
 		}
 	}
-	// 3. The bridge, created WITH the TAP, by GUID -- the one adapter id netsh takes that no name
+	// 3. The bridge, created with the TAP, by GUID -- the one adapter id netsh takes that no name
 	// or index change can make ambiguous.
 	if shell {
 		if err := shellVerb(ctx, "createbridge", TapName, m.name); err != nil { // the TAP first: shellverb_windows.go says why
@@ -118,12 +117,12 @@ func BuildBridge(ctx context.Context, member string) (Offload, error) {
 	return rec, nil
 }
 
-// offloadOff records a's IPv4 checksum offload and receive segment coalescing and turns them off,
-// the settings a member needs (checksumOffload, rscOffloadIPv4, rscOffloadIPv6). The record is
-// returned even when turning one off fails part-way. An adapter whose driver offers none of them
-// has nothing to record or turn off (measured: Realtek's RTL8922AE package has no checksum
-// keyword): the property list is read whole, so a failed read stays an error and only a list
-// without the keyword reads as absent.
+// offloadOff records a's IPv4 checksum offload and receive segment coalescing (checksumOffload,
+// rscOffloadIPv4, rscOffloadIPv6) and turns them off, as a member needs; the record is returned
+// even when turning one off fails part-way. An adapter whose driver offers none of them has
+// nothing to record or turn off (measured: Realtek's RTL8922AE package has no checksum keyword):
+// the property list is read whole, so a failed read stays an error and only a list without the
+// keyword reads as absent.
 func offloadOff(ctx context.Context, a adapter) (Offload, error) {
 	rec := Offload{GUID: a.guid, Keyword: checksumOffload}
 	for i, v := range []*string{&rec.Value, &rec.RSC4, &rec.RSC6} {
@@ -171,17 +170,16 @@ func putBack(ctx context.Context, name string, rec Offload) error {
 	return nil
 }
 
-// SwapMember moves bridge onto the standalone adapter to: the physical member leaves, the
-// bridge's MAC is re-pinned to to's, and to joins. The TAP stays where it is: its membership is
-// the part bound to the bridge's creation and a restart, and a physical member's is not (measured:
-// a live swap carried the guest, both directions). It returns to's offload record; prev is the
-// leaving member's, whose value is put back once it is standalone again.
+// SwapMember moves bridge onto the standalone adapter to: the physical member leaves, the bridge's
+// MAC is re-pinned to to's, and to joins. The TAP stays where it is: its membership is the part
+// bound to the bridge's creation and a restart, and a physical member's is not (measured: a live
+// swap carried the guest, both directions). It returns to's offload record; prev is the leaving
+// member's, whose value is put back once it is standalone again.
 //
-// ⚠️ OUT BEFORE IN. Both uplinks in the bridge at once on one LAN is a loop, so to is added only
-// once the leaving member is seen gone, and not at all if it is not.
-//
-// ⚠️ THE RE-PIN, because the bridge keeps the household's MAC (BuildBridge): unmoved, the leaving
-// member, standalone again, transmits the MAC the bridge still carries.
+// ⚠️ Out before in: both uplinks in the bridge at once on one LAN is a loop, so to is added only
+// once the leaving member is seen gone, and not at all if it is not. ⚠️ The re-pin, because the
+// bridge keeps the household's MAC (BuildBridge): unmoved, the leaving member, standalone again,
+// transmits the MAC the bridge still carries.
 func SwapMember(ctx context.Context, bridge, to string, prev Offload) (Offload, error) {
 	as := adapters()
 	b, ok := byName(as, bridge)
@@ -328,7 +326,7 @@ func tapAdapter(as []adapter) (adapter, bool) {
 
 // Member names the household's NIC in bridge -- the member that is not our TAP -- with its link
 // speed in bits/s and its carrier, all from one read of the adapters: the tick asks this every
-// check, and each read is a full IP Helper walk. The bridge's own speed is the SUM of its members
+// check, and each read is a full IP Helper walk. The bridge's own speed is the sum of its members
 // (measured: 2 Gbps on a gigabit NIC plus the TAP), and its own status the OR, so neither is ever
 // the question. ("", 0, false) when there is no such member.
 func Member(bridge string) (string, uint64, bool) {
@@ -370,14 +368,12 @@ func TapInstalled() bool {
 }
 
 // LinkChanges is a channel that receives when Windows reports a change to an IP interface. A
-// bridge member has no IP binding, so its carrier is never reported itself: what is reported is
-// the bridge's, whose link speed is the sum of its members and so moves on every edge of a
-// member's carrier (measured: four notifications per edge, within milliseconds of the
-// member's own state). A receive therefore says only "look again"; the reader reads the member.
-//
-// Registered once per process and never cancelled: a callback made by windows.NewCallback is
-// never freed, so one per observe loop would leak one per channel re-dial. Notifications that
-// arrive while nobody reads coalesce into one.
+// bridge member has no IP binding, so its own carrier is never reported; the bridge's is, and its
+// link speed, the sum of its members', moves on every edge of a member's carrier (measured: four
+// notifications per edge, within milliseconds of the member's own state). A receive says only
+// "look again"; the reader reads the member. Registered once per process and never cancelled: a
+// callback made by windows.NewCallback is never freed, so one per observe loop would leak one per
+// channel re-dial. Notifications that arrive while nobody reads coalesce into one.
 func LinkChanges() (<-chan struct{}, error) {
 	linkOnce.Do(func() {
 		cb := windows.NewCallback(func(_ uintptr, _ *windows.MibIpInterfaceRow, _ uint32) uintptr {
@@ -406,17 +402,17 @@ var (
 
 // DestroyBridge undoes BuildBridge (`briard uninstall`): our bridge is destroyed, its member gets
 // the values rec recorded back, and our TAP is removed. A bridge that is not ours is never
-// touched, and an absent one is already destroyed.
+// touched, and an absent one is already destroyed. The member is found by GUID and the value set
+// by registry keyword and value, because a name is the user's to change and a display string is
+// localized -- and never to the driver's default: a user who had tuned the setting gets their own
+// value back, not the factory one. An empty Value is a driver with no such setting, and restores
+// nothing.
 //
-// THE MEMBER BY GUID, the value by registry keyword and value: a name is the user's to change and
-// a display string is localized. Never the driver's default either -- a user who had tuned the
-// setting gets their own value back, not the factory one. An empty Value is a driver with no such
-// setting, and restores nothing.
-//
-// THE TAP BY INSTANCE, only once the bridge is gone. The driver's own `tapinstall remove <hwid>`
-// removes EVERY instance of the hardware id (measured: "2 device(s) were removed" when one was
-// asked for, taking a live bridge member with it), and another program's VPN adapter is a TAP too.
-// The driver package itself stays: other programs may use it, and a reinstall's TAP comes from it.
+// The TAP is removed by instance, only once the bridge is gone: the driver's own `tapinstall
+// remove <hwid>` removes every instance of the hardware id (measured: "2 device(s) were removed"
+// when one was asked for, taking a live bridge member with it), and another program's VPN adapter
+// is a TAP too. The driver package itself stays: other programs may use it, and a reinstall's TAP
+// comes from it.
 func DestroyBridge(ctx context.Context, rec Offload) error {
 	as := adapters()
 	if b, ok := byName(as, BridgeName); ok && IsBridge(BridgeName) {

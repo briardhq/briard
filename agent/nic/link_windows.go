@@ -15,21 +15,21 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// The link facts on Windows, from IP Helper. Three things about it decide the shape of this file,
-// each measured on the rig rather than assumed:
+// The link facts on Windows, from IP Helper. Three facts, each measured on the rig rather than
+// assumed, shape this file:
 //
-//   - A BRIDGE MEMBER HAS NO IP BINDING, so the default adapter list -- and therefore Go's
-//     net.Interfaces and net.InterfaceByName -- does not contain it. Asking the stdlib whether the
-//     TAP exists answers "no" about a TAP that is up and carrying the guest. Every lookup here goes
-//     through the full list (GAA_FLAG_INCLUDE_ALL_INTERFACES).
-//   - THE BRIDGE IS A STACK, NOT A FLAG. GetIfStackTable relates the bridge's interface to its
-//     members through intermediate layers -- hidden filter interfaces, and a hidden "Network
-//     Bridge" edge -- so membership is a walk through the table, never one row.
-//   - "IsBridged" in `netsh bridge show adapter` is a localized string. The stack table is not.
+//   - A bridge member has no IP binding, so the default adapter list -- and so Go's net.Interfaces
+//     and net.InterfaceByName -- omits it: the stdlib answers "no" about a TAP that is up and
+//     carrying the guest. Every lookup here goes through the full list
+//     (GAA_FLAG_INCLUDE_ALL_INTERFACES).
+//   - The bridge is a stack, not a flag: GetIfStackTable relates the bridge's interface to its
+//     members through intermediate layers (hidden filter interfaces, a hidden "Network Bridge"
+//     edge), so membership is a walk through the table, never one row.
+//   - "IsBridged" in `netsh bridge show adapter` is a localized string; the stack table is not.
 //
-// An adapter is found by its FriendlyName, which is what a person sees and what qemu's tap backend
-// opens by. Filter layers carry composed names ("TAP0-WFP Native MAC Layer...") that no adapter
-// is ever called, so a name lookup never lands on one.
+// An adapter is found by its FriendlyName, what a person sees and what qemu's tap backend opens
+// by. Filter layers carry composed names ("TAP0-WFP Native MAC Layer...") that no adapter is ever
+// called, so a name lookup never lands on one.
 
 type adapter struct {
 	index   uint32
@@ -131,7 +131,7 @@ func stack() []stackRow {
 	return append([]stackRow(nil), rows...)
 }
 
-// walk visits every interface reachable UPWARD from start through the stack table,
+// walk visits every interface reachable upward from start through the stack table,
 // in breadth-first order, until visit returns true. start itself is not visited.
 func walk(rows []stackRow, start uint32, visit func(uint32) bool) {
 	seen := map[uint32]bool{start: true}
@@ -191,7 +191,7 @@ const bridgeComponent = `compositebus\ms_implat_mp`
 // netClass is the device class key every network adapter's driver settings live under.
 const netClass = `SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}`
 
-// IsBridge reports whether dev is a Network Bridge, by what its adapter IS (its ComponentId) and
+// IsBridge reports whether dev is a Network Bridge, by what its adapter is (its ComponentId) and
 // never by what sits below it: Hyper-V's vEthernet -- WSL2's, Docker Desktop's -- has a hidden
 // vSwitch below it and is no bridge.
 func IsBridge(dev string) bool {
@@ -265,11 +265,10 @@ var procGetIpInterfaceEntry = windows.NewLazySystemDLL("iphlpapi.dll").NewProc("
 // bestDefault is the default route Windows would use -- or, with on != 0, the one it would use
 // on that adapter. ok is false when there is none.
 //
-// ⚠️ THE EFFECTIVE METRIC IS ROUTE + INTERFACE. A route row's own Metric is only half of what
-// `route print` orders by: Windows adds the adapter's interface metric (automatic from link
-// speed, or set by hand), and on a machine with two live uplinks -- a laptop on both its wire
-// and its Wi-Fi -- the route metrics tie and the interface metric is the whole decision. Ranking
-// by the row alone picks whichever came first.
+// ⚠️ The effective metric is route + interface: `route print` orders by the route row's Metric
+// plus the adapter's interface metric (automatic from link speed, or set by hand), and with two
+// live uplinks -- a laptop on both its wire and its Wi-Fi -- the route metrics tie and the
+// interface metric is the whole decision. Ranking by the row alone picks whichever came first.
 func bestDefault(on uint32) (defaultRoute, bool) {
 	var t *windows.MibIpForwardTable2
 	if err := windows.GetIpForwardTable2(windows.AF_INET, &t); err != nil {
@@ -301,26 +300,24 @@ func interfaceMetric(index uint32) uint32 {
 	return row.Metric
 }
 
-// DefaultRoute names the adapter the guest should stand on, from the IPv4 default routes Windows
-// holds, ranked by effective metric (route + interface) and carrier (rankDefaults). "" if there is
-// none. Windows has one routing table, so the main-table question Select argues for is the only
-// one there is to ask.
+// DefaultRoute names the adapter the guest should stand on, from Windows' IPv4 default routes
+// ranked by effective metric (route + interface) and carrier (rankDefaults); "" if there is none.
+// Windows has one routing table, so the main-table question Select argues for is the only one.
 //
-// ⚠️ THE BRIDGE'S CARRIER IS ITS MEMBER'S. Its own media state is the OR with the TAP: connected
-// whenever qemu holds it, disconnected before the guest's first start, and evidence of nothing.
-// And Windows keeps a disconnected adapter's default route, so a standalone adapter with its
-// cable out still holds one; its own media state says so.
+// ⚠️ The bridge's carrier is its member's: its own media state is the OR with the TAP, connected
+// whenever qemu holds it, disconnected before the guest's first start, evidence of nothing. A
+// standalone adapter with its cable out still holds a default route (Windows keeps a disconnected
+// adapter's), and its own media state says so. The bridge wins a tie, whatever the caller
+// prefers: it is the only parent there ever is here, and before the guest holds the TAP a
+// same-tier standalone adapter can tie it exactly.
 //
-// THE BRIDGE WINS A TIE, whatever the caller prefers: it is the only parent there ever is here,
-// and before the guest holds the TAP a same-tier standalone adapter can tie it exactly.
-//
-// ⚠️ A STANDALONE CANDIDATE IS A HARDWARE ADAPTER. A standalone adapter is a candidate only as
-// the member the bridge would swap to, and the bridge binds hardware: a VPN client that puts a
-// real default route on its tunnel adapter, at a metric below the household NIC's, would
-// otherwise be named the swap -- and the swap takes the household NIC out of the bridge before
-// the add of the tunnel fails. The Linux selector argues against any virtual/non-virtual filter
-// (Select); there a bond or a VLAN is a fine parent and the probe validates. Here nothing is
-// built on the answer but a bridge membership, and the question is the one the bridge asks.
+// ⚠️ A standalone candidate is a hardware adapter: it is a candidate only as the member the bridge
+// would swap to, and the bridge binds hardware. Otherwise a VPN client with a real default route on
+// its tunnel adapter, below the household NIC's metric, would be named the swap -- and the swap
+// takes the household NIC out of the bridge before the tunnel's add fails. The Linux selector
+// argues against any virtual/non-virtual filter (Select), since there a bond or a VLAN is a fine
+// parent and the probe validates; here nothing is built on the answer but a bridge membership,
+// and the question is the one the bridge asks.
 func DefaultRoute(string) string {
 	var t *windows.MibIpForwardTable2
 	if err := windows.GetIpForwardTable2(windows.AF_INET, &t); err != nil {
@@ -492,7 +489,7 @@ func createTap(_ context.Context, dev string) error {
 	return fmt.Errorf("no adapter named %q: the TAP adapter comes with the tap-windows6 driver, at install", dev)
 }
 
-// joinBridge cannot either: a Windows bridge carries a TAP member only if the bridge was BUILT with
+// joinBridge cannot either: a Windows bridge carries a TAP member only if the bridge was built with
 // it, and only after a restart (measured on the rig: a live add joins the bridge and carries
 // nothing). The TAP's membership is an install act, never a repair the tick can make; a physical
 // member's is not bound that way, and a cold start or the live rule moves it with SwapMember.
@@ -505,7 +502,7 @@ func linkUp(ctx context.Context, dev string) error {
 	return netsh(ctx, "interface", "set", "interface", "name="+dev, "admin=enabled")
 }
 
-// addAddr puts a host address on a DHCP-configured adapter WITHOUT turning its DHCP off, which is
+// addAddr puts a host address on a DHCP-configured adapter without turning its DHCP off, which is
 // what a manual address does there unless dhcpstaticipcoexistence is set first (measured: the
 // host's own lease was released within a second). The address is active-only -- the agent puts it
 // back at every start, as on Linux -- and never a source for the host's other traffic: Windows
@@ -576,7 +573,7 @@ func maskOf(bits int) string {
 const ifFilterInterface = 0x02
 
 // isFilter asks IP Helper whether an interface is a filter layer. Structure cannot answer it: a
-// filter sits ON its adapter exactly as a bridge sits on its members, and its description begins
+// filter sits on its adapter exactly as a bridge sits on its members, and its description begins
 // with its adapter's.
 func isFilter(index uint32) bool {
 	row := windows.MibIfRow2{InterfaceIndex: index}

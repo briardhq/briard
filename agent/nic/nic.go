@@ -1,15 +1,13 @@
 // Package nic answers one question: which of this host's devices does the guest's L2 hang off?
+// It is a leaf (no briard imports) because both ends of the install ask it: the report card before
+// anything is written, so a host that cannot carry a guest is refused rather than half-installed,
+// and the agent again at bring-up, because the answer is the machine's on the day it is asked,
+// and machines change.
 //
-// It is a leaf — no briard imports — because both ends of the install need it. The report card
-// asks before anything is written, so a host that cannot carry a guest is refused rather than
-// half-installed; the agent asks again at bring-up, because the answer is a property
-// of the machine on the day it is asked and machines change.
-//
-// ONE SELECTOR, ONE PROBE, AND A MESSAGE. The selector is the default route and nothing else. The
-// probe does not select — it validates the selection by creating the very thing the agent will
-// build. And the message is the whole safety margin between the two, because every way this can
-// be wrong ends with a guest that boots and is unreachable, which is the failure a user cannot
-// diagnose from inside the house.
+// One selector, one probe, and a message. The selector is the default route and nothing else; the
+// probe does not select, it validates by creating the very thing the agent will build; the message
+// is the whole safety margin between the two, because every way this can be wrong ends with a
+// guest that boots and is unreachable, a failure a user cannot diagnose from inside the house.
 package nic
 
 import (
@@ -23,16 +21,14 @@ import (
 	"strings"
 )
 
-// The two ways there is no answer, separated because they want opposite handling from a caller
-// that can wait. A device with no default route YET is a timing question — the cable is in, NM has
-// not finished, DHCP is mid-flight — and the answer is to wait. A host with no default route AT
-// ALL is a configuration question, and waiting for it is waiting forever.
-//
-// ⚠️ NOTHING HERE TELLS THEM APART, deliberately: they are the same reading. Only elapsed time
-// separates them, so the distinction belongs to the caller — the report card is a one-shot and
-// refuses, the agent waits and then reports itself degraded. A selector that "helpfully" fell back
-// to a second heuristic when the first came up empty would answer the timing case with a wrong
-// device and never notice.
+// The two ways there is no answer, which want opposite handling from a caller that can wait: a
+// device with no default route yet is a timing question (the cable is in, NM has not finished,
+// DHCP is mid-flight), answered by waiting; a host with none at all is a configuration question,
+// and waiting for it is waiting forever. ⚠️ Nothing here tells them apart, deliberately: they are
+// the same reading, separated only by elapsed time, so the caller decides — the report card is a
+// one-shot and refuses, the agent waits and then reports itself degraded. A selector that
+// "helpfully" fell back to a second heuristic when the first came up empty would answer the
+// timing case with a wrong device and never notice.
 var (
 	ErrNoDefaultRoute = errors.New("no default route")
 	ErrNoInterfaces   = errors.New("no network interface")
@@ -53,15 +49,13 @@ type Selection struct {
 	// changes the message and nothing else: a user who named a device does not need to be told
 	// how we would have guessed.
 	Override bool
-	// Bridge and Wireless are the SUBSTRATE FORK, three ways: a bridge gets one port and the
-	// guest makes its own service identity inside; a wireless station gets ipvtap children, on
-	// its own MAC, the one an access point carries for it (ipvtap.go); anything else gets
-	// macvtap children. Asked of the device rather than selected by a knob, because there is one
-	// true answer and the machine holds it. A managed station cannot be a bridge member, so the
-	// two never overlap.
-	//
-	// Wired stays macvtap even though ipvtap would carry it: failover moves a MAC, and an ipvtap
-	// child cannot hold one of its own. That is also why a wireless node is yellow, not green.
+	// Bridge and Wireless are the substrate fork, three ways: a bridge gets one port and the guest
+	// makes its own service identity inside; a wireless station gets ipvtap children on its own
+	// MAC, the one an access point carries for it (ipvtap.go); anything else gets macvtap children.
+	// Asked of the device rather than set by a knob: there is one true answer and the machine holds
+	// it. A managed station cannot be a bridge member, so the two never overlap. Wired stays macvtap
+	// even though ipvtap would carry it: failover moves a MAC, and an ipvtap child cannot hold one of
+	// its own, which is also why a wireless node is yellow, not green.
 	Bridge   bool
 	Wireless bool
 	// SwapIn is the adapter to swap into the bridge Dev names before the guest stands on it: the
@@ -75,21 +69,19 @@ type Selection struct {
 	Candidates []string
 }
 
-// Choose makes the selection and VALIDATES it — for a caller that is about to create devices on
+// Choose makes the selection and validates it — for a caller that is about to create devices on
 // the answer. override is BRIARD_NIC, which may name a bridge -- kept under that name because
 // renaming it would cost a sweep of every rig that sets it and buy nothing. prefer is the parent
 // last served on, which wins a tie (DefaultRoute); "" for a caller with none.
 func Choose(ctx context.Context, override, prefer string) Selection {
 	s := Select(override, prefer)
-	// THE PROBE VALIDATES, IT DOES NOT SELECT. There is no second heuristic above it: no
-	// gateway-ARP confirmation, no scope-global fallback, no virtual/non-virtual filter — a bond
-	// and a VLAN are both "virtual" and both fine, and no sysfs attribute separates a tun device
-	// from them the way creating a macvtap on it does. docker0 and tailscale0 fall out of the
-	// selection because they hold no default route, never by a name blacklist.
-	//
-	// Whether it can run is the OS's answer (canProbe): on Linux only as root -- `ip link add`
-	// fails with EPERM for a reason that says nothing about the host, and a curious user running
-	// `briard-agent --report-card` without sudo must not be told their machine is unfit; on
+	// The probe validates; it does not select, and no second heuristic sits above it: no
+	// gateway-ARP confirmation, no scope-global fallback, no virtual/non-virtual filter (a bond and a
+	// VLAN are both "virtual" and both fine, and no sysfs attribute separates a tun device from them
+	// the way creating a macvtap on it does). docker0 and tailscale0 fall out for holding no default
+	// route, never by a name blacklist. Whether it can run is the OS's answer (canProbe): on Linux
+	// only as root, since `ip link add`'s EPERM says nothing about the host and a curious user
+	// running `briard-agent --report-card` without sudo must not be told their machine is unfit; on
 	// Windows never, since nothing the install builds is created at runtime there.
 	if s.Err == nil && canProbe() {
 		s.Err = Probe(ctx, s.Dev)
@@ -97,7 +89,7 @@ func Choose(ctx context.Context, override, prefer string) Selection {
 	return s
 }
 
-// Select names the device without validating it — for a caller that is NOT about to create
+// Select names the device without validating it — for a caller that is not about to create
 // anything on the answer, and must not pay for a probe to find out where its existing devices
 // hang. The agent's live rule is exactly that: it asks at every network check whether a gone
 // parent has a successor, and a probe there would be a netlink write to answer a question nobody
@@ -112,14 +104,14 @@ func Select(override, prefer string) Selection {
 			return s
 		}
 	default:
-		// THE DEFAULT ROUTE, read from the main table — and read that way rather than with
-		// `ip route get`, which answers a different question. We want the household's L2, not the
-		// path to the internet, and on a host running a VPN those differ: WireGuard/wg-quick and
-		// Tailscale exit nodes put their default in a table of their own behind an ip rule, and
-		// OpenVPN's `redirect-gateway def1` installs a 0.0.0.0/1 + 128.0.0.0/1 pair rather than a
-		// default at all. `ip route get` follows every one of them and names a tunnel that cannot
-		// carry a macvtap; the main table's default keeps naming the wire. ⚠️ The naive read is
-		// the correct one here — say so, or the next reader "fixes" it.
+		// The default route, read from the main table rather than with `ip route get`, which
+		// answers a different question: we want the household's L2, not the path to the
+		// internet, and under a VPN those differ. WireGuard/wg-quick and Tailscale exit nodes
+		// put their default in a table of their own behind an ip rule, and OpenVPN's
+		// `redirect-gateway def1` installs a 0.0.0.0/1 + 128.0.0.0/1 pair, not a default at all;
+		// `ip route get` follows every one and names a tunnel that cannot carry a macvtap, while
+		// the main table's default keeps naming the wire. ⚠️ The naive read is the correct one
+		// here — say so, or the next reader "fixes" it.
 		if s.Dev = DefaultRoute(prefer); s.Dev == "" {
 			if len(s.Candidates) == 0 {
 				s.Err = ErrNoInterfaces
@@ -160,12 +152,11 @@ func ParentOf(dev string) string {
 // substrate, and what it costs (no failover) is the report card's to grade.
 func (s Selection) Usable() bool { return s.Dev != "" && s.Err == nil }
 
-// Fix is the remedy line, and it is the whole safety margin: what was picked, why, what failed,
-// the override, and the devices to choose from. It is rendered here rather than at each caller
-// so the refusal a user meets before the install and the degraded status they meet after it say
-// the same thing. No copy-pasteable example: a device picked for the example is a device this
-// selection could not vouch for (it could be a tunnel holding a default route), and who sets
-// BRIARD_NIC knows how.
+// Fix is the remedy line, and the whole safety margin: what was picked, why, what failed, the
+// override, and the devices to choose from. Rendered here rather than per caller, so the refusal a
+// user meets before the install and the degraded status after it say the same thing. No
+// copy-pasteable example: a device picked for one is a device this selection could not vouch for
+// (it could be a tunnel holding a default route), and who sets BRIARD_NIC knows how.
 func (s Selection) Fix() string {
 	var b strings.Builder
 	switch {
@@ -190,19 +181,17 @@ func (s Selection) Fix() string {
 }
 
 // Probe validates dev by creating the very thing Converge builds — a macvtap child, or an ipvtap
-// child on a wireless station — and deleting it. It turns a wrong selection into a clean
-// refusal instead of a guest that boots and is unreachable, which is the one failure mode a
-// household cannot diagnose.
-//
-// What it catches is the device that cannot parent one at all — a full-tunnel tun0 above all,
-// which a laptop on a corporate VPN hands us as its default route. It cannot see whether an
-// access point carries the result; the substrate is chosen so that it does.
+// child on a wireless station — and deleting it, turning a wrong selection into a clean refusal
+// instead of a guest that boots and is unreachable, the one failure mode a household cannot
+// diagnose. It catches the device that cannot parent one at all, above all a full-tunnel tun0,
+// which a laptop on a corporate VPN hands us as its default route. It cannot see whether an access
+// point carries the result; the substrate is chosen so that it does.
 func Probe(ctx context.Context, dev string) error {
 	// A leaked probe device from a run killed between create and delete would make every later
 	// probe fail with EEXIST -- i.e. would condemn a perfectly good NIC. Clear it first.
 	_, _ = ip(ctx, "link", "del", probeDev)
-	// THE SAME ARGV CONVERGE USES, from the same builders -- that identity is the whole claim
-	// this probe makes, so it is shared rather than restated.
+	// The same argv Converge uses, from the same builders: that identity is the whole claim this
+	// probe makes, so it is shared rather than restated.
 	kind, args := "macvtap", macvtapAddArgs(probeDev, dev)
 	if Wireless(dev) {
 		kind, args = "ipvtap", ipvtapAddArgs(probeDev, dev)
@@ -227,7 +216,7 @@ func firstLine(out []byte, err error) string {
 	return err.Error()
 }
 
-// THE PARSERS ARE SHARED, THE READERS ARE NOT. What follows here is pure text handling for the
+// The parsers are shared, the readers are not. What follows here is pure text handling for the
 // Linux arm's procfs tables (link_linux.go reads them), kept beside the other pure renderers so the
 // unit tests reach it from any OS; nothing below touches the machine.
 
@@ -257,18 +246,15 @@ type defaultCandidate struct {
 }
 
 // rankDefaults is the selection rule, one for both OSes; each OS's reader only builds the
-// candidates. Among those with carrier the lowest metric wins, and prefer wins a tie.
+// candidates. Among those with carrier the lowest metric wins, and prefer (the parent last served
+// on) wins a tie: a tie is not a better answer than the one standing, so it never moves the guest;
+// with no prefer in the tie the first candidate wins, the OS's own order.
 //
-// ⚠️ THE CARRIER IS READ, NOT INFERRED FROM THE ROUTE. systemd-networkd keeps a dead wire's
-// default route and Windows keeps a disconnected adapter's, so a route alone does not say the
-// cable is in. A dead wire is not a candidate, so it never outranks a live radio, and nobody
-// guesses how long it stays dead.
-//
-// THE METRIC IS THE WHOLE RANKING. The OS already encodes wire-over-radio in it; a preference of
-// our own by kind, name or speed would be a second opinion that can disagree with it.
-//
-// prefer is the parent last served on. A tie is not a better answer than the one standing, so it
-// never moves the guest; with no prefer in the tie the first candidate wins, the OS's own order.
+// ⚠️ The carrier is read, not inferred from the route: systemd-networkd keeps a dead wire's
+// default route and Windows a disconnected adapter's. A dead wire is not a candidate, so it never
+// outranks a live radio, and nobody guesses how long it stays dead. The metric is the whole
+// ranking: the OS already encodes wire-over-radio in it, and a preference of our own by kind, name
+// or speed would be a second opinion that can disagree with it.
 func rankDefaults(cs []defaultCandidate, prefer string) string {
 	best, bestMetric := "", uint64(0)
 	for _, c := range cs {
@@ -283,7 +269,7 @@ func rankDefaults(cs []defaultCandidate, prefer string) string {
 }
 
 // parseDefaultRouteDev picks the guest's parent out of /proc/net/route's text: the main table's
-// default routes (destination AND mask 00000000), ranked by their Metric column and carrier
+// default routes (destination and mask 00000000), ranked by their Metric column and carrier
 // (rankDefaults). Pure, so the format handling is unit-tested against real output rather than
 // trusted. The mask is checked because OpenVPN's `redirect-gateway def1` adds a 0.0.0.0/1, whose
 // destination column also reads 00000000.
@@ -319,7 +305,7 @@ func parseSettling(text string, devs []string, carrier func(string) bool) string
 	return ""
 }
 
-// Candidates lists this host's non-loopback devices, in kernel order. For the MESSAGE only --
+// Candidates lists this host's non-loopback devices, in kernel order. For the message only --
 // nothing selects from this list, because a list is not evidence about which device is on the
 // household's LAN and the default route is.
 func Candidates() []string {
@@ -359,11 +345,11 @@ func parseHostRoute(text, dev, dst string) bool {
 	return false
 }
 
-// Offload is what building the Windows bridge changed on the household's own NIC, recorded BEFORE
-// the change so that removing briard can put back what was there: keyed by the adapter's GUID (a
+// Offload is what building the Windows bridge changed on the household's own NIC, recorded before
+// the change so removing briard can put back what was there: keyed by the adapter's GUID (a
 // rename, ours or the user's, moves the name; the GUID stays) and stored as the registry value,
-// never the display string, which is localized. Declared for every platform so the host's record
-// of it reads and writes, and is tested, anywhere.
+// never the localized display string. Declared for every platform so the host's record of it
+// reads, writes and is tested anywhere.
 type Offload struct {
 	GUID    string `json:"guid"`
 	Keyword string `json:"keyword"`

@@ -9,17 +9,16 @@ import (
 	"strings"
 )
 
-// THE IPVTAP SUBSTRATE: the guest's L2 on a wireless station.
-//
-// One 802.11 station carries one MAC, and a macvtap child gives the guest a MAC of its own, so
-// its frames die at the access point. ipvlan in L2 mode gives every child the PARENT's MAC, which
-// the station can carry. What it costs is the demux: ipvlan delivers a frame from the wire to a
-// child only when the destination IP is configured ON THAT CHILD, host-side. It learns nothing
-// from traffic. So the guest's live addresses are copied onto the children (Hold), and the
-// children live in a namespace of their own, because an address configured in the host's own
-// namespace is an address the HOST answers for: it pings itself over `lo` and the guest never
-// sees the frame. ipvlan's address table belongs to the parent, so a child in another namespace
-// still demuxes the parent's traffic, and qemu opens /dev/tapN across namespaces.
+// The ipvtap substrate: the guest's L2 on a wireless station. One 802.11 station carries one MAC,
+// and a macvtap child gives the guest a MAC of its own, so its frames die at the access point;
+// ipvlan in L2 mode gives every child the parent's MAC, which the station can carry. The cost is
+// the demux: ipvlan delivers a frame from the wire to a child only when the destination IP is
+// configured on that child, host-side, and learns nothing from traffic. So the guest's live
+// addresses are copied onto the children (Hold), and the children live in a namespace of their
+// own, because an address configured in the host's own namespace is one the host answers for: it
+// pings itself over `lo` and the guest never sees the frame. ipvlan's address table belongs to the
+// parent, so a child in another namespace still demuxes the parent's traffic, and qemu opens
+// /dev/tapN across namespaces.
 //
 // Everything else is macvtap's shape: two children, ALLMULTI on each, IPv6 off, and the private
 // tap for host<->guest, because ipvlan never hands a frame the host sends out the parent to a
@@ -36,7 +35,7 @@ func ipvtapAddArgs(dev, parent string) []string {
 	return []string{"link", "add", "link", parent, "name", dev, "type", "ipvtap", "mode", "l2", "bridge"}
 }
 
-// holdIPv6Off is run inside HoldNS when it is created. A child carries the PARENT's MAC, so an
+// holdIPv6Off is run inside HoldNS when it is created. A child carries the parent's MAC, so an
 // IPv6 stack on it derives the host's own link-local address, and ipvlan would then deliver the
 // host's IPv6 traffic to the child. `default` covers every device moved in afterwards, `all` any
 // already there. A kernel with no IPv6 has neither file, and nothing to turn off.
@@ -62,7 +61,7 @@ func ensureHoldNS(ctx context.Context) error {
 func ensureIpvtap(ctx context.Context, dev, parent string, held map[string][]string) error {
 	flags, created := held[dev], false
 	if flags == nil {
-		// A device by this name in the HOST's namespace is ours from the macvtap substrate,
+		// A device by this name in the host's namespace is ours from the macvtap substrate,
 		// left by a move from wire to Wi-Fi. It holds the name the child needs.
 		if Exists(dev) {
 			if out, err := ip(ctx, "link", "del", dev); err != nil {
@@ -111,7 +110,7 @@ func holdLinks(ctx context.Context) map[string][]string {
 //
 //	7: briard0@if3: <BROADCAST,MULTICAST,ALLMULTI,UP,LOWER_UP> mtu 1500 ...
 //
-// The `@if3` names the parent by its index in ANOTHER namespace, and is cut off.
+// The `@if3` names the parent by its index in another namespace, and is cut off.
 func parseLinks(text string) map[string][]string {
 	links := map[string][]string{}
 	for l := range strings.SplitSeq(text, "\n") {
@@ -126,7 +125,7 @@ func parseLinks(text string) map[string][]string {
 }
 
 // Held reports whether dev is a child held in HoldNS and up, and names the device it was created
-// on: the `@ifN` its line carries is the parent's ifindex in THIS namespace (parseHeld). It is the
+// on: the `@ifN` its line carries is the parent's ifindex in this namespace (parseHeld). It is the
 // standing parent of an ipvtap node, read off the device as every other substrate's is (ParentOf),
 // for an agent that restarts under its guest. ("", false) when dev is not held.
 func Held(ctx context.Context, dev string) (up bool, parent string) {

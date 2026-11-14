@@ -10,19 +10,18 @@ import (
 	"time"
 )
 
-// THE WINDOWS TRANSPORT: two frames per message, past the bridge's DHCP rewriter.
-//
-// A Windows bridge in compatibility mode (what it switches on by itself for a Wi-Fi member, and
-// may on a wired one) rewrites the chaddr of the DHCP requests it forwards to the member's MAC --
-// the host's own included, so the router would lease the flock the host's address. It classifies
-// as DHCP only UDP with BOTH ports in {67, 68}, and rewrites only what it classifies: a request
-// from another source port leaves as plain IP, the flock's chaddr intact. Servers answer it at
-// port 68 regardless (RFC 2131 fixes the destination ports only). But the bridge's inbound side
-// classifies that reply and drops one whose xid it never saw leave -- in every member kind and
-// state, measured -- so each message goes twice: first a DECOY from port 68, the same bytes with
-// message type 255, which the bridge records under the xid and no server answers; then the real
-// one from an ephemeral port. Nothing here reads the member kind or its mode; the one path holds
-// in all of them, which is also why a cable swap changes nothing.
+// The Windows transport: two frames per message, past the bridge's DHCP rewriter. A Windows bridge
+// in compatibility mode (what it switches on by itself for a Wi-Fi member, and may on a wired one)
+// rewrites the chaddr of the DHCP requests it forwards to the member's MAC -- the host's own
+// included, so the router would lease the flock the host's address. It classifies as DHCP only UDP
+// with both ports in {67, 68}, and rewrites only what it classifies: a request from another source
+// port leaves as plain IP, the flock's chaddr intact, and servers answer it at port 68 regardless
+// (RFC 2131 fixes the destination ports only). But the bridge's inbound side classifies that reply
+// and drops one whose xid it never saw leave -- in every member kind and state, measured -- so
+// each message goes twice: first a decoy from port 68, the same bytes with message type 255, which
+// the bridge records under the xid and no server answers; then the real one from an ephemeral
+// port. Nothing here reads the member kind or its mode; the one path holds in all of them, which
+// is also why a cable swap changes nothing.
 //
 // Three sockets, all SO_REUSEADDR (Windows' own DHCP client holds 68): the sender on the
 // bridge's LAN address (openDHCP says which) and an ephemeral port, which picks the interface a
@@ -38,7 +37,7 @@ type udpConn struct {
 	got          chan []byte
 }
 
-// ⚠️ BOUND TO THE LAN ADDRESS, RE-READ BEFORE EVERY TRY. On briard's bridge the agent's own
+// ⚠️ Bound to the LAN address, re-read before every try. On briard's bridge the agent's own
 // system-subnet /32 sits beside the LAN address, and the OS lists them in its own order; after a
 // move to another network the bridge first holds that network's stale address, then only the
 // /32, then the LAN's address back. A socket bound to either of the first two sends from an

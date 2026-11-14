@@ -11,26 +11,24 @@ import (
 	"time"
 )
 
-// THE FLOCK'S LEASE, ASKED FOR BY THE HOST.
+// The flock's lease, asked for by the host. On a single-anchor substrate (an ipvtap child of a
+// wireless station, the Windows bridge) the guest's frames leave with the host's L2 source, so a
+// router that keys leases on the source, or on a chaddr the substrate rewrote to it, hands the
+// guest the host's own address. A router keys on the payload's chaddr, never the frame's source
+// (every relay and every bridged VM rests on that), so the host asks in a frame of its own whose
+// chaddr is the flock's MAC, and the guest is handed the answer.
 //
-// On a single-anchor substrate -- an ipvtap child of a wireless station, the Windows bridge -- the
-// guest's frames leave with the HOST's L2 source, so a router that keys leases on the source, or on
-// a chaddr the substrate rewrote to it, hands the guest the host's own address. A router keys on
-// the payload's chaddr, never the frame's source: that is what every relay and every bridged VM
-// rests on. So the host asks, in a frame of its own whose chaddr is the flock's MAC, and the guest
-// is handed the answer.
+// One identity: chaddr = the flock MAC and client-id 01:<flock MAC>, the same pair the guest's own
+// client presents on a wired substrate. Chaddr-keyed and client-id-keyed routers both resolve it
+// to the flock, so no server the guest's client would satisfy is one this does not, and the router
+// sees one client whether the machine is on Wi-Fi or on its cable.
 //
-// ONE IDENTITY: chaddr = the flock MAC AND client-id 01:<flock MAC>, the same pair the guest's own
-// client presents on a wired substrate. A chaddr-keyed router and a client-id-keyed one both
-// resolve it to the flock, so there is no server the guest's client would satisfy that this does
-// not, and the router sees one client whether the machine is on Wi-Fi or on its cable.
-//
-// THREE MESSAGES, and none of them has ciaddr set. A REQUEST carrying ciaddr (RENEWING,
-// REBINDING) is answered by unicast TO ciaddr (RFC 2131 4.1), which the substrate hands to whoever
-// holds the address -- the guest, never the host that asked. INIT-REBOOT asks for the address by
-// option 50 with ciaddr 0 and the broadcast flag, so its answer comes back to the host; servers
-// answer it with a full lease, which makes it the renewal too. Every message sets the broadcast
-// flag, because the address being asked for is not one the asking machine holds.
+// Three messages, none with ciaddr set: a REQUEST carrying ciaddr (RENEWING, REBINDING) is
+// answered by unicast to ciaddr (RFC 2131 4.1), which the substrate hands to whoever holds the
+// address -- the guest, never the host that asked. INIT-REBOOT asks for the address by option 50
+// with ciaddr 0 and the broadcast flag, so its answer comes back to the host; servers answer it
+// with a full lease, which makes it the renewal too. Every message sets the broadcast flag,
+// because the address being asked for is not one the asking machine holds.
 
 // DHCPClient asks for leases under Chaddr, from Dev: on Linux the ipvtap child in HoldNS (the frame
 // leaves with the station's MAC), on Windows the bridge (a socket bound to its address).
