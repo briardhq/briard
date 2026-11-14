@@ -2631,21 +2631,26 @@ func parseUint(b []byte) uint64 {
 	return n
 }
 
+// healthBudget bounds every answer to "is this app working". The host asks it inside a status
+// cycle whose calls share one five-second deadline, and the host's request carries no deadline
+// of its own, so the guest keeps the answer well inside it: a slow app must come back as a
+// verdict (unhealthy, or unknown from an override), never as silence. Silence is what the host
+// counts toward declaring the whole guest dead.
+const healthBudget = 3 * time.Second
+
 // probeHTTPOK does a minimal plaintext HTTP/1.0 GET of rawURL and reports whether the response
 // status is 200. It is deliberately net/http-free (raw net.Dial + a hand-written request) so the
 // guest binary stays clear of a TLS client of its own. Plaintext
 // is all the local /healthz needs. Any parse/dial/read error, non-http scheme, or non-200 status is
-// "not healthy" — the same fail-closed semantics as the old host-side probe.
+// "not healthy" — the same fail-closed semantics as the old host-side probe. It gives up after
+// healthBudget, so an app slow to answer reads "not healthy" too.
 func probeHTTPOK(ctx context.Context, rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "http" || u.Host == "" {
 		return false
 	}
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-	}
+	ctx, cancel := context.WithTimeout(ctx, healthBudget)
+	defer cancel()
 	addr := u.Host
 	if u.Port() == "" {
 		addr = net.JoinHostPort(u.Hostname(), "80")

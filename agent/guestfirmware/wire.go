@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 )
@@ -77,12 +78,14 @@ func readFrame(r io.Reader, v any) error {
 // A call's deadline abandons THAT call -- its reply, if it ever comes, is dropped, and the
 // guest is told to stop it (VerbCancel), so a hung act does not hold the guest's act lane --
 // and leaves the channel up for everything else, with one exception that is the liveness rule:
-// if nothing at all has arrived from the guest since the call was sent, the guest is not
-// answering anything, and the deadline closes the channel so the host re-dials and, failing
-// that, climbs the recovery ladder. A guest that answered something meanwhile is alive and
-// merely slow on this verb. Against a guest that serves one verb at a time the two cases are
-// the same case, and this is exactly the old behaviour; against one that serves reads beside a
-// long act, a timed-out act costs nothing but itself.
+// missLimit calls unanswered at their deadlines within missWindow close the channel, so the host
+// re-dials (which restarts the guest agent, as every new connection does) and, failing that,
+// climbs the recovery ladder. ONE unanswered call is never enough, whatever else did or did not
+// answer meanwhile: a handler that waits on something outside the agent -- an in-guest HTTP
+// probe of an app that is slow to answer -- leaves every call in flight unanswered at once, and
+// a slow app is not a dead guest. A guest that answers nothing misses every call it is sent and
+// is closed within a few status cycles; one whose handlers have all wedged behind a frame loop
+// that still runs is closed the same way, which a rule keyed on "any frame arrived" would not do.
 type Conn struct {
 	rw io.ReadWriteCloser
 	// wmu serialises frames onto the stream: writeFrame is one Write, but two of them must
@@ -92,15 +95,30 @@ type Conn struct {
 	mu      sync.Mutex
 	nextID  uint64
 	pending map[uint64]chan response
-	// lastReply is when the reader last read a frame -- any frame, any id. The liveness rule
-	// above compares a timed-out call's send time against it; alive says whether any frame has
-	// ever arrived, because the rule applies only to a connection that has proven itself once.
-	lastReply time.Time
-	alive     bool
+	// misses are the calls the liveness rule above counts: sent, and unanswered at their
+	// deadlines, newest last. alive says whether any frame has ever arrived, because the rule
+	// applies only to a connection that has proven itself once.
+	misses []miss
+	alive  bool
 	// readErr is why the reader stopped; set once, after which every call fails with it.
 	readErr  error
 	readDone chan struct{}
 	readOnce sync.Once
+}
+
+// The liveness rule's numbers: three calls unanswered at their deadlines within a minute. A
+// status cycle's calls share their deadlines, so a guest that answers nothing misses one or two
+// calls a cycle and is closed within two or three cycles.
+const (
+	missLimit  = 3
+	missWindow = time.Minute
+)
+
+// miss is one call the liveness rule counted: when its deadline passed, and its verb, which
+// the closing error names.
+type miss struct {
+	at   time.Time
+	verb string
 }
 
 // NewConn wraps a stream in a host-side Conn. Request ids start from the WALL CLOCK, not
@@ -133,7 +151,7 @@ func (c *Conn) reader() {
 			close(c.readDone)
 			return
 		}
-		c.lastReply, c.alive = time.Now(), true
+		c.alive = true
 		if ch, ok := c.pending[resp.ID]; ok {
 			delete(c.pending, resp.ID)
 			ch <- resp
@@ -166,7 +184,6 @@ func (c *Conn) Call(ctx context.Context, verb string, arg, reply any) error {
 	ch := make(chan response, 1)
 	c.pending[id] = ch
 	c.mu.Unlock()
-	sent := time.Now()
 
 	c.wmu.Lock()
 	err := writeFrame(c.rw, request{ID: id, Verb: verb, Payload: payload})
@@ -195,16 +212,20 @@ func (c *Conn) Call(ctx context.Context, verb string, arg, reply any) error {
 	case <-ctx.Done():
 		c.abandon(id)
 		c.mu.Lock()
-		silent, alive := c.lastReply.Before(sent), c.alive
+		alive := c.alive
+		var down []miss
+		if alive && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			down = c.missed(verb, time.Now())
+		}
 		c.mu.Unlock()
 		switch {
-		case silent && alive:
-			// The liveness rule: nothing answered since this was sent, on a connection that
-			// used to answer. Close, so the reader ends and the host re-dials; the error
-			// carries both facts, as it always has.
+		case down != nil:
+			// The liveness rule: missLimit calls unanswered within missWindow, on a connection
+			// that used to answer. Close, so the reader ends and the host re-dials; the error
+			// carries the timeout, the dead channel and the verbs that went unanswered.
 			_ = c.rw.Close()
-			return channelDown(ctx, ctx.Err())
-		case silent:
+			return fmt.Errorf("%w: %w (%s)", ErrChannelDown, ctx.Err(), missedVerbs(down))
+		case !alive:
 			// Nothing has EVER arrived here: not a guest that stopped answering but one that
 			// has not answered yet -- the handshake's case, where the guest agent may be
 			// between an EOF and its restart and the request written meanwhile is lost with
@@ -212,10 +233,38 @@ func (c *Conn) Call(ctx context.Context, verb string, arg, reply any) error {
 			// what reaches the agent that opens the port next.
 			return ctx.Err()
 		default:
+			// This call's own deadline (or its caller's cancel, which the rule never counts):
+			// the channel stays up, and the guest is told to stop the request.
 			c.cancel(id)
 			return ctx.Err()
 		}
 	}
+}
+
+// missed counts one call unanswered at its deadline, drops the ones older than missWindow, and
+// returns the window's misses when they reach missLimit -- the liveness rule's verdict -- or
+// nil. Called with c.mu held.
+func (c *Conn) missed(verb string, now time.Time) []miss {
+	keep := c.misses[:0]
+	for _, m := range c.misses {
+		if now.Sub(m.at) < missWindow {
+			keep = append(keep, m)
+		}
+	}
+	c.misses = append(keep, miss{at: now, verb: verb})
+	if len(c.misses) < missLimit {
+		return nil
+	}
+	return append([]miss(nil), c.misses...)
+}
+
+// missedVerbs names what went unanswered, for the error that closes the channel.
+func missedVerbs(ms []miss) string {
+	verbs := make([]string, len(ms))
+	for i, m := range ms {
+		verbs[i] = m.verb
+	}
+	return fmt.Sprintf("%d calls unanswered within %s: %s", len(ms), missWindow, strings.Join(verbs, ", "))
 }
 
 // cancel tells the guest to stop the request with this id: fire-and-forget, its own id, its
@@ -252,14 +301,13 @@ func ctxOr(ctx context.Context, err error) error {
 }
 
 // ErrChannelDown marks a transport-level failure of the control channel: a write or read
-// failed, or a call's deadline passed with the guest answering nothing at all (Conn's liveness
-// rule). The host re-dials on it (host.Run's reconnect loop). A *verb* error -- the guest ran
-// the request and returned an error string -- is NOT this: the round-trip completed, the
-// channel is fine, so callers see the plain error and keep using the connection. Nor is a
-// deadline on one call while the guest answers others: that is the call's own
-// context.DeadlineExceeded, and the channel stays up. When the liveness rule does close it,
-// the error wraps *both*, so a bounded op still sees its timeout while the observe loop sees
-// the dead channel.
+// failed, or the guest left too many calls unanswered (Conn's liveness rule). The host re-dials
+// on it (host.Run's reconnect loop). A *verb* error -- the guest ran the request and returned an
+// error string -- is NOT this: the round-trip completed, the channel is fine, so callers see
+// the plain error and keep using the connection. Nor is a deadline on one call short of the
+// rule: that is the call's own context.DeadlineExceeded, and the channel stays up. When the
+// liveness rule does close it, the error wraps *both*, so a bounded op still sees its timeout
+// while the observe loop sees the dead channel.
 var ErrChannelDown = errors.New("guestfirmware: control channel down")
 
 func channelDown(ctx context.Context, err error) error {

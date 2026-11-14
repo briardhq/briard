@@ -334,6 +334,20 @@ func TestAppHealth(t *testing.T) {
 	if got, err := dial(t, f).AppHealth(context.Background(), "http://127.0.0.1:1/healthz"); err != nil || got {
 		t.Errorf("unreachable: got (%v,%v), want (false,nil)", got, err)
 	}
+	// An app that takes the connection and does not answer -> not healthy, and INSIDE the
+	// five seconds the host's status cycle gives its calls, with no deadline from the caller:
+	// a verdict, never the silence the host counts toward a dead guest.
+	held := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { <-held }))
+	defer slow.Close()
+	defer close(held)
+	start := time.Now()
+	if got, err := dial(t, f).AppHealth(context.Background(), slow.URL); err != nil || got {
+		t.Errorf("an app that never answers: got (%v,%v), want (false,nil)", got, err)
+	}
+	if took := time.Since(start); took >= 4*time.Second {
+		t.Errorf("an app that never answers took %s to read unhealthy, want well inside the host's 5s", took)
+	}
 }
 
 // The handshake records the advertised capability set, which is the whole of the negotiation:

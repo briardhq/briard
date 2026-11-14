@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -112,8 +113,9 @@ func TestServeEndsOnClose(t *testing.T) {
 // A guest that reads the request but never replies must not hang the host: the
 // call returns when its context deadline fires (turning a wedged verb into a
 // timeout the caller can act on), not block forever. Two cases, by whether the connection
-// ever answered: one that did and stopped is DEAD (the liveness rule closes it, ErrChannelDown
-// too, so the observe loop re-dials); one that never answered at all is merely UNANSWERED --
+// ever answered: one that did and stopped is DEAD once it has left missLimit calls unanswered
+// (the liveness rule closes it, ErrChannelDown too, so the observe loop re-dials) and merely
+// late before that; one that never answered at all is UNANSWERED however often it is asked --
 // the handshake's case, where the hello may have been lost in the guest agent's own restart
 // and the right move is to send it again on this same connection, not to close.
 func TestCallHonorsContextOnStuckGuest(t *testing.T) {
@@ -135,7 +137,7 @@ func TestCallHonorsContextOnStuckGuest(t *testing.T) {
 			t.Fatalf("second hello on the kept connection = %v, want a plain DeadlineExceeded", err)
 		}
 	})
-	t.Run("answered once, then silent: dead", func(t *testing.T) {
+	t.Run("answered once, then silent: late, late, then dead", func(t *testing.T) {
 		cconn, sconn := net.Pipe()
 		answered := false
 		stuck := func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
@@ -152,13 +154,130 @@ func TestCallHonorsContextOnStuckGuest(t *testing.T) {
 		if err := g.Call(context.Background(), "echo", nil, nil); err != nil {
 			t.Fatalf("the first call: %v", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		defer cancel()
-		err := g.Call(ctx, "echo", nil, nil)
-		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrChannelDown) {
-			t.Fatalf("err = %v, want DeadlineExceeded AND ErrChannelDown: it answered once and stopped", err)
+		for i := 1; i <= missLimit; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			err := g.Call(ctx, fmt.Sprintf("verb%d", i), nil, nil)
+			cancel()
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("miss %d = %v, want DeadlineExceeded", i, err)
+			}
+			if i < missLimit {
+				if errors.Is(err, ErrChannelDown) {
+					t.Fatalf("miss %d of %d = %v: a call short of the rule must leave the channel up", i, missLimit, err)
+				}
+				continue
+			}
+			if !errors.Is(err, ErrChannelDown) {
+				t.Fatalf("miss %d = %v, want ErrChannelDown too: it answered once and stopped", i, err)
+			}
+			for j := 1; j <= missLimit; j++ {
+				if v := fmt.Sprintf("verb%d", j); !strings.Contains(err.Error(), v) {
+					t.Errorf("the closing error %q does not name %s, one of the calls that went unanswered", err, v)
+				}
+			}
 		}
 	})
+}
+
+// A SLOW HANDLER IS NOT A DEAD GUEST. Every call in flight waits on the same slow thing -- here
+// a serial guest whose one handler is stuck, the shape of an in-guest HTTP probe of an app that
+// is slow to answer -- so nothing at all answers before the call behind it gives up. One such
+// call leaves the channel up: the timeout is the call's own, and once the handler returns the
+// next call is served on the same connection.
+func TestOneUnansweredCallLeavesTheChannelUp(t *testing.T) {
+	cc, sc := net.Pipe()
+	release := make(chan struct{})
+	go ServeFrames(context.Background(), sc, slowDispatch(release, nil), allActs)
+	c := NewConn(cc)
+	t.Cleanup(func() { c.Close() })
+	var out string
+	if err := c.Call(context.Background(), "echo", "a", &out); err != nil { // proven alive once
+		t.Fatal(err)
+	}
+
+	sctx, scancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer scancel()
+	slow := make(chan error, 1)
+	go func() { slow <- c.Call(sctx, "slow", nil, nil) }()
+	time.Sleep(20 * time.Millisecond) // let the slow request reach the serial server first
+
+	ectx, ecancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer ecancel()
+	err := c.Call(ectx, "echo", "x", nil)
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrChannelDown) {
+		t.Fatalf("echo behind a slow handler = %v, want its own DeadlineExceeded and the channel up", err)
+	}
+	close(release)
+	if err := <-slow; err != nil {
+		t.Fatalf("the slow call, released = %v, want its answer", err)
+	}
+	if err := c.Call(context.Background(), "echo", "y", &out); err != nil || out != "yy" {
+		t.Fatalf("echo after the slow handler returned = (%q, %v), want the channel still up", out, err)
+	}
+}
+
+// WHAT THE RULE COUNTS. A caller's own cancel is not the guest failing to answer, and a call
+// whose deadline had passed before it was sent never reached the guest: neither is a miss, so
+// any number of them leave the channel up, and the misses that follow start from zero.
+func TestCancelsAndUnsentCallsAreNotMisses(t *testing.T) {
+	cc, sc := net.Pipe()
+	stuck := func(ctx context.Context, verb string, payload json.RawMessage) (any, error) {
+		if verb == "echo" {
+			return echoDispatch(ctx, verb, payload)
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	go ServeFrames(context.Background(), sc, stuck, func(string) bool { return false })
+	c := NewConn(cc)
+	t.Cleanup(func() { c.Close() })
+	var out string
+	if err := c.Call(context.Background(), "echo", "a", &out); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2*missLimit; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+		if err := c.Call(ctx, "hang", nil, nil); !errors.Is(err, context.Canceled) || errors.Is(err, ErrChannelDown) {
+			t.Fatalf("a cancelled call = %v, want a plain Canceled", err)
+		}
+		expired, cancel2 := context.WithTimeout(context.Background(), -time.Second)
+		if err := c.Call(expired, "hang", nil, nil); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrChannelDown) {
+			t.Fatalf("a call already past its deadline = %v, want a plain DeadlineExceeded", err)
+		}
+		cancel2()
+	}
+	for i := 1; i < missLimit; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		err := c.Call(ctx, "hang", nil, nil)
+		cancel()
+		if errors.Is(err, ErrChannelDown) {
+			t.Fatalf("miss %d after only cancels and unsent calls = %v: they were counted", i, err)
+		}
+	}
+	if err := c.Call(context.Background(), "echo", "b", &out); err != nil || out != "bb" {
+		t.Fatalf("echo after = (%q, %v), want the channel up", out, err)
+	}
+}
+
+// THE WINDOW. Misses spread wider than missWindow never add up to missLimit: only the ones
+// inside the window count, and the call that brings the window to missLimit is the verdict.
+func TestMissesCountOnlyInsideTheWindow(t *testing.T) {
+	c := NewConn(nil)
+	t0 := time.Now()
+	step := missWindow + time.Second // each miss alone in its window
+	for i := 0; i < 3*missLimit; i++ {
+		if down := c.missed("spread", t0.Add(time.Duration(i)*step)); down != nil {
+			t.Fatalf("miss %d, %s apart = %v: misses spread wider than %s were counted together", i, step, down, missWindow)
+		}
+	}
+	c = NewConn(nil)
+	for i := 0; i < missLimit; i++ {
+		down := c.missed(fmt.Sprintf("v%d", i), t0.Add(time.Duration(i)*time.Second))
+		if (down != nil) != (i == missLimit-1) {
+			t.Fatalf("miss %d of %d within a second each: verdict %v", i+1, missLimit, down)
+		}
+	}
 }
 
 // A REPLY ALREADY BEING WRITTEN SURVIVES CANCELLATION, which is what makes EOF mean "the agent
@@ -265,8 +384,7 @@ func TestCallsMultiplexAndADeadlineAbandonsOnlyItsCall(t *testing.T) {
 	sctx, scancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer scancel()
 	go func() { slow <- c.Call(sctx, "slow", nil, nil) }()
-	<-started // the slow request is in the guest's hands BEFORE the echo is sent: the liveness
-	// rule compares the echo's reply against the slow call's send time, so the order matters.
+	<-started // the slow request is in the guest's hands before the echo is sent
 
 	// Beside it, an echo answers at once.
 	var out string
@@ -288,38 +406,6 @@ func TestCallsMultiplexAndADeadlineAbandonsOnlyItsCall(t *testing.T) {
 	close(release)
 	if err := c.Call(ectx, "echo", "y", &out); err != nil || out != "yy" {
 		t.Fatalf("echo after the abandoned call = (%q, %v), want the channel still up", out, err)
-	}
-}
-
-// THE LIVENESS RULE, the other way round from TestCallHonorsContextOnStuckGuest: a guest that
-// answered something -- anything -- since the call was sent is alive, so the deadline is the
-// call's own; a guest that answered nothing is not, so the deadline closes the channel. Here
-// the guest serves one verb at a time (ServeFrames, the serial shape): the echo queued behind
-// the slow verb is never answered, so from the echo's point of view nothing arrived since it was
-// sent, and it reports the channel down -- which is what re-dials, and what the recovery ladder
-// hangs off. (allActs: the guest puts every verb in the act lane, which is the serial shape.)
-func TestADeadlineWithNoAnswerAtAllIsChannelDown(t *testing.T) {
-	cc, sc := net.Pipe()
-	release := make(chan struct{})
-	defer close(release)
-	go ServeFrames(context.Background(), sc, slowDispatch(release, nil), allActs)
-	c := NewConn(cc)
-	t.Cleanup(func() { c.Close() })
-	var out string
-	if err := c.Call(context.Background(), "echo", "a", &out); err != nil { // proven alive once
-		t.Fatal(err)
-	}
-
-	sctx, scancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer scancel()
-	go func() { _ = c.Call(sctx, "slow", nil, nil) }()
-	time.Sleep(20 * time.Millisecond) // let the slow request reach the serial server first
-
-	ectx, ecancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer ecancel()
-	err := c.Call(ectx, "echo", "x", nil)
-	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrChannelDown) {
-		t.Fatalf("echo behind a serial guest's slow verb = %v, want DeadlineExceeded AND ErrChannelDown", err)
 	}
 }
 

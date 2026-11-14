@@ -903,7 +903,11 @@ func appHealthURL(x Executor, name string) (string, error) {
 //
 // An unresolvable app is an ERROR, never a verdict (appHealthURL says why). A manifest
 // that cannot be read on the volume leaves the default probe, which needs none.
+//
+// The whole answer, an override's included, takes at most healthBudget.
 func appHealth(ctx context.Context, x Executor, app string) (apps.Health, error) {
+	ctx, cancel := context.WithTimeout(ctx, healthBudget)
+	defer cancel()
 	url, err := appHealthURL(x, app)
 	if err != nil {
 		return apps.HealthUnknown, err
