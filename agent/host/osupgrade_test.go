@@ -53,8 +53,8 @@ func dialStatus(t *testing.T, fixture string) *guestagent.Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The fixture is the ground truth this test rests on: read it the way the product does and
-	// fail loudly if it ever stops saying what the case names.
+	// The fixture is the ground truth: parse it as the product does, and fail loudly if it ever
+	// stops saying what the case names.
 	if _, err := drbd.ParseCluster(raw, "r0"); err != nil {
 		t.Fatal(err)
 	}
@@ -72,18 +72,15 @@ func newTestUpgrade(t *testing.T, fixture string) *osUpgrade {
 	return newOSUpgrade(cfg, nil, dialStatus(t, fixture), guest.Config{}, func(string, ...any) {})
 }
 
-// THE OS UPGRADE. What matters is less the sequence than its shape: an OS upgrade that does
-// not touch the workload. newSwitchUpgrade and assertLeftTheWorkloadAlone below are the rig for
-// asserting that directly (no app verb, no data snapshot); no test in this file calls them.
-//
-// No unit test can prove the rollback LEG. Restoring the point means stopping a real VM and
-// reverting a real qcow2, neither of which exists in a unit test; that is an end-to-end rollback
-// test's, on the shipped disk.
+// The OS upgrade: what matters is less its sequence than that it does not touch the workload.
+// newSwitchUpgrade and assertLeftTheWorkloadAlone below are the rig for asserting that directly
+// (no app verb, no data snapshot); no test in this file calls them. No unit test can prove the
+// rollback leg: it stops a real VM and reverts a real qcow2, so it belongs to an end-to-end
+// rollback test on the shipped disk.
 
-// recExec is a guest that answers every command benignly and records what it was asked. The
-// opposite of statusExec above: that one refuses everything, this one permits everything so the
-// whole sequence runs and the test can read back what it did -- and, more to the point, what it
-// did not.
+// recExec is a guest that answers every command benignly and records what it was asked, the
+// opposite of statusExec: the whole sequence runs and the test reads back what it did, and above
+// all what it did not.
 type recExec struct {
 	mu      sync.Mutex
 	cmds    []string
@@ -98,8 +95,7 @@ func (e *recExec) Run(_ context.Context, name string, args ...string) ([]byte, e
 	case name == "readlink":
 		return []byte(e.current + "\n"), nil
 	case name == "systemctl" && len(args) > 0 && args[0] == "is-active":
-		// Any unit asked about is reported DOWN, deliberately, so a path that passes only on an
-		// active unit cannot pass here.
+		// Every unit reads down, deliberately: a path that passes only on an active unit cannot.
 		return []byte("inactive\n"), nil
 	}
 	return nil, nil
@@ -133,16 +129,15 @@ func (e *recExec) count(substr string) int {
 
 func (e *recExec) ran(substr string) bool { return e.count(substr) > 0 }
 
-// fakeQMP is QEMU's monitor, reduced to what the protocol requires: an unprompted greeting, a
-// reply per command, and a record of what was asked. Serving it over a real unix socket keeps
-// the whole of qmp.go in the path -- dial, greeting, capabilities handshake, framing -- rather
-// than stubbing the one call under test.
+// fakeQMP is QEMU's monitor reduced to what the protocol requires: an unprompted greeting, a reply
+// per command, and a record of what was asked. A real unix socket keeps all of qmp.go in the path
+// (dial, greeting, capabilities handshake, framing) rather than stubbing the call under test.
 type fakeQMP struct {
 	mu   sync.Mutex
 	cmds []string
-	// replies overrides the default `{"return":{}}` for named commands -- query-accelerators
-	// answers with a payload, and the name in it is the whole point of asking. Fixed at construction
-	// so the serving goroutine only ever reads it; a test that set it later would race its fake.
+	// replies overrides the default `{"return":{}}` for named commands (query-accelerators answers
+	// with the name that is the point of asking). Fixed at construction so the serving goroutine
+	// only reads it; a test that set it later would race its fake.
 	replies map[string]string
 }
 
@@ -227,15 +222,15 @@ func newSwitchUpgrade(t *testing.T, healthy bool) (*osUpgrade, *recExec, *fakeQM
 	cfg.Resource.Name = "r0"
 	u := newOSUpgrade(cfg, platform.Adopt(cfg.guestSpec()), c, guest.Config{
 		HealthURL:      srv.URL,
-		ReactorSnippet: "briard", // the promoter hold IS the quiesce
+		ReactorSnippet: "briard", // the promoter hold is the quiesce
 		Logf:           t.Logf,
 	}, t.Logf)
 	return u, x, q
 }
 
 // assertLeftTheWorkloadAlone checks the OS path left the workload alone: no app lifecycle, no app
-// data. It reads the recorded commands rather than the code because that is where a regression
-// would show up -- a quiesce or data snapshot is a command, whoever calls it.
+// data. It reads the recorded commands, not the code: a quiesce or data snapshot is a command,
+// whoever calls it.
 func assertLeftTheWorkloadAlone(t *testing.T, x *recExec) {
 	t.Helper()
 	for _, c := range x.all() {
@@ -248,19 +243,15 @@ func assertLeftTheWorkloadAlone(t *testing.T, x *recExec) {
 	}
 }
 
-// THE CLEAN STOP. Every stop of a guest that comes back goes through it -- the image upgrade, the
-// rollback leg, the recovery ladder's power cycle and the rescue -- so DRBD records its quorum
-// state on the way down. They depend on the two halves of one contract: that the agent route is
-// tried first, and that the power button really is an independent fallback rather than a comment.
-// Both are asserted here, because in the field they fail apart.
-//
-// What this rig cannot show is restoreImage CHOOSING the clean stop: that needs a running VM and
-// a real qcow2, so it is asserted where those exist (an end-to-end rollback test, on the log
-// line the else-branch emits).
+// The clean stop. Every stop of a guest that comes back goes through it (the image upgrade, the
+// rollback leg, the recovery ladder's power cycle, the rescue) so DRBD records its quorum state on
+// the way down. Both halves of its contract are asserted, because in the field they fail apart:
+// the agent route is tried first, and the power button is a real, independent fallback. What
+// this rig cannot show is restoreImage choosing the clean stop: that needs a running VM and a real
+// qcow2, so an end-to-end rollback test asserts it, on the log line the else-branch emits.
 
-// newStopRig gives a guest that is already down -- so WaitStopped returns the moment it is asked
-// -- beside a live QMP endpoint. That combination is what lets the ordering be read off cleanly:
-// whether QMP was touched at all is the whole answer.
+// newStopRig gives a guest that is already down (WaitStopped returns at once) beside a live QMP
+// endpoint, so the ordering reads off cleanly: whether QMP was touched at all is the answer.
 func newStopRig(t *testing.T) (*platform.Guest, *fakeQMP) {
 	t.Helper()
 	q, sock := startQMP(t)
@@ -282,22 +273,21 @@ func TestStopCleanlyAsksTheAgentBeforeThePowerButton(t *testing.T) {
 	if !x.ran("systemctl poweroff") {
 		t.Errorf("the guest OS was never asked to shut itself down: %q", x.all())
 	}
-	// The point of the ordering: ACPI is the fallback for an agent that is gone, so a working
-	// agent must mean the power button is never pressed.
+	// ACPI is the fallback for an agent that is gone: a working agent means no press at all.
 	if got := q.got(); len(got) != 0 {
 		t.Errorf("the agent route worked, so QMP must not have been touched; got %q", got)
 	}
 }
 
-// The lost reply: `os.poweroff` is `--no-block` so its reply can lose the race with systemd
-// tearing the machine down, and the host then sees EOF — indistinguishable from a dead agent.
-// Escalating finds no monitor socket either (the guest is already gone), and reading the two
-// joined errors as a refusal force-kills a guest that had ALREADY stopped cleanly. Both errors
-// are about a REQUEST; only "is the VM still there?" is about the machine. Here the agent
-// refuses rather than hangs up, and the unit is absent, so it reads inactive.
+// The lost reply: `os.poweroff` is `--no-block`, so its reply can lose the race with systemd
+// tearing the machine down and the host sees EOF, indistinguishable from a dead agent. Escalating
+// finds no monitor socket either (the guest is gone), and reading the two joined errors as a
+// refusal force-kills a guest that had already stopped cleanly. Both errors are about a request;
+// only "is the VM still there?" is about the machine. Here the agent refuses rather than hangs
+// up, and the absent unit reads inactive.
 func TestStopCleanlyTreatsAnAlreadyStoppedGuestAsClean(t *testing.T) {
-	// A guest that answers nothing and whose monitor socket does not exist — i.e. one that is
-	// gone. Its unit is inactive, which is the only fact that actually settles it.
+	// A guest that answers nothing and has no monitor socket: gone. Its inactive unit is the only
+	// fact that settles it.
 	cconn, sconn := net.Pipe()
 	go guestagent.Serve(context.Background(), sconn, &statusExec{})
 	c := guestagent.NewClient(cconn)
@@ -312,11 +302,10 @@ func TestStopCleanlyTreatsAnAlreadyStoppedGuestAsClean(t *testing.T) {
 	}
 }
 
-// fakeGuest is a guest whose STATE the test controls, which the socket-and-unit rig above
-// cannot do: `newStopRig`'s unit does not exist, so its machine reads as already-stopped no
-// matter what, and the one state the lost reply lives in -- STOPPING, i.e. QEMU gone but the unit not
-// yet reaped -- has no expression there. The QMP wiring these fakes stand in for is asserted
-// directly in agent/platform/qmp_test.go; what is under test here is the ESCALATION DECISION.
+// fakeGuest is a guest whose state the test controls. `newStopRig`'s unit does not exist, so its
+// machine always reads already-stopped, and the state the lost reply lives in (stopping: QEMU gone,
+// the unit not yet reaped) has no expression there. The QMP wiring these fakes stand in for is
+// asserted in agent/platform/qmp_test.go; under test here is the escalation decision.
 //
 //	stopsAfter  how long until the machine is down (guestStays = never on its own)
 //	shutdownErr what the power button does; nil means it works, and a working press stops it
@@ -329,11 +318,10 @@ type fakeGuest struct {
 
 const guestStays = time.Hour // longer than any grace: this machine will not stop by itself
 
-// WaitStopped answers from the fake's own clock, and COMPRESSES the grace it is handed: a real
-// shutdownGrace is 30s, and a test that genuinely waited two of them to prove a timeout would
-// cost a minute to say something the fake already knows. The distinction the tests actually
-// need survives compression -- a zero grace is a glance and must still see a running machine,
-// while any real grace is a wait and must see it stop.
+// WaitStopped answers from the fake's own clock and compresses the grace it is handed: waiting out
+// two real 30s shutdownGraces would cost a minute to say what the fake already knows. The
+// distinction the tests need survives: a zero grace is a glance and must still see a running
+// machine, any real grace is a wait and must see it stop.
 func (g *fakeGuest) WaitStopped(ctx context.Context, grace time.Duration) error {
 	if grace > 200*time.Millisecond {
 		grace = 200 * time.Millisecond
@@ -363,23 +351,19 @@ func (g *fakeGuest) Shutdown(context.Context, time.Duration) error {
 	return nil
 }
 
-// THE LOST REPLY, on a guest that is STILL STOPPING rather than already stopped.
+// The lost reply, on a guest still stopping rather than already stopped. `os.poweroff` is
+// `--no-block`, so a guest doing as told can close the channel before the reply lands, and the
+// host sees EOF, as from a dead agent. Both routes then fail (the agent is unreachable, and QEMU
+// has exited so the power button has nothing to press) and the last probe decides. With a zero
+// grace it would answer "still running" in the seconds between QEMU exiting and the unit going
+// inactive, recording a perfect shutdown as a refusal and abandoning the upgrade. Only a standby
+// hits it (a node with a workload to quiesce is slow enough that the reply wins the race), so a
+// live tier can stay green while this path is broken.
 //
-// `os.poweroff` is `--no-block`, so a guest doing exactly as it was told can close the channel
-// before the reply lands: the host sees EOF, which is indistinguishable from a dead agent. Both
-// routes then fail — the agent is unreachable, and the power button has nothing to press because
-// QEMU has already exited — and the verdict comes down to the last probe. Asked with a ZERO
-// grace, it would answer "still running" during the seconds between QEMU exiting and the unit going
-// inactive, so a guest that had shut down perfectly would be recorded as having refused and its
-// upgrade abandoned.
-//
-// Only a STANDBY hits it: a node with a workload to quiesce takes long enough that the reply
-// wins the race, so a live tier can stay green while this path is broken.
-//
-// Note what is NOT asserted: that the power button went unpressed. Pressing it is harmless here
-// and costs nothing — the dial fails at once precisely because QEMU is gone — and forbidding it
-// would mean waiting before escalating, which would slow every genuinely dead agent down by a
-// full grace for no gain. The failure is not the press; it is the verdict after it.
+// Deliberately not asserted: that the button went unpressed. The press is harmless (the dial fails
+// at once because QEMU is gone), and forbidding it would mean waiting before escalating, slowing
+// every genuinely dead agent by a full grace for no gain. The failure is the verdict, not the
+// press.
 func TestStopCleanlyWaitsOutAGuestThatIsStillStopping(t *testing.T) {
 	// A channel that is closed under us: PowerOff gets EOF, the shape of a lost reply.
 	cconn, sconn := net.Pipe()
@@ -387,10 +371,9 @@ func TestStopCleanlyWaitsOutAGuestThatIsStillStopping(t *testing.T) {
 	c := guestagent.NewClient(cconn)
 	t.Cleanup(func() { c.Close() })
 
-	// QEMU has already exited, so there is no monitor socket left to dial -- the error is
-	// `dial ...guest.sock: no such file or directory`. The machine finishes stopping shortly
-	// after, which is the window a zero-grace probe falls into: a glance says "running", the
-	// wait says "gone".
+	// QEMU has exited, so the dial finds no socket (`dial ...guest.sock: no such file or
+	// directory`); the machine finishes stopping shortly after, the window a zero-grace probe falls
+	// into: a glance says "running", the wait says "gone".
 	g := &fakeGuest{
 		stopsAfter:  50 * time.Millisecond,
 		shutdownErr: errors.New("dial QMP: no such file or directory"),
@@ -401,16 +384,13 @@ func TestStopCleanlyWaitsOutAGuestThatIsStillStopping(t *testing.T) {
 	}
 }
 
-// The fallback still has to fire for the case it exists for: the agent route is unusable AND the
-// machine is genuinely still up.
-//
-// It runs on a fakeGuest, not `newStopRig`: that rig's unit does not exist, so its machine
-// always reads as ALREADY STOPPED and cannot express "still up". A guest that must be stopped is
-// modelled here as one that does not stop by itself; the QMP wiring the press travels over is
+// The fallback still fires for its case: the agent route unusable and the machine genuinely up.
+// It runs on a fakeGuest that does not stop by itself, since `newStopRig`'s absent unit always
+// reads already stopped and cannot express "still up"; the QMP wiring the press travels over is
 // asserted in agent/platform/qmp_test.go.
 func TestStopCleanlyFallsBackToThePowerButton(t *testing.T) {
-	// statusExec refuses every command it is sent here, which is what a guest whose agent is
-	// present but broken looks like -- and near enough to one that is gone for this route's purpose.
+	// statusExec refuses every command sent here: an agent present but broken, near enough to a
+	// gone one for this route.
 	cconn, sconn := net.Pipe()
 	go guestagent.Serve(context.Background(), sconn, &statusExec{})
 	c := guestagent.NewClient(cconn)
@@ -425,11 +405,10 @@ func TestStopCleanlyFallsBackToThePowerButton(t *testing.T) {
 	}
 }
 
-// And it must still FAIL when neither route works on a machine that stays up. This is the
-// outcome the image upgrade depends on being loud: it abandons the upgrade and leaves the node
-// serving its current image rather than power-cutting it. Worth pinning next to the two
-// clean-stop cases above, because the wait for a lost reply lengthens how long this takes to
-// decide and it would be easy to lose the refusal itself.
+// It must still fail when neither route works on a machine that stays up: the image upgrade
+// depends on that being loud: it abandons the upgrade and leaves the node serving its current
+// image rather than power-cutting it. Pinned beside the clean-stop cases because the wait for a
+// lost reply lengthens this decision, and the refusal itself would be easy to lose.
 func TestStopCleanlyReportsAGuestThatWillNotGoDown(t *testing.T) {
 	cconn, sconn := net.Pipe()
 	go guestagent.Serve(context.Background(), sconn, &statusExec{})
@@ -445,8 +424,8 @@ func TestStopCleanlyReportsAGuestThatWillNotGoDown(t *testing.T) {
 	if err == nil {
 		t.Fatal("both routes failed on a running guest — that must be reported, not passed off as a clean stop")
 	}
-	// Both routes' evidence, not just the last one: the caller's message says "clean shutdown
-	// refused", and which route refused is the first thing anyone reading it needs.
+	// Both routes' evidence: the caller says "clean shutdown refused", and which route refused is
+	// the first thing its reader needs.
 	if !strings.Contains(err.Error(), "refusing systemctl poweroff") || !strings.Contains(err.Error(), "dial QMP") {
 		t.Errorf("want both the agent and the power-button failure in the error, got %v", err)
 	}
@@ -466,7 +445,7 @@ func (s *stateSeq) SystemState(context.Context) (guestagent.SystemState, error) 
 }
 
 // The OS gate's generic check: only `running` passes; boot jobs still queued and a channel error
-// are waited out; any other state is the answer on FIRST sight -- a degraded guest is never
+// are waited out; any other state is the answer on first sight, so a degraded guest is never
 // polled until something resets its failed units into looking healthy.
 func TestSystemRunningReadsTheAnswerOnce(t *testing.T) {
 	st := func(s string, failed ...string) guestagent.SystemState {
@@ -525,10 +504,9 @@ func TestSystemRunningGivesUpWithTheBudget(t *testing.T) {
 	}
 }
 
-// The recovery ladder entered from a bring-up that never got a channel stops the guest with NO
-// client at all. The agent route is then known unavailable before it is tried -- straight to the
-// button, and the verdict is the unit's state as ever. Without the nil check this is a nil
-// dereference on the first call.
+// The recovery ladder entered from a bring-up that never got a channel stops the guest with no
+// client: straight to the button, the verdict the unit's state as ever. Without the nil check
+// this is a nil dereference on the first call.
 func TestStopCleanlyWithoutAChannelGoesToTheButton(t *testing.T) {
 	g := platform.Adopt(platform.QEMUSpec{
 		QMPSock: filepath.Join(testsock.Dir(t), "absent.sock"), // never listened on: the button finds nothing

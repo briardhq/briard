@@ -18,10 +18,10 @@ import (
 	"briard.io/shared/model"
 )
 
-// A SIGTERM IS A SHUTDOWN ONLY WHILE THE MACHINE IS STOPPING. Every other answer `systemctl
-// is-system-running` gives -- the ordinary ones, the boot's, a failed query's empty line -- is a
-// stop, which drains and leaves the guest serving: reading one of those as a shutdown would abort
-// an update's act and power a serving guest off.
+// A SIGTERM is a shutdown only while the machine is stopping. Every other answer of `systemctl
+// is-system-running` (the ordinary ones, the boot's, a failed query's empty line) is a stop, which
+// drains and leaves the guest serving: reading one as a shutdown would abort an update's act and
+// power a serving guest off.
 func TestASigtermIsAShutdownOnlyWhileTheMachineStops(t *testing.T) {
 	for state, want := range map[string]error{
 		"stopping":     ErrShutdown,
@@ -40,8 +40,8 @@ func TestASigtermIsAShutdownOnlyWhileTheMachineStops(t *testing.T) {
 	}
 }
 
-// THE STOP DIRECTIVE ABORTS THE ACT IN FLIGHT -- the other stop, through the real loop. With a
-// sync held open, the directive is answered at once naming the act, the node's context ends as a
+// The stop directive aborts the act in flight: the other stop, through the real loop. With a sync
+// held open, the directive is answered at once naming the act, the node's context ends as a
 // shutdown, and the loop ends without waiting for the act: the drain TestAStopFinishesTheActInFlight
 // proves is exactly what a shutdown must not do.
 func TestTheStopDirectiveAbortsTheActInFlight(t *testing.T) {
@@ -102,7 +102,7 @@ func TestAShutdownWithNothingInFlightIsImmediate(t *testing.T) {
 	}
 }
 
-// A STOP DIRECTIVE DURING A DRAIN IS REFUSED, never quietly folded into it: a drain ends with the
+// A stop directive during a drain is refused, never quietly folded into it: a drain ends with the
 // guest still running, so answering "stopping" would leave `briard stop` reporting a node down
 // that is serving.
 func TestAStopDirectiveDuringADrainIsRefused(t *testing.T) {
@@ -123,7 +123,7 @@ func TestAStopDirectiveDuringADrainIsRefused(t *testing.T) {
 	}
 }
 
-// THE STOP'S ANSWER OUTLIVES THE CONTEXT IT ENDS. The loop cancels the node's context and sends
+// The stop's answer outlives the context it ends. The loop cancels the node's context and sends
 // the outcome a moment later, so the door must still hand that outcome to the CLI rather than
 // "agent shut down": otherwise `briard stop` could never name the act it aborted.
 func TestTheDoorAnswersAStopThatEndedItsContext(t *testing.T) {

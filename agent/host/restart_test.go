@@ -39,7 +39,7 @@ func TestRestartGate(t *testing.T) {
 		return cfg.restartGate(context.Background(), b.read, n, func(string, ...any) {}), n
 	}
 
-	// A FIRST INSTALL asks at every start until a cold boot, then marks the record and asks nothing.
+	// A first install asks at every start until a cold boot, then marks the record and asks nothing.
 	t.Run("first install", func(t *testing.T) {
 		cfg, path := setup(t)
 		if err := keepBuiltBridge(path, off, built); err != nil {
@@ -70,7 +70,7 @@ func TestRestartGate(t *testing.T) {
 		}
 	})
 
-	// A REINSTALL over a running node: the install's build finds its record marked and keeps it.
+	// A reinstall over a running node: the install's build finds its record marked and keeps it.
 	t.Run("reinstall over a running node", func(t *testing.T) {
 		cfg, path := setup(t)
 		if err := writeBridgeRecord(path, bridgeRec{Offload: off, Built: built, Restarted: true}); err != nil {
@@ -89,8 +89,8 @@ func TestRestartGate(t *testing.T) {
 		}
 	})
 
-	// A RE-RUN AFTER A BUILD THAT FAILED PART-WAY: the first build turned the offload off, so the
-	// re-run reads back "0" -- the record keeps the user's own value for uninstall to put back.
+	// A re-run after a build that failed part-way: the first build turned the offload off, so the
+	// re-run reads back "0"; the record keeps the user's own value for uninstall to put back.
 	// Another adapter's record is that adapter's, and replaces it.
 	t.Run("re-run after a failed build", func(t *testing.T) {
 		_, path := setup(t)
@@ -114,8 +114,8 @@ func TestRestartGate(t *testing.T) {
 		}
 	})
 
-	// AN UNINSTALL THEN AN INSTALL: the record went with the bridge, so the new bridge owes its own
-	// restart -- the earlier cold boots are before its build and do not count.
+	// An uninstall then an install: the record went with the bridge, so the new bridge owes its own
+	// restart; the earlier cold boots predate its build and do not count.
 	t.Run("uninstall then install", func(t *testing.T) {
 		cfg, path := setup(t)
 		if err := writeBridgeRecord(path, bridgeRec{Offload: off, Built: built, Restarted: true}); err != nil {
@@ -132,7 +132,7 @@ func TestRestartGate(t *testing.T) {
 		}
 	})
 
-	// A READ THAT FAILS PROCEEDS, unmarked, so the next start asks again; and a record no install
+	// A read that fails proceeds, unmarked, so the next start asks again; and a record no install
 	// built (a member swap's first record, or no record at all) asks nothing.
 	t.Run("could not tell, and nothing to count", func(t *testing.T) {
 		cfg, path := setup(t)

@@ -8,10 +8,9 @@ import (
 	"briard.io/shared/api"
 )
 
-// The planned-handover directive. What is worth asserting here is the MODE
-// mapping and the refusals -- the eviction itself is a real mechanism and is proven against a
-// real drbd-reactor in nixosTest/reactor-evict.nix, not against a fake that would agree with
-// whatever this file happens to send.
+// The planned-handover directive. Asserted here are the mode mapping and the refusals; the
+// eviction itself is a real mechanism, proven against a real drbd-reactor in
+// nixosTest/reactor-evict.nix, not a fake that would agree with whatever this file sends.
 
 type fakeEvictor struct {
 	calls        int
@@ -91,10 +90,10 @@ func TestApplyHandoverModes(t *testing.T) {
 	}
 }
 
-// The sync is a pre-copy, not a gate: a node whose disk cannot flush is a node to evict away
-// from, so a failing FsSync is logged and the eviction PROCEEDS -- the unmount retries the same
-// writeback with the same result either way. This also absorbs version skew: an older guest
-// answers fs.sync with unknown-verb, which must not strand the handover.
+// The sync is a pre-copy, not a gate: a node whose disk cannot flush is one to evict away from, so
+// a failing FsSync is logged and the eviction proceeds (the unmount retries the same writeback
+// with the same result either way). That also absorbs version skew: an older guest answers
+// fs.sync with unknown-verb, which must not strand the handover.
 func TestApplyHandoverEvictsEvenWhenTheSyncFails(t *testing.T) {
 	f := &fakeEvictor{syncErr: errors.New("fs.sync: unknown verb")}
 	o := Config{}.applyHandover(context.Background(),

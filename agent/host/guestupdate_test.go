@@ -233,11 +233,11 @@ func withImage(t *testing.T, c *guestChannel, m install.Manifest, contents strin
 	return m
 }
 
-// The directive end to end: a signed guest release resolved on the channel, its
-// image fetched, verified, expanded and staged beside the one in use, the swap handed to the
-// upgrader with the release it must prove, the node-local record written with the exact
-// signed bytes -- and, once there, a no-op that says so. The assertion proves the positive:
-// the staged image is the manifest's expanded artifact, byte for byte.
+// The directive end to end: a signed guest release resolved on the channel, its image fetched,
+// verified, expanded and staged beside the one in use, the swap handed to the upgrader with the
+// release it must prove, the node-local record written with the exact signed bytes, and once
+// there, a no-op that says so. The positive is proven: the staged image is the manifest's
+// expanded artifact, byte for byte.
 func TestUpdateGuestStagesTheImageAndSwaps(t *testing.T) {
 	c, key := newGuestChannel(t)
 	want := withImage(t, c, guestMan("vm.20260910.nnnnnnn", "/nix/store/n-nixos-system", "v3.20260906.aaaaaaa"), "the new image")
@@ -349,12 +349,11 @@ func TestUpdateGuestTrustsTheClosureOverTheRecord(t *testing.T) {
 	}
 }
 
-// AN EMPTY PAYLOAD RESOLVES `stable`, NOT `latest`. The two pointers name different
-// releases here on purpose, because that is the only shape in which the default is observable:
-// a directive carrying no target is what an operator or a cloud sends when they mean "just
-// update", and defaulting to `latest` would walk the node onto whatever was published last -- a
-// release the channel points at precisely so that it can be PROVEN before promotion. The
-// assertion is which release the node took, never that it took one.
+// An empty payload resolves `stable`, not `latest`. The two pointers name different releases on
+// purpose, the only shape in which the default is observable. No target is what an operator or a
+// cloud sends to mean "just update", and defaulting to `latest` would walk the node onto whatever
+// was published last, a release the channel points at precisely so it can be proven before
+// promotion. The assertion is which release the node took, never that it took one.
 func TestUpdateGuestEmptyPayloadTakesStableNotLatest(t *testing.T) {
 	c, key := newGuestChannel(t)
 	promoted := withImage(t, c, guestMan("vm.20260910.sssssss", "/nix/store/s-nixos-system", ""), "the promoted image")
