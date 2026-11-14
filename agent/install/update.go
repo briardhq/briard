@@ -25,20 +25,22 @@ import (
 // (install.sh's bootstrap pattern, on a timer). The unit runs it only once the COMMITTED agent's
 // VerifyAgent has passed it, and that check is the one thing the running agent does for its
 // replacement: a release proves its own check (the self-test) before it may become the committed
-// agent. One process, in order: reconcile a run that died mid-swap, decide against the installed
-// manifest, fetch and verify, stage, self-test the candidate, smoke-test a staged qemu, stop the
-// agent through its ordinary stop path, swap, start and watch it reach READY, then commit -- or
-// revert and leave the reason for the agent that comes back. The running agent carries no other
-// update logic: its stop path is the safe point.
+// agent. One process, in order: reconcile a run that died mid-swap, defer if briard was stopped,
+// decide against the installed manifest, fetch and verify, stage, smoke-test a staged qemu,
+// self-test the candidate, lay the release's keyring, stop the agent through its ordinary stop
+// path, swap, start and watch it reach READY, then commit -- or revert and leave the reason for
+// the agent that comes back. The running agent carries no other update logic: its stop path is
+// the safe point.
 //
-// Scope is the BRIARD BUNDLE: the agent, the guest launch shim, the qemu tree and the guest
-// bundle move as one release, staged as .next siblings and swapped together. Only entries whose
-// sha256 differs from the installed manifest's are fetched -- a JSON compare, no hashing of the
-// 86 MB qemu tree -- which is what keeps a daily tick at the agent's ~9 MB rather than the
-// bundle's ~28 MB, and is safe by construction: an identical hash is an identical artifact, so a
-// skipped qemu is still the pairing the release was tested with. A staged qemu is smoke-tested
-// by THIS binary -- the release's own agent -- before anything is stopped, so a release that does
-// not run on this host is refused at no cost, and the node never lands on agent N with qemu N-1.
+// Scope is the BRIARD BUNDLE: the agent, its manifest, the guest launch shim (the tray on
+// Windows), the qemu tree and the guest bundle move as one release, staged as .next siblings and
+// swapped together. Only entries whose sha256 differs from the installed manifest's are fetched
+// -- a JSON compare, no hashing of the 86 MB qemu tree -- which is what keeps a daily tick at the
+// agent's ~9 MB rather than the bundle's ~28 MB, and is safe by construction: an identical hash
+// is an identical artifact, so a skipped qemu is still the pairing the release was tested with.
+// A staged qemu is smoke-tested by THIS binary -- the release's own agent -- before anything is
+// stopped, so a release that does not run on this host is refused at no cost, and the node never
+// lands on agent N with qemu N-1.
 
 // The artifacts of the briard bundle, by the names the manifest uses; the agent's and the qemu
 // bundle's are per OS (update_other.go, update_windows.go). Anything else a briard manifest
@@ -54,11 +56,9 @@ const (
 // cannot be read): refused loudly, so a bad pin looks like one to whoever sent it.
 var ErrBelowFloor = errors.New("install: pinned release is below the stable floor")
 
-// ErrTooOldToUpgrade is the UPGRADE FLOOR's refusal: the installed release is older
-// than the oldest this one can be installed over, so the remedy is a reinstall rather than
-// another update. Loud, and naming the remedy, because the alpha's answer to an unupgradable
-// node is exactly that (it is reinstall-only) and a node that cannot say so is a node
-// whose owner discovers it from the symptom instead.
+// ErrTooOldToUpgrade is the UPGRADE FLOOR's refusal: the installed release is older than the
+// oldest this one can be installed over, so the remedy is a reinstall rather than another update.
+// Loud, and naming the remedy, so the owner learns it from the message rather than the symptom.
 var ErrTooOldToUpgrade = errors.New("install: this machine is too old to upgrade to that release")
 
 // MinUpgradeFrom is THE FLOOR THIS TREE DECLARES: the oldest installed release the release built
@@ -78,12 +78,12 @@ var ErrTooOldToUpgrade = errors.New("install: this machine is too old to upgrade
 // it to reinstall, which in this product means a household's machine comes apart and goes back
 // together.
 //
-// ⚠️ THE FLOOR AND THE PUBLISH GATE INTERACT, and the interaction is not optional. Gate 3
-// (lab/vanilla-linux/tests/upgrade.sh) drives `stable` -> the candidate; a floor
-// ABOVE the current stable makes that refusal correct and the gate red for a true reason. So a
-// release that raises the floor past stable has DELIBERATELY CLOSED its own upgrade path, and
-// the publish sequence has to record the refusal as the declared outcome rather than as a
-// finding. Decide that before raising it, not while reading a red gate.
+// ⚠️ THE FLOOR AND THE PUBLISH GATE INTERACT, and the interaction is not optional. The upgrade
+// gate drives `stable` -> the candidate; a floor ABOVE the current stable makes that refusal
+// correct and the gate red for a true reason. So a release that raises the floor past stable has
+// DELIBERATELY CLOSED its own upgrade path, and the publish sequence has to record the refusal as
+// the declared outcome rather than as a finding. Decide that before raising it, not while reading
+// a red gate.
 //
 // THE SECOND THING IT BUYS, which may be the larger one: a migration becomes deletable. Code
 // that exists to read an old on-disk shape can go once the floor is past the release that wrote
@@ -92,8 +92,8 @@ var ErrTooOldToUpgrade = errors.New("install: this machine is too old to upgrade
 //
 // ⚠️ A var, not a const, for ONE reason: the wiring that carries it into a manifest cannot be
 // tested against a value that never varies, and a test that cannot fail is not a test.
-// Nothing at runtime writes it -- the only writer
-// besides this line is TestWriteManifestCarriesTheTreesFloor, which restores it.
+// Nothing at runtime writes it -- the only writer besides this line is
+// TestWriteManifestCarriesTheTreesFloor, which restores it.
 var MinUpgradeFrom = "v3.26110216.07bf1e6"
 
 // Decision is what Decide concluded: whether to install, and the one line saying why either way.
@@ -146,10 +146,10 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 			return Decision{}, fmt.Errorf("%w: installed release id %q has no date to compare min_upgrade_from %s against",
 				ErrTooOldToUpgrade, have.Version, want.MinUpgradeFrom)
 		}
-		// On the DATE, like every other ordering in this channel (owner, 2026-09-20). It
-		// inherits the blind spot `min_briard` has within one date field, and for the same reason
-		// it is tolerable: `promote` refuses a build whose date field equals stable's, so
-		// `stable` cannot cross a floor twice in one hour.
+		// On the DATE, like every other ordering in this channel. It inherits the blind spot
+		// `min_briard` has within one date field, and for the same reason it is tolerable:
+		// `promote` refuses a build whose date field equals stable's, so `stable` cannot cross a
+		// floor twice in one hour.
 		if haveDate < floorDate {
 			return Decision{}, fmt.Errorf("%w: installed %s is older than %s's min_upgrade_from %s — this machine cannot be upgraded to it and must be reinstalled",
 				ErrTooOldToUpgrade, have.Version, want.Version, want.MinUpgradeFrom)
@@ -171,14 +171,11 @@ func Decide(target string, want Manifest, have, stable *Manifest) (Decision, err
 		if haveDate < wantDate {
 			return Decision{Install: true, Reason: fmt.Sprintf("stable moved to %s (installed %s)", want.Version, have.Version)}, nil
 		}
-		// ⚠️ "AT OR PAST" IS FOR THE CASE IT DESCRIBES, AND EQUALITY IS NOT IT. A node sitting on
-		// the release stable names falls through to the shared `already at X` line below, which
-		// is what `briard update` promises to print (agent/cli/cli.go's help row) and
-		// what an operator reads as "nothing owed". Found by the rigs the moment the default became
-		// `stable`: the bare verb started taking this branch instead of latest's, and
-		// two host-agent rigs asserting `already at <id>` went red on the wording alone.
-		// The longer line stays for what it actually means -- installed is genuinely PAST stable,
-		// which is a pin, and saying so is the point.
+		// ⚠️ "PAST STABLE" IS NOT "AT STABLE". A node sitting on the release stable names falls
+		// through to the shared `already at X` line below, which is what `briard update` promises
+		// to print (agent/cli/cli.go's help row), what an operator reads as "nothing owed", and
+		// what host-agent rigs assert by text. This line is only for installed genuinely PAST
+		// stable, which is a pin, and saying so is the point.
 		if have.Version != want.Version {
 			return Decision{Reason: fmt.Sprintf("installed %s is past stable %s; nothing to do", have.Version, want.Version)}, nil
 		}
@@ -276,7 +273,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 		return "", err
 	}
 	// A NODE THE USER STOPPED STAYS STOPPED: the run would stop the stopped agent, swap, and start
-	// it -- the guest back at 03:00. A crashed node is not stopped (its OS service failed, or is
+	// it -- the guest back up in the night. A crashed node is not stopped (its OS service failed, or is
 	// restarting) and still updates, because the update may be its fix; so does a node whose state
 	// could not be read.
 	if u.Stopped != nil {
@@ -311,9 +308,9 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	// FETCH EVERYTHING FIRST, STAGE NOTHING UNTIL IT ALL VERIFIED. Into a private temp dir on
 	// the same filesystem as the candidates; a refusal anywhere (a tampered net-wrap, a qemu
 	// tarball whose hash disagrees) returns before any .next exists, so refuse-and-stay holds
-	// for the bundle as it did for the agent alone. The one thing that may outlive a refused
-	// run is an extracted qemu TREE, and that is deliberate: it is verified bytes under a
-	// name no link points at, inert until a run stages a link to it.
+	// for the whole bundle. The one thing that may outlive a refused run is an extracted qemu or
+	// guest TREE, and that is deliberate: it is verified bytes under a name no link points at,
+	// inert until a run stages a link to it.
 	tmp, err := os.MkdirTemp(u.Layout.Base, ".update-")
 	if err != nil {
 		return "", fmt.Errorf("install: update temp dir: %w", err)
@@ -455,8 +452,8 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 	logf("update: staged %s (%s)", want.Version, strings.Join(staged, ", "))
 
 	// THE QEMU QUESTION, ANSWERED BEFORE ANYTHING STOPS. This binary is the release's own agent,
-	// so the pairing proven is agent N with qemu N, and a refusal
-	// costs the household nothing: the staged set goes, nothing was touched. The question is not
+	// so the pairing proven is agent N with qemu N, and a refusal costs the household nothing: the
+	// staged set goes, nothing was touched. The question is not
 	// "is this qemu good" but "does release N work on this host" (a missing lib, an old glibc, an
 	// absent device model), and no is a reason to refuse the release.
 	if qemuTree != "" {
@@ -676,10 +673,10 @@ func stageFile(src string, stage func(io.Reader) error) error {
 	return stage(f)
 }
 
-// extractTree unpacks a verified qemu tarball into dest, which appears whole or not at all
-// (unpacked into a sibling temp dir, renamed into place). tar(1) rather than archive/tar: the
-// install unpacks this same tarball with it, and every host we install on has one (Windows
-// ships tar.exe) -- one way to open the bundle, not two.
+// extractTree unpacks a verified qemu or guest-bundle tarball into dest, which appears whole or
+// not at all (unpacked into a sibling temp dir, renamed into place). tar(1) rather than
+// archive/tar: the install unpacks this same tarball with it, and every host we install on has
+// one (Windows ships tar.exe) -- one way to open the bundle, not two.
 func extractTree(ctx context.Context, tarball, dest string) error {
 	tmp, err := os.MkdirTemp(filepath.Dir(dest), ".update-tree-")
 	if err != nil {
@@ -723,19 +720,15 @@ func (u *Update) installed(logf func(string, ...any)) *Manifest {
 	return &m
 }
 
-// DirectiveUpdateVM is the LOCAL directive kind of the vm chain: `briard update --vm`
-// and the agent's own nightly timer submit it through the admin door; the payload is a target
-// (`stable`, `latest`, an exact vm id; "" is stable). It is deliberately NOT in
-// shared/api: the cloud names closures (`upgrade-system`) and the wire allowlist stays closed --
+// DirectiveUpdateVM is the LOCAL directive kind of the vm chain: `briard update --vm` submits it
+// through the admin door and the agent's own nightly timer in-process; the payload is a target
+// (`stable`, `latest`, an exact vm id; "" is stable). It is deliberately NOT in shared/api: the
+// cloud's kind is `upgrade-system` (an exact vm release id) and the wire allowlist stays closed --
 // a kind that never crosses to the cloud does not belong in the contract that says what can.
 // It lives here rather than in agent/host so the CLI and the host share one spelling.
 //
-// ⚠️ IT WAS `update-guest` ONCE, and the rename was safe for the reason the comment
-// above already gives: nothing carries this kind across a version boundary. The cloud never
-// emits it, the CLI reaches a binary it is symlinked to, the timer is in-process, and no spool
-// persists a kind across an upgrade. What DID read the old spelling was the journal -- the fleet
-// tests wait on these lines by text -- and every one of those waits fails by timeout rather than
-// passing vacuously, which is what made the rename cheap to prove.
+// ⚠️ The spelling is read outside the code too: fleet tests wait on `directive update-vm` in the
+// journal by text.
 const DirectiveUpdateVM = "update-vm"
 
 // ErrBriardTooOld is the min_briard refusal: the installed briard predates what a vm release

@@ -6,6 +6,7 @@
 //	<base>/manifest.json       the signed manifest of the committed release -- what an update
 //	                           compares the channel against
 //	<base>/briard-net-wrap     the guest launch shim, cattle that rides with the agent
+//	<base>/briard-tray.exe     Windows only: the notification-area icon, likewise
 //	<base>/qemu                a SYMLINK to the committed qemu tree, qemu-<release>/ beside it --
 //	                           so moving qemu is a rename of a link, never a recursive delete, and
 //	                           N-1 stays on disk for free
@@ -28,8 +29,8 @@
 // therefore means exactly "a run stopped between its swap and its verdict", and the next run
 // reverts it (Interrupted). One rule, no flag, no state file.
 //
-// The bundle moves as ONE release: whatever of {agent, manifest, net-wrap, qemu, guest} a release
-// changed is staged, and a partial set is the normal case (an unchanged artifact is not
+// The bundle moves as ONE release: whatever of {agent, manifest, net-wrap, tray, qemu, guest} a
+// release changed is staged, and a partial set is the normal case (an unchanged artifact is not
 // re-fetched). A revert puts every displaced entry back, so the node lands on a combination that
 // WAS tested, never on agent N with qemu N-1.
 package selfupdate
@@ -107,8 +108,8 @@ func (l Layout) NextPath() string { return filepath.Join(l.Base, nextName) }
 func (l Layout) PrevPath() string { return filepath.Join(l.Base, agentName+prevSuffix) }
 
 // ManifestPath / NextManifestPath are the committed release's signed manifest and the staged
-// candidate's, swapped together with the agent (existence-guarded, so a node installed before
-// manifests were kept simply has none until its first update).
+// candidate's, swapped together with the agent (existence-guarded: a node installed from a local
+// artifact dir without a manifest has none until its first update).
 func (l Layout) ManifestPath() string     { return filepath.Join(l.Base, manifestName) }
 func (l Layout) NextManifestPath() string { return filepath.Join(l.Base, nextManifest) }
 
@@ -131,18 +132,16 @@ func (l Layout) NextTrayPath() string { return filepath.Join(l.Base, nextTray) }
 
 // QEMUPath / NextQEMUPath are the committed and staged LINKS to a qemu tree; QEMUTree is where
 // the tree for one release lives. The link is what the agent's QEMU/QEMU_DATADIR point through
-// (install.sh keeps the public /opt/briard/qemu path as a link onto QEMUPath, because the
-// bundle bakes that prefix into its ELF interpreter), so moving it is a rename of a link.
+// (on Linux the install keeps the public /opt/briard/qemu path as a link onto QEMUPath, because
+// the bundle bakes that prefix into its ELF interpreter), so moving it is a rename of a link.
 func (l Layout) QEMUPath() string               { return filepath.Join(l.Base, qemuLink) }
 func (l Layout) NextQEMUPath() string           { return filepath.Join(l.Base, nextQEMULink) }
 func (l Layout) QEMUTree(release string) string { return filepath.Join(l.Base, qemuTree+release) }
 
-// StageNext atomically writes the candidate binary to agent.next (temp file in the same
+// StageNext atomically writes the candidate binary to <agent>.next (temp file in the same
 // directory, fsync, rename), mode 0755 — durable on disk BEFORE it can ever be swapped in, so
-// the swap is safe against a power loss. Idempotent (overwrites).
-//
-// The temp name is unique per call rather than a fixed `.tmp`: with the fetch run by a
-// unit rather than the agent, two writers are at least conceivable (a directive and a timer
+// the swap is safe against a power loss. Idempotent (overwrites). The temp name is unique per
+// call rather than a fixed `.tmp`: two writers are at least conceivable (a directive and a timer
 // tick merging late), and a fixed name would let them tear each other's candidate.
 func (l Layout) StageNext(src io.Reader) error {
 	return atomicWrite(l.NextPath(), 0o755, func(f *os.File) error {
@@ -236,7 +235,7 @@ func (l Layout) StageNextGuest(tree string) error {
 
 // CommittedGuestRelease is the release id the committed guest tree carries in its name --
 // what the guest must report as its Bundle once dressed. "" when no tree is committed (an
-// install that predates the bundle, or a candidate not yet committed).
+// install whose channel shipped no guest bundle).
 func (l Layout) CommittedGuestRelease() string {
 	t, ok := l.CommittedGuestTree()
 	if !ok {
@@ -254,8 +253,8 @@ func (l Layout) PruneGuestTrees() ([]string, error) {
 	})
 }
 
-// THE PERMANENT REVERT. The guest's own pivot falls back only until
-// its next launch (a fresh scratch knows nothing), so the host remembers two release ids beside
+// THE PERMANENT REVERT. The guest's own pivot falls back only until its next launch (a fresh
+// scratch knows nothing), so the host remembers two release ids beside
 // the committed tree: which tree the guest last ran SUCCESSFULLY (`guest.good`, which also keeps
 // that tree from the pruner) and which release it REFUSED (`guest.reverted`). A refused release is
 // never pushed again; the good tree is, on every launch, until a new host commit brings a different
@@ -575,7 +574,7 @@ func (l Layout) TakeFailure() (release, reason string, ok bool) {
 }
 
 // WriteTarget leaves the release the next update run should converge to: `stable`, `latest`,
-// or an exact host id. One line, read and unlinked by the unit — a message, not state. It
+// `dev`, or an exact host id. One line, read and unlinked by the unit — a message, not state. It
 // replaces whatever target was waiting, since the unit runs once per start and the newest
 // intent is the one that should win.
 func (l Layout) WriteTarget(target string) error {

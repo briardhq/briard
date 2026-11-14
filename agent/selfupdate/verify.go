@@ -9,11 +9,11 @@ import (
 )
 
 // A release artifact is trusted only if it carries a valid detached Ed25519 signature from
-// the release-signing root. The agent verifies BEFORE it stages —
-// refuse-and-stay is the whole point: a bad or absent signature must leave the committed
-// binary untouched, never trial an unverified binary. This is the client half of the four
-// key-management points (keyring / offline-blesses-warm root / M-of-N + escrow /
-// verify-or-refuse); full TUF (roles, timestamp/snapshot freshness) is deferred.
+// the release-signing root. The agent verifies BEFORE it stages — refuse-and-stay is the whole
+// point: a bad or absent signature must leave the committed binary untouched, never trial an
+// unverified binary. This is the client half of the four key-management points (keyring /
+// offline-blesses-warm root / M-of-N + escrow / verify-or-refuse); full TUF (roles,
+// timestamp/snapshot freshness) is not implemented.
 
 // ErrUnsigned is returned when an artifact arrives with no signature — refused, not trialed.
 var ErrUnsigned = errors.New("selfupdate: unsigned artifact refused")
@@ -29,13 +29,14 @@ var ErrBadSignature = errors.New("selfupdate: signature does not verify against 
 
 // Keyring is the set of release-signing public keys the agent trusts. An artifact is accepted
 // iff at least ONE key verifies its signature, so:
-//   - key rotation is additive — ship the next public key in a base-image update BEFORE
+//   - key rotation is additive — ship the next public key in a release's keyring.pem BEFORE
 //     signing releases with it, and the union keeps verifying across the cutover;
 //   - a lost signing key is survivable — the offline M-of-N root blesses a fresh warm signer
 //     and its public key joins the ring; agents trust the union, no flag-day.
 //
-// The ring on disk is replaced only by a release's own keyring.pem, an artifact of a manifest a
-// key already in the ring signed, so the ring widens only by a release the ring vouched for.
+// Outside a (re)install, the ring on disk is replaced only by a release's own keyring.pem, an
+// artifact of a manifest a key already in the ring signed, so the ring widens only by a release
+// the ring vouched for.
 type Keyring struct {
 	keys []ed25519.PublicKey
 }

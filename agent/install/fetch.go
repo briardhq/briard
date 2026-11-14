@@ -1,20 +1,19 @@
-// Package install is the free-local installer's signed-artifact fetch (assertion e):
-// the network half of scripts/install.sh, replacing the BRIARD_ARTIFACTS local-staging path.
+// Package install is the signed-artifact fetch from the release channel: the network half of the
+// install (`briard-agent install`, the alternative to a local BRIARD_ARTIFACTS dir), and the
+// agent's own update (Update).
 //
-// It reuses the release keyring (selfupdate.Keyring) as the single verify-or-refuse
-// trust root, but scales to the multi-GB guest image by signing a small MANIFEST rather than
-// each artifact. The keyring verifies the manifest's detached Ed25519 signature (small, held
-// in memory, the exact self-update primitive); the manifest then pins every artifact by SHA-256 +
-// size, and each artifact is STREAMED to disk with its hash checked against the signed
-// manifest — never the whole 2.5 GB image in memory. A signed list of hashes is the standard
-// way to extend one signature over large blobs, and it keeps the trust root identical to the
-// agent self-update path.
+// It uses the release keyring (selfupdate.Keyring) as the single verify-or-refuse trust root,
+// and scales to the large guest image by signing a small MANIFEST rather than each artifact. The
+// keyring verifies the manifest's detached Ed25519 signature (small, held in memory); the
+// manifest then pins every artifact by SHA-256 + size, and each artifact is STREAMED to disk with
+// its hash checked against the signed manifest — never the whole image in memory. A signed list
+// of hashes is the standard way to extend one signature over large blobs.
 //
 // The safety property is all-or-nothing, verify-before-commit: everything lands in a private
 // temp dir, and only when the manifest verifies AND every artifact's hash/size matches is that
 // dir atomically renamed into place. Any missing, tampered, unsigned, or wrong-size artifact —
 // or an empty/absent keyring — aborts the whole fetch and leaves the destination untouched, so
-// install.sh never consumes a half-verified staging dir (refuse-and-stay, the same doctrine as
+// the install never consumes a half-verified staging dir (refuse-and-stay, the same doctrine as
 // selfupdate's refuse-and-keep-current).
 package install
 
@@ -68,18 +67,17 @@ import (
 // (`stable`, `latest`, or an exact version id) to pick the manifest, and then resolves every
 // artifact against the manifest's `version`, never against the path it was fetched from. That
 // stops pointer paths from duplicating a 380 MB image, and it is an anti-substitution property: a
-// signed manifest says where its own artifacts live. (`briard-agent` is the one artifact ALSO
-// copied under the pointer paths, because install.sh has to curl a bootstrap before anything
-// exists that can parse a manifest.)
+// signed manifest says where its own artifacts live. (`briard-agent`, `.exe` on Windows, is the
+// one artifact ALSO copied under the pointer paths, because install.sh has to curl a bootstrap
+// before anything exists that can parse a manifest.)
 //
-// The chains are release LINES, not flavours of one release: the briard bundle (agent, qemu,
-// net-wrap, the guest's binaries) and the VM image move on different cadences and carry
-// different version series. The manifest names its chain and platform so a crossed wire -- a vm
-// manifest served where a briard one was expected, a Windows bundle where the Linux one should
-// be -- is refused by the signature's own content rather than compared by eye. The chain is a
-// FIELD rather than something read off the version id's first token because that token is the
-// epoch (`v3.`), which moves forward over time; a series check keyed on it would refuse every
-// update across an epoch boundary, fleet-wide.
+// The chains are release LINES, not flavours of one release: they move on different cadences
+// and carry different version series. The manifest names its chain and platform so a crossed
+// wire -- a vm manifest served where a briard one was expected, a Windows bundle where the Linux
+// one should be -- is refused by the signature's own content rather than compared by eye. The
+// chain is a FIELD rather than something read off the version id's first token because that
+// token is the epoch (`v3.`), which moves forward over time; a series check keyed on it would
+// refuse every update across an epoch boundary, fleet-wide.
 const (
 	ChainBriard = "briard" // briard-agent, briard-net-wrap, qemu-bundle.tar.zst, guest-bundle.tar.zst — per OS and CPU
 	ChainVM     = "vm"     // nixos.qcow2.zst — per CPU
@@ -103,14 +101,15 @@ const (
 	ManifestName = "manifest.json"
 	sigSuffix    = ".sig"
 
-	// MaxManifestSize bounds the index download. The manifest is a short JSON list; 1 MiB is
+	// maxManifestSize bounds the index download. The manifest is a short JSON list; 1 MiB is
 	// vast headroom while still a hard ceiling before the signature is even checked.
 	maxManifestSize = 1 << 20
-	// MaxArtifactSize is the absolute per-artifact ceiling, above the manifest's own Size (which
-	// is the real bound). The guest image is ~2.5 GB; 8 GiB leaves room without being unbounded.
+	// maxArtifactSize is the absolute per-artifact ceiling, above the manifest's own Size (which
+	// is the real bound). The guest image expands to ~1.2 GB; 8 GiB leaves room without being
+	// unbounded.
 	maxArtifactSize = 8 << 30
 
-	// CompressedSuffix marks an artifact shipped compressed and expanded here, after
+	// compressedSuffix marks an artifact shipped compressed and expanded here, after
 	// verification, to its name minus the suffix. Measured: the guest image goes 1178 -> 377 MB
 	// and the qemu bundle 86 -> 19 MB, which is what a household link actually waits on.
 	//
@@ -155,8 +154,8 @@ func Unreachable(err error) bool {
 }
 
 // Entry pins one artifact in the manifest: Name is both the URL path element
-// (<root>/<chain>/<version>/<Name>) and the filename written under the staging dir; SHA256 is
-// lowercase hex; Mode is the file mode (0 → 0644; the agent binary ships 0755).
+// (<root>/<chain>/<version>/<platform>/<Name>) and the filename written under the staging dir;
+// SHA256 is lowercase hex; Mode is the file mode (0 → 0644; the agent binary ships 0755).
 type Entry struct {
 	Name   string `json:"name"`
 	SHA256 string `json:"sha256"`
@@ -172,10 +171,9 @@ type Manifest struct {
 	Platform  string  `json:"platform,omitempty"` // PlatformHost on the briard chain, PlatformVM on the vm chain
 	Version   string  `json:"version"`
 	Artifacts []Entry `json:"artifacts"`
-	// The vm chain names the CLOSURE, not just the image: System is the store path of
-	// the NixOS toplevel the image boots -- the bytes still come from the binary cache and nix
-	// verifies them itself, so naming it adds no trust root, but it makes image and closure a PAIR
-	// (what an upgrade activates, and what a rescue must land on). MinBriard is the oldest briard
+	// The vm chain names the CLOSURE, not just the image: System is the store path of the NixOS
+	// toplevel the image boots -- what the vm resolver compares with the closure the guest runs,
+	// and what an image upgrade proves the new boot against. MinBriard is the oldest briard
 	// release this VM tolerates: briard must tolerate old VMs, the VM need never tolerate old
 	// briards, and this field is what closes the one direction that can go wrong (an
 	// exact-pinned old briard resolving vm/stable). Both are empty on the briard chain.
@@ -183,22 +181,21 @@ type Manifest struct {
 	MinBriard string `json:"min_briard,omitempty"`
 	// The pair, named from the briard side: VM is the vm release this briard release
 	// was published beside -- what an installer fetches after the briard chain, and what
-	// `promote` moves vm/stable to. The vm chain stopped deriving its id from the commit (its
-	// image is a function of its INPUTS and is re-published only when they change), so the
-	// briard manifest is the only place the pairing can live. Empty on the vm chain.
+	// `promote` moves vm/stable to. The vm chain's id is not derived from the commit (its image
+	// is a function of its INPUTS and is re-published only when they change), so the briard
+	// manifest is the only place the pairing can live. Empty on the vm chain.
 	VM string `json:"vm,omitempty"`
 	// Inputs is the VM image's input hash (sha256 hex, flake.nix guestInputs): the fact that
 	// decides whether a stage re-publishes the vm chain or reuses the release that already
 	// serves these exact inputs. Empty on the briard chain.
 	Inputs string `json:"inputs,omitempty"`
-	// MinUpgradeFrom is the UPGRADE FLOOR: the oldest INSTALLED release this one can
-	// be installed over. Empty means no floor, which is the normal state. It is the mirror image
-	// of MinBriard and must not be confused with it -- MinBriard points from the VM at briard
-	// (inner declaring a minimum on the outer, so briard upgrades first), while this points
-	// from a release at its OWN PAST. Those are the only two directions a floor may ever point;
-	// a floor from briard at the VM is forbidden, because a briard that needs a newer image
-	// upgrades the image rather than waiting for it. Written from install.MinUpgradeFrom, a
-	// constant in the tree, so the release carries its own floor rather than being told one.
+	// MinUpgradeFrom is the UPGRADE FLOOR: the oldest INSTALLED release this one can be
+	// installed over; empty (the normal state) means no floor. Not to be confused with MinBriard:
+	// MinBriard points from the VM at briard (inner declaring a minimum on the outer, so briard
+	// upgrades first), this points from a release at its OWN PAST. Those are the only two
+	// directions a floor may point; a floor from briard at the VM is forbidden, because a briard
+	// that needs a newer image upgrades the image rather than waiting for it. Written from
+	// install.MinUpgradeFrom, so the release carries its own floor rather than being told one.
 	MinUpgradeFrom string `json:"min_upgrade_from,omitempty"`
 }
 
@@ -278,8 +275,8 @@ func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error 
 
 	// 3. All artifacts verified against the signed manifest — publish atomically.
 	//
-	// ATOMIC, NOT DURABLE, deliberately. This set is a staging dir: install.sh copies
-	// it into /opt/briard, deletes it, and flushes what it laid down. Flushing here as well would
+	// ATOMIC, NOT DURABLE, deliberately. This set is a staging dir: the install (host.Install)
+	// copies it out, deletes it, and flushes what it laid down. Flushing here as well would
 	// write the largest thing we ship to disk twice for a copy nobody keeps. A caller that keeps
 	// what this places must flush it itself (atomicfile.SyncTree).
 	if err := os.Rename(tmp, dest); err != nil {
@@ -290,8 +287,8 @@ func (f *Fetcher) FetchVerified(ctx context.Context, target, dest string) error 
 }
 
 // Manifest resolves target on the fetcher's chain: the verified manifest and the exact bytes
-// that verified, and nothing on disk -- what the guest chain's resolver needs, since a
-// guest upgrade activates a closure from the cache rather than fetching an artifact.
+// that verified, and nothing on disk -- for a caller that decides before it fetches (the guest
+// chain's resolver, the Windows setup program), then fetches what it chose through Artifact.
 func (f *Fetcher) Manifest(ctx context.Context, target string) (Manifest, []byte, error) {
 	man, mBytes, _, err := f.fetchManifest(ctx, target)
 	return man, mBytes, err
@@ -422,7 +419,7 @@ func readBounded(name string, limit int64) ([]byte, error) {
 	return b, nil
 }
 
-// FetchArtifact streams <root>/<from>/<a.Name> into dir/<a.Name>, computing its SHA-256 as it
+// fetchArtifact streams <root>/<from>/<a.Name> into dir/<a.Name>, computing its SHA-256 as it
 // goes and refusing the moment the byte count exceeds a.Size or the final hash disagrees with the
 // signed manifest. The write is bounded by a.Size+1 so a longer-than-declared body is caught
 // rather than silently truncated.
@@ -472,19 +469,17 @@ func (f *Fetcher) fetchArtifact(ctx context.Context, from, dir string, a Entry) 
 	}
 	// ⚠️ EXPANSION HAPPENS HERE AND NOWHERE EARLIER. Everything above this line has established
 	// that these bytes are the bytes the release signed; only now is it safe to hand them to a
-	// decoder. Streaming the download THROUGH a decompressor would have been less code and would
-	// have fed attacker-controlled input to a parser before any signature was checked — the
-	// ordering, not the decompression, is the security-relevant part.
+	// decoder. Streaming the download THROUGH a decompressor would be less code and would feed
+	// attacker-controlled input to a parser before any signature was checked — the ordering, not
+	// the decompression, is the security-relevant part.
 	if strings.HasSuffix(clean, compressedSuffix) {
 		return expand(filepath.Join(dir, clean), mode)
 	}
 	return nil
 }
 
-// Expand decompresses src (a verified .zst) to src minus the suffix, then removes src. The
-// staging dir therefore ends up holding exactly the filenames install.sh already expects
-// (nixos.qcow2, qemu-bundle.tar), which is why shipping them compressed needed no change to
-// install.sh at all.
+// expand decompresses src (a verified .zst) to src minus the suffix, then removes src, so the
+// staging dir holds the filenames the install reads (nixos.qcow2, qemu-bundle.tar).
 //
 // The output is bounded by maxArtifactSize even though these bytes are signed: the manifest pins
 // the COMPRESSED size, so nothing in it constrains how far they expand, and a release that was
@@ -531,7 +526,7 @@ func expand(src string, mode os.FileMode) error {
 	return nil
 }
 
-// Get fetches <root>/<rel> and returns its body, refusing a non-200 or an over-limit
+// get fetches <root>/<rel> and returns its body, refusing a non-200 or an over-limit
 // response. Used for the small manifest + signature; artifacts stream via fetchArtifact.
 func (f *Fetcher) get(ctx context.Context, rel string, limit int64) ([]byte, error) {
 	resp, err := f.do(ctx, rel)
@@ -552,7 +547,7 @@ func (f *Fetcher) get(ctx context.Context, rel string, limit int64) ([]byte, err
 	return data, nil
 }
 
-// Do issues a bounded GET for <root>/<rel>. The caller owns resp.Body.
+// do issues a bounded GET for <root>/<rel>. The caller owns resp.Body.
 func (f *Fetcher) do(ctx context.Context, rel string) (*http.Response, error) {
 	client := f.Client
 	if client == nil {
@@ -601,7 +596,8 @@ func validSegment(s string) bool {
 }
 
 // Artifact fetches one entry of version's release into dir, verified against the manifest that
-// named it -- the guest chain's image, for the host to stage beside the one in use.
+// named it -- the guest chain's image, for the host to stage beside the one in use, or the
+// Windows setup program's install script.
 func (f *Fetcher) Artifact(ctx context.Context, version, dir string, a Entry) error {
 	if !validSegment(version) {
 		return fmt.Errorf("install: bad release version %q", version)
@@ -610,9 +606,9 @@ func (f *Fetcher) Artifact(ctx context.Context, version, dir string, a Entry) er
 }
 
 // IsPointer says whether a target names a pointer path rather than an exact release id. The one
-// place the three names are enumerated: a version that spells a pointer is refused by the manifest
-// (the tree could not say which it is), and the update path floors only an exact id against
-// stable.
+// place the three names are enumerated: a version that spells a pointer is refused by
+// WriteManifest (the tree could not say which it is), and the update path floors only an exact id
+// against stable.
 func IsPointer(target string) bool {
 	return target == TargetStable || target == TargetLatest || target == TargetDev
 }

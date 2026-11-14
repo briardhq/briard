@@ -14,11 +14,11 @@ import (
 
 // notArtifacts are the channel files that describe the artifact set rather than belong to it:
 // the manifest cannot list itself, nor its signature. Nothing else is excluded, because a
-// release directory holds exactly what its manifest names -- INSTALL.SH INCLUDED, since
-// it is an ordinary artifact of briard/<version>/linux-amd64 that `promote` byte-copies to
-// the channel root. Excluding it would re-open the gap this closed: the root copy
-// is served unsigned, because the one-liner fetches it before anything exists that could verify
-// a signature, and this manifest hashing it is the only thing that ties those bytes to a release.
+// release directory holds exactly what its manifest names -- THE INSTALLERS INCLUDED (install.sh;
+// install.ps1 and briard-setup.exe on the windows arm), ordinary artifacts that `promote`
+// byte-copies to the channel root. The root copy is served unsigned, because the one-liner
+// fetches it before anything exists that could verify a signature, and this manifest hashing it
+// is the only thing that ties those bytes to a release.
 var notArtifacts = map[string]bool{
 	ManifestName:             true,
 	ManifestName + sigSuffix: true,
@@ -30,13 +30,12 @@ var notArtifacts = map[string]bool{
 // chain has one) and version the release id; all go INSIDE the signed bytes, so a manifest
 // served from a pointer path can say which release it is and where its artifacts live.
 //
-// ⚠️ THIS EXISTS SO THERE IS ONE IMPLEMENTATION OF THE FORMAT. It used to be a printf loop in
-// scripts/publish-release.sh, hand-assembling JSON — including `"mode":493`, which is 0o755
-// written in decimal by a human. That made the manifest a contract between a shell script and a
-// Go struct with nothing holding them together: a renamed field, a mode that stopped being
-// hand-converted, or a `Size` that drifted from what the reader bounds on would have shipped a
-// channel no agent could install, and no test either side could catch. The writer and the reader
-// now share this file's types, so the format cannot disagree with itself.
+// ⚠️ THIS EXISTS SO THERE IS ONE IMPLEMENTATION OF THE FORMAT. The release pipeline writes
+// every manifest through it (`briard-agent --stage-manifest`), so the writer and the reader share
+// this file's types and the format cannot disagree with itself. A manifest hand-assembled
+// elsewhere -- a renamed field, a mode written in decimal by a human, a `Size` that drifted from
+// what the reader bounds on -- would ship a channel no agent could install, with no test on
+// either side to catch it.
 //
 // Every regular file in dir is an artifact except the ones that describe the set (notArtifacts).
 // Entries are sorted by name so the same directory always produces the same bytes — the manifest
