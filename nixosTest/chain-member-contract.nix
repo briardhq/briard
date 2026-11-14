@@ -4,7 +4,7 @@
 # The rules, one assertion each. A is the reverse proxy -- a real member, and the one that actually
 # fails in the field -- driven by SIGKILL, `systemctl restart` and `daemon-reload`, never by
 # editing a unit file (a fault injection that WRITES can trigger the outcome by a path you did not
-# intend, which is how the first cut of this investigation misattributed a teardown).
+# intend, and so misattribute a teardown).
 #
 #   1 A is STARTED on promotion
 #   2 A is NOT started on the node that LOST the race
@@ -18,14 +18,13 @@
 #   8 the hold RELEASES itself and clears the start limit, and the peer keeps serving
 #
 # NOTHING HERE READS THE ROLE FOR ITS VERDICT on rules 3 and 4. A torn-down chain rebuilds and is
-# Primary again in ~40ms, so `drbdadm role` a settle window later says Primary either way -- the
-# first version of this measurement asserted exactly that and passed straight through a full
+# Primary again in ~40ms, so `drbdadm role` a settle window later says Primary either way -- an
+# assertion on the role passes straight through a full
 # demote + data-volume unmount + re-promote. `chain_since()` is the window that sees it: the
 # promote unit's and the mount's start timestamps move, and stay moved.
 #
 # WHY TWO NODES. Rule 2 needs a loser, and rule 5's consequence is a HANDOVER -- on a lone node the
-# demote is followed 40ms later by the same node re-promoting, which is what hid this defect's
-# severity for the whole first day of measuring it.
+# demote is followed 40ms later by the same node re-promoting, which hides how severe a demote is.
 { pkgs, guestModule, fixture }:
 
 let
@@ -112,8 +111,8 @@ pkgs.testers.runNixOSTest {
     # start job fails with result `dependency` fires OnFailure= exactly like one that failed on its
     # own, and on the race loser EVERY member does. Without a guard the standby masks itself for
     # the whole hold on every boot -- a five-minute window, at the shipped duration, in which it
-    # cannot take over. The first version of this test passed anyway, because rule 5's 90s timeout
-    # simply outlasted a 60s hold; the assertion below is what makes that visible instead.
+    # cannot take over. Rule 5 alone would pass anyway, because its 90s timeout simply outlasts
+    # the 60s hold; the assertion below is what makes that visible instead.
     assert loser.execute("test -L /run/systemd/system/drbd-services@r0.target")[0] != 0, (
         "RULE 2 VIOLATED: the race loser masked its own drbd-services@r0.target, so it cannot take over"
     )
@@ -123,9 +122,9 @@ pkgs.testers.runNixOSTest {
     print(f"### 2 A is not started on the loser (state={state(loser, member)})")
 
     # === 3 MANUAL RESTART AND DAEMON-RELOAD DO NOT DEMOTE =================================
-    # switch-to-configuration does both during an OS upgrade, inside the maintenance bracket --
-    # which never covered this, because the bracket stops drbd-reactor and none of this is
-    # drbd-reactor's doing.
+    # An update does both: a pushed binary set try-restarts the running members it replaces
+    # (agent/guestfirmware/bin.go), and writing the units reloads systemd. No maintenance bracket
+    # covers either -- the bracket stops drbd-reactor, and none of this is drbd-reactor's doing.
     c = chain_since(holder)
     holder.succeed(f"systemctl restart {member}")
     time.sleep(8)
@@ -211,8 +210,8 @@ pkgs.testers.runNixOSTest {
     holder.wait_until_fails("systemctl is-active briard-promotion-hold.service", timeout=hold_secs + 60)
     # POLL THE THING BEING ASSERTED, not a proxy for it. The release is a sequence -- `rm` the mask,
     # `daemon-reload` (~300ms), THEN `reset-failed` -- so the mask disappearing means step 1 is done,
-    # not that the release is finished. Keying on the mask made this rule a coin toss: it passed
-    # once and failed the next run, ~300ms early, with the product behaving identically both times.
+    # not that the release is finished. Keying on the mask makes this rule a coin toss: it can
+    # fail ~300ms early, with the product behaving identically either way.
     holder.wait_until_fails("test -L /run/systemd/system/drbd-services@r0.target", timeout=30)
     for _ in range(30):
         if holder.execute(f"systemctl is-failed {member}")[1].strip() != "failed":

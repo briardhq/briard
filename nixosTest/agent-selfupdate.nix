@@ -225,7 +225,7 @@ pkgs.testers.runNixOSTest {
 
     # === 3) REFUSE-AND-STAY: a release whose served bytes differ from what its signed manifest
     #        pins is refused by the fresh bootstrap's hash check, and an unsigned pointer before
-    #        anything is fetched -- nothing staged, nothing stopped, the verdict says failed. ===
+    #        its agent runs -- nothing staged, nothing stopped, the verdict says failed. ===
     V5 = "v3.99090700.bbbbbbb"
     publish(V5, "${readyV4}", pointers=("latest",))
     machine.succeed(f"install -m755 ${evilCand} /srv/briard/{V5}/linux-amd64/briard-agent")  # tamper AFTER signing

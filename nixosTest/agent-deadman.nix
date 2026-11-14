@@ -1,15 +1,14 @@
 # The host-agent deadman on a LONE node REBOOTS — and the reboot surfaces to the supervisor.
 #
-# This test used to assert the opposite (a lone node holds, keeps serving, never reboots) because
-# the gate derived the single-node case from the majority formula: departing loses quorum, so hold.
+# Derived from the majority formula, the single-node case would hold: departing loses quorum.
 # True, and irrelevant — there is no peer to outage, quorum is guaranteed the moment it comes back,
-# and the data is on its own disk. What holding actually bought was a reflex that did nothing at
-# all on the shape most briard installs have: the node alerted once and then sat wedged and silent
-# indefinitely. Single-node is now its own clause in deadman.RebootAllowed.
+# and the data is on its own disk. Holding would be a reflex that did nothing at all on the shape
+# most briard installs have: the node alerts once and then sits wedged and silent indefinitely.
+# Single-node is its own clause in deadman.RebootAllowed.
 #
-# Single-node harness (like agent-readopt): the guest is DRBD single-node, so it exercises exactly
-# that clause. We kill the host agent for well past T_deadman (baked short via BRIARD_DEADMAN in
-# the guest image) and prove three things:
+# Single-node harness (like agent-readopt): the guest is a lone node, which runs no DRBD and reads
+# as no peers, so it exercises exactly that clause. We kill the host agent for well past
+# T_deadman (baked short via BRIARD_DEADMAN in the guest image) and prove three things:
 #
 #   1. the in-guest deadman evaluated and chose to REBOOT (its log rides the guest serial),
 #   2. QEMU EXITED rather than resetting inside itself — `-no-reboot` is what makes a guest restart
@@ -21,8 +20,8 @@
 # running, the VIP would blip, and every other check here would still pass — while the agent had
 # silently stopped being able to observe or count its charge's restarts.
 #
-# Heavy (nested VM) → the `integration` tag. Run on the self-hosted L0:
-#   gh workflow run vm-test.yml -f test=agent-deadman
+# Heavy (nested VM) → the `integration` tag. Run one:
+#   nix build .#tests.agent-deadman -L
 { pkgs, guestDisk, agent, netWrap, dressBase }:
 pkgs.testers.runNixOSTest {
   name = "agent-deadman";
@@ -51,7 +50,7 @@ pkgs.testers.runNixOSTest {
           QEMU = "${pkgs.qemu}/bin/qemu-system-x86_64";
           ACCEL = "kvm:tcg";
           GUEST_IMAGE = "/tmp/guest.qcow2";
-          # Where the host keeps its guest bundle tree, the way install.sh sets it: the
+          # Where the host keeps its guest bundle tree, the default an install gets: the
           # image bakes only the firmware, so the deadman's own binary arrives by the dress
           # and a host holding no tree could never start it.
           UPDATE_BASE = "/opt/briard/agent";
@@ -84,22 +83,23 @@ pkgs.testers.runNixOSTest {
     host.succeed("ls -l /dev/kvm")
 
     # The shipped NIC contract: carrier-bearing veth parent, the guest's two LAN NICs as macvtap
-    # children in install.sh's order (sys0 -> eth1, svc0 -> eth2), and the private host<->guest
-    # link as a plain tap. The macvlan shim this used to build was the rig granting itself
-    # reachability the product lacked.
+    # children in the agent's order (sys0 -> eth1, svc0 -> eth2), and the private host<->guest
+    # link as a plain tap. No macvlan shim: that would be the rig granting itself reachability
+    # the product lacks.
     #
-    # The tap carries TWO addresses for now: 10.0.0.129/32, this host's own end of the system
-    # subnet, which is what everything here actually uses; and 10.11.9.1/24, which survives for the
-    # single consumer that has not moved yet (the cloud-witness forwarder) and goes with it.
+    # The tap carries TWO addresses: 10.0.0.129/32, this host's own end of the system subnet,
+    # which is what everything here actually uses; and 10.11.9.1/24, the host's end of the
+    # private link (PRIV_HOST_CIDR in the product), which nothing dials but which avahi needs on
+    # both ends to join the IPv4 mDNS group on the link.
     #
     # THE PRIVATE LINK MATTERS TWICE HERE, and the second reason is this test's own subject: the
-    # host's recovery rung reads the guest's reboot GATE across it. The gate now answers at the
-    # guest's NODE IP (10.0.0.1:7790) rather than a baked private-link address -- one address per
+    # host's recovery rung reads the guest's reboot GATE across it. The gate answers at the
+    # guest's NODE IP (10.0.0.1:7790), not a private-link address -- one address per
     # node, whatever is asking -- and the host resolves it over this tap through the
-    # permanent neighbour entry the agent pins, because the guest will not ARP for an eth1 address
-    # on eth3. Without the link the gate had nowhere to be read, so this rig proved the
-    # guest reboots while being structurally unable to exercise the guard that decides whether it
-    # may -- a second place the rig was quietly narrower than the product.
+    # permanent neighbour entry the agent pins, because the guest will not answer ARP for an
+    # eth1 address on eth3. Without the link the gate has nowhere to be read, and the rig would
+    # prove the guest reboots while structurally unable to exercise the guard that decides
+    # whether it may.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
@@ -108,8 +108,8 @@ pkgs.testers.runNixOSTest {
     )
     host.succeed("ln -s ${guestDisk}/nixos.qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
-    # The bundle tree install.sh lays on every install, copied out of the store because the host
-    # writes `guest.good` beside it.
+    # The bundle tree an install lays (briard-agent install), copied out of the store because the
+    # host writes `guest.good` beside it.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     # Boot + converge (the agent launches the guest, drives bring-up).
@@ -117,16 +117,13 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
 
     # THE HOST REACHES ITS GUEST AT THE NODE IP -- asserted before the VIP curl below, because it
-    # is the hop the curl depends on and a failure here says WHICH half broke. This rig had no such
-    # assertion when the reboot gate moved onto this address, and its absence cost a
-    # debugging round: the curl failed and nothing said whether the private link or the VIP route
-    # was at fault.
+    # is the hop the curl depends on and a failure here says WHICH half broke: without it a failed
+    # curl does not say whether the private link or the VIP route was at fault.
     #
     # What it catches, concretely: the link is UNNUMBERED, so both ends pin a permanent neighbour
     # instead of ARPing. Drop either pin and this fails -- with no address on its outgoing NIC the
     # guest's ARP borrows a source from another one (arp_announce=2), and what it borrows is eth0's
-    # slirp address, which on this rig is the outer host's own, so nothing ever answers. Measured
-    # on the wire, not reasoned about.
+    # slirp address, which on this rig is the outer host's own, so nothing ever answers.
     host.wait_until_succeeds("ping -c1 -W2 10.0.0.1", timeout=60)
     print("the host reaches its guest at the node IP over the unnumbered private link")
 
@@ -144,9 +141,9 @@ pkgs.testers.runNixOSTest {
     # the contact stamp go stale past T_deadman (~8s) and evaluates.
     host.wait_until_succeeds("grep -q 'briard-deadman' /tmp/guest-serial.log", timeout=90)
 
-    # 1) It chose to REBOOT, and said so. The inverse assertion ("degraded, holding") is what this
-    # test carried until single-node got its own clause; if the gate is ever re-derived from the
-    # majority formula, a lone node silently goes back to holding and this is the line that catches it.
+    # 1) It chose to REBOOT, and said so. "degraded, holding" is what a lone node would log under a
+    # gate derived from the majority formula; if the gate is ever re-derived that way, a lone node
+    # silently goes back to holding and this is the line that catches it.
     host.wait_until_succeeds("grep -q 'deadman: rebooting' /tmp/guest-serial.log", timeout=120)
     host.fail("grep -q 'degraded, holding' /tmp/guest-serial.log")
 
@@ -165,9 +162,9 @@ pkgs.testers.runNixOSTest {
     # ONE query, and it must match QEMU rather than anything mentioning the disk. A bare
     # `pgrep -f guest.qcow2` also matches the transient `systemd-run … -drive file=/tmp/guest.qcow2`
     # wrapper the agent launches through, so a wait would return on the wrapper, the wrapper would
-    # exit, and a second pgrep a moment later would find nothing. (Measured: the wait returned in
-    # 0.02 s, before the guest unit had even started.) Taking the pid from the wait's own output
-    # closes the gap between the two calls as well.
+    # exit, and a second pgrep a moment later would find nothing; the wait can return before the
+    # guest unit has even started. Taking the pid from the wait's own output closes the gap
+    # between the two calls as well.
     qemu_after = host.wait_until_succeeds(
         "pgrep -f 'qemu-system-x86_64.*guest.qcow2'", timeout=300
     ).strip().splitlines()[0]
@@ -178,7 +175,7 @@ pkgs.testers.runNixOSTest {
 
     # 4) The guest agent did not spend the outage crash-looping. It serves ONE host connection and
     # exits on EOF (Restart=always puts it back on a freshly opened port), and with the host end gone
-    # for good every reopen EOFs the instant it is read — ~48 restarts in 30s before the pause was added. It now
+    # for good every reopen EOFs the instant it is read — ~48 restarts in 30s without a pause. It
     # pauses ~5s before that exit, so a whole run costs a couple of restarts. Both bounds matter:
     # the upper one catches the busy loop coming back, the lower one catches this grep going stale
     # against a systemd message that moved (a rename would make the assertion vacuously pass, and

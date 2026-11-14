@@ -12,11 +12,13 @@
 # about the chain is a rule about a fast failure.
 #
 # THE THEORY THIS MEASURES (and it is only a theory until the run prints otherwise): nothing bounds
-# it. `briard-apps` is `Type=oneshot`, and systemd disables `TimeoutStartSec=` by default for
-# oneshot; quadlet's generated `.image` unit is a oneshot too, and neither we nor quadlet set a
-# timeout on either. If that holds, a slow pull holds the resource Primary with no VIP and no
-# apps, indefinitely, and the demote-and-hand-over the eight rules prove (chain-member-contract)
-# never fires -- because the member never fails, it just never finishes.
+# it inside the window. `briard-apps` is `Type=oneshot`, and systemd disables `TimeoutStartSec=`
+# by default for oneshot, and its unit sets none; quadlet's generated `.image` unit is a oneshot
+# too, bounded only by the TimeoutStartSec the renderer gives it (agent/quadlet PullTimeout: 45
+# minutes for a manifest with no size, as here), far past the window. If that holds, a slow pull
+# holds the resource Primary with no VIP and no apps for that long, and the demote-and-hand-over
+# the eight rules prove (chain-member-contract) never fires -- because the member never fails,
+# it just never finishes.
 #
 # WHY IT IS NOT IN THE NIGHTLY. It is a stopwatch, not an assertion: its whole output is a
 # timeline, and it deliberately runs its observation window to the end rather than failing early.
@@ -43,7 +45,7 @@ let
   # or this measures a connect timeout rather than a transfer.
   rate = "32kbit";
   # The observation window. Past 300s on purpose: it clears systemd's 90s DefaultTimeoutStartSec,
-  # the 180s the deadman uses, and the 300s promotion hold, so a bound at any of the numbers we
+  # the deadman's 360s base, and the 300s promotion hold, so a bound at any of the numbers we
   # already use in this tree would be visible rather than argued away.
   windowSecs = 420;
 
@@ -207,12 +209,12 @@ pkgs.testers.runNixOSTest {
 
     print("t     apps                  result    restarts image           role       mnt vip mask   txKB")
     settled = None
-    # LATCHED ON `activating` FIRST, and the first run of this rig is why. `--no-block` returns
-    # before systemd has moved the unit, so the t=0 probe still saw the PREVIOUS generation's
-    # `active/stop` -- not a start substate, so a bare "is it still starting?" test declared the
-    # job settled at t=0.0s and printed "something DOES bound it" above a timeline showing the
-    # exact opposite for the next 411 seconds. The data was right and the verdict was wrong, which
-    # is the worse way round: nobody re-reads a table underneath a conclusion.
+    # LATCHED ON `activating` FIRST. `--no-block` returns before systemd has moved the unit, so
+    # the t=0 probe can still see the PREVIOUS generation's `active/stop` -- not a start substate,
+    # so a bare "is it still starting?" test would declare the job settled at t=0.0s and print
+    # "something DOES bound it" above a timeline showing the exact opposite. The data would be
+    # right and the verdict wrong, which is the worse way round: nobody re-reads a table
+    # underneath a conclusion.
     seen_activating = False
     while time.monotonic() - t0 < ${toString windowSecs}:
         p = probe()

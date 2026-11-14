@@ -8,10 +8,9 @@
 #
 # What this proves that nothing else can (it needs REAL HA): (1) a real HA entry
 # regression produces a real `migration_error`, and (2) the real gate returns Rollback on
-# HA's real config-entry states. The live swap-and-reserve under the maintenance bracket
-# is Manager orchestration, unit-tested in agent/guest (managed-upgrade.nix, which proved it end
-# to end on the dummy, was retired; the lab rollback demo rebuilds that proof) — see
-# the rollback section for why it can't run in a lib.nix rig.
+# HA's real config-entry states. The live restore is the host agent's install undo
+# (agent/host/app.go), unit-tested there and run end to end on the dummy by
+# agent-install-undo.nix — see the rollback section for why it can't run in a lib.nix rig.
 #
 # The break is a REAL regressed migration, authored deterministically: the briard_canary
 # custom integration (nixosTest/fixtures/briard_canary) loads cleanly on 2025.11.0 and
@@ -22,9 +21,9 @@
 # to the real gate via entrygate-eval, asserting VERDICT=rollback.
 #
 # Harness scope matches hass-upgrade.nix: single-node lib.nix, primitives driven directly
-# (the Manager's maintenance bracket + the ReadinessAssessor seam are unit-tested in
-# agent/guest — the guest agent is virtio-serial-only, so the real Manager can't run in a
-# lib.nix node). What is NEW here: the gate trips on a real HA entry regression, and a
+# (the install undo is unit-tested in agent/host and the ReadinessAssessor seam in
+# agent/guest — the guest agent serves the host over virtio-serial only, and a lib.nix node
+# has no host). What is NEW here: the gate trips on a real HA entry regression, and a
 # real recorder rollback preserves named history.
 { pkgs, guestModule, entrygateEval, fixture }:
 
@@ -48,8 +47,8 @@ let
   snap = "/var/lib/briard/data/.snapshots/${fixture.name}-preupgrade";
   schemaQ = "SELECT COALESCE(MAX(schema_version),0) FROM schema_changes;";
   # A specific named recorder row that must survive into the rollback point (non-vacuous —
-  # we assert the exact row content by id, not just a count; see
-  # verification-assertions-must-fail). sun.sun is always present via default_config and
+  # we assert the exact row content by id, not just a count). sun.sun is always present via
+  # default_config and
   # records an initial state on boot.
   namedRowCountQ = "SELECT COUNT(*) FROM states s JOIN states_meta m ON s.metadata_id = m.metadata_id WHERE m.entity_id = 'sun.sun';";
   namedRowPickQ = "SELECT s.state_id || '|' || m.entity_id || '|' || COALESCE(s.state,'') FROM states s JOIN states_meta m ON s.metadata_id = m.metadata_id WHERE m.entity_id = 'sun.sun' ORDER BY s.state_id DESC LIMIT 1;";
@@ -64,11 +63,11 @@ pkgs.testers.runNixOSTest {
     { ... }:
     {
       imports = [ node ];
-      # 3072, and the extra GB over the other HA tests buys HEADROOM rather than speed: a guest
-      # grows page cache into what it is given, so 4096 measured 4192 MB resident and 3072
-      # measures 3167, in the same time to within the noise. The recorder SCHEMA MIGRATION this
-      # test drives is the one workload whose peak could grow with a future HA, so it keeps a
-      # margin the others do not need.
+      # 3072, and the GB over the 2048 hass-failover and hass-payload take buys HEADROOM rather
+      # than speed: a guest grows page cache into what it is given, so 4096 measured 4192 MB
+      # resident and 3072 measures 3167, in the same time to within the noise. The recorder SCHEMA
+      # MIGRATION this test drives is the one workload whose peak could grow with a future HA, so
+      # it keeps a margin those two do not need.
       virtualisation.memorySize = 3072;
       virtualisation.diskSize = 20480;
       environment.systemPackages = [ pkgs.sqlite pkgs.btrfs-progs pkgs.jq entrygateEval ];
@@ -108,8 +107,8 @@ pkgs.testers.runNixOSTest {
     node1.succeed("sync")
     # Bounce HA onto the new config the way CONVERGE does: stop the container, then start the units
     # in the renderer's order (pod first), each its own transaction. That IS
-    # agent/guestagent/converge.go's stopApp + start loop, by hand -- the rig drives the path
-    # the product takes rather than a `systemctl restart` it never issues.
+    # agent/guestagent/converge.go's stopApp (less its pod stop) + start loop, by hand -- the rig
+    # drives the path the product takes rather than a `systemctl restart` it never issues.
     units = fixture_units(node1)
     node1.succeed(f"systemctl stop {units[-1]}")
     for u in units:
@@ -159,7 +158,8 @@ pkgs.testers.runNixOSTest {
     # The canary's entry lands migration_error (HA ran async_migrate_entry, which refused).
     node1.wait_until_succeeds(canary_is("migration_error"), timeout=300)
     # Sampled through the product again, and the token still answers -- across a container bounce
-    # onto a different image digest, which is the boundary (a)'s wrapper re-mints at.
+    # onto a different image digest, a boundary at which the wrapper re-mints the token
+    # (agent/hass/ensure-token.py, run from the s6 run script at every container start).
     node1.succeed("entrygate-eval -sample ${toString fixture.port} > /tmp/post.json")
     print("post-upgrade entry states: " + node1.succeed("cat /tmp/post.json"))
     # The product's sampler and HA's own computed state agree about the regression. If these ever
@@ -175,17 +175,15 @@ pkgs.testers.runNixOSTest {
     node1.succeed("curl -fsS -o /dev/null ${haVip}${fixture.healthPath}")
 
     # ---- Rollback-with-history-intact: the {code+data} snapshot is a valid rollback point ----
-    # The live swap-and-reserve (stop app → restore subvolume → re-pin `from` → re-serve)
-    # is Manager orchestration under the maintenance bracket, and can't run in THIS rig: the
-    # bracket (drbd-reactor pause-defused) lives in the guest agent's reactor.pause verb,
-    # which is virtio-serial-only — so a bare `systemctl stop <app>` here makes the running
-    # promoter demote + unmount the volume (exactly the hazard the bracket exists to avoid).
-    # The real Manager doing the full swap + re-serve is unit-tested in agent/guest; the nested
-    # end-to-end proof (managed-upgrade.nix) was retired and is the lab demo's to rebuild
-    # (broken upgrade → gate trips → {code+data} rollback → healthy re-serve; see the app-install tests0). What THIS
-    # test uniquely proves — needing REAL HA — is the two halves that rig can't: the gate trips on a
-    # REAL entry regression (above), and the rollback point holds the pre-migration DB with its
-    # history intact (here).
+    # The live restore (stop app → data.restore swaps the subvolume back → the `from` manifest →
+    # converge → re-serve) is the host agent's install undo (agent/host/app.go), driven over the
+    # guest control channel, and can't run in THIS rig: the guest agent serves it over
+    # virtio-serial only, and a lib.nix node has no host. The undo is unit-tested in agent/host,
+    # and agent-install-undo.nix runs it end to end with the real agent on the dummy (broken
+    # upgrade → {code+data} rollback → healthy re-serve). What THIS test uniquely proves —
+    # needing REAL HA — is the two halves that rig can't: the gate trips on a REAL entry
+    # regression (above), and the rollback point holds the pre-migration DB with its history
+    # intact (here).
     node1.succeed("btrfs subvolume show ${snap}")
     # WAL-replay copy: the snapshot was taken while HA-from was live, so recent commits sit in the
     # -wal, not the main file — copy the set + open normally (sqlite replays it), exactly as HA-from

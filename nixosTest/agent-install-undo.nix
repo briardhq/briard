@@ -457,7 +457,7 @@ pkgs.testers.runNixOSTest {
     assert re.search(r"DATA=uninstalled-dataE FILE=the-householdsE KEPT=0E", out), f"after installing it again:\n{out}"
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=90)
     assert serving(), "the app does not answer after installing it again"
-    # Not volume(): the quota section rebound that name to the volume's size.
+    # Not volume(): the files tier section rebound that name to the volume's size.
     out = guest(f'echo T""ICKS=$(cat /var/lib/briard/data/{svc}/app/state.json | tr -dc 0-9)E')
     m = re.search(r"TICKS=(\d+)E", out)
     assert m and int(m.group(1)) != poison, f"installing it again ran the catalog's poisoning version, not the kept one:\n{out}"

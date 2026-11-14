@@ -1,6 +1,5 @@
 # A REAL Home Assistant upgrade carrying a REAL recorder schema migration
-# through the pipeline, with its data intact (closing a known gap: "the update pipeline
-# never processed a real HA upgrade").
+# through the pipeline, with its data intact.
 #
 # HA boots on the `from` image (2025.11.0, recorder schema 51), the recorder writes
 # history, then the app is upgraded to `to` (2025.12.0, schema 53) and HA runs the
@@ -17,12 +16,12 @@
 # as a diagnostic.
 #
 # Harness scope (in-place, under the running promoter): this drives the core
-# app-upgrade PRIMITIVES — snapshot → pin+retag → restart → health-gate — with
+# app-upgrade PRIMITIVES — snapshot → new manifest → converge (a bounce) → health-gate — with
 # drbd-reactor live throughout, which is also the product's shape: an app install
 # never pauses the promoter; the maintenance bracket belongs to the
 # OS-upgrade path (covered by the maintenance-contract test), and the health-gated
 # auto-rollback is host-side orchestration (agent/host/app.go, unit-tested there).
-# What is NEW and untested until now — a real recorder schema migration surviving the
+# What the unit tests cannot show — a real recorder schema migration surviving the
 # upgrade with its data intact — is exactly what this proves. The forced-failure →
 # rollback half is hass-upgrade-rollback.
 { pkgs, guestModule, fixture }:
@@ -62,16 +61,17 @@ pkgs.testers.runNixOSTest {
       imports = [ node ];
       # Two 2.4 GB HA images resident (from serving + to staged) + HA's live Python
       # stack + the migration: give it real memory and disk headroom.
-      # 3072 rather than the 2048 the other HA tests take, and the extra GB buys HEADROOM, not
-      # speed: a guest grows page cache into what it is given, so 4096 measured 4192 MB resident,
-      # 3072 measures 3168, 2048 measures 2143, and all three run in the same time to within the
-      # noise. What is different here is the recorder SCHEMA MIGRATION -- the one workload in the
-      # set whose peak could grow with a future HA -- so this keeps a margin the others do not
-      # need.
+      # 3072 rather than the 2048 hass-failover and hass-payload take, and the extra GB buys
+      # HEADROOM, not speed: a guest grows page cache into what it is given, so 4096 measured
+      # 4192 MB resident, 3072 measures 3168, 2048 measures 2143, and all three run in the same
+      # time to within the noise. What is different here is the recorder SCHEMA MIGRATION -- the
+      # one workload in the set whose peak could grow with a future HA -- so this keeps a margin
+      # those two do not need.
       virtualisation.memorySize = 3072;
       virtualisation.diskSize = 20480;
       # Sqlite3 to read the recorder DB + btrfs to take the pre-upgrade snapshot
-      # directly (lib.nix nodes ship only curl; the guest's systemd units carry their own paths).
+      # directly (lib.nix nodes ship no sqlite3, and btrfs only with a fixture; the guest's
+      # systemd units carry their own paths).
       environment.systemPackages = [ pkgs.sqlite pkgs.btrfs-progs ];
     };
 
@@ -126,10 +126,11 @@ pkgs.testers.runNixOSTest {
     node1.succeed("findmnt /var/lib/briard")            # still mounted (promoter untouched)
     node1.succeed("btrfs subvolume show ${subvol}")  # the app's data dir is a real subvolume
     node1.succeed("mkdir -p /var/lib/briard/data/.snapshots")
-    # -r read-only, the exact form the guest agent's data.member verb runs.
+    # -r read-only, as the guest agent's data.member verb takes it (which also adds -i, the
+    # app's quota group).
     #
-    # ⚠️ TAKEN LIVE ON PURPOSE, AND THIS IS THE ONLY PLACE THAT STILL IS. Since the
-    # install path started stopping the app first, this no longer mirrors the product — it is the
+    # ⚠️ TAKEN LIVE ON PURPOSE. The install path stops the app first, so this does not
+    # mirror the product — it is the
     # EVIDENCE the product's comments cite: btrfs snapshots atomically, HA replays its WAL on
     # open, so a crash-consistent point is still recoverable FOR HOME ASSISTANT. That is a
     # measured fact about one app, never a catalog-wide guarantee (apps-pair.nix measured
@@ -138,9 +139,9 @@ pkgs.testers.runNixOSTest {
     node1.succeed("btrfs subvolume snapshot -r ${subvol} ${snap}") # the {code,data} rollback point
 
     # THE UPGRADE: install the `to` manifest under the SAME app name. That is what a version
-    # change is now -- the volume's manifest moves, and converge re-renders and
+    # change is -- the volume's manifest moves, and converge re-renders and
     # BOUNCES the container onto the new digest (starting an already-running unit
-    # would have left HA-from serving while every file said otherwise). The bounce cleanly stops
+    # would leave HA-from serving while every file said otherwise). The bounce cleanly stops
     # HA-from, flushing its DB, before HA-to opens the schema-51 database and migrates it.
     install_fixture(node1, variant="to")
 
