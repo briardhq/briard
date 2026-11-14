@@ -1,10 +1,10 @@
 # briard-agent.service -- SHIPPED VERBATIM, not generated.
 #
 # It is a signed artifact of the host chain (scripts/publish-release.sh stages it, the manifest
-# hashes it, install.sh copies it), which is the whole reason it is a file: install.sh is outside
-# the versioning system, so a unit it wrote by heredoc was frozen where no release could reach it
-# and unsigned into the bargain. Every path in it is /opt/briard, which the qemu bundle's own ELF
-# interpreter already bakes -- there is no prefix to interpolate.
+# hashes it, briard-agent install copies it), which is the whole reason it is a file: install.sh is
+# outside the versioning system, so a unit it wrote by heredoc would be frozen where no release
+# could reach it, and unsigned into the bargain. Every path in it is /opt/briard, which the qemu
+# bundle's own ELF interpreter already bakes -- there is no prefix to interpolate.
 #
 # The values the agent DECIDES anything from are not here; they are in /opt/briard/config.env,
 # which the agent can rewrite.
@@ -29,7 +29,7 @@ StartLimitIntervalSec=0
 # VIP over the private link); give it a PATH that resolves them on a stock host
 # (/usr/sbin, /sbin) AND on NixOS (/run/current-system/sw/bin), since a unit's default is minimal.
 # `ip` in particular lives in *sbin on a stock host, which is why both are listed and neither is
-# decoration -- a nixosTest launching the agent without this PATH lost exactly that binary.
+# decoration -- without this PATH the agent cannot find that binary.
 # It cannot move to the file: systemd SETS a PATH for every systemd service, so the environment would
 # already have spoken and the file's value would correctly lose.
 Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
@@ -64,8 +64,8 @@ TimeoutStartSec=60
 WatchdogSec=20
 # The committed binary, run directly. Self-update moves it by rename beneath this name (the
 # updater, briard-update.service), so the line never changes; `run` is the daemon subcommand,
-# since a bare invocation prints the help. (UPDATE_BASE, the directory the updater swaps in, is in
-# config.env with the rest of the values.)
+# since a bare invocation prints the help. (UPDATE_BASE, the directory the updater swaps in,
+# defaults in agent/host/config.go, and config.env carries it only when an operator named it.)
 ExecStart=/opt/briard/agent/briard-agent run
 Restart=on-failure
 RestartSec=3

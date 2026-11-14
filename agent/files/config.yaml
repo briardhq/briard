@@ -13,9 +13,9 @@ server:
   database:
     activity:
       disabled: true
-  # ONE SOURCE, the view: a folder per app holding the directories its manifest mounts, bound
-  # there by the guest agent (agent/guestagent). The app sees real directories, so every one of
-  # them lists, opens and edits as what it is.
+  # ONE SOURCE, the view: a folder per app holding the directories its manifest mounts outside its
+  # cache tier, bound there by the guest agent (agent/guestagent). The app sees real directories,
+  # so every one of them lists, opens and edits as what it is.
   sources:
     - path: "/srv"
       name: "Apps"

@@ -61,7 +61,7 @@ def minter(token):
             ),
             None,
         )
-        # THE ADMIN GROUP IS FOR ACTING, not for reading. Measured against 2026.7.1: the health
+        # THE ADMIN GROUP IS FOR ACTING, not for reading. The health
         # gate's own signal — `GET /api/config/config_entries/entry` — carries no `@require_admin`
         # and a group-less system user reads it with a 200. What is admin-gated is everything that
         # acts: `/api/services/...` returns 401 without it, config and options flows are decorated,
@@ -97,8 +97,8 @@ def main():
         raise SystemExit(f"{token_file}: not a briard token")
     # A PLAIN asyncio.run, on purpose. HA's own script runner dresses its loop differently per
     # release (an event-loop policy through 2026.8, a loop_factory from 2026.9 once Python retired
-    # policies), and borrowing either form ties this file to one side of that line -- the
-    # AttributeError on 2026.9 was exactly that. The mint needs nothing the dressing adds (an
+    # policies), and borrowing either form ties this file to one side of that line -- the policy
+    # form raises AttributeError on 2026.9. The mint needs nothing the dressing adds (an
     # executor name, an exception handler, a faster clock), so the stock loop is the one form
     # every release accepts.
     # run_command reads exactly two attributes off the namespace — verified against both ends of

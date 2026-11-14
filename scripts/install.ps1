@@ -35,7 +35,8 @@ $ProgressPreference = 'SilentlyContinue' # Invoke-WebRequest's progress bar slow
 
 # ---- what this script needs to know -------------------------------------------------
 # THE KNOBS ARE NOT HERE, and adding one back is the mistake. Every `BRIARD_*` in the environment
-# reaches the agent, which copies it into config.env with the prefix stripped, so this script
+# reaches the agent, which copies it into config.env with the prefix stripped (all but the few that
+# configure the install itself: ARTIFACTS, RELEASE, UNIT_DIR, CONFIG), so this script
 # carries no list of them, no defaults for them and no documentation of them (install.sh says the
 # same). Below is the short list this script READS, because it acts on it before any agent runs.
 #
@@ -253,7 +254,8 @@ if ($NoRestart) {
 }
 # The bridge carries the guest only once Windows has started with it, and the hypervisor runs
 # only after a restart: one restart, asked for, never a shutdown (Fast Startup's resume is not a
-# start). Briard finishes on its own afterwards; the link appears when an administrator logs on.
+# start). Briard finishes on its own afterwards; the link appears when the installing account
+# logs on.
 Say 'installed. Windows must restart once for the network bridge and the hypervisor.'
 Say 'after the restart, log on: Briard finishes starting and opens in your browser.'
 if ([Environment]::UserInteractive -and $Host.Name -eq 'ConsoleHost') {

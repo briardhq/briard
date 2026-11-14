@@ -101,7 +101,8 @@ def plant_stub(config_dir, src):
     os.makedirs(dst, exist_ok=True)
     for name in sorted(os.listdir(src)):
         if os.path.isdir(os.path.join(src, name)):
-            # translations/: Home Assistant reads an integration's strings from beside its package.
+            # translations/ and brand/: Home Assistant reads an integration's strings and brand
+            # images from beside its package.
             shutil.copytree(os.path.join(src, name), os.path.join(dst, name), dirs_exist_ok=True)
             continue
         shutil.copyfile(os.path.join(src, name), os.path.join(dst, name))

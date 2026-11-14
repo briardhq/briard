@@ -43,7 +43,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     async def _dump(_) -> None:
         # Read every entry's live state from HA's real config-entry manager — this is
-        # the exact signal the production ReadinessAssessor will fetch from the API.
+        # the exact signal the production ReadinessAssessor (agent/hass) fetches from the API.
         entries = [
             {"entry_id": e.entry_id, "domain": e.domain, "state": e.state.value}
             for e in hass.config_entries.async_entries()

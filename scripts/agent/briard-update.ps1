@@ -28,7 +28,8 @@ $ErrorActionPreference = 'Stop'
 # THE TWO DEFAULTS BELOW ARE A DELIBERATE SECOND COPY of agent/host/config.go's (owner's call).
 # config.env carries a key only when somebody named one, so on an ordinary install there is
 # nothing to read -- and this script must not ask the agent, which is the thing it exists to
-# replace. Pinned by a test that reads both files.
+# replace. The channel default is pinned by a test that reads both files; the keyring default
+# derives from the Windows prefix, which that test cannot see off Windows.
 $Prefix = 'C:\ProgramData\briard'
 $conf = @{}
 if (Test-Path "$Prefix\config.env") {

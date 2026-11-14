@@ -56,7 +56,7 @@ def main():
         s.connect(SOCKET)
     except OSError as e:
         # No socket is the ordinary case on an app that was never given one, and on any node
-        # whose agent is older than this wrapper. Neither is worth a word in the log.
+        # whose agent is older than this wrapper. Neither is worth more than a line.
         print(f"briard: no inbound channel ({e}); starting without a snapshot", file=sys.stderr)
         return
     try:

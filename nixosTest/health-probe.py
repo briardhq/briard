@@ -100,7 +100,7 @@ FAULTS = {
                                   "    time.sleep(3600)\n    return True\n"),
     "recorder-db": lambda: sh("dd", "if=/dev/urandom", f"of={CONFIG}/home-assistant_v2.db",
                               "bs=4096", "count=4", "conv=notrunc"),
-    # The second pass: a config-entry integration that fails or is not ready, and a
+    # A config-entry integration that fails or is not ready, and a
     # real event-loop spin during setup and after the start.
     "entry-setup-error": lambda: config_entry("probe_entry_error",
                                               "async def async_setup_entry(hass, entry):\n"

@@ -68,10 +68,10 @@ jobs:
       # CROSS-COMPILE, not a test run — a Windows test binary cannot execute on this runner, and
       # does not need to: what decays is a shared file quietly growing a Linux-only symbol, and
       # the compiler is what sees that. `vet` is the load-bearing half, because it type-checks
-      # _test.go files too; the plain build does not, and missed one of the three original errors.
+      # _test.go files too; the plain build does not.
       #
       # The OTHER half of the seam — exec.Command("systemctl", …), which compiles everywhere —
-      # is agent/platform/seam_test.go, and the step above already runs it.
+      # is internal/arch TestHostOSCallsStayBehindTheSeam, and the step above already runs it.
       - name: Go builds for Windows (the GOOS seam)
         run: nix develop --command bash -c 'GOOS=windows go build ./... && GOOS=windows go build -tags guest ./... && GOOS=windows go vet ./...'
 
