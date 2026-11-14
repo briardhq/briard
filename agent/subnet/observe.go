@@ -37,13 +37,11 @@ type seenPrefix struct {
 	where  string
 }
 
-// hostAddrs reads the networks this machine's own NICs sit on. The NETWORK, not the address: a
-// host at 10.173.94.5/24 occupies the whole /24 as far as a draw is concerned, because that is what
-// its on-link route claims.
-//
-// Down interfaces count too. A NIC that is down today is a NIC that comes up tomorrow -- and the
-// one a laptop has unplugged while a stranger installs over wifi is exactly the one whose subnet
-// we must not squat.
+// hostAddrs reads the networks this machine's own NICs sit on. The network, not the address: a
+// host at 10.173.94.5/24 occupies the whole /24 as far as a draw is concerned, because its on-link
+// route claims it. Down interfaces count too: a NIC down today comes up tomorrow, and the one a
+// laptop has unplugged while a stranger installs over wifi is exactly the one whose subnet we
+// must not squat.
 func hostAddrs() []seenPrefix {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -165,16 +163,13 @@ func devOf(f []string) string {
 	return "this machine"
 }
 
-// worthHonouring is THE PREFIX CUT: ignore /8 through /11, honour /12 and longer.
-//
-// The pathological case is specifically the sloppy whole-RFC1918 catch-all -- a corporate VPN
-// pushing 10.0.0.0/8 must not veto the entire pool, or an employee's laptop can never install.
-// The obvious cut of "/16 and smaller" would also discard Kubernetes' 10.96.0.0/12 service CIDR,
-// which is a genuine collision. Anything more specific than a /8 is somebody NAMING a range;
-// treat it as real.
-//
+// worthHonouring is the prefix cut: ignore /8 through /11, honour /12 and longer. The
+// pathological case is the sloppy whole-RFC1918 catch-all: a corporate VPN pushing 10.0.0.0/8
+// must not veto the entire pool, or an employee's laptop can never install. The obvious cut of
+// "/16 and smaller" would also discard Kubernetes' 10.96.0.0/12 service CIDR, a genuine
+// collision; anything more specific than a /8 is somebody naming a range, so treat it as real.
 // Non-10/8 prefixes are dropped here too: they cannot collide with any pool, and carrying them
-// only makes a refusal's message longer.
+// only lengthens a refusal's message.
 func worthHonouring(p netip.Prefix) bool {
 	return p.Addr().Is4() && p.Bits() >= 12 && p.Addr().As4()[0] == 10
 }
@@ -186,16 +181,15 @@ func Report(w io.Writer, d Draw) error {
 	return err
 }
 
-// recorded matches one line of what Report wrote. The pattern IS the format's assertion: anything
-// that is not a bare 10.a.b reads as ABSENT, so a truncated or hand-mangled record leaves that
-// field empty and the caller draws it again rather than numbering a node out of a typo.
+// recorded matches one line of what Report wrote. The pattern is the format's assertion: anything
+// not a bare 10.a.b reads as absent, so a truncated or hand-mangled record leaves that field empty
+// and the caller draws it again rather than numbering a node out of a typo.
 var recorded = regexp.MustCompile(`(?m)^(SYSTEM_SUBNET|PRIV_SUBNET|POD_SUBNET)=(10\.\d{1,3}\.\d{1,3})$`)
 
-// Parse reads a record back. A field the record does not carry comes back empty -- which is how a
-// node that predates a pool gains only that pool, rather than being renumbered wholesale.
-//
-// Never a shell `source`, on a file that holds three numbers: there is no reason to give it the
-// power to run anything.
+// Parse reads a record back. A field the record does not carry comes back empty, which is how a
+// node that predates a pool gains only that pool rather than being renumbered wholesale. Never a
+// shell `source`: a file that holds three numbers has no reason to be given the power to run
+// anything.
 func Parse(b []byte) Draw {
 	var d Draw
 	for _, m := range recorded.FindAllSubmatch(b, -1) {

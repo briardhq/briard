@@ -1,23 +1,20 @@
-// Package entrygate is the S1 (stateless) health-gate signal for a Home Assistant
-// app upgrade. It turns two samples of HA's per-config-entry setup
-// state — one taken pre-upgrade at steady state, one taken post-upgrade after the
-// retry backoff has settled — into a Verdict: keep the upgrade, hold for a human, or
-// auto-roll-back to the {code+data} rollback point.
+// Package entrygate is the S1 (stateless) health-gate signal for a Home Assistant app upgrade. It
+// turns two samples of HA's per-config-entry setup state, one pre-upgrade at steady state, one
+// post-upgrade after the retry backoff has settled, into a Verdict: keep the upgrade, hold for a
+// human, or auto-roll-back to the {code+data} rollback point.
 //
-// The signal is deliberately *differential* and rides HA's own state machine rather
-// than a single snapshot's raw shape. The pre sample is the confounder control: an
-// integration that was already flaky (setup_retry) or down (not_loaded) before the
-// upgrade is excluded, so only entries that were solidly `loaded` and regressed count.
-// And HA's transient-vs-terminal split does the denoising for us — a network/WAN flap
-// during the settle window lands in setup_retry (HA retries it), while a genuine
-// incompatibility lands in the terminal setup_error / migration_error. So the gate can
-// trust a terminal regression without a fleet cross-check.
+// The signal is deliberately differential and rides HA's own state machine rather than one
+// snapshot's raw shape. The pre sample is the confounder control: an integration already flaky
+// (setup_retry) or down (not_loaded) before the upgrade is excluded, so only entries solidly
+// `loaded` that regressed count. HA's transient-vs-terminal split does the denoising: a
+// network/WAN flap during the settle window lands in setup_retry (HA retries it), a genuine
+// incompatibility in the terminal setup_error / migration_error, so the gate can trust a terminal
+// regression without a fleet cross-check.
 //
-// This package is pure: no I/O, no HA client, no clock. The samples are taken in the guest
-// (agent/hass); the settle wait and the mapping onto guest.ReadinessAssessor are
-// agent/host/readiness.go's; the denoising *doctrine* lives here, unit-tested in isolation.
-// A cross-boot reliability prior (S2) or fleet correlation (S3) would layer on top without
-// changing this function's contract.
+// Pure: no I/O, no HA client, no clock. The samples are taken in the guest (agent/hass); the
+// settle wait and the mapping onto guest.ReadinessAssessor are agent/host/readiness.go's; the
+// denoising doctrine lives here, unit-tested in isolation. A cross-boot reliability prior (S2) or
+// fleet correlation (S3) would layer on top without changing this function's contract.
 package entrygate
 
 import (
@@ -40,13 +37,12 @@ const (
 	StateSetupRetry State = "setup_retry"
 	// StateSetupInProgress is still-booting: transient, treated like setup_retry.
 	StateSetupInProgress State = "setup_in_progress"
-	// StateSetupError is failed *terminally* — HA has given up retrying. A
-	// previously-loaded entry landing here is the core regression signal.
+	// StateSetupError is failed terminally: HA has given up retrying. A previously-loaded entry
+	// landing here is the core regression signal.
 	StateSetupError State = "setup_error"
-	// StateMigrationError is a config-entry migration failure — the upgrade-specific
-	// class (cousin of the recorder schema migration). Always a
-	// high-confidence trigger: it only happens because the version bumped, so it is
-	// never an environmental confounder.
+	// StateMigrationError is a config-entry migration failure, the upgrade-specific class (cousin
+	// of the recorder schema migration). Always a high-confidence trigger: it only happens because
+	// the version bumped, so it is never an environmental confounder.
 	StateMigrationError State = "migration_error"
 	// StateNotLoaded is disabled / never set up.
 	StateNotLoaded State = "not_loaded"
@@ -59,10 +55,9 @@ type Entry struct {
 	State  State
 }
 
-// Verdict is the gate's decision. Ordered by consequence: Pass keeps the upgrade,
-// Rollback restores the pre-upgrade snapshot, Hold is the ambiguous middle — the upgrade
-// is kept and the hold is surfaced (logged), not acted on; the rollback window and the user
-// are the backstop.
+// Verdict is the gate's decision, ordered by consequence: Pass keeps the upgrade, Rollback
+// restores the pre-upgrade snapshot, Hold is the ambiguous middle: the upgrade is kept and the
+// hold surfaced (logged), not acted on; the rollback window and the user are the backstop.
 type Verdict string
 
 const (
@@ -84,18 +79,17 @@ type Result struct {
 	Findings []Finding
 }
 
-// Policy carries the one tunable in the S1 gate: how many terminal regressions make a
-// *cluster* (high-confidence auto-rollback) versus a single ambiguous one (hold).
+// Policy carries the one tunable in the S1 gate: how many terminal regressions make a cluster
+// (high-confidence auto-rollback) versus a single ambiguous one (hold).
 type Policy struct {
-	// ClusterThreshold is the count of was-loaded→setup_error regressions at or above
-	// which the gate auto-rolls-back instead of holding. Biased by consequence toward
-	// Hold: a single terminal regression is the ambiguous middle — it might be a
-	// genuinely-removed/changed integration, so hold and let the user or the rollback
-	// window decide; two or more independent integrations going terminal at once is
-	// far likelier a version bug than N simultaneous environmental failures (which
-	// HA's retry state machine would have parked in setup_retry anyway), so roll back.
-	// A migration_error is always a cluster-of-one — it is deterministic and
-	// upgrade-caused, never confoundable.
+	// ClusterThreshold is the count of was-loaded→setup_error regressions at or above which the
+	// gate auto-rolls-back instead of holding, biased by consequence toward Hold. A single terminal
+	// regression is the ambiguous middle (it might be a genuinely removed/changed integration), so
+	// hold and let the user or the rollback window decide; two or more independent integrations
+	// going terminal at once is far likelier a version bug than N simultaneous environmental
+	// failures (which HA's retry state machine would have parked in setup_retry anyway), so roll
+	// back. A migration_error is always a cluster-of-one: deterministic, upgrade-caused, never
+	// confoundable.
 	ClusterThreshold int
 }
 
@@ -105,8 +99,8 @@ var DefaultPolicy = Policy{ClusterThreshold: 2}
 // Assess runs the default-policy S1 verdict over a pre/post entry-state pair.
 func Assess(pre, post []Entry) Result { return DefaultPolicy.Assess(pre, post) }
 
-// Assess compares a pre-upgrade steady-state sample against a settled post-upgrade
-// sample and returns the S1 verdict. It is the whole S1 signal:
+// Assess compares a pre-upgrade steady-state sample against a settled post-upgrade sample and
+// returns the S1 verdict. It is the whole S1 signal:
 //
 //   - migration_error on any entry            → Rollback   (upgrade-specific, deterministic)
 //   - a cluster of was-loaded→setup_error      → Rollback   (≥ ClusterThreshold; a version bug)
@@ -115,11 +109,10 @@ func Assess(pre, post []Entry) Result { return DefaultPolicy.Assess(pre, post) }
 //     not_loaded) still at the settle deadline
 //   - everything else                          → Pass
 //
-// Entries that were not `loaded` pre-upgrade are excluded (they were not reliable, so a
-// post-upgrade failure can't be attributed to the upgrade), as are entries new in post
-// (S1 makes no claim about integrations the upgrade added). The HTTP-200 liveness floor
-// sits *beneath* this: if HA never answers, the gate never gets a post sample and the
-// upgrade deadline trips a rollback on its own.
+// Excluded: entries not `loaded` pre-upgrade (not reliable, so a post failure can't be
+// attributed to the upgrade) and entries new in post (S1 makes no claim about integrations the
+// upgrade added). The HTTP-200 liveness floor sits beneath this: if HA never answers, the gate
+// gets no post sample and the upgrade deadline trips a rollback on its own.
 func (p Policy) Assess(pre, post []Entry) Result {
 	preState := make(map[string]State, len(pre))
 	for _, e := range pre {
@@ -155,9 +148,9 @@ func (p Policy) Assess(pre, post []Entry) Result {
 		}
 	}
 
-	// A migration_error, or a *cluster* of terminal regressions, is high-confidence →
-	// Rollback (carrying every terminal finding). A single regression is the ambiguous
-	// middle, and a non-settling entry never auto-rolls-back → Hold. Otherwise Pass.
+	// A migration_error, or a cluster of terminal regressions, is high-confidence → Rollback
+	// (carrying every terminal finding). A single regression is the ambiguous middle, and a
+	// non-settling entry never auto-rolls-back → Hold. Otherwise Pass.
 	switch {
 	case len(migrations) > 0 || len(regressions) >= p.ClusterThreshold:
 		return Result{Verdict: Rollback, Findings: sortFindings(concat(migrations, regressions))}

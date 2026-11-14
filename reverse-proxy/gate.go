@@ -1,32 +1,28 @@
 package main
 
-// THE GATE: how the reverse proxy signs the user into an app that has no login of its own worth
-// trusting (a route with a Gate, shared/routes). Files (signed token) and Mealie (header) are the
-// live cases.
+// The gate signs the user into an app with no login of its own worth trusting (a route with a
+// Gate, shared/routes); Files (signed token) and Mealie (header) are the live cases.
 //
-// THE SESSION IS THE DASHBOARD'S, carried to the app's own name. A browser arriving at a gated
-// app without the dashboard's cookie for that name is sent to the dashboard's /open/<app>, which
-// -- on a browser it trusts -- hands back a one-time code for the device's OWN session token. The
-// reverse proxy redeems the code with the dashboard and sets the same token as the app name's
-// cookie, so a device is one row on the Trusted devices page and revoking it closes the app too. A
-// browser the dashboard does not trust meets the dashboard's ordinary way in, and nothing else.
+// The session is the dashboard's, carried to the app's name. A browser without the dashboard's
+// cookie for that name is sent to the dashboard's /open/<app>, which, on a browser it trusts,
+// hands back a one-time code for the device's own session token; the reverse proxy redeems it and
+// sets that token as the app name's cookie. So a device is one row on the Trusted devices page,
+// and revoking it closes the app too. An untrusted browser meets the dashboard's ordinary way in,
+// and nothing else.
 //
-// THE APP IS TOLD WHO IT IS IN A SIGNATURE, NOT A HEADER IT BELIEVES. After the dashboard says the
-// token stands for this app (asked over loopback, naming the app, so the dashboard can make the
-// app ready for the user first; the answer kept for half a minute), the reverse proxy forwards the
-// request with a token signed with the app's secret (the route's Gate file) naming the user by
-// the username the dashboard answers with, valid for a minute. The app verifies it on every
-// request, so nothing that can reach the app's address -- another workload on this node, a LAN
-// host routing to the pod network -- can sign in without the key, which only root on this node
-// can read.
+// The app learns the user from a signature, not a header it believes. Once the dashboard says the
+// token stands for this app (asked over loopback, naming the app so the dashboard can make it
+// ready for the user first; the answer kept half a minute), the request goes on with a token
+// signed with the app's secret (the route's Gate file), naming the user by the username the
+// dashboard answers with, valid for a minute. The app verifies it on every request, so nothing
+// that can reach the app's address (another workload here, a LAN host routing to the pod network)
+// can sign in without the key, which only root on this node can read. Or by header, for an app
+// that reads its user from a reverse proxy (Mealie): the username in X-Forwarded-User, the secret
+// itself in the route's GateHeader, compared with the app's copy -- a standing bearer rather than
+// a minute's signature, as safe as its file, which nothing off this node reads.
 //
-// OR BY HEADER, for an app that reads its user from a reverse proxy (Mealie): the username in
-// X-Forwarded-User and the secret itself in the route's GateHeader, which the app compares with
-// its own copy. The secret is then a standing bearer rather than a minute's signature -- as safe
-// as the file it is kept in, which nothing off this node reads.
-//
-// THE DASHBOARD'S TOKEN NEVER REACHES THE APP. The cookie is the household's credential for the
-// dashboard itself, so the reverse proxy takes it off every request it forwards to a gated app.
+// The dashboard's token never reaches the app: the cookie is the household's credential for the
+// dashboard itself, so it is taken off every request forwarded to a gated app.
 
 import (
 	"context"

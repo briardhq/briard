@@ -33,18 +33,15 @@ func platformChecks(f HostFacts) []Check {
 			"install iproute2: `sudo apt install iproute2` (or your distro's equivalent)"})
 	}
 
-	// SYSTEMD -- and it is here, with the other hard requirements, because it is one.
-	//
-	// The install writes unit files and runs `systemctl daemon-reload`/`enable`/`start`; there is no
-	// non-systemd path and none is planned (we do not own the host's init). Like every other hard
-	// requirement it refuses before anything is written -- a guard any later would let an OpenRC or
-	// runit box download and unpack ~400 MB, create taps and write units nothing will ever read
-	// before hearing "no systemd".
-	//
-	// BOOTED, not merely installed. `systemctl` on PATH is the weaker question: a host with the
-	// binary present but another init as PID 1 answers yes and then fails at daemon-reload, which
-	// is exactly the late failure this check exists to move forward. /run/systemd/system is the
-	// documented "systemd is running this machine" test, so that is what is asked.
+	// systemd, here with the other hard requirements because it is one. The install writes unit
+	// files and runs `systemctl daemon-reload`/`enable`/`start`; there is no non-systemd path and
+	// none is planned (we do not own the host's init). It refuses before anything is written: any
+	// later guard would let an OpenRC or runit box download and unpack ~400 MB, create taps and
+	// write units nothing will ever read before hearing "no systemd". Booted, not merely
+	// installed: `systemctl` on PATH is the weaker question, since a host with the binary but
+	// another init as PID 1 answers yes and then fails at daemon-reload, exactly the late failure
+	// this check moves forward. /run/systemd/system is the documented "systemd is running this
+	// machine" test, so that is what is asked.
 	if f.SystemdBooted {
 		cs = append(cs, Check{"systemd", Pass, "systemd is the init", ""})
 	} else {

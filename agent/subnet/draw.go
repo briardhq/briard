@@ -1,26 +1,25 @@
 // Package subnet draws the three private IPv4 ranges a briard node needs and cannot ask anyone
-// for: the FLOCK SUBNET (the system subnet -- the guests' node IPs and the DRBD mesh,
-// which rides the household's own L2 by design), the PRIVATE LINK (the point-to-point tap
-// between a host and its own guest, the guest's eth3) and the POD pool (the guest's private app
-// networks, see Draw.Pod).
+// for: the flock subnet (the system subnet: the guests' node IPs and the DRBD mesh, which rides
+// the household's own L2 by design), the private link (the point-to-point tap between a host and
+// its own guest, the guest's eth3) and the pod pool (the guest's private app networks, Draw.Pod).
 //
-// WHY DRAW RATHER THAN HARDCODE. Any fixed range is somebody's: 10.0.0.0/24 is one of the most
-// common real household subnets there is (every Xfinity gateway ships it). Two subnets with the
-// same numbers on one L2 is not a degraded install, it is an install that cannot talk to half the
-// house -- and every node, a lone one included, holds a system address. The link's collision is
-// quieter and just as real: it never touches the LAN, so it cannot collide at L2 -- but the HOST'S
-// ROUTING TABLE is shared, so a household on the link's /24 gives the host two identical on-link
-// /24s and Linux picks between them by metric and insertion order. Both directions then break, and
-// which one is not ours to say.
+// Why draw rather than hardcode: any fixed range is somebody's. 10.0.0.0/24 is one of the most
+// common real household subnets (every Xfinity gateway ships it), and two subnets with the same
+// numbers on one L2 is not a degraded install but one that cannot talk to half the house; every
+// node, a lone one included, holds a system address. The link's collision is quieter and as real:
+// it never touches the LAN, so it cannot collide at L2, but the host's routing table is shared,
+// so a household on the link's /24 gives the host two identical on-link /24s, and Linux picks
+// between them by metric and insertion order. Both directions then break, and which is not ours
+// to say.
 //
-// THE SHAPE OF THE ANSWER: draw with real entropy, exclude the ranges convention has already
-// spoken for, and check the draw against what this host can actually see. That turns "unlikely to
-// collide" into "observed not to" for the collisions we can observe, and leaves the rest to the
-// ~59,600 candidates the flock pool holds. What it deliberately does NOT solve is the LATE
-// collision -- a user who joins a VPN or adds a router after us -- because renumbering a live node
-// is a renumber, and the flock subnet is flock-scoped, so it moves the whole flock.
+// So: draw with real entropy, exclude the ranges convention has spoken for, and check the draw
+// against what this host can actually see, turning "unlikely to collide" into "observed not to"
+// for the collisions we can observe and leaving the rest to the ~59,600 candidates in the flock
+// pool. Deliberately not solved: the late collision (a user who joins a VPN or adds a router
+// after us), because renumbering a live node is a renumber, and the flock subnet is flock-scoped,
+// so it moves the whole flock.
 //
-// Pick is PURE (a reader, an observation, a probe function in; three subnets out), so every
+// Pick is pure (a reader, an observation, a probe function in; three subnets out), so every
 // rejection path is unit-tested against a fabricated host; Observe and LANProbe (observe.go) are
 // the thin impure halves.
 package subnet
@@ -31,63 +30,54 @@ import (
 	"net/netip"
 )
 
-// Draw is the set a node commits to, each as the first three octets ("10.173.94") -- the form
-// its record holds (Report) and the only form anything downstream needs, because the addresses in
-// a /24 are positional: guests take .1/.2/.3 by node-id and their hosts take the same index 128
-// higher (agent/host applyDraw).
+// Draw is the set a node commits to, each as the first three octets ("10.173.94"): the form its
+// record holds (Report) and the only one anything downstream needs, because a /24's addresses are
+// positional: guests take .1/.2/.3 by node-id and their hosts the same index 128 higher
+// (agent/host applyDraw).
 type Draw struct {
 	System string // the flock subnet -- LAN-scoped, shared by every node in the flock
 	Priv   string // the private host<->guest link -- node-private, never on the LAN
-	// Pod is the pool the guest's PRIVATE APP NETWORKS are allocated from --
-	// node-private and guest-internal, never configured on the host at all. That last part is the
-	// point rather than an omission: the host holding no address and no route in this range is
-	// what makes a pod unreachable from outside the guest BY CONSTRUCTION, with nothing to
-	// enforce and no firewall to get wrong.
-	//
-	// It is drawn rather than carved out of Priv, and the reason is a rule rather than tidiness:
-	// 10.11 is L2 SUBSTRATE that no briard code may reference, because it does not exist on a
-	// Windows host and code that dialled it could not run there. A podman network our renderer
-	// manages is exactly briard code referencing it.
+	// Pod is the pool the guest's private app networks are allocated from: node-private,
+	// guest-internal, never configured on the host at all. That is the point, not an omission: the
+	// host holding no address and no route in this range makes a pod unreachable from outside the
+	// guest by construction, with nothing to enforce and no firewall to get wrong. It is drawn
+	// rather than carved out of Priv by rule, not tidiness: 10.11 is L2 substrate that no briard
+	// code may reference, because it does not exist on a Windows host and code that dialled it
+	// could not run there, and a podman network our renderer manages is exactly briard code
+	// referencing it.
 	Pod string
 }
 
-// Complete reports whether every range is answered. A partial set is not a usable one -- the node
-// would build half a substrate out of it -- so it is the caller's cue to draw, and a draw fills
-// only what is missing, so a node that predates a pool gains only that pool.
+// Complete reports whether every range is answered. A partial set is not usable (the node would
+// build half a substrate out of it), so it is the caller's cue to draw, and a draw fills only what
+// is missing, so a node that predates a pool gains only that pool.
 func (d Draw) Complete() bool { return d.System != "" && d.Priv != "" && d.Pod != "" }
 
-// attempts bounds each draw. Statistically absurd as a bound on bad luck -- the conventional
-// exclusions reject under 10% of the pool, so sixteen consecutive rejections by chance is a
-// number with more zeros than this comment -- which is the point: reaching it means the host
-// really does have 10/8 carved up, and then we must REFUSE rather than invent, naming the
-// variable that pins the range. The alternative is a node that installs green and cannot serve
-// half the house.
-//
-// It is also a wall-clock bound, because the flock draw ARP-probes each surviving candidate:
-// ~750ms of unanswered probe each, so sixteen is ~12s worst case and one probe (~750ms) in every
-// realistic case.
+// attempts bounds each draw. As a bound on bad luck it is statistically absurd (the conventional
+// exclusions reject under 10% of the pool, so sixteen rejections in a row by chance has more zeros
+// than this comment), which is the point: reaching it means the host really has 10/8 carved up,
+// and then we must refuse rather than invent, naming the variable that pins the range; the
+// alternative is a node that installs green and cannot serve half the house. It is also a
+// wall-clock bound, since the flock draw ARP-probes each surviving candidate (~750ms unanswered):
+// ~12s worst case, one probe in every realistic case.
 const attempts = 16
 
-// Pick draws all three subnets.
-//
-// rnd is the entropy source (crypto/rand.Reader in production, a fixed reader in tests). obs is
-// what this host can already see of 10/8; answers asks the LAN whether a candidate flock subnet's
-// .1 is already somebody's, and may be nil where nobody can be asked.
-//
-// The draws are structurally disjoint rather than checked against each other: the flock pool
-// excludes 10.11.x and 10.12.x, the whole of the link and pod pools, which are themselves
-// disjoint. So no range can land on another, and no ordering between the draws can make it.
+// Pick draws all three subnets. rnd is the entropy source (crypto/rand.Reader in production, a
+// fixed reader in tests); obs is what this host can already see of 10/8; answers asks the LAN
+// whether a candidate flock subnet's .1 is already somebody's, and may be nil where nobody can be
+// asked. The draws are structurally disjoint rather than checked against each other: the flock
+// pool excludes 10.11.x and 10.12.x, the whole of the link and pod pools, which are themselves
+// disjoint, so no range can land on another and no ordering between the draws can make it.
 func Pick(obs Observed, rnd io.Reader, answers func(netip.Addr) bool) (Draw, error) {
 	sys, err := draw(rnd, systemCandidate, func(p netip.Prefix) string {
 		if where := obs.Occupied(p); where != "" {
 			return where
 		}
-		// The flock subnet is the one that rides the household's L2, so it is the one with a
-		// second question to ask: is another flock already here? An existing node answers on its
-		// node IP, and node IPs are positional -- .1 is node-id 0, which every flock has.
-		//
-		// ⚠️ This detects only a flock that is POWERED ON and on this L2. A node that is off
-		// during our install collides silently later. It narrows the window; it does not close it.
+		// The flock subnet rides the household's L2, so it has a second question: is another
+		// flock already here? An existing node answers on its node IP, and node IPs are
+		// positional: .1 is node-id 0, which every flock has. ⚠️ This detects only a flock that
+		// is powered on and on this L2; one that is off during our install collides silently
+		// later. It narrows the window; it does not close it.
 		if answers != nil && answers(nodeIP(p)) {
 			return "a machine already answers at " + nodeIP(p).String()
 		}
@@ -108,9 +98,9 @@ func Pick(obs Observed, rnd io.Reader, answers func(netip.Addr) bool) (Draw, err
 }
 
 // draw is the loop every pool shares: propose, reject with a reason, stop at the bound. reject
-// returns "" for a candidate it accepts and the reason otherwise -- a string rather than a bool
-// so the refusal can say what the machine actually looked like, which is the difference between
-// a user who can act on it and one who files a bug.
+// returns "" to accept and the reason otherwise, a string rather than a bool so the refusal can
+// say what the machine actually looked like: the difference between a user who can act on it and
+// one who files a bug.
 func draw(rnd io.Reader, propose func(io.Reader) (netip.Prefix, error), reject func(netip.Prefix) string) (netip.Prefix, error) {
 	var last string
 	for range attempts {
@@ -128,15 +118,13 @@ func draw(rnd io.Reader, propose func(io.Reader) (netip.Prefix, error), reject f
 }
 
 // systemCandidate proposes a flock subnet: 10.R.R.0/24, both octets random, minus the ranges
-// convention has spoken for.
-//
-// THE POOL IS 10.0.0.0/8 AND NOWHERE ELSE. 172.16.0.0/12 is Docker's in practice (default bridge
-// 172.17.0.0/16, compose networks upward from 172.18); 192.168.0.0/16 is the most CPE-collided
-// space there is; and 100.64.0.0/10 (RFC 6598) is actively hostile -- ISP CGNAT on the DS-Lite
-// market, Tailscale, and our own NetBird-class overlay all live there. The
+// convention has spoken for. The pool is 10.0.0.0/8 and nowhere else: 172.16.0.0/12 is Docker's
+// in practice (default bridge 172.17.0.0/16, compose networks upward from 172.18); 192.168.0.0/16
+// is the most CPE-collided space there is; 100.64.0.0/10 (RFC 6598) is actively hostile (ISP CGNAT
+// on the DS-Lite market, Tailscale, and our own NetBird-class overlay all live there). The
 // benchmarking and documentation ranges (198.18.0.0/15, 192.0.2.0/24, 198.51.100.0/24,
-// 203.0.113.0/24) are unrouted and therefore tempting, but squatting non-private space breaks the
-// day a user legitimately needs to reach it.
+// 203.0.113.0/24) are unrouted and so tempting, but squatting non-private space breaks the day a
+// user legitimately needs to reach it.
 func systemCandidate(rnd io.Reader) (netip.Prefix, error) {
 	var o [2]byte
 	for range 4 * attempts {
@@ -153,25 +141,21 @@ func systemCandidate(rnd io.Reader) (netip.Prefix, error) {
 	return netip.Prefix{}, fmt.Errorf("entropy kept proposing reserved ranges")
 }
 
-// privCandidate proposes a private link: 10.11.R.0/24, one octet random.
+// privCandidate proposes a private link: 10.11.R.0/24, one octet random. 256 candidates is plenty
+// here, and tens of thousands are wanted for the flock, because the scopes differ: the link is
+// node-private (a point-to-point wire on one host), so two nodes in one flock may draw the same
+// 10.11.R without conflict, separate wires that never meet, while the flock subnet must miss every
+// other flock on the LAN as well as the LAN itself. 10.11.x deliberately, not the historical
+// 10.9.x: any surviving `10.9.` in either tree is then provably a leftover rather than a judgement
+// call, which turns a class of rogue use into one grep.
 //
-// 256 candidates is plenty here, and tens of thousands are wanted for the flock, because the two
-// have different scopes. The link is node-private -- a point-to-point wire on one host -- so two
-// nodes in one flock may draw the SAME 10.11.R without conflict; they are separate wires that
-// never meet. The flock subnet must miss every OTHER flock on the same LAN as well as the LAN
-// itself.
-//
-// 10.11.x DELIBERATELY, and not the historical 10.9.x: any surviving `10.9.` in either tree is
-// then provably a leftover rather than a judgement call, which turns a class of rogue use into
-// one grep.
-//
-// ⚠️ THE POOL IS L2 SUBSTRATE AND NO BRIARD CODE MAY REFERENCE IT. On Linux, macvtap leaves host
+// ⚠️ The pool is L2 substrate and no briard code may reference it. On Linux, macvtap leaves host
 // and guest unable to route each other's subnets directly, and these addresses on eth3 are what
-// both routing tables hang that routing off -- so the pool is permanent, whatever else stops using
-// it. It does not exist at all on a Windows host, which is what makes the rule a rule rather than
-// a preference: anything that dials this range cannot run where the link was never built. A
-// product network that needs addresses of its own draws its own pool and excludes it below,
-// exactly as this one is excluded from the flock's.
+// both routing tables hang that routing off, so the pool is permanent, whatever else stops using
+// it. It does not exist at all on a Windows host, which makes the rule a rule, not a preference:
+// anything that dials this range cannot run where the link was never built. A product network that
+// needs addresses of its own draws its own pool and excludes it below, as this one is excluded
+// from the flock's.
 func privCandidate(rnd io.Reader) (netip.Prefix, error) {
 	var o [1]byte
 	if _, err := io.ReadFull(rnd, o[:]); err != nil {
@@ -180,20 +164,16 @@ func privCandidate(rnd io.Reader) (netip.Prefix, error) {
 	return slash24(10, 11, o[0]), nil
 }
 
-// podCandidate proposes the guest's private-app pool: 10.12.R.0/24, one octet random.
+// podCandidate proposes the guest's private-app pool: 10.12.R.0/24, one octet random. Node-scoped
+// like the link, for the same reason: these networks live inside one guest's namespace, so two
+// nodes may draw the same 10.12.R without ever meeting, and 256 candidates is plenty. It is still
+// drawn rather than fixed because the guest is not isolated from the household: eth2 sits on the
+// household LAN, which can itself be 10.x, and a colliding pool would leave an app unable to reach
+// the devices it exists to talk to.
 //
-// Node-scoped like the link and for the same reason: these networks live inside ONE guest's
-// namespace, so two nodes may draw the same 10.12.R without ever meeting. 256 candidates is
-// therefore plenty, exactly as it is for privCandidate.
-//
-// It still has to be DRAWN rather than fixed, because the guest is not isolated from the
-// household: eth2 sits on the household LAN, which can itself be 10.x, and a pool that collided
-// with it would leave an app unable to reach the devices it exists to talk to.
-//
-// 10.12 rather than spare room inside 10.11: excluding another /16 costs the flock pool 256 of
-// its ~59,900 other free /24s, 0.43%. Borrowing from 10.11 would cost nothing there and break the
-// rule that no briard code may reference the link pool (see privCandidate), which is worth more
-// than 0.43%.
+// 10.12 rather than spare room inside 10.11: excluding another /16 costs the flock pool 256 of its
+// ~59,900 other free /24s, 0.43%. Borrowing from 10.11 would cost nothing there and break the
+// rule that no briard code may reference the link pool (see privCandidate), which is worth more.
 func podCandidate(rnd io.Reader) (netip.Prefix, error) {
 	var o [1]byte
 	if _, err := io.ReadFull(rnd, o[:]); err != nil {
@@ -202,17 +182,14 @@ func podCandidate(rnd io.Reader) (netip.Prefix, error) {
 	return slash24(10, 12, o[0]), nil
 }
 
-// occupied is the conventional-occupant table: ranges inside 10/8 that are already somebody's by
-// convention, so a draw that lands on one is a collision waiting for the user to install the
-// other thing.
-//
-// The collisions cluster on ROUND, LOW, MEMORABLE numbers, because that is what humans and vendor
-// defaults pick -- which is also why a random pair like 10.173.94.0/24 is nearly safe by
-// construction, and why the round-number belt (10.1/10.10/10.100/10.200) is hand-picked rather than
-// sourced: nobody documents "operators like round numbers", but every network engineer has met it.
-//
-// Each sourced entry was verified rather than recalled, because a table of remembered constants is
-// a table of plausible wrong numbers.
+// occupied is the conventional-occupant table: ranges inside 10/8 already somebody's by
+// convention, where a draw is a collision waiting for the user to install the other thing.
+// Collisions cluster on round, low, memorable numbers, what humans and vendor defaults pick, which
+// is why a random pair like 10.173.94.0/24 is nearly safe by construction, and why the
+// round-number belt (10.1/10.10/10.100/10.200) is hand-picked rather than sourced: nobody
+// documents "operators like round numbers", but every network engineer has met it. Each sourced
+// entry was verified, not recalled: a table of remembered constants is a table of plausible wrong
+// numbers.
 var occupied = []struct {
 	prefix netip.Prefix
 	who    string
@@ -228,8 +205,8 @@ var occupied = []struct {
 	{netip.MustParsePrefix("10.10.0.0/16"), "a round number operators pick by hand"},
 	{netip.MustParsePrefix("10.100.0.0/16"), "a round number operators pick by hand"}, // already inside the k8s /12; kept for the day that moves
 	{netip.MustParsePrefix("10.200.0.0/16"), "a round number operators pick by hand"},
-	// OURS, and the entry that does the structural work: excluding the whole link pool from the
-	// flock pool is what keeps the two disjoint without either draw knowing about the other.
+	// Ours, and the entry that does the structural work: excluding the whole link pool from the
+	// flock pool keeps the two disjoint without either draw knowing about the other.
 	{netip.MustParsePrefix("10.11.0.0/16"), "briard's own private-link pool -- L2 substrate, permanent, referenced by no code"},
 	{netip.MustParsePrefix("10.12.0.0/16"), "briard's own pod pool -- guest-internal, never configured on the host"},
 }
@@ -245,11 +222,9 @@ func conventional(p netip.Prefix) string {
 }
 
 // Observed is what this host can already see of the address space around it: its own addresses
-// and the routes it holds.
-//
-// AN EMPTY Observed DRAWS FREELY, and that asymmetry is deliberate -- the same one the report
-// card's VIP probe uses. This check turns evidence-of-use into a redraw and must never turn
-// absence-of-evidence into a refusal: a host we could not read is a host that installs.
+// and the routes it holds. An empty Observed draws freely, deliberately, the asymmetry the report
+// card's VIP probe uses: this check turns evidence of use into a redraw and must never turn
+// absence of evidence into a refusal; a host we could not read is a host that installs.
 type Observed struct {
 	// Prefixes is every range this host has an address in or a route to, already cut to the
 	// prefix lengths worth honouring (see Observe).
@@ -259,12 +234,10 @@ type Observed struct {
 	Where map[netip.Prefix]string
 }
 
-// Occupied names what already holds p, or "" if nothing this host can see does.
-//
-// It knows nothing of the conventional table on purpose: that exclusion belongs to the flock
-// POOL (systemCandidate applies it when proposing) and not to the link's or the pod's, each of
-// whose whole pool is one of the table's entries. Folding the two together here would reject
-// every link and pod candidate.
+// Occupied names what already holds p, or "" if nothing this host can see does. It knows nothing
+// of the conventional table on purpose: that exclusion belongs to the flock pool (systemCandidate
+// applies it when proposing), not to the link's or the pod's, whose whole pools are each one of
+// the table's entries, so folding it in here would reject every link and pod candidate.
 func (o Observed) Occupied(p netip.Prefix) string {
 	for _, q := range o.Prefixes {
 		if q.Overlaps(p) {

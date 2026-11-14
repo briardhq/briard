@@ -1,12 +1,12 @@
 // Package reportcard is the machine report card: the admission gate `briard-agent install` runs
-// first (and `briard-agent --report-card` alone). It inspects the host for the capabilities a
-// briard node needs -- KVM or WHPX, TUN/TAP, iproute2, RAM, disk, a NIC that can carry the guest's
-// L2 -- and REFUSES the genuinely unfit with the fix named, rather than half-installing onto a box
-// that can't serve. ("Microsoft says e-waste; we say server" is honest only because the card
-// refuses what truly won't work.) It also holds the installed host's own checks for `briard
-// doctor` (doctor.go) and the readers the agent shares with it (disk free, RAM, clock, SMART).
+// first (and `briard-agent --report-card` alone). It inspects the host for what a briard node
+// needs (KVM or WHPX, TUN/TAP, iproute2, RAM, disk, a NIC that can carry the guest's L2) and
+// refuses the genuinely unfit with the fix named, rather than half-installing onto a box that
+// can't serve. ("Microsoft says e-waste; we say server" is honest only because the card refuses
+// what truly won't work.) It also holds the installed host's own checks for `briard doctor`
+// (doctor.go) and the readers the agent shares with it (disk free, RAM, clock, SMART).
 //
-// Assess is PURE (host facts in, verdict out), so every refuse/warn path is unit-tested against
+// Assess is pure (host facts in, verdict out), so every refuse/warn path is unit-tested against
 // fabricated facts; Gather (gather_<os>.go) is the thin impure reader of the real host.
 package reportcard
 
@@ -44,59 +44,58 @@ type Check struct {
 type HostFacts struct {
 	DevKVM    bool // /dev/kvm present
 	VirtFlags bool // vmx (Intel) or svm (AMD) in /proc/cpuinfo
-	// CPUAES is `aes` in /proc/cpuinfo -- AES-NI on x86, the ARMv8 crypto extension on aarch64.
-	// It decides whether this node's data volume is created encrypted, so the card
-	// reports it before the install rather than leaving the split to be discovered.
+	// CPUAES is `aes` in /proc/cpuinfo (AES-NI on x86, the ARMv8 crypto extension on aarch64). It
+	// decides whether this node's data volume is created encrypted, so the card reports it before
+	// the install rather than leaving the split to be discovered.
 	CPUAES    bool
 	DevNetTun bool // /dev/net/tun present (the agent loads tun before it builds the substrate)
 	TunModule bool // the tun module is loaded or available to load (or built-in)
 	HasIP     bool // `ip` (iproute2) on PATH
-	// SystemdBooted is whether systemd is PID 1 here, not merely whether systemctl is installed --
+	// SystemdBooted is whether systemd is PID 1 here, not merely whether systemctl is installed:
 	// the install registers units, so an OpenRC box with the binary lying around is still a refusal.
 	SystemdBooted bool
 	MemTotalMB    int
-	// NIC is the device the guest's L2 will hang off, and why it is or is not usable. The
-	// card judges that one device, never whether the MACHINE has a wired one: a laptop with
-	// an unplugged eth0 and the default route on wlan0 has one, and the install would still
-	// hang the guest off the wireless station.
+	// NIC is the device the guest's L2 will hang off, and why it is or is not usable. The card
+	// judges that one device, never whether the machine has a wired one: a laptop with an unplugged
+	// eth0 and the default route on wlan0 has one, and the install would still hang the guest off
+	// the wireless station.
 	NIC nic.Selection
-	// PrimaryNICBus is the bus of the selected NIC ("usb", "pci", or "" if unknown). Used
-	// only by the macvtap advisories: a USB NIC (e.g. RTL8153) usually can't program
-	// the guest MACs into a hardware unicast filter, so macvtap runs it promiscuous.
+	// PrimaryNICBus is the selected NIC's bus ("usb", "pci", or "" if unknown), used only by the
+	// macvtap advisories: a USB NIC (e.g. RTL8153) usually can't program the guest MACs into a
+	// hardware unicast filter, so macvtap runs it promiscuous.
 	PrimaryNICBus string
 	// DiskFreeMB is free space on the filesystem the install lands on. 0 means "could not read",
 	// which the disk check treats as unknown (and stays quiet) rather than as an empty disk.
 	DiskFreeMB int
 	// KeptDataDisk / KeptStateDisk: the pet volumes a previous install left at their paths, which a
-	// reinstall keeps. Their lines are already paid, so the floor does not charge for them again --
-	// a reinstall is how an alpha node moves across an upgrade floor, and it must not be refused
-	// for space its own disks already hold.
+	// reinstall keeps. Their lines are already paid, so the floor does not charge them again: a
+	// reinstall is how an alpha node moves across an upgrade floor, and it must not be refused for
+	// space its own disks already hold.
 	KeptDataDisk, KeptStateDisk bool
-	// HostCIDR is the SELECTED NIC's own IPv4 address in CIDR form ("192.168.9.100/24") --
-	// i.e. the LAN this node is actually on. "" means it could not be read, which the VIP check
-	// treats as unknown rather than as a fault.
+	// HostCIDR is the selected NIC's own IPv4 address in CIDR form ("192.168.9.100/24"), i.e. the
+	// LAN this node is actually on. "" means unreadable, which the VIP check treats as unknown
+	// rather than as a fault.
 	HostCIDR string
-	// VIPAddr is the service address this install intends to claim, in CIDR form. "" means DHCP,
-	// which is a different question with its own answer (dhcpCheck), not "nothing to check". It
-	// exists here because the address is the LAN's, not ours, and the card is the last place to
-	// say so before a VM boots holding it.
+	// VIPAddr is the service address this install intends to claim, in CIDR form. "" means DHCP, a
+	// different question with its own answer (dhcpCheck), not "nothing to check". It is here
+	// because the address is the LAN's, not ours, and the card is the last place to say so before a
+	// VM boots holding it.
 	VIPAddr string
-	// VIPAnswered is true when something on the LAN already replies for VIPAddr -- the address a
-	// user named is taken. Gathered rather than probed inside the check, so the checks stay pure
-	// and testable. False also covers "we could not probe", which reads as no evidence and never
-	// as proof the address is free.
+	// VIPAnswered is true when something on the LAN already replies for VIPAddr: the address a user
+	// named is taken. Gathered rather than probed inside the check, so the checks stay pure and
+	// testable. False also covers "we could not probe", which reads as no evidence and never as
+	// proof the address is free.
 	VIPAnswered bool
-	// HasMDNSResolver is true when this machine can resolve .local names -- nsswitch names an
-	// mDNS module (nss-mdns, or systemd-resolved, which answers mDNS through `resolve`). It is
-	// about the HOST's own software, not about us: the name we hand over resolves through
-	// whatever resolver the household already has, and a box with none resolves no .local name
-	// from any source. False also covers "could not read nsswitch", which warns rather than
-	// refuses -- absence of evidence is not evidence of absence.
+	// HasMDNSResolver is true when this machine can resolve .local names: nsswitch names an mDNS
+	// module (nss-mdns, or systemd-resolved, which answers mDNS through `resolve`). It is about the
+	// host's own software, not us: the name we hand over resolves through whatever resolver the
+	// household has, and a box with none resolves no .local name from any source. False also
+	// covers "could not read nsswitch", which warns rather than refuses: absence of evidence is not
+	// evidence of absence.
 	HasMDNSResolver bool
-	// HostLeased is true when this machine's own address looks DHCP-assigned (a lease file for
-	// the selected NIC, under any of the usual managers). EVIDENCE, not proof: a
-	// deliberately static host on a DHCP-serving LAN reads false. So it may warn and must never
-	// refuse.
+	// HostLeased is true when this machine's own address looks DHCP-assigned (a lease file for the
+	// selected NIC, under any of the usual managers). Evidence, not proof: a deliberately static
+	// host on a DHCP-serving LAN reads false, so it may warn and must never refuse.
 	HostLeased bool
 
 	// The Windows host's requirements (platform_windows.go); unread on Linux.
@@ -107,46 +106,43 @@ type HostFacts struct {
 	NICSpeedBps       uint64 // the selected NIC's link speed
 }
 
-// RAM. The thresholds are deliberately BELOW the round numbers they describe, because the number
-// a machine reports is not the number on the DIMM: firmware reserves a slice before the OS counts,
-// so an 8 GB desktop reports ~7873 MB (measured) and a 4 GB one ~3800. A literal 8*1024 would tell
-// every 8 GB machine to buy RAM it already has, and a floor at 4*1024 would REFUSE conforming 4 GB
-// hosts outright.
+// RAM. The thresholds sit deliberately below the round numbers they describe, because firmware
+// reserves a slice before the OS counts: an 8 GB desktop reports ~7873 MB (measured), a 4 GB one
+// ~3800. A literal 8*1024 would tell every 8 GB machine to buy RAM it already has, and a floor at
+// 4*1024 would refuse conforming 4 GB hosts outright.
 const (
 	memFloorMB       = 3584 // 3.5 GiB: a 4 GB host, after firmware reservation
 	memRecommendedMB = 7680 // 7.5 GiB: an 8 GB host, after firmware reservation
 )
 
-// Disk: WHAT A NODE USES, each line paid for when it is made. Nothing the guest writes charges the
+// Disk: what a node uses, each line paid for when it is made. Nothing the guest writes charges the
 // host later: its OS image is read-only and its state disk thick, grown by an install before the
-// pull (agent/host growStateDisk). Only what stays is counted -- what an update stages beside the
-// running image and frees again is not a line, it is what the free space every computer keeps for
-// itself is for, and the card says to keep that rather than adding it in.
-//
-// Below what the install USES the card refuses, rather than half-land. Below that plus one Home
-// Assistant plus the free space it advises, it warns and names each number: a node with no
-// app is a working node.
+// pull (agent/host growStateDisk). Only what stays is counted: what an update stages beside the
+// running image and frees again is not a line but what the free space every computer keeps for
+// itself is for, and the card says to keep that rather than adding it in. Below what the install
+// uses the card refuses, rather than half-land; below that plus one Home Assistant plus the
+// advised free space, it warns and names each number: a node with no app is a working node.
 const (
 	// The guest image (~0.86 GB) and the agent, qemu and guest bundles (~0.1 GB), measured.
 	diskImageLineMB = 1024
-	// The data volume, THICK, at DATA_SIZE's default (agent/host/config.go). A larger DATA_SIZE is
+	// The data volume, thick, at DATA_SIZE's default (agent/host/config.go). A larger DATA_SIZE is
 	// refused by its own allocation if the host cannot back it.
 	diskDataLineMB = 4 * 1024
-	// StateDiskInitialMB is the state disk an empty node starts with, THICK: the journal (128 MB
+	// StateDiskInitialMB is the state disk an empty node starts with, thick: the journal (128 MB
 	// cap), the boot's scratch and room to spare. The agent makes it at exactly this size
 	// (agent/host/disks.go stateDiskInitial).
 	StateDiskInitialMB = 1024
-	// One Home Assistant: what the state disk GROWS by when it installs (2.49 GB installed + 0.62
-	// GB downloading + the 1 GiB the guest keeps free, padded as the grow pads it) -- used for good,
-	// because the disk never shrinks.
+	// One Home Assistant: what the state disk grows by, for good (the disk never shrinks), when it
+	// installs: 2.49 GB installed + 0.62 GB downloading + the 1 GiB the guest keeps free, padded as
+	// the grow pads it.
 	diskHomeAssistantLineMB = 5 * 1024
-	// HostDiskReserveMB is the free space this computer keeps for its own system -- and for an
+	// HostDiskReserveMB is the free space this computer keeps for its own system, and for an
 	// update's staging, which comes and goes inside it. Not a line: the card advises it, and the
 	// agent refuses any grow of the state disk that would leave less.
 	HostDiskReserveMB = 2 * 1024
 )
 
-// diskUse is what installing uses on THIS host: every line, less the pet volumes a previous
+// diskUse is what installing uses on this host: every line, less the pet volumes a previous
 // install left in place (a reinstall keeps them, and they are paid for). 6 GB on a fresh host.
 func diskUse(f HostFacts) int {
 	mb := diskImageLineMB
@@ -174,8 +170,8 @@ func (r Report) Admit() bool {
 	return true
 }
 
-// nicDetail is the one-line statement of what was selected -- the "what was picked, and why" half
-// of the message; Fix carries the remedy. It says WHY on the selected path because "eth1 holds
+// nicDetail is the one-line statement of what was selected, the "what was picked, and why" half
+// of the message; Fix carries the remedy. It says why on the selected path because "eth1 holds
 // this machine's default route" is the sentence that lets a user disagree with us.
 func nicDetail(s nic.Selection) string {
 	switch {
@@ -210,10 +206,10 @@ func Assess(f HostFacts) Report {
 			"add RAM to at least 4 GB (often a cheap SO-DIMM); below this a machine can't run the VM reliably"})
 	}
 
-	// Disk -- the install makes every line above up front (the data volume and the guest's disk
-	// thick), so a host without room must be refused BEFORE any of that lands, not discovered
-	// halfway through. A 0 reading means the statfs failed; say nothing rather than refuse a host
-	// over a fact we could not read.
+	// Disk: the install makes every line above up front (the data volume and the guest's disk
+	// thick), so a host without room is refused before any of that lands, not discovered halfway
+	// through. A 0 reading means the statfs failed; say nothing rather than refuse a host over a
+	// fact we could not read.
 	use := diskUse(f)
 	comfortable := use + diskHomeAssistantLineMB + HostDiskReserveMB
 	lines := "the VM image"
@@ -237,15 +233,12 @@ func Assess(f HostFacts) Report {
 			fmt.Sprintf("free at least %s for %s, plus about %s for this computer's own system", gbOf(use), lines, gbOf(HostDiskReserveMB))})
 	}
 
-	// THE NIC THE GUEST'S L2 WILL HANG OFF -- judged as the one device the install
-	// will actually use, not as a survey of the machine's devices.
-	//
-	// The refusal is the whole safety margin, because every way this goes wrong ends the same
-	// way: a guest that boots, reports healthy, and is unreachable from the household. So the
-	// unusable cases refuse BEFORE anything is written, carrying nic.Selection.Fix -- what was
-	// picked, why, what failed, the override, and the devices to choose from.
-	//
-	// Wireless is a WARN, and its fix says what the household should know: the guest rides the
+	// The NIC the guest's L2 will hang off, judged as the one device the install will use, not as a
+	// survey of the machine's devices. The refusal is the whole safety margin, because every way
+	// this goes wrong ends the same way: a guest that boots, reports healthy, and is unreachable
+	// from the household. So the unusable cases refuse before anything is written, carrying
+	// nic.Selection.Fix (what was picked, why, what failed, the override, the devices to choose
+	// from). Wireless is a Warn whose fix says what the household should know: the guest rides the
 	// station's own MAC (ipvtap on Linux, compatibility mode on Windows) and works fully, but Wi-Fi
 	// drops, roams and sleeps in ways no substrate fixes.
 	switch {
@@ -257,14 +250,12 @@ func Assess(f HostFacts) Report {
 		cs = append(cs, Check{"network", Pass, nicDetail(f.NIC), ""})
 	}
 
-	// mDNS ON THIS MACHINE. The install ends by handing over `briard-<flock>.local`, and whether
-	// that name resolves on the machine reading it is a property of the HOST, not of us: a box
-	// with no mDNS resolver resolves no .local name from anywhere, ours included. Nothing is
-	// missing on our side -- but saying so before the install beats a user meeting a dead name
-	// after it.
-	//
-	// Never a Refuse, and not even substrate-scoped: the address always works, the name is the
-	// convenience, and this warns about the household's own software.
+	// mDNS on this machine. The install ends by handing over `briard-<flock>.local`, and whether
+	// that resolves on the machine reading it is the host's property, not ours: a box with no mDNS
+	// resolver resolves no .local name from anywhere, ours included. Nothing is missing on our side,
+	// but saying so before the install beats a user meeting a dead name after it. Never a Refuse,
+	// not even substrate-scoped: the address always works, the name is the convenience, and this
+	// warns about the household's own software.
 	if f.HasMDNSResolver {
 		cs = append(cs, Check{"mdns", Pass, "this machine can resolve .local names (mDNS)", ""})
 	} else {
@@ -272,16 +263,14 @@ func Assess(f HostFacts) Report {
 			"the numeric address always works (and other machines on your LAN resolve the name fine); install avahi-daemon + libnss-mdns if you want the name on this box too"})
 	}
 
-	// ENCRYPTION AT REST, which on this machine is decided by one hardware fact.
-	// The data volume is created encrypted wherever AES acceleration exists, and in the clear
-	// where it does not -- a software cipher on the write path of a household's data is a worse
-	// trade than an honest report. So the fleet splits on an axis that is hardware-determined,
-	// predictable, and said out loud here rather than discovered later.
-	//
-	// Never a Refuse: an AES-less box is a perfectly good node. And the decision is really the
-	// GUEST's -- it checks its own /proc/cpuinfo, where silicon, accelerator and CPU model compose
-	// into one answer -- so this reports what that check will find (`-cpu max` passes this CPU
-	// through under KVM, which the kvm check above has already established).
+	// Encryption at rest, decided on this machine by one hardware fact: the data volume is created
+	// encrypted wherever AES acceleration exists and in the clear where it does not, since a
+	// software cipher on the write path of a household's data is a worse trade than an honest
+	// report. So the fleet splits on a hardware-determined, predictable axis, said out loud here
+	// rather than discovered later. Never a Refuse: an AES-less box is a perfectly good node. The
+	// decision is really the guest's (it checks its own /proc/cpuinfo, where silicon, accelerator
+	// and CPU model compose into one answer), so this reports what that check will find (`-cpu max`
+	// passes this CPU through under KVM, which the kvm check above has already established).
 	if f.CPUAES {
 		cs = append(cs, Check{"encryption", Pass, "AES acceleration present -- the data volume will be encrypted at rest", ""})
 	} else {
@@ -294,23 +283,21 @@ func Assess(f HostFacts) Report {
 	return Report{Checks: cs}
 }
 
-// vipCheck compares the VIP with the household's LAN. The VIP is an address ON THE USER'S LAN, and
-// nothing else compares the two: a node claiming an address off this LAN boots and reports READY
-// -- the readiness probe runs in-guest, against an address the guest itself owns -- and nobody in
-// the house can reach it. The card is the last moment that failure can be turned into a refusal
-// with a reason, which is the whole promise of the card.
-//
-// It refuses rather than warns, because there is no partial success here: admitting an off-LAN
-// VIP produces exactly the green-but-useless install the card exists to prevent.
+// vipCheck compares the VIP, an address on the user's LAN, with that LAN, which nothing else
+// does: a node claiming an off-LAN address boots and reports READY (the readiness probe runs
+// in-guest, against an address the guest itself owns) and nobody in the house can reach it. The
+// card is the last moment to turn that into a refusal with a reason, the whole promise of the
+// card. It refuses rather than warns: there is no partial success, and admitting an off-LAN VIP
+// is exactly the green-but-useless install the card exists to prevent.
 //
 // There is no default address, so the check has two halves:
 //
-//   - an address the user NAMED is judged against this LAN and probed -- if something already
+//   - an address the user named is judged against this LAN and probed: if something already
 //     answers for it, we would be putting a second claimant on a live address.
-//   - NO address means DHCP, and the question becomes whether this LAN hands them out (dhcpCheck).
-//     That cannot be proven without leasing, so it WARNS on absent evidence and never refuses: a
-//     deliberately-static host on a DHCP-serving network is a false negative we must not turn
-//     into a refusal. Never silence: an unchecked empty VIP is how the off-LAN defect hides.
+//   - no address means DHCP, and the question is whether this LAN hands them out (dhcpCheck).
+//     That cannot be proven without leasing, so it warns on absent evidence and never refuses (a
+//     deliberately static host on a DHCP-serving network is a false negative we must not turn
+//     into a refusal), and is never silent: an unchecked empty VIP is how the off-LAN defect hides.
 //
 // VIPCheck is the same gate for a running node changing its address (`briard config set vip`), so
 // the install and the change refuse the same addresses for the same reasons.
@@ -359,15 +346,12 @@ func vipCheck(f HostFacts) []Check {
 }
 
 // dhcpCheck answers the question an unset BRIARD_VIP_ADDR asks: can this LAN give us an address?
-//
-// It cannot be answered with certainty short of actually leasing one, and the install is not the
-// place to take a lease we may not keep. So it reports EVIDENCE: this machine's own address being
-// DHCP-assigned means a server answered on this segment recently, which is the best available
-// proxy for "one will answer the guest too".
-//
-// Absent evidence WARNS. A host deliberately configured with a static address on a network that
-// does serve DHCP reads false here, and refusing that install would be refusing a machine over a
-// fact we merely failed to gather -- the same stance the disk and VIP checks already take.
+// Only a lease proves it, and the install is not the place to take one we may not keep, so it
+// reports evidence: this machine's own address being DHCP-assigned means a server answered on
+// this segment recently, the best available proxy for "one will answer the guest too". Absent
+// evidence warns: a deliberately static host on a network that does serve DHCP reads false, and
+// refusing it would refuse a machine over a fact we merely failed to gather, the stance the disk
+// and VIP checks already take.
 func dhcpCheck(f HostFacts) []Check {
 	if f.HostLeased {
 		return []Check{{"vip", Pass, "no service address set, and this network hands out addresses (this machine holds a DHCP lease)", ""}}
@@ -385,27 +369,26 @@ func prefixOf(cidr string) string {
 	return "24"
 }
 
-// MacvtapAdvisories returns the macvtap-substrate caveat checks, layered onto the core card only
-// when this host's selected device is one the guest will be macvtapped onto -- a question about
-// the DEVICE (a bridge gets a port instead, a wireless station ipvtap; platformAdvisories). They
-// are advisory (WARN/PASS) and NEVER Refuse: macvtap is never *worse* than the bridge substrate on
-// any of these axes, so a macvtap caveat can steer but must not block a box the bridge path would
-// admit. Pure -- unit-tested against fabricated facts.
+// MacvtapAdvisories returns the macvtap-substrate caveats, layered onto the core card only when
+// the selected device is one the guest will be macvtapped onto, a question about the device (a
+// bridge gets a port instead, a wireless station ipvtap; platformAdvisories). They are advisory
+// (WARN/PASS) and never Refuse: macvtap is never worse than the bridge substrate on any of these
+// axes, so a caveat can steer but must not block a box the bridge path would admit. Pure, and
+// unit-tested against fabricated facts.
 func MacvtapAdvisories(f HostFacts) []Check {
 	var cs []Check
-	// USB-NIC unicast-filter exhaustion. A cheap USB NIC (RTL8153-class) can't hold the two
+	// USB-NIC unicast-filter exhaustion: a cheap USB NIC (RTL8153-class) can't hold the two
 	// per-guest MACs in a hardware unicast filter, so the kernel falls the parent back to
-	// promiscuous mode. Functionally harmless -- a Linux bridge does exactly this on EVERY NIC
-	// unconditionally -- but a hair more host CPU, so flag it (not a refuse).
+	// promiscuous mode. Harmless (a Linux bridge does exactly this on every NIC, unconditionally)
+	// but a hair more host CPU, so flag it, never refuse.
 	if f.PrimaryNICBus == "usb" {
 		cs = append(cs, Check{"macvtap-nic", Warn, "primary NIC is USB (e.g. RTL8153); macvtap likely runs it promiscuous (no hardware unicast filter for the VM's MACs)",
 			"harmless -- a bridge does the same on every NIC -- but an onboard/PCIe NIC avoids the extra host CPU; no action needed if this is your only NIC"})
 	} else {
 		cs = append(cs, Check{"macvtap-nic", Pass, "primary NIC supports macvtap without forcing promiscuous mode", ""})
 	}
-	// MAC port-security is a switch property, not host-detectable -- surface it as an always-on
-	// advisory so a managed-switch LAN isn't surprised (the guest presents its own MAC, exactly
-	// as it does under a bridge).
+	// MAC port-security is a switch property, not host-detectable: an always-on advisory so a
+	// managed-switch LAN isn't surprised (the guest presents its own MAC, as under a bridge).
 	cs = append(cs, Check{"macvtap-l2", Warn, "the VM presents its own MAC on the LAN (same as a bridge)",
 		"if your switch enforces MAC port-security or you're on a hosted/cloud L2, allow the VM's MAC on this port"})
 	return cs
@@ -428,11 +411,10 @@ func Print(w io.Writer, r Report) {
 }
 
 // Run gathers the real host's facts, assesses them, prints the card to w, and returns whether the
-// host is admitted -- the one call `briard-agent install` / `briard-agent --report-card` makes.
-//
-// It takes no substrate: being told one would let the card judge a substrate the machine will not
-// end up on. The substrate is the answer to "is the selected device a bridge", and the card has
-// the selection, so it derives the same answer the agent will.
+// host is admitted: the one call `briard-agent install` / `briard-agent --report-card` makes. It
+// takes no substrate, since being told one would let the card judge a substrate the machine will
+// not end up on: the substrate answers "is the selected device a bridge", and from the selection
+// the card derives the same answer the agent will.
 func Run(ctx context.Context, w io.Writer) bool {
 	f := Gather(ctx)
 	r := Assess(f)

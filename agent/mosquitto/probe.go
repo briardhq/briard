@@ -8,35 +8,35 @@ import (
 	"time"
 )
 
-// The S1 readiness signal for a broker, and why it is a WRITE where Home Assistant's is a read.
+// The S1 readiness signal for a broker, and why it is a write where Home Assistant's is a read.
 //
-// The liveness floor asks whether the app answers; S1 asks whether it still does the thing it
-// was doing. For Home Assistant that is legible without touching anything — it publishes which
-// integrations are loaded, so the gate samples and compares. A broker publishes no such thing.
-// Its work is accepting clients and keeping what they told it to keep, and NEITHER is observable
+// The liveness floor asks whether the app answers; S1 asks whether it still does what it was
+// doing. Home Assistant makes that legible without touching anything (it publishes which
+// integrations are loaded, so the gate samples and compares); a broker publishes no such thing.
+// Its work is accepting clients and keeping what they told it to keep, and neither is observable
 // from the management API: `/api/v1/listeners` reports the listener is configured, which stays
 // true of a broker that refuses every connection and of one that came back with an empty store.
 //
-// So the probe does what a client does. Before the change it publishes a RETAINED token; after,
-// it reads that token back. Surviving that round trip is the whole claim, and it covers the two
-// ways an upgrade breaks a broker while leaving it answering:
+// So the probe does what a client does: before the change it publishes a retained token, after it
+// reads the token back. Surviving that round trip is the whole claim, and it covers the two ways an
+// upgrade breaks a broker while leaving it answering:
 //
-//   - it lost its persisted state (a mount that no longer covers where it writes, a database
-//     format it cannot read) — the token is gone, and so is every retained message the household
-//     had, which no floor can see because the broker is up and serving nothing;
-//   - it stopped accepting clients (an auth default that moved, a listener bound elsewhere) —
+//   - it lost its persisted state (a mount no longer covering where it writes, a database format
+//     it cannot read): the token is gone, and so is every retained message the household had,
+//     which no floor can see because the broker is up and serving nothing;
+//   - it stopped accepting clients (an auth default that moved, a listener bound elsewhere):
 //     nothing can connect at all.
 //
-// THE TWO ARE DISTINGUISHED, deliberately, by a control read of `$SYS/broker/version`: the broker
-// publishes it retained, so it comes back instantly to any client that can connect (measured on
+// The two are distinguished, deliberately, by a control read of `$SYS/broker/version`, which the
+// broker publishes retained, so it comes back instantly to any client that can connect (measured on
 // the pinned image). If that answers and our token does not, the broker is serving and has lost
-// its state. If it does not answer, the broker is not serving. The verdicts differ in reason and
+// its state; if it does not answer, the broker is not serving. The verdicts differ in reason, and
 // the household deserves the right one.
 //
-// IT BORROWS THE APP'S OWN TOOLS, exactly as agent/hass borrows Home Assistant's Python: the
-// image ships mosquitto_pub and mosquitto_sub, so nothing here implements MQTT and the guest gains
-// no dependency. Dumb hands: this is HOW to ask a broker, never what the answer means — the
-// verdict is the host's (agent/host/readiness.go).
+// It borrows the app's own tools, as agent/hass borrows Home Assistant's Python: the image ships
+// mosquitto_pub and mosquitto_sub, so nothing here implements MQTT and the guest gains no
+// dependency. Dumb hands: this is how to ask a broker, never what the answer means; the verdict is
+// the host's (agent/host/readiness.go).
 
 // ProbeTopic is the one topic Briard owns on a household's broker. Namespaced so it cannot
 // collide with a device's, and a single retained message rather than a series: it is overwritten
@@ -44,32 +44,31 @@ import (
 // this one's survival.
 const ProbeTopic = "briard/probe"
 
-// versionTopic is the control. Every mosquitto publishes it retained, so a client that can
-// connect gets it immediately — which is what makes "the token is missing" and "nothing can
-// connect" two different findings rather than one ambiguous failure.
+// versionTopic is the control. Every mosquitto publishes it retained, so a client that can connect
+// gets it immediately, which makes "the token is missing" and "nothing can connect" two different
+// findings rather than one ambiguous failure.
 const versionTopic = "$SYS/broker/version"
 
-// probeWait bounds each subscribe, in seconds (mosquitto_sub's -W). A retained message is delivered on subscribe, so this is not a
-// poll interval — it is how long to wait for a broker that is not going to answer. Short, because
-// it is spent twice inside an install window that has to finish or revert.
+// probeWait bounds each subscribe, in seconds (mosquitto_sub's -W). A retained message is
+// delivered on subscribe, so this is not a poll interval but how long to wait for a broker that is
+// not going to answer. Short, because it is spent twice inside an install window that has to
+// finish or revert.
 const probeWait = 5
 
-// Sample is one observation of the broker as a CLIENT sees it.
+// Sample is one observation of the broker as a client sees it.
 type Sample struct {
 	// Serving is true when a client connected and the broker answered the control read. False
 	// means no client can use this broker at all, whatever its management API says.
 	Serving bool
 	// Token is what was stored at ProbeTopic, or "" when the broker is serving and the topic is
-	// empty — which is the data-loss signal, not an error.
+	// empty, which is the data-loss signal, not an error.
 	Token string
 }
 
 // Probe stores `token` in the broker's own retained state when one is given, and returns what the
-// broker holds. An empty token makes it a pure read.
-//
-// The container is named by the caller rather than derived here: the renderer decides unit and
-// container names (agent/quadlet), and a second place that reconstructs them is a second place to
-// get them wrong.
+// broker holds; an empty token makes it a pure read. The container is named by the caller, not
+// derived here: the renderer decides unit and container names (agent/quadlet), and a second place
+// that reconstructs them is a second place to get them wrong.
 func Probe(ctx context.Context, x Executor, container, token string) (Sample, error) {
 	if err := safeName(container); err != nil {
 		return Sample{}, err
@@ -86,22 +85,21 @@ func Probe(ctx context.Context, x Executor, container, token string) (Sample, er
 	}
 	stored, err := subscribe(ctx, x, container, ProbeTopic)
 	if err != nil {
-		// Serving, and the topic is empty. That is an ANSWER — the broker kept nothing — so it
-		// comes back as a sample rather than as an error. The two are separated one line above.
+		// Serving, and the topic is empty. That is an answer (the broker kept nothing), so it
+		// comes back as a sample, not an error. The two are separated one line above.
 		return Sample{Serving: true}, nil
 	}
 	return Sample{Serving: true, Token: stored}, nil
 }
 
-// publish writes the token retained, then makes the broker persist it.
-//
-// THE SIGNAL IS THE POINT, and without it this probe would be a race it could not win: mosquitto
-// holds retained state in memory and writes it on a clean stop or every autosave_interval (30s,
-// mosquitto.conf). A token published seconds before an upgrade would usually be flushed by the
-// stop and occasionally not — and the miss would read as data loss, i.e. an automatic rollback of
-// a perfectly good upgrade. SIGUSR1 is mosquitto's documented "write the persistence database
-// now" (measured on the pinned image: the log says `Saving in-memory database`), which turns a
-// probability into a fact before anything is judged on it.
+// publish writes the token retained, then makes the broker persist it. The signal is the point:
+// without it this probe is a race it cannot win. mosquitto holds retained state in memory and
+// writes it on a clean stop or every autosave_interval (30s, mosquitto.conf), so a token published
+// seconds before an upgrade would usually be flushed by the stop and occasionally not, and the
+// miss would read as data loss: an automatic rollback of a perfectly good upgrade. SIGUSR1 is
+// mosquitto's documented "write the persistence database now" (measured on the pinned image: the
+// log says `Saving in-memory database`), turning a probability into a fact before anything is
+// judged on it.
 func publish(ctx context.Context, x Executor, container, token string) error {
 	if strings.ContainsAny(token, " \t\n\r\x00") || token == "" {
 		return fmt.Errorf("mosquitto probe: token %q is not a bare word", token)
@@ -127,8 +125,8 @@ func persist(ctx context.Context, x Executor, container string) error {
 const flushSettle = 3 * time.Second
 
 // Flush makes the broker write its persistence database and waits for it, so a clock sample taken
-// next holds what the broker had rather than its last autosave. The signal is
-// asynchronous, which is why the wait is part of it.
+// next holds what the broker had rather than its last autosave. The signal is asynchronous, which
+// is why the wait is part of it.
 func Flush(ctx context.Context, x Executor, container string) error {
 	if err := safeName(container); err != nil {
 		return err
@@ -158,8 +156,8 @@ func subscribe(ctx context.Context, x Executor, container, topic string) (string
 }
 
 // safeName refuses anything that is not a plain container name. It becomes an argument to podman,
-// and the schema's whole discipline is that a catalogued app cannot reach past its own box —
-// so a name that arrived from anywhere gets checked before it is executed with.
+// and the schema's whole discipline is that a catalogued app cannot reach past its own box, so a
+// name that arrived from anywhere is checked before it is executed with.
 func safeName(name string) error {
 	if name == "" {
 		return fmt.Errorf("mosquitto probe: no container named")

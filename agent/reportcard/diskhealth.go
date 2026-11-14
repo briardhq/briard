@@ -32,7 +32,7 @@ type SMART struct {
 	Failing bool
 	// Errors counts the bad sectors and media errors the disk has recorded: ATA reallocated (5),
 	// reported uncorrectable (187), pending (197) and offline uncorrectable (198); NVMe media
-	// errors. Some disks run for years at a small steady count; a GROWING one is the warning.
+	// errors. Some disks run for years at a small steady count; a growing one is the warning.
 	Errors int64
 	Why    string // what failed, or why it could not be read
 }

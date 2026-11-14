@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// LiveFacts is what `briard doctor` reads off an INSTALLED host by itself -- the half
+// LiveFacts is what `briard doctor` reads off an installed host by itself -- the half
 // that still answers with the agent down, which is when someone is most likely to run it. The
 // agent's half (agent/host, doctor.go) judges what only the agent can see.
 type LiveFacts struct {
@@ -36,7 +36,7 @@ func AssessLive(f LiveFacts) []Check {
 	default:
 		cs = append(cs, Check{"disk", Pass, fmt.Sprintf("%s free on this machine", gbOf(f.DiskFreeMB)), ""})
 	}
-	// THE CLOCK. A wrong clock turns a valid cert into a refusal and misdates every
+	// The clock. A wrong clock turns a valid cert into a refusal and misdates every
 	// alert and backup, and an RTC-less board boots with whatever time it last saved.
 	switch f.NTPSynced {
 	case "yes":

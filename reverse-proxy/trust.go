@@ -12,19 +12,17 @@ import (
 
 // forwardTrust is what the reverse proxy knows about each routed app's willingness to be told who
 // the client is: whether a request carrying X-Forwarded-For is accepted from this proxy. It starts
-// empty, which means NO header for anyone -- an app that is not expecting a proxy must keep
-// working when put behind one, and Home Assistant answers 400 to the header from a proxy it has
-// not been told to trust.
+// empty, meaning no header for anyone: an app not expecting a proxy must keep working behind one,
+// and Home Assistant answers 400 to the header from a proxy it has not been told to trust.
 //
-// IT IS LEARNED, NEVER CONFIGURED. We do not own the app's configuration, so the reverse proxy asks
-// the app instead: a household that trusts 127.0.0.1 in Home Assistant gets real client addresses
+// It is learned, never configured: we do not own the app's configuration, so the reverse proxy
+// asks the app. A household that trusts 127.0.0.1 in Home Assistant gets real client addresses
 // (login tracking, ip_ban, trusted_networks), and one that does not loses nothing.
 //
-// IT IS ASKED ONLY WHEN AN APP STARTS. An app reads its proxy trust at start, so a start is
-// the only moment the answer can change; the guest agent sends SIGHUP on every start it sees (the
-// container's own and Home Assistant's restarts inside it), and the reverse proxy asks once at its
-// own start. No timer: each refused probe is an error line in the app's log, one per start is
-// what a household that never opted in pays, and nothing more.
+// It is asked only when an app starts, since an app reads its proxy trust at start: the guest
+// agent sends SIGHUP on every start it sees (the container's own and Home Assistant's restarts
+// inside it), and the reverse proxy asks once at its own start. No timer: each refused probe is
+// an error line in the app's log, and one per start is all a household that never opted in pays.
 type forwardTrust struct {
 	mu      sync.RWMutex
 	trusted map[string]bool
@@ -91,7 +89,7 @@ func (t *forwardTrust) recheck(r *routing) {
 // endpoint again with the header. known is false when no answer was reached -- the app never
 // came up, or the recheck was superseded -- and the caller then keeps what it had.
 //
-// THE PLAIN ANSWER IS WHAT MAKES A REFUSAL AN ANSWER. Without it, an app still starting (a 503,
+// The plain answer is what makes a refusal an answer: without it, an app still starting (a 503,
 // a refused connection) would read as "does not trust us", and so would every transient error.
 func probeForwarded(ctx context.Context, url string) (ok, known bool) {
 	deadline := time.Now().Add(probeWaitFor)

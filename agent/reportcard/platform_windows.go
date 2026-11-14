@@ -12,10 +12,10 @@ func platformChecks(f HostFacts) []Check {
 		cs = append(cs, Check{"admin", Refuse, "not running as an administrator",
 			"run the installer as an administrator: it registers a service and builds a network bridge"})
 	}
-	// THE HYPERVISOR, asked of the hypervisor rather than of the feature list: the feature reads
-	// "Enabled" from the moment it is turned on, while the hypervisor only runs after a restart.
-	// So "enabled, not running" is the normal state of a first install -- the installer turns it
-	// on and restarts once for it and the bridge together -- and is said, not refused.
+	// The hypervisor, asked of the hypervisor rather than the feature list: the feature reads
+	// "Enabled" from the moment it is turned on, but the hypervisor only runs after a restart. So
+	// "enabled, not running" is a first install's normal state (the installer turns it on and
+	// restarts once for it and the bridge together), and is said, not refused.
 	switch {
 	case f.Hypervisor:
 		cs = append(cs, Check{"hypervisor", Pass, "the Windows hypervisor is running (WHPX can accelerate the VM)", ""})

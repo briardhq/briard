@@ -14,16 +14,14 @@ import (
 	"briard.io/agent/nic"
 )
 
-// The Linux eyes: Gather, and every reader beneath it that opens /proc, /sys, /etc or looks for
-// a binary. The pure verdict stays in reportcard.go, the readers both OSes share in gather.go.
+// The Linux eyes: Gather, and every reader beneath it that opens /proc, /sys, /etc or looks for a
+// binary. The pure verdict stays in reportcard.go, the readers both OSes share in gather.go.
 //
-// Gather reads the real host into HostFacts (Linux /proc + /sys + /dev). Thin + best-effort: a
-// read that fails reads as "absent/false", which flows into a Refuse/Warn with a fix -- never a
-// crash. All the verdict logic lives in the pure Assess (this is just the eyes).
-//
-// The NIC is selected ONCE here and every NIC-derived fact hangs off that one answer. Re-reading
-// it per fact from the default route would quietly judge a different device than the install
-// uses whenever BRIARD_NIC is set.
+// Gather reads the real host into HostFacts (/proc + /sys + /dev), thin and best-effort: a failed
+// read reads as "absent/false", which flows into a Refuse/Warn with a fix, never a crash; the
+// verdict logic lives in the pure Assess. The NIC is selected once here and every NIC-derived
+// fact hangs off that answer; re-reading it per fact from the default route would quietly judge a
+// different device than the install uses whenever BRIARD_NIC is set.
 func Gather(ctx context.Context) HostFacts {
 	sel := nic.Choose(ctx, os.Getenv("BRIARD_NIC"), "")
 	return HostFacts{
@@ -34,9 +32,9 @@ func Gather(ctx context.Context) HostFacts {
 		DevNetTun: exists("/dev/net/tun"),
 		TunModule: tunModuleAvailable(),
 		HasIP:     onPath("ip"),
-		// /run/systemd/system is systemd's own "I am running this machine" marker (it creates the
-		// directory at boot), which is the question the install actually needs answered -- `systemctl`
-		// on PATH says only that a package is installed.
+		// /run/systemd/system is systemd's own "I am running this machine" marker (created at
+		// boot), the question the install needs answered; `systemctl` on PATH says only that a
+		// package is installed.
 		SystemdBooted: exists("/run/systemd/system"),
 		MemTotalMB:    MemTotalMB(),
 		PrimaryNICBus: primaryNICBus(sel.Dev),
@@ -45,12 +43,12 @@ func Gather(ctx context.Context) HostFacts {
 		KeptStateDisk: exists(petDir + "/state.img"),
 		HostCIDR:      nic.HostCIDR(sel.Dev),
 		// The address the install is about to hand the guest: BRIARD_VIP_ADDR (CIDR form), which
-		// `briard-agent install` sets as VIP_ADDR before it runs the card -- the card cannot judge
-		// an address it is not told about, and this is the last gate before a VM boots holding it.
+		// `briard-agent install` sets as VIP_ADDR before it runs the card; the card cannot judge an
+		// address it is not told about, and this is the last gate before a VM boots holding it.
 		VIPAddr: os.Getenv("VIP_ADDR"),
-		// Is that address already somebody's? Probed here rather than inside the check so the
-		// verdict logic stays pure. Only meaningful when an address was named -- under DHCP the
-		// router picks from its own pool and this question is not ours to ask.
+		// Is that address already somebody's? Probed here, not inside the check, so the verdict
+		// stays pure. Only meaningful when an address was named: under DHCP the router picks from
+		// its own pool and the question is not ours to ask.
 		VIPAnswered:     os.Getenv("VIP_ADDR") != "" && AddressAnswers(os.Getenv("VIP_ADDR")),
 		HostLeased:      hostHasLease(sel.Dev),
 		HasMDNSResolver: hasMDNSResolver(),
@@ -58,19 +56,16 @@ func Gather(ctx context.Context) HostFacts {
 }
 
 // AddressAnswers reports whether some machine on this segment already owns cidr's address.
+// Exported for its second caller, the subnet draw, which asks it of a candidate flock subnet's .1:
+// one mechanism, two questions ("is the address the user named taken", "is another flock living
+// here").
 //
-// Exported for its second caller: the subnet draw asks the same question of a candidate flock
-// subnet's .1. One mechanism, two questions -- the VIP's is "is the address the user
-// named already taken", the draw's is "is another flock already living here".
-//
-// It provokes the kernel into resolving ARP by sending one datagram at the address (discard port,
-// nothing listens, and nothing needs to -- ARP sits below UDP, so any IPv4 host on the segment
-// must reply to the resolution regardless of what it does with the payload). Then it reads the
-// answer out of the kernel's own neighbour table. No raw sockets, no CAP_NET_RAW, no shelling out.
-//
-// A false is "nothing answered", which includes "we could not ask". That asymmetry is deliberate:
-// this gate turns evidence-of-use into a refusal, and absence of evidence proves nothing -- a
-// sleeping device will not answer, and the install proceeds.
+// It provokes the kernel into resolving ARP with one datagram at the address (discard port;
+// nothing need listen, since ARP sits below UDP and any IPv4 host on the segment must answer the
+// resolution whatever it does with the payload), then reads the answer from the kernel's own
+// neighbour table. No raw sockets, no CAP_NET_RAW, no shelling out. False is "nothing answered",
+// including "we could not ask", deliberately: this gate turns evidence of use into a refusal, and
+// absence of evidence proves nothing (a sleeping device will not answer, and the install proceeds).
 func AddressAnswers(cidr string) bool {
 	ip, _, err := net.ParseCIDR(cidr)
 	if err != nil || ip.To4() == nil {
@@ -92,9 +87,9 @@ func AddressAnswers(cidr string) bool {
 	}
 }
 
-// neighbourComplete reports whether /proc/net/arp holds a RESOLVED entry for ip. The flags column
+// neighbourComplete reports whether /proc/net/arp holds a resolved entry for ip. The flags column
 // carries ATF_COM (0x2) once an address actually replied; an unanswered probe leaves the entry
-// present but incomplete, with flags 0x0 -- so the flag, not the row, is the evidence.
+// present but incomplete, flags 0x0, so the flag, not the row, is the evidence.
 func neighbourComplete(ip net.IP) bool {
 	f, err := os.Open("/proc/net/arp")
 	if err != nil {
@@ -115,12 +110,10 @@ func neighbourComplete(ip net.IP) bool {
 	return false
 }
 
-// hostHasLease reports whether THIS machine's address on dev looks DHCP-assigned, by looking for a
-// lease under any of the managers a stranger's box might be running. It is evidence that a DHCP
-// server answered on this segment recently, which is the closest we can get to "one will answer
-// the guest too" without taking a lease we might not keep.
-//
-// Deliberately a broad net over several managers rather than a detection of which one is in use:
+// hostHasLease reports whether this machine's address on dev looks DHCP-assigned, by looking for
+// a lease under any manager a stranger's box might run: evidence that a DHCP server answered on
+// this segment recently, the closest we get to "one will answer the guest too" without taking a
+// lease we might not keep. Deliberately a broad net, not a detection of which manager is in use:
 // we do not care who asked, only that somebody answered.
 func hostHasLease(dev string) bool {
 	if dev == "" {
@@ -145,12 +138,10 @@ func hostHasLease(dev string) bool {
 const petDir = "/var/lib/briard"
 
 // installRoot is the filesystem the install will land on. /opt and /var/lib can be separate
-// mounts, so measure the deepest existing ancestor of the prefix rather than assuming "/": on a
-// reinstall /opt/briard already exists and is the honest thing to measure, and on a fresh host the
-// walk ends at / anyway.
-//
-// The prefix is a CONSTANT, not a knob: the qemu bundle bakes it into its own ELF
-// interpreter, so an install anywhere else produces a qemu that cannot execute.
+// mounts, so it measures the deepest existing ancestor of the prefix rather than assuming "/": on
+// a reinstall /opt/briard exists and is the honest thing to measure, and on a fresh host the walk
+// ends at / anyway. The prefix is a constant, not a knob: the qemu bundle bakes it into its own
+// ELF interpreter, so an install anywhere else produces a qemu that cannot execute.
 func installRoot() string {
 	p := "/opt/briard"
 	for p != "/" && p != "." {
@@ -162,13 +153,12 @@ func installRoot() string {
 	return "/"
 }
 
-// hasMDNSResolver reports whether this machine can resolve a .local name.
-//
-// nsswitch.conf is the question rather than "is avahi-daemon running", because RESOLUTION is what
-// the user actually does and a daemon nothing consults resolves nothing. Two spellings count:
-// nss-mdns (`mdns4_minimal`/`mdns`, the Debian/Ubuntu/Fedora desktop default) and systemd-resolved
-// (`resolve`), which answers mDNS itself. An unreadable file reads as false, which warns and never
-// refuses -- absence of evidence about someone else's machine is not evidence of absence.
+// hasMDNSResolver reports whether this machine can resolve a .local name. It asks nsswitch.conf,
+// not "is avahi-daemon running", because resolution is what the user actually does and a daemon
+// nothing consults resolves nothing. Two spellings count: nss-mdns (`mdns4_minimal`/`mdns`, the
+// Debian/Ubuntu/Fedora desktop default) and systemd-resolved (`resolve`), which answers mDNS
+// itself. An unreadable file reads as false, which warns and never refuses: absence of evidence
+// about someone else's machine is not evidence of absence.
 func hasMDNSResolver() bool {
 	b, err := os.ReadFile("/etc/nsswitch.conf")
 	if err != nil {
@@ -192,10 +182,9 @@ func hasMDNSResolver() bool {
 // milliseconds; anything slower than this is a device we would rather not block an install on.
 const arpProbeWait = 750 * time.Millisecond
 
-// primaryNICBus returns the bus of the NIC the install will use ("usb", "pci", or "" if it cannot be
-// determined) -- best-effort, for the macvtap advisories. It resolves
-// /sys/class/net/<dev>/device to a bus:
-// a USB NIC's device link points under .../usb..., a PCIe NIC's under .../pci....
+// primaryNICBus returns the bus of the NIC the install will use ("usb", "pci", or "" if it cannot
+// be determined), best-effort, for the macvtap advisories: /sys/class/net/<dev>/device points
+// under .../usb... for a USB NIC, under .../pci... for a PCIe one.
 func primaryNICBus(dev string) string {
 	if dev == "" {
 		return ""
@@ -224,11 +213,9 @@ func cpuHasVirtFlags() bool {
 	return cpuHasFlag("vmx") || cpuHasFlag("svm")
 }
 
-// cpuHasFlag reports whether /proc/cpuinfo advertises a CPU feature.
-//
-// It reads both "flags" (x86) and "Features" (aarch64), because the two facts it answers live on
-// different lines depending on the architecture: virtualization is x86-only in practice, but AES
-// acceleration is exactly the question a Pi has to answer and a Pi says "Features".
+// cpuHasFlag reports whether /proc/cpuinfo advertises a CPU feature. It reads both "flags" (x86)
+// and "Features" (aarch64): virtualization is x86-only in practice, but AES acceleration is
+// exactly the question a Pi has to answer, and a Pi says "Features".
 func cpuHasFlag(want string) bool {
 	f, err := os.Open("/proc/cpuinfo")
 	if err != nil {

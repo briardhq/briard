@@ -112,17 +112,16 @@ func ParseCluster(raw []byte, resource string) (model.Cluster, error) {
 	return model.Cluster{}, fmt.Errorf("drbd: resource %q not in status", resource)
 }
 
-// PeerCounts reads `drbdsetup status --json` for the first resource and returns the three inputs
-// to the deadman's reboot gate: how many peers are CONFIGURED (connected or not — DRBD lists
-// every configured connection), how many are currently CONNECTED, and whether THIS node is
-// quorate. A node runs one resource, so the first resource is the one; it errors if the status is
-// empty. It only reads (CONTRIBUTING.md invariant 2).
+// PeerCounts reads `drbdsetup status --json` for the first resource (a node runs one) and returns
+// the three inputs to the deadman's reboot gate: how many peers are configured (connected or not:
+// DRBD lists every configured connection), how many are currently connected, and whether this
+// node is quorate. It errors if the status is empty, and only reads (CONTRIBUTING.md invariant 2).
 //
 // Quorate is folded exactly as ParseCluster folds it, and must stay that way: quorum is
 // per-device, any volume without it means DRBD refuses writes (on-no-quorum=io-error), and a node
-// with no devices at all must not come out quorate by vacuous truth. It is here rather than left
-// to the caller because the gate reads all three from ONE sample — deriving "am I quorate" from a
-// second, later call would let the two halves disagree about the moment they describe.
+// with no devices at all must not come out quorate by vacuous truth. It is here, not left to the
+// caller, because the gate reads all three from one sample: deriving "am I quorate" from a later
+// call would let the two halves disagree about the moment they describe.
 func PeerCounts(raw []byte) (peers, connected int, quorate bool, err error) {
 	var resources []statusResource
 	if err := json.Unmarshal(raw, &resources); err != nil {
