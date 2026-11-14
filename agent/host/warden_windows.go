@@ -31,7 +31,7 @@ const wardenAfter = dumpAfter + 2
 const startAfter = int(startLimit / beatTick)
 
 // Warden is the agent's outside watcher on Windows, the half of systemd's watchdog the service
-// manager does not give: it notices the ABSENCE of beats, which no goroutine inside the agent can
+// manager does not give: it notices the absence of beats, which no goroutine inside the agent can
 // (beat.go), and ends a wedged agent so the service manager's failure actions restart it.
 //
 // It carries no product knowledge: it reads one bit per tick from the beat event, asks the service
@@ -43,9 +43,9 @@ const startAfter = int(startLimit / beatTick)
 //     its length, like TimeoutStartSec -- anything slow belongs after RUNNING, under a lease.
 //
 // A stop, or a service with no process, counts nothing, and a new state or process starts the
-// count again. Ending the process is the whole act -- a process that ends without reporting STOPPED is a
-// failure to the service manager, whose recovery already restarts the agent; the guest runs in its
-// own job and the next agent re-adopts it.
+// count again. Ending the process is the whole act -- a process that ends without reporting
+// STOPPED is a failure to the service manager, whose recovery already restarts the agent; the
+// guest runs in its own job and the next agent re-adopts it.
 func Warden(ctx context.Context, logf func(string, ...any)) error {
 	ev, err := beatEvent()
 	if err != nil {
@@ -116,10 +116,10 @@ func agentStatus(m *mgr.Mgr) svc.Status {
 	return st
 }
 
-// THE WARDEN IS ONE MORE ENTRY of the self-update: its program is a copy of the agent, so an
-// update that moves the agent moves it too. It is stopped FIRST (StopWarden), before the agent,
+// The warden is one more entry of the self-update: its program is a copy of the agent, so an
+// update that moves the agent moves it too. It is stopped first (StopWarden), before the agent,
 // so it does not count the agent's quiet as a wedge, and because its program must not be running
-// to be replaced; it is brought to the agent in place LAST (StartWarden), once the agent is up.
+// to be replaced; it is brought to the agent in place last (StartWarden), once the agent is up.
 // It is put back on its own when it does not start, and the agent never waits on it.
 
 // StopWarden stops the warden for an update.

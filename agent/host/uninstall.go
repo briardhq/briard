@@ -1,23 +1,21 @@
 // `briard uninstall`: take briard off this machine and leave the host the way its installer
 // found it.
 //
-// THE INSTALL IS THE SPEC. Everything here undoes one thing that the installer or the agent made,
-// and nothing else; each OS's arm (uninstall_linux.go, uninstall_windows.go) lists what that is
-// there. The pet -- this node's state directory, the data volume and the identity it is keyed to --
-// is KEPT unless the operator asks for it to go.
+// The install is the spec: everything here undoes one thing the installer or the agent made, and
+// nothing else; each OS's arm (uninstall_linux.go, uninstall_windows.go) lists what that is there.
+// The pet -- this node's state directory, the data volume and the identity it is keyed to -- is
+// kept unless the operator asks for it to go, and kept whole, not the data file alone: the volume
+// is keyed to this node's identity and its address and name are records beside it, so a data.img
+// without them is a file nothing can open, while the whole dir is exactly what a reinstall
+// resumes, as the cattle/pet reinstall does (install-macvtap). Deleting it is the one destructive
+// act here, gated on the explicit flag the CLI asks for, never implied.
 //
-// KEEP MEANS THE WHOLE PET DIR, not the data file alone. The volume is keyed to this node's
-// identity, and its address and name are records beside it, so a data.img without them is a file
-// nothing can open -- while the whole dir is exactly what a reinstall resumes, the same way the
-// cattle/pet reinstall does (install-macvtap). Deleting it is the one destructive act here, and it
-// is gated on the explicit flag the CLI asks for, never implied.
-//
-// ORDER IS THE SAFETY. The node down first, exactly as `briard stop` brings it down (Stop): the
-// act in flight aborted and named, the guest powered off cleanly -- or, with no agent answering,
-// the agent's unit and the guest stopped from here. Then the units, and a unit that will not stop
-// ends the uninstall there: nothing is deleted from under a guest that is still running. The
-// install tree goes last, because it holds this very binary -- an uninstall that stopped half way
-// can be run again.
+// Order is the safety. The node goes down first, exactly as `briard stop` does it (Stop): the act
+// in flight aborted and named, the guest powered off cleanly -- or, with no agent answering, the
+// agent's unit and the guest stopped from here. Then the units, and one that will not stop ends
+// the uninstall there: nothing is deleted from under a guest that is still running. The install
+// tree goes last, because it holds this very binary, so an uninstall that stopped half way can be
+// run again.
 package host
 
 import (

@@ -16,13 +16,11 @@ import (
 	"briard.io/shared/atomicfile"
 )
 
-// `briard config set`: CHANGING A SETTING ON A RUNNING NODE.
-//
-// The installer writes the settings once, into config.env, and the agent reads them once. A
-// setting the household has to change later -- the service address, which the lease refusal asks
-// them to change -- would otherwise need an uninstall and a reinstall. This writes the same key
-// into the same file, so config.env stays the one place a setting lives (a reinstall that names
-// it overwrites it).
+// `briard config set`: changing a setting on a running node. The installer writes the settings
+// once, into config.env, and the agent reads them once, so a setting the household has to change
+// later -- the service address, which the lease refusal asks them to change -- would otherwise
+// need an uninstall and a reinstall. This writes the same key into the same file, so config.env
+// stays the one place a setting lives (a reinstall that names it overwrites it).
 //
 // Four keys. `vip` is applied here, the way a bring-up fact is applied: restart the guest, so the
 // next bring-up carries it. The backup's three (`backup-dir`, `backup-key-saved`, `backup-adopt`)
@@ -54,7 +52,7 @@ func (cfg Config) applyConfigSet(ctx context.Context, d api.Directive, r guest.V
 	if s.Key != "vip" {
 		return failed("unknown setting %q: the settings that can be changed are vip, backup-dir, backup-key-saved and backup-adopt", s.Key)
 	}
-	// THE ADDRESS IS THE FLOCK'S. Changed on one node of a pair, the next failover would move the
+	// The address is the flock's. Changed on one node of a pair, the next failover would move the
 	// apps to a different address than the one the household uses; changing it everywhere at
 	// once waits for the flock's own settings.
 	if len(cfg.Resource.Peers) > 1 {

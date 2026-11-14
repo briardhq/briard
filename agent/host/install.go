@@ -2,30 +2,29 @@
 // call once the agent's systemd or Windows service runs -- wait for it to answer and hand the
 // household its link.
 //
-// THE INSTALLER'S BODY, IN THE BINARY THE CHANNEL CAN FIX. install.sh is fetched from the channel
-// root and run once, so whatever it does in shell is frozen where no release can reach it. It does
-// only what supervises the agent's own arrival -- root, the bootstrap fetch, this call, enabling
-// the systemd unit, the hand-over -- and everything that lays files down is here. The Windows
-// installer (install.ps1) calls the same verb rather than re-implementing it.
+// The installer's body lives in the binary the channel can fix: install.sh is fetched from the
+// channel root and run once, so whatever it does in shell is frozen where no release can reach it.
+// It does only what supervises the agent's own arrival -- root, the bootstrap fetch, this call,
+// enabling the systemd unit, the hand-over -- and everything that lays files down is here. The
+// Windows installer (install.ps1) calls the same verb rather than re-implementing it.
 //
-// Two tests decide what belongs in the layout at all, the second wider than the first:
+// Two tests decide what belongs in the layout at all, the second wider than the first. Would a
+// release ever need to change it? Which device the guest's L2 hangs off, the substrate that
+// implies, the addresses this node numbers itself from, whether the tun driver is loaded: all
+// revisited at every start (the agent's tick), none laid here. Is it a decision about this
+// machine? The disks, the identifiers, the console's rotation: the agent's first start makes
+// them, so no installer of any OS writes them.
 //
-//  1. would a RELEASE ever need to change it?  Which device the guest's L2 hangs off, which
-//     substrate that implies, which addresses this node numbers itself from, whether the tun
-//     driver is loaded -- all revisited at every start (the agent's tick), none of them laid here.
-//  2. is it a DECISION about this machine?  The disks, the identifiers, the console's rotation:
-//     the agent's first start makes them, so no installer of any OS writes them.
-//
-// It installs NO APP. A node is a node first: ready, replicating, able to fail over -- then
-// you choose what runs on it. So the VIP answers with Briard's own page, and the health probe
-// watches the reverse proxy there, the one address that answers whether or not anything is installed.
+// It installs no app: a node is a node first (ready, replicating, able to fail over), then you
+// choose what runs on it. So the VIP answers with Briard's own page, and the health probe watches
+// the reverse proxy there, the one address that answers whether or not anything is installed.
 //
 // Cattle/pet FHS:
 //
 //	/opt/briard     = cattle: signed self-updating binaries + qemu bundle + guest image, plus
 //	                  config.env. `rm -rf /opt/briard` + reinstall = a fresh host.
 //	/var/lib/briard = pet: the data volume, the state disk, this node's identifiers and the
-//	                  subnets it drew -- all of them the AGENT's to create and keep.
+//	                  subnets it drew -- all of them the agent's to create and keep.
 //	/run/briard     = tmpfs flags.
 //
 // BRIARD_ARTIFACTS=<dir> installs from a local, already-verified staging dir (the hermetic install
@@ -66,7 +65,7 @@ type installRoots struct {
 // frozen update launcher, config.env and the systemd units or Windows services -- everything a
 // node's first start reads. It enables nothing and starts nothing; that is the installer's hand-over.
 //
-// The report card is NOT here: the caller runs it first, so a refusal means nothing was written.
+// The report card is not here: the caller runs it first, so a refusal means nothing was written.
 func Install(ctx context.Context, say, logf func(string, ...any)) error {
 	r := installRoots{prefix: prefixDir, state: stateDir, run: runDir}.osRoots()
 	if err := os.MkdirAll(filepath.Join(r.prefix, "agent"), 0o755); err != nil {
@@ -80,12 +79,12 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 
 	// ---- the artifacts (cattle) ----
 	hostSrc, guestSrc := os.Getenv("BRIARD_ARTIFACTS"), os.Getenv("BRIARD_ARTIFACTS")
-	staging := "" // the staging dir THIS call created, if any -- see the removal at the end
+	staging := "" // the staging dir this call created, if any -- see the removal at the end
 	if hostSrc == "" {
-		// The signed release channel root, and WHICH release off it: `stable` (what strangers get,
-		// a tested pair by construction), `latest` (what was published most recently -- how a
-		// release is proven before promotion), `dev` (whatever was last cut from HEAD, ungated,
-		// for a test node), or an exact host id. One selector, both chains.
+		// The signed release channel root, and which release off it: `stable` (what strangers get,
+		// a tested pair by construction), `latest` (the most recent publish -- how a release is
+		// proven before promotion), `dev` (the last cut from HEAD, ungated, for a test node), or an
+		// exact host id. One selector, both chains.
 		channel := env("BRIARD_CHANNEL_URL", "https://get.briard.io")
 		release := env("BRIARD_RELEASE", install.TargetStable)
 		// The release public key: the installer writes it before this runs (it travels inside
@@ -99,10 +98,10 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 		if err != nil {
 			return err
 		}
-		// OURS TO DELETE, and the only staging dir that is. Recorded in the branch that CREATES
-		// it rather than re-derived from BRIARD_ARTIFACTS at the far end: the caller's artifact
-		// dir on the other branch is read-only and not ours, and deleting it would be a
-		// considerably worse bug than the leak this closes.
+		// Ours to delete, and the only staging dir that is. Recorded in the branch that creates it,
+		// not re-derived from BRIARD_ARTIFACTS at the far end: the other branch's artifact dir is
+		// the caller's and read-only, and deleting it would be a considerably worse bug than the
+		// leak this closes.
 		staging = filepath.Join(r.prefix, "staging")
 		if err := os.RemoveAll(staging); err != nil {
 			return err
@@ -115,9 +114,9 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 			return fmt.Errorf("artifact verification failed (%w); nothing installed", err)
 		}
 		hostSrc, guestSrc = filepath.Join(staging, install.ChainBriard), filepath.Join(staging, install.ChainVM)
-		// The verified qemu bundle arrives as a tarball (FetchRelease expanded the .zst). The tar
-		// is rooted at the bundle itself (bin/ lib/ share/ PROVENANCE), NOT at a qemu/ dir, so it
-		// is extracted INTO one -- the shape the local staging dir has.
+		// The verified qemu bundle arrives as a tarball (FetchRelease expanded the .zst) rooted at
+		// the bundle itself (bin/ lib/ share/ PROVENANCE), not at a qemu/ dir, so it is extracted
+		// into one -- the shape the local staging dir has.
 		if err := os.MkdirAll(filepath.Join(hostSrc, "qemu"), 0o755); err != nil {
 			return err
 		}
@@ -137,13 +136,11 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 	}
 
 	// ---- the staging dir goes ----
-	// Every artifact has been copied out, so what is left there is a second copy of the largest
-	// thing we ship: the guest image byte for byte, a second qemu tree, a second agent -- about
-	// 1.2 GB, on the same filesystem as the state disk that must grow to hold every app image the
-	// household installs.
-	//
-	// Never fatal: this is space reclaimed from a finished install, not a step whose failure means
-	// the install did not happen.
+	// Every artifact has been copied out, so what is left is a second copy of the largest thing we
+	// ship (the guest image byte for byte, a second qemu tree, a second agent: about 1.2 GB) on the
+	// same filesystem as the state disk that must grow to hold every app image the household
+	// installs. Never fatal: this is space reclaimed from a finished install, not a step whose
+	// failure means the install did not happen.
 	if staging != "" {
 		say("removing the staging directory")
 		os.RemoveAll(staging)
@@ -151,8 +148,8 @@ func Install(ctx context.Context, say, logf func(string, ...any)) error {
 
 	// ---- everything reaches the disk before anything runs it ----
 	// A copy returns with the bytes in the page cache, and a rename or a new file's name can reach
-	// the disk before its contents do. A power cut in the next few seconds would leave a truncated
-	// qemu or image under a verified name, surfacing at the next BOOT where nobody would connect it
+	// the disk before its contents do: a power cut in the next few seconds would leave a truncated
+	// qemu or image under a verified name, surfacing at the next boot where nobody would connect it
 	// to the install. One sync covers every file laid down; it costs seconds, once.
 	return flushInstall(ctx, say)
 }
@@ -165,15 +162,14 @@ func (r installRoots) layDown(ctx context.Context, hostSrc, guestSrc string, say
 		return fmt.Errorf("staging dir %s has no usable %s: %w", hostSrc, agentExe, err)
 	}
 
-	// THE QEMU TREE, REACHED THROUGH A LINK. One extracted bundle per release lives at
-	// agent/qemu-<release>/ -- inside the directory self-update swaps in -- and agent/qemu
-	// is a symlink to the current one. An update extracts the next release's tree beside it and
-	// stages qemu.next as a link; the swap moves qemu by renaming links, so no
-	// recursive delete ever runs near the committed tree.
-	//
-	// The tree is named by the installed release when a manifest is present, so a later pin back to
-	// it reuses the tree; the local staging path has no manifest and gets a fixed name. (On Linux
-	// <prefix>/qemu is also a public link onto agent/qemu -- install_linux.go says why.)
+	// The qemu tree, reached through a link: one extracted bundle per release lives at
+	// agent/qemu-<release>/, inside the directory self-update swaps in, and agent/qemu is a symlink
+	// to the current one. An update extracts the next release's tree beside it and stages qemu.next
+	// as a link; the swap moves qemu by renaming links, so no recursive delete ever runs near the
+	// committed tree. The tree is named by the installed release when a manifest is present, so a
+	// later pin back to it reuses the tree; the local staging path has no manifest and gets a fixed
+	// name. (On Linux <prefix>/qemu is also a public link onto agent/qemu -- install_linux.go says
+	// why.)
 	rel := "install"
 	if m, err := install.ReadManifest(filepath.Join(hostSrc, install.ManifestName)); err == nil && m.Version != "" {
 		rel = m.Version
@@ -192,11 +188,10 @@ func (r installRoots) layDown(ctx context.Context, hostSrc, guestSrc string, say
 		return err
 	}
 
-	// THE GUEST BUNDLE: the briard binaries the guest runs, shipped in the host chain and pushed
-	// into the guest by the agent at every bring-up. Same tree-and-link shape as qemu, same swap.
-	// Existence-guarded: a channel without one leaves the
-	// guest on the image's firmware -- which REFUSES every non-firmware verb, so an install that
-	// finds a bundle must land it.
+	// The guest bundle: the briard binaries the guest runs, shipped in the host chain and pushed
+	// into the guest by the agent at every bring-up; same tree-and-link shape as qemu, same swap.
+	// Existence-guarded: a channel without one leaves the guest on the image's firmware, which
+	// refuses every non-firmware verb, so an install that finds a bundle must land it.
 	if bundle := filepath.Join(hostSrc, "guest-bundle.tar"); exists(bundle) {
 		guestTree := filepath.Join(agentDir, "guest-"+rel)
 		if err := freshDir(guestTree); err != nil {
@@ -212,10 +207,9 @@ func (r installRoots) layDown(ctx context.Context, hostSrc, guestSrc string, say
 			return err
 		}
 	}
-	// THE INSTALLED MANIFEST, beside what it describes: the exact signed bytes that verified, so
-	// the node can say which release it is on -- and so the update path can diff the target's
-	// manifest against it and fetch only what changed. Absent on a local staging path that carries
-	// none.
+	// The installed manifest, beside what it describes: the exact signed bytes that verified, so
+	// the node can say which release it is on and the update path can diff the target's manifest
+	// against it to fetch only what changed. Absent on a local staging path that carries none.
 	if m := filepath.Join(hostSrc, install.ManifestName); exists(m) {
 		if err := installFile(m, filepath.Join(agentDir, install.ManifestName), 0o644); err != nil {
 			return err
@@ -246,15 +240,15 @@ func (r installRoots) installedImage() string {
 }
 
 // layDownImage places the guest image from src -- the vm chain's verified set, or a caller's flat
-// staging dir -- with its manifest. THE ONE WAY THE IMAGE LANDS: the install calls it, and so
-// does the first start that fetches an image the install did not lay down (finish.go). A src
+// staging dir -- with its manifest. It is the one way the image lands: the install calls it, and
+// so does the first start that fetches an image the install did not lay down (finish.go). A src
 // with no image is not a failure: the image installed here is kept, or, with none, the first
 // start fetches it -- the Store's exe may fetch nothing while it runs.
 //
-// The guest chain's manifest goes twice. The copy under guest-image/ describes the IMAGE on disk;
-// the one in the state dir is the node-local RECORD of the release this node runs, pet state,
-// because the guest itself knows only a closure path and the stable path orders on a release id
-// -- it follows the running OS as updates land.
+// The guest chain's manifest goes twice: the copy under guest-image/ describes the image on disk;
+// the one in the state dir is the node-local record (pet state) of the release this node runs,
+// because the guest itself knows only a closure path and the stable path orders on a release id;
+// it follows the running OS as updates land.
 func (r installRoots) layDownImage(src string, say func(string, ...any)) error {
 	image := r.imagePath()
 	if !exists(filepath.Join(src, "nixos.qcow2")) {
@@ -291,26 +285,24 @@ func (r installRoots) layDownImage(src string, say func(string, ...any)) error {
 // installEnvKey is an operator setting in the installer's environment: BRIARD_ + a config.env key.
 var installEnvKey = regexp.MustCompile(`^BRIARD_[A-Z0-9_]*$`)
 
-// installOnlyKeys configure THE INSTALL rather than the node: a local artifact dir, which release,
+// installOnlyKeys configure the install rather than the node: a local artifact dir, which release,
 // where the units go -- plus BRIARD_CONFIG, which names config.env itself, so copying it in would
 // be a node telling itself where it already is.
 var installOnlyKeys = map[string]bool{
 	"BRIARD_ARTIFACTS": true, "BRIARD_RELEASE": true, "BRIARD_UNIT_DIR": true, "BRIARD_CONFIG": true,
 }
 
-// writeConfig writes config.env: A FILE, NOT THE UNIT, because some of these are decisions the
-// agent revisits, and a decision it can revisit has to live somewhere it can rewrite (configset.go).
-// The agent reads it with the environment layered ON TOP (loadConfigFile), so a rig that exports a
-// variable still wins. Plain and greppable at 2am; 0600 because it is root's business alone.
+// writeConfig writes config.env -- a file, not the unit, because some of these are decisions the
+// agent revisits, and a decision it can revisit has to live somewhere it can rewrite
+// (configset.go). The agent layers the environment on top (loadConfigFile), so a rig that exports
+// a variable still wins. Plain and greppable at 2am; 0600 because it is root's business alone.
 //
-// ⚠️ THREE KINDS OF LINE, AND ONLY THREE. What this install LAID DOWN -- the paths of what it
-// created or staged, and where the agent's disks go -- who INSTALLED it (their backup folder,
-// and on Windows their SID: only a human at install knows whose machine it is), and what the
-// OPERATOR said, copied verbatim from the environment. Deliberately NO DEFAULTS: a key that is
-// absent is answered from config.go's shipped default, which a release can change and a line in
-// this file could not.
-//
-// ⚠️ AND NO IDENTIFIERS. The node id, the flock id and the flock name are minted once into pet
+// ⚠️ Three kinds of line, and only three: what this install laid down (the paths of what it
+// created or staged, and where the agent's disks go), who installed it (their backup folder, and
+// on Windows their SID: only a human at install knows whose machine it is), and what the operator
+// said, copied verbatim from the environment. Deliberately no defaults: an absent key is answered
+// from config.go's shipped default, which a release can change and a line in this file could not.
+// ⚠️ And no identifiers: the node id, the flock id and the flock name are minted once into pet
 // state at the agent's first start (identity.go), never written here.
 //
 // bundle is the per-OS block naming the qemu this install laid down (and, on Linux, the launch
@@ -337,7 +329,7 @@ STATE_DISK=%s
 	if sid := installUser(); sid != "" {
 		fmt.Fprintf(&b, "INSTALL_USER_SID=%s\n", sid)
 	}
-	// The operator's own settings: EVERY BRIARD_* in the environment, prefix stripped, so
+	// The operator's own settings: every BRIARD_* in the environment, prefix stripped, so
 	// `BRIARD_CPU=qemu64` becomes `CPU=qemu64` and the rule is one sentence rather than a table to
 	// keep in step with config.go. Sorted, so two installs given the same environment produce
 	// byte-identical files; single-line by the format's own rule.
@@ -414,10 +406,10 @@ func freshDir(dir string) error {
 	return os.MkdirAll(dir, 0o755)
 }
 
-// removeRetried is os.RemoveAll, RETRIED, BOUNDED: on Windows something can still hold a file
-// briefly after the process that used it has gone. The retry outlasts a holder that lets go; the
-// logf line says it was needed. A delete that still fails past the bound is a real failure, and
-// the caller says so.
+// removeRetried is os.RemoveAll, retried and bounded: on Windows something can still hold a file
+// briefly after the process that used it has gone. The retry outlasts a holder that lets go, and
+// the logf line says it was needed; a delete that still fails past the bound is a real failure,
+// and the caller says so.
 func removeRetried(dir string, logf func(string, ...any)) error {
 	deadline := time.Now().Add(removeBound)
 	for first := true; ; first = false {
@@ -467,17 +459,16 @@ var (
 )
 
 // InstallWait is `briard-agent install -wait`, install.sh's hand-over once the agent's unit runs
-// (on Windows the tray's --open is the hand-over): wait, bounded, for the agent's OWN word that
+// (on Windows the tray's --open is the hand-over): wait, bounded, for the agent's own word that
 // the node is primary and its chain (the reverse proxy, the dashboard) passed its health gate --
 // the status line it logs, the same signal the tier-4 rig waits on, and local (no name to
 // resolve, no address to know under DHCP) -- then print what `briard open` says, its one-time
 // link included, and hand that link to a desktop browser.
 //
-// ⚠️ THE AGENT'S OWN WORDS ARE PRINTED, not re-rendered here: `briard open` says what is on the
-// node, which is the same answer a household gets running it a month from now.
-//
-// NO ADDRESS IS PRINTED before then. Nothing answers yet, so a name or an address is a promise
-// about a node still booting -- and under DHCP there is no address to print at all.
+// ⚠️ The agent's own words are printed, not re-rendered here: `briard open` says what is on the
+// node, the same answer a household gets running it a month from now. No address is printed
+// before the node answers: until then a name or an address is a promise about a node still
+// booting -- and under DHCP there is no address to print at all.
 func InstallWait(ctx context.Context, say func(string, ...any)) error {
 	// The mark the agent's log is read from: a reinstall's log still holds the previous life's
 	// "healthy=true", and a link minted on a stale line is minted before the guest exists.
@@ -487,14 +478,12 @@ func InstallWait(ctx context.Context, say func(string, ...any)) error {
 	if agentLogReadable() {
 		for deadline := time.Now().Add(installWaitBound); time.Now().Before(deadline); {
 			journal := agentLogSince(ctx, since)
-			// THE AGENT REFUSING ends the wait, in its own words: a node that cannot serve must not
-			// leave the household waiting out the bound for a sentence that says "still starting".
-			// Two say so: a router that leases the flock nothing of its own on a single-anchor
-			// substrate (lease.go, remedied by `config set vip`), and a Windows restart still owed
-			// (restart.go). Either ends here as a failure.
-			//
-			// ⚠️ ASKED BEFORE HEALTHY: a refusal is final for this wait, and a status line logged
-			// in the same pass must not outvote it.
+			// The agent refusing ends the wait as a failure, in its own words: a node that cannot
+			// serve must not leave the household waiting out the bound for a sentence that says
+			// "still starting". Two say so: a router that leases the flock nothing of its own on a
+			// single-anchor substrate (lease.go, remedied by `config set vip`), and a Windows
+			// restart still owed (restart.go). ⚠️ Asked before healthy: a refusal is final for this
+			// wait, and a status line logged in the same pass must not outvote it.
 			if refused := refusedLine(journal); refused != "" {
 				return fmt.Errorf("briard is installed but cannot serve your home: %s", refused)
 			}

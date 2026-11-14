@@ -34,7 +34,7 @@ import (
 //     apps;
 //   - the tray, running in its owner's session, its Run and RunOnce values in that account's hive,
 //     and the all-users Start menu entry that runs it;
-//   - state\ under it, the pet -- KEPT unless the operator asks for it to go.
+//   - state\ under it, the pet -- kept unless the operator asks for it to go.
 //
 // The tap-windows6 driver package goes only when install.ps1 installed it (state\tap-installed)
 // and no other TAP adapter is left using it (removeTapDriver). The Hypervisor Platform stays:
@@ -90,11 +90,10 @@ func (cfg Config) removeServices(ctx context.Context, logf func(string, ...any))
 
 // stopNode stops a running node for something that must not race it -- an uninstall, or a
 // reinstall laying files over the ones in use -- and is `briard stop` with no agent to ask (Stop):
-// the warden (its program is one of those files),
-// then the agent's service (a stop leaves the guest running, for the next agent to re-adopt; here
-// nothing must re-adopt it), then the guest's clean powerdown. A job kill is not a stop on Windows
-// (unitStop), and the data volume a reinstall or a kept uninstall leaves behind is only worth
-// keeping if the guest was not power-cut off it.
+// the warden (its program is one of those files), then the agent's service (a stop leaves the
+// guest running for the next agent to re-adopt; here nothing must re-adopt it), then the guest's
+// clean powerdown. A job kill is not a stop on Windows (unitStop), and the data volume a reinstall
+// or a kept uninstall leaves behind is only worth keeping if the guest was not power-cut off it.
 func stopNode(ctx context.Context, qmpSock string, logf func(string, ...any)) error {
 	m, err := mgr.Connect()
 	if err != nil {
@@ -232,7 +231,7 @@ func (cfg Config) removeFiles(deleteData bool, logf func(string, ...any)) error 
 	if len(left) == 0 {
 		return errors.Join(errs...)
 	}
-	// NEVER THE RESTART WHEN THE HELPER RUNS: a delete queued for the restart is by path, and a
+	// Never the restart when the helper runs: a delete queued for the restart is by path, and a
 	// reinstall before that restart lays its new agent down at the same path for the restart to
 	// delete.
 	err = removeAfterExit(left)
@@ -361,10 +360,10 @@ const tapMarker = "tap-installed"
 const tapUninstallKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TAP-Windows`
 
 // removeTapDriver removes the tap-windows6 driver -- its own uninstaller, then the package in the
-// driver store and the service it registered; the TAP
-// adapter is gone by now (DestroyBridge) -- on a POSITIVE record that briard installed it: no
-// record, or one that cannot be read, keeps the driver, which may be another program's. Kept too
-// while any TAP adapter is left: something else uses the driver.
+// driver store and the service it registered; the TAP adapter is gone by now (DestroyBridge) --
+// only on a positive record that briard installed it: no record, or one that cannot be read, keeps
+// the driver, which may be another program's. Kept too while any TAP adapter is left: something
+// else uses the driver.
 func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)) error {
 	marker := filepath.Join(cfg.stateDir(), tapMarker)
 	if _, err := os.Stat(marker); err != nil {
@@ -405,9 +404,9 @@ func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)
 	// _?=, which must come last and unquoted even with spaces in it -- so the command line is
 	// written by hand rather than escaped argument by argument. Run in place, it cannot delete
 	// itself: the folder goes after, retried -- the just-run Uninstall.exe can still be held a
-	// moment after its process exits (`Access is denied`). A folder that
-	// outlasts the retry is reported, and the driver goes regardless: it, not the folder, is what
-	// another install would trip on.
+	// moment after its process exits (`Access is denied`). A folder that outlasts the retry is
+	// reported, and the driver goes regardless: it, not the folder, is what another install would
+	// trip on.
 	c := exec.CommandContext(ctx, exe)
 	c.SysProcAttr = &syscall.SysProcAttr{CmdLine: windows.EscapeArg(exe) + " /S _?=" + dir}
 	if out, err := c.CombinedOutput(); err != nil {
@@ -417,9 +416,9 @@ func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)
 	if err := removeRetried(dir, logf); err != nil {
 		left = fmt.Errorf("removing %s: %w (the folder is left; delete it by hand)", dir, err)
 	}
-	// What that uninstaller leaves: the driver package in Windows' driver
-	// store, its .sys, and the driver's service entry. The package is found by its provider,
-	// which its INF names and no locale changes -- pnputil's own listing is translated.
+	// What that uninstaller leaves: the driver package in Windows' driver store, its .sys, and the
+	// driver's service entry. The package is found by its provider, which its INF names and no
+	// locale changes -- pnputil's own listing is translated.
 	out, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
 		"Get-WindowsDriver -Online | Where-Object { $_.ProviderName -eq '"+tapProvider+"' } | ForEach-Object { $_.Driver }").Output()
 	if err != nil {

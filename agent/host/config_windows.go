@@ -24,11 +24,10 @@ const (
 	// bridgeWhose says, in the log, whose bridge the guest hangs off: on Windows, the one briard built.
 	bridgeWhose = "briard's bridge, built at install"
 
-	// defaultSystemTap is the tap-windows6 adapter the bridge is built with, under the name the bridge
-	// build gives it. It is the guest's ONE NIC here: the bridge shape has no service tap and no
-	// private link (applySubstrate), and a config that named them would name devices this host
-	// never has -- which the hot path reads as "not built" and sends every restart down the cold
-	// start.
+	// defaultSystemTap is the tap-windows6 adapter the bridge is built with, under the name the
+	// bridge build gives it. It is the guest's one NIC here: the bridge shape has no service tap and
+	// no private link (applySubstrate), and a config that named them would name devices this host
+	// never has -- which the hot path reads as "not built" and sends every restart down the cold start.
 	defaultSystemTap  = nic.TapName
 	defaultServiceTap = ""
 	defaultWitnessTap = ""

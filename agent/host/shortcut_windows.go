@@ -9,7 +9,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// THE START MENU SHORTCUT, written through Windows' own shell-link object (IShellLinkW) rather than
+// The Start menu shortcut, written through Windows' own shell-link object (IShellLinkW) rather than
 // WScript.Shell, which cannot set a shortcut's properties: the one this needs is the
 // AppUserModelID, which ties the tray's process to the shortcut so that Windows titles its
 // notifications with the shortcut's name and icon instead of the program's file name. COM by hand

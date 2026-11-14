@@ -18,7 +18,7 @@ import (
 // the frozen update script, config.env and the systemd units.
 func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(string, ...any)) error {
 	agentDir := filepath.Join(r.prefix, "agent")
-	// <prefix>/qemu is the PUBLIC path, a fixed link onto the moving agent/qemu: the Linux bundle
+	// <prefix>/qemu is the public path, a fixed link onto the moving agent/qemu: the Linux bundle
 	// bakes /opt/briard/qemu/lib/ld-linux... into its ELF interpreter, so that path must always
 	// resolve to the running tree, and the agent's QEMU / QEMU_DATADIR point through it. A real
 	// directory left here by an older layout is removed first: a link cannot replace one.
@@ -40,30 +40,29 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 		}
 	}
 
-	// `briard` -- the operator CLI, a MODE of the agent binary rather than a second one. Nothing
-	// under the prefix is on $PATH, so this symlink IS the CLI's existence as far as a user is
-	// concerned. A symlink rather than a copy: self-update replaces the binary in place, and a copy
-	// would leave a stale CLI talking to a newer agent. Best-effort: an unwritable /usr/local/bin
-	// costs the CLI, never the install.
+	// `briard` -- the operator CLI, a mode of the agent binary rather than a second one. Nothing
+	// under the prefix is on $PATH, so to a user this symlink is the CLI. A symlink, not a copy:
+	// self-update replaces the binary in place, and a copy would leave a stale CLI talking to a
+	// newer agent. Best-effort: an unwritable /usr/local/bin costs the CLI, never the install.
 	os.MkdirAll(filepath.Dir(r.cliLink), 0o755)
 	if err := relink(filepath.Join(agentDir, "briard-agent"), r.cliLink); err != nil {
 		say("note: could not link %s; run %s directly", r.cliLink, filepath.Join(agentDir, "briard-agent"))
 	}
 
-	// NETWORKING IS NOT CONFIGURED HERE: the agent owns the whole of it, converged on its status
-	// tick. One thing still has to be true, and it is checked rather than assumed: without the
-	// fd-passing launch wrapper the agent cannot attach a macvtap to qemu, and that failure belongs
-	// at the install rather than at the first guest launch.
+	// Networking is not configured here: the agent owns all of it, converged on its status tick.
+	// One thing is checked rather than assumed: without the fd-passing launch wrapper the agent
+	// cannot attach a macvtap to qemu, and that failure belongs at the install, not at the first
+	// guest launch.
 	if netWrap == "" {
 		return errors.New("the briard-net-wrap wrapper is absent from staging; the guest cannot be given a NIC")
 	}
 
-	// THE AGENT'S FROZEN SCRIPT, copied out of the verified set: briard-update launches the
-	// update, which must not be shipped by the thing it updates. Frozen means dumb shell: it
-	// fetches the next agent, has the installed one verify it, and runs the FETCHED agent's
-	// --update, so the update logic is the release being installed, not the volatile one being
-	// replaced. Shipped means it is a signed artifact of the host chain, covered by the same
-	// manifest as the binary it fetches.
+	// The agent's frozen script, copied out of the verified set: briard-update launches the update,
+	// which must not be shipped by the thing it updates. Frozen means dumb shell: it fetches the
+	// next agent, has the installed one verify it, and runs the fetched agent's --update, so the
+	// update logic is the release being installed, not the volatile one being replaced. Shipped
+	// means it is a signed artifact of the host chain, covered by the same manifest as the binary
+	// it fetches.
 	say("installing the agent's update script")
 	if !exists(filepath.Join(hostSrc, "briard-update")) {
 		return errors.New("briard-update is absent from staging; this release cannot be installed")
@@ -75,7 +74,7 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 		return err
 	}
 
-	// THE UNITS, copied, not written: shipped artifacts of the host chain, hashed by the same
+	// The units, copied, not written: shipped artifacts of the host chain, hashed by the same
 	// signed manifest. Every path in them is /opt/briard, a constant on every install, so there is
 	// nothing to interpolate. Refused rather than skipped when one is missing: a staging dir without
 	// briard-agent.service is one this host cannot run briard from.
@@ -120,16 +119,14 @@ func flushInstall(ctx context.Context, say func(string, ...any)) error {
 }
 
 // backupFolder makes the household's backup folder: `Briard Backup` in the home of the person who
-// ran the installer, made AS them so it is theirs from the start -- they can move, copy or delete
+// ran the installer, made as them so it is theirs from the start -- they can move, copy or delete
 // it without us, it outlives an uninstall, and whatever already backs up or syncs their home takes
-// it along. Laid down by this install, so it is a line in config.env rather than a default. Nobody
-// human (root, a cloud-init) or no home to put it in: "", and the agent's own folder under the
-// state dir is used. An operator who named one (BRIARD_BACKUP_DIR, "" for off) is copied like any
-// other setting instead.
-//
-// getent and sudo rather than os/user and a chown: the static agent reads /etc/passwd alone, and
-// a household's account may come from NSS; and a folder the user could not have made themselves
-// is not one this should make for them.
+// it along. Laid down by this install, so it is a line in config.env rather than a default. With
+// nobody human (root, a cloud-init) or no home to put it in: "", and the agent's own folder under
+// the state dir is used. An operator who named one (BRIARD_BACKUP_DIR, "" for off) is copied like
+// any other setting instead. getent and sudo rather than os/user and a chown: the static agent
+// reads /etc/passwd alone while a household's account may come from NSS, and a folder the user
+// could not have made themselves is not one this should make for them.
 func backupFolder(ctx context.Context) string {
 	user := os.Getenv("SUDO_USER")
 	if _, set := os.LookupEnv("BRIARD_BACKUP_DIR"); set || user == "" || user == "root" {
@@ -154,7 +151,7 @@ func backupFolder(ctx context.Context) string {
 }
 
 // openForUser hands the dashboard link to the invoking user's browser, on a desktop and only there:
-// a user to run it AS (the browser must be theirs, never root's), a display they can see (sudo
+// a user to run it as (the browser must be theirs, never root's), a display they can see (sudo
 // keeps DISPLAY and XAUTHORITY; a Wayland session carries DISPLAY through Xwayland), and xdg-open
 // present. Best-effort and silent otherwise -- a headless install is the printed link opened on a
 // phone, not a failure -- and never waited on: xdg-open may block until the browser exits.

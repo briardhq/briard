@@ -46,17 +46,16 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	if err := r.writeConfig(ctx, r.bundleLines(""), say); err != nil {
 		return err
 	}
-	// THE TREE IS SYSTEM'S AND THE ADMINISTRATORS'. %ProgramData% lets Users create and read
-	// beneath it, and run\ holds the admin socket and the monitor socket -- unrestricted control
-	// of the agent and the VM. The Linux 0700/0600 modes say this there; on Windows only an ACL
-	// can: the ROOT stops inheriting and grants the two by SID (names are localized), and
-	// everything beneath INHERITS that. Never `/inheritance:r /T`: on a file it strips the inherited
-	// entries and the (OI)(CI) grants cannot attach to a file, leaving every file with an empty ACL
-	// -- an agent even SYSTEM cannot start. So the root alone is restricted, and then everything
-	// BENEATH it is reset to inheriting from it. Root first, and the reset never names the root: a
-	// reset of the root re-inherits %ProgramData%'s Users entries, and a reset that fails partway (a
-	// reinstall's walk meeting an entry it cannot open) would leave the whole tree readable by
-	// Users. In this order a failure leaves the tree restricted, only some files not yet inheriting.
+	// The tree is SYSTEM's and the Administrators'. %ProgramData% lets Users create and read
+	// beneath it, and run\ holds the admin and monitor sockets -- unrestricted control of the agent
+	// and the VM. Linux says this with 0700/0600 modes; on Windows only an ACL can: the root alone
+	// stops inheriting and grants the two by SID (names are localized), and everything beneath is
+	// reset to inherit that. Never `/inheritance:r /T`: on a file it strips the inherited entries and
+	// the (OI)(CI) grants cannot attach to a file, leaving every file with an empty ACL -- an agent
+	// even SYSTEM cannot start. Root first, and the reset never names the root: a reset of the root
+	// re-inherits %ProgramData%'s Users entries, and a reset that fails partway (a reinstall's walk
+	// meeting an entry it cannot open) would leave the whole tree readable by Users. In this order a
+	// failure leaves the tree restricted, only some files not yet inheriting.
 	say("restricting %s to SYSTEM and Administrators", r.prefix)
 	if err := run(ctx, "icacls", r.prefix, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "/Q"); err != nil {
 		return err
@@ -64,13 +63,12 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	if err := run(ctx, "icacls", filepath.Join(r.prefix, "*"), "/reset", "/T", "/Q"); err != nil {
 		return err
 	}
-	// THE PROGRAM IS EVERYONE'S TO RUN; THE NODE IS NOT. agent\ holds only release files, the bytes
+	// The program is everyone's to run; the node is not. agent\ holds only release files, the bytes
 	// anyone can download, and bin\ the `briard` link to the agent. Windows reads a program as its
-	// caller before it starts or elevates it, so without this `briard` in a shell that is not
-	// elevated is Windows' "Access is denied" rather than the agent saying what it needs, and the
-	// Installed-apps entry cannot ask UAC to elevate the agent. Read and run only, inherited, so a
-	// file a release lays down later is covered too. After the restriction: a failure here leaves
-	// the tree closed.
+	// caller before it starts or elevates it, so without this an unelevated `briard` gets Windows'
+	// "Access is denied" rather than the agent saying what it needs, and the Installed-apps entry
+	// cannot ask UAC to elevate the agent. Read and run only, inherited, so a file a release lays
+	// down later is covered too. After the restriction: a failure here leaves the tree closed.
 	bin := filepath.Join(r.prefix, "bin")
 	say("letting Users run %s", agentExe)
 	for _, d := range []string{agentDir, bin} {
@@ -81,17 +79,17 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 			return err
 		}
 	}
-	// THE SERVICE BEFORE THE BRIDGE, knowingly. A bridge build that fails leaves an auto-start
-	// service behind, so the agent runs degraded at the next boot and says so -- the better
-	// leftover than the other order's, a bridge nobody runs on, and every step here is
-	// idempotent, so the re-run the failure asks for finds its own work done.
+	// The service before the bridge, knowingly: a failed bridge build leaves an auto-start service
+	// behind, so the agent runs degraded at the next boot and says so -- a better leftover than the
+	// other order's bridge nobody runs on -- and every step here is idempotent, so the re-run the
+	// failure asks for finds its own work done.
 	if err := registerService(ServiceName, exe, "run", agentConfig, preshutdownBudget, installUser(), say); err != nil {
 		return err
 	}
-	// THE WARDEN, the agent's outside watcher (warden_windows.go): a COPY of this agent in a
+	// The warden, the agent's outside watcher (warden_windows.go): a copy of this agent in a
 	// directory of its own, which an update replaces only once the agent it watches is up
-	// (StartWarden).
-	// Registered after the agent, so a failure here leaves an agent that runs, unwatched.
+	// (StartWarden). Registered after the agent, so a failure here leaves an agent that runs,
+	// unwatched.
 	wexe := filepath.Join(r.prefix, "warden", wardenExe)
 	say("laying the warden at %s", wexe)
 	if err := copyFile(exe, wexe); err != nil {
@@ -100,7 +98,7 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	if err := registerService(WardenName, wexe, "-warden", wardenConfig, 0, installUser(), say); err != nil {
 		return err
 	}
-	// THE UPDATE LAUNCHER, copied out of the verified set, and the task that runs it: the Windows
+	// The update launcher, copied out of the verified set, and the task that runs it: the Windows
 	// twin of briard-update and its timer. Frozen by necessity, as that script is -- it launches
 	// the replacement of the binary, so no release can be what fixes it -- and shipped, so it is a
 	// signed artifact covered by the same manifest as the binary it fetches.
@@ -115,14 +113,13 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	if err := r.registerUpdateTask(ctx, script); err != nil {
 		return fmt.Errorf("registering the update task: %w", err)
 	}
-	// THE TRAY, started at the logon of the account that passed UAC by that account's own Run key,
+	// The tray, started at the logon of the account that passed UAC by that account's own Run key,
 	// which Settings > Apps > Startup lists and switches off. It starts at the next logon, never
 	// from here: a program this elevated process started would run elevated, and so would the
-	// browser it opens. A SYSTEM install has no such account, and no tray.
-	//
-	// THE HAND-OVER is the same tray, once: that logon also runs it with --open, which says Briard
-	// is starting and opens the dashboard in the person's browser once it serves -- the install's
-	// closing, with no console window.
+	// browser it opens. A SYSTEM install has no such account, and no tray. The hand-over is the
+	// same tray, once: that logon also runs it with --open, which says Briard is starting and opens
+	// the dashboard in the person's browser once it serves -- the install's closing, with no
+	// console window.
 	say("installing the notification-area icon")
 	tray := filepath.Join(agentDir, trayExe)
 	if err := installFile(filepath.Join(hostSrc, trayExe), tray, 0o755); err != nil {
@@ -131,14 +128,14 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 	if err := runAtLogon(installUser(), tray); err != nil {
 		return fmt.Errorf("starting the icon at logon: %w", err)
 	}
-	// THE START MENU ENTRY, every account's: "Briard" runs the tray with --open, which starts
+	// The Start menu entry, every account's: "Briard" runs the tray with --open, which starts
 	// briard if it is stopped and opens the dashboard once it serves (or says why not). The
 	// tray is the program a person runs; the service never is.
 	say("adding Briard to the Start menu")
 	if err := startMenuEntry(tray); err != nil {
 		return fmt.Errorf("adding Briard to the Start menu: %w", err)
 	}
-	// THE ONE INBOUND HOLE: the guest dials the host's backup store. Scoped to this program and
+	// The one inbound hole: the guest dials the host's backup store. Scoped to this program and
 	// port rather than to a network profile, so the household's network category stays theirs.
 	say("allowing the VM to reach the backup store (TCP %s, %s only)", backupStorePort, agentExe)
 	_ = run(ctx, "netsh", "advfirewall", "firewall", "delete", "rule", "name=Briard backup store")
@@ -238,18 +235,18 @@ func registerService(name, exe, arg string, c mgr.Config, preshutdown time.Durat
 		return fmt.Errorf("registering %s: %w", name, err)
 	}
 	defer s.Close()
-	// RECOVERY, WHICH NEVER LATCHES DEAD: the last action repeats for every failure after the
+	// Recovery, which never latches dead: the last action repeats for every failure after the
 	// third, so "restart" three times is restart forever -- systemd's StartLimitIntervalSec=0.
 	restart := mgr.RecoveryAction{Type: mgr.ServiceRestart, Delay: 5 * time.Second}
 	if err := s.SetRecoveryActions([]mgr.RecoveryAction{restart, restart, restart}, 0); err != nil {
 		return fmt.Errorf("recovery actions: %w", err)
 	}
-	// And a FAILURE is any non-zero exit, not only a crash: without this flag an agent that reports
+	// And a failure is any non-zero exit, not only a crash: without this flag an agent that reports
 	// STOPPED with an error is, to the service manager, a service that stopped as asked.
 	if err := s.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
 		return fmt.Errorf("recovery on failure exits: %w", err)
 	}
-	// WHO MAY START AND STOP IT: what Windows gives a new service (serviceSDDL), plus START, STOP and
+	// Who may start and stop it: what Windows gives a new service (serviceSDDL), plus START, STOP and
 	// QUERY_STATUS for the install user's account, so `briard start` works unelevated from the tray
 	// and that account's terminal. Set whole on every install, so a reinstall by another account,
 	// or by SYSTEM, leaves no earlier account's grant behind.
@@ -346,9 +343,9 @@ func (r installRoots) buildBridge(ctx context.Context, say func(string, ...any))
 	if err != nil {
 		return fmt.Errorf("building the bridge over %s: %w", member, err)
 	}
-	// SPANNING TREE OFF. The bridge runs 802.1D: on every member carrier-up -- a cable in, a Wi-Fi
+	// Spanning tree off. The bridge runs 802.1D: on every member carrier-up -- a cable in, a Wi-Fi
 	// association -- it holds the port dark ~11 s in listening/learning, host and guest both, and
-	// sends BPDUs onto the household LAN every 2 s. With one physical member beside the TAP there
+	// sends BPDUs onto the household LAN every 2 s; with one physical member beside the TAP there
 	// is no loop to break. The value lives on the service key itself (its Parameters subkey is
 	// ignored), the machine has one bridge and it is ours, and the restart below applies it.
 	if err := disableBridgeSTA(); err != nil {
@@ -371,8 +368,8 @@ func disableBridgeSTA() error {
 // arriving member's offload record where buildBridge keeps the first one, so the record always
 // describes the member the bridge stands on, and the leaving member gets its own value back.
 //
-// AND WAITS FOR THE BRIDGE'S LEASE: it re-leases under the arriving member's MAC, and until it
-// has, everything read off it -- the LAN fingerprint the bring-up compares and records, the
+// It then waits for the bridge's lease: the bridge re-leases under the arriving member's MAC, and
+// until it has, everything read off it -- the LAN fingerprint the bring-up compares and records, the
 // address the guest is reached by -- is a reading of an adapter mid-DHCP. Both callers boot the
 // guest right after (the cold start's swap, the live re-parent's), so both wait here. Bounded by
 // the caller's budget; a lease that never comes is the guest's to wait out, as at any boot. Asked
@@ -459,12 +456,11 @@ func makeWritable(context.Context, string) error { return nil }
 // and flushed. The restart the install ends in would write them out too, but the person is
 // asked before it and may decline, and the rule (a verified name must never sit over truncated
 // bytes) does not get to depend on their answer.
-//
-// The running executable is skipped: it is the installer's bootstrap, written before it ran rather
-// than by the install, and Windows refuses a running image to a writer. So is any other file
-// Windows refuses for a sharing violation -- a binary running from the tree, the tray in the
-// user's session at a first start's finish: nothing writes a running image, and every file the
-// install copies was flushed by installFile before its rename.
+// Skipped: the running executable (the installer's bootstrap, written before it ran rather than by
+// the install, and Windows refuses a running image to a writer), and any other file Windows
+// refuses for a sharing violation -- a binary running from the tree, the tray in the user's session
+// at a first start's finish. Nothing writes a running image, and every file the install copies was
+// flushed by installFile before its rename.
 func flushInstall(_ context.Context, say func(string, ...any)) error {
 	say("flushing the installed files to disk")
 	self, _ := os.Executable()
@@ -485,16 +481,15 @@ func flushInstall(_ context.Context, say func(string, ...any)) error {
 }
 
 // backupFolder makes the household's backup folder: `Briard Backup` in the Documents of the account
-// that passed UAC -- the installer runs elevated AS that account, so the known folder is theirs.
+// that passed UAC -- the installer runs elevated as that account, so the known folder is theirs.
 // Resolved through the shell, never composed: with OneDrive's folder backup on (Windows 11's default
-// with a Microsoft account) Documents IS OneDrive's, and the off-site copy comes with it. WRITTEN AS
-// %DOCUMENTS%\Briard Backup, not as the path: OneDrive's folder backup turned on LATER moves
+// with a Microsoft account) Documents is OneDrive's, and the off-site copy comes with it. Written as
+// %DOCUMENTS%\Briard Backup, not as the path: OneDrive's folder backup turned on later moves
 // Documents and the folder with it, and the agent follows wherever Documents is (backup.go's
-// resolveBackupDir). No owner
-// step: the profile's inherited ACL gives its owner every file under it, whoever wrote it. SYSTEM
-// (a remote or scripted install) has no household Documents: "", and the agent's own folder under
-// the state dir is used. An operator who named one (BRIARD_BACKUP_DIR, "" for off) is copied like
-// any other setting instead.
+// resolveBackupDir). No owner step: the profile's inherited ACL gives its owner every file under
+// it, whoever wrote it. SYSTEM (a remote or scripted install) has no household Documents: "", and
+// the agent's own folder under the state dir is used. An operator who named one
+// (BRIARD_BACKUP_DIR, "" for off) is copied like any other setting instead.
 func backupFolder(context.Context) string {
 	if _, set := os.LookupEnv("BRIARD_BACKUP_DIR"); set || installUser() == "" {
 		return ""
@@ -509,7 +504,7 @@ func backupFolder(context.Context) string {
 	return documentsPlaceholder + `\Briard Backup`
 }
 
-// installUser is the SID of the account that passed UAC: the installer runs elevated AS that
+// installUser is the SID of the account that passed UAC: the installer runs elevated as that
 // account, so its token's user is the household's administrator, and the one account the admin door
 // and the services admit unelevated (restrictDoor, registerService) -- the tray, and `briard` in
 // that account's own terminal. SYSTEM (a remote or scripted install) is nobody: "", and both stay
@@ -571,8 +566,8 @@ func (r installRoots) osRoots() installRoots { return r }
 
 // stopRunning stops a node already installed here before the lay-down replaces its files: Windows
 // refuses to replace an executable or a library that is running (the agent's own .exe, a DLL of
-// the qemu still running from the same release's tree). The guest
-// is powered off cleanly, never killed. The restart the installer ends in starts it all again.
+// the qemu still running from the same release's tree). The guest is powered off cleanly, never
+// killed. The restart the installer ends in starts it all again.
 func stopRunning(ctx context.Context, say func(string, ...any)) error {
 	endTrays()
 	return stopNode(ctx, ConfigFromEnv().QMPSock, say)
