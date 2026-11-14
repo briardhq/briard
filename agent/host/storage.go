@@ -40,9 +40,8 @@ func dataTier(mode nodestorage.Mode) nodestorage.Tier {
 // than quietly becoming the default -- the whole reason DataEncryption is not validated at
 // ConfigFromEnv time and then trusted: one gate, at the point of use.
 //
-// Exported for the test driver, the harness that stands in for this agent (nixosTest/driver): it
-// renders its spec through here rather than assembling its own, so a rig exercises the product's
-// composition -- the DATA_ENCRYPTION knob included -- instead of a second opinion about it.
+// Bring-up and the pairing join both render their spec through here rather than assembling their
+// own, so there is one composition -- the DATA_ENCRYPTION knob included -- not one per caller.
 func (c Config) StorageSpec(res drbd.Resource, diskless, freshInit bool) (nodestorage.Spec, error) {
 	// A resource is worth running only with two copies: with one diskful member DRBD protects
 	// nothing and turns any single bad block into a dead node, so a lone anchor runs btrfs on its

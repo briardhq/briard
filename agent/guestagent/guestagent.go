@@ -3606,8 +3606,7 @@ func (g *Client) Close() error { return g.c.Close() }
 
 // BringUpGuest dials the guest's control socket (the virtio-serial chardev's host end), brings
 // the resource up, and waits for the node to serve, then closes the connection. Only a test calls
-// it: agent/host and nixosTest/driver keep one connection for the session and call BringUp
-// themselves.
+// it: agent/host keeps one connection for the session and calls BringUp itself.
 func BringUpGuest(ctx context.Context, sock string, spec BringUpSpec) error {
 	conn, err := net.Dial("unix", sock)
 	if err != nil {

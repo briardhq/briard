@@ -172,7 +172,6 @@ let
   # installs is the shape CI exercises.
   guestDisk = (import ../guest-image/disk-image.nix { inherit nixpkgs pkgs overlay; agentVersion = guestVersion; }) // { inputs = guestInputs; };
 
-  driverPkg = pkgs.callPackage ./driver/package.nix { };
   agentPkg = pkgs.callPackage ../agent/package.nix { version = agentVersion; }; # the product agent binary (the host agent)
   # The guest bundle: every briard binary the guest runs, built with the host release's version
   # because it ships in the briard chain and the host pushes it at every bring-up. The image bakes
@@ -596,8 +595,8 @@ in
     };
   };
 
-  # Build artifacts, not tests: the product agent binary, the bootable guest qcow2, the
-  # nested-test driver and the Windows arms. Consumed by the fleet of the private sibling repo
+  # Build artifacts, not tests: the product agent binary, the bootable guest qcow2 and the
+  # Windows arms. Consumed by the fleet of the private sibling repo
   # + demo scripts, so they stay reachable by name (`.#artifacts.<name>`).
   artifacts = {
     guest-disk = guestDisk;
@@ -609,7 +608,6 @@ in
     # The Store's installer stub, a GUI program too: `publish-release.sh setup` appends a published
     # windows arm to it.
     setup-windows = pkgs.callPackage ../agent/package.nix { subPackage = "agent/cmd/briard-setup"; version = agentVersion; goos = "windows"; gui = true; winres = "agent/cmd/briard-setup/briard-setup.rc"; };
-    driver = driverPkg;
     qemu-bundle = qemuBundle.bundle; # the relocatable qemu the free-local installer ships
     # The Windows arm of the same thing: QEMU cross-built here from a pinned release over MSYS2's
     # libraries (qemu-bundle-windows.nix says how). Its proof is a boot on a Windows machine, not

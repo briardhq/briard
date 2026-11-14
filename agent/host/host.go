@@ -2,9 +2,8 @@
 // boots the guest VM, drives the agent-owned DRBD bring-up over the control
 // channel, and then continuously observes the node's state into an api.NodeStatus.
 //
-// It differs from the test driver (nixosTest/driver), which brings up and then just holds the
-// guest alive, by the standing observe loop. Config comes from the environment
-// (host.ConfigFromEnv); status is reported up the north-bound shared/api seam.
+// Config comes from the environment (host.ConfigFromEnv); status is reported up the north-bound
+// shared/api seam.
 package host
 
 import (
