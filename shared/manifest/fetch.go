@@ -19,7 +19,7 @@ const (
 	sigSuffix       = ".sig"
 )
 
-// ErrNoVerifier is returned when no trust root is wired. Fail CLOSED: with no key there is no
+// ErrNoVerifier is returned when no trust root is wired. Fail closed: with no key there is no
 // such thing as a valid signature, so every manifest is refused — never fail-open to "no key
 // configured means allow anything" (the stance selfupdate.ErrNoKeys and install.ErrNoKeyring
 // already take, kept identical here on purpose).
@@ -34,11 +34,11 @@ type Verifier interface {
 
 // Catalog fetches signed app manifests from the published catalog (a signed,
 // versioned, static, mirrorable artifact at a dumb URL, the apt-mirror shape rather than an
-// API). URL is the signed LIST a node reads (`…/catalog/latest.json`, served from get.briard.io);
+// API). URL is the signed list a node reads (`…/catalog/latest.json`, served from get.briard.io);
 // every app version a list names is a file beside it, `<app>/<version>.json`. Client is
 // optional.
 //
-// ONLY THE LIST IS SIGNED. A list line carries the identity of its version file -- the sha256 of
+// Only the list is signed. A list line carries the identity of its version file -- the sha256 of
 // its exact bytes -- and a version file pins its images by digest, so one signature covers
 // everything down to the image bytes, and every version ever published stays where it is,
 // readable by whoever still needs it, without being signed again.
@@ -55,16 +55,15 @@ type Catalog struct {
 
 // Fetch reads the signed list, takes the named app's line, downloads the version file the line
 // names from beside the list and refuses it unless its sha256 is the line's identity. It returns
-// the parsed manifest with the identity of those bytes.
+// the parsed manifest, the identity of those bytes, and the raw bytes themselves, because they
+// are what gets recorded on the volume: the identity is the hash of exactly these bytes, so
+// storing a re-marshalling would store a different app.
 //
-// Order matters and is the whole safety property: the list's signature is verified over its RAW
+// Order matters and is the whole safety property: the list's signature is verified over its raw
 // bytes before the list is parsed, and the version file's hash is checked against the signed
 // line before the file is parsed. Parsing untrusted input is a larger attack surface than
 // checking a signature or a hash over it, and the identity must be the hash of what was signed
 // for -- not of anything a parse-then-verify flow might have already normalised.
-// The RAW bytes come back alongside the parsed form because they are what gets recorded on the
-// volume: the identity is the hash of exactly these bytes, so storing a re-marshalling would
-// store a different app.
 func (c *Catalog) Fetch(ctx context.Context, name string) (Manifest, Identity, []byte, error) {
 	if c.Verifier == nil {
 		return Manifest{}, "", nil, ErrNoVerifier // fail closed before touching the network

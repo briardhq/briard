@@ -1,26 +1,25 @@
-// Package routes is the reverse proxy's routing table: the file the guest's converge WRITES and the
-// reverse proxy READS, mapping a hostname a household types to the app that answers it.
+// Package routes is the reverse proxy's routing table: the file the guest's converge writes and the
+// reverse proxy reads, mapping a hostname a household types to the app that answers it.
 //
-// IT IS A DERIVED PROJECTION, NOT THE CATALOG. The signed manifest is stored verbatim on the
-// replicated volume, because the app identity is the sha256 of those exact bytes — enriching
-// it would remint the identity on every node, so the catalog document physically cannot be the
-// thing we add fields to. This is the separate document derived from it, and its inputs come from
-// three places that no single one of them could supply:
+// It is a derived projection, not the catalog: the signed manifest is stored verbatim on the
+// replicated volume because the app identity is the sha256 of those exact bytes, so enriching it
+// would remint the identity on every node and the catalog document physically cannot be what we
+// add fields to. This separate document derives from three places, no one of which could supply
+// it alone:
 //
-//   - the MANIFEST: the app's name, its port and its health path.
-//   - the RENDERER: Address. An app's address is a rendering fact, not a manifest fact — the
-//     manifest names a port, and what host answers on it is decided by how the pod was wired.
-//   - NODE IDENTITY: Hosts, composed from the flock's minted name, which cannot exist in a
+//   - the manifest: the app's name, its port and its health path.
+//   - the renderer: Address, a rendering fact rather than a manifest fact (the manifest names a
+//     port; what host answers on it is decided by how the pod was wired).
+//   - node identity: Hosts, composed from the flock's minted name, which cannot exist in a
 //     published catalog because it is per-household and chosen at install.
 //
 // So it lives in /run: node-local, tmpfs, re-derived by every converge rather than replicated,
 // exactly like the quadlet units it is written beside.
 //
-// A HOSTNAME APPEARS HERE AND NOWHERE ELSE. These entries are what the reverse proxy's mDNS
-// responder answers for on the LAN and what its router matches on, so a `.local` name that is
-// published but not routed — or routed but not published — is not expressible. That is why the
-// names are composed once, here (HostNames), rather than independently by the router and the
-// responder.
+// A hostname appears here and nowhere else: these entries are what the reverse proxy's mDNS
+// responder answers for on the LAN and what its router matches on, so a `.local` name published
+// but not routed, or routed but not published, is not expressible. That is why the names are
+// composed once, here (HostNames), rather than independently by the router and the responder.
 package routes
 
 import (
@@ -42,7 +41,7 @@ import (
 const Path = "/run/briard/routes.json"
 
 // Table is the reverse proxy's whole routing, as one file. Ordered by app name, because converge
-// renders in that order and a table two nodes disagree about the ORDER of is a diff nobody wants
+// renders in that order and a table two nodes disagree about the order of is a diff nobody wants
 // to read.
 type Table struct {
 	Apps []App `json:"apps"`
@@ -53,76 +52,66 @@ type App struct {
 	// Name is the catalog slug, the same one the manifest and the units carry.
 	Name string `json:"name"`
 	// Hosts are the names this app answers to, in the order HostNames composes them: the
-	// flock-scoped mDNS label HostName composes, first — it is the SRV target announcements
-	// point at — then the bare alias BareHostName composes, and the per-home
-	// `<app>.<flock>.briard.casa` name CasaHostName composes, which resolves only once the
-	// household has claimed its name and is harmless in the table until then.
+	// flock-scoped mDNS label HostName composes first (it is the SRV target announcements point
+	// at), then the bare alias BareHostName composes, and the per-home `<app>.<flock>.briard.casa`
+	// name CasaHostName composes, which resolves only once the household has claimed its name and
+	// is harmless in the table until then. Materialised rather than derived, though every form is
+	// computable from (flock, slug): stored, the mDNS responder composes nothing (it answers
+	// whatever this list says) and every rule for building a name stays in this package
+	// (HostNames).
 	//
-	// MATERIALISED RATHER THAN DERIVED, though every form is computable from (flock, slug):
-	// stored, the mDNS responder composes nothing — it answers whatever this list says — and
-	// every rule for building a name stays in this package (HostNames).
-	//
-	// EMPTY IS A REAL STATE: a node whose flock has no minted name publishes nothing rather than
-	// a guess (net.mdnsname), so it routes nothing either. The app is still installed and
-	// still reachable on any port it publishes; it simply has no name yet.
+	// Empty is a real state: a node whose flock has no minted name publishes nothing rather than
+	// a guess (net.mdnsname), so it routes nothing either. The app is still installed and still
+	// reachable on any port it publishes; it simply has no name yet.
 	Hosts []string `json:"hosts,omitempty"`
-	// Address is the host this app answers on — the guest's own loopback under host networking,
-	// the pod's address under a private pod network. A bare host,
-	// with no port: an app is ONE pod and a pod is ONE network namespace, so one address serves
-	// every port it listens on, and Health and Routes below carry only the port.
-	//
-	// It comes from the renderer, which is the only thing that knows how the pod was wired, and it
-	// never appears in the catalog: a published, signed, node-independent document cannot carry a
-	// fact that differs per node and per render.
+	// Address is the host this app answers on: the guest's own loopback under host networking, the
+	// pod's address under a private pod network. A bare host with no port: an app is one pod and a
+	// pod is one network namespace, so one address serves every port it listens on, and Health and
+	// Routes below carry only the port. It comes from the renderer, the only thing that knows how
+	// the pod was wired, and never appears in the catalog: a published, signed, node-independent
+	// document cannot carry a fact that differs per node and per render.
 	Address string `json:"address,omitempty"`
 	// Health is the endpoint that answers "is this app serving", as a host-less URL resolved
-	// against Address (see Resolve).
-	//
-	// It is NOT a route, and that is the point: the probe is performed by the guest, straight to
-	// the app, and never traverses the proxy. An app the reverse proxy may not front is still
-	// probed here every cycle — mosquitto's management API is exactly that, bound inside the pod
-	// and relayed to nobody.
+	// against Address (see Resolve). It is deliberately not a route: the guest probes the app
+	// directly, never through the proxy, so an app the reverse proxy may not front is still probed
+	// here every cycle (mosquitto's management API is exactly that, bound inside the pod and
+	// relayed to nobody).
 	Health string `json:"health,omitempty"`
-	// Routes is what the REVERSE PROXY does about this app, and an empty list means nothing — the
-	// app is named and probed, and no request is ever forwarded to it.
-	//
-	// ABSENCE RATHER THAN A FLAG, deliberately. A boolean saying "do not front this" leaves the
-	// reverse proxy holding an address it is trusted not to use, one inverted condition away from
-	// relaying a pod-internal endpoint to the LAN. With no route there is nothing to forward and
-	// nothing to get wrong — the same reason shared/manifest grants capability by omission.
+	// Routes is what the reverse proxy does about this app; an empty list means nothing is done:
+	// the app is named and probed, and no request is ever forwarded to it. Absence rather than a
+	// flag, deliberately: a boolean saying "do not front this" leaves the reverse proxy holding an
+	// address it is trusted not to use, one inverted condition away from relaying a pod-internal
+	// endpoint to the LAN. With no route there is nothing to forward and nothing to get wrong, the
+	// same reason shared/manifest grants capability by omission.
 	Routes []Route `json:"routes,omitempty"`
-	// Ports are what this app publishes to the household, reachable at the node's
-	// service address on the same number. NOT the reverse proxy's business -- it forwards HTTP and
-	// these exist for the apps that do not speak it -- but the node's, because the page and `briard
-	// app install` have to be able to say where an app actually is.
-	//
-	// They are the manifest's DECLARED exposure (its `ports`), never inferred: under host
-	// networking every port a container listens on is reachable at the service address, and the
-	// manifest's primary port alone would be a partial list printed as the whole truth.
+	// Ports are what this app publishes to the household, reachable at the node's service address
+	// on the same number. Not the reverse proxy's business (it forwards HTTP, and these exist for
+	// the apps that do not speak it) but the node's, because the page and `briard app install`
+	// have to be able to say where an app actually is. They are the manifest's declared exposure
+	// (its `ports`), never inferred: under host networking every port a container listens on is
+	// reachable at the service address, and the manifest's primary port alone would be a partial
+	// list printed as the whole truth.
 	Ports []int `json:"ports,omitempty"`
-	// Announce are the mDNS SERVICE records this app wants on the household LAN -- what a
-	// device looking for a broker browses for, as opposed to Hosts, which are names something has
-	// to know already in order to ask.
+	// Announce are the mDNS service records this app wants on the household LAN: what a device
+	// looking for a broker browses for, as opposed to Hosts, which are names something has to know
+	// already in order to ask. Product knowledge, never the manifest's: which service type a thing
+	// is found under is the kind of per-app fact a curated catalog exists to let us encode
+	// (agent/apps), and a publisher declaring its own type would be claiming a well-known name on a
+	// household's LAN. The catalog names a port; what protocol answers there is ours to say.
 	//
-	// PRODUCT KNOWLEDGE, never the manifest's: which service type a thing is found under is the
-	// kind of per-app fact a curated catalog exists to let us encode (agent/apps), and a
-	// publisher declaring its own type would be claiming a well-known name on a household's LAN.
-	// The catalog names a port; what protocol answers there is ours to say.
-	//
-	// MATERIALISED, for the same reason Hosts is: every rule for composing a name lives in this
-	// package (InstanceName) and the responder composes nothing. Each record is pointed at the
-	// app's OWN name -- the first of Hosts -- which is why
-	// Validate refuses an announcement on an app that has none. An SRV record needs a target,
-	// and the only other candidate is the guest's own hostname, which is node-scoped and would
-	// send every device on the LAN to a machine that just stopped being the Primary.
+	// Materialised, for the same reason Hosts is: every rule for composing a name lives in this
+	// package (InstanceName) and the responder composes nothing. Each record points at the app's
+	// own name, the first of Hosts, which is why Validate refuses an announcement on an app that
+	// has none: an SRV record needs a target, and the only other candidate is the guest's own
+	// hostname, which is node-scoped and would send every device on the LAN to a machine that just
+	// stopped being the Primary.
 	Announce []Announcement `json:"announce,omitempty"`
 	// Gate, when set, is the file holding the secret the reverse proxy signs the household into
-	// this app with, and its presence is what makes the app GATED: the reverse proxy lets a browser
+	// this app with, and its presence is what makes the app gated: the reverse proxy lets a browser
 	// through only with the household dashboard's session, and tells the app who it is in a
 	// short-lived token signed with this secret, which the app verifies on every request. Empty is
-	// an app with a login of its own, forwarded as it is.
-	//
-	// A PATH, NEVER THE SECRET: this table is world-readable on the node, and the secret is root's.
+	// an app with a login of its own, forwarded as it is. A path, never the secret: this table is
+	// world-readable on the node, and the secret is root's.
 	Gate string `json:"gate,omitempty"`
 	// GateHeader, when set beside Gate, is the other way the reverse proxy tells a gated app who it
 	// is, for an app that reads its user from a reverse proxy's header rather than a token: the
@@ -153,10 +142,9 @@ type Route struct {
 	Listen string `json:"listen"`
 	// To is where the reverse proxy forwards, as a host-less URL resolved against the app's
 	// Address. The scheme says how to speak to it: "http" is a proxied request, upgrades included.
-	//
-	// THE MISSING HOST IS A SECURITY PROPERTY, not a spelling convenience. Because the only
-	// address the reverse proxy can ever splice in is the app's own, no table — however it was
-	// written — can point the reverse proxy at another machine. Validate refuses a host here.
+	// The missing host is a security property, not a spelling convenience: the only address the
+	// reverse proxy can ever splice in is the app's own, so no table, however it was written, can
+	// point the reverse proxy at another machine. Validate refuses a host here.
 	To string `json:"to"`
 }
 
@@ -167,23 +155,21 @@ const ListenName = "name"
 
 // HostName is the single place an app's LAN name is composed: `briard-<flock>-<app>.local`.
 //
-// ONE LABEL, and that is measured rather than stylistic: `mdns4_minimal`, the resolver in
-// Debian/Ubuntu's nsswitch, handles exactly ONE label before `.local`. So the flock-scoped
-// `briard-picked-hornet-home-assistant.local` resolves on a stock client and the prettier
-// `home-assistant.briard-picked-hornet.local` would publish fine and resolve nowhere — the same
-// trap as for the flock name itself, one level down.
-//
-// FLOCK-SCOPED, because this is the app's IDENTITY on the LAN: the SRV target every
-// announcement points at, and the name that stays unambiguous when two flocks share a house.
-// The bare alias is BareHostName, and the split is the rule: the flock-scoped name is what the
-// node relies on, the bare name is what it prints.
+// One label, measured rather than stylistic: `mdns4_minimal`, the resolver in Debian/Ubuntu's
+// nsswitch, handles exactly one label before `.local`, so the flock-scoped
+// `briard-picked-hornet-home-assistant.local` resolves on a stock client while the prettier
+// `home-assistant.briard-picked-hornet.local` would publish fine and resolve nowhere (the same
+// trap as for the flock name itself, one level down). Flock-scoped, because this is the app's
+// identity on the LAN: the SRV target every announcement points at, and the name that stays
+// unambiguous when two flocks share a house. The bare alias is BareHostName, and the split is the
+// rule: the flock-scoped name is what the node relies on, the bare name is what it prints.
 //
 // Never bare `home-assistant.local` in either form: that is the name every Home Assistant tutorial
 // uses and the one thing a household might already own. Measured: two avahi publishers of the
-// same `-a` record BOTH report Established, with no conflict, no rename and no log — the later
-// silently shadows the earlier — and the household most likely to already own
-// that name is the one migrating from an HAOS box. Claiming a name we can only lose silently is
-// worse than a longer one nobody contests.
+// same `-a` record both report Established, with no conflict, no rename and no log (the later
+// silently shadows the earlier), and the household most likely to already own that name is the
+// one migrating from an HAOS box. Claiming a name we can only lose silently is worse than a
+// longer one nobody contests.
 //
 // An empty flock name yields no name at all, deliberately: `briard--home-assistant.local` is worse
 // than silence, and FlockHostName follows the same rule.
@@ -194,19 +180,18 @@ func HostName(flock, app string) string {
 	return "briard-" + flock + "-" + app + ".local"
 }
 
-// BareHostName is the app's CONVENIENCE name: `briard-<app>.local`, the one a household
-// types and the one every print site shows (the installer, `briard app install`, the
-// dashboard's links). Every flock answers it beside its flock-scoped name, and nearly every home
-// holds exactly one flock, so nearly every home gets the short name on its only no-account door.
+// BareHostName is the app's convenience name: `briard-<app>.local`, the one a household types
+// and every print site shows (the installer, `briard app install`, the dashboard's links). Every
+// flock answers it beside its flock-scoped name, and nearly every home holds exactly one flock,
+// so nearly every home gets the short name on its only no-account door.
 //
-// AMBIGUOUS BY DESIGN WHEN TWO FLOCKS SHARE A LAN: both answer it, a client gets whichever replies
+// Ambiguous by design when two flocks share a LAN: both answer it, a client gets whichever replies
 // first, and nothing the node does depends on which. The responder probes nothing, so no
-// detection and no yielding exist here, and that is the point — a name that is bare "unless a
-// second install is detected" is a fact that depends on who was powered on at install time. The
-// flock-scoped names still tell the two apart, and they are what the agent relies on.
-//
-// Not a name derived from the flock-scoped one: BareFlockHostName is the same prefix with no
-// app, and the two are kept as literal strings so a reader sees the shape without computing it.
+// detection and no yielding exist here, deliberately: a name that is bare "unless a second
+// install is detected" is a fact that depends on who was powered on at install time. The
+// flock-scoped names still tell the two apart, and they are what the agent relies on. Not a name
+// derived from the flock-scoped one: BareFlockHostName is the same prefix with no app, and the
+// two are kept as literal strings so a reader sees the shape without computing it.
 func BareHostName(app string) string {
 	if app == "" {
 		return ""
@@ -238,14 +223,12 @@ func CasaHostName(flock, app string) string {
 	return app + "." + flock + "." + casa.Zone
 }
 
-// InstanceName is the mDNS SERVICE-INSTANCE label an announcement carries: the same
-// `briard-<flock>-<app>` HostName builds, without the domain. It is what a household sees in
-// a device's broker picker, which is why it is the flock-scoped name and not the bare slug -- two
-// briard flocks in one house must be told apart by the person choosing between them.
-//
-// DERIVED FROM HostName ON PURPOSE, rather than assembled a second time: the instance and the SRV
-// target it points at are then the same name by construction, and a future name form
-// changes one function.
+// InstanceName is the mDNS service-instance label an announcement carries: the same
+// `briard-<flock>-<app>` HostName builds, without the domain. It is what a household sees in a
+// device's broker picker, which is why it is the flock-scoped name and not the bare slug: two
+// briard flocks in one house must be told apart by the person choosing between them. Derived from
+// HostName on purpose rather than assembled a second time, so the instance and the SRV target it
+// points at are the same name by construction, and a future name form changes one function.
 func InstanceName(flock, app string) string {
 	return strings.TrimSuffix(HostName(flock, app), ".local")
 }
@@ -399,11 +382,10 @@ func (s App) Route(listen string) (Route, bool) {
 
 // Lookup finds the app a request's Host header names. The header is normalised first, because
 // what arrives is whatever the client typed: any case, a trailing dot from a fully-qualified
-// resolver, and a `:port` whenever the port is not the scheme's default.
-//
-// A match says only that the name is OURS. Whether anything is served under it is the app's
-// Routes, and the difference matters: the reverse proxy can then say "this is ours and does not
-// answer HTTP" instead of a 404 that reads as "you typed it wrong".
+// resolver, and a `:port` whenever the port is not the scheme's default. A match says only that
+// the name is ours; whether anything is served under it is the app's Routes, and the difference
+// matters: the reverse proxy can then say "this is ours and does not answer HTTP" instead of a 404
+// that reads as "you typed it wrong".
 func (t Table) Lookup(host string) (App, bool) {
 	h := Normalise(host)
 	if h == "" {
@@ -431,7 +413,7 @@ func (t Table) Get(name string) (App, bool) {
 }
 
 // Normalise reduces a Host header to the form Hosts are stored in: lowercase, no trailing dot, no
-// port. IPv6 literals arrive bracketed (`[::1]:80`), so the port is split off the LAST colon and
+// port. IPv6 literals arrive bracketed (`[::1]:80`), so the port is split off the last colon and
 // only when there is no unmatched bracket — a naive SplitN on ":" would truncate every v6 address
 // to "[".
 func Normalise(host string) string {
@@ -444,16 +426,14 @@ func Normalise(host string) string {
 	return strings.TrimSuffix(h, ".")
 }
 
-// FlockHostName is the flock's OWN name — `briard-<flock>.local`, the one that tells this flock
+// FlockHostName is the flock's own name, `briard-<flock>.local`: the one that tells this flock
 // from any other on the LAN and the one the doctor reports. It lives here for the reason HostName
 // does: every rule for building a name belongs to one function, so a second name form is one
-// change rather than one per language.
-//
-// The reverse proxy's mDNS responder composes nothing: it answers the names this package builds,
-// so it and the agent (the doctor) cannot disagree about what a flock is called.
-//
-// An empty flock name yields no name at all, the same rule HostName follows: a node with no minted
-// name publishes nothing rather than `briard-.local`, which is worse than silence.
+// change rather than one per language. The reverse proxy's mDNS responder composes nothing (it
+// answers the names this package builds), so it and the agent (the doctor) cannot disagree about
+// what a flock is called. An empty flock name yields no name at all, the same rule HostName
+// follows: a node with no minted name publishes nothing rather than `briard-.local`, which is
+// worse than silence.
 func FlockHostName(flock string) string {
 	if flock == "" {
 		return ""

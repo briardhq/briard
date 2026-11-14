@@ -7,11 +7,11 @@ import (
 	"briard.io/shared/model"
 )
 
-// The host<->guest control protocol -- its verb set and the handshake that advertises it --
-// lives in agent/guestfirmware, not here. Two reasons: the guest IMAGE's inputs
-// hash covers whole directories, so anything in shared/ that the guest links republishes a
-// 400 MB guest chain for every unrelated edit; and nothing on that channel leaves the
-// house, so this file's audited allowlist is not the register it belongs in.
+// The host<->guest control protocol (its verb set and the handshake that advertises it) lives in
+// agent/guestfirmware, not here: the guest image's inputs hash covers whole directories, so
+// anything in shared/ that the guest links republishes a 400 MB guest chain for every unrelated
+// edit; and nothing on that channel leaves the house, so this file's audited allowlist is not its
+// register.
 
 // EnrollRequest asks an overlay provider to admit this node to the tenant network.
 type EnrollRequest struct {
@@ -30,16 +30,14 @@ type NodeInfo struct {
 	NodeName string     `json:"node_name"`
 	Role     model.Role `json:"role"`
 	// Timezone is this machine's IANA zone name ("Europe/Athens"), read from the host at
-	// registration; "" when it cannot be determined. It is a SCHEDULING INPUT, not telemetry:
-	// automatic updates run inside a window the household states in LOCAL time, and 03:00 in
-	// the wrong zone is the middle of someone's evening. Without it a home cannot be scheduled
-	// at all, and since automatic updates are obligatory that is a fault, not a preference.
-	//
-	// The allowlist argument for one coarse-location field: a zone is roughly a continent and
-	// an hour, it is already derivable from the local timestamps a node sends, and the window
-	// cannot be delivered without it. The cloud stores it against the HOME, first reporter
-	// winning; a later disagreement raises an operator alert rather than moving a schedule the
-	// household already has.
+	// registration; "" when it cannot be determined. A scheduling input, not telemetry: automatic
+	// updates run inside a window the household states in local time (03:00 in the wrong zone is
+	// the middle of someone's evening). Without it a home cannot be scheduled at all, and since
+	// updates are obligatory that is a fault, not a preference. The allowlist argument for one
+	// coarse-location field: a zone is roughly a continent and an hour, already derivable from the
+	// local timestamps a node sends, and the window cannot be delivered without it. The cloud
+	// stores it against the home, first reporter winning; a later disagreement raises an operator
+	// alert rather than moving a schedule the household already has.
 	Timezone string `json:"timezone,omitempty"`
 }
 
@@ -61,36 +59,33 @@ type NodeStatus struct {
 	// so the controller keys storage on its own tenant, not this self-asserted value. Empty on a
 	// node that hasn't registered.
 	Tenant string `json:"tenant,omitempty"`
-	// System is the guest RELEASE this node runs (`vm.<date>.<inputs>`): the OS moves
+	// System is the guest release this node runs (`vm.<date>.<inputs>`): the OS moves
 	// only by swapping the image, so the host is the authority and reports the release whose
 	// image its guest booted. Ground truth for the OS rollout -- the controller confirms the
 	// node reached the target release. Empty on a witness, or a node with no record.
 	System string `json:"system,omitempty"`
-	// GuestBundle is the guest bundle the guest RUNS -- the host release id its pushed binaries
+	// GuestBundle is the guest bundle the guest runs: the host release id its pushed binaries
 	// came from, "" while it runs the image's firmware. The allowlist argument: the cloud's
-	// agent rollout converges on a node only when BOTH halves run the release -- without this a
+	// agent rollout converges on a node only when both halves run the release -- without this a
 	// stuck guest (a pushed binary that reverted, a firmware without the push verbs) would read
 	// as converged the moment the host committed. It is a release id, nothing about the household.
 	GuestBundle string `json:"guest_bundle,omitempty"`
-	// Apps is what this node has INSTALLED at runtime, one entry per app, ordered by name: the
+	// Apps is what this node has installed at runtime, one entry per app, ordered by name: the
 	// whole answer to "what is this node running". The allowlist argument for a repeated field:
 	// the cloud must be able to confirm an app rollout, and a node running several apps must
-	// describe each, or a crash-loop in one goes unseen behind a rollout confirmed against
-	// another.
+	// describe each, or a crash-loop in one goes unseen behind a rollout confirmed against another.
 	//
-	// WHY THE MANIFEST HASH AND NOT THE NAME: a catalog name is stable ACROSS versions --
-	// home-assistant 2026.8 -> 2026.9 is one name -- so names alone are blind to precisely the
-	// change a rollout observes. A runtime-installed app's identity is its MANIFEST, and its
-	// upgrade is an app-install directive that lands a new one. The hash is taken over the exact
-	// signed bytes (shared/manifest.Identity), so the catalog can state it in advance and the
-	// node can be held to it afterwards.
-	//
-	// WHAT IT DELIBERATELY DOES NOT CARRY: the manifest's Version string (a human label the
-	// cloud can look up from the identity), and the image refs (derivable from the manifest).
+	// The manifest hash, not the name: a catalog name is stable across versions (home-assistant
+	// 2026.8 -> 2026.9 is one name), so names alone are blind to precisely the change a rollout
+	// observes. A runtime-installed app's identity is its manifest, and its upgrade is an
+	// app-install directive that lands a new one; the hash is over the exact signed bytes
+	// (shared/manifest.Identity), so the catalog can state it in advance and the node be held to
+	// it afterwards. Deliberately not carried: the manifest's Version string (a human label the
+	// cloud can look up from the identity) and the image refs (derivable from the manifest).
 	// Per-app liveness and health are AppStatus.State and AppStatus.Health.
 	//
 	// Empty on a witness and on the zero-app node a fresh install leaves. A node that has
-	// PROMOTED reports what the volume says it runs, not merely what it was itself told to
+	// promoted reports what the volume says it runs, not merely what it was itself told to
 	// install (adoptVolumeApps).
 	Apps []AppStatus `json:"apps,omitempty"`
 	// AgentVersion is the release id of the host-agent binary now running. It makes a
@@ -99,33 +94,31 @@ type NodeStatus struct {
 	// healthy) before it offers the fleet -- a reverted trial keeps the old version, so a bad
 	// build never advances past the canary. Empty when the binary is built without a version.
 	AgentVersion string `json:"agent_version,omitempty"`
-	// PublishedName is the flock name this node is ACTUALLY answering for over mDNS, bare
+	// PublishedName is the flock name this node is actually answering for over mDNS, bare
 	// ("brave-elf"), read back from what the reverse proxy's responder recorded rather than
 	// echoed from config. Empty on a node publishing none: a Secondary (the name is bound to the
-	// VIP, so only the serving node publishes it), a witness, or a flock with no minted name.
-	//
-	// The allowlist argument: the value is the household's own public LAN name -- a curated
-	// random word pair carrying no login name, which is exactly why it is not $SUDO_USER -- and
-	// the cloud needs it to reconcile a name CLAIM against what is really being served.
+	// VIP, so only the serving node publishes it), a witness, or a flock with no minted name. The
+	// allowlist argument: it is the household's own public LAN name, a curated random word pair
+	// carrying no login name (exactly why it is not $SUDO_USER), and the cloud needs it to
+	// reconcile a name claim against what is really being served.
 	PublishedName string `json:"published_name,omitempty"`
-	// OtherBriard is the LAN address of ANOTHER briard installation this node heard answering
-	// the shared `briard.local` when it came up -- the bare name every flock answers beside its
-	// own `briard-<flock>.local`, ambiguous by design when two flocks share a house. Empty when
-	// none was heard, or on a node publishing nothing. Asked once per bring-up, never probed
-	// continuously, so it is a snapshot of who was on at that moment.
-	//
-	// The allowlist argument: the value is a private address on the household's own LAN -- not
-	// the other household's name, not anything that identifies a person -- and it carries the one
-	// fact the doctor needs to say "two households share this LAN; yours is briard-<flock>.local"
-	// and support needs to see before anything else about a name that "sometimes opens the
-	// wrong page". Nothing about it is remotely toggleable; the node sends it or it does not.
+	// OtherBriard is the LAN address of another briard installation this node heard answering
+	// the shared `briard.local` when it came up (the bare name every flock answers beside its own
+	// `briard-<flock>.local`, ambiguous by design when two flocks share a house); empty when none
+	// was heard, or on a node publishing nothing. Asked once per bring-up, never probed
+	// continuously: a snapshot of who was on at that moment. The allowlist argument: a private
+	// address on the household's own LAN, not the other household's name nor anything that
+	// identifies a person, carrying the one fact the doctor needs to say "two households share
+	// this LAN; yours is briard-<flock>.local" and support needs to see first about a name that
+	// "sometimes opens the wrong page". Nothing about it is remotely toggleable; the node sends it
+	// or it does not.
 	OtherBriard string `json:"other_briard,omitempty"`
 	// Overlay is this node's remote-reach state. Nil when the node runs no
 	// overlay (standalone / LAN-only, the default) -- the overlay is off the failover
 	// critical path, so it reports as a signal, never a gate.
 	Overlay *OverlayStatus `json:"overlay,omitempty"`
 	// Resource-footprint telemetry (RSS/FDs/load/disk, guest kernel errors, restart counts)
-	// deliberately does NOT ride this wire: it is a soak leak-instrument, not product health,
+	// deliberately does not ride this wire: it is a soak leak-instrument, not product health,
 	// so it stays home on the internal host→lab channel (shared/telemetry). A product-health
 	// subset reaches the cloud through the separate MetricsReport (volume used, load -- rolled
 	// up, never raw). Expanding that set is a deliberate, visible act.
@@ -144,47 +137,42 @@ type AppStatus struct {
 	// the node, never echoed from the directive it was sent.
 	Manifest string `json:"manifest"`
 	// State is what this node observes the app's own serving unit doing: StateRunning,
-	// StateStopped, or EMPTY when the question does not apply or could not be answered.
+	// StateStopped, or empty when the question does not apply or could not be answered. Empty is
+	// a real answer and must not be read as "stopped": a Secondary is not supposed to be running
+	// anything (the apps run on whoever holds the volume), and a node whose control channel
+	// hiccuped this cycle knows nothing; reporting either as stopped would make an ordinary
+	// standby indistinguishable from a broken primary.
 	//
-	// The allowlist argument is a MEASURED one. Node-level Healthy is the REVERSE PROXY at the
-	// VIP, which answers its own /healthz on a zero-app node: a survivor that promoted and ran
-	// no app at all reported `healthy=true`, and every signal said fine. Healthy is not wrong
-	// about its own subject; it is pointed at a different one.
+	// The allowlist argument is a measured one. Node-level Healthy is the reverse proxy at the
+	// VIP, which answers its own /healthz on a zero-app node: a survivor that promoted and ran no
+	// app at all reported `healthy=true`, and every signal said fine. Healthy is not wrong about
+	// its own subject; it is pointed at a different one. Converge-at-promotion keeps the app units
+	// out of the promoter chain, so a crashed container alerts instead of demoting the node, and
+	// drbd-reactor does not notice one at all; this field and Health are what do.
 	//
-	// Converge-at-promotion keeps the app units OUT of the promoter chain, so a crashed
-	// container alerts instead of demoting the node -- and drbd-reactor does not notice one at
-	// all. This field and Health are what do.
-	//
-	// It REPORTS AND NEVER GATES: promotion gate and health signal need separate carriers, and
-	// conflating them produces both the flap this avoids and the silence it fixes. It answers
-	// "is the unit up", not "does the application work" -- that is Health.
-	//
-	// EMPTY IS A REAL ANSWER and must not be read as "stopped": a Secondary is not supposed to be
-	// running anything (the apps run on whoever holds the volume), and a node whose control
-	// channel hiccuped this cycle knows nothing. Reporting either as stopped would make an
-	// ordinary standby indistinguishable from a broken primary.
+	// It reports and never gates: promotion gate and health signal need separate carriers, and
+	// conflating them produces both the flap this avoids and the silence it fixes. It answers "is
+	// the unit up", not "does the application work" (that is Health).
 	State string `json:"state,omitempty"`
-	// Health is APP HEALTH: whether the app works, as the guest answers it — the app's own
-	// health endpoint, resolved through the node's routing table, or a curated app's own check —
-	// reported as StateHealthy, StateUnhealthy or StateStarting. Empty means the question does
-	// not apply or could not be asked — a Secondary (which runs nothing), an app that is not
+	// Health is app health: whether the app works, as the guest answers it (the app's own health
+	// endpoint, resolved through the node's routing table, or a curated app's own check), reported
+	// as StateHealthy, StateUnhealthy or StateStarting. StateStarting means still booting and
+	// nothing else; without it a restarting app reads as unhealthy for the minute it takes, a
+	// false alarm on a field whose value is that someone acts on it. Empty means the question does
+	// not apply or could not be asked: a Secondary (which runs nothing), an app that is not
 	// running (State already says so), a cycle whose control channel hiccuped, or an app that
 	// told us nothing (our login to it failing).
 	//
-	// STARTING means still booting and nothing else; without it a restarting app reads as
-	// unhealthy for the minute it takes — a false alarm on a field whose value is that someone
-	// acts on it.
-	//
 	// The allowlist argument is the second half of State's: a container that is up while the
-	// application inside it is broken reads as `running`, and Healthy answers for the NODE, so
-	// an app that starts and then fails to serve is invisible to every other signal. It carries
-	// nothing about the household beyond healthy/unhealthy/starting. It is asked through the
+	// application inside it is broken reads as `running`, and Healthy answers for the node, so an
+	// app that starts and then fails to serve is invisible to every other signal. It carries
+	// nothing about the household beyond healthy/unhealthy/starting, and is asked through the
 	// routing table so it is a claim about the address the household reaches, not about a URL
 	// some caller assembled.
 	//
-	// IT REPORTS AND NEVER GATES, like State: app failures are kept out of the promoter's reach
+	// Like State, it reports and never gates: app failures are kept out of the promoter's reach
 	// on purpose, because a code fault is deterministic and failing over to a peer running the
-	// identical closure only flaps. This makes such a failure VISIBLE without making it
+	// identical closure only flaps. This makes such a failure visible without making it
 	// actionable by the wrong machinery.
 	Health string `json:"health,omitempty"`
 }
@@ -293,16 +281,15 @@ const (
 	OutcomeFailed     = "failed"      // the op failed with no clean revert (e.g. a wedged rollback)
 )
 
-// Directive kinds the agent understands. The down-channel carries cheap, safe directives plus
-// the ones that change what a node runs: a whole-OS upgrade, an agent update, an app install.
-//
-// There is no app `upgrade` kind: a runtime-installed app is identified by its MANIFEST, so
-// moving one to a new version is an app-install directive carrying the catalog name whose
-// published manifest changed.
+// Directive kinds the agent understands. The down-channel carries cheap, safe directives plus the
+// ones that change what a node runs (a whole-OS upgrade, an agent update, an app install). There
+// is no app `upgrade` kind: a runtime-installed app is identified by its manifest, so moving one
+// to a new version is an app-install directive carrying the catalog name whose published manifest
+// changed.
 const (
 	DirectiveNoop          = "noop"           // acknowledge only -- proves the round-trip
 	DirectiveLog           = "log"            // agent logs Payload -- push a marker/instruction to a node
-	DirectiveUpgradeSystem = "upgrade-system" // Payload = a VM RELEASE id (`vm.<date>.<inputs>`) on the
+	DirectiveUpgradeSystem = "upgrade-system" // Payload = a VM release id (`vm.<date>.<inputs>`) on the
 	//                              release channel. The node fetches and verifies that
 	//                              release's image, swaps it under a fresh OS disk, proves the boot
 	//                              against the signed manifest, health-gates, and swaps back on
@@ -316,11 +303,11 @@ const (
 	//                        it (DNS-01) and returns the cert via DirectiveCert.
 	DirectiveAgentUpdate = "agent-update" // Payload = a JSON AgentUpdate. The node writes the
 	//                        target and starts its frozen update unit, which fetches a fresh agent
-	//                        from the channel and lets THAT binary run the update -- verified against
+	//                        from the channel and lets that binary run the update -- verified against
 	//                        the release keyring, swapped in, and reverted unless the new agent
-	//                        reaches READY. Answered "done" once the run is STARTED; whether the node
+	//                        reaches READY. Answered "done" once the run is started; whether the node
 	//                        moved is NodeStatus.AgentVersion.
-	DirectiveAppInstall = "app-install" // Payload = a CATALOG NAME (a slug, e.g.
+	DirectiveAppInstall = "app-install" // Payload = a catalog name (a slug, e.g.
 	//                        "home-assistant"), or several separated by spaces, installed in that
 	//                        order as one act that stops at the first that does not come up. For
 	//                        each, the node fetches that name's signed manifest from the
@@ -328,72 +315,64 @@ const (
 	//                        units and warms the images, stages the manifest on the volume (Primary
 	//                        only), converges and health-gates -- committing on a pass, undoing to
 	//                        the rollback point on a failure. It never touches the promoter chain:
-	//                        app units are not members of it. Deliberately a NAME and not the
+	//                        app units are not members of it. Deliberately a name and not the
 	//                        manifest itself: shipping the document down this channel would make the
 	//                        directive a second delivery path for signed content, and the node would
 	//                        then be trusting the sender rather than the signature. Sent by the cloud,
 	//                        or injected locally by `briard app install` over the admin socket
 	//                        — both land in the same dispatch.
-	DirectiveAppPrewarm = "app-prewarm" // Payload = a CATALOG NAME, as app-install. Renders
-	//                        the quadlet units and pulls the images WITHOUT touching the volume or
-	//                        what is currently serving -- the warm-standby half, made a named
-	//                        operation.
+	DirectiveAppPrewarm = "app-prewarm" // Payload = a catalog name, as app-install. Renders
+	//                        the quadlet units and pulls the images without touching the volume or
+	//                        what is currently serving: the warm-standby half, made a named
+	//                        operation. Idempotent and safe to re-send (rendering is a file write,
+	//                        pulling a digest already present is a no-op); it never changes what the
+	//                        node serves, which is what lets the cloud fan it out to every anchor
+	//                        before committing anything.
 	//
-	//                        ITS OWN KIND FOR SAFETY, not tidiness. An app-install on a node that is
-	//                        not serving does only this much -- the PHASE inferred from the ROLE --
-	//                        and roles are not ours to control: drbd-reactor promotes on quorum
-	//                        events. A directive enqueued to a Secondary meaning "download this"
-	//                        would, if that node promoted before executing it, silently become
-	//                        "stage onto the volume, converge, health-gate" -- an EXECUTE the sender
-	//                        never asked for, landing mid-failover. A download and an execute are
-	//                        different operations and must not be the same message read twice.
-	//
-	//                        Second, and it is why the Primary gets one too: every anchor warms in
-	//                        PARALLEL, so the expensive pull happens once end to end, and the
-	//                        Primary's later install finds the image already local.
-	//
-	//                        Idempotent and safe to re-send: rendering is a file write, and pulling a
-	//                        digest already present is a no-op. It never changes what the node serves,
-	//                        which is what lets the cloud fan it out to every anchor before committing
-	//                        anything.
-	DirectiveAppMembers = "app-members" // Payload = an APP NAME. Outcome.Detail is a
+	//                        Its own kind for safety, not tidiness. An app-install on a node that is
+	//                        not serving does only this much (the phase inferred from the role), and
+	//                        roles are not ours to control: drbd-reactor promotes on quorum events.
+	//                        A "download this" enqueued to a Secondary that promoted before executing
+	//                        it would silently become "stage onto the volume, converge, health-gate":
+	//                        an execute the sender never asked for, landing mid-failover. A download
+	//                        and an execute are different operations and must not be the same
+	//                        message read twice. A second reason, and why the Primary gets one too:
+	//                        every anchor warms in parallel, so the expensive pull happens once end
+	//                        to end and the Primary's later install finds the image already local.
+	DirectiveAppMembers = "app-members" // Payload = an app name. Outcome.Detail is a
 	//                        JSON array of quadlet.SnapshotEntry: one app's ring, oldest
 	//                        first, as the picker shows it. Read-only — it changes
-	//                        nothing and is safe to re-send.
-	//
-	//                        JSON IN Detail, deliberately: the alternative is a second transport
-	//                        beside the directive channel for one query, and two ways to ask a node
-	//                        something is how they drift. Both readers want structure: the CLI
-	//                        prints a table, the dashboard renders a list.
-	DirectiveAppUsage = "app-usage" // Payload = an APP NAME. Outcome.Detail is a JSON
+	//                        nothing and is safe to re-send. JSON in Detail, deliberately: the
+	//                        alternative is a second transport beside the directive channel for one
+	//                        query, and two ways to ask a node something is how they drift. Both
+	//                        readers want structure: the CLI prints a table, the dashboard a list.
+	DirectiveAppUsage = "app-usage" // Payload = an app name. Outcome.Detail is a JSON
 	//                        dashboard.AppUsage: what the app's data and history hold on the
 	//                        volume, per tier, for its page's Storage card. Read-only; the split
 	//                        between current data and history comes from a walk the guest runs in
 	//                        its background when the last one is stale, so the first answer may
 	//                        say it is still measuring. Local-only: what a household stores is the
 	//                        household's to see.
-	DirectiveAppRestore = "app-restore" // Payload = a RING MEMBER's subvolume path
+	DirectiveAppRestore = "app-restore" // Payload = a ring member's subvolume path
 	//                        exactly as the listing the picker read returned it. The
 	//                        node puts that app back to the member: its data, and — when the
-	//                        member's pinned manifest differs from the running one — its CODE with
+	//                        member's pinned manifest differs from the running one — its code with
 	//                        it, which is the designed {code identity + data} rollback reached
-	//                        deliberately rather than through a failed upgrade.
+	//                        deliberately rather than through a failed upgrade. A path and not a
+	//                        title, deliberately, by app-install's reasoning from the other end: a
+	//                        title is for people, and is neither unique nor stable; the directive
+	//                        names the thing, never a description of it.
 	//
-	//                        A PATH AND NOT A TITLE, deliberately, and it is app-install's
-	//                        reasoning from the other end: a title is for people, and is neither
-	//                        unique nor stable. The directive names the thing, never a description
-	//                        of it.
-	//
-	//                        ⚠️ IT REFUSES BEFORE IT STOPS ANYTHING. The member's images are
+	//                        ⚠️ It refuses before it stops anything: the member's images are
 	//                        pre-flighted first, so a household whose rollback target can no longer
-	//                        be fetched is told while its app is still running. An INSTALL is
+	//                        be fetched is told while its app is still running. An install is
 	//                        allowed to stop things, because the household asked for a change; a
 	//                        restore that cannot finish must cost nothing.
-	DirectiveAppCacheEmpty = "app-cache-empty" // Payload = an APP NAME. The node stops
+	DirectiveAppCacheEmpty = "app-cache-empty" // Payload = an app name. The node stops
 	//                        the app, empties its cache area and starts it again: the Storage
 	//                        card's Clear. Refused for an app that keeps no cache. Local-only: a
 	//                        household's app restarting is the household's to ask for.
-	DirectiveAppUninstall = "app-uninstall" // Payload = an APP NAME, or the name and "now". The
+	DirectiveAppUninstall = "app-uninstall" // Payload = an app name, or the name and "now". The
 	//                        node stops the app and removes it, keeping its data and files areas
 	//                        as they stood for 30 days -- installing it again in that time brings
 	//                        it back as it was -- and deleting everything else of it at once. With
@@ -402,14 +381,13 @@ const (
 	//                        is the household's to remove.
 	DirectiveRescue = "rescue" // Payload = "" — restart this node's guest on its verified,
 	//                        read-only image: stop the VM and bring it up again, its scratch emptied
-	//                        at boot and every binary pushed afresh. The REPLICATED DATA DISK and
-	//                        the state disk are not touched, so identity, replica and app pin all survive —
-	//                        the same node returns with a factory code half.
-	//
-	//                        THE ONE DIRECTIVE THAT IS NEVER A REFLEX. Every other recovery
-	//                        rung fires on its own; this waits for a human — or, later, a cloud that
-	//                        has read the logs and decided. It stops the household's app, and
-	//                        its result is uncertain when the cause is unknown.
+	//                        at boot and every binary pushed afresh. The replicated data disk and the
+	//                        state disk are not touched, so identity, replica and app pin all
+	//                        survive: the same node returns with a factory code half. The one
+	//                        directive that is never a reflex: every other recovery rung fires on its
+	//                        own, this waits for a human (or, later, a cloud that has read the logs
+	//                        and decided), because it stops the household's app and its result is
+	//                        uncertain when the cause is unknown.
 	DirectiveDashboard = "dashboard" // Payload = a JSON {name, username, language} describing the OS account the
 	//                                  CLI ran under (all optional). The node mints a one-time code, hands
 	//                                  it to the guest with that account (shared/dashboard), and reports
@@ -425,7 +403,7 @@ const (
 	//                                       network resolves its registered casa name, for when the
 	//                                       household changed its router after the name was found
 	//                                       blocked. Local-only, like the claim.
-	DirectiveWish = "wish" // Payload = a CATALOG NAME the catalog's index lists. Toggles the
+	DirectiveWish = "wish" // Payload = a catalog name the catalog's index lists. Toggles the
 	//                        household's wish for an app that is listed but not yet installable:
 	//                        recorded on the node when absent, removed when present. The node
 	//                        tells the household from its own dashboard and alerts when a wished
@@ -439,53 +417,49 @@ const (
 	//                        a stub injects it in the test. Blank-join only — re-homing
 	//                        an already-seeded island is cloud-composed.
 	//
-	//                        ⚠️ A LONE NODE HAS NO RESOURCE TO ADJUST: a home with one
-	//                        diskful member runs no DRBD, so the serving anchor's side of its FIRST
-	//                        pairing is a CONVERSION -- the host records the mesh and reboots the
+	//                        ⚠️ A lone node has no resource to adjust: a home with one
+	//                        diskful member runs no DRBD, so the serving anchor's side of its first
+	//                        pairing is a conversion -- the host records the mesh and reboots the
 	//                        guest, and bring-up creates the metadata on the LV the layout reserved
 	//                        for it, declares this copy UpToDate before any peer connects, and the
 	//                        joiner syncs from it. One reboot, never a migration.
-	DirectiveUnpair = "unpair" // Payload = a JSON MeshSpec: the mesh that REMAINS after a member left
+	DirectiveUnpair = "unpair" // Payload = a JSON MeshSpec: the mesh that remains after a member left
 	//                        sent to a surviving anchor (Join=false, always). With two or
 	//                        more diskful members left the survivor adjusts in place, as pair does;
 	//                        with one -- itself -- the flock has ended and the node goes back to
 	//                        running its volume without DRBD: the host records the mesh, asserts the
-	//                        one-shot convert-disable intent (the ONLY thing that lets a node found
+	//                        one-shot convert-disable intent (the only thing that lets a node found
 	//                        alone with metadata wipe it rather than refuse), and reboots the guest.
-	//                        REFUSED unless this node is serving and UpToDate, so a removal never
+	//                        Refused unless this node is serving and UpToDate, so a removal never
 	//                        makes a stale copy the only one. Cloud-composed, like pair; the leaver
 	//                        receives nothing here. A local variant waits for the OSS flock design.
 	DirectiveHandover = "handover" // Payload = "" (plain), "keep-masked", or "unmask". Give this node's
-	//                        Work to a peer -- a PLANNED failover, which is what lets a
-	//                        healthy node reboot into a new generation while its peer serves the house.
-	//                        Runs drbd-reactorctl's own `evict`; see the guest verb for why that rather
-	//                        than a demote dance.
-	//
-	//                        IT SAYS "NOT ME", NOT "YOU": the destination is drbd-reactor's election.
-	//                        The sender must therefore verify where the work LANDED rather than assume
-	//                        it went where intended -- deterministic only because our shipped topology
-	//                        has exactly one other node that can hold the resource.
-	//
-	//                        `keep-masked` leaves the node ineligible to take the work back, which the
-	//                        reboot path needs so an unverified generation cannot reclaim the house on
-	//                        the way up; `unmask` releases that and evicts nothing. Sent by the cloud
-	//                        when rolling a pair, or injected locally by `briard handover`
-	//                        -- both land in the same dispatch.
+	//                        Work to a peer: a planned failover, which is what lets a healthy node
+	//                        reboot into a new generation while its peer serves the house. Runs
+	//                        drbd-reactorctl's own `evict`; see the guest verb for why that rather
+	//                        than a demote dance. It says "not me", not "you": the destination is
+	//                        drbd-reactor's election, so the sender must verify where the work landed
+	//                        rather than assume it went where intended (deterministic only because
+	//                        our shipped topology has exactly one other node that can hold the
+	//                        resource). `keep-masked` leaves the node ineligible to take the work
+	//                        back, which the reboot path needs so an unverified generation cannot
+	//                        reclaim the house on the way up; `unmask` releases that and evicts
+	//                        nothing. Sent by the cloud when rolling a pair, or injected locally by
+	//                        `briard handover`; both land in the same dispatch.
 	DirectiveSync = "sync" // Payload empty. Flush the node's replicated data volume (dirty page
 	//                        cache -> both disks), so a handover issued moments later unmounts a
 	//                        volume that owes almost nothing -- the pre-copy half of the eviction
 	//                        discipline. The sequencer sends it to the node it is about
-	//                        to evict BEFORE its settle window, so the flush's own replication
+	//                        to evict before its settle window, so the flush's own replication
 	//                        burst lands while the fleet is still under observation rather than
 	//                        inside the demote path. Node-local and idempotent; a node with
 	//                        nothing mounted (a Secondary, a witness) reports done("skipped"),
 	//                        which is an answer, not a failure.
 
-	// LOCAL-ONLY KINDS. These, like the kinds above marked Local-only, are refused when they
-	// arrive on the cloud's down-channel; the allowlist that does it is localOnlyKinds in
-	// agent/host. They sit in this same block because the taxonomy is one taxonomy -- what
-	// differs is which door may carry them, and that is a property of the call site, never of
-	// anything on the Directive struct.
+	// Local-only kinds. These, like the kinds above marked Local-only, are refused when they
+	// arrive on the cloud's down-channel (the allowlist is localOnlyKinds in agent/host). They
+	// share this block because the taxonomy is one: what differs is which door may carry them, a
+	// property of the call site, never of anything on the Directive struct.
 	DirectiveDoctor = "doctor" // Payload empty. The agent's half of `briard doctor`:
 	//                        the node judged live from the agent's own view -- the network it
 	//                        built, the guest channel, role vs DRBD, replication, the address vs
@@ -536,7 +510,7 @@ const (
 	//                        second one beside the night's -- and it does not count as the night.
 	//                        Local-only: `briard backup`, and the page's Back up now.
 	DirectiveBackupFolder = "backup-folder" // Payload = a JSON BackupFolder. Move the backup to
-	//                        another folder, the folder READ FIRST: without Confirm nothing changes,
+	//                        another folder, the folder read first: without Confirm nothing changes,
 	//                        and Outcome.Detail is a JSON dashboard.BackupFolderCheck -- empty, this
 	//                        household's backups, or another key's; with Confirm it is read again
 	//                        and the backup moves there, adopting it with Key when another key made
@@ -591,17 +565,17 @@ type ConfigSetting struct {
 }
 
 // CertBundle is a renewed cert the controller pushes down (JSON-encoded into a DirectiveCert's
-// Payload). Cert-only: the node generated the keypair and holds the private key, so
-// only the signed certificate crosses the wire (the key never
-// leaves home). The cloud/controller schedules + issues (it holds the DNS token + does DNS-01);
-// the node pairs this cert with its stashed key and applies both to the replicated volume.
+// Payload). Cert-only: the node generated the keypair and holds the private key, so only the
+// signed certificate crosses the wire (the key never leaves home). The cloud/controller schedules
+// + issues (it holds the DNS token + does DNS-01); the node pairs this cert with its stashed key
+// and applies both to the replicated volume.
 type CertBundle struct {
 	Name string `json:"name"`
 	Cert string `json:"cert"` // full chain PEM
 }
 
 // AgentUpdate is the payload of a DirectiveAgentUpdate: the host-agent release the cloud asks a
-// node to converge to. It names a VERSION and nothing else: the node resolves it through the
+// node to converge to. It names a version and nothing else: the node resolves it through the
 // signed channel manifest — `stable`, `latest`, or an exact id, floored at stable — so the cloud
 // cannot name an arbitrary URL, and everything that ever runs on a node is a published signed
 // release (canary builds included). A bad pin or a bad signature is refused and the running
@@ -622,7 +596,7 @@ type MeshPeer struct {
 	Disk    string `json:"disk,omitempty"` // "" = diskless witness
 }
 
-// MeshSpec is a DirectivePair payload: the target DRBD mesh plus how THIS recipient joins it.
+// MeshSpec is a DirectivePair payload: the target DRBD mesh plus how this recipient joins it.
 // Join selects the side of the pairing: false = the existing serving primary (adjust the running
 // resource in place, keep its data), true = a blank joiner (bring up fresh + resync as SyncTarget;
 // blank-join only, never merging existing data). SystemDev/SystemCIDR give this node its
@@ -641,7 +615,7 @@ type MeshSpec struct {
 
 // MeshWitness carries the host-side cloud-witness forwarder wiring for a managed pairing.
 // Non-nil only when the mesh's diskless voter is the forwarded cloud witness, reached through
-// each anchor's OWN host witness-forwarder over a private guest↔host link
+// each anchor's own host witness-forwarder over a private guest↔host link
 // (logic lives on the host by default). The recipient anchor uses it to (a) render the explicit-connection
 // .res (LocalAddr → drbd.Peer.WitnessLocal; the diskless peer's mesh Address is the host forwarder
 // the guest's DRBD dials), (b) address its guest witness NIC (Dev/CIDR = eth3), and (c) start its
@@ -656,10 +630,9 @@ type MeshWitness struct {
 	ServerName string `json:"server_name"` // expected SAN on the witness-proxy server cert
 }
 
-// The north-bound control seam. A node POSTs its status up and gets any
-// pending directives back in the same response -- poll-based + node-initiated, so it
-// works from behind NAT. Versioned paths so node<->controller
-// can't silently drift.
+// The north-bound control seam. A node POSTs its status up and gets any pending directives back in
+// the same response -- poll-based + node-initiated, so it works from behind NAT. Versioned paths so
+// node<->controller can't silently drift.
 const (
 	RegisterPath  = "/v1/register"  // node -> cloud: NodeInfo up, Assignment (tenant/role) back
 	ReportPath    = "/v1/report"    // node -> controller: status up, directives down
@@ -675,16 +648,15 @@ const (
 // it, and it is served outside the managed channel: a node that is not managed sends it too.
 const WishPath = "/v1/wish"
 
-// Wish is the one thing a node sends that is neither health nor control. A household pressed
-// "I want this" on an app the catalog lists but cannot install yet, and the node tells us which
-// app, once, so the next app built is the one most asked for. Taking the wish back sends
-// nothing.
+// Wish is the one thing a node sends that is neither health nor control: a household pressed "I
+// want this" on an app the catalog lists but cannot install yet, and the node tells us which app,
+// once, so the next app built is the one most asked for. Taking the wish back sends nothing.
 //
 // Voter is not the flock's id but a one-way hash of it made for this alone: it lets us count a
-// household once however often it presses, and it matches nothing else the id feeds (the
-// service address, the backup's group). The cloud forgets it after a while and keeps the
-// count. Form-encoded rather than JSON, so a plain HTML form with no node behind it can post
-// the same fields, Voter empty.
+// household once however often it presses, and matches nothing else the id feeds (the
+// service address, the backup's group). The cloud forgets it after a while and keeps the count.
+// Form-encoded rather than JSON, so a plain HTML form with no node behind it can post the same
+// fields, Voter empty.
 type Wish struct {
 	App   string // the catalog name, as the index lists it
 	Voter string // 32 hex digits; "" from a form

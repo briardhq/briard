@@ -12,21 +12,21 @@ import (
 	"strings"
 )
 
-// The catalog's LIST is what a household can see: the apps it can install today and the ones it
+// The catalog's list is what a household can see: the apps it can install today and the ones it
 // may ask for. A node reads one, `latest.json` (each app's newest version), at its CATALOG_URL,
 // with a detached signature over the same bytes made by the release key; rigs read `dev.json`,
 // the same shape. It is the only signed document in the catalog: a line names an app's version
 // file beside it, `<name>/<version>.json`, by the sha256 of its exact bytes, so a mirror that
 // cannot forge the signature can forge neither the list nor any manifest it names.
 //
-// THE LIST SAYS WHICH APPS ARE INSTALLABLE. An entry marked available names its version and
-// identity; the rest are listed so a household can ask for them. Omission is the LESS capable
+// The list says which apps are installable. An entry marked available names its version and
+// identity; the rest are listed so a household can ask for them. Omission is the less capable
 // shape, the same discipline the manifest schema keeps: an entry that says nothing is one a
 // node cannot install. A node learns the whole catalog from this one document, read whole and
 // cached, the way every add-on store and package index is read; asking the catalog per app is
 // what those moved away from.
 //
-// IT IS PROSE AND PICTURES, NOT CAPABILITY, which is why its rules are about size and safety
+// It is prose and pictures, not capability, which is why its rules are about size and safety
 // rather than about what a node may do: nothing here is rendered into a unit file. The icon is
 // the one field with teeth. It is carried as a data URI so a page can show it through an <img>,
 // where an SVG's styles and scripts cannot reach the page, and it is checked here as well so a
@@ -42,7 +42,7 @@ const (
 	iconSVG     = "data:image/svg+xml;base64,"
 )
 
-// Index is the catalog's listing, in the order a page shows it: the file's order IS the order,
+// Index is the catalog's listing, in the order a page shows it: the file's order is the order,
 // so a renderer needs no rule of its own and two renderers agree.
 type Index struct {
 	Apps []App `json:"apps"`

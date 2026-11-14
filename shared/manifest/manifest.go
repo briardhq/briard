@@ -1,40 +1,38 @@
 // Package manifest is the Briard app manifest: the signed, published description of a
-// catalogued app, and the thing `briard app install` acts on.
+// catalogued app, and the thing `briard app install` acts on. Three properties, none of them
+// incidental:
 //
-// THREE PROPERTIES, none of them incidental:
+//  1. It is runtime-neutral. The layering is manifest (published, signed) -> a renderer on the
+//     node (podman/quadlet-specific, swappable) -> systemd units. The manifest names what an app
+//     is, never how one podman version spells it: the same reasoning that named `reverse-proxy`
+//     for the role rather than the mechanism.
 //
-//  1. It is runtime-NEUTRAL. The layering is manifest (published, signed) -> a renderer on the
-//     node (podman/quadlet-specific, swappable) -> systemd units. The manifest names WHAT an
-//     app is, never how one podman version spells it — the same reasoning that named
-//     `reverse-proxy` for the role rather than the mechanism.
+//  2. It is a security boundary. Upstream compose can ask for `privileged`, arbitrary host binds,
+//     the docker socket; this schema cannot express any of them, and the node is designed to
+//     execute what it is given without judgement, so capability comes by omission, and what we do
+//     not model is not merely refused but unsayable. The discipline this demands: model only what
+//     catalogued apps need and expand deliberately, or it becomes a compose reimplementation. Host
+//     networking is the one capability that is sayable (`Network`): silence means private, so
+//     omission yields the less capable shape, and asking for host is a deliberate act recorded in
+//     the identity hash.
 //
-//  2. It is a SECURITY BOUNDARY. Upstream compose can ask for `privileged`, arbitrary host binds,
-//     the docker socket. This schema cannot express any of them, and the node is designed to
-//     execute what it is given without judgement — so capability comes by omission, and what we do
-//     not model is not merely refused but UNSAYABLE. The discipline this demands: model only what
-//     catalogued apps need, expand deliberately, or it becomes a compose reimplementation.
+//     ⚠️ The test for the next field, because the risk is not one bad field but a plausible
+//     fourth, fifth and sixth: a field earns its place only if a catalogued app cannot be operated
+//     correctly without it, and the alternative is worse than the field. Host networking passes
+//     both: Home Assistant cannot find devices without it, and the alternative is granting it to
+//     every app. "Some app might want it", "compose has it" and "it would be more flexible" are
+//     not arguments; the answer to those is a curated catalog.
 //
-//     Host networking is the one capability that IS sayable (`Network`): silence means private,
-//     so omission yields the LESS capable shape, and asking for host is a deliberate act recorded
-//     in the identity hash.
+//     Validate() is the second half of that boundary. A renderer writes INI, so every string that
+//     reaches a unit file is checked for newlines here: otherwise a single manifest field could
+//     carry "\nPodmanArgs=--privileged" and re-open by injection precisely what the schema closed
+//     by omission. Names are checked as slugs for the same reason: they become path elements and
+//     unit names, where "../" is arbitrary file write as root.
 //
-//     ⚠️ THE TEST FOR THE NEXT FIELD, because the risk here is not one bad field
-//     but a plausible fourth, fifth and sixth: a field earns its place only if a CATALOGUED app
-//     cannot be operated correctly without it, AND the alternative is worse than the field. Host
-//     networking passes both — Home Assistant cannot find devices without it, and the alternative
-//     is granting it to every app. "Some app might want it", "compose has it", and
-//     "it would be more flexible" are not arguments; the answer to those is a curated catalog.
-//
-//     Validate() is the second half of that boundary. A renderer writes INI, so every string
-//     that reaches a unit file is checked for newlines here: without that, a single manifest
-//     field could carry "\nPodmanArgs=--privileged" and re-open by injection precisely what the
-//     schema closed by omission. Names are checked as slugs for the same reason — they become
-//     path elements and unit names, where "../" is arbitrary file write as root.
-//
-//  3. Its CONTENT HASH IS THE APP IDENTITY. That transitively pins the whole container set,
-//     keeps the identity content-addressed and node-independent, and gives the upgrade path
-//     its shape: a new manifest is a new identity -> announce -> snapshot ->
-//     switch -> health-gate -> roll back to the previous manifest, already on the volume.
+//  3. Its content hash is the app identity. That transitively pins the whole container set, keeps
+//     the identity content-addressed and node-independent, and gives the upgrade path its shape:
+//     a new manifest is a new identity -> announce -> snapshot -> switch -> health-gate -> roll
+//     back to the previous manifest, already on the volume.
 package manifest
 
 import (
@@ -62,24 +60,22 @@ func ValidName(name string) bool { return slug.MatchString(name) }
 // envKey mirrors the shell/systemd convention. Values are free-form apart from the newline ban.
 var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// digestRef matches a fully digest-pinned OCI reference (repo@sha256:<64 hex>). A tag is NOT
-// accepted: a tag is mutable, so a tagged manifest would make the app identity a promise
-// someone else can silently change — which is the one thing the content-hash identity exists to
-// prevent.
-//
-// The optional `:<port>` after the first component is load-bearing, not decoration: a registry on
-// a non-default port (`registry.example.com:5000/foo@sha256:…`) is an ordinary deployment, and a
-// pattern without it silently refuses every one of them.
+// digestRef matches a fully digest-pinned OCI reference (repo@sha256:<64 hex>). A tag is
+// deliberately not accepted: it is mutable, so a tagged manifest would make the app identity a
+// promise someone else can silently change, the one thing the content-hash identity exists to
+// prevent. The optional `:<port>` after the first component is load-bearing, not decoration: a
+// registry on a non-default port (`registry.example.com:5000/foo@sha256:…`) is an ordinary
+// deployment, and a pattern without it silently refuses every one of them.
 var digestRef = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*(:[0-9]{1,5})?(/[a-zA-Z0-9._-]+)*@sha256:[a-f0-9]{64}$`)
 
 // ErrInvalid wraps every schema violation, so a caller can refuse a whole manifest on one check.
 var ErrInvalid = errors.New("manifest: invalid")
 
 // Manifest describes one installable app. An app is one or more containers sharing a
-// network namespace (a pod), and what they keep lives in the STORAGE TIERS: one area per tier the
+// network namespace (a pod), and what they keep lives in the storage tiers: one area per tier the
 // app mounts, each a subvolume of its own, with the directories its containers mount as plain
 // subdirectories inside it. Plain, and a requirement rather than a preference: `data.restore`
-// runs `btrfs subvolume delete`, which REFUSES on a subvolume that contains nested subvolumes, so
+// runs `btrfs subvolume delete`, which refuses on a subvolume that contains nested subvolumes, so
 // a mounted directory cannot itself be a subvolume.
 type Manifest struct {
 	// Name is the app slug — its unit prefix, its subvolume name, and the handle a user
@@ -91,9 +87,9 @@ type Manifest struct {
 	// Containers is the pod, in the order they should be declared. Exactly one must be marked
 	// Primary (see Container.Primary).
 	Containers []Container `json:"containers"`
-	// Size is what a node DOWNLOADS to install this app: the compressed layers of every
+	// Size is what a node downloads to install this app: the compressed layers of every
 	// container's image, summed -- the number a progress bar is a fraction of.
-	// InstalledSize is what the image store HOLDS once pulled: the same layers uncompressed --
+	// InstalledSize is what the image store holds once pulled: the same layers uncompressed --
 	// the number a free-space check is against, because compressed bytes understate disk by
 	// two to four times (Home Assistant 2026.7.1: 622 MB down, 2.49 GB on disk). Two scalars
 	// rather than a layer table: the digest above already commits to every layer, and podman's
@@ -109,43 +105,40 @@ type Manifest struct {
 	// container's memory limit (agent/quadlet). Zero means the entry does not say (the app counts
 	// for nothing until it needs more, and has no limit).
 	MinMemoryMB int `json:"minMemoryMB,omitempty"`
-	// Network is the pod's networking mode: "host" or "private". SILENCE MEANS PRIVATE, which is
-	// property 2 in the small: omission yields the LESS capable shape, so a manifest that says
-	// nothing about networking gets a pod that can reach nothing but itself and whatever the node
-	// deliberately routes or publishes to it.
+	// Network is the pod's networking mode: "host" or "private". Silence means private, which is
+	// property 2 in the small: omission yields the less capable shape, a pod that can reach
+	// nothing but itself and whatever the node deliberately routes or publishes to it.
 	//
-	// IT IS A NEUTRAL WORD, NEVER A QUADLET DIRECTIVE — "host", not "Network=host". Property 1 is
-	// the reason: this document names WHAT an app is, never how one podman version spells it, so
-	// that the renderer stays swappable. A raw directive would weld a permanently-identified signed
-	// artifact to podman's config syntax, and because the content hash is the identity you could
-	// not quietly fix the spelling later — you would re-mint every entry in the catalog. `Mounts`
-	// already draw this line correctly: they say `/config`, not `Volume=…:/config`.
+	// It is a neutral word, never a quadlet directive ("host", not "Network=host"), by property 1:
+	// this document names what an app is, never how one podman version spells it, so that the
+	// renderer stays swappable. A raw directive would weld a permanently-identified signed artifact
+	// to podman's config syntax, and because the content hash is the identity the spelling could
+	// not be quietly fixed later without re-minting every entry in the catalog. `Mounts` already
+	// draw this line correctly: they say `/config`, not `Volume=…:/config`.
 	//
-	// HOST NETWORKING IS FOR THE DISCOVERY-DEPENDENT FEW. Home Assistant needs mDNS/SSDP to find
+	// Host networking is for the discovery-dependent few: Home Assistant needs mDNS/SSDP to find
 	// devices on the household LAN, and the HASS periphery skews the same way (ESPHome, Music
-	// Assistant). A broker, a media server or a photo app wants a private pod and to be reached
-	// through the reverse proxy or a published port — which is why the default is the one that does
-	// not hand a container the household's LAN, and saying "host" is a deliberate, reviewable act
-	// recorded in the identity hash.
+	// Assistant). A broker, a media server or a photo app wants a private pod, reached through the
+	// reverse proxy or a published port, which is why the default does not hand a container the
+	// household's LAN, and saying "host" is a deliberate, reviewable act recorded in the identity
+	// hash.
 	Network string `json:"network,omitempty"`
-	// Ports are the container ports this app PUBLISHES to the household, each reachable at the
+	// Ports are the container ports this app publishes to the household, each reachable at the
 	// node's service address on the same number. A list rather than a host:container map: for every
 	// app we can foresee the two are the same number, and a map would spend a second field on
-	// expressing the identity function.
+	// expressing the identity function. The catalog picks them, a node-level allocation decided in
+	// a published document: safe because the catalog is curated and hand-checked for conflicts,
+	// which is also why there is no runtime port-collision pre-flight; two entries wanting one port
+	// is a review failure, not a runtime one.
 	//
-	// THE CATALOG PICKS THEM, which makes this a node-level allocation decided in a published
-	// document — safe because the catalog is curated and hand-checked for conflicts, which is also
-	// why there is no runtime port-collision pre-flight. Two entries wanting one port is a review
-	// failure, not a runtime one.
-	//
-	// It is how an app that CANNOT be fronted reaches anyone. A reverse proxy can serve HTTP and
+	// It is how an app that cannot be fronted reaches anyone: a reverse proxy can serve HTTP and
 	// nothing else, so mosquitto's MQTT on 1883 has no route and never will; publishing is the
 	// whole of its reachability, and the reverse proxy is not involved.
 	//
-	// ⚠️ MEANINGLESS UNDER HOST NETWORKING, and refused there rather than ignored: a host-networked
+	// ⚠️ Meaningless under host networking, and refused there rather than ignored: a host-networked
 	// pod already holds the guest's ports, so there is nothing to publish, and podman rejects the
-	// combination outright. A manifest that asked for both would describe an app no node could
-	// run, which is exactly what Validate exists to catch before a household does.
+	// combination outright. A manifest asking for both would describe an app no node could run,
+	// exactly what Validate exists to catch before a household does.
 	Ports []int `json:"ports,omitempty"`
 }
 
@@ -175,11 +168,10 @@ type Container struct {
 }
 
 // Mount is one directory of the app's area in a tier, at Path inside the container. Two
-// containers naming the same tier and Dir share the directory.
-//
-// A MOUNT IS A RENAME AND A RMDIR BOUNDARY: the container cannot move a file across it, nor
-// remove the mount point itself. So a mount nested inside another goes only where the app's own
-// code tolerates both, read in its upstream source for each entry.
+// containers naming the same tier and Dir share the directory. A mount is a rename and an rmdir
+// boundary: the container cannot move a file across it, nor remove the mount point itself, so a
+// mount nested inside another goes only where the app's own code tolerates both, read in its
+// upstream source for each entry.
 type Mount struct {
 	// Tier is what the node does with the directory: one of the Tier* values.
 	Tier string `json:"tier"`
@@ -190,7 +182,7 @@ type Mount struct {
 	Path string `json:"path"`
 }
 
-// THE STORAGE TIERS, named for what the node does with what they hold. A closed set, spelled here
+// The storage tiers, named for what the node does with what they hold. A closed set, spelled here
 // rather than at each end, so a catalog entry and a node cannot disagree about one.
 const (
 	// TierData is what the app keeps to run -- its settings, its database: snapshotted as its
@@ -221,7 +213,7 @@ func (c Container) UsesTier(tier string) bool {
 }
 
 // Identity is the manifest's content hash — the app identity (property 3 above). It is
-// computed over the EXACT signed bytes, never a re-marshalling of the parsed struct, because
+// computed over the exact signed bytes, never a re-marshalling of the parsed struct, because
 // re-encoding can reorder or reformat and would silently mint a different identity for the same
 // signed document.
 type Identity string
@@ -237,7 +229,7 @@ func (m Manifest) Primary() Container {
 }
 
 // Parse decodes and validates a manifest, returning it with the identity of the bytes given.
-// Unknown fields are REFUSED: a field this build does not understand may be one that grants a
+// Unknown fields are refused: a field this build does not understand may be one that grants a
 // capability, and silently ignoring it would let a newer catalog widen what an older node runs
 // without the node ever noticing.
 func Parse(raw []byte) (Manifest, Identity, error) {
@@ -271,7 +263,7 @@ func (m Manifest) Validate() error {
 	switch m.Network {
 	case "", NetworkPrivate, NetworkHost:
 	default:
-		// A CLOSED ENUM, refused rather than defaulted. Defaulting an unrecognised word to private
+		// A closed enum, refused rather than defaulted. Defaulting an unrecognised word to private
 		// would be the safe-looking choice and the wrong one: a catalog entry that means to ask for
 		// host networking and misspells it would install, run, and fail to find a single device,
 		// with nothing anywhere saying why. Refusing names the typo at the door.
@@ -392,15 +384,15 @@ func safeValue(what, v string) error {
 }
 
 // The values Manifest.Network takes. A closed set, spelled here rather than at each end, so a
-// catalog entry and a node cannot disagree about what a manifest meant.
-//
-// NetworkPrivate is also what an ABSENT field means, and both spellings are accepted: the explicit
-// word is clearer in a catalog entry a human reviews, and silence means the same.
+// catalog entry and a node cannot disagree about what a manifest meant. NetworkPrivate is also
+// what an absent field means, and both spellings are accepted: the explicit word is clearer in a
+// catalog entry a human reviews, and silence means the same.
 const (
 	NetworkHost    = "host"
 	NetworkPrivate = "private"
 )
 
 // HostNetwork reports whether this app's pod shares the guest's network namespace. The one
-// question every reader asks (the renderer, converge, agent/mosquitto), so that "" and "private" cannot be handled differently by accident.
+// question every reader asks (the renderer, converge, agent/mosquitto), so that "" and "private"
+// cannot be handled differently by accident.
 func (m Manifest) HostNetwork() bool { return m.Network == NetworkHost }
