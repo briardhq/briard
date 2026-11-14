@@ -29,15 +29,14 @@ import socket
 import sys
 
 # The token rides this app's own read-only /briard directory, like every other thing briard
-# hands it. The SOCKET cannot: it must be writable to connect to, and a read-write bind inside a
-# read-only one cannot be created by the runtime at all -- so it is a sibling. agent/apps
-# carries the full trace.
+# hands it. The socket cannot: it must be writable to connect to, and the runtime cannot create a
+# read-write bind inside a read-only one, so it is a sibling. agent/apps carries the full trace.
 SOCKET = "/briard-agent.sock"
 TOKEN = "/briard/inbound.token"
 
-# Generous but finite. The agent's work is one btrfs snapshot of this app's subvolume, which
-# is milliseconds; anything approaching this means something is wrong on the other side, and
-# waiting longer would hold a household's Home Assistant down for no benefit.
+# Generous but finite: the agent's work is one btrfs snapshot of this app's subvolume, milliseconds,
+# so anything near this means something is wrong on the other side, and waiting longer would hold
+# a household's Home Assistant down for no benefit.
 TIMEOUT = 30
 
 

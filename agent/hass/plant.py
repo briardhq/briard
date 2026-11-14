@@ -46,9 +46,9 @@ def ensure_default_config(config_dir):
     """Relay HA's own default-config creation, which is a no-op once the file exists."""
     if os.path.isfile(os.path.join(config_dir, YAML)):
         return
-    # Imported LAZILY, and that is worth the two lines: importing homeassistant.config costs
-    # seconds at every single Home Assistant start, and this branch is taken once in a node's
-    # life. Everything else in this file is stdlib and starts in milliseconds.
+    # Imported lazily: importing homeassistant.config costs seconds at every Home Assistant start,
+    # and this branch is taken once in a node's life. Everything else here is stdlib and starts in
+    # milliseconds.
     import asyncio
 
     from homeassistant.config import async_ensure_config_exists
@@ -77,10 +77,9 @@ def ensure_yaml_key(config_dir):
         return
     with open(path, encoding="utf-8") as fh:
         body = fh.read()
-    # ANY top-level line that OPENS the key, not just the bare one we write. A household that
-    # gave it a value (`briard: {}`) still owns the key, and appending a second one would leave
-    # configuration.yaml with a duplicate top-level key -- a config error in a file we do not own,
-    # caused by briard, at every start.
+    # Any top-level line that opens the key, not just the bare one we write: a household that gave
+    # it a value (`briard: {}`) still owns the key, and a second one appended would be a duplicate
+    # top-level key -- a config error in a file we do not own, caused by briard, at every start.
     for line in body.splitlines():
         if line.startswith(DOMAIN + ":"):
             return

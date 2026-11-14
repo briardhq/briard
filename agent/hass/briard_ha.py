@@ -125,7 +125,7 @@ class QuiesceView(HomeAssistantView):
         if not isinstance(body, dict) or not isinstance(body.get("hold"), bool):
             return self.json_message("hold must be a boolean", HTTPStatus.BAD_REQUEST)
         hass = request.app[KEY_HASS]
-        # IMPORTED HERE, NOT AT MODULE SCOPE: a Home Assistant with the recorder disabled has no
+        # Imported here, not at module scope: a Home Assistant with the recorder disabled has no
         # such module, and this integration must still load for everything else it does.
         try:
             from homeassistant.components.recorder import get_instance
@@ -158,25 +158,25 @@ class QuiesceView(HomeAssistantView):
         # and the member is simply crash-consistent. The node decides what that means.
         return self.json({"held": bool(held)})
 
-# The event the node fires on Home Assistant's own bus when something OUTSIDE Home Assistant
-# changed that this integration may want to act on — today, a broker that was installed next to an
-# HA already running. The other half of the contract is agent/hass/nudge.go's, and it is
-# that the event carries NOTHING: it means "reconsider", and everything below re-derives its world
-# from scratch, so a lost, duplicated or unrelated one all cost the same.
+# The event the node fires on Home Assistant's bus when something outside it changed that this
+# integration may act on — today, a broker installed next to an HA already running. The contract,
+# whose other half is agent/hass/nudge.go, is that the event carries nothing: it means
+# "reconsider", and everything below re-derives its world from scratch, so a lost, duplicated or
+# unrelated one all cost the same.
 EVENT_RECONSIDER = "briard_reconsider"
 
 # The broker briard installs, as Home Assistant reaches it: every app shares the guest's
 # network namespace or publishes into it, so the address is loopback and the config is anonymous.
-# The port is substituted by the node from the OTHER app's package, because it belongs to
-# that one and a second copy here would be a second thing to keep in step with the catalog.
+# The node substitutes the port from the other app's package, which owns it; a second copy here
+# would be a second thing to keep in step with the catalog.
 BROKER_HOST = "127.0.0.1"
 BROKER_PORT = @MQTT_PORT@
 
 async def async_setup(hass, config):
     """Set up briard from its `briard:` line in configuration.yaml."""
 
-    # ONE AT A TIME. There are two ways in — the start below and a nudge from the node — and they
-    # can land together, which without this is two flows racing the same empty slot. HA's
+    # One at a time: the two ways in — the start below and a nudge from the node — can land
+    # together, which without this lock is two flows racing the same empty slot. HA's
     # `single_config_entry: true` would refuse the second, so the cost is a confusing log line
     # rather than a duplicate entry; a lock is cheaper than explaining that.
     running = asyncio.Lock()
@@ -192,10 +192,10 @@ async def async_setup(hass, config):
         await _reconsider()
 
     async def _nudged(_event):
-        # ONLY ONCE HA IS FULLY UP. A nudge that arrives mid-boot is not lost work: `_started`
-        # below has not run yet and will, against a settled Home Assistant. Acting now would mean
-        # starting a config flow into a boot that is still setting entries up, for no gain.
-        # `hass.is_running` is deliberately NOT the test — it is true during `starting` too.
+        # Only once HA is fully up. A nudge mid-boot is not lost work: `_started` below has not run
+        # yet and will, against a settled Home Assistant; acting now would start a config flow into
+        # a boot still setting entries up, for no gain. `hass.is_running` is deliberately not the
+        # test — it is true during `starting` too.
         if hass.state is not CoreState.running:
             _LOGGER.debug("briard: nudged during startup; the start hook will do this")
             return
@@ -203,17 +203,16 @@ async def async_setup(hass, config):
 
     # The login minter, from the moment HA serves: it needs nothing loaded but the auth manager.
     hass.http.register_view(LoginView())
-    # And the recorder hold. Registered here for the same reason: it resolves the
-    # recorder per request, so it is correct from the moment HA serves and stays correct if the
-    # recorder is reloaded under it.
+    # And the recorder hold, for the same reason: it resolves the recorder per request, so it is
+    # correct from the moment HA serves and stays correct if the recorder is reloaded under it.
     hass.http.register_view(QuiesceView())
 
     # Started, not set-up: config entries are loaded by then, so "does an mqtt entry exist" has a
     # truthful answer, and starting a flow is not competing with the rest of the boot.
     async_at_started(hass, _started)
-    # And the same work on demand, for everything that changes outside Home Assistant while it is
-    # running. The listener is never removed: this integration lives for the lifetime of the
-    # process, and `async_setup` has no unload counterpart to remove it in.
+    # And the same work on demand, for whatever changes outside Home Assistant while it runs. The
+    # listener is never removed: this integration lives as long as the process, and `async_setup`
+    # has no unload counterpart to remove it in.
     hass.bus.async_listen(EVENT_RECONSIDER, _nudged)
 
     # What needs attention on the node, mirrored into Repairs: at start, then on a slow poll of the copy.
@@ -242,21 +241,19 @@ async def async_setup(hass, config):
     hass.async_create_task(async_load_platform(hass, "update", DOMAIN, {}, config))
     return True
 
-# THE NODE'S ALERTS AS REPAIRS ISSUES. The node's host agent keeps the one record of every alert;
-# the guest holds a copy, bound into this container read-only at ALERTS_PATH. Repairs shows what
-# needs attention by the same rule as the dashboard's tile and the tray's count: the latest record
-# of each key that is an open condition or an event, at warning or above, and not dismissed on the
-# dashboard. Each is one issue; a record that stops needing attention -- resolved, dismissed, or
-# replaced by the key's next record -- deletes its issue. Nothing here acts: the issues are not
-# fixable, "Learn more" leads to the Briard dashboard, which stays the one place to act, and Ignore
-# hides an issue in Home Assistant only -- this container has no way to tell Briard anything.
+# The node's alerts as Repairs issues. The host agent keeps the one record of every alert; the
+# guest holds a copy, bound read-only into this container at ALERTS_PATH. Repairs shows what needs
+# attention by the rule of the dashboard tile and the tray count: the latest record of each key
+# that is an open condition or an event, at warning or above, not dismissed on the dashboard. Each
+# is one issue; a record that stops needing attention -- resolved, dismissed, or replaced by the
+# key's next record -- deletes its issue. Nothing here acts: the issues are not fixable, "Learn
+# more" leads to the Briard dashboard, the one place to act, and Ignore hides an issue in Home
+# Assistant only -- this container has no way to tell Briard anything.
 #
-# An issue is a RECORD, not a key (its id is the key and the record's time), as a dismissal is: an
+# An issue is a record, not a key (its id is the key and the record's time), as a dismissal is: an
 # Ignore holds for that record, and the key's next one -- the event again, the condition reopened
-# or changed -- is a new issue that asks again.
-#
-# Not persistent: Home Assistant drops them at a restart (keeping an Ignore) and this rebuilds
-# them from the copy at start, so an issue can never outlive the copy that justified it.
+# or changed -- is a new issue. Not persistent: Home Assistant drops them at a restart (keeping an
+# Ignore) and this rebuilds them from the copy at start, so an issue never outlives its copy.
 #
 # A copy that is absent or unreadable changes nothing, in either direction. Unknown is not "all
 # clear": the copy is missing before the host's first push and on a host too old to push one.
@@ -315,16 +312,14 @@ async def _mirror_alerts(hass):
         if domain == DOMAIN and issue_id not in now:
             ir.async_delete_issue(hass, DOMAIN, issue_id)
 
-# THE APPS' UPDATES AS UPDATE ENTITIES. The node offers an app's update when the catalog names a
+# The apps' updates as update entities. The node offers an app's update when the catalog names a
 # release it does not run, and never takes one unasked; the guest writes each installed app's
-# running and latest version to APPS_PATH, beside the alert copy. Each app is one update entity,
-# so an offer shows where Home Assistant shows every update, under Settings. Nothing here acts:
-# the entity cannot install (Home Assistant has no door to the node, and this adds none), and
-# its release link leads to the app's page on the Briard dashboard, which stays the one place to
-# take the update. Skip is Home Assistant's own and stays on its side.
-#
-# Versions are compared the way Home Assistant compares them, so a revision of how Briard runs
-# the same version, which the page offers, is not one here.
+# running and latest version to APPS_PATH, beside the alert copy. One update entity per app, so an
+# offer shows where Home Assistant shows every update, under Settings. Nothing here acts: the
+# entity cannot install (Home Assistant has no door to the node, and this adds none), and its
+# release link leads to the app's page on the Briard dashboard, the one place to take the update.
+# Skip is Home Assistant's own and stays on its side. Versions compare the Home Assistant way, so
+# a revision of how Briard runs the same version, which the page offers, is not one here.
 #
 # A copy that is absent or unreadable changes nothing, as with the alerts; an app the copy no
 # longer lists is unavailable rather than removed, since nothing here can tell why it went.
@@ -399,20 +394,19 @@ async def async_setup_update_platform(hass, async_add_entities):
     await _refresh()
     async_track_time_interval(hass, _refresh, APPS_EVERY)
 
-# THE CASA NAME AS HOME ASSISTANT'S EXTERNAL URL. A Home Assistant with no external URL cannot
-# cast a dashboard to a Chromecast or Nest Hub, which needs https, and the household's casa name
-# has a real certificate. The node writes the URL to EXTERNAL_URL_PATH only once the household's
-# own network has been seen to resolve that name, and empties it otherwise, so nothing here
-# decides whether the name works.
+# The casa name as Home Assistant's external URL. Without one Home Assistant cannot cast a
+# dashboard to a Chromecast or Nest Hub, which needs https, and the casa name has a real
+# certificate. The node writes the URL to EXTERNAL_URL_PATH only once the household's own network
+# has been seen to resolve that name, and empties it otherwise, so nothing here decides whether
+# the name works.
 #
-# FILL AN EMPTY SLOT, NEVER ANYTHING ELSE. An external URL already set (Nabu Casa, DuckDNS, the
-# household's own domain, or ours from an earlier start) is left alone, and this never clears
-# one: a name that later stops resolving costs the household a cast, while the internal URL
-# stays their way in. A core config managed in YAML is skipped too: `async_update` would mark it
-# UI-managed, and YAML owns those keys.
-#
-# Live, with no restart: `async_update` is what Settings -> System -> Network calls. Compared
-# against the string, because ConfigSource is a StrEnum whose module has moved between releases.
+# Fill an empty slot, never anything else. An external URL already set (Nabu Casa, DuckDNS, the
+# household's own domain, or ours from an earlier start) is left alone, and this never clears one:
+# a name that later stops resolving costs a cast, while the internal URL stays their way in. A
+# core config managed in YAML is skipped too: `async_update` would mark it UI-managed, and YAML
+# owns those keys. Live, with no restart: `async_update` is what Settings -> System -> Network
+# calls. Compared against the string, because ConfigSource is a StrEnum whose module has moved
+# between releases.
 EXTERNAL_URL_PATH = "@EXTERNAL_URL_PATH@"
 EXTERNAL_URL_EVERY = timedelta(seconds=30)
 
@@ -469,20 +463,20 @@ async def _wire_mqtt(hass):
     """
     if hass.config_entries.async_entries("mqtt"):
         return
-    # A BROKER MUST ACTUALLY BE THERE. Checked with a socket rather than by starting a flow and
-    # letting it fail: an abandoned flow is visible clutter in the household's UI, and a node with
-    # no broker installed would leave one at every start forever.
+    # A broker must actually be there: checked with a socket rather than a flow left to fail, since
+    # an abandoned flow is visible clutter in the household's UI, and a node with no broker would
+    # leave one at every start forever.
     if not await hass.async_add_executor_job(_broker_listening):
         return
 
     result = await hass.config_entries.flow.async_init("mqtt", context={"source": SOURCE_USER})
     flow_id = result["flow_id"]
-    # FILL THE FORM IT SHOWS, not the one a release described. 2026.9 folded the broker step's
+    # Fill the form it shows, not the one a release described. 2026.9 folded the broker step's
     # advanced options into a required, collapsed `other_settings` section, whose two answers
     # without a default are the TLS questions -- for a plaintext broker on localhost, no client
-    # certificate and no verification, which is what the basic form implied before. The releases
-    # before it refuse the key as extra, so the form's own schema says which shape this is and
-    # the version never has to.
+    # certificate and no verification, as the basic form implied before 2026.9. Earlier releases
+    # refuse the key as extra, so the form's own schema says which shape this is and the version
+    # never has to.
     answer = {"broker": BROKER_HOST, "port": BROKER_PORT}
     fields = {str(key) for key in getattr(result.get("data_schema"), "schema", {})}
     if "other_settings" in fields:
@@ -494,8 +488,8 @@ async def _wire_mqtt(hass):
         raise
     if result["type"] != FlowResultType.CREATE_ENTRY:
         # A form back means the broker refused the connection between the socket check and the
-        # submit. Never leave the half-finished flow behind: it shows up in the household's UI as
-        # something they have to dismiss, which is what this design exists to avoid.
+        # submit. Never leave the half-finished flow behind: the household would have to dismiss
+        # it in their UI, which is what this design exists to avoid.
         _abort(hass, flow_id)
         _LOGGER.warning("briard: Home Assistant did not accept the broker: %s", result.get("type"))
         return

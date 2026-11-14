@@ -1,35 +1,35 @@
 # briard-update.ps1: converge this node to the release channel -- the Windows twin of
 # briard-update, run by the briard-update scheduled task as SYSTEM, one run at a time.
 #
-# SHIPPED VERBATIM and FROZEN: a signed artifact of the briard chain's windows arm that the install
-# copies into place. The freeze is the safety property -- this is dumb script, so a bug in the
-# volatile agent can never wedge the thing that replaces it -- and it is frozen by necessity: it
-# launches the replacement of the binary, so no release can be what fixes it.
+# Shipped verbatim and frozen: a signed artifact of the briard chain windows arm that the install
+# copies into place. The freeze is the safety property -- dumb script, so a bug in the volatile
+# agent can never wedge what replaces it -- and it is frozen by necessity: it launches the
+# replacement of the binary, so no release can fix it.
 #
-# IT HAS NO PRODUCT KNOWLEDGE, and that is the whole design: five steps -- read the channel and
-# keyring, read the target, download the pointer's agent, have the committed agent check it
-# against the target's signed manifest, run it with --update -- and the verdict written down. The
-# fetched binary does the whole update (stop, swap, start, commit or revert), so nothing in the
-# product can make this script need a new release.
+# It has no product knowledge, by design: five steps -- read the channel and keyring, read the
+# target, download the pointer agent, have the committed agent check it against the signed
+# manifest of the target, run it with --update -- and the verdict written down. The fetched binary
+# does the whole update (stop, swap, start, commit or revert), so nothing in the product can make
+# this script need a new release.
 #
-# THE ONE QUESTION IT ASKS THE AGENT IT REPLACES is that check, and only because it cannot be
-# asked of the binary being checked: a forged agent would skip it, and the fetched agent runs as
-# SYSTEM, so without it whoever can write to the channel could run code on every node with no
-# signing key. Every release answers it for its own release before it may become the committed
-# agent, so a committed agent that cannot answer it is one no update produced.
+# That check is the one question it asks the agent it replaces, only because it cannot be asked of
+# the binary being checked: a forged agent would skip it, and the fetched agent runs as SYSTEM, so
+# without it whoever can write to the channel could run code on every node with no signing key.
+# Every release answers it for itself before it may become the committed agent, so a committed
+# agent that cannot answer it is one no update produced.
 #
-# Windows PowerShell 5.1 -- what every Windows Home ships -- so nothing newer is used here.
+# Windows PowerShell 5.1, what every Windows Home ships, so nothing newer is used.
 $ErrorActionPreference = 'Stop'
 
 # The node's own configuration, when it has one: CHANNEL_URL and UPDATE_KEYRING exactly as the
 # operator set them at install, read the way the agent reads config.env (KEY=value, both halves
 # trimmed, nothing quoted).
 #
-# THE TWO DEFAULTS BELOW ARE A DELIBERATE SECOND COPY of agent/host/config.go's (owner's call).
-# config.env carries a key only when somebody named one, so on an ordinary install there is
-# nothing to read -- and this script must not ask the agent, which is the thing it exists to
-# replace. The channel default is pinned by a test that reads both files; the keyring default
-# derives from the Windows prefix, which that test cannot see off Windows.
+# The two defaults below are a deliberate second copy of agent/host/config.go (owner call):
+# config.env carries a key only when somebody named one, so an ordinary install has nothing to
+# read, and this script must not ask the agent it exists to replace. The channel default is pinned
+# by a test that reads both files; the keyring default derives from the Windows prefix, which that
+# test cannot see off Windows.
 $Prefix = 'C:\ProgramData\briard'
 $conf = @{}
 if (Test-Path "$Prefix\config.env") {
@@ -60,15 +60,15 @@ if (Test-Path "$Run\update-target") {
 	$target = ([IO.File]::ReadAllLines("$Run\update-target"))[0].Trim()
 	Remove-Item -Force "$Run\update-target"
 }
-# (2) A fresh agent FROM THE TARGET runs the update: never the committed file itself, which the update
-#     replaces. Under the prefix, which only SYSTEM and the administrators can write.
+# (2) A fresh agent from the target runs the update, never the committed file itself, which the
+#     update replaces. Under the prefix, which only SYSTEM and the administrators can write.
 $tmp = "$Prefix\.update." + [IO.Path]::GetRandomFileName()
 New-Item -ItemType Directory $tmp | Out-Null
 $rc = 1
 try {
 	#     Most runs find the target's agent byte-identical to the committed one, so curl asks for it
 	#     only if it differs: the channel's ETag for a pointer's file is its MD5, and a 304 means the
-	#     committed binary IS the target's, so its copy runs -- hashed after copying, so what runs
+	#     committed binary is the target's, so its copy runs -- hashed after copying, so what runs
 	#     is what was compared. Any other ETag (an exact id's multipart upload) just downloads. The
 	#     header goes through a file: 5.1 passes a native argument's inner quotes unescaped.
 	$url = "$Channel/briard/$target/windows-amd64/briard-agent.exe"
@@ -82,7 +82,7 @@ try {
 	$code = & curl.exe -fsSL @hdr -w '%{http_code}' $url -o "$tmp\briard-agent.exe"
 	if ($LASTEXITCODE -ne 0) { throw "could not fetch a bootstrap agent from $url" }
 	if ($code -eq '304') { Move-Item -Force "$tmp\have.exe" "$tmp\briard-agent.exe" }
-	# (3) The COMMITTED agent checks it before it runs: the target's manifest and signature, as
+	# (3) The committed agent checks it before it runs: the target's manifest and signature, as
 	#     served beside it, must be a release the node's keyring signed and must name these bytes.
 	#     A publish moving the pointer between the downloads fails this run, and the next one finds
 	#     them agreeing. Its stdout only: 5.1 turns a native command's stderr into an error record.

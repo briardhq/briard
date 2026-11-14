@@ -30,21 +30,21 @@ DOMAIN = "briard"
 
 # Where briard mounts the implementation, read-only, from the node's tmpfs. Part of the ABI
 # above: this stub may meet an implementation many releases newer than itself, so the two agree
-# on a PATH and a MODULE NAME and on nothing else.
+# on a path and a module name and on nothing else.
 IMPL_PATH = "/briard/integration"
 IMPL_MODULE = "briard_ha"
 
 
 async def async_setup(hass, config):
     """Hand over to the implementation, or say plainly that there is none."""
-    # APPENDED, never prepended: on a collision Home Assistant's own modules must win. The
+    # Appended, never prepended: on a collision Home Assistant's own modules must win. The
     # directory holds one distinctively-named module, which is what keeps this bounded.
     if IMPL_PATH not in sys.path:
         sys.path.append(IMPL_PATH)
-    # OFF THE EVENT LOOP: an import is file I/O, and Home Assistant flags one made on the
-    # loop at every start, and refuses some blocking calls from custom integrations outright. Its
-    # import executor where it has one; the plain executor on a Home Assistant too old for that,
-    # because this file may be restored onto one (the ABI above).
+    # Off the event loop: an import is file I/O, which Home Assistant flags on the loop at every
+    # start (and some blocking calls from custom integrations it refuses outright). Its import
+    # executor where it has one; the plain executor on one too old for that, because this file may
+    # be restored onto one (the ABI above).
     run = getattr(hass, "async_add_import_executor_job", None) or hass.async_add_executor_job
     try:
         impl = await run(importlib.import_module, IMPL_MODULE)

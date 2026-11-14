@@ -61,13 +61,12 @@ def minter(token):
             ),
             None,
         )
-        # THE ADMIN GROUP IS FOR ACTING, not for reading. The health
-        # gate's own signal — `GET /api/config/config_entries/entry` — carries no `@require_admin`
-        # and a group-less system user reads it with a 200. What is admin-gated is everything that
-        # acts: `/api/services/...` returns 401 without it, config and options flows are decorated,
-        # and that is the half this channel exists to keep available to its consumers. A system
-        # user is only admin by virtue of this group (`User.is_admin`), so it has to be asked for
-        # here or not at all.
+        # The admin group is for acting, not reading: the health gate's signal,
+        # `GET /api/config/config_entries/entry`, has no `@require_admin`, and a group-less system
+        # user reads it with a 200. Everything that acts is admin-gated (`/api/services/...`
+        # returns 401 without it, config and options flows are decorated), and that is the half
+        # this channel exists to keep available to its consumers. A system user is admin only by
+        # this group (`User.is_admin`), so it is asked for here or not at all.
         if user is None:
             user = await hass.auth.async_create_system_user(USER, group_ids=[GROUP_ID_ADMIN])
         elif not user.is_admin:
@@ -78,11 +77,11 @@ def minter(token):
         refresh = await hass.auth.async_create_refresh_token(user, token_type=TOKEN_TYPE_SYSTEM)
         refresh.token = token
 
-        # The store saves on a DELAY, and run_command ends with `hass.async_stop()`, which returns
-        # immediately on a HomeAssistant that was never started (`core.py`: `if self.state is
-        # CoreState.not_running: return`) — so it flushes nothing. Firing the final-write event is
-        # what the delayed save is waiting for, and it has to happen here, inside the callback,
-        # while the store still exists.
+        # The store saves on a delay, and run_command ends with `hass.async_stop()`, which returns
+        # at once on a HomeAssistant never started (`core.py`: `if self.state is
+        # CoreState.not_running: return`) and so flushes nothing. The delayed save waits for the
+        # final-write event, which must be fired here, inside the callback, while the store still
+        # exists.
         hass.bus.async_fire(EVENT_HOMEASSISTANT_FINAL_WRITE)
         await hass.async_block_till_done()
 
@@ -95,14 +94,13 @@ def main():
         token = f.read().strip()
     if len(token) < MIN_TOKEN_LEN:
         raise SystemExit(f"{token_file}: not a briard token")
-    # A PLAIN asyncio.run, on purpose. HA's own script runner dresses its loop differently per
-    # release (an event-loop policy through 2026.8, a loop_factory from 2026.9 once Python retired
-    # policies), and borrowing either form ties this file to one side of that line -- the policy
-    # form raises AttributeError on 2026.9. The mint needs nothing the dressing adds (an
-    # executor name, an exception handler, a faster clock), so the stock loop is the one form
-    # every release accepts.
-    # run_command reads exactly two attributes off the namespace — verified against both ends of
-    # the range we span — so this is the whole of its input.
+    # A plain asyncio.run, on purpose. HA's script runner dresses its loop differently per release
+    # (an event-loop policy through 2026.8, a loop_factory from 2026.9 once Python retired
+    # policies), so borrowing either form ties this file to one side -- the policy form raises
+    # AttributeError on 2026.9. The mint needs nothing the dressing adds (an executor name, an
+    # exception handler, a faster clock), and the stock loop is the one form every release accepts.
+    # run_command reads exactly two attributes off the namespace, verified at both ends of the range
+    # we span, so this is the whole of its input.
     asyncio.run(ha_auth.run_command(argparse.Namespace(config=config_dir, func=minter(token))))
 
 

@@ -1,66 +1,60 @@
-# briard-agent.service -- SHIPPED VERBATIM, not generated.
-#
-# It is a signed artifact of the host chain (scripts/publish-release.sh stages it, the manifest
-# hashes it, briard-agent install copies it), which is the whole reason it is a file: install.sh is
-# outside the versioning system, so a unit it wrote by heredoc would be frozen where no release
-# could reach it, and unsigned into the bargain. Every path in it is /opt/briard, which the qemu
-# bundle's own ELF interpreter already bakes -- there is no prefix to interpolate.
-#
-# The values the agent DECIDES anything from are not here; they are in /opt/briard/config.env,
-# which the agent can rewrite.
+# briard-agent.service -- shipped verbatim, not generated: a signed artifact of the host chain
+# (scripts/publish-release.sh stages it, the manifest hashes it, briard-agent install copies it).
+# That is why it is a file: install.sh is outside the versioning system, so a unit it wrote by
+# heredoc would be frozen where no release could reach it, and unsigned. Every path in it is
+# /opt/briard, which the qemu bundle ELF interpreter already bakes, so there is no prefix to
+# interpolate. The values the agent decides anything from are in /opt/briard/config.env, which
+# the agent can rewrite, not here.
 [Unit]
 Description=briard host agent (single node)
 # ⚠️ [Unit], not [Service]: systemd ignores it in the wrong section and says so on every start. A
-# failed update followed by its revert must never latch the unit as dead -- the revert path is by
+# failed update and its revert must never latch the unit as dead: the revert path is by
 # construction a burst of rapid start failures, which would trip the start limiter and leave the
 # node down for the one reason self-update exists to avoid.
 StartLimitIntervalSec=0
-# ⚠️ NO ORDERING AND NO DEPENDENCIES, deliberately. A network unit in `Requires=` means
-# a cable out at boot takes the node fully dark, with nothing left running to report, retry or
-# answer the admin door. And not `network-online.target` either: NetworkManager's notion of
-# "online" is a poor approximation of "I have a default route", and NetworkManager-wait-online adds
-# up to 90s to every boot. The agent polls for the condition it actually needs.
+# ⚠️ Deliberately no ordering and no dependencies. A network unit in `Requires=` means a cable out
+# at boot takes the node fully dark, with nothing left running to report, retry or answer the
+# admin door. Not `network-online.target` either: the NetworkManager notion of "online" is a poor
+# approximation of "I have a default route", and NetworkManager-wait-online adds up to 90s to
+# every boot. The agent polls for the condition it actually needs.
 [Service]
-# WHAT IS LEFT HERE IS THE EXECUTION ENVIRONMENT, NOT CONFIGURATION. Every value the
-# agent decides anything from lives in config.env beside it; these three cannot, and each for its own
+# What is left here is the execution environment, not configuration: every value the agent decides
+# anything from lives in config.env beside it, and each of these three cannot, for its own
 # structural reason rather than by taste.
 #
-# The agent shells out to systemd-run/systemctl AND to `ip` by name (the route to its own guest's
-# VIP over the private link); give it a PATH that resolves them on a stock host
-# (/usr/sbin, /sbin) AND on NixOS (/run/current-system/sw/bin), since a unit's default is minimal.
-# `ip` in particular lives in *sbin on a stock host, which is why both are listed and neither is
-# decoration -- without this PATH the agent cannot find that binary.
-# It cannot move to the file: systemd SETS a PATH for every systemd service, so the environment would
-# already have spoken and the file's value would correctly lose.
+# The agent shells out to systemd-run/systemctl and to `ip` by name (the route to the VIP of its
+# own guest over the private link), and a unit default PATH is minimal, so this resolves them on a
+# stock host (/usr/sbin, /sbin) and on NixOS (/run/current-system/sw/bin). `ip` lives in *sbin on
+# a stock host, so neither is decoration -- without this PATH the agent cannot find it. Not in the
+# file: systemd sets a PATH for every systemd service, so the environment has already spoken and
+# the file value would correctly lose.
 Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin
 # Where the file is. Stated rather than left to the agent's baked default (agent/host/config.go),
 # so `systemctl cat briard-agent` answers the question an operator is about to ask next.
 Environment=BRIARD_CONFIG=/opt/briard/config.env
-# GOTRACEBACK=all is what makes the watchdog below worth having. Its default signal is
-# SIGABRT, and Go answers SIGABRT by dumping goroutine stacks and dying -- so a trip leaves the
-# stack of every goroutine at the moment the agent wedged, which is the diagnosis for a bug whose
-# whole difficulty is leaving no evidence. Go's default, "single", dumps only the CURRENT
-# goroutine, and at signal-delivery time that is an arbitrary one: useless here. Restarting the
-# agent is the lesser half of this feature; the traceback is the half that closes the bug.
-# It cannot move to the file either: the Go RUNTIME reads it, before any of our code runs, so an
-# agent that set it from its own config would set it too late to mean anything.
+# GOTRACEBACK=all is what makes the watchdog below worth having. Its default signal is SIGABRT,
+# which Go answers by dumping goroutine stacks and dying, so a trip leaves the stack of every
+# goroutine at the moment the agent wedged: the diagnosis for a bug whose whole difficulty is
+# leaving no evidence. Go's default, "single", dumps only the current goroutine, an arbitrary one
+# at signal-delivery time: useless here. The restart is the lesser half; the traceback closes the
+# bug. Not in the file either: the Go runtime reads it before any of our code runs, so setting it
+# from config would be too late to mean anything.
 Environment=GOTRACEBACK=all
 Type=notify
 NotifyAccess=main
-# READY=1 means THE AGENT started -- config read, loop entered -- not that the node is healthy.
-# It deliberately does NOT have to cover BringUpBudget: the agent signals ready before it brings
-# the guest up, which is what lets the watchdog cover bring-up and the recovery ladder instead of
-# arming only after a node first converges (an agent whose guest never converges would otherwise
-# never arm one at all). It is also self-update's whole gate: the updater swaps a candidate in,
-# starts this unit, and commits only if the start succeeds -- a candidate that will not exec,
-# panics, or hangs before loop entry fails it here and is reverted.
+# READY=1 means the agent started -- config read, loop entered -- not that the node is healthy, so
+# this deliberately need not cover BringUpBudget: the agent signals ready before it brings the
+# guest up, which lets the watchdog cover bring-up and the recovery ladder rather than arm only
+# after a first converge (an agent whose guest never converges would never arm one at all). It
+# is also the whole gate of self-update: the updater swaps a candidate in, starts this unit, and
+# commits only if the start succeeds; a candidate that will not exec, panics, or hangs before
+# loop entry fails it here and is reverted.
 TimeoutStartSec=60
 # The watchdog: systemd kills the unit if the agent stops sending WATCHDOG=1 for this long, and
-# Restart= brings it back. Sized by the longest GAP between pings, not by the longest thing the
-# agent legitimately does -- the agent beats between its bounded steps and takes a lease across the
-# long ones, so a ten-minute recovery is covered without widening this. WATCHDOG_USEC (which
-# systemd derives from this line) is the agent's only source for its ping interval, so this number
-# has exactly one definition.
+# Restart= brings it back. Sized by the longest gap between pings, not the longest thing the agent
+# legitimately does: it beats between its bounded steps and takes a lease across the long ones,
+# so a ten-minute recovery is covered without widening this. WATCHDOG_USEC (derived from this
+# line) is the only source of its ping interval, so this number has exactly one definition.
 WatchdogSec=20
 # The committed binary, run directly. Self-update moves it by rename beneath this name (the
 # updater, briard-update.service), so the line never changes; `run` is the daemon subcommand,
@@ -69,14 +63,13 @@ WatchdogSec=20
 ExecStart=/opt/briard/agent/briard-agent run
 Restart=on-failure
 RestartSec=3
-# Explicit, because the default (90s) is shorter than the operations a stop waits for. SIGTERM
-# unwinds cooperatively and then FINISHES the act in flight, which runs on a context a stop does
-# not cancel (a SIGTERM during the machine's own shutdown aborts the act instead and powers the
-# guest off, which is seconds); the recovery and rollback legs on the loop run on DETACHED
-# contexts too, so they cannot be cancelled halfway, and rebootGuest alone budgets
-# BringUpBudget+3*shutdownGrace. At 90s a forced stop SIGKILLs the agent partway through
-# a recovery -- the one moment the machine can least afford it. Self-update does not wait on this
-# bound: it asks the agent to stop with a SIGTERM of its own and waits longer (StopPatience).
+# Explicit, because the default (90s) is shorter than what a stop waits for. SIGTERM unwinds
+# cooperatively and then finishes the act in flight, on a context a stop does not cancel (during
+# the machine's own shutdown a SIGTERM aborts the act instead and powers the guest off, seconds);
+# the recovery and rollback legs on the loop run on detached contexts too, so they cannot be
+# cancelled halfway, and rebootGuest alone budgets BringUpBudget+3*shutdownGrace. At 90s a forced
+# stop SIGKILLs the agent partway through a recovery, the moment the machine can least afford it.
+# Self-update does not wait on this bound: it sends its own SIGTERM and waits longer (StopPatience).
 TimeoutStopSec=600
 [Install]
 WantedBy=multi-user.target

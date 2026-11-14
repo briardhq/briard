@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # gofmt the staged Go files before they land. CI's fast job runs
 #   test -z "$(gofmt -l .)" && go vet ./... && go test ./...
-# and short-circuits at the gofmt gate, so an unformatted file never
-# reaches vet/test -- it just fails the whole job. Catch it here.
-#
-# Scope: only staged .go files, so the hook is instant and never trips
-# on unrelated in-flight formatting elsewhere in the tree.
-#
+# and short-circuits at the gofmt gate, so an unformatted file fails the
+# whole job before vet/test. Only staged .go files, so the hook is instant
+# and never trips on unrelated in-flight formatting elsewhere in the tree.
 # Installed into .git/hooks/pre-commit by the flake devShell (nix develop).
 set -euo pipefail
 

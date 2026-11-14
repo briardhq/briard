@@ -1,6 +1,6 @@
-# Briard's configuration for Files (FileBrowser Quantum). It is NOT the household's to edit: it is
-# rendered into the guest's /run by every converge and bound read-only into the container, so a
-# node re-derives it at every promotion and every guest boot. What a household changes in the app
+# Briard's configuration for Files (FileBrowser Quantum), not the household's to edit: rendered
+# into the guest's /run by every converge and bound read-only into the container, so a node
+# re-derives it at every promotion and guest boot. What a household changes in the app
 # (its own preferences) lives in the app's database, in its cache area, which is disposable.
 server:
   # The updates come through the catalog, so the app asking its maintainer for news is noise.
@@ -13,7 +13,7 @@ server:
   database:
     activity:
       disabled: true
-  # ONE SOURCE, the view: a folder per app holding the directories its manifest mounts outside its
+  # One source, the view: a folder per app holding the directories its manifest mounts outside its
   # cache tier, bound there by the guest agent (agent/guestagent). The app sees real directories,
   # so every one of them lists, opens and edits as what it is.
   sources:
@@ -32,10 +32,10 @@ auth:
   methods:
     password:
       enabled: false
-    # SIGNED, NOT TRUSTED. Briard's reverse proxy lets a browser through only with the household
-    # dashboard's session, and then signs who it is: a token the app verifies with this secret on
-    # every request. A header the app believed blindly would be only as safe as the network path
-    # to it; a signature needs the key, which only root on this node can read.
+    # Signed, not trusted. Briard's reverse proxy lets a browser through only with the household
+    # dashboard's session, then signs who it is: a token the app verifies with this secret on
+    # every request. A header believed blindly would be only as safe as the network path to it; a
+    # signature needs the key, which only root on this node can read.
     jwt:
       enabled: true
       header: "X-JWT-Assertion"
