@@ -1,14 +1,14 @@
 # The maintenance-mode CONTRACT suite. "stop drbd-reactor == maintenance mode" is
-# an abuse that rides on properties nothing enforced; the promote-vs-stop deadlock was a violation of them caught only
-# incidentally, through a flaky managed-upgrade. This asserts the contract DIRECTLY, so the next
-# violation fails a named gate instead of hiding.
+# an abuse that rides on properties nothing else enforces; a violation of them (the
+# promote-vs-stop deadlock is one) otherwise surfaces only incidentally, as a flaky managed
+# upgrade. This asserts the contract DIRECTLY, so a violation fails a named gate instead of hiding.
 #
 # One node promotes r0, then the script drives one pause → poke → resume lifecycle and checks
 # each contract point in turn:
 #
 #   #1 the pause completes promptly            — no promote-vs-stop deadlock, defused on
-#                                                drbd-reactor.service's ExecStop; here the pause
-#                                                is just the lifecycle's entry.
+#                                                drbd-reactor.service's ExecStop; not timed
+#                                                here, the pause is just the lifecycle's entry.
 #   #2 the pause is NON-DESTRUCTIVE            — still Primary+quorate, and the app is the
 #                                                SAME process (active-since unchanged: a pause is
 #                                                not a restart).
@@ -19,26 +19,25 @@
 #                                                via tick continuity.
 #   #4 the resume is CLEAN                     — the daemon re-ADOPTS the already-Primary,
 #                                                already-running app: no demote, no bounce.
-#   #5 the pause holds across a RELOAD         — `systemctl daemon-reload` is what
-#                                                switch-to-configuration does INSIDE the OS
-#                                                upgrade's own bracket, and it must not disturb the
-#                                                promotion or the data mount. Verdict reads unit
+#   #5 the pause holds across a RELOAD         — a `systemctl daemon-reload` while paused
+#                                                must not disturb the promotion or the data
+#                                                mount. Verdict reads unit
 #                                                timestamps, NOT the role: a torn-down chain is
-#                                                Primary again in ~40ms. The two harsher gestures
-#                                                this began as — crashing a chain member, and
-#                                                merely restarting one — are measured RED and are
-#                                                the chain-member contract's, not the bracket's; see the check.
+#                                                Primary again in ~40ms. Crashing or restarting
+#                                                a chain member is the chain-member contract
+#                                                (chain-member-contract.nix), not the
+#                                                bracket's; see the check.
 #
-# HERMETIC. Driving it through a nested guest and the agent's verbs would add nothing: drive the lifecycle
-# through the agent's reactor.*/app.* verbs over virtio-serial (the driver's PAUSE_ONLY hook).
-# Every check above is a read of DRBD or systemd state INSIDE the node, so none of it needed a
-# host on the far side of a channel; moving it onto lib.nix is what lets the fixture guest disk
-# be deleted, which is (e4)'s point. What it costs is stated at the pause below.
+# HERMETIC. The lifecycle is driven by the same systemctl commands the guest agent's
+# reactor.*/app.* verbs run, not through the agent over virtio-serial: every check above is a
+# read of DRBD or systemd state INSIDE the node, so none of it needs a host on the far side of
+# a channel. What it costs is stated at the pause below.
 { pkgs, guestModule, fixture }:
 
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
-  # A single node: the contract is about one node's promoter being paused, so a peer would add a
+  # A single DRBD node (a shape no shipped node runs: a lone node runs no DRBD, and its pause is a
+  # no-op): the contract is about one node's promoter being paused, so a peer would add a
   # failover path the test then has to rule out rather than a property worth proving.
   node = h.mkNode {
     inherit fixture;
@@ -47,7 +46,8 @@ let
   # The app's own unit, named by the RENDERER rather than restated here -- it is the fixture's
   # container unit, and what the contract is about is that a pause does not touch it.
   appUnit = "briard-${fixture.name}-${fixture.container}.service";
-  # Mirrors `reactorBeforeOverride` in agent/guestagent/guestagent.go — see the pause below.
+  # The drop-in drbd-reactor.service's ExecStop removes (guest-image/configuration.nix) — see the
+  # pause below.
   beforeOverride = "/run/systemd/system/drbd-services@r0.target.d/reactor-50-before.conf";
 in
 pkgs.testers.runNixOSTest {
@@ -86,9 +86,9 @@ pkgs.testers.runNixOSTest {
     def chain_since():
         # The PROMOTION's identity, and the data mount's. A pause that lets the chain be torn
         # down and rebuilt returns to Primary in well under a second (measured: 40ms), so reading
-        # the ROLE afterwards cannot see it -- the first cut of #5 asserted exactly that and
-        # passed through a demote it never noticed. These two timestamps DO move, so the
-        # round trip is visible after the fact, so the check can fail.
+        # the ROLE afterwards cannot see it: a role check passes through a demote it never
+        # notices. These two timestamps DO move, so the round trip is visible after the fact,
+        # so the check can fail.
         return node1.succeed(
             "systemctl show -p ActiveEnterTimestampMonotonic --value drbd-promote@r0.service",
             "systemctl show -p ActiveEnterTimestampMonotonic --value briard-primary-storage.service",
@@ -106,8 +106,8 @@ pkgs.testers.runNixOSTest {
 
     # === BASELINE: promoter running, app serving ==============================================
     # The app needs WAITING for, not one read: Primary is the HEAD of the promoter's ordered
-    # chain and mount → app → VIP all follow it. A bare read here once lost that race and
-    # failed the precondition 19ms after promotion (nightly 2026-07-27).
+    # chain and mount → app → VIP all follow it. A bare read here can lose that race and fail
+    # the precondition milliseconds after promotion.
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     # Nothing is installed until the node has promoted -- the volume is where an app lives, so
     # that ordering is the product's, not the harness's. The reverse proxy answers meanwhile.
@@ -119,8 +119,8 @@ pkgs.testers.runNixOSTest {
     assert active(), "CONTRACT PRECOND: the app is not active at baseline"
     born = since()
     # NON-VACUITY for the pause below: the drop-in must be armed, or the stop could not have
-    # deadlocked and a clean pause would prove nothing. Its REMOVAL is now the unit's job
-    # (drbd-reactor.service ExecStop) rather than this script's.
+    # deadlocked and a clean pause would prove nothing. Its REMOVAL is the unit's job
+    # (drbd-reactor.service ExecStop), not this script's.
     node1.succeed("test -f ${beforeOverride}")
 
     # === #1 THE PAUSE =========================================================================
@@ -128,14 +128,11 @@ pkgs.testers.runNixOSTest {
     # verbReactorPause): stop the daemon. One command with no decision in it, so it is run here
     # rather than driven through the agent, which would need a nested guest plus a host on the far
     # side of a virtio-serial channel. What that gives up is coverage of the verb's own plumbing —
-    # the class of defect where the unit's PATH lacks a binary, which bit us once — and that is
-    # carried by the lab fleet demos, which run the real agent.
+    # the class of defect where the unit's PATH lacks a binary — which this test does not carry.
     #
-    # NOTHING IS DISARMED FIRST any more. The verb used to `rm` drbd-reactor's `Before=` drop-in
-    # and reload before stopping, to dodge the promote-vs-stop deadlock, and this file mirrored
-    # it; a later change moved that defusal onto drbd-reactor.service's ExecStop, so the bare stop below
-    # is the whole of it. The DURATION is not gated anywhere now (the isolated harness could not
-    # fail when the defusal was removed, so it was deleted) — what is
+    # NOTHING IS DISARMED FIRST. drbd-reactor.service's ExecStop removes the `Before=` drop-in that
+    # would deadlock promote-vs-stop, so the bare stop below is the whole of it. The DURATION is
+    # not gated anywhere (an isolated harness could not fail with the defusal removed) — what is
     # under test here is that a pause is non-destructive, a claim about the state the stop leaves
     # behind however it got there. Keep this in step with the verb.
     node1.succeed("systemctl stop drbd-reactor.service")
@@ -156,10 +153,8 @@ pkgs.testers.runNixOSTest {
     print(f"### #2 pause non-destructive: still Primary, app unbounced, ticks={pre}")
 
     # === #3 THE PAUSED PROMOTER IS INERT ======================================================
-    # `--job-mode=ignore-dependencies` is NOT decoration, and this test proved it the hard way:
-    # written as a bare `systemctl stop` the job cascaded to drbd-services@r0.target, took the
-    # promote unit with it, and the node was Secondary by the next check. That flag is the
-    # `app.stop` verb's one real decision (agent/guestagent/guestagent.go, verbAppStop:
+    # `--job-mode=ignore-dependencies` is NOT decoration: it is the `app.stop` verb's one real
+    # decision (agent/guestagent/guestagent.go, verbAppStop:
     # "a planned app quiesce can't cascade to the promoter target / data mount / VIP"), so a
     # mirror that drops it is not testing the product's quiesce at all. `app.start` needs no
     # counterpart — it is a plain start.
@@ -194,28 +189,23 @@ pkgs.testers.runNixOSTest {
 
     # === #5 THE PAUSE ACROSS A DAEMON-RELOAD =================================================
     # #3 proves the paused promoter ignores a deliberate APP stop. This asks about a CHAIN
-    # MEMBER, which after converge-at-promotion is a different question: app units are not members any
-    # more -- briard-apps converges them from the volume -- so a crashed container cannot
-    # reach the promoter's target at all ("an app error alerts, never demotes"). Six units
-    # still are members, and the target `Requires=` them.
+    # MEMBER, which under converge-at-promotion is a different question: app units are not
+    # members -- briard-apps converges them from the volume -- so a crashed container cannot
+    # reach the promoter's target at all ("an app error alerts, never demotes"). Five units
+    # are members (lib.nix promoterSnippet), and the target `Wants=` them (target-as).
     #
-    # ONLY THE RELOAD IS ASSERTED HERE, AND THE TWO GESTURES THAT ARE NOT ARE THE POINT OF
-    # the chain-member contract -- recorded rather than quietly omitted. Measured on this rig: with the
-    # promoter PAUSED, one `systemctl kill -s KILL` of briard-reverse-proxy, and equally one plain
-    # `systemctl restart` of a HEALTHY member, stop the target -> unmount the data volume ->
-    # demote DRBD -> re-promote. That is not a bracket defect: the same crash does the same thing
-    # with drbd-reactor RUNNING, so the pause is not what is missing and an assertion here would
-    # be filed against the wrong layer. The two checks land with (c)'s fix, where they can pass.
+    # ONLY THE RELOAD IS ASSERTED HERE. A member crash (`systemctl kill -s KILL`) or a plain
+    # `systemctl restart` of a member is the chain-member contract, asserted in
+    # chain-member-contract.nix with drbd-reactor RUNNING: the pause is not what decides it, and
+    # an assertion here would be filed against the wrong layer.
     #
-    # What IS asserted is the control that told those two apart from the harness's own poke: a
-    # bare `systemctl daemon-reload`, which is not a synthetic gesture -- `switch-to-configuration`
-    # reloads, so the OS upgrade does exactly this inside the bracket it opened
-    # (agent/host/osupgrade.go). A reload alone starts no stop job, and this proves it stays inert.
+    # What IS asserted is a bare `systemctl daemon-reload` while paused, which is not a synthetic
+    # gesture: the guest agent reloads whenever it writes units (agent/guestagent/converge.go,
+    # units.go). A reload alone starts no stop job, and this proves it stays inert.
     #
-    # The verdict does NOT read the role, and that correction is worth keeping: a torn-down chain
-    # rebuilds and is Primary again in ~40ms, so `drbdadm role` a settle window later says Primary
-    # either way -- the first cut of this check asserted exactly that and passed straight through a
-    # full demote + unmount + re-promote, so the check can fail.
+    # The verdict does NOT read the role: a torn-down chain rebuilds and is Primary again in
+    # ~40ms, so `drbdadm role` a settle window later says Primary either way and would pass
+    # straight through a full demote + unmount + re-promote. The timestamps can fail.
     node1.succeed("systemctl stop drbd-reactor.service")
     require_primary("second-pause")
 

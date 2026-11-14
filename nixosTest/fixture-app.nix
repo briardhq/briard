@@ -1,17 +1,14 @@
 # The dummy fixture as a CATALOGUED APP — a digest-pinned manifest plus the image tarball it
 # names — so a test can install it the way a user installs one, with no registry.
 #
-# WHY THIS EXISTS. The fixture has always reached a test by being BAKED into the guest's app
-# slot, which was a mechanism no user had: a shipped node installs apps at
-# runtime from a manifest. Every test riding the baked slot therefore proves a path
-# nobody ships. This module is the other half of retiring it — the same fixture,
-# delivered the shipped way.
+# WHY THIS EXISTS. A shipped node installs apps at runtime from a manifest, and the guest image
+# has no build-time app slot; a fixture baked into the guest would prove a path nobody ships.
+# This module is the fixture delivered the shipped way.
 #
-# WHY NO REGISTRY, which is the part that was assumed impossible and turned out not to be. The
-# manifest schema accepts only digest-pinned refs (a tag is mutable, so it is UNSAYABLE here), and
-# app-install.nix gets its digest by pushing to a real registry inside the test and inspecting
-# it — which read as "a registry node per test". Measured on 2026-08-27 (podman 5.8.2, skopeo
-# 1.22.2) instead of assumed:
+# WHY NO REGISTRY. The manifest schema accepts only digest-pinned refs (a tag is mutable, so it
+# is UNSAYABLE here), and app-install.nix gets its digest by pushing to a real registry inside
+# the test and inspecting it — which reads as "a registry node per test". Measured (podman
+# 5.8.2, skopeo 1.22.2):
 #
 #   1. `podman load` of a docker-archive RECORDS a RepoDigest, for an image never pulled;
 #   2. `podman image exists localhost/<name>@<digest>` resolves against it — what Pull=never needs;
@@ -55,7 +52,7 @@
   # guest's ports, and the manifest schema refuses the combination.
   ports ? [ ],
   # THE DECLARED MINIMUM MEMORY (manifest minMemoryMB), and with it the app's container memory
-  # limit. Zero, the default, declares none -- the shape of every fixture before it existed.
+  # limit. Zero, the default, declares none.
   minMemoryMB ? 0,
   # THE DECLARED SIZES (manifest size / installedSize, bytes): what the download stages and what
   # the image store holds once pulled -- what the host grows the guest's disk for and gates the
@@ -65,10 +62,10 @@
   installedSize ? 0,
   # THE IMAGE, when the caller has one. Default: the dummy is built here. The HA tests pass the
   # pinned upstream image instead, which is what lets a REAL app be catalogued rather than only
-  # the fixture (the baked slot was how HA reached a guest before).
+  # the fixture.
   #
   # `imageFile` is a docker-archive derivation and `imageName` is the repo the manifest names.
-  # MEASURED 2026-08-28 (podman 5.8.2, skopeo 1.22.2), because the digest question is not obvious
+  # MEASURED (podman 5.8.2, skopeo 1.22.2), because the digest question is not obvious
   # for a PULLED image: `podman load` of a `dockerTools.pullImage` archive records
   # `<repo>@<archive digest>` -- the digest of the archive's own manifest, NOT the registry digest
   # the image was pulled by -- and `podman image exists <repo>@<archive digest>` resolves against
@@ -162,11 +159,11 @@ let
   }) variants;
   # THE PODMAN STORE, PREBUILT. Every version's archive is `podman load`ed ONCE, here, and the
   # resulting store ships to the node as a read-only disk it mounts as an additional image store.
-  # The load used to run on every node at every boot, and for the 2.4 GB HA archive it cost ~8 GB
-  # of host disk writes and ~100 s per node -- three quarters of a nightly's writes, measured --
-  # for a step that is pure harness: a shipped node pulls by digest (image.ensure) and never loads
-  # an archive. What the node proves is unchanged: the same load records the same RepoDigest, and
-  # `podman image exists <ref>` at boot now asserts that the digest resolves through the store.
+  # Loading on every node at every boot instead costs, for the 2.4 GB HA archive, ~8 GB of host
+  # disk writes and ~100 s per node, for a step that is pure harness: a shipped node pulls by
+  # digest (image.ensure) and never loads an archive. What the node proves is the same: the same
+  # load records the same RepoDigest, and `podman image exists <ref>` at boot (lib.nix) asserts
+  # that the digest resolves through the store.
   #
   # A DISK IMAGE rather than a store directory, because a loaded layer carries its whiteouts as
   # character devices, which a store path cannot hold. erofs because it is what a read-only
@@ -279,8 +276,8 @@ pkgs.runCommand "briard-fixture-${name}"
 
     # A minimal SIGNED CATALOG beside each version, so a harness can install (and then roll) this
     # the way a user does rather than seeding the node-local cache -- which reproduces what an
-    # install records but not what it does (no data subvolume, so the container cannot start;
-    # measured on a fleet run 2026-08-27). `fetchManifest` fails closed with no keyring and
+    # install records but not what it does (no data subvolume, so the container cannot start).
+    # `fetchManifest` fails closed with no keyring and
     # verifies before parsing, both deliberately, so the honest answer is a real catalog and not a
     # weakened path. Every catalog here is signed by ONE key, because a node holds one keyring:
     # publishing a new version must not need the node re-trusted.

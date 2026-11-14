@@ -1,8 +1,8 @@
 # The real product `agent` (host mode) boots the real guest disk under
-# NESTED QEMU and drives DRBD bring-up over the virtio-serial channel, converging to
-# quorate Primary, then holds it in its observe loop. This is the integration test the
-# net.Pipe unit tests stand in for, and the end-to-end proof that the host path
-# promoted out of the driver actually works. Also covers reconnect: a frozen
+# NESTED QEMU and drives bring-up over the virtio-serial channel, converging a lone node
+# (no DRBD; it reports quorate primary), then holds it in its observe loop. This is the
+# integration test the net.Pipe unit tests stand in for, and the end-to-end proof that the
+# host path the driver also exercises works in the agent. Also covers reconnect: a frozen
 # guest drops the channel and the agent re-dials + resyncs past the stale in-flight reply
 # rather than going blind. Heavy (a nested VM + a multi-GB guest disk), so it rides the
 # `integration` tag; `nix flake check` boots no VM tests. Run:
@@ -33,18 +33,16 @@ pkgs.testers.runNixOSTest {
     # THE SHIPPED NIC CONTRACT, and it is the rig's job to match it rather than improve on it.
     # A carrier-bearing parent (a veth whose peer is up -- a dummy has no carrier and
     # macvlan bridge-mode won't forward), then the guest's two LAN NICs as macvtap CHILDREN of it in
-    # install.sh's order -- sys0 -> the guest's eth1 (the DRBD NIC, idle on one node), svc0 -> eth2
-    # (the VIP) -- and the private host<->guest link as a plain tap holding 10.11.9.1/24, exactly as
-    # install.sh lays it down. qemu.go assigns NICs positionally, so all three or none: omit sys0 and
-    # the witness NIC lands on eth2, where the guest's baked 10.11.9.2 is not, and the private link
-    # silently fails to exist.
+    # the agent's order -- sys0 -> the guest's eth1 (the node IP; DRBD's NIC on a flock),
+    # svc0 -> eth2 (the VIP) -- and the private host<->guest link as a plain tap holding
+    # 10.11.9.1/24, the shape the agent gives a shipped node. qemu.go assigns NICs positionally,
+    # so all three or none: omit sys0 and the witness NIC lands on eth2, while the agent
+    # addresses eth3 (10.11.9.2), and the private link silently fails to exist.
     #
-    # ⚠️ THIS USED TO BUILD A HOST-SIDE MACVLAN SHIM INSTEAD (shim0, 192.168.1.1/24), because macvtap
-    # isolates host<->guest and without something L1 could not curl the VIP at all. That shim was the
-    # rig granting itself a reachability THE PRODUCT DID NOT HAVE -- so no test could fail on the gap,
-    # and a stranger found it instead of us. The curl below is unchanged and now passes for
-    # the shipped reason: the agent routes the VIP over the private link. A shim here would hide that
-    # working or broken, which is the whole argument for deleting it.
+    # ⚠️ NO HOST-SIDE MACVLAN SHIM. macvtap isolates host<->guest, and a shim giving L1 the VIP
+    # would be the rig granting itself a reachability THE PRODUCT DOES NOT HAVE -- so no test could
+    # fail on the gap. The curl below passes for the shipped reason: the agent routes the VIP over
+    # the private link. A shim here would hide that working or broken.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
@@ -52,36 +50,38 @@ pkgs.testers.runNixOSTest {
         "ip tuntap add briard-priv0 mode tap && ip addr add 10.11.9.1/24 dev briard-priv0 && ip addr add 10.0.0.129/32 dev briard-priv0 && ip link set briard-priv0 up"
     )
 
-    # The shipped image, which the agent attaches read-only, + a blank DRBD backing disk.
+    # The shipped image, which the agent attaches read-only, + a blank data disk.
     host.succeed("ln -s ${guestDisk}/nixos.qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
 
     # Run the product agent (host mode = plain `run`): boots the guest, drives the
     # ordered bring-up (data -> VIP, no app -- the shipped disk runs none), then holds it in
-    # the observe loop so systemd-run stays up. Same env contract the driver used (ConfigFromEnv).
-    # The host holds a guest bundle tree, as install.sh lays on every install: the image
+    # the observe loop so systemd-run stays up. The same env names the driver reads; the agent
+    # reads them through ConfigFromEnv.
+    # The host holds a guest bundle tree, as the install lays on every node: the image
     # bakes no reverse proxy, so a guest is dressed by its host or it cannot serve. Copied out of
     # the store because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
-        # The PATH install.sh gives the shipped unit (scripts/install.sh, "Environment=PATH="). The
-        # agent shells out to systemd-run, systemctl and -- since it owns the host's route -- `ip`, all BY NAME, and
-        # a transient unit's default PATH resolves none of them reliably. Pinning the shipped value
-        # is the point: the rig gets what the product gets.
+        # The PATH the shipped unit carries (scripts/units/briard-agent.service,
+        # "Environment=PATH="). The agent shells out to systemd-run, systemctl and -- as it owns
+        # the host route -- `ip`, all BY NAME, and a transient unit's default PATH resolves none
+        # of them reliably. Pinning the shipped value is the point: the rig gets what the product
+        # gets.
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
-        # Where the host keeps its guest bundle tree, the way install.sh sets it.
+        # Where the host keeps its guest bundle tree: the agent default (config.go), stated.
         "--setenv=UPDATE_BASE=/opt/briard/agent "
         "--setenv=GUEST_IMAGE=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
         "--setenv=CONTROL_SOCK=/run/briard-ctl.sock --setenv=NODE=guest --setenv=GUEST_SERIAL=/tmp/guest-console.log "
-        # The three taps install.sh sets on every install, in its order: SYSTEM_TAP -> eth1,
-        # SERVICE_TAP -> eth2, WITNESS_TAP -> eth3 (the private link). SYSTEM_DEV/SYSTEM_CIDR are
-        # set, as they now are on a shipped single node too: eth1 carries this node's NODE IP, the
-        # one address anything uses to reach it, and the gate below answers there.
-        # SYSTEM_HOST_CIDR is the host's own end of that subnet, on the tap -- the rig states all
-        # three because it is standing in for install.sh, which sets them together or not at all.
+        # The three taps every shipped node has, in the agent's order: SYSTEM_TAP -> eth1,
+        # SERVICE_TAP -> eth2, WITNESS_TAP -> eth3 (the private link); the rig names its own taps
+        # in place of the agent defaults. SYSTEM_DEV/SYSTEM_CIDR are set, as on a shipped single
+        # node: eth1 carries this node's NODE IP, the one address anything uses to reach it.
+        # SYSTEM_HOST_CIDR is the host's own end of that subnet, on the tap. A shipped agent draws
+        # these addresses itself (applyDraw); the rig pins them so the addresses here are known.
         "--setenv=SYSTEM_TAP=sys0 --setenv=SYSTEM_DEV=eth1 --setenv=SYSTEM_CIDR=10.0.0.1/24 --setenv=SYSTEM_HOST_CIDR=10.0.0.129/32 --setenv=WITNESS_CIDR=10.11.9.2/24 --setenv=SERVICE_TAP=svc0 --setenv=WITNESS_TAP=briard-priv0 "
         "--setenv=STATUS_EVERY=2s "
         # The test DECLARES the service address it is about to curl. The guest image bakes none
@@ -101,9 +101,9 @@ pkgs.testers.runNixOSTest {
     # not just the reverse proxy. Bring-up is the first thing that can fail and the one whose cause
     # is entirely inside the guest: a chain member that would not start, a device the resource names
     # and the guest does not have. Without the dump here, the only evidence is the agent's one-line
-    # "a dependency job for drbd@r0.target failed", which names no dependency.
+    # "a dependency job for briard-chain.target failed", which names no dependency.
     try:
-        # The agent prints CONVERGED once the guest reports quorate Primary.
+        # The agent prints CONVERGED once bring-up completes.
         host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
 
         # The whole point: L1 reaches Briard's reverse proxy at the agent-claimed VIP. This boots
@@ -113,9 +113,8 @@ pkgs.testers.runNixOSTest {
     except Exception:
         # The FAILURE LINES FIRST, then the tail. A tail alone is not enough once the host agent
         # has died: the guest agent then restarts every second forever, and 250 lines of that
-        # scroll the actual cause off the end (measured, chasing a bring-up failure whose reason
-        # sat 600 lines above the tail). `grep -m` rather than `| head`, so the producer is not
-        # SIGPIPE'd into a non-zero status under the driver's pipefail shell.
+        # scroll the actual cause off the end. `grep -m` rather than `| head`, so the producer is
+        # not SIGPIPE'd into a non-zero status under the driver's pipefail shell.
         print("=== guest console (failures) ===")
         print(host.succeed("tr -d '\\r' < /tmp/guest-console.log "
                            "| grep -m 200 -iE 'fail|error|refus|dependency|drbd-r0' || true"))
@@ -123,8 +122,8 @@ pkgs.testers.runNixOSTest {
         print(host.succeed("tr -d '\\r' < /tmp/guest-console.log | tail -80 || true"))
         raise
     # ...and it reaches it THE WAY A REAL HOST DOES: over the private link, on a route the agent
-    # put there. Asserted rather than inferred from the curl, because the curl passing is what a
-    # rig-built shim used to buy too -- this is the line that tells the two apart.
+    # put there. Asserted rather than inferred from the curl, because a rig-built shim would make
+    # the curl pass too -- this is the line that tells the two apart.
     route = host.succeed("ip route get 192.168.1.100")
     print(f"host route to the VIP: {route.strip()}")
     assert "briard-priv0" in route and "10.0.0.1" in route, (
@@ -140,10 +139,10 @@ pkgs.testers.runNixOSTest {
     )
 
     # --- the host recovers a dropped control channel ---
-    # Freeze the nested guest (SIGSTOP the guest QEMU) so the host's next control call
-    # blocks and hits its 5 s deadline; the wire watcher then closes the channel
-    # (ErrChannelDown) -- the event that, older, blinded the host to the guest
-    # *forever* (it dialed once and observe never re-dialed).
+    # Freeze the nested guest (SIGSTOP the guest QEMU) so the host's control calls go
+    # unanswered past their deadlines; three misses within a minute close the channel
+    # (the liveness rule, ErrChannelDown). Without the re-dial that follows, the host would be
+    # blind to the guest *forever*.
     qemu = host.succeed("pgrep -f guest.qcow2").strip().splitlines()[0]
     # Counted, not grepped: the bring-up already logged one reconnect (the dress restarts the
     # guest agent), so "a reconnected line exists" was true before the freeze and proved nothing.
@@ -168,10 +167,11 @@ pkgs.testers.runNixOSTest {
         print("=== guest agent across the thaw ===")
         host.succeed(f"(printf '\\n'; sleep 2; printf 'journalctl -u briard-guest-agent -o short-precise --since=\"{thawed}\" --no-pager | grep -v Consumed | tail -60\\n'; sleep 6; printf '\\035') | briard-agent debug shell > /tmp/thaw.out 2>&1")
         print(host.succeed("tr -d '\\r' < /tmp/thaw.out"))
-        # ONE ATTEMPT, OR THE PHASES ARE COLLIDING AGAIN. The guest agent restarts on the EOF the
-        # freeze's close gave it and reads the buffered hello ~11 s later; the handshake window
-        # must outlast that cycle, or every attempt times out just before its answer and a thaw
-        # takes four to six attempts (~100 s, measured 2026-10-08 with a 10 s window).
+        # ONE ATTEMPT, OR THE PHASES ARE COLLIDING. The guest agent restarts on the EOF the
+        # freeze's close gave it, and a hello written in that gap is lost; the reconnect resends
+        # its hello on the same connection (every 5 s for up to 30 s, host.go) so the restarted
+        # agent reads one. Closing and re-dialling instead gives the fresh agent another EOF, and a
+        # thaw takes four to six attempts (~100 s).
         failed = int(host.succeed(f"journalctl -u briard-agent --since='{thawed}' | grep -c 'reconnect attempt' || true").strip())
         assert failed == 0, f"the thaw took {failed + 1} handshake attempts; the window is shorter than a guest agent restart"
     except Exception:
@@ -223,7 +223,7 @@ pkgs.testers.runNixOSTest {
     # THE AGENT'S OWN JOURNAL, not merely the journal: arm and disarm are directives it
     # applies, so the record is its log line like every other action on this node. Scoped to the
     # unit because that is the claim -- a CLI writing its own audit from outside would satisfy an
-    # unscoped `journalctl` just as well, which is exactly the arrangement this replaced.
+    # unscoped `journalctl` just as well.
     host.succeed("journalctl -u briard-agent | grep -q 'debug console ARMED'")
     host.succeed("journalctl -u briard-agent | grep -q 'debug console disarmed'")
     print("debug console: closed -> root shell -> closed")

@@ -1,8 +1,8 @@
-# TWO apps on one node, which is the claim converge-at-promotion made and nothing measured.
+# TWO apps on one node, which is the claim converge-at-promotion makes.
 #
-# The coordination went plural — one promoter, N apps rendered from the volume by
-# briard-apps at promotion — but with one app in the catalog every test of it was a test
-# of N=1, and the properties that only exist at N=2 were reasoning rather than measurement:
+# The coordination is plural — one promoter, N apps rendered from the volume by
+# briard-apps at promotion — and a single-app test is a test of N=1. The properties that
+# only exist at N=2:
 #
 #   1. BOTH apps converge from the volume and run together, on a node that installed them and
 #      on a survivor that was never told about either.
@@ -51,7 +51,7 @@ let
       ];
     };
   # The broker's rollback point, in the product's own layout: a read-only sibling of the app's
-  # subvolume under the btrfs root's .snapshots dir (agent/quadlet.SnapshotPath), so it replicates
+  # subvolume under the data tier's .snapshots dir (agent/quadlet SnapshotsDir), so it replicates
   # with the volume rather than living on the node that took it.
   subvol = "/var/lib/briard/data/${mosquitto.name}";
   snap = "/var/lib/briard/data/.snapshots/${mosquitto.name}-preupgrade";
@@ -164,10 +164,11 @@ pkgs.testers.runNixOSTest {
     assert "ok" in body and "reverse proxy" not in body, f"the fixture through the reverse proxy answered {body!r}"
 
     # THE BROKER IS NAMED BUT NOT FRONTED, and this is a security property rather than a nicety.
-    # Its manifest port is the MANAGEMENT API, which mosquitto.conf binds to 127.0.0.1 on purpose
-    # ("nothing outside the guest has any business reading it") -- and the reverse proxy runs inside
-    # that guest, so a table that fronted it would republish a loopback-only endpoint on the LAN
-    # through a mechanism that never mentions the bind.
+    # Its manifest port is the MANAGEMENT API, which mosquitto.conf keeps off the LAN on purpose
+    # ("nothing outside the guest has any business reading it"; on this private pod it binds the
+    # pod namespace) -- and the reverse proxy runs inside that guest, so a table that fronted it
+    # would republish a guest-only endpoint on the LAN through a mechanism that never mentions
+    # the bind.
     mq_host = routed["${mosquitto.name}"]["hosts"][0]
     assert not routed["${mosquitto.name}"].get("routes"), f"the broker has a route: {table}"
     # It keeps the name and the address: the name resolves to the VIP where MQTT listens, and the
@@ -183,21 +184,18 @@ pkgs.testers.runNixOSTest {
     assert "listeners" not in denied, f"the reverse proxy served the broker's management API: {denied!r}"
     assert "${mosquitto.name}" in denied, f"the reverse proxy did not name the app it declined to serve: {denied!r}"
     # NOT asserted by NAME from off the box: resolving `.local` needs nss-mdns on the client, which
-    # is avahi's property and not this item's -- install-macvtap owns the does-a-stranger's-machine
-    # resolve-it question. What is asserted here is the reverse proxy's decision, which is
-    # what changed.
+    # is avahi's property and not this test's -- install-macvtap owns the does-a-stranger's-machine
+    # resolve-it question. What is asserted here is the reverse proxy's decision.
 
     # ---- (2) UPGRADE ONE, LEAVE THE OTHER ALONE -----------------------------------------------
     dummy_unit = container_unit(primary)
     dummy_started = started_at(primary, dummy_unit)
-    # THE ROLLBACK POINT, TAKEN QUIESCED -- which is the product's rule, and this rig is what measured
-    # why it is one. Taken LIVE (which is what applyAppInstall did until the stop was put
-    # in) the snapshot did not
-    # contain the message the broker had already accepted: mosquitto holds retained state in memory
-    # and writes it on a clean stop or every autosave_interval, so a live snapshot of an app
-    # that has just been written to is a rollback point missing exactly the data someone would roll
-    # back FOR. The run that showed it: the upgrade carried the message across (2.1.2 logged
-    # "Restored 1 retained messages"), and the rollback then restored a broker with nothing in it.
+    # THE ROLLBACK POINT, TAKEN QUIESCED -- the product's rule (applyOneAppInstall stops the
+    # app first), and this rig shows why it is one. Taken LIVE, the snapshot misses the message the
+    # broker has already accepted: mosquitto holds retained state in memory and writes it on a
+    # clean stop or every autosave_interval, so a live snapshot of an app that has just been
+    # written to is a rollback point missing exactly the data someone would roll back FOR: the
+    # upgrade carries the message across, and the rollback restores a broker with nothing in it.
     #
     # So the bracket's own order is used here: stop the app, take the point, start it again.
     # Application-consistent by construction, and nothing writes between the stop and the snapshot.

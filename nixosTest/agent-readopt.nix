@@ -4,9 +4,9 @@
 # briard-agent.service, so `systemctl restart briard-agent` kills only the agent's
 # cgroup and leaves qemu serving; the restarted agent RE-ADOPTS it over the persisted
 # control socket instead of booting a second VM. Were qemu a child of the agent, a restart
-# would kill the whole cgroup → guest reboot → DRBD demote → VIP move. This test proves it is
-# not: across the restart the same qemu process keeps running, DRBD stays Primary, and the VIP
-# is served with ZERO interruption.
+# would kill the whole cgroup → guest reboot → the node stops serving. This test proves it is
+# not: across the restart the same qemu process keeps running, the node stays primary (a lone
+# node: no DRBD), and the VIP is served with ZERO interruption.
 #
 # Heavy (nested VM), so it rides the `integration` tag. Run:
 #   nix build .#tests.agent-readopt -L
@@ -45,7 +45,7 @@ pkgs.testers.runNixOSTest {
           QEMU = "${pkgs.qemu}/bin/qemu-system-x86_64";
           ACCEL = "kvm:tcg";
           GUEST_IMAGE = "/tmp/guest.qcow2";
-          # Where the host keeps its guest bundle tree, the way install.sh sets it.
+          # Where the host keeps its guest bundle tree: the agent default (config.go), stated.
           UPDATE_BASE = "/opt/briard/agent";
           DATA_DISK = "/tmp/data.img";
           STATE_DISK = "/tmp/state.img";
@@ -82,17 +82,16 @@ pkgs.testers.runNixOSTest {
     host.succeed("ls -l /dev/kvm")
 
     # The shipped NIC contract: a carrier-bearing parent, the guest's two LAN NICs as macvtap
-    # children in install.sh's order (sys0 -> eth1, svc0 -> eth2, the VIP), and the private
+    # children in the agent's order (sys0 -> eth1, svc0 -> eth2, the VIP), and the private
     # host<->guest link as a plain tap at 10.11.9.1/24.
     #
     # ⚠️ THE VIP POLLER BELOW IS WHY THIS RIG MATTERS MOST. It samples the VIP every
     # 0.5s across `systemctl restart briard-agent` and asserts ZERO dropped ticks -- and since the
-    # agent now owns the host's route to that address, the poller is measuring the route as well as
-    # the guest. That caught a real regression while this conversion was being written: the
-    # reconcile withdrew the route whenever its context cancelled, so every restart -- which is what
-    # a self-update IS -- would have blipped reachability for a guest that never stopped serving.
-    # With the old macvlan shim here, nothing about the route was on this path and the poller could
-    # not have seen it.
+    # agent owns the host route to that address, the poller is measuring the route as well as
+    # the guest. A reconcile that withdrew the route whenever its context cancelled would blip
+    # reachability on every restart -- which is what a self-update IS -- for a guest that never
+    # stopped serving (viproute.go guards it). A macvlan shim here would take the route off this
+    # path and the poller could not see it.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
@@ -103,7 +102,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("truncate -s 512M /tmp/data.img")
 
     # Boot: the agent launches the guest as a transient service and drives bring-up.
-    # The host holds a guest bundle tree, as install.sh lays on every install: the
+    # The host holds a guest bundle tree, as the install lays on every node: the
     # image bakes no reverse proxy, so a guest is dressed by its host or it cannot serve. Copied out
     # of the store because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
@@ -117,7 +116,7 @@ pkgs.testers.runNixOSTest {
     print(f"guest qemu pid before restart: {qemu_before}")
 
     # A continuous VIP poller spanning the restart: one PASS/FAIL line per ~0.5 s tick.
-    # A DRBD demote / VIP move / guest reboot would drop the VIP and show FAILs. Run it as
+    # A demote / VIP move / guest reboot would drop the VIP and show FAILs. Run it as
     # a DETACHED background shell (not systemd-run) so it inherits the machine's full PATH
     # (curl/sleep) and survives host.succeed returning; a `while` loop avoids seq.
     host.succeed(
@@ -157,7 +156,8 @@ pkgs.testers.runNixOSTest {
     # 2) The guest transient service stayed active throughout.
     host.succeed("systemctl is-active briard-guest.service")
 
-    # 3) DRBD never demoted (the survivor of a coupled restart would have): still Primary.
+    # 3) The guest qemu is still running. (The role was read above: the first status line after
+    #    the restart says primary=true quorate=true.)
     host.succeed("test $(pgrep -cf guest.qcow2) -ge 1")
 
     # 4) Zero VIP interruption across the restart. Wait for the poller to finish (80 ticks),
@@ -176,10 +176,10 @@ pkgs.testers.runNixOSTest {
     #
     # Act 1 is re-adoption working: a healthy guest kept across the restart. This is re-adoption
     # meeting a guest that is alive and dead inside -- the shape of a vCPU WHPX gave up on and of a
-    # kernel halted in a panic, both measured on the first real desktop -- which the restarted
-    # agent adopts and never hears from. What used to happen: bring-up's budget ran out, the agent
-    # EXITED cleanly ("systemd restarts it"), and under Restart=on-failure a clean exit is a
-    # normal stop, so the node stayed down with a dead qemu holding the sockets and nothing said.
+    # kernel halted in a panic -- which the restarted agent adopts and never hears from. An agent
+    # that EXITED cleanly when bring-up's budget ran out ("systemd restarts it") would stay down:
+    # under Restart=on-failure a clean exit is a normal stop, so the node would sit with a dead
+    # qemu holding the sockets and nothing said.
     #
     # agent-recover cannot stand in for this: it never restarts the agent, so the guest it
     # freezes is one the running agent had already converged, and the ladder is entered from the
@@ -213,7 +213,7 @@ pkgs.testers.runNixOSTest {
     print(f"the ladder took the mute guest {time.monotonic() - adopted_at:.0f}s after the adopt")
 
     # THE AGENT DID NOT EXIT: the invocation that adopted the guest is still the one running, and
-    # the service manager counted no restart of its own. With the old code the agent is gone
+    # the service manager counted no restart of its own. An agent that exited would be gone
     # here -- exit 0, Restart=on-failure, nothing comes back.
     host.succeed("systemctl is-active briard-agent")
     now_invocation = host.succeed("systemctl show -p InvocationID --value briard-agent").strip()
@@ -223,7 +223,7 @@ pkgs.testers.runNixOSTest {
 
     # THE DOOR ANSWERS MEANWHILE. A status asked during the wait is refused with what the ladder
     # is doing and the way out -- not left hanging until the agent exits, which is what a channel
-    # with no reader does, and what the tray and `briard stop` used to get.
+    # with no reader does.
     rc, out = host.execute("timeout 20 ${agent}/bin/briard-agent directive status 2>&1")
     print(f"status during the ladder's wait (rc {rc}): {out.strip()}")
     assert "the VM is not answering" in out and "briard stop" in out, (
@@ -272,8 +272,8 @@ pkgs.testers.runNixOSTest {
     # === ACT 2: the other half of the same contract. ===
     # Act 1 proved stopping the AGENT leaves the guest alone. This proves stopping the GUEST UNIT
     # powers the machine down rather than pulling its plug — the case a host reboot creates, since
-    # systemd stops every unit on the way down. Before the unit had an ExecStop, that SIGTERMed
-    # qemu, and the guest experienced its owner installing distro updates as a power cut.
+    # systemd stops every unit on the way down. Without the unit's ExecStop, that SIGTERMs
+    # qemu, and the guest experiences its owner installing distro updates as a power cut.
     #
     # The agent is stopped FIRST, deliberately: it mirrors a host shutdown, and it proves the clean
     # stop does not depend on the daemon still being alive to arrange it. The mechanism is the unit
@@ -310,7 +310,7 @@ pkgs.testers.runNixOSTest {
     #    The bound is set to exclude the TimeoutStopSec path (75s) rather than to be tight: a
     #    clean shutdown that took 65s is still clean, and the guest's own shutdown was measured at
     #    ~25s. What must never pass is a unit that waits out its timeout and power-cuts the guest
-    #    anyway — the old behaviour wearing the new behaviour's log line.
+    #    anyway — a power cut wearing the clean stop's log line.
     assert stop_secs < 70, f"the stop took {stop_secs}s — that is the timeout killing it, not a clean powerdown"
 
     host.fail("systemctl is-active briard-guest.service")

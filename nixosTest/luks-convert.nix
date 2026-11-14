@@ -1,23 +1,24 @@
 # ENCRYPTION IS A `pvmove`, AND IT IS REVERSIBLE.
 #
-# The item was admitted on a premise that turned out to be false — "format the volume encrypted at
-# install, because you can never add it later". You can. What has to exist in advance is not the
-# encryption, it is a SEAM: a VG of linear LVs between the disk and DRBD. With one there, disarming a
+# "Format the volume encrypted at install, because you can never add it later" is false: you
+# can. What has to exist in advance is not the encryption, it is a SEAM: a VG of linear LVs
+# between the disk and DRBD. With one there, disarming a
 # node is a `pvmove` onto a plaintext PV and arming it is the same move back, both with the
 # workload serving throughout; without one there is no table to reload and DRBD would have to
 # close and reopen its backing device.
 #
 # So this rig proves the claim in the direction that actually matters — BOTH — on the shape a
-# household runs: an app writing to a btrfs volume over a promoted DRBD. The app is the
-# dummy, whose tick is an fsync'd write every second and whose counter may only grow -- a
-# workload that dies on the first write that fails, which is what makes it the right witness here.
+# flock node runs: an app writing to a btrfs volume over a promoted DRBD (a lone node runs no
+# DRBD). The app is the dummy, whose tick is an fsync'd write every second and whose counter
+# may only grow -- a workload that dies on the first write that fails, which is what makes it
+# the right witness here.
 #
 #   the shipped ENCRYPTED node → (hotplug a blank disk, pvcreate, vgextend) → pvmove → vgreduce
 #                              → (device_del the retired disk) → and all the way back onto LUKS.
 #
-# DISARM FIRST, deliberately. Encryption on by default (c) is defensible only if a household can
+# DISARM FIRST, deliberately. Encryption on by default is defensible only if a household can
 # get back off it without an outage — otherwise the default is a one-way door for the installed
-# base, which is precisely the trap the original "impossible later" premise would have set.
+# base.
 #
 # WHAT IS UNDER TEST IS THE ABSENCE OF EVENTS, which is why every assertion here is a negative
 # with a positive control beside it. `pvmove` suspends the LV to insert and to retire its
@@ -29,8 +30,7 @@
 # counters; the app must keep answering, and its counter keep climbing.
 #
 # AND IT MEASURES, because "a latency bump" is a number or it is a hope. The run prints the stall
-# distribution per move and the copy throughput, which is what the rule of thumb in the docs is
-# derived from.
+# distribution per move and the copy throughput.
 #
 # ⚠️ THE MOVE IS BOUNDED BY THE DISK, NOT BY THE CIPHER. AES-NI runs at GB/s and dm-crypt
 # parallelises across per-CPU workqueues, so what this measures on any host is the copy.
@@ -90,8 +90,8 @@ let
 
   node = h.mkNode {
     inherit fixture;
-    # The resource names the LV -- as every node does since the storage seam -- and every move below
-    # happens underneath that name, which is the whole now-decision the item turns on.
+    # The resource names the LV -- as every flock node does -- and every move below happens
+    # underneath that name.
     resource = h.mkResource [
       {
         name = "node1";
@@ -108,10 +108,11 @@ pkgs.testers.runNixOSTest {
     {
       imports = [ node ];
       # The data disk the seam unit will claim, resized from lib.nix's 256 MiB (a 4 GiB volume is
-      # what `install.sh` lays down by default, and a 256 MiB move would measure nothing) and given
-      # a qdev id + a serial. Both are load-bearing: the id is what `device_del` names when the
-      # conversion retires this disk, and the serial is what makes `/dev/disk/by-id/virtio-plain0`
-      # a stable name in the guest rather than a `/dev/vd?` letter that shifts as disks come and go.
+      # what the agent makes by default, DATA_SIZE, and a 256 MiB move would measure nothing) and
+      # given a qdev id + a serial. Both are load-bearing: the id is what `device_del` names when
+      # the conversion retires this disk, and the serial is what makes
+      # `/dev/disk/by-id/virtio-plain0` a stable name in the guest rather than a `/dev/vd?` letter
+      # that shifts as disks come and go.
       virtualisation.emptyDiskImages = lib.mkForce [
         {
           size = diskMB;
@@ -262,7 +263,7 @@ pkgs.testers.runNixOSTest {
     # briard-node-storage.service lays this down from the spec the host writes, and
     # it also loads dm-mirror -- the target pvmove builds its transient mirror out of, which LVM
     # cannot autoload on a NixOS guest (it shells out to /sbin/modprobe, which does not exist
-    # there; the conversion spike measured the refusal). Nothing here builds a seam of its own: a rig that
+    # there). Nothing here builds a seam of its own: a rig that
     # did would be proving a stack no household runs.
     node1.succeed("modprobe drbd")
     node1.succeed("briard-test-storage --seed")
@@ -270,7 +271,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed("lsmod | grep -q '^dm_mirror'")
     # The fence, asserted here because everything below depends on it: one linear segment, the
     # same target and the same linear_map() a bare disk would have had. It is what keeps the
-    # seam free, and `lab/oracle` asserts it continuously on the soak fleet.
+    # seam free.
     table = node1.succeed(f"dmsetup table {LV}").strip().splitlines()
     assert len(table) == 1 and " linear " in f" {table[0]} ", f"the LV is not one linear segment: {table}"
 
@@ -296,7 +297,6 @@ pkgs.testers.runNixOSTest {
 
     # A megabyte of data whose checksum has to survive both moves. The app's ticks are the
     # live load; this is the deterministic witness beside it.
-    # realistic load; this is the deterministic witness beside it.
     node1.succeed("head -c 1048576 /dev/urandom >/var/lib/briard/.convert-token")
     node1.succeed("sync -f /var/lib/briard")
     witness = node1.succeed("sha256sum /var/lib/briard/.convert-token").split()[0]
@@ -358,8 +358,8 @@ pkgs.testers.runNixOSTest {
     assert witness == node1.succeed("sha256sum /var/lib/briard/.convert-token").split()[0]
 
     # ── RE-ARM: PLAINTEXT → LUKS, LIVE ─────────────────────────────────────────────────────────
-    # The same move the other way, onto a header this rig makes itself. v5 owns the arming VERB;
-    # what this proves is the only thing the verb will need from the substrate.
+    # The same move the other way, onto a header this rig makes itself. No arming VERB exists;
+    # what this proves is the only thing such a verb would need from the substrate.
     hotplug(node1, "enc1", TARGET_MB)
     node1.succeed("head -c 32 /dev/urandom >/run/briard-rearm.key")
     node1.succeed(f"cryptsetup luksFormat --batch-mode --type luks2 {ENC1} /run/briard-rearm.key")

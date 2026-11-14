@@ -6,7 +6,7 @@
 # a broker that starts is not evidence of anything a household needs. The product replaces that
 # config from `agent/apps`, and every claim in this file is about the difference:
 #
-#   1. the config is IN EFFECT (not merely rendered) -- the API answers on the guest's loopback;
+#   1. the config is IN EFFECT (not merely rendered) -- the API answers at the pod's address;
 #   2. the API is NOT on the LAN -- asserted from ANOTHER MACHINE, which is the only place the
 #      claim can be made honestly (observe from outside);
 #   3. MQTT itself IS on the LAN -- from that same off-box client, because a broker only nobody
@@ -19,8 +19,9 @@
 #      then connected to. An image that advertises nothing is invisible to every appliance in the
 #      house, which is a broker nobody without our documentation can use.
 #
-# Two nodes for one broker: node2 is the off-box client. It holds no app and never promotes
-# -- it is the outside from which (2), (3) and (5) are observed.
+# Two nodes for one broker: node2 is the off-box client, the outside from which (2), (3) and (5)
+# are observed. node1 seeds the volume; the script takes whichever node promoted as the broker
+# and the other as the client.
 { pkgs, guestModule, fixture }:
 
 let
@@ -99,7 +100,7 @@ pkgs.testers.runNixOSTest {
     # broker with no management listener for the health floor to probe.
     #
     # ⚠️ REACHED AT THE POD'S ADDRESS, NOT THE GUEST'S LOOPBACK. The broker runs on a
-    # PRIVATE network now, so 127.0.0.1 in here is the guest's namespace and the broker is not in
+    # PRIVATE network, so 127.0.0.1 in here is the guest's namespace and the broker is not in
     # it. The address comes from the routing table -- the same place the product's own health probe
     # resolves it -- so this test cannot pass against an address nothing else uses.
     import json as _mj
@@ -116,7 +117,7 @@ pkgs.testers.runNixOSTest {
 
     # (2) AND IT IS NOT ON THE LAN. From the other machine, to the address the household uses.
     # This is the assertion that fails if anyone simplifies the config back to the image's -- and
-    # it now has a second guard behind it: the management port is not in the manifest's `ports`, so
+    # it has a second guard behind it: the management port is not in the manifest's `ports`, so
     # nothing publishes it out of the pod at all.
     other.fail(f"curl -fsS --max-time 5 http://{VIP}:9883/api/v1/listeners")
     other.fail(f"curl -fsS --max-time 5 http://{primary.name}:9883/api/v1/listeners")
@@ -133,8 +134,8 @@ pkgs.testers.runNixOSTest {
     # (4) IT KEEPS WHAT IT WAS TOLD TO KEEP -- across a clean bounce and across a crash.
     #
     # THE BOUNCE IS THE PRODUCT'S OWN SEQUENCE, and it has to be: `systemctl restart` on a
-    # container unit does not work at all in a pod, MEASURED here on the first run of this test.
-    # Stopping the container takes the POD down with it, and the start half then fails with
+    # container unit does not work at all in a pod (MEASURED on this rig): stopping the
+    # container takes the POD down with it, and the start half then fails with
     # `Bound to unit briard-mosquitto-pod.service, but unit isn't active`. So the units are
     # stopped containers-first and started pod-first -- exactly what converge does
     # (agent/guestagent) and the reason it never spells this as a restart.
@@ -188,10 +189,9 @@ pkgs.testers.runNixOSTest {
                if s["name"] == "mosquitto")["announce"][0]
     assert ann["port"] == 1883, f"the node announces port {ann['port']}, not MQTT's"
 
-    # (5a) THE SRV TARGET RESOLVES ON THE LAN. Also the first assertion anywhere to resolve a
-    # per-app name over mDNS at all: every earlier one reached those names with
-    # `curl -H 'Host: …'`, which never touches a resolver, so a name that resolved nowhere would
-    # have passed all of them.
+    # (5a) THE SRV TARGET RESOLVES ON THE LAN, over mDNS: a per-app name reached with
+    # `curl -H 'Host: …'` never touches a resolver, so a name that resolved nowhere would
+    # pass that.
     other.wait_until_succeeds(f"avahi-resolve -n {host} | grep -q {VIP}", timeout=120)
 
     # (5b) AND THE SERVICE RECORD IS THERE, under the type and instance the node chose.
@@ -208,13 +208,13 @@ pkgs.testers.runNixOSTest {
     # ⚠️ WHAT THIS DELIBERATELY DOES NOT ASSERT, and why, so nobody adds it back and spends the
     # day: the SRV record's own target/port fields as read by `avahi-browse -r`. Those fields ARE
     # correct -- observed resolving to `briard-brave-elf-mosquitto.local / 192.168.1.100 / 1883`
-    # in runs 33445936181, 33448573206 and 33449242156 -- but avahi's service-record resolver cannot be
-    # made to produce them on demand. MEASURED: it does not fetch the SRV target's address itself,
+    # -- but avahi's service-record resolver cannot be made to produce them on demand.
+    # MEASURED: it does not fetch the SRV target's address itself,
     # so `-r` returns "Failed to resolve … Timeout reached" indefinitely -- through 120s of
     # repeated short browses, a single 90s browse, on the off-box client AND on the node that
     # publishes the records, with both records established and the name resolvable on that very
-    # box. Resolving the host first fixes it sometimes (33449242156) and not others (33475931135,
-    # 180s of exactly that sequence). It is avahi's client, not our records, and the three claims
+    # box. Resolving the host first fixes it sometimes and not others (180s of exactly that
+    # sequence). It is avahi's client, not our records, and the three claims
     # above cover what a household actually needs: the name is on the LAN, the service instance is on
     # the LAN under its type, and the endpoint serves.
   '';

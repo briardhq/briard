@@ -1,13 +1,14 @@
 # DOES AN INTERRUPTED `podman image pull` RESUME, OR START OVER? (A follow-on to the cold-converge-pull stopwatch.)
 #
-# WHY IT DECIDES A DESIGN. Converge-at-promotion put a fetch on the promotion path, and cold-converge-pull
-# measured that nothing bounds it: a slow pull holds the promotion forever, Primary with no VIP.
-# The fix under consideration is a `TimeoutStartSec=` on the generated `.image` unit -- but a
-# timeout is only half a strategy. What it buys is a RETRY: a fresh connection, possibly to a
-# faster CDN mirror, and an escape from a transient network fault. That is worth having only if a
-# retry keeps the bytes already on disk. If every attempt starts from zero, a bound set slightly
-# too tight converts "slow but eventually serves" into "never converges" -- the household's link
-# is re-downloading the same blob until something gives up for good.
+# WHY IT DECIDES A DESIGN. Converge-at-promotion puts a fetch on the promotion path, and
+# cold-converge-pull shows that, unbounded, a slow pull holds the promotion forever, Primary with
+# no VIP. The bound is a `TimeoutStartSec=` on the generated `.image` unit
+# (agent/quadlet/render.go, PullTimeout) -- but a timeout is only half a strategy. What it buys
+# is a RETRY: a fresh connection, possibly to a faster CDN mirror, and an escape from a
+# transient network fault. That is worth having only if a retry keeps the bytes already on disk.
+# If every attempt starts from zero, a bound set slightly too tight converts "slow but
+# eventually serves" into "never converges" -- the household's link is re-downloading the same
+# blob until something gives up for good.
 #
 # So the number that matters is not a duration. It is: after an interrupted pull, how many bytes
 # does the SECOND attempt ask the registry for?
@@ -25,7 +26,7 @@
 # which no amount of protocol overhead or TLS renegotiation can blur.
 #
 # SIGTERM IS THE FAITHFUL INTERRUPTION. That is exactly what systemd sends when
-# `TimeoutStartSec=` expires, so act 2 interrupts the pull the way the proposed fix would.
+# `TimeoutStartSec=` expires, so act 2 interrupts the pull the way the shipped bound does.
 #
 # ACT 3 IS THE CASE THAT PROMPTED THIS: a TRANSIENT fault, not a slow link. podman's own
 # `--retry` (default 3) runs INSIDE one `podman image pull`, so a blip may never reach systemd at
@@ -75,12 +76,10 @@ let
 
   # UNEVEN LAYERS, and the unevenness is the whole point.
   #
-  # The first cut of this act used SIX EQUAL 4 MiB layers and concluded "nothing is kept". That
-  # conclusion was not measured. podman copies every layer concurrently, so six equal layers
-  # progress in lockstep and all six cross any given percentage together: the registry log showed
-  # attempt 1 serving 3407872 / 3211264 / 2392064 / 2228224 / 2883584 / 3276800 bytes against a
-  # full layer of 4197350 -- every one partial, not one finished. There were no completed layers
-  # to discard, so the rig could not have seen them discarded.
+  # EQUAL layers cannot answer the question. podman copies every layer concurrently, so equal
+  # layers progress in lockstep and all cross any given percentage together: at the interrupt
+  # every one is partial, not one finished. With no completed layer to discard, the rig cannot
+  # see one discarded, and "nothing is kept" would read as a result.
   #
   # Real images are not shaped like that: a handful of small layers and one big one is the normal
   # case, and the small ones finish long before the big one does. That is the only arrangement in
@@ -198,7 +197,7 @@ pkgs.testers.runNixOSTest {
 
     # === ACT 2: interrupt at ~40%, then complete ===
     # SIGTERM is what `TimeoutStartSec=` sends, so this interrupts the pull exactly the way the
-    # proposed bound would.
+    # shipped bound does.
     drop_image()
     throttle(True)
     b = tx()
@@ -265,12 +264,11 @@ pkgs.testers.runNixOSTest {
     recovered = False
     t0 = time.monotonic()
     while time.monotonic() - t0 < 300:
-        # BOTH "active" AND "activating" MEAN STILL RUNNING, and the first cut of this rig got
-        # that wrong. A `systemd-run` transient service is Type=simple, so it reports `active`
-        # from the moment it starts -- an `!= "activating"` test therefore fired on the FIRST
-        # poll, printed "did NOT recover" 0.2s into a 20s outage, and finished the whole act in
-        # under a second. The bytes it reported were the ones already on the wire before the
-        # break. Nothing was measured; the number just looked like one.
+        # BOTH "active" AND "activating" MEAN STILL RUNNING. A `systemd-run` transient service
+        # is Type=simple, so it reports `active` from the moment it starts -- an
+        # `!= "activating"` test would fire on the FIRST poll, print "did NOT recover" a moment
+        # into a 20s outage, and report the bytes already on the wire before the break.
+        # Nothing would be measured; the number would just look like one.
         st = node1.succeed("systemctl show -p ActiveState --value pull-act3 || echo gone").strip()
         if st not in ("activating", "active"):
             break
@@ -285,16 +283,16 @@ pkgs.testers.runNixOSTest {
     print("=" * 78)
 
     # === ACT 4: ARE FINISHED LAYERS KEPT ACROSS A RESTART? ===
-    # This decides how bad the 45-minute bound actually is. If a completed layer survives, a long
-    # pull makes MONOTONIC progress across attempts -- only the layer in flight is lost each time
+    # This decides how bad the pull bound (45 minutes for an unsized entry) actually is. If a
+    # completed layer survives, a long pull makes MONOTONIC progress across attempts -- only the
+    # layer in flight is lost each time
     # -- and the "never converges" risk shrinks to a single question: can the image's LARGEST
     # layer cross the household's link inside the window? If nothing survives, every attempt
     # really does start from zero and the bound has to clear the whole image.
     #
-    # AGGREGATE BYTES CANNOT ANSWER THIS, which is what the first cut got wrong. It compared
-    # totals and called a complete re-fetch "layers were discarded" -- but with six EQUAL layers
-    # copied concurrently, nothing had finished at the interrupt, so there was no retained layer
-    # to observe either way. The evidence has to be PER BLOB: which digests does the registry
+    # AGGREGATE BYTES CANNOT ANSWER THIS. A total reads a complete re-fetch as "layers were
+    # discarded" -- but if nothing had finished at the interrupt there was no retained layer to
+    # observe either way. The evidence has to be PER BLOB: which digests does the registry
     # serve on the second attempt, and which does it never hear about again?
     lref = f"${registryHost}/briard-uneven@{ldigest}"
     raw = zregistry.succeed(
@@ -341,7 +339,7 @@ pkgs.testers.runNixOSTest {
     for d, n in sorted(first.items(), key=lambda kv: -layer_size[kv[0]]):
         print(f"    {d[:12]}  {n:9d} / {layer_size[d]:9d}  {'complete' if d in done1 else 'partial'}")
     # THE RIG'S OWN PRECONDITION: with nothing finished, this act cannot see retention and would
-    # repeat the first cut's mistake.
+    # report a result it never measured.
     assert done1, "no layer completed before the interrupt — this act cannot answer its question"
     assert len(done1) < len(layer_size), "every layer completed — the interrupt was too late"
 
@@ -359,11 +357,11 @@ pkgs.testers.runNixOSTest {
     print(f"layers COMPLETED in attempt 1 : {len(done1)}")
     print(f"  re-fetched in attempt 2     : {len(refetched)} {[d[:12] for d in refetched]} = {paid} B")
     print(f"  never requested again       : {len(kept)} {[d[:12] for d in kept]} = {saved} B")
-    # WEIGHED IN BYTES, NOT COUNTED. The first run of this act counted a single re-fetched blob as
-    # "discarded" and printed the wrong verdict over the right data: five 1 MiB layers were kept
-    # and the one re-fetched layer was 450 BYTES. Whether a household's pull converges is decided
-    # by megabytes, so a rule that lets a 450-byte blob outvote 5 MiB of retained work is
-    # measuring its own arithmetic rather than podman's behaviour.
+    # WEIGHED IN BYTES, NOT COUNTED. A count reads a single re-fetched blob as "discarded" and
+    # prints the wrong verdict over the right data: five 1 MiB layers kept and the one re-fetched
+    # layer 450 BYTES. Whether a household pull converges is decided by megabytes, so a rule that
+    # lets a 450-byte blob outvote 5 MiB of retained work is measuring its own arithmetic rather
+    # than podman behaviour.
     if saved > 0 and paid < saved // 20:
         print("VERDICT: FINISHED LAYERS ARE KEPT. The retry asked only for what it had not")
         print(f"  finished — {saved / MiB:.1f} MiB of completed work survived, against {paid} B re-fetched.")
@@ -376,10 +374,10 @@ pkgs.testers.runNixOSTest {
     print("=" * 78)
 
     # === ACT 5: WHERE DO THE BYTES LIVE, AND WHEN ARE THEY SWEPT? ===
-    # The guest has ONE filesystem for all of this (16 GiB root; the replicated volume holds only
-    # app DATA), so a pull's scratch space competes with the OS closure, the image store and
-    # the second system generation an OS upgrade stages. The host's ENOSPC handling and the guest disk
-    # sizing note in disk-image.nix are the same question from the other side.
+    # In the guest, ONE filesystem holds all of this: the state disk, whose scratch is /var
+    # (emptied at boot) and whose persistent half holds the image store (the replicated volume
+    # holds only app DATA), so a pull scratch space competes with the image store. The state
+    # disk in disk-image.nix is the same question from the other side.
     def usage():
         def kb(p):
             out = node1.execute(f"du -sk {p} 2>/dev/null | cut -f1")[1].strip()
@@ -412,13 +410,14 @@ pkgs.testers.runNixOSTest {
     throttle(False)
 
     # === ACT 6: DOES PrivateTmp=true SWEEP THE LEAK? ===
-    # Act 5 found the time bomb: every INTERRUPTED pull abandons its scratch directory in
-    # /var/tmp, and the 45-minute bound is a machine for producing interrupted pulls. On the
-    # guest's OS disk a Home Assistant pull leaks up to its whole compressed download (622 MB) per
-    # expiry, and podman never comes back for it.
+    # Act 5 measures the time bomb: an INTERRUPTED pull abandons its scratch directory in
+    # /var/tmp, and the pull bound is a machine for producing interrupted pulls. On the guest
+    # a Home Assistant pull leaks up to its whole compressed download (622 MB) per expiry
+    # until the next boot empties the scratch, and podman never comes back for it.
     #
-    # PrivateTmp=true is the candidate because it needs no cleanup code: systemd gives the unit
-    # its own /tmp and /var/tmp and removes them when the unit stops, however it stops.
+    # PrivateTmp=true is what the .image unit ships with (agent/quadlet/render.go), because it
+    # needs no cleanup code: systemd gives the unit its own /tmp and /var/tmp and removes them
+    # when the unit stops, however it stops.
     #
     # TWO THINGS HAVE TO HOLD, and the second is the one that could bite. The sweep must work on
     # the interrupt path (that is the point), AND the success path must be unaffected -- if the

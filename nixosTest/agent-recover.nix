@@ -46,15 +46,14 @@ pkgs.testers.runNixOSTest {
     host.succeed("ls -l /dev/kvm")
 
     # The shipped NIC contract, same shape as agent-bringup: a carrier-bearing veth parent, the
-    # guest's two LAN NICs as macvtap children in install.sh's order (sys0 -> eth1, svc0 -> eth2),
+    # guest's two LAN NICs as macvtap children in the agent's order (sys0 -> eth1, svc0 -> eth2),
     # and the private host<->guest link as a plain tap holding 10.11.9.1/24. All three or none --
     # qemu.go assigns NICs positionally, so omitting sys0 lands the witness NIC on eth2 and the
     # private link silently fails to exist.
     #
-    # ⚠️ THIS BUILT A HOST-SIDE MACVLAN SHIM until the agent owned the host's route, because macvtap isolates host<->guest
-    # and L1 could not otherwise curl the VIP -- the rig handing itself a reachability the product
-    # did not have. The curls below are unchanged and now pass because the agent routes the VIP over
-    # the private link. Note the isolation itself is still real and still load-bearing HERE: it is
+    # ⚠️ NO HOST-SIDE MACVLAN SHIM: macvtap isolates host<->guest, and a shim would hand the rig a
+    # reachability the product does not have. The curls below pass because the agent routes the
+    # VIP over the private link. The isolation itself is still load-bearing HERE: it is
     # precisely why the recovery ladder cannot probe the app before deciding.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
@@ -65,20 +64,21 @@ pkgs.testers.runNixOSTest {
     host.succeed("ln -s ${guestDisk}/nixos.qcow2 /tmp/guest.qcow2")
     host.succeed("truncate -s 512M /tmp/data.img")
 
-    # The host holds a guest bundle tree, as install.sh lays on every install: the image
+    # The host holds a guest bundle tree, as the install lays on every node: the image
     # bakes no reverse proxy, so a guest is dressed by its host or it cannot serve. Copied out of
     # the store because the host writes `guest.good` beside the tree.
     host.succeed("mkdir -p /opt/briard/agent && cp -r ${dressBase}/. /opt/briard/agent/ && chmod -R u+w /opt/briard/agent")
 
     host.succeed(
         "systemd-run --unit=briard-agent --collect "
-        # The PATH install.sh gives the shipped unit (scripts/install.sh, "Environment=PATH="). The
-        # agent shells out to systemd-run, systemctl and -- since it owns the host's route -- `ip`, all BY NAME, and
-        # a transient unit's default PATH resolves none of them reliably. Pinning the shipped value
-        # is the point: the rig gets what the product gets.
+        # The PATH the shipped unit carries (scripts/units/briard-agent.service,
+        # "Environment=PATH="). The agent shells out to systemd-run, systemctl and -- as it owns
+        # the host route -- `ip`, all BY NAME, and a transient unit's default PATH resolves none
+        # of them reliably. Pinning the shipped value is the point: the rig gets what the product
+        # gets.
         "--setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/wrappers/bin "
         "--setenv=QEMU=${pkgs.qemu}/bin/qemu-system-x86_64 --setenv=ACCEL=kvm:tcg "
-        # Where the host keeps its guest bundle tree, the way install.sh sets it.
+        # Where the host keeps its guest bundle tree: the agent default (config.go), stated.
         "--setenv=UPDATE_BASE=/opt/briard/agent "
         "--setenv=GUEST_IMAGE=/tmp/guest.qcow2 --setenv=DATA_DISK=/tmp/data.img --setenv=STATE_DISK=/tmp/state.img "
         # The guest console, because this test's failure mode is "the guest never answered" and
@@ -86,8 +86,8 @@ pkgs.testers.runNixOSTest {
         # carry it for the same reason (the console is the window).
         "--setenv=GUEST_SERIAL=/tmp/guest-serial.log "
         # THE RECOVERY WINDOW, SHORTENED FROM THE SHIPPED TEN MINUTES. Proving a
-        # ten-minute timer by waiting ten minutes cost 730s of an 800s tier -- 91% of the wall
-        # clock for one idle wait -- and the principle it served does not scale: nobody would
+        # ten-minute timer by waiting ten minutes spends ~90% of the tier wall clock on one
+        # idle wait, and the principle it serves does not scale: nobody would
         # wait out a two-day timer to watch it fire. This still runs the SHIPPED binary on a
         # real wedged guest; only the number differs, and the assertion below checks the host
         # waited THE CONFIGURED window, which is the property that would actually rot. That the
@@ -163,9 +163,9 @@ pkgs.testers.runNixOSTest {
     # `is-active` says "not active" about a unit that is spending its ExecStop, so the ladder
     # correctly decides the VM is not running and launches -- into a name systemd has not released
     # yet. systemd-run refuses it ("already loaded or has a fragment file"), and because a refusal
-    # costs milliseconds, all three relaunch attempts are spent inside one logged second, on a
-    # condition that clears by itself in a few. The node then sat out the two-hour cadence with
-    # nothing left to try -- measured on a stranger's machine.
+    # costs milliseconds, the relaunch burst (three attempts, a 30s floor between failures) is
+    # spent on a condition that clears by itself, and the node sits out the two-hour cadence with
+    # nothing left to try. The launch waits for the name to come free (platform waitUnitFree).
     #
     # The window is made WIDE and certain rather than raced for. SIGSTOP the guest QEMU first: the
     # control channel dies at once, and the graceful stop that follows cannot complete, because the
@@ -184,9 +184,9 @@ pkgs.testers.runNixOSTest {
         "journalctl -u briard-agent | grep -c 'guest relaunched and converged' || true"
     ).strip())
 
-    # THE ASSERTION THAT MUST BE ABLE TO FAIL: the node comes back. Without the wait the three
-    # attempts are gone in a second and this times out -- the guest is never relaunched at all
-    # until the two-hour cadence comes round.
+    # THE ASSERTION THAT MUST BE ABLE TO FAIL: the node comes back. Without the wait each attempt
+    # is refused while the unit is still stopping, and once the burst is spent the guest is not
+    # relaunched until the two-hour cadence comes round.
     host.wait_until_succeeds(
         "test \"$(journalctl -u briard-agent | grep -c 'guest relaunched and converged' || true)\" "
         f"-gt {relaunched_before}",
@@ -229,8 +229,9 @@ pkgs.testers.runNixOSTest {
     # was given, not to a number someone typed once. A floor alone passes a host that waited far
     # too long (a hung ladder looks patient); a ceiling alone passes one that never waited.
     #
-    # The slack above the window is the re-dial handshakes the host spends while waiting, ~10s
-    # each, measured at 13s of slack against the shipped 600s window.
+    # The slack above the window is what the host spends around it: noticing the drop before
+    # the window opens (the liveness rule needs three missed calls), and the gate read and the
+    # alert write after it closes.
     window = 60
     assert waited >= window, f"host acted after only {waited:.0f}s, inside its own {window}s window -- the wait is not driving the decision"
     assert waited < window + 90, f"host waited {waited:.0f}s for a {window}s window -- the ladder is not acting when the window closes"
@@ -272,9 +273,9 @@ pkgs.testers.runNixOSTest {
     alerts = int(host.succeed("journalctl -u briard-agent | grep -c 'Briard: the VM has stopped answering' || true").strip())
     assert alerts == 1, f"{alerts} degraded alerts for one incident -- the announce-once latch is broken"
 
-    # AND THE INCIDENT CLOSES ITSELF. The guest came back, so the owner is told it is over. This
-    # is the half that used to be missing: the ladder announced trouble and then never mentioned
-    # it again either way, so a resolved incident looked exactly like an ignored one.
+    # AND THE INCIDENT CLOSES ITSELF. The guest came back, so the owner is told it is over.
+    # Without the all-clear the ladder would announce trouble and never mention it again either
+    # way, so a resolved incident would look exactly like an ignored one.
     host.wait_until_succeeds(
         "${agent}/bin/briard-agent alerts | sed -n '/history/,$p' | grep -q 'the VM is answering again'",
         timeout=120,
