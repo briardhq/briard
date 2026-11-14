@@ -6,17 +6,16 @@ import (
 )
 
 // transient is a transient unit's command line read back into the three things a service manager
-// other than systemd can honour: the NAME it is found by again, the file its own output goes to,
+// other than systemd can honour: the name it is found by again, the file its own output goes to,
 // and what it runs.
 //
-// The callers (launchArgs, StartForwarder) render systemd-run's argv and nothing else, on
-// purpose: launchArgs is a pure renderer whose unit tests are the only check on the stop
-// contract, and a second, per-OS renderer beside each would be two descriptions of one unit that
-// can drift. So
-// a backend that is not systemd reads the one rendering back. The properties it has no use for
-// (Restart=no is a Job Object's default; Description is decoration) are skipped rather than
-// refused, and ExecStop is skipped too -- on Windows the agent itself is told about a shutdown,
-// which is where the clean stop lives there.
+// The callers (launchArgs, StartForwarder) deliberately render systemd-run's argv and nothing
+// else: launchArgs is a pure renderer whose unit tests are the only check on the stop contract,
+// and a second, per-OS renderer beside each would be two descriptions of one unit that can drift.
+// So a backend that is not systemd reads the one rendering back, skipping rather than refusing the
+// properties it has no use for (Restart=no is a Job Object's default; Description is decoration),
+// and ExecStop too: on Windows the agent itself is told about a shutdown, which is where the clean
+// stop lives there.
 type transient struct {
 	unit string
 	log  string // StandardOutput/StandardError's append: target; "" = the manager's default

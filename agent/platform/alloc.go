@@ -8,37 +8,34 @@ import (
 	"briard.io/shared/atomicfile"
 )
 
-// THE DISKS A NODE'S GUEST RUNS ON, ALLOCATED BY THE AGENT.
+// The disks a node's guest runs on, allocated by the agent: a few primitives with one per-OS seam
+// (alloc_linux.go / alloc_windows.go), the shape the rest of this package has for routes and units.
 //
-// A few primitives with one per-OS seam (alloc_linux.go / alloc_windows.go), the shape the rest of
-// this package has for routes and units.
-//
-// ⚠️ CREATION NEVER OVERWRITES. A disk that exists is never recreated or rewritten: these are the
-// PET volumes, the ones a reinstall deliberately keeps, and the guest owns what is inside them.
-// The one change a disk may undergo is to GROW (ExtendThick), which adds reserved bytes at its end
-// and leaves every byte before them alone.
+// ⚠️ Creation never overwrites. A disk that exists is never recreated or rewritten: these are the
+// pet volumes, the ones a reinstall deliberately keeps, and the guest owns what is inside them.
+// The one change a disk may undergo is to grow (ExtendThick), adding reserved bytes at its end and
+// leaving every byte before them alone.
 
-// AllocateThick creates path at exactly size bytes with the space RESERVED, and does nothing if it
+// AllocateThick creates path at exactly size bytes with the space reserved, and does nothing if it
 // already exists.
 //
-// THICK, because a sparse file the host cannot actually back becomes ENOSPC underneath the guest,
-// mid-write -- on the data volume, *underneath the replicated filesystem* the guest writes app
-// data into, on the node holding the primary role. Reserving
-// up front makes "is there room for this node's data?" a question answered once, by a call that
-// either succeeds or refuses, rather than months later by a write that fails.
+// Thick, because a sparse file the host cannot actually back becomes ENOSPC underneath the guest,
+// mid-write: on the data volume, under the replicated filesystem the guest writes app data into, on
+// the node holding the primary role. Reserving up front makes "is there room for this node's
+// data?" a question answered once, by a call that succeeds or refuses, not months later by a write
+// that fails.
 //
-// ⚠️ THE DISK APPEARS WHOLE OR NOT AT ALL. The bytes are reserved under path+".partial", flushed,
-// and only then published at path. An allocation can be interrupted where no error path runs -- a
-// watchdog past its lease, a power cut, minutes into a zero-write -- and a half-made file AT path
+// ⚠️ The disk appears whole or not at all: the bytes are reserved under path+".partial", flushed,
+// and only then published at path. An allocation can be interrupted where no error path runs (a
+// watchdog past its lease, a power cut, minutes into a zero-write), and a half-made file at path
 // would be taken for this node's volume by the next start: a short disk under the guest, and no
-// error anywhere. A ".partial" is never anything else: only this function writes that name and
-// nothing attaches it, so finding one is the positive proof of an interrupted allocation, and it is
-// discarded and made again.
+// error anywhere. Only this function writes a ".partial" and nothing attaches one, so finding one
+// is positive proof of an interrupted allocation; it is discarded and made again.
 //
-// ⚠️ THE PUBLISH IS THE PROOF OF ABSENCE. It is a hard link, which the kernel refuses when anything
-// is already at path, atomically -- "absent" and "present but unstat-able" are different facts a
-// stat cannot separate, and a rename would replace either. The Lstat before the allocation only
-// saves the work when the volume is plainly there; it decides nothing destructive.
+// ⚠️ The publish is the proof of absence: a hard link, which the kernel refuses atomically when
+// anything is already at path. A stat cannot separate "absent" from "present but unstat-able", and
+// a rename would replace either. The Lstat before the allocation only saves the work when the
+// volume is plainly there; it decides nothing destructive.
 func AllocateThick(path string, size int64) error {
 	partial := path + ".partial"
 	if _, err := os.Lstat(path); err == nil {
@@ -59,7 +56,7 @@ func AllocateThick(path string, size int64) error {
 	}
 	err = allocate(f, 0, size)
 	if err == nil {
-		err = f.Sync() // the reservation is durable BEFORE the name that vouches for it exists
+		err = f.Sync() // the reservation is durable before the name that vouches for it exists
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
@@ -80,14 +77,14 @@ func AllocateThick(path string, size int64) error {
 	return atomicfile.SyncDir(filepath.Dir(path))
 }
 
-// ExtendThick grows the thick file at path to size bytes with the new range RESERVED, and does
+// ExtendThick grows the thick file at path to size bytes with the new range reserved, and does
 // nothing when it is already that large. It never shrinks and never creates: the disk it grows is
 // a pet the guest owns, so a missing one is an error, not something to make.
 //
-// The one allocation that may happen while the file is in use -- the guest's state disk grows
+// It is the one allocation that may happen while the file is in use: the guest's state disk grows
 // under a running VM, which sees the new size only once QEMU is told (Guest.ResizeStateDisk). A
-// reservation that fails half-way is cut back to the old size, so the file never claims bytes
-// its blocks do not back.
+// reservation that fails half-way is cut back to the old size, so the file never claims bytes its
+// blocks do not back.
 func ExtendThick(path string, size int64) error {
 	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
@@ -109,10 +106,10 @@ func ExtendThick(path string, size int64) error {
 }
 
 // SetNoCOW asks the filesystem holding dir not to copy-on-write the files created in it from now
-// on (`chattr +C`; inherited, and only honoured on a file while it is empty). THICK IS NOT A
-// PROMISE ON A COPY-ON-WRITE FILESYSTEM: on btrfs every overwrite of a reserved block allocates a
-// new one, so a reservation made at install does not cover a write made a month later. Setting it
-// on the directory before the disks are created is what makes their reservation mean what it says.
+// on (`chattr +C`; inherited, and only honoured on a file while it is empty). Thick is no promise
+// on a copy-on-write filesystem: on btrfs every overwrite of a reserved block allocates a new one,
+// so a reservation made at install does not cover a write made a month later. Setting it on the
+// directory before the disks are created is what makes their reservation mean what it says.
 // Filesystems that never copy (ext4, XFS) have no such flag and are not an error.
 func SetNoCOW(dir string) error {
 	if err := setNoCOW(dir); err != nil {

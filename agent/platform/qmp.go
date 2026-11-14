@@ -9,27 +9,24 @@ import (
 	"time"
 )
 
-// QMP -- QEMU's machine protocol -- is the host's control channel to the VM itself, as
-// distinct from the virtio-serial channel, which reaches the guest OS *inside* it.
-// The distinction is the point: everything this file does must keep working when the guest
-// OS is wedged, mid-reboot, or not yet booted.
+// QMP, QEMU's machine protocol, is the host's control channel to the VM itself, as distinct from
+// the virtio-serial channel, which reaches the guest OS inside it: everything this file does must
+// keep working when the guest OS is wedged, mid-reboot, or not yet booted.
 //
-// It is line-oriented JSON over a unix socket QEMU serves -- the same shape the agent
-// already speaks to the guest agent -- so it needs no new process, no daemon, and no
-// coordination. A connection is dialled per call rather than held open: these are rare,
-// deliberate operations, and a long-lived handle to total-control-of-the-VM is a liability
-// with no benefit.
+// It is line-oriented JSON over a unix socket QEMU serves (the shape the agent already speaks to
+// the guest agent), so it needs no new process, no daemon, and no coordination. A connection is
+// dialled per call rather than held open: these are rare, deliberate operations, and a long-lived
+// handle to total control of the VM is a liability with no benefit.
 //
-// SECURITY. QMP is unrestricted control of the VM: it can reset it, stop it, and dump guest
-// RAM to a file. There is no capability subsetting to hide behind, so the containment is the
-// filesystem -- the socket lives in a directory the agent creates 0700 root (see Launch).
-// Connecting to a unix socket requires write permission on it, and QEMU creates it 0755, so
-// the directory is the second lock rather than the only one; it is deliberate either way.
+// Security: QMP is unrestricted control of the VM (reset, stop, dump guest RAM to a file), with no
+// capability subsetting to hide behind, so the containment is the filesystem: the socket lives in
+// a directory the agent creates 0700 root (see Launch). Connecting to a unix socket requires write
+// permission on it and QEMU creates it 0755, so the directory is the second lock rather than the
+// only one; it is deliberate either way.
 
-// qmpTimeout bounds a single request/response exchange. QMP replies are effectively
-// immediate (QEMU answers from its main loop); this exists so a wedged QEMU surfaces as an
-// error instead of a hang, since the whole point of this channel is to act when things are
-// already going wrong.
+// qmpTimeout bounds a single request/response exchange. QMP replies are effectively immediate
+// (QEMU answers from its main loop); this makes a wedged QEMU an error instead of a hang, since
+// this channel exists to act when things are already going wrong.
 const qmpTimeout = 10 * time.Second
 
 // qmpConn is one dialled, capability-negotiated QMP session.
@@ -63,18 +60,17 @@ func dialQMP(ctx context.Context, path string) (*qmpConn, error) {
 		return nil, fmt.Errorf("platform: dial QMP %s: %w", path, err)
 	}
 	q := &qmpConn{c: c, dec: json.NewDecoder(c)}
-	// THE HANDSHAKE IS BOUNDED BY qmpTimeout, THE COMMAND BY THE CALLER'S CONTEXT, and the two
-	// must not share a deadline. A frozen QEMU never sends the greeting, so a caller's long
-	// budget handed to the handshake is a hang for the whole of it: the recovery ladder
-	// (host.rebootGuest) and the rollback leg (osUpgrade.restoreImage) budget ~6.5 minutes for
-	// stop + relaunch, and their ACPI attempt would sit in this Decode for all of it before
-	// falling back to the forced stop. nixosTest/agent-recover SIGSTOPs QEMU to prove it does not.
+	// The handshake is bounded by qmpTimeout, the command by the caller's context, and the two
+	// must not share a deadline. A frozen QEMU never sends the greeting, so a caller's long budget
+	// handed to the handshake is a hang for the whole of it: the recovery ladder (host.rebootGuest)
+	// and the rollback leg (osUpgrade.restoreImage) budget ~6.5 minutes for stop + relaunch, and
+	// their ACPI attempt would sit in this Decode for all of it before falling back to the forced
+	// stop. nixosTest/agent-recover SIGSTOPs QEMU to prove it does not.
 	//
-	// The split is the honest bound for each. Connection setup on a local unix socket is
-	// sub-second on any QEMU that is alive at all -- silence here means the process is gone or
-	// stopped, which more waiting cannot change. A COMMAND keeps the budget its caller chose. Hence
-	// the deadline is tightened for the handshake and handed back to the caller's context before
-	// the command runs.
+	// Each gets its honest bound: connection setup on a local unix socket is sub-second on any QEMU
+	// alive at all, so silence means the process is gone or stopped, which more waiting cannot
+	// change, while a command keeps the budget its caller chose. The deadline is tightened for the
+	// handshake and handed back to the caller's context before the command runs.
 	setupDeadline := time.Now().Add(qmpTimeout)
 	if deadline, ok := ctx.Deadline(); ok && deadline.Before(setupDeadline) {
 		setupDeadline = deadline // a caller in more of a hurry than we are still wins
@@ -148,15 +144,13 @@ func qmpExecute(ctx context.Context, path, cmd string, args any) (json.RawMessag
 	return q.execute(cmd, args)
 }
 
-// Shutdown asks the guest OS to power off cleanly (an ACPI power-button event) and waits
-// until the VM is actually gone.
+// Shutdown asks the guest OS to power off cleanly (an ACPI power-button event) and waits until the
+// VM is actually gone: the counterpart to Stop, which kills QEMU (a power cut, from the guest's
+// point of view).
 //
-// It is the counterpart to Stop, which kills QEMU -- a power cut, from the guest's point of
-// view.
-//
-// It does NOT escalate on its own. A guest that ignores ACPI is a decision, not a detail --
-// the caller may force it with Stop, or abandon what it was doing and leave the guest serving
-// -- so this reports the failure and leaves the choice upstream.
+// It does not escalate on its own. A guest that ignores ACPI is a decision, not a detail (the
+// caller may force it with Stop, or abandon what it was doing and leave the guest serving), so
+// this reports the failure and leaves the choice upstream.
 func (g *Guest) Shutdown(ctx context.Context, grace time.Duration) error {
 	if g == nil || g.unit == "" {
 		return nil
@@ -176,21 +170,16 @@ const GuestShutdownGrace = 60 * time.Second
 // ShutdownVM is Guest.Shutdown for a caller that has a socket path and nothing else: the guest
 // unit's own ExecStop, which runs as a separate process with no Guest handle to hold.
 //
-// It is a sibling rather than a reuse because Guest.Shutdown confirms the stop with
-// WaitStopped, which judges the unit by its ActiveState -- and inside its own unit's ExecStop
-// the unit reads "deactivating" for as long as this function runs. Reading that as stopped
-// (`is-active`) would report a clean shutdown while the guest is still flushing, and systemd
-// would kill QEMU underneath it; reading it as still-running, as WaitStopped does, waits on a
-// state only this function's own return can clear. Vacuous one way, self-deadlocked the other.
-//
-// So this judges the VM by the MONITOR SOCKET instead, which belongs to QEMU rather than to
-// systemd's opinion of QEMU: a dial that no longer connects means the process is gone (QEMU
-// unlinks the socket at exit; a leftover file refuses the connection instead -- both are a
-// failed dial, so neither needs special-casing).
-//
-// A socket that is already unreachable on entry is success, not failure. The commonest caller is
-// a stop that follows something else having killed QEMU already (Stop's SIGKILL, a crash), and
-// "there is no VM to power down" is that request satisfied.
+// It cannot reuse Guest.Shutdown, whose WaitStopped judges the unit by its ActiveState: inside its
+// own unit's ExecStop the unit reads "deactivating" for as long as this function runs. Reading
+// that as stopped (`is-active`) would report a clean shutdown while the guest is still flushing,
+// and systemd would kill QEMU underneath it; reading it as still-running, as WaitStopped does,
+// waits on a state only this function's own return can clear (self-deadlock). So this judges the
+// VM by the monitor socket, which belongs to QEMU rather than to systemd's opinion of it: a failed
+// dial means the process is gone (QEMU unlinks the socket at exit, and a leftover file refuses the
+// connection, so neither needs special-casing). A socket already unreachable on entry is success,
+// not failure: the commonest caller is a stop after something else already killed QEMU (Stop's
+// SIGKILL, a crash), and "there is no VM to power down" is that request satisfied.
 func ShutdownVM(ctx context.Context, qmpSock string, grace time.Duration) error {
 	if !qmpReachable(ctx, qmpSock) {
 		return nil // nothing there to power down
@@ -235,27 +224,23 @@ func qmpReachable(ctx context.Context, path string) bool {
 	return true
 }
 
-// Accelerator reports which accelerator the running VM actually got, by name
-// ("kvm", "whpx", "tcg", ...) -- QEMU's own answer (`query-accelerators`), not an inference
-// from the argv or from /dev/kvm.
+// Accelerator reports which accelerator the running VM actually got, by name ("kvm", "whpx",
+// "tcg", ...): QEMU's own answer (`query-accelerators`), not an inference from the argv or from
+// /dev/kvm. It has to be asked because QEMUSpec.Accel is a fallback list ("kvm:tcg"): the command
+// line says what the host requested, only the VM knows what it got. The fallback is deliberate
+// and supported (the no-virt host) but silent, and costs roughly an order of magnitude of guest
+// speed, so the one place it must not stay silent is the log a future performance question
+// starts from (host.bringUp logs it).
 //
-// It has to be asked rather than assumed, because QEMUSpec.Accel is a fallback LIST
-// ("kvm:tcg"): the command line says what the host REQUESTED and only the VM knows what it
-// got. The fallback is deliberate and supported (the no-virt host), but it is also SILENT and
-// costs roughly an order of magnitude of guest speed, so the one place it must not stay silent
-// is the log a future performance question starts from (host.bringUp logs it).
+// ⚠️ It asks for a name, not a yes/no about KVM, and the difference is not cosmetic: `query-kvm`
+// answers `{"enabled": false, "present": false}` on a perfectly accelerated WHPX guest (measured
+// on Windows), because it asks whether the accelerator is KVM specifically, and its `present` is
+// QEMU's `accel_find("kvm")`, i.e. is KVM compiled into this binary, true on every Linux build no
+// matter what the host can do.
 //
-// ⚠️ IT ASKS FOR A NAME, NOT FOR A YES/NO ABOUT KVM, and the difference is not cosmetic.
-// `query-kvm` answers `{"enabled": false, "present": false}` on a perfectly accelerated
-// WHPX guest, because it is asking whether the accelerator is KVM specifically -- measured on
-// Windows. Its `present` field is no better: QEMU implements it as
-// `accel_find("kvm")`, i.e. *is KVM compiled into this binary*, so on every Linux build it is
-// true no matter what the host can do.
-//
-// `query-accelerators` needs QEMU 10.2+, which is what nixosTest/qemu-bundle.nix ships. An older qemu
-// errors here and the caller logs that it could not ask; there is deliberately no `query-kvm`
-// fallback, because a second code path maintained forever for a qemu we do not ship is the
-// wrong trade.
+// `query-accelerators` needs QEMU 10.2+, which nixosTest/qemu-bundle.nix ships; an older qemu
+// errors here and the caller logs that it could not ask. There is deliberately no `query-kvm`
+// fallback: a second code path maintained forever for a qemu we do not ship is the wrong trade.
 func (g *Guest) Accelerator(ctx context.Context) (string, error) {
 	if g == nil {
 		return "", fmt.Errorf("platform: no guest to ask about acceleration")
@@ -276,18 +261,15 @@ func (g *Guest) Accelerator(ctx context.Context) (string, error) {
 	return out.Enabled, nil
 }
 
-// AccelTCG is the one accelerator name that means the guest is being EMULATED rather than
-// accelerated. Every other name QEMU can return is some hypervisor doing the work, so callers
-// test for this one rather than enumerating the rest -- the list grows with QEMU, the
-// emulator does not.
+// AccelTCG is the one accelerator name that means the guest is being emulated rather than
+// accelerated. Every other name QEMU can return is some hypervisor doing the work, so callers test
+// for this one rather than enumerating the rest: the list grows with QEMU, the emulator does not.
 const AccelTCG = "tcg"
 
-// WaitStopped blocks until the VM is actually gone, which is the only honest confirmation
-// that a shutdown happened: every way of ASKING for one (the guest agent's os.poweroff, the
-// ACPI button) returns as soon as the request is accepted, and the caller's next act is
-// usually to touch the disk QEMU still has open.
-//
-// "Gone" means the unit is at rest, not merely non-"active" -- see unitAtRest.
+// WaitStopped blocks until the VM is actually gone, the only honest confirmation that a shutdown
+// happened: every way of asking for one (the guest agent's os.poweroff, the ACPI button) returns
+// as soon as the request is accepted, and the caller's next act is usually to touch the disk QEMU
+// still has open. "Gone" means the unit is at rest, not merely non-"active" (see unitAtRest).
 func (g *Guest) WaitStopped(ctx context.Context, grace time.Duration) error {
 	if g == nil || g.unit == "" {
 		return nil
@@ -370,18 +352,16 @@ func (g *Guest) SetServiceLink(ctx context.Context, up bool) error {
 
 // AddMemory grows the running VM by one DIMM of MemoryStepMB: a RAM backend, then the DIMM that
 // plugs it in. The guest's kernel sees an ACPI memory-hotplug event and onlines the memory itself,
-// so nothing is asked of the guest OS. It is the ONE way the VM grows, on every accelerator: QEMU's
+// so nothing is asked of the guest OS. It is the one way the VM grows, on every accelerator: QEMU's
 // virtio-mem is built for Linux hosts only, and DIMM hotplug was measured working under both KVM
 // and WHPX.
 //
-// THE ID COMES FROM THE VM, NOT FROM A COUNTER. The agent can restart while the guest keeps
-// running, and a counter would restart at zero and collide with a DIMM the previous agent added --
-// so the next free id is read off the backends QEMU already holds. A backend whose DIMM failed to
-// plug is deleted before returning, and if even that fails it still holds its id, so the next
-// attempt skips it rather than colliding.
-//
-// It needs a launch with room to grow (QEMUSpec.MaxMemoryMB); on one without, QEMU refuses the
-// DIMM and this returns that refusal.
+// The next free id is read off the backends QEMU already holds, never a counter: the agent can
+// restart while the guest keeps running, and a counter would restart at zero and collide with a
+// DIMM the previous agent added. A backend whose DIMM failed to plug is deleted before returning;
+// if even that fails it still holds its id, so the next attempt skips it rather than colliding. It
+// needs a launch with room to grow (QEMUSpec.MaxMemoryMB); on one without, QEMU refuses the DIMM
+// and this returns that refusal.
 func (g *Guest) AddMemory(ctx context.Context) error {
 	if g == nil {
 		return fmt.Errorf("platform: no guest to add memory to")
@@ -433,7 +413,7 @@ func (g *Guest) MemoryMB(ctx context.Context) (int, error) {
 	return int((s.Base + s.Plugged) >> 20), nil
 }
 
-// ResizeStateDisk tells the running VM its state disk is now size bytes. The FILE must already be
+// ResizeStateDisk tells the running VM its state disk is now size bytes. The file must already be
 // that large (ExtendThick, before this): QEMU only changes the size the guest is shown, and the
 // guest's kernel picks it up as a capacity change on the virtio disk. Like a DIMM, it lasts as
 // long as the file does -- the next launch opens the grown file -- so nothing has to remember it.
@@ -471,32 +451,29 @@ func nextMemoryID(raw json.RawMessage) (int, error) {
 	return n, nil
 }
 
-// DebugConsoleName is the debug console's socket; DebugConsolePath puts it BESIDE the monitor
-// that arms it, rather than anywhere a second setting could name.
-//
-// THAT DERIVATION IS THE CONTAINMENT. Launch makes the QMP directory 0700 root
-// (secureQMPDir), so a socket placed there inherits it; the same socket in, say, /tmp would be a
-// world-reachable door onto an autologin root shell. There is therefore exactly one input -- the
-// monitor's own path -- and no configuration that can pull the two apart.
+// DebugConsoleName is the debug console's socket; DebugConsolePath puts it beside the monitor that
+// arms it, rather than anywhere a second setting could name. That derivation is the containment:
+// Launch makes the QMP directory 0700 root (secureQMPDir), so a socket placed there inherits it,
+// while the same socket in, say, /tmp would be a world-reachable door onto an autologin root shell.
+// So there is exactly one input, the monitor's own path, and no configuration that can pull the
+// two apart.
 const DebugConsoleName = "console.sock"
 
 func DebugConsolePath(qmpSock string) string {
 	return filepath.Join(filepath.Dir(qmpSock), DebugConsoleName)
 }
 
-// DebugArm points the guest's debug console (ttyS1) at a unix socket, on a guest that is
-// already running, and returns the path QEMU is now serving.
+// DebugArm points the guest's debug console (ttyS1) at a unix socket, on a guest that is already
+// running, and returns the path QEMU is now serving. The backend moves, not the port: QEMU cannot
+// hot-add a serial port at all (`device_add isa-serial` is refused outright with "Bus 'isa.0' does
+// not support hotplugging", measured on the machine type qemuArgs asks for), but it will change a
+// chardev under a live frontend, which is why serialArgs gives every guest the port up front with
+// nothing behind it. So arming costs no relaunch: the guest's getty has sat on that port since
+// boot, reading a device that never had anything to say.
 //
-// IT IS THE BACKEND THAT MOVES, NOT THE PORT, because QEMU cannot hot-add a serial port at all
-// -- `device_add isa-serial` is refused outright with "Bus 'isa.0' does not support
-// hotplugging" (measured, on the machine type qemuArgs asks for). What it will do is
-// change a chardev under a live frontend, which is why serialArgs gives every guest the port up
-// front with nothing behind it. So arming costs no relaunch: the getty inside the guest has
-// been sitting on that port since boot, reading a device that never had anything to say.
-//
-// QEMU creates the socket, in the QMP directory, which Launch has already made 0700 root
-// (secureQMPDir) -- the same containment as the monitor itself, and the honest one: a caller
-// who can reach QMP can already dump this guest's RAM, so a shell inside it is not a new power.
+// QEMU creates the socket in the QMP directory, which Launch has already made 0700 root
+// (secureQMPDir): the monitor's own containment, and the honest one, since a caller who can reach
+// QMP can already dump this guest's RAM, so a shell inside it is not a new power.
 func DebugArm(ctx context.Context, qmpSock, consoleSock string) error {
 	_, err := qmpExecute(ctx, qmpSock, "chardev-change", map[string]any{
 		"id": DebugChardevID,
@@ -515,14 +492,12 @@ func DebugArm(ctx context.Context, qmpSock, consoleSock string) error {
 	return nil
 }
 
-// DebugDisarm puts the debug console back on a null backend. QEMU UNLINKS THE SOCKET when it
-// does, which is the property worth having: "is this node open?" is then a question the
-// filesystem answers, not a claim some state file makes, and nothing can be left behind saying
-// yes when the answer is no. A relaunch disarms just as thoroughly, since every launch starts
-// the port null-backed.
-//
-// Safe to call when the console was never armed -- changing a null backend to a null backend is
-// what QEMU does either way, and the caller is usually a deferred cleanup that cannot know.
+// DebugDisarm puts the debug console back on a null backend. QEMU unlinks the socket when it does,
+// the property worth having: "is this node open?" is then a question the filesystem answers, not a
+// claim some state file makes, and nothing can be left behind saying yes when the answer is no. A
+// relaunch disarms just as thoroughly, since every launch starts the port null-backed. Safe to
+// call when the console was never armed: changing a null backend to a null backend is what QEMU
+// does either way, and the caller is usually a deferred cleanup that cannot know.
 func DebugDisarm(ctx context.Context, qmpSock string) error {
 	_, err := qmpExecute(ctx, qmpSock, "chardev-change", map[string]any{
 		"id":      DebugChardevID,

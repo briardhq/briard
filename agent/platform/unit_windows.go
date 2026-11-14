@@ -13,29 +13,28 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
-// The Windows side of the service-manager seam: a transient unit is a NAMED JOB OBJECT holding the
-// unit's process tree, found again by name after the agent restarts -- the property the seam
-// exists for.
+// The Windows side of the service-manager seam: a transient unit is a named job object holding the
+// unit's process tree, found again by name after the agent restarts, the property the seam exists
+// for.
 //
-// ⚠️ THE NAME LIVES AS LONG AS A HANDLE DOES, NOT AS LONG AS THE JOB. A process in a job keeps the
+// ⚠️ The name lives as long as a handle does, not as long as the job. A process in a job keeps the
 // job object alive but holds no handle to it, and the object manager drops a name when the last
-// HANDLE closes. So a job made by the agent and joined by qemu outlives the agent nameless: the next
-// agent's OpenJobObject finds nothing, reads the guest as stopped, and launches a second qemu over
-// the first one's sockets (measured, on the rig). The unit's own process therefore INHERITS a handle
-// to its job: the name lives exactly as long as the unit does, and the agent holds none.
+// handle closes. So a job made by the agent and joined by qemu outlives the agent nameless: the
+// next agent's OpenJobObject finds nothing, reads the guest as stopped, and launches a second qemu
+// over the first one's sockets (measured, on the rig). The unit's own process therefore inherits a
+// handle to its job: the name lives exactly as long as the unit does, and the agent holds none.
 //
-// What it leaves off: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE. With the unit holding the last handle it
-// would only fire as the unit exits, so it would buy nothing; it is named here because it is the
-// tidy-looking flag, and on any other handle arrangement it kills the guest at an agent restart.
-//
-// What it has no equivalent of: ExecStop. A job is killed, never asked to stop. On Linux the clean
-// guest powerdown lives on the unit, so every stop of it -- the machine's, the agent's -- runs it;
-// here the agent powers the guest down itself (PowerOffGuest) and this layer only ever kills.
+// Left off: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE. With the unit holding the last handle it would only
+// fire as the unit exits, buying nothing; it is named here because it is the tidy-looking flag, and
+// on any other handle arrangement it kills the guest at an agent restart. No equivalent of
+// ExecStop: a job is killed, never asked to stop. On Linux the clean guest powerdown lives on the
+// unit, so every stop of it (the machine's, the agent's) runs it; here the agent powers the guest
+// down itself (PowerOffGuest) and this layer only ever kills.
 
 // unitTail is the unit's last words: the tail of the file its output goes to (the SCM keeps no
-// journal). The file is this launch's alone -- unitOutput rolls the previous one to `.prev` --
-// so a line the launch before wrote cannot stand in for this one's, which is the journal's
-// per-invocation reading on Linux; "" with no file named.
+// journal). The file is this launch's alone (unitOutput rolls the previous one to `.prev`), so a
+// line the launch before wrote cannot stand in for this one's: the journal's per-invocation
+// reading on Linux; "" with no file named.
 func unitTail(_ context.Context, s QEMUSpec, n int) string {
 	if s.UnitLog == "" {
 		return ""
@@ -53,11 +52,11 @@ const (
 	jobTerminate = 0x0008 // JOB_OBJECT_TERMINATE
 )
 
-// OpenJobObjectW is not wrapped by x/sys/windows. CreateJobObject is, but it CREATES on a miss, and
+// OpenJobObjectW is not wrapped by x/sys/windows. CreateJobObject is, but it creates on a miss, and
 // a query that conjures the thing it asks about cannot answer "not there".
 var procOpenJobObjectW = windows.NewLazySystemDLL("kernel32.dll").NewProc("OpenJobObjectW")
 
-// errNoJob is the one failure that IS an answer: no job of that name, so no such unit.
+// errNoJob is the one failure that is an answer: no job of that name, so no such unit.
 var errNoJob = errors.New("no such job")
 
 func openJob(unit string, access uint32) (windows.Handle, error) {
@@ -97,7 +96,7 @@ func activeProcesses(unit string) (uint32, error) {
 }
 
 // startTransient runs the command as a named job that outlives this process. The process is created
-// SUSPENDED and joined to the job before it runs a single instruction, so nothing it starts can
+// suspended and joined to the job before it runs a single instruction, so nothing it starts can
 // escape the job by racing the assignment.
 func startTransient(_ context.Context, args []string) ([]byte, error) {
 	t, err := parseTransient(args)
@@ -173,11 +172,11 @@ func startTransient(_ context.Context, args []string) ([]byte, error) {
 // unitOutput opens the unit's log, inheritable, shared so a reader can open it while the unit
 // writes. No log named is NUL: the SCM keeps no journal to fall back on.
 //
-// ONE FILE PER LAUNCH: the one before is rolled to `.prev` first, one generation, the console
+// One file per launch: the one before is rolled to `.prev` first, one generation, the console
 // capture's own convention. The file is what unitTail reads for the guest's last words, and a
-// unit's output is read by the invocation that wrote it -- measured the other way, a relaunch
-// after a WHPX fatal exit carried that exit's line under the next guest's kernel panic. Best
-// effort: a roll that fails costs one stale line, never the launch.
+// unit's output is read by the invocation that wrote it: measured the other way, a relaunch after
+// a WHPX fatal exit carried that exit's line under the next guest's kernel panic. Best effort: a
+// roll that fails costs one stale line, never the launch.
 func unitOutput(path string) (windows.Handle, error) {
 	if path == "" {
 		path = "NUL"
@@ -281,15 +280,15 @@ const (
 	serviceStartBound = 60 * time.Second
 )
 
-// StopService stops a service through its ORDINARY stop path and waits, with patience, for it to
+// StopService stops a service through its ordinary stop path and waits, with patience, for it to
 // finish what it is doing: the service manager's STOP, then a poll until the service reports
-// STOPPED. Past the patience -- or at once, for a service still starting, which takes no stop --
-// its process is ended. patience 0 is a plain stop, bounded by serviceStopBound. The
+// STOPPED. Past the patience (or at once, for a service still starting, which takes no stop) its
+// process is ended. patience 0 is a plain stop, bounded by serviceStopBound. It is the
 // self-update's stop: the agent drains its act lane on STOP, so "stopped" means "stopped between
 // acts".
 //
-// ⚠️ AN ENDED PROCESS IS A FAILURE to the service manager, whose recovery starts the service
-// again 5 s later. Every caller swaps and starts within that, and a recovery start that finds the
+// ⚠️ An ended process is a failure to the service manager, whose recovery starts the service again
+// 5 s later. Every caller swaps and starts within that, and a recovery start that finds the
 // service running is a no-op.
 func StopService(ctx context.Context, name string, patience time.Duration, logf func(string, ...any)) error {
 	m, err := mgr.Connect()
@@ -358,8 +357,8 @@ func waitStopped(ctx context.Context, s *mgr.Service, bound time.Duration) (bool
 }
 
 // openService opens a service holding only the rights asked for, through a connection to the
-// service manager that asks only to connect: what the install user does unelevated -- `briard
-// start`, the wait after `briard stop` -- holds no more than the service grants that account, and
+// service manager that asks only to connect: what the install user does unelevated (`briard
+// start`, the wait after `briard stop`) holds no more than the service grants that account, and
 // mgr.Connect's all-access is an administrator's alone.
 func openService(name string, access uint32) (*mgr.Service, error) {
 	m, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
@@ -378,7 +377,7 @@ func openService(name string, access uint32) (*mgr.Service, error) {
 	return &mgr.Service{Name: name, Handle: h}, nil
 }
 
-// StartService starts a service and returns once it reported RUNNING -- for the agent, READY --
+// StartService starts a service and returns once it reported RUNNING (for the agent, READY),
 // or with why it did not: it stopped again while starting, or was still starting at
 // serviceStartBound. A service already running counts as started.
 func StartService(ctx context.Context, name string) error {
@@ -427,8 +426,8 @@ func EndProcess(pid uint32) error {
 const guestExitBound = 30 * time.Second
 
 // PowerOffGuest stops the guest cleanly and returns once its process has exited: the powerdown
-// over the monitor, then the wait for the guest's job to empty. A QUIET MONITOR IS NOT AN EXITED
-// QEMU: qemu closes its socket on its way out, and a guest launched by an agent that stopped mid
+// over the monitor, then the wait for the guest's job to empty. A quiet monitor is not an exited
+// qemu: qemu closes its socket on its way out, and a guest launched by an agent that stopped mid
 // bring-up has no monitor up yet at all. A caller may go on to delete or replace files that process
 // holds, so the kill is only the last resort past the bound. A job is killed, never stopped
 // (unitStop), so the clean half is this function's own.
@@ -439,8 +438,8 @@ func PowerOffGuest(ctx context.Context, qmpSock string, logf func(string, ...any
 		if !unitIsActive(ctx, GuestUnit) {
 			return nil
 		}
-		// The power button went unanswered: a guest dead inside -- a halted kernel, a WHPX fatal
-		// exit -- keeps its monitor up and never powers down, and a stop that left it running
+		// The power button went unanswered: a guest dead inside (a halted kernel, a WHPX fatal
+		// exit) keeps its monitor up and never powers down, and a stop that left it running
 		// would hand it to the next agent to adopt. On Linux the unit's stop timeout kills such
 		// a guest; this is that. The clean half was offered, and the grace is spent.
 		logf("the guest did not power down after the power button (%v); ending it", err)

@@ -7,17 +7,17 @@ import (
 	"unsafe"
 )
 
-// allocate reserves the bytes of f from `from` up to `size`. THE LINUX ARM of the one seam in
+// allocate reserves the bytes of f from `from` up to `size`: the Linux arm of the one seam in
 // alloc.go.
 //
 // fallocate(2) is the fast path: it reserves extents in the filesystem's allocator and writes no
-// data, so a 4 GiB volume costs milliseconds. Not every filesystem implements it (older ext,
-// several network ones), and the kernel says so with ENOTSUP/EOPNOTSUPP rather than lying -- so the
-// fallback writes the bytes, which is slow and correct.
+// data, so a 4 GiB volume costs milliseconds. Filesystems without it (older ext, several network
+// ones) say so with ENOTSUP/EOPNOTSUPP rather than lying, and the fallback writes the bytes: slow
+// and correct.
 //
-// ⚠️ THE FALLBACK MUST ACTUALLY WRITE. Truncate would return instantly and leave a sparse file,
-// which is precisely the state AllocateThick exists to prevent: the space would not be reserved and
-// the failure would arrive later, under a replicated filesystem, as ENOSPC mid-write.
+// ⚠️ The fallback must actually write. Truncate would return instantly and leave a sparse file,
+// precisely the state AllocateThick exists to prevent: the space unreserved, and the failure
+// arriving later, under a replicated filesystem, as ENOSPC mid-write.
 func allocate(f *os.File, from, size int64) error {
 	err := syscall.Fallocate(int(f.Fd()), 0, from, size-from)
 	if err == nil {
@@ -43,7 +43,7 @@ const (
 )
 
 // setNoCOW marks dir NOCOW (`chattr +C`) where the filesystem has the flag, so the disks created
-// in it afterwards inherit it. THE LINUX ARM; see SetNoCOW. A filesystem without the flag (ext4,
+// in it afterwards inherit it. The Linux arm; see SetNoCOW. A filesystem without the flag (ext4,
 // XFS: they never copy on write) answers ENOTTY/EOPNOTSUPP/EINVAL, which is not an error here.
 func setNoCOW(dir string) error {
 	d, err := os.Open(dir)

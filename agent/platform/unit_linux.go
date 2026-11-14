@@ -11,8 +11,8 @@ import (
 
 // This file is the service manager half of the platform seam on Linux: every place the agent
 // reaches for systemd to start, inspect or stop a transient unit or one of its own systemd units.
-// The policy above it -- what a state MEANS, how long to wait for a name, when a corpse is worth
-// clearing -- stays OS-neutral in qemu.go and forwarder.go, so it reads and tests the same
+// The policy above it (what a state means, how long to wait for a name, when a corpse is worth
+// clearing) stays OS-neutral in qemu.go and forwarder.go, so it reads and tests the same
 // everywhere. What an arm owes here is re-adoption of a detached, named unit, not detachment
 // (unit_windows.go is the other arm).
 
@@ -23,7 +23,7 @@ func startTransient(ctx context.Context, args []string) ([]byte, error) {
 }
 
 // unitShow reads one property of a unit. The manager answers for units that do not exist too
-// (absent reads as "inactive", exit 0), so an error means the QUERY failed -- which is not an
+// (absent reads as "inactive", exit 0), so an error means the query failed, which is not an
 // answer about the unit and must not be read as one.
 func unitShow(unit, prop string) (string, error) {
 	// Bounded here, for every caller: a manager that does not answer is a query that failed, and
@@ -96,13 +96,13 @@ func unitTransient(fragment string) bool {
 // unit's behalf, which outlives the unit file unless someone removes it.
 func unitStamp(unit string) string { return "/var/lib/systemd/timers/stamp-" + unit }
 
-// StopService stops a long-running systemd service through its ORDINARY stop path and waits, with
-// patience, for it to finish what it is doing: SIGTERM to the main process alone, so the
-// unit's TimeoutStopSec is not the bound (raising that would hold every shutdown), then a poll
-// until that process is gone, then `systemctl stop` -- instant once it has exited, it also
-// cancels a restart the exit queued, and past the patience it is the force (TimeoutStopSec, then
-// SIGKILL). patience 0 is that plain stop alone (uninstall's). The self-update's stop: the agent
-// drains its act lane on SIGTERM, so "stopped" means "stopped between acts".
+// StopService stops a long-running systemd service through its ordinary stop path and waits, with
+// patience, for it to finish what it is doing: SIGTERM to the main process alone, so the unit's
+// TimeoutStopSec is not the bound (raising that would hold every shutdown), a poll until that
+// process is gone, then `systemctl stop`: instant once it has exited, it also cancels a restart
+// the exit queued, and past the patience it is the force (TimeoutStopSec, then SIGKILL). patience
+// 0 is that plain stop alone (uninstall's). It is the self-update's stop: the agent drains its act
+// lane on SIGTERM, so "stopped" means "stopped between acts".
 func StopService(ctx context.Context, unit string, patience time.Duration, logf func(string, ...any)) error {
 	pid, err := unitShow(unit, "MainPID")
 	if err != nil {
@@ -149,8 +149,8 @@ func StartService(ctx context.Context, unit string) error {
 	return fmt.Errorf("start %s: %w: %s", unit, err, strings.Join(strings.Fields(strings.ReplaceAll(string(out), "\n", " | ")), " "))
 }
 
-// PowerOffGuest stops the guest cleanly and returns once it is down: a PLAIN stop of its unit, the
-// one RemoveUnit makes, which runs the unit's ExecStop -- the powerdown over the monitor -- and
+// PowerOffGuest stops the guest cleanly and returns once it is down: a plain stop of its unit, the
+// one RemoveUnit makes, which runs the unit's ExecStop (the powerdown over the monitor) and
 // returns when the unit has stopped. Never Guest.Stop, which is the kill. During a machine
 // shutdown the manager has already queued the same stop, and this one joins it. A unit the manager
 // does not know has no guest to stop. The monitor socket is the Windows arm's; here the unit's

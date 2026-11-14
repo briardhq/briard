@@ -5,22 +5,19 @@ import (
 	"os"
 )
 
-// allocate reserves the bytes of f from `from` up to `size`. THE WINDOWS ARM, and deliberately
-// the slow one.
+// allocate reserves the bytes of f from `from` up to `size`: the Windows arm, and deliberately the
+// slow one.
 //
-// Setting the end of the file alone (SetEndOfFile) reserves the clusters with no privilege, and
-// reads past the file's valid-data length return zeros. What it saves is only deferred: NTFS keeps
-// that length, and a write past it zero-fills the gap first, synchronously, inside the write --
-// qemu's write. That is the first bring-up's mkfs, which scatters its backup superblocks over the
-// whole state disk, and on the data volume a stall as long as the gap whenever the filesystem
-// allocates further out, under a running app. Moving the length up front instead
-// (SetFileValidData) needs SE_MANAGE_VOLUME_NAME and exposes whatever was previously on the disk,
-// which is why it needs the privilege; a briard host is somebody's desktop, and that is not a
-// trade worth making.
+// SetEndOfFile alone reserves the clusters with no privilege, and reads past the file's valid-data
+// length return zeros, but the saving is only deferred: NTFS keeps that length, and a write past it
+// zero-fills the gap first, synchronously, inside qemu's write. That is the first bring-up's mkfs,
+// which scatters its backup superblocks over the whole state disk, and on the data volume a stall
+// as long as the gap whenever the filesystem allocates further out, under a running app. Moving the
+// length up front (SetFileValidData) needs SE_MANAGE_VOLUME_NAME because it exposes whatever was
+// previously on the disk; a briard host is somebody's desktop, and that trade is not worth making.
 //
-// So this writes the zeros, once, before the guest exists: the cost is paid where nothing is
-// waiting on it. It is the same answer the Linux arm falls back to on a filesystem without
-// fallocate.
+// So this writes the zeros once, before the guest exists, where nothing is waiting on the cost:
+// the answer the Linux arm falls back to on a filesystem without fallocate.
 func allocate(f *os.File, from, size int64) error {
 	if _, err := f.Seek(from, io.SeekStart); err != nil {
 		return err
