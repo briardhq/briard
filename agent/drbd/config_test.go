@@ -34,8 +34,8 @@ func forwardedWitnessResource() Resource {
 }
 
 // A forwarded witness renders explicit `connection` stanzas (not connection-mesh) so the
-// anchor↔witness path can carry a per-connection local address. Golden-matched
-// against the nixosTest/witness-proxy.nix shape, re-addressed for the host-side private link.
+// anchor↔witness path can carry a per-connection local address. A golden of the witness-proxy
+// shape, addressed for the host-side private link.
 func TestResourceConfigForwardedWitness(t *testing.T) {
 	const want = `resource r0 {
 	net {
@@ -178,12 +178,12 @@ func TestReactorConfigStartOrder(t *testing.T) {
 	// TWO layer lines are asserted LITERALLY here, and both are bugs of ABSENCE -- the promoter
 	// defaults do the wrong thing for us, so a missing key is the defect, not a missing feature.
 	//
-	// adjust-resource-on-start: the promoter must NOT attach the backing device, because the agent
-	// brings the resource up via drbd@<res>.target and reads the result.
+	// adjust-resource-on-start: the promoter must NOT attach the backing device, because the guest
+	// agent brings the resource up via drbd@<res>.target and reads the result.
 	//
 	// target-as: the default `Requires` makes the target react to a member being restarted --
-	// including the auto-restart `Restart=` schedules -- which demoted the node on one crash of the
-	// reverse proxy and handed the resource to a peer in 2 of 5 tries. `Wants` keeps the
+	// including the auto-restart `Restart=` schedules -- so one crash of the reverse proxy demotes
+	// the node and hands the resource to a peer in 2 of 5 tries. `Wants` keeps the
 	// target STARTING every member and stops it reacting to them; giving up is signalled by each
 	// member's OnFailure= instead.
 	const want = `[[promoter]]

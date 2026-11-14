@@ -219,10 +219,10 @@ func TestPeerCounts(t *testing.T) {
 	}
 }
 
-// This node's OWN disk, read from the same sample as everyone else's. The gap it closes
-// is not cosmetic: without these fields a node could say whether a PEER was a viable failover
-// target but not whether IT was — so a Secondary's OS-upgrade gate had nothing node-local to ask
-// and probed the VIP, which its peer answers.
+// This node's OWN disk, read from the same sample as everyone else's. Not cosmetic: without
+// these fields a node can say whether a PEER is a viable failover target but not whether IT is,
+// and a Secondary's OS-upgrade gate has nothing node-local to ask -- the VIP it could probe
+// instead is answered by its peer.
 //
 // The witness row is the one that makes the fold matter. A diskless node reports disk-state
 // "Diskless", so a `!= "UpToDate"` test alone would call it not-UpToDate AND leave Diskful true —

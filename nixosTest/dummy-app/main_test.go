@@ -4,7 +4,7 @@ import "testing"
 
 // An empty data dir reads as tick 0 (first boot); a save then load round-trips
 // the counter. This is the persistence the failover tests depend on — the last
-// committed tick must come back intact (V0).
+// committed tick must come back intact.
 func TestStateRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 

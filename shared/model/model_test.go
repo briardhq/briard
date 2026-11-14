@@ -4,9 +4,9 @@ import "testing"
 
 // ServingUnit is the one definition of "which unit is this app?". An app names its
 // quadlet-rendered container explicitly, and anything else names NOTHING — never a unit assembled
-// from the app name, which is what once had the host asking systemd about "podman-.service"
-// and being told "inactive" forever. The name-only case is asserted because it is the one a
-// derivation would be tempted to answer.
+// from the app name: for an empty one that is "podman-.service", which systemd reports
+// "inactive" forever. The name-only case is asserted because it is the one a derivation would be
+// tempted to answer.
 func TestServingUnit(t *testing.T) {
 	cases := []struct {
 		name string
@@ -31,7 +31,7 @@ func TestServingUnit(t *testing.T) {
 // Serving is THE "does this node hold the house" predicate, and both conjuncts are load-bearing:
 // a Primary that has lost quorum is refused its writes and about to be demoted, so it is not
 // serving; a quorate Secondary is participating, not serving. Pinned so no reader is tempted
-// back to Primary alone.
+// to use Primary alone.
 func TestServing(t *testing.T) {
 	cases := []struct {
 		name string

@@ -17,7 +17,7 @@ func TestNames(t *testing.T) {
 }
 
 // The canonical forms are three newline-joined lines -- the shape the Worker's JavaScript
-// rebuilds. A change here must be a change there (cloud/dns/worker's golden catches it).
+// rebuilds. A change here must be a change there (the Worker's own golden catches it).
 func TestCanonicalForms(t *testing.T) {
 	if got := CanonicalA("amber-otter", "192.168.1.50", 1700000000); string(got) != "amber-otter\n192.168.1.50\n1700000000" {
 		t.Fatalf("CanonicalA = %q", got)

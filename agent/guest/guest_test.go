@@ -79,8 +79,8 @@ func (f *fakeControl) ReactorResume(context.Context, string) error {
 	return nil
 }
 
-// Cluster is what OSReady asks about this node. Every pre-existing test leaves
-// Config.Resource empty, so OSReady short-circuits and never reaches this.
+// Cluster is what OSReady asks about this node. A test that leaves Config.Resource empty
+// never reaches this: OSReady short-circuits to the probe.
 func (f *fakeControl) Cluster(context.Context, string) (model.Cluster, error) {
 	return f.cluster, f.clusterErr
 }
@@ -220,7 +220,7 @@ func TestAwaitReadyPollsOnDetachedContext(t *testing.T) {
 		}
 		fired = true
 		cancel()                             // simulate the upgrade deadline firing during the call
-		pollCtxCancelled = hctx.Err() != nil // fixed: poll ctx is detached, so still live here
+		pollCtxCancelled = hctx.Err() != nil // the poll ctx is detached, so still live here
 	}
 
 	if err := m.AwaitReady(ctx, haSpec); err == nil {
@@ -231,20 +231,15 @@ func TestAwaitReadyPollsOnDetachedContext(t *testing.T) {
 	}
 }
 
-// THE OS-UPGRADE SEQUENCE TESTS MOVED OUT, with the sequence itself: it is
-// agent/host's now, because an OS upgrade rolls back to a snapshot of the OS disk and only the
-// host can take or restore one. Their replacements are TestSwitchUpgrade* in
-// agent/host/osupgrade_test.go, and they assert the shape gave the path -- no app
-// stop/start, no data snapshot/restore, one activation on a failing run.
+// THE OS-UPGRADE SEQUENCE IS NOT TESTED HERE: it is agent/host's (osupgrade.go), because an
+// OS upgrade rolls back to a snapshot of the OS disk and only the host can take or restore one.
 //
-// What stays here is what the guest still owns and this file can still fail on: the health
-// floor (including the zero-app case), the S1 gate's verdicts, the primitives, and the
-// APP upgrade -- which is unchanged, because {image + data} rolling back together is the
-// whole point of that one.
+// What is here is what the guest owns and this file can fail on: the health floor (including
+// the zero-app case), the OS gates (OSReady, OSReadyServing), the S1 gate's verdicts and the
+// primitives the APP upgrade uses -- {image + data} rolling back together.
 
-// fakeAssessor drives the differential S1 gate: a canned verdict + a record of when it
-// was consulted, to assert the baseline is taken before quiesce and Assess after the
-// floor.
+// fakeAssessor drives the differential S1 gate: a canned verdict + a record of how often it
+// was consulted and which baseline Assess was handed.
 type fakeAssessor struct {
 	verdict     Verdict
 	baselineErr error
@@ -306,10 +301,9 @@ func TestAssessVerdicts(t *testing.T) {
 }
 
 // A ZERO-APP node -- the shipped state -- must health-gate on the reverse
-// proxy alone. Before the fix, unitOf on an empty spec named the nonexistent
-// `podman-.service`, systemd said "inactive", and Ready was false forever: every OS upgrade a
-// fresh install was offered rolled back, while the same node reported Healthy: true to the
-// cloud (cfg.snapshot takes the probe's answer with no such conjunct).
+// proxy alone. Without hasApp, the empty spec names no unit, systemd says "inactive", and
+// Ready is false forever, while the same node reports Healthy: true to the cloud
+// (cfg.snapshot takes the probe's answer with no such conjunct).
 func TestHealthZeroAppGatesOnTheReverseProxyAlone(t *testing.T) {
 	srv := codeServer(t, http.StatusOK)
 	f := &fakeControl{active: false} // no app unit exists, so it cannot be active
@@ -342,8 +336,8 @@ func TestHealthZeroAppUnreadyWhenTheReverseProxyIsDown(t *testing.T) {
 	}
 }
 
-// An app-bearing node keeps the old meaning: the unit must be active AND the probe pass.
-// Without this, the fix could have been "drop the conjunct entirely".
+// An app-bearing node still needs the unit active AND the probe passing. Without this,
+// dropping the conjunct entirely would pass the zero-app tests above.
 func TestHealthWithAAppStillRequiresTheUnitActive(t *testing.T) {
 	srv := codeServer(t, http.StatusOK)
 	m := newManager(&fakeControl{active: false}, srv.URL) // probe green, unit down
@@ -357,11 +351,9 @@ func TestHealthWithAAppStillRequiresTheUnitActive(t *testing.T) {
 }
 
 // The end-to-end half -- a zero-app node must COMMIT an OS upgrade rather than roll it
-// back -- moved to agent/host with the sequence, and got stronger on the way. The
-// OS path no longer takes a spec at all, so "no app" is not a case it can get wrong; what
-// the host test asserts instead is the harder version of the same thing, on a node whose units
-// all report INACTIVE: it commits, and it never asks about a unit at all ( deletion 5).
-// The Health-level halves above stay here, where the conjunct they guard lives.
+// back -- belongs to agent/host with the sequence. The OS path takes no spec at all, so
+// "no app" is not a case it can get wrong. The Health-level halves above stay here, where
+// the conjunct they guard lives.
 
 // ── ResolveHealthURL: what we probe, decided per call ──────────────────────────────
 //
@@ -397,9 +389,9 @@ func TestResolveHealthURL(t *testing.T) {
 		{"no address held", false, "eth2", "", "", nil, ""},
 
 		// A device we did not NAME is a device we know nothing about: with VIP_DEV unset this
-		// node claims no VIP, so there is no address to ask about. (It used to fall back
-		// to a baked eth1, which in the agent-less harnesses also carries the DRBD address --
-		// "the first address on eth1" would have been the replication link.)
+		// node claims no VIP, so there is no address to ask about. (Never a guessed eth1: in
+		// the agent-less harnesses it also carries the DRBD address, so "the first address on
+		// eth1" would be the replication link.)
 		{"never ask about an unnamed device", false, "", configured, "192.168.9.50/24", nil, configured},
 
 		// An old guest predating net.vip is one that still has a baked address to fall back
@@ -417,7 +409,7 @@ func TestResolveHealthURL(t *testing.T) {
 }
 
 // A data node that holds no service address is NOT ready -- it is the node nobody in the house
-// can reach, which is the whole of V3.19. The assertion is that it does not probe at all: an
+// can reach. The assertion is that it does not probe at all: an
 // empty URL handed to a probe is a request that fails for an incidental reason, and this must
 // fail for the reason it actually has.
 func TestHealthOnANodeWithNoAddressDoesNotProbe(t *testing.T) {
@@ -438,10 +430,10 @@ func TestHealthOnANodeWithNoAddressDoesNotProbe(t *testing.T) {
 
 // ── OSReady: the OS-upgrade gate ───────────────────────────────────────────────────
 //
-// The defect it fixes, measured live: the OS gate probed HealthURL — the VIP — which a SECONDARY
-// does not own. Its peer answers, so a Secondary health-gated its own upgrade against another
-// machine's reverse proxy and committed a broken generation. The table below is the whole predicate,
-// enumerated, and the Secondary rows are the ones that were wrong.
+// Not HealthURL: that is the VIP, which a SECONDARY does not own. Its peer answers, so a
+// Secondary gated on it certifies its own upgrade against another machine's reverse proxy and
+// commits a broken generation. The table below is the whole predicate, enumerated, and the
+// Secondary rows are the ones that guard against that.
 func TestOSReadyAsksEachNodeAboutTheJobItHolds(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -454,7 +446,7 @@ func TestOSReadyAsksEachNodeAboutTheJobItHolds(t *testing.T) {
 		{"primary with a dead reverse proxy", model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, Diskful: true, UpToDate: true}}, false, false},
 
 		// Diskful ∧ quorate ⇒ UpToDate. A Secondary is judged on being a viable failover
-		// target, and NOT on the reverse proxy — the row that used to pass by asking the peer.
+		// target, and NOT on the reverse proxy — the row that would pass by asking the peer.
 		{"secondary uptodate, reverse proxy dead", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true, UpToDate: true}}, false, true},
 		{"secondary NOT uptodate", model.Cluster{QuorumState: model.QuorumState{Quorate: true, Diskful: true}}, true, false},
 
@@ -489,8 +481,8 @@ func TestOSReadyAsksEachNodeAboutTheJobItHolds(t *testing.T) {
 }
 
 // A Secondary must not consult the reverse proxy AT ALL — not merely reach the right verdict by
-// coincidence. That is the actual defect: the probe went to the VIP, which the peer answers, so
-// any reverse-proxy result read on a Secondary is a statement about a different machine.
+// coincidence. The probe goes to the VIP, which the peer answers, so any reverse-proxy result
+// read on a Secondary is a statement about a different machine.
 func TestOSReadySecondaryNeverProbesTheReverseProxy(t *testing.T) {
 	var probes int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -526,9 +518,9 @@ func TestOSReadyUnreadableClusterIsNotReady(t *testing.T) {
 
 // The lone holder of the house must come back SERVING, not merely unobliged. This is the row
 // OSReady passes vacuously and OSReadyServing must not: a node whose reverse proxy failed after
-// the boot and which its own failure handling has already demoted (measured 2026-09-07, lab
-// os-rollback: start-limit-hit -> OnFailure -> promotion hold -> Secondary, in 14 s, before the
-// gate looked). Nobody else could be serving, so a Secondary here is a dark house.
+// the boot and which its own failure handling has already demoted (start-limit-hit -> OnFailure
+// -> promotion hold -> Secondary, measured at 14 s, before the gate looks). Nobody else could be
+// serving, so a Secondary here is a dark house.
 func TestOSReadyServingRefusesADemotedHolder(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

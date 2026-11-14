@@ -32,7 +32,7 @@ func capable() HostFacts {
 	}
 }
 
-// find returns the check with the given name (fatal if absent -- every Assess must emit all gates).
+// find returns the check with the given name (fatal if absent -- the gate asked for must exist).
 func find(t *testing.T, r Report, name string) Check {
 	t.Helper()
 	for _, c := range r.Checks {
@@ -233,16 +233,16 @@ func TestMacvtapAdvisories(t *testing.T) {
 	})
 }
 
-// THE BAKED-VIP REGRESSION. A node's VIP is an address on the USER'S LAN, and nothing compared the two
-// until this check existed: the card admitted a 192.168.9.0/24 home for an install that would claim
-// a baked 192.168.1.100, and the node then reported READY while unreachable (the readiness probe
-// runs in-guest, against an address the guest itself owns). These are the exact facts of the machine
-// that found it -- an 8 GB Ubuntu desktop at 192.168.9.100 -- and the card must now REFUSE it.
+// A VIP OFF THE USER'S LAN. A node's VIP is an address on the USER'S LAN: without this check the
+// card admits a 192.168.9.0/24 home for an install that would claim 192.168.1.100, and the node
+// then reports READY while unreachable (the readiness probe runs in-guest, against an address the
+// guest itself owns). These are the facts of such a machine -- an 8 GB Ubuntu desktop at
+// 192.168.9.100 -- and the card must REFUSE it.
 func TestVIPOffLANIsRefused(t *testing.T) {
 	f := capable()
 	f.MemTotalMB = 7873 // as reported by an 8 GB box after firmware reservation
 	f.HostCIDR = "192.168.9.100/24"
-	f.VIPAddr = "192.168.1.100/24" // the old baked default
+	f.VIPAddr = "192.168.1.100/24" // an address on another LAN
 	r := Assess(f)
 	if r.Admit() {
 		t.Fatal("a VIP outside the host's LAN must be refused; the card admitted it")
@@ -257,7 +257,7 @@ func TestVIPOffLANIsRefused(t *testing.T) {
 }
 
 // The host's own address is the other way this bites: on a 192.168.1.0/24 home whose desktop is
-// already .100, the baked VIP collided with the very machine being installed on.
+// already .100, a VIP of .100 collides with the very machine being installed on.
 func TestVIPEqualToHostIsRefused(t *testing.T) {
 	f := capable()
 	f.HostCIDR = "192.168.1.100/24"
@@ -286,9 +286,7 @@ func TestVIPOnLANPasses(t *testing.T) {
 }
 
 // The THIRD refusal for this gate, after off-LAN and host's-own: an address that is already
-// somebody's. It is the only one of the three that needs the network rather than arithmetic, and
-// the only one that could not have existed before step 3 -- until the address became the user's
-// choice, there was no candidate to probe that we had not invented ourselves.
+// somebody's. It is the only one of the three that needs the network rather than arithmetic.
 func TestVIPAlreadyInUseIsRefused(t *testing.T) {
 	f := capable()
 	f.HostCIDR = "192.168.9.100/24"
@@ -307,9 +305,8 @@ func TestVIPAlreadyInUseIsRefused(t *testing.T) {
 	}
 }
 
-// UNSET IS NO LONGER SILENCE. Since step 3 it means DHCP, which is a claim about the network that
-// the card can actually speak to: a machine holding its own lease is evidence this LAN hands
-// addresses out. Silence is what the original defect sounded like.
+// UNSET IS NOT SILENCE. It means DHCP, which is a claim about the network that the card can
+// actually speak to: a machine holding its own lease is evidence this LAN hands addresses out.
 func TestUnsetVIPReportsWhetherTheLANCanGiveUsOne(t *testing.T) {
 	f := capable()
 	f.HostCIDR = "192.168.9.100/24"
@@ -360,7 +357,7 @@ func TestVIPUnknownHostCIDRIsSilent(t *testing.T) {
 
 // The RAM thresholds describe DIMMs, but the kernel reports what firmware left it. A stock 8 GB
 // desktop (7873 MB) must not be told to buy RAM it already has, and a stock 4 GB box must not be
-// refused for meeting the stated floor. Both were wrong until V3.19.
+// refused for meeting the stated floor.
 func TestMemoryThresholdsAllowForFirmwareReservation(t *testing.T) {
 	f := capable()
 	f.MemTotalMB = 7873 // a real 8 GB machine
@@ -425,8 +422,8 @@ func TestDiskCheckCountsWhatTheNodeUses(t *testing.T) {
 }
 
 // A REINSTALL KEEPS ITS PET VOLUMES, so it is not charged for them again: the data volume and the
-// state disk are already on this host's disk. Measured on install-macvtap's reinstall: 8.6 GB free
-// with both kept was refused when the card charged a fresh host's lines -- for space its own disks held.
+// state disk are already on this host's disk. Charged a fresh host's lines, install-macvtap's
+// reinstall (8.6 GB free, both kept) is refused -- for space its own disks hold.
 func TestDiskCheckCreditsTheVolumesAReinstallKeeps(t *testing.T) {
 	f := capable()
 	f.KeptDataDisk, f.KeptStateDisk = true, true

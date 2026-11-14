@@ -20,7 +20,7 @@ func TestAssess(t *testing.T) {
 		},
 		{
 			name: "flaky-of-40 recovers within the window -> pass",
-			// Weather was retrying pre and post but settled to loaded; cloud was
+			// Weather was retrying pre but settled to loaded post; cloud was
 			// retrying pre and still retrying post but was never reliable, so excluded.
 			pre:  []Entry{e("1", "hue", StateLoaded), e("2", "weather", StateSetupRetry), e("3", "cloud", StateSetupRetry)},
 			post: []Entry{e("1", "hue", StateLoaded), e("2", "weather", StateLoaded), e("3", "cloud", StateSetupRetry)},
@@ -96,8 +96,8 @@ func TestAssess(t *testing.T) {
 		{
 			name: "migration_error dominates a hold",
 			// A lone terminal regression would be a Hold, but a concurrent
-			// migration_error forces Rollback (rollbacks reach the threshold via the
-			// always-rollback migration finding).
+			// migration_error forces Rollback (a migration finding rolls back on its own,
+			// whatever the count of terminal regressions).
 			pre:      []Entry{e("1", "hue", StateLoaded), e("2", "mqtt", StateLoaded)},
 			post:     []Entry{e("1", "hue", StateSetupError), e("2", "mqtt", StateMigrationError)},
 			want:     Rollback,

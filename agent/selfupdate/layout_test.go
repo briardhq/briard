@@ -56,7 +56,7 @@ func TestStageNextLeavesCommittedBinaryUntouched(t *testing.T) {
 	if string(b) != "COMMITTED" {
 		t.Errorf("committed agent changed on a mere stage: got %q — power-loss safety broken", b)
 	}
-	// And agent.next is on the SAME directory (so the wrapper's commit is an atomic same-fs rename).
+	// And agent.next is on the SAME directory (so the swap is an atomic same-fs rename).
 	if filepath.Dir(l.NextPath()) != filepath.Dir(l.AgentPath()) {
 		t.Errorf("agent.next (%s) not colocated with agent (%s) — commit rename would cross fs",
 			l.NextPath(), l.AgentPath())
@@ -245,7 +245,7 @@ func TestResultIsReadNotTaken(t *testing.T) {
 }
 
 // The bundle siblings: net-wrap stages beside the agent, qemu stages as a RELATIVE
-// link to a tree under Base (replacing an earlier link atomically), a link to anything else
+// link to a tree under Base (replacing an earlier one), a link to anything else
 // is refused, and the two resolve back to absolute tree paths.
 func TestBundleStagesNetWrapAndAQEMULink(t *testing.T) {
 	l := newLayout(t)

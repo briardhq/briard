@@ -162,7 +162,7 @@ func TestVolumesBindTheConfigReadOnly(t *testing.T) {
 // the manifest is what every node PROBES and what it BINDS. An edit to one without the other is
 // a health gate that can never pass, or retained state written outside the replicated volume.
 func TestConfigAgreesWithWhatEveryNodeIsToldToProbe(t *testing.T) {
-	// The management listener. The ADDRESS is now the templated half -- it follows the pod's
+	// The management listener. The ADDRESS is the templated half -- it follows the pod's
 	// networking (see bindToken) -- so what this asserts is the port and the token, which is the
 	// part the manifest has to agree with.
 	if want := fmt.Sprintf("listener %d %s", HealthPort, bindToken); !strings.Contains(confSource, want) {
@@ -225,8 +225,8 @@ func TestTheManagementBindFollowsTheNetworkMode(t *testing.T) {
 
 // TestPrepareRefusesAConfigThatLostItsPlaceholder — the guard that the before-check exists for.
 // Without it a template that stopped carrying @BIND@ would be installed verbatim, and the broker
-// would listen wherever the leftover literal said — which is exactly what the comment above the
-// check has always claimed to prevent, and what the check did not actually do.
+// would listen wherever the leftover literal said. The check after the Replace cannot catch it:
+// a Replace of an absent token is a silent no-op.
 func TestPrepareRefusesAConfigThatLostItsPlaceholder(t *testing.T) {
 	saved := confSource
 	t.Cleanup(func() { confSource = saved })

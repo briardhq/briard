@@ -23,8 +23,8 @@ import (
 const webVersion = "v3.20261027.abc1234"
 
 // webChannel serves a signed windows arm: stable's manifest (signed by signer, naming arts)
-// under the pointer and the artifacts under the version it names. It returns the channel's URL
-// and the PEM of the key the program would carry.
+// under the pointer and the artifacts under the version it names. It returns the channel's URL;
+// key makes the PEM the program would carry.
 func webChannel(t *testing.T, platform string, arts map[string][]byte, served map[string][]byte, signer ed25519.PrivateKey) string {
 	t.Helper()
 	var es []install.Entry

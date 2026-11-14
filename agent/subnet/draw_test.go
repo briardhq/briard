@@ -26,7 +26,7 @@ func (c *cycler) Read(p []byte) (int, error) {
 }
 
 // octets spells a sequence of candidate proposals: two bytes per system candidate, one per link
-// candidate, in the order Pick consumes them.
+// candidate, one per pod candidate, in the order Pick consumes them.
 func octets(v ...byte) *cycler { return &cycler{b: v} }
 
 func TestPickSkipsTheConventionalOccupants(t *testing.T) {
@@ -163,7 +163,7 @@ func TestConventionalTableCoversTheVerifiedOccupants(t *testing.T) {
 		{"10.8.0.0/24", "OpenVPN"},
 		{"10.1.0.0/24", "round number"},
 		{"10.10.0.0/24", "round number"},
-		{"10.100.0.0/24", "Kubernetes"},   // inside 10.96.0.0/12, so the belt entry under it is redundant today
+		{"10.100.0.0/24", "Kubernetes"},   // inside 10.96.0.0/12, so the belt entry under it is redundant
 		{"10.111.255.0/24", "Kubernetes"}, // the far end of 10.96.0.0/12
 		{"10.244.9.0/24", "Flannel"},
 		{"10.147.17.0/24", "ZeroTier"},

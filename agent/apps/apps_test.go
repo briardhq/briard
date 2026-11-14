@@ -47,9 +47,7 @@ func TestAnUnknownAppGetsNothing(t *testing.T) {
 	if x.runs != 0 {
 		t.Errorf("an unknown app ran %d command(s) on the node", x.runs)
 	}
-	// The app's OWN name on the reverse proxy's :80, not the flock name and a port: the
-	// port in this sentence was the shape of a node that could only be reached around the reverse
-	// proxy.
+	// The app's OWN name on the reverse proxy's :80, not the flock name and a port.
 	if got := Reach(m, "home"); got != "reach it at http://briard-something-else.local/" {
 		t.Errorf("Reach = %q", got)
 	}
@@ -182,10 +180,10 @@ func TestOnlyHomeAssistantGetsRawSockets(t *testing.T) {
 }
 
 // TestReachNamesMQTTForTheBroker, because the manifest's port is the broker's MANAGEMENT endpoint
-// and it is bound to the guest's loopback. Printing it would hand the household a dead link for an
-// app that is working perfectly — which is the failure the reach line exists to prevent.
+// and it is bound inside the guest, off the LAN. Printing it would hand the household a dead link
+// for an app that is working perfectly — which is the failure the reach line exists to prevent.
 func TestReachNamesMQTTForTheBroker(t *testing.T) {
-	// The port comes from the MANIFEST now, not from a constant in this package: what a household
+	// The port comes from the MANIFEST, not from a constant in this package: what a household
 	// reaches is what the catalog publishes, so a change there moves this sentence with it.
 	mq := svc(mosquitto.Name, mosquitto.HealthPort)
 	mq.Network = manifest.NetworkPrivate
@@ -197,11 +195,9 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 	if !strings.Contains(got, "1883") {
 		t.Errorf("the reach line does not name the MQTT port: %q", got)
 	}
-	// THE PROTOCOL, not just the port -- the assertion this test was named for and did not make.
-	// A later change generalised the sentence off mosquitto and the word "MQTT" went with it while every
-	// check here still passed, because a port and a name both survive a protocol going missing.
-	// Tier 4 caught it against the live channel: a ten-minute VM run standing in for a string
-	// compare.
+	// THE PROTOCOL, not just the port -- the assertion this test is named for. A port and a name
+	// both survive a protocol going missing, so without this check a sentence generalised off
+	// mosquitto can drop the word "MQTT" while every other check here passes.
 	if !strings.Contains(got, mosquitto.Protocol) {
 		t.Errorf("the reach line does not say what a client must speak to the port: %q", got)
 	}
@@ -219,8 +215,9 @@ func TestReachNamesMQTTForTheBroker(t *testing.T) {
 
 // TestOnlyTheBrokerIsNotFronted — the reverse proxy's exposure decision, keyed on the catalog name
 // like everything else here. It is a security property: mosquitto's manifest port is its
-// management API, which mosquitto.conf binds to 127.0.0.1 deliberately, and the reverse proxy runs
-// inside that same guest — so fronting it would republish a loopback-only endpoint on the LAN
+// management API, which mosquitto.conf deliberately binds where only the guest reaches it (the
+// pod's own namespace, or 127.0.0.1 under host networking), and the reverse proxy runs inside that
+// same guest — so fronting it would republish a guest-only endpoint on the LAN
 // through a mechanism that never mentions the bind.
 func TestOnlyTheBrokerIsNotFronted(t *testing.T) {
 	if Fronted(svc(mosquitto.Name, mosquitto.HealthPort)) {
@@ -359,9 +356,9 @@ func TestInboundBindIsReadWriteAndOnlyForHomeAssistant(t *testing.T) {
 // to exist before the container that will present it starts -- and Prepare is the one step that
 // runs on every converge, which is exactly the set of moments the mount it lands in is remade.
 //
-// FRESH EVERY TIME, like the HA control token next to it: /run is tmpfs, so a value cannot
-// outlive the boot that minted it and a token read out of a backup or a snapshot is worth
-// nothing.
+// FRESH EVERY CONVERGE, where the HA control token next to it is kept for the boot: both live on
+// /run, which is tmpfs, so a value cannot outlive the boot that minted it and a token read out of
+// a backup or a snapshot is worth nothing.
 func TestPrepareMintsAFreshInboundToken(t *testing.T) {
 	ha := manifest.Manifest{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/config"}}}}}
 	f := &tokenExec{files: map[string]string{}}
@@ -433,10 +430,9 @@ func (f *tokenExec) ran(want ...string) bool {
 // starts; and podman having created a root-owned directory where a file belongs poisons the path
 // for every later attempt, which is the failure Prepare's own comment describes.
 //
-// Caught this the hard way: the inbound socket and token were first written as /briard/inbound.*,
-// inside exactly that read-only mount. Asserting the PROPERTY rather than the two paths is what
-// keeps the next mount out of the same hole -- the temptation to group things under /briard is
-// obvious and will recur.
+// /briard/inbound.* for the inbound socket and token would sit inside exactly that read-only
+// mount. Asserting the PROPERTY rather than the two paths is what keeps the next mount out of the
+// same hole -- the temptation to group things under /briard is obvious and will recur.
 func TestNoBindNestsInsideAnother(t *testing.T) {
 	for _, m := range []manifest.Manifest{
 		{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/config"}}}}},
@@ -453,7 +449,7 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 				dests = append(dests, parts[1])
 			}
 			// The container's own mounts count too: they are destinations like any other. Only
-			// two of them may nest, in each other, because the renderer orders them parent first.
+			// they may nest, in each other, because the renderer orders them parent first.
 			product := len(dests)
 			for _, mt := range c.Mounts {
 				dests = append(dests, mt.Path)
@@ -492,7 +488,7 @@ func TestAppDirMatchesTheRegistry(t *testing.T) {
 	}
 }
 
-// TestStartingIsSettledAsUnhealthy (owner, 2026-09-27): once HealthGate has passed, an app still
+// TestStartingIsSettledAsUnhealthy: once HealthGate has passed, an app still
 // starting is not working -- the gate reverts it and the history records it so -- while unknown
 // stays unknown, and never reverts.
 func TestStartingIsSettledAsUnhealthy(t *testing.T) {

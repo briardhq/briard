@@ -167,9 +167,8 @@ func TestValidateRejectsUnitInjection(t *testing.T) {
 }
 
 // TestAcceptsRealWorldRegistryForms: the shapes a real catalog entry actually carries. The ported
-// form is a REGRESSION TEST — the first version of the digest pattern had no `:` in it, so every
-// registry on a non-default port was silently refused, and only the integration test running one
-// found it.
+// form is a REGRESSION TEST — a digest pattern with no `:` in it silently refuses every registry
+// on a non-default port, which otherwise only an integration test running one would find.
 func TestAcceptsRealWorldRegistryForms(t *testing.T) {
 	for _, image := range []string{
 		"ghcr.io/home-assistant/home-assistant@sha256:" + hex64,
@@ -189,8 +188,8 @@ func TestAcceptsRealWorldRegistryForms(t *testing.T) {
 	}
 }
 
-// TestStillRejectsMalformedRegistryForms: widening the pattern for ports must not have opened it
-// to references that are not digest-pinned at all, which is the property doing the work.
+// TestStillRejectsMalformedRegistryForms: allowing ports in the pattern must not open it to
+// references that are not digest-pinned at all, which is the property doing the work.
 func TestStillRejectsMalformedRegistryForms(t *testing.T) {
 	for _, image := range []string{
 		"registry.example.com:5000/foo:latest",                             // tagged, not pinned
@@ -220,7 +219,7 @@ func TestStatelessContainerNeedsNoMount(t *testing.T) {
 	}
 }
 
-// TestMultiContainerPod: the two-container shape the quadlet spike proved.
+// TestMultiContainerPod: the two-container shape of one pod.
 func TestMultiContainerPod(t *testing.T) {
 	m := good()
 	m.Containers = append(m.Containers, Container{

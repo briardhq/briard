@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// The lists as they were FROZEN on 2026-08-08, at the moment the first installer able to mint a
-// name was built. Words may be APPENDED after these prefixes; nothing before them may change.
+// The lists as they were FROZEN when the first installer able to mint a name was built. Words
+// may be APPENDED after these prefixes; nothing before them may change.
 //
 // Update rules, and there are only two:
-//   - Adding words: leave these three constants alone. The test checks the frozen PREFIX, so a
+//   - Adding words: leave these four constants alone. The test checks the frozen PREFIX, so a
 //     longer list still passes.
 //   - Changing or removing a word: don't. If you are here because this test failed, the failure
 //     is the point -- see TestListsAreAppendOnly for what breaks.
@@ -64,7 +64,7 @@ func TestListsAreAppendOnly(t *testing.T) {
 }
 
 // Every word must be a legal DNS label on its own AND inside the two labels we build from it:
-// `briard-<adj>-<animal>.local` today, `<adj>-<animal>.briard.casa` once there is an account.
+// `briard-<adj>-<animal>.local` on the LAN, `<adj>-<animal>.briard.casa` once claimed.
 // A curated list is what lets Generate have no sanitiser; this is the assertion that keeps that
 // true as words are appended.
 func TestWordsAreValidDNSLabels(t *testing.T) {
