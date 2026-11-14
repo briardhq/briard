@@ -87,7 +87,6 @@ func (cfg Config) assessorFor(m manifest.Manifest, p readinessProbe, logf func(s
 		if settle == 0 {
 			settle = probeSettle
 		}
-		// A pointer, because this assessor carries the token it minted from Baseline to Assess.
 		return &probeAssessor{p: p, name: m.Name, settle: settle}
 	default:
 		return nil
@@ -193,9 +192,6 @@ type probeAssessor struct {
 	p      readinessProbe
 	name   string
 	settle time.Duration
-	// token is what Baseline stored, kept on the assessor as well as in the Baseline value so a
-	// mismatch can be reported as a mismatch rather than as an absence.
-	token string
 }
 
 // Baseline stores a fresh token in the app and confirms the app is serving. A fresh token every
@@ -225,7 +221,6 @@ func (a *probeAssessor) Baseline(ctx context.Context) (guest.Baseline, error) {
 		// to establish a baseline, and it must not be dressed up as a regression later.
 		return nil, fmt.Errorf("readiness: %s did not store the probe token", a.name)
 	}
-	a.token = token
 	return token, nil
 }
 
