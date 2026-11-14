@@ -18,24 +18,21 @@ import (
 	"briard.io/shared/routes"
 )
 
-// Converge-at-promotion: a node that takes over makes itself match the VOLUME.
+// Converge-at-promotion: a node that takes over makes itself match the volume. An install renders
+// only on the node that ran it, so without this a peer that was Secondary then (or absent, or
+// joined later) promotes onto whatever it last rendered — nothing — and serves the zero-app
+// landing page while reporting healthy, because the reverse proxy answers its own /healthz: what
+// a node was told would decide what the household gets after a failover.
 //
-// THE PROBLEM IT SOLVES: an install renders on the node that ran it, so without this a peer that
-// was Secondary at the time (or absent, or joined later) promotes onto whatever it last rendered
-// — nothing — and serves the zero-app landing page while reporting healthy, because the reverse
-// proxy answers its own /healthz. What a node was TOLD would decide what the household gets after
-// a failover.
+// The chicken-and-egg: drbd-reactor promotes with the promoter chain, but the volume is readable
+// only after promotion. So the chain is static — the same members on every data node
+// (shared/chain.Members) — and `briard-apps` is the member that, once the mount exists, reads the
+// manifests, renders, warms and starts them. The app units themselves are not chain members.
 //
-// THE SHAPE, and the chicken-and-egg it has to solve. The promoter chain is what drbd-reactor
-// promotes WITH, but the volume is only readable AFTER promotion. So the chain is STATIC — the
-// same members on every data node (shared/chain.Members) — and `briard-apps` is the member that,
-// once the mount exists, reads the manifests, renders, warms and starts them. The app units
-// themselves are not chain members.
-//
-// The manifests are TRUSTED here, and the signature is not re-checked. Identity is the host's:
-// it fetched the manifest from the catalog, verified it against the release keyring, and wrote
-// those exact bytes to a volume only a Primary can write. What the guest re-derives is the
-// RENDERING, deliberately — the renderer belongs next to the podman it renders for. Parse still
+// The manifests are trusted, the signature not re-checked: identity is the host's, which fetched
+// the manifest from the catalog, verified it against the release keyring, and wrote those exact
+// bytes to a volume only a Primary can write. What the guest deliberately re-derives is the
+// rendering, because the renderer belongs next to the podman it renders for. Parse still
 // validates the structure, so a corrupt manifest is refused rather than rendered.
 //
 // ⚠️ This is the natural home for a code↔data identity gate; whether it gates per app
@@ -43,63 +40,56 @@ import (
 
 // unitsFile records the ordered units converge started, so ConvergeStop can stop exactly those.
 // /run (tmpfs), re-derived by every converge, therefore immune to the durable-write rule.
-//
-// Recording them beats re-deriving them at stop time: ExecStop does run while the volume is
-// still mounted (drbd-reactor unwinds the chain in reverse, so briard-primary-storage goes last),
-// but a stop that depends on reading the volume would fail exactly when the volume is what went
-// wrong.
+// Recording beats re-deriving at stop time: ExecStop does run while the volume is still mounted
+// (drbd-reactor unwinds the chain in reverse, so briard-primary-storage goes last), but a stop
+// that depends on reading the volume would fail exactly when the volume is what went wrong.
 const unitsFile = "/run/briard/apps.units"
 
-// startedFile records what converge last STARTED, one `<unit source> <sha256>` line per file.
+// startedFile records what converge last started, one `<unit source> <sha256>` line per file.
 //
-// ⚠️ COMPARING AGAINST THE FILES ON DISK LOOKS RIGHT AND IS WRONG: converge is not their only
-// writer -- an INSTALL renders the new units through app.render before asking the node to
-// converge. Disk would already hold the new bytes, every file would compare equal, nothing would
-// be bounced, and `systemctl start` on an already-active unit is a no-op: the OLD container keeps
-// serving while the volume, the node-local cache and the report all name the new version, and the
-// install's health gate passes because the old container answers. A deliberately-broken version
-// installed "healthy" in three seconds that way.
-//
-// So converge remembers what IT started. /run is tmpfs, so a guest reboot loses the record and
-// everything counts as changed -- which is correct: nothing is running either.
+// ⚠️ Comparing against the files on disk looks right and is wrong: converge is not their only
+// writer -- an install renders the new units through app.render before asking the node to
+// converge. Disk would already hold the new bytes, nothing would be bounced, and `systemctl start`
+// on an already-active unit is a no-op: the old container keeps serving while the volume, the
+// node-local cache and the report all name the new version, and the install's health gate passes
+// because the old container answers (a deliberately-broken version installed "healthy" in three
+// seconds that way). /run is tmpfs, so a guest reboot loses the record and everything counts as
+// changed -- which is correct: nothing is running either.
 const startedFile = "/run/briard/apps.started"
 
 // unitPrefix namespaces everything the renderer writes into quadletDir. Converge owns the files
 // carrying it and no others: a file a user put there is theirs, and must survive.
 const unitPrefix = "briard-"
 
-// Converge makes this node run what the replicated volume says it should.
+// Converge makes this node run what the replicated volume says it should: render -> write units
+// -> reload -> warm images -> start. Idempotent: re-running it against an unchanged volume
+// rewrites identical bytes and starts already-active units, which lets an install re-converge in
+// place instead of restarting this unit (restarting a chain member would deactivate the
+// promoter's target and demote the node).
 //
-// Render -> write units -> reload -> warm images -> start. Idempotent: re-running it against an
-// unchanged volume rewrites identical bytes and starts already-active units, which is what lets
-// an install re-converge in place instead of restarting this unit (restarting a chain member
-// would deactivate the promoter's target and demote the node).
+// The failure rule, the whole reason for this split:
 //
-// THE FAILURE RULE, and it is the whole reason this is split the way it is:
-//
-//   - CONVERGE's own failure — the volume unreadable, a manifest that will not render, units that
+//   - Converge's own failure — the volume unreadable, a manifest that will not render, units that
 //     cannot be written, an image that is absent and cannot be fetched — returns an error. This
 //     runs as briard-apps, a promoter chain member after briard-vip, so the failure reaches the
 //     promotion hold through the member's OnFailure=, which stops the chain — the VIP with it —
-//     and hands the resource on (units.go). Loud, through machinery that already exists.
+//     and hands the resource on (units.go): loud, through machinery that already exists.
+//   - An app's own failure to start is logged and survived. A crashing container must not demote:
+//     a code fault is deterministic, so the peer running the identical closure hits it
+//     identically and the failover only flaps — and one broken app must not take the other N-1
+//     down with it. Recovery is the unit's own Restart= (agent/quadlet); the household hears
+//     about it through per-app health, which reports and never gates.
 //
-//   - An APP's own failure to start is logged and survived. A container that crashes must not
-//     demote: a code fault is deterministic, so the peer running the identical closure hits it
-//     identically and the failover only flaps — and one broken app must not take the other
-//     N-1 down with it. Recovery is the unit's own Restart= (agent/quadlet), and the household
-//     hears about it through per-app health, which reports and never gates.
+// A node with nothing installed converges successfully to nothing: the shipped state, not an
+// error.
 //
-// A node with nothing installed converges successfully to nothing. That is the shipped state, not
-// an error.
+// It returns the apps it could not prepare, having started every other one. Preparation is
+// per-app work that can fail for one app and not the rest (agent/hass), and the two callers need
+// opposite things from the list: `briard-apps`, a promoter chain member, must promote anyway and
+// let the household keep the apps that work; an install must fail, because the app it was told
+// to install is the one that did not start. Same code, one report, each caller deciding.
 //
-// It RETURNS the apps it could not prepare, having started every other one. That list is not
-// bookkeeping: preparation is per-app work that can fail for one app and not the rest
-// (agent/hass), and the two callers need opposite things from it. `briard-apps` is a promoter
-// chain member, so it must promote anyway and let the household keep the apps that work; an
-// INSTALL must fail, because the app it was told to install is the one that did not start.
-// Same code, one report, each caller deciding for itself.
-//
-// live names the install the caller is running now, "" for none (staging.go): its STAGED
+// live names the install the caller is running now, "" for none (staging.go): its staged
 // manifest is rendered for that app, and every other staged app is left out entirely --
 // not rendered, not started, its stale units stopped -- until the host's undo puts its data back.
 func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
@@ -124,12 +114,12 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Warm before starting, not during: the containers are Pull=never, so an image that is not
-	// resident fails the container rather than fetching it. Absence here means the design was not
-	// upheld (install warms, prewarm puts the image on every standby) and a pull is the honest
-	// recovery — the digest in the manifest pins the bytes, so a fetch returns exactly those or
-	// fails. A pull that CANNOT happen fails converge, which takes the VIP down and says so,
-	// rather than promoting into a half-started chain (the running-never-needs-network doctrine, upheld by failing).
+	// Warm before starting, not during: the containers are Pull=never, so a non-resident image
+	// fails the container rather than fetching it. Absence here means the design was not upheld
+	// (install warms, prewarm puts the image on every standby) and a pull is the honest recovery —
+	// the manifest's digest pins the bytes, so a fetch returns exactly those or fails. A pull that
+	// cannot happen fails converge, which takes the VIP down and says so, rather than promoting
+	// into a half-started chain (the running-never-needs-network doctrine, upheld by failing).
 	warm := make([]string, 0, len(all.ImageRefs))
 	for u := range all.ImageRefs {
 		warm = append(warm, u)
@@ -140,24 +130,21 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 			return nil, fmt.Errorf("converge: %w", err)
 		}
 	}
-	// The per-app knowledge the product holds about one catalogued app, materialised on
-	// this node: Home Assistant's control channel, mosquitto's config file (agent/apps).
-	// Here because converge is the one path every node takes — the installing Primary, the
-	// survivor promoting into an app it was never told about, and every guest reboot, /run
-	// being tmpfs. After the warm, because it reads the image; before the start, because the
-	// containers bind what it writes.
+	// The per-app knowledge the product holds about one catalogued app, materialised on this
+	// node: Home Assistant's control channel, mosquitto's config file (agent/apps). Here because
+	// converge is the one path every node takes — the installing Primary, the survivor promoting
+	// into an app it was never told about, and every guest reboot, /run being tmpfs. After the
+	// warm, because it reads the image; before the start, because the containers bind what it
+	// writes.
 	//
-	// A FAILURE HERE COSTS ONE APP, NOT THE NODE. Preparation is the one step whose inputs
-	// are the APP's (its image's own layout), so an app whose upstream packaging moved
-	// must not take the other N-1 down with it, or the promoter chain becomes hostage to whatever
-	// a vendor did to a container this month. The app is skipped and named; everything else
-	// promotes.
-	//
-	// SKIPPING IS ALSO WHAT MAKES IT SAFE, which is why this cannot simply log and carry on to
-	// the start: the rendered unit names bind sources Prepare writes, and podman CREATES a
-	// missing source as a root-owned directory, leaving a container that can never start and a
-	// path a later Prepare cannot fix (agent/hass). Never starting the unit is what keeps podman
-	// from making that directory at all.
+	// A failure here costs one app, not the node: preparation is the one step whose inputs are
+	// the app's (its image's own layout), so an app whose upstream packaging moved must not take
+	// the other N-1 down, or the promoter chain becomes hostage to whatever a vendor did to a
+	// container this month. The app is skipped and named; everything else promotes. Skipping,
+	// rather than logging and carrying on to the start, is also what makes it safe: the rendered
+	// unit names bind sources Prepare writes, and podman creates a missing source as a root-owned
+	// directory, leaving a container that can never start and a path a later Prepare cannot fix
+	// (agent/hass). Never starting the unit keeps podman from making that directory at all.
 	var skipped []string
 	for i := range svcs {
 		if err := apps.Prepare(ctx, x, svcs[i].m); err != nil {
@@ -166,7 +153,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 			skipped = append(skipped, svcs[i].name)
 		}
 	}
-	// Record BEFORE starting: a start that fails part-way still leaves units running, and a stop
+	// Record before starting: a start that fails part-way still leaves units running, and a stop
 	// that does not know about them would leave containers on an unmounted volume.
 	if err := x.WriteFile(unitsFile, []byte(strings.Join(all.Units, "\n")+"\n")); err != nil {
 		return nil, fmt.Errorf("converge: record started units: %w", err)
@@ -181,21 +168,19 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 	for _, s := range svcs {
 		if s.skip {
 			// Not started, so not stopped either: on an upgrade whose new image cannot be
-			// prepared, the OLD container is still serving and taking it down would turn a
+			// prepared, the old container is still serving and taking it down would turn a
 			// failed upgrade into an outage. The install path is told (see the return), and
 			// reverts.
 			continue
 		}
-		// A CHANGED RENDERING MUST BE MADE TO TAKE EFFECT, and a start alone will not do it:
-		// systemd does not restart an already-active unit on daemon-reload, so an upgrade
-		// (same app name => same unit names) would leave the OLD container serving while
-		// every file on disk described the new one. It belongs here because converge is the only
-		// thing that starts these units.
-		//
-		// Only the apps whose bytes actually changed are bounced. Converge runs on every
-		// promotion and on every install, so restarting unconditionally would take an untouched
-		// app down because a DIFFERENT one was upgraded — the "one app must not cost the
-		// others" rule, in its quietest form.
+		// A changed rendering must be made to take effect, and a start alone will not do it:
+		// systemd does not restart an already-active unit on daemon-reload, so an upgrade (same
+		// app name => same unit names) would leave the old container serving while every file on
+		// disk described the new one. Here because converge is the only thing that starts these
+		// units. Only apps whose bytes actually changed are bounced: converge runs on every
+		// promotion and every install, so restarting unconditionally would take an untouched app
+		// down because a different one was upgraded — the "one app must not cost the others"
+		// rule, in its quietest form.
 		if s.touched(changed) {
 			stopApp(ctx, x, s.r)
 		}
@@ -214,12 +199,11 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 			log.Printf("converge: %v; Files shows what it can", err)
 		}
 	}
-	// Remember what is now running, so the NEXT converge can tell an upgrade from a promotion.
-	// A failure here is not worth aborting a converge that has already started the apps: the
-	// cost is a needless bounce next time, not a wrong one.
-	// Recorded WITHOUT the skipped apps: their new bytes are on disk but are not running, and
-	// a record claiming otherwise would make the next converge treat them as current and never
-	// retry them.
+	// Remember what is now running, so the next converge can tell an upgrade from a promotion. A
+	// failure here is not worth aborting a converge that has already started the apps: the cost
+	// is a needless bounce next time, not a wrong one. Recorded without the skipped apps: their
+	// new bytes are on disk but not running, and a record claiming otherwise would make the next
+	// converge treat them as current and never retry them.
 	if err := writeStarted(x, started(svcs)); err != nil {
 		log.Printf("converge: could not record what was started (%v); the next converge will bounce everything", err)
 	}
@@ -231,7 +215,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 	return skipped, nil
 }
 
-// started folds the apps converge actually started, for the record the NEXT converge compares
+// started folds the apps converge actually started, for the record the next converge compares
 // against. A skipped app is deliberately absent rather than present-and-stale.
 func started(svcs []convergedApp) quadlet.Rendered {
 	out := quadlet.Rendered{Files: map[string]string{}}
@@ -244,15 +228,14 @@ func started(svcs []convergedApp) quadlet.Rendered {
 	return out
 }
 
-// stopApp quiesces one app so a re-render takes effect: its CONTAINER units in reverse,
-// then the pod. Best-effort — a unit that was not running is not a failure worth aborting for.
+// stopApp quiesces one app so a re-render takes effect: its container units in reverse, then the
+// pod. Best-effort — a unit that was not running is not a failure worth aborting for.
 //
 // Containers before the pod, never the pod alone: `systemctl stop <pod>` makes podman `pod stop`,
 // which kills the member containers out from under their systemd units so each lands in `failed`
-// rather than stopping cleanly. Stopping them directly is a graceful stop, which is what releases
-// the data subvolume's bind and what keeps a failed-unit state out of the journal for an
-// operation nobody asked to fail. By the time the pod is stopped it has no containers left to
-// kill, so its own stop is clean too.
+// rather than stopping cleanly. Stopping them directly is graceful, which releases the data
+// subvolume's bind and keeps a failed-unit state out of the journal for an operation nobody asked
+// to fail; the pod, with no containers left to kill, then stops cleanly too.
 func stopApp(ctx context.Context, x Executor, r quadlet.Rendered) {
 	for i := len(r.ContainerUnits) - 1; i >= 0; i-- {
 		if _, err := x.Run(ctx, "systemctl", "stop", r.ContainerUnits[i]); err != nil {
@@ -270,14 +253,13 @@ func stopApp(ctx context.Context, x Executor, r quadlet.Rendered) {
 
 // stopUnrendered stops what the previous converge started and this one no longer renders — an
 // app forgotten after its first install failed, or uninstalled — containers before their pod,
-// as ConvergeStop does. Before the unit sources go, while systemd still has them.
+// as ConvergeStop does. Before the unit sources go, while systemd still has them. Best-effort,
+// like every stop here: a unit already gone is the state this wants.
 //
-// ⚠️ THE POD DOES NOT STOP ITSELF, which is why this exists. Pods are rendered with
-// ExitPolicy=continue so a crashed container is restarted, and the price is that stopping the last
-// container does not take the pod down with it. A pod left behind holds its address and its
-// published ports, and a reinstall of the same app would join the stale pod.
-//
-// Best-effort, like every stop here: a unit already gone is the state this wants.
+// ⚠️ It exists because the pod does not stop itself: pods are rendered with ExitPolicy=continue so
+// a crashed container is restarted, and the price is that stopping the last container does not
+// take the pod down with it. A pod left behind holds its address and its published ports, and a
+// reinstall of the same app would join the stale pod.
 func stopUnrendered(ctx context.Context, x Executor, all quadlet.Rendered) {
 	raw, err := x.ReadFile(unitsFile)
 	if err != nil {
@@ -299,13 +281,11 @@ func stopUnrendered(ctx context.Context, x Executor, all quadlet.Rendered) {
 }
 
 // ConvergeStop stops the app units this node started, newest-dependency first. Run as
-// briard-apps' ExecStop, i.e. by drbd-reactor unwinding the chain on demote — the app
-// units are not chain members, so nothing else would stop them and the containers would be left
-// running on a volume about to be unmounted.
-//
-// Best-effort by design: a unit that is already gone, or that will not stop, must not fail the
-// demote. A failed ExecStop would leave briard-apps active, which blocks the unmount behind
-// it — strictly worse than a container that outlives its data.
+// briard-apps' ExecStop, i.e. by drbd-reactor unwinding the chain on demote — the app units are
+// not chain members, so nothing else would stop them and the containers would be left running on
+// a volume about to be unmounted. Best-effort by design: a unit already gone, or that will not
+// stop, must not fail the demote, because a failed ExecStop would leave briard-apps active,
+// blocking the unmount behind it — strictly worse than a container that outlives its data.
 func ConvergeStop(ctx context.Context, x Executor) error {
 	// Files' view first: every bind in it holds the volume, which is unmounted after this.
 	if err := tearDownFilesView(ctx, x); err != nil {
@@ -328,18 +308,15 @@ func ConvergeStop(ctx context.Context, x Executor) error {
 	return nil
 }
 
-// renderVolume reads every manifest on the volume and renders them, returning them
-// as a per-app list.
+// renderVolume reads every manifest on the volume and renders them as a per-app list, ordered by
+// app name, which owes nothing but determinism: no inter-app dependency order is modelled, and
+// alphabetical is the cheapest way to be the same on every node.
 //
-// ORDER IS BY APP NAME, which owes nothing but determinism: no inter-app dependency order is
-// modelled, and alphabetical is the cheapest way to be the same on every node.
-//
-// An ABSENT manifest directory is the shipped zero-app node, not a failure. A manifest that
-// is present and unusable IS a failure, and the difference is deliberate: absence is a state we
-// ship, while a corrupt manifest means this node cannot honour what the volume says it runs, and
+// An absent manifest directory is the shipped zero-app node, not a failure; a present, unusable
+// manifest deliberately is one, because this node cannot honour what the volume says it runs, and
 // promoting anyway is how a household silently loses an app.
 //
-// A STAGED app is the exception to "render what the volume says" (staging.go): the live one
+// A staged app is the exception to "render what the volume says" (staging.go): the live one
 // renders from its `.json.next`, including a fresh install that has no accepted manifest yet,
 // and every other one is left out.
 func renderVolume(ctx context.Context, x Executor, live string) ([]convergedApp, error) {
@@ -391,26 +368,25 @@ func renderVolume(ctx context.Context, x Executor, live string) ([]convergedApp,
 	return svcs, nil
 }
 
-// allocator hands each app the address its pod answers on.
+// allocator hands each app the address its pod answers on. The whole design is that it is a
+// ledger, not a function: a pure hash of the app name would be stable until the day it collides,
+// the loser is probed to the next slot, and then uninstalling the winner frees the loser's own
+// hash, moves it, and bounces an app for a reason that has nothing to do with it — the shape of
+// any collision-resolution scheme without memory.
 //
-// IT IS A LEDGER, NOT A FUNCTION, and that is the whole design. A pure hash of the app name
-// would be stable until the day it collides: the loser is probed to the next slot, and then
-// UNINSTALLING THE WINNER frees the loser's own hash, moves it, and bounces an app for a reason
-// that has nothing to do with it. Any collision-resolution scheme without memory has that shape.
+// The ledger is the previous routing table, which already records each app's address on this
+// node -- a second file would hold the same fact twice. Keep every address already recorded,
+// allocate only for apps that have none, and take the lowest free slot, which needs no hashing
+// at all once there is memory to consult.
 //
-// The ledger is the previous routing table, because that table already records, per app, the
-// address it has on this node -- a second file would hold the same fact twice. So: keep every
-// address already recorded, allocate only for apps that have none, and take the lowest free
-// slot, which needs no hashing at all once there is memory to consult.
+// /run is the correctness argument, not just where the table happens to live: it dies with the
+// guest, so a reboot reallocates from nothing while no container is running, and no address
+// change can bounce anything. Within a run the ledger holds, and a running app keeps its address
+// whatever else is installed or removed around it.
 //
-// /run IS THE CORRECTNESS ARGUMENT, not just where it happens to live. The table dies with the
-// guest, so a reboot reallocates from nothing -- and at that moment no container is running, so no
-// address change can bounce anything. Within a run the ledger holds and a running app keeps
-// its address whatever else is installed or removed around it.
-//
-// AN ADDRESS THAT DOES CHANGE MUST BOUNCE, which is why nothing here tries to prevent that in
-// general: an app moving from host networking to private genuinely changed where it answers,
-// and recreating the container is the correct response rather than something to suppress.
+// An address that does change must bounce, so nothing here tries to prevent that in general: an
+// app moving from host networking to private genuinely changed where it answers, and recreating
+// the container is the correct response rather than something to suppress.
 type allocator struct {
 	pool  string          // the node's pod pool, first three octets; "" = none drawn
 	taken map[string]bool // addresses already spoken for this pass
@@ -468,7 +444,7 @@ func (a *allocator) addressFor(m manifest.Manifest) (string, error) {
 }
 
 // inUse reports whether another app already holds this address in the ledger. Checked so that
-// a newly-allocated app cannot be handed an address a LATER app in the same pass is about
+// a newly-allocated app cannot be handed an address a later app in the same pass is about
 // to keep -- the apps are walked in name order, and a new one may sort before an existing one.
 func (a *allocator) inUse(addr string) bool {
 	for _, held := range a.known {
@@ -479,7 +455,7 @@ func (a *allocator) inUse(addr string) bool {
 	return false
 }
 
-// convergedApp is one app the volume names, with its rendering. Kept PER APP rather
+// convergedApp is one app the volume names, with its rendering. Kept per app rather
 // than merged, because the two decisions converge makes are per app: whether this one's
 // rendering changed (and so must be bounced), and whether this one failed to start (which must
 // not stop the others).
@@ -487,7 +463,7 @@ type convergedApp struct {
 	name string
 	// m is the manifest as the volume gave it, kept beside the rendering because the units are
 	// not the only thing derived from it: apps.Prepare is handed the manifest so that the
-	// per-app knowledge stays keyed on the app's NAME and its pinned image, never on a
+	// per-app knowledge stays keyed on the app's name and its pinned image, never on a
 	// unit filename it would have to parse back out.
 	m manifest.Manifest
 	r quadlet.Rendered
@@ -541,19 +517,17 @@ func manifestNames(ctx context.Context, x Executor) ([]string, error) {
 }
 
 // writeUnits materialises the rendered set into quadletDir and reloads systemd, removing any
-// briard- unit source that this converge did NOT render, and reports which files it actually
-// CHANGED.
+// briard- unit source this converge did not render, and reports which files it actually changed.
 //
-// The removal is what makes converge the whole truth rather than an addition to it: an app
-// uninstalled on another node, or renamed, leaves orphan unit source behind, and an orphan
-// .container is a unit a future converge could start against data that no longer exists. Only
-// files carrying the renderer's own prefix are candidates — a quadlet file a user dropped there
-// is theirs.
+// The removal makes converge the whole truth rather than an addition to it: an app uninstalled on
+// another node, or renamed, leaves orphan unit source behind, and an orphan .container is a unit
+// a future converge could start against data that no longer exists. Only files carrying the
+// renderer's own prefix are candidates — a quadlet file a user dropped there is theirs.
 //
-// The changed set is what tells an UPGRADE apart from a promotion. Converge runs on both, and on
-// a promotion nothing is running so a start is enough; on an upgrade the units are already
-// active, and systemd does not restart an active unit on daemon-reload. Comparing the bytes is
-// how the caller learns which apps must be bounced and, just as importantly, which must not.
+// The changed set tells an upgrade from a promotion, both of which converge runs on: on a
+// promotion nothing is running, so a start is enough; on an upgrade the units are already active,
+// and systemd does not restart an active unit on daemon-reload. Comparing the bytes tells the
+// caller which apps must be bounced and, just as importantly, which must not.
 func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string]bool, error) {
 	if _, err := x.Run(ctx, "mkdir", "-p", quadletDir); err != nil {
 		return nil, fmt.Errorf("converge: %s: %w", quadletDir, err)
@@ -578,14 +552,14 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 		names = append(names, n)
 	}
 	sort.Strings(names)       // deterministic write order, so a part-way failure is reproducible
-	started := readStarted(x) // what THIS node last started, empty after a guest reboot
+	started := readStarted(x) // what this node last started, empty after a guest reboot
 	changed := map[string]bool{}
 	for _, n := range names {
 		if err := safeUnitName(n); err != nil {
 			return nil, err
 		}
 		path := quadletDir + "/" + n
-		// Changed against what converge last STARTED, never against what is on disk -- see
+		// Changed against what converge last started, never against what is on disk -- see
 		// startedFile. A unit converge has not started with exactly these bytes counts as changed,
 		// which after a guest reboot is all of them, correctly: nothing is running.
 		if started[n] != sum(r.Files[n]) {
@@ -601,37 +575,34 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 	return changed, nil
 }
 
-// warmImage ensures one image is present, running its .image unit ONLY when it is missing.
+// warmImage ensures one image is present, running its .image unit only when it is missing.
+// Shared by the app.warm verb and by converge, so that a converging survivor and an installing
+// Primary cannot disagree about what "the image is here" means.
 //
-// PRESENT => DONE, without touching the network. Starting the unit is a `podman image pull`:
+// Present => done, without touching the network: starting the unit is a `podman image pull` —
 // quadlet generates `Wants=network-online.target` + `ExecStart=podman image pull <ref>` with no
-// already-present short-circuit (measured with podman's own generator), so an unconditional start
-// would make every guest reboot depend on reaching a registry — breaking the doctrine that
+// already-present short-circuit (measured with podman's own generator) — so an unconditional
+// start would make every guest reboot depend on reaching a registry, breaking the doctrine that
 // running and failover never need network.
 //
-// MISSING => pull, and wait for it. Absence is not something to fail on: the image SHOULD already
-// be here (install warms it, prewarm puts it on every standby, and app-install.nix asserts
-// exactly that), but a node that was down when the install ran, or joined afterwards, promotes
-// into an app it was never told about and legitimately has no image for. Deliberately NOT
-// conditioned on whether some other node could promote instead: two nodes that both lack the
-// image would refuse in turn, bounded only by the promotion hold (units.go, holdSecs), and on the
-// free tier there is no cloud to stop them. A node that fetches what it can name beats a
-// cluster-wide negotiation nothing arbitrates.
+// Missing => pull, and wait for it; absence is not something to fail on. The image should already
+// be here (install warms it, prewarm puts it on every standby, app-install.nix asserts exactly
+// that), but a node that was down when the install ran, or joined afterwards, promotes into an
+// app it was never told about and legitimately has no image for. Deliberately not conditioned on
+// whether some other node could promote instead: two nodes that both lack the image would refuse
+// in turn, bounded only by the promotion hold (units.go, holdSecs), with no cloud on the free
+// tier to stop them; a node that fetches what it can name beats a cluster-wide negotiation
+// nothing arbitrates. Pulling is safe because the ref is digest-pinned (`repo@sha256:…`;
+// shared/manifest refuses anything else): a pull returns exactly those bytes or fails, so
+// identity survives either outcome. Refuse when you cannot verify what you would get (a tag),
+// fetch when the digest pins it.
 //
-// PULLING IS SAFE BECAUSE THE REF IS DIGEST-PINNED. A manifest names `repo@sha256:…`
-// (shared/manifest refuses anything else), so a pull returns exactly those bytes or fails —
-// identity survives either outcome. The rule: refuse when you cannot verify what you would get
-// (a tag), fetch when the digest pins it.
-//
-// RESTART, NEVER START: the unit is `Type=oneshot` + `RemainAfterExit=yes` (podman's generator
+// Restart, never start: the unit is `Type=oneshot` + `RemainAfterExit=yes` (podman's generator
 // says so), so once it has pulled it stays active until the guest reboots, and a `start` of an
-// active unit succeeds having run nothing. Reaching this line means the image is gone, so what the
-// unit says about it is stale -- an uninstall or a superseded version removed the image under it,
-// and the same unit name carries the next version's pull. A start would leave an app installed
-// again, or upgraded twice since boot, at Pull=never with no image.
-//
-// Shared by the app.warm verb and by converge, which is the point: a converging survivor and
-// an installing Primary must not disagree about what "the image is here" means.
+// active unit succeeds having run nothing. Reaching the restart means the image is gone, so what
+// the unit says about it is stale -- an uninstall or a superseded version removed the image under
+// it, and the same unit name carries the next version's pull. A start would leave an app
+// installed again, or upgraded twice since boot, at Pull=never with no image.
 func warmImage(ctx context.Context, x Executor, unit, ref string) error {
 	if unit == "" || ref == "" {
 		return fmt.Errorf("warm image: need a unit and an image ref")
@@ -670,7 +641,7 @@ func sum(body string) string {
 }
 
 // readStarted loads the unit → fingerprint record converge last wrote. An absent or unreadable
-// file is an EMPTY record, which makes every unit count as changed: after a guest reboot /run is
+// file is an empty record, which makes every unit count as changed: after a guest reboot /run is
 // empty and nothing is running, so bouncing everything is exactly right, and on a corrupt read an
 // unnecessary restart beats leaving the old container serving new-format data.
 func readStarted(x Executor) map[string]string {
@@ -688,7 +659,7 @@ func readStarted(x Executor) map[string]string {
 }
 
 // writeStarted records what is now running, so the next converge can tell an upgrade from a
-// promotion. Written AFTER the units are started: a record written first would make a failed
+// promotion. Written after the units are started: a record written first would make a failed
 // start look, to the next converge, like something already running.
 func writeStarted(x Executor, r quadlet.Rendered) error {
 	names := make([]string, 0, len(r.Files))
@@ -705,31 +676,28 @@ func writeStarted(x Executor, r quadlet.Rendered) error {
 
 // writeRoutes materialises the reverse proxy's routing table from what this converge rendered —
 // the names included, so what the reverse proxy routes and what its mDNS responder answers are one
-// list.
+// list. Converge is the whole truth here for the same reason it is for the units: with no apps it
+// writes an empty table rather than no file, because "this node routes nothing" and "nobody has
+// told me anything" are different states, and the reverse proxy reading a stale table left over
+// from before an uninstall is exactly the failure the file exists to make impossible.
 //
-// IT IS WRITTEN EVEN WHEN THERE ARE NO APPS, as an empty table rather than an absent file:
-// "this node routes nothing" and "nobody has told me anything" are different states, and the
-// reverse proxy reading a stale table left over from before an uninstall is exactly the failure
-// the file exists to make impossible. Converge is the whole truth here for the same reason it is
-// for the units.
+// Skipped apps are included, unlike the started-record: the volume says the node serves them, so
+// the reverse proxy should say so too — a name that resolves and gives a 502 tells a household its
+// app is down, while a name that resolves to nothing tells them they typed it wrong. The per-app
+// health probe reads the same table and reports the same truth.
 //
-// SKIPPED APPS ARE INCLUDED, unlike the started-record. The volume says the node serves them,
-// so the reverse proxy should say so too: a name that resolves and gives a 502 tells a household
-// its app is down, while a name that resolves to nothing tells them they typed it wrong. The
-// per-app health probe reads the same table and reports the same truth.
-//
-// A FAILURE HERE FAILS THE CONVERGE, and that is the harsher of the two options on purpose. A
-// node that cannot write its routing table fails its briard-apps member, which ends in the
-// resource handed on (see Converge's failure rule), rather than promoting into a reverse proxy
-// serving the landing page over a household's running app — the silent-degradation shape
+// A failure here fails the converge, deliberately the harsher of the two options: a node that
+// cannot write its routing table fails its briard-apps member, which ends in the resource handed
+// on (see Converge's failure rule), rather than promoting into a reverse proxy serving the
+// landing page over a household's running app — the silent-degradation shape
 // converge-at-promotion was built to end, one layer up.
 func writeRoutes(x Executor, svcs []convergedApp) error {
 	t := routesFor(flockName(x), svcs)
 	return putRoutes(x, t)
 }
 
-// putRoutes writes the table. ONE FILE: the reverse proxy reloads it on mtime, for its routes and
-// for the names its mDNS responder answers, so writing it IS the notification. No `systemctl
+// putRoutes writes the table. One file: the reverse proxy reloads it on mtime, for its routes and
+// for the names its mDNS responder answers, so writing it is the notification. No `systemctl
 // restart`, and nothing can be left stale by a restart that was skipped because the unit happened
 // to be inactive. Where the reverse proxy is stopped, the write is simply read at its next start.
 func putRoutes(x Executor, t routes.Table) error {
@@ -743,24 +711,21 @@ func putRoutes(x Executor, t routes.Table) error {
 	return nil
 }
 
-// routesFor turns the rendered apps into the table. Three sources meet here and no one of
-// them could supply the others: the MANIFEST's port and health path, the RENDERER's address, and
-// the node's own flock name for the hostnames.
+// routesFor turns the rendered apps into the table, from three sources none of which could supply
+// the others: the manifest's port and health path, the renderer's address, and the node's own
+// flock name for the hostnames. Each app gets:
 //
-// An app gets a NAME whether or not the reverse proxy serves it. The name resolves to the VIP,
-// which is where a non-HTTP app is listening anyway, and it is the anchor any future route hangs
-// off — so `briard-<flock>-mosquitto.local` is worth having even while nothing is fronted under
-// it.
-//
-// It gets a ROUTE only if the product says the reverse proxy may front it (agent/apps.Fronted).
-// No route is how "do not expose this" is said: the reverse proxy is then never handed a way to
-// reach the app at all, rather than being handed one and trusted not to use it. mosquitto is the
-// live case — its manifest port is the broker's management API, bound inside the pod on purpose.
-//
-// It gets an ANNOUNCEMENT only if the product says the household's other devices go looking for
-// it (agent/apps.Announce), and only alongside a name, because that name is what the record
-// points at. mosquitto is again the live case, from the other side: the one app whose clients
-// are appliances that browse rather than people who type.
+//   - a name, whether or not the reverse proxy serves it: the name resolves to the VIP, where a
+//     non-HTTP app is listening anyway, and is the anchor any future route hangs off — so
+//     `briard-<flock>-mosquitto.local` is worth having even while nothing is fronted under it;
+//   - a route only if the product says the reverse proxy may front it (agent/apps.Fronted). No
+//     route is how "do not expose this" is said: the reverse proxy is never handed a way to reach
+//     the app at all, rather than handed one and trusted not to use it. mosquitto is the live
+//     case — its manifest port is the broker's management API, bound inside the pod on purpose;
+//   - an announcement only if the product says the household's other devices go looking for it
+//     (agent/apps.Announce), and only alongside a name, because that name is what the record
+//     points at. mosquitto is again the live case, from the other side: the one app whose clients
+//     are appliances that browse rather than people who type.
 func routesFor(flock string, svcs []convergedApp) routes.Table {
 	t := routes.Table{Apps: make([]routes.App, 0, len(svcs))}
 	for _, s := range svcs {
@@ -797,18 +762,16 @@ func routesFor(flock string, svcs []convergedApp) routes.Table {
 }
 
 // flockName reads the flock's visible name out of the file net.mdnsname wrote, or "" if this node
-// has none.
-//
-// READ RATHER THAN PASSED IN, because the alternative is worse than it looks: the host knows the
-// name too (it minted it), so it could hand it over with the converge — and then a node that
-// promoted on its own, which is the whole case converge-at-promotion exists for, would render its
-// routing table with no name in it. The name is guest-local state for exactly the same reason the
-// manifests are volume state: it must be readable by a node that nobody is talking to.
+// has none. Read rather than passed in: the host knows the name too (it minted it) and could hand
+// it over with the converge, but then a node that promoted on its own — the whole case
+// converge-at-promotion exists for — would render its routing table with no name in it. The name
+// is guest-local state for exactly the reason the manifests are volume state: it must be readable
+// by a node that nobody is talking to.
 //
 // An unreadable or nameless file yields "", which routes.HostNames turns into an app with no
-// hostname — installed and reachable on its port, simply not yet named. That is the same rule
-// the reverse proxy already applies to the flock's own name, and it is the state of a node between
-// install and its first name.
+// hostname — installed and reachable on its port, simply not yet named: the rule the reverse
+// proxy already applies to the flock's own name, and the state of a node between install and its
+// first name.
 func flockName(x Executor) string {
 	raw, err := x.ReadFile(mdnsEnvPath)
 	if err != nil {
@@ -822,12 +785,10 @@ func flockName(x Executor) string {
 	return ""
 }
 
-// renameRoutes re-composes the hostnames in the EXISTING routing table after a flock rename, and
-// republishes them.
-//
-// IT DOES NOT RE-DERIVE THE TABLE FROM THE VOLUME, which was the obvious shape and is the wrong
-// one: a rename can arrive on a Secondary, or on a Primary whose volume read hiccups, and
-// re-rendering would then write an EMPTY table over a good one — losing every route because a
+// renameRoutes re-composes the hostnames in the existing routing table after a flock rename, and
+// republishes them. It does not re-derive the table from the volume, the obvious shape and the
+// wrong one: a rename can arrive on a Secondary, or on a Primary whose volume read hiccups, and
+// re-rendering would then write an empty table over a good one — losing every route because a
 // name changed. A rename changes names and nothing else, so it rewrites names and nothing else.
 //
 // An absent table is not an error: the node has never converged (or runs nothing), and the next
@@ -850,13 +811,11 @@ func renameRoutes(x Executor, flock string) {
 	}
 }
 
-// appHealthURL resolves where to ask one app whether it is serving, from the routing table
-// this node last converged.
-//
-// It reads the SAME table the reverse proxy routes on, so "is it healthy" and "where do requests
-// go" can never be answered about two different addresses — which a caller-supplied URL allows
-// by construction. It does NOT go through the reverse proxy: the probe is a direct GET from
-// inside the guest, which is why an app the reverse proxy may not front is still probed here
+// appHealthURL resolves where to ask one app whether it is serving, from the routing table this
+// node last converged: the same table the reverse proxy routes on, so "is it healthy" and "where
+// do requests go" can never be answered about two different addresses — which a caller-supplied
+// URL allows by construction. It does not go through the reverse proxy: the probe is a direct GET
+// from inside the guest, which is why an app the reverse proxy may not front is still probed here
 // every cycle.
 //
 // An app that is not in the table, or that has no health endpoint, yields an error rather than
@@ -884,11 +843,11 @@ func appHealthURL(x Executor, name string) (string, error) {
 	return u.String(), nil
 }
 
-// appHealth is APP HEALTH, the one answer to "does this app work": the registry's
+// appHealth is app health, the one answer to "does this app work": the registry's
 // override for a curated app that has one (apps.HealthOverride), otherwise the manifest's
 // healthPath answering 200. The status report, the app-update gate and the history all ask here.
 //
-// An unresolvable app is an ERROR, never a verdict (appHealthURL says why). A manifest
+// An unresolvable app is an error, never a verdict (appHealthURL says why). A manifest
 // that cannot be read on the volume leaves the default probe, which needs none.
 //
 // The whole answer, an override's included, takes at most healthBudget.
@@ -914,17 +873,16 @@ func appHealth(ctx context.Context, x Executor, app string) (apps.Health, error)
 
 // ensurePodNetwork creates the podman network private pods join, if it is not already there.
 //
-// IT IS THE NODE'S JOB, NEVER QUADLET'S. A `.network` unit would make network creation a
+// It is the node's job, never quadlet's: a `.network` unit would make network creation a
 // side-effect of starting a pod -- the same trap `Image=foo.image` sets for pulls, where a unit
-// that looks declarative reaches out and does something at the worst moment. Creating it here, once
-// per converge and before anything starts, keeps promotion a sequence of steps that either work or
-// say why.
+// that looks declarative reaches out and does something at the worst moment. Creating it here,
+// once per converge and before anything starts, keeps promotion a sequence of steps that either
+// work or say why. One network for the node, not one per app: the pool is a /24 and the
+// addresses inside it are what separate apps, while a network each would spend a subnet to
+// express the same thing.
 //
-// ONE NETWORK FOR THE NODE, not one per app: the pool is a /24 and the addresses inside it are
-// what separate apps, while a network each would spend a subnet to express the same thing.
-//
-// A NETWORK THAT EXISTS ON A DIFFERENT SUBNET FAILS THE CONVERGE rather than being adopted. The
-// addresses this node allocates come from the pool it was handed, so a network carrying some other
+// A network that exists on a different subnet fails the converge rather than being adopted: the
+// addresses this node allocates come from the pool it was handed, so a network carrying another
 // range would place every pod outside its own address -- reachable by nothing, with the routing
 // table and the health probe both pointing where the app is not. That can only happen if the
 // pool was redrawn under a live guest, and the honest answer is to refuse and name it.

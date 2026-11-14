@@ -14,33 +14,30 @@ import (
 	"briard.io/shared/chain"
 )
 
-// THE UNITS THE PUSHED AGENT OWNS.
+// The units the pushed agent owns. The guest image bakes exactly one binary --
+// briard-guest-firmware, the push protocol -- and every other briard binary rides the host
+// bundle. A unit is mostly an ExecStart plus the environment that binary needs, so a unit baked
+// into the image would move on the image's cadence while its binary moves on the host's: a pushed
+// agent asking its older image for a unit that image does not define crash-loops the node with
+// the household's app gone. So the agent writes them itself, at every start, and the defect class
+// stops being representable: a unit on tmpfs is rewritten by the binary that needs it, so it can
+// never be older than that binary. There is nothing to detect and nothing to version-gate.
 //
-// The guest image bakes exactly one binary -- briard-guest-firmware, the push
-// protocol -- and every other briard binary rides the HOST bundle. A unit is mostly an ExecStart
-// plus the environment that binary needs, so a unit baked into the image would move on the
-// image's cadence while its binary moves on the host's: a pushed agent asking its older image for
-// a unit that image does not define crash-loops the node with the household's app gone.
-//
-// So the agent writes them itself, at every start, and the defect class stops being
-// representable: a unit on tmpfs is rewritten by the binary that needs it, so it can never be
-// older than that binary. There is nothing to detect and nothing to version-gate.
-//
-// ⚠️ /run/systemd/system IS THE ONLY PLACE THIS CAN WORK, and that constraint is the feature.
+// ⚠️ /run/systemd/system is the only place this can work, and that constraint is the feature.
 // NixOS makes /etc/systemd/system a read-only store path (the reason scripts/install.sh has a
 // UNIT_DIR knob at all), so runtime units are the only writable kind -- and tmpfs is exactly the
 // lifetime we want, because a reboot must land on firmware with no units at all until the host
 // dresses the guest again. Others write here too: drbd-reactor generates its promoter units and
 // drop-ins into this directory, and a `systemctl mask --runtime` is a symlink here (MaskRendered).
 //
-// ⚠️ WHAT DOES NOT MOVE, and the line is the frozen-by-necessity one drawn inside the
-// guest: a unit that starts the thing writing it cannot be written by that thing. briard-guest-
-// agent.service and briard-deadman.service supervise the agent's own arrival, so they stay baked
+// ⚠️ What does not move, by the frozen-by-necessity line drawn inside the guest: a unit that
+// starts the thing writing it cannot be written by that thing. briard-guest-agent.service and
+// briard-deadman.service supervise the agent's own arrival, so they stay baked
 // (guest-image/disk-image.nix), as do the upstream DRBD units and briard-stage, whose content is
 // a build-time fact about the image rather than anything the agent knows.
 //
-// ⚠️ AND THE IMAGE STILL OWNS THE CLOSURE. A unit's PATH is a set of store paths, which a pushed
-// binary cannot invent; the image publishes them as ONE profile at ToolsBin and the agent names
+// ⚠️ And the image still owns the closure. A unit's PATH is a set of store paths, which a pushed
+// binary cannot invent; the image publishes them as one profile at ToolsBin and the agent names
 // that path. The two halves share a name and nothing else -- no manifest, no schema, no
 // handshake. An image that predates the profile has none, which WriteUnits treats as a refusal
 // to run rather than as something to work around (see below).
@@ -52,7 +49,7 @@ const (
 	// defaultUnitDir is where the units below are written.
 	defaultUnitDir = "/run/systemd/system"
 	// defaultToolsBin is the image's tool profile: everything an agent-written unit may exec,
-	// under one fixed path. PAIRED with guest-image/configuration.nix's `guestTools` +
+	// under one fixed path. Paired with guest-image/configuration.nix's `guestTools` +
 	// `toolsEtc`, which carry the reasoning for whole-packages-not-named-commands. Different
 	// languages, so no shared import; the nix-side comment names this const back.
 	defaultToolsBin = "/etc/briard/tools/bin"
@@ -74,7 +71,7 @@ func toolsBin() string {
 
 // holdSecs is how long a node refuses promotion after one of its chain members gave up.
 //
-// 300s is a judgement, not a measurement, and the trade is legible: a fault that TRAVELS with
+// 300s is a judgement, not a measurement, and the trade is legible: a fault that travels with
 // the replicated volume (a bad routes table, a corrupt cert, a name that collides LAN-wide) is
 // hit identically by whoever promotes next, so the resource ping-pongs with a period of roughly
 // this value -- five minutes is about twelve hand-overs an hour, each costing a mount cycle and
@@ -100,34 +97,33 @@ func holdSecs() string {
 // word -- PATH only reaches what the command itself then shells out to.
 func tool(name string) string { return filepath.Join(toolsBin(), name) }
 
-// WHAT HANDS THE RESOURCE ON WHEN A CHAIN MEMBER GIVES UP, and it has to be a STATE
-// hook rather than a dependency, which is the whole finding.
+// What hands the resource on when a chain member gives up; the whole finding is that it has to
+// be a state hook rather than a dependency.
 //
-// `Requires=` is JOB-level: systemd consults it when a stop or restart job is enqueued on the
+// `Requires=` is job-level: systemd consults it when a stop or restart job is enqueued on the
 // depended-upon unit, and never against that unit's state (transaction.c, atom
 // UNIT_ATOM_PROPAGATE_STOP on UNIT_REQUIRED_BY). So the promoter target's default `Requires=` on
-// its members would demote the node on EVERY crash: `Restart=` enqueues its auto-restart with job mode
-// JOB_RESTART_DEPENDENCIES, which propagates a TRY_RESTART up to the target, which stops
+// its members would demote the node on every crash: `Restart=` enqueues its auto-restart with job
+// mode JOB_RESTART_DEPENDENCIES, which propagates a TRY_RESTART up to the target, which stops
 // drbd-promote@ (PartOf) -- measured, taking the resource away from a live peer in 2 of 5
-// reverse-proxy crashes. With `target-as = Wants` (agent/drbd/config.go) nothing
-// upstream reacts to a member at all, which is right for a crash and wrong for a member that has
-// genuinely given up.
+// reverse-proxy crashes. With `target-as = Wants` (agent/drbd/config.go) nothing upstream reacts
+// to a member at all, which is right for a crash and wrong for a member that has genuinely given
+// up.
 //
-// OnFailure= is the missing half: unit.c fires it on the transition INTO UNIT_FAILED, with no
-// reference to restart mode. Under `RestartMode=direct` a member never enters that state while
-// it is being auto-restarted, so this stays silent through the transient crashes and fires
-// exactly once -- when the start limit is exhausted and the unit really has stopped trying.
+// OnFailure= is the missing half: unit.c fires it on the transition into UNIT_FAILED, with no
+// reference to restart mode. Under `RestartMode=direct` a member never enters that state while it
+// is being auto-restarted, so this stays silent through the transient crashes and fires exactly
+// once -- when the start limit is exhausted and the unit really has stopped trying. It points at
+// our hold unit rather than upstream's drbd-demote-or-escalate@ directly because of ordering:
+// reactor re-promotes ~2s after a demote completes, so the mask that says "not me, for now" has
+// to go on before the demote, not after it. briard-promotion-hold does both in that order and
+// carries the same FailureAction=reboot for a demote DRBD refuses.
 //
-// It points at OUR hold unit rather than upstream's drbd-demote-or-escalate@ directly, and the
-// reason is ordering: reactor re-promotes ~2s after a demote completes, so the mask that says
-// "not me, for now" has to go on BEFORE the demote, not after it. briard-promotion-hold does
-// both in that order and carries the same FailureAction=reboot for a demote DRBD refuses.
-//
-// THE BUDGET IS UNIFORM ACROSS THE CHAIN: five starts in five minutes, after which
-// the member gives up and the resource moves. A judgement rather than a measurement, and it
-// matters more than the shape suggests -- with no StartLimit at all systemd's 5-in-10s default
-// applies, and at RestartSec=2 that IS reachable, so the reverse proxy would hand the resource on
-// after ~10s of trying.
+// The budget is uniform across the chain: five starts in five minutes, after which the member
+// gives up and the resource moves. A judgement rather than a measurement, and it matters more
+// than the shape suggests -- with no StartLimit at all systemd's 5-in-10s default applies, and at
+// RestartSec=2 that is reachable, so the reverse proxy would hand the resource on after ~10s of
+// trying.
 const chainMemberFailure = `OnFailure=` + holdUnit + `
 OnFailureJobMode=replace-irreversibly
 StartLimitIntervalSec=300
@@ -146,9 +142,9 @@ const (
 )
 
 // chainEdges is what makes the members an ordered chain on a node with no promoter, and what
-// makes them stop with it: PartOf the target, and Requires=/After= the PREVIOUS member. It is
+// makes them stop with it: PartOf the target, and Requires=/After= the previous member. It is
 // the same shape drbd-reactor writes onto its own target's members, so a lone node and a flock
-// run ONE chain and the members cannot tell which target started them.
+// run one chain and the members cannot tell which target started them.
 func chainEdges(i int, members []string) string {
 	s := "PartOf=" + chain.Target + "\n"
 	if i > 0 {
@@ -158,8 +154,8 @@ func chainEdges(i int, members []string) string {
 }
 
 // reversed is the stop order: a chain unwinds the way it was built. Used for the lone node's
-// hold, which NAMES every member because `systemctl stop` of a target returns as soon as the
-// TARGET is down -- measured, with the volume still mounted -- while a stop of several units
+// hold, which names every member because `systemctl stop` of a target returns as soon as the
+// target is down -- measured, with the volume still mounted -- while a stop of several units
 // returns when all of them are down.
 func reversed(in []string) []string {
 	out := make([]string, len(in))
@@ -173,10 +169,10 @@ func reversed(in []string) []string {
 // structs: the name is the key systemd knows the unit by, and having it in two places is how a
 // rename goes half-done.
 //
-// ⚠️ THE ExecStart PATH MAY NOT EXIST YET when this runs, and that is correct rather than
-// sloppy. The committed binary is laid down by guestfirmware.BinCommit, which runs AFTER the
-// control port opens (BinCommit's doc says why it cannot run earlier), while rendering runs BEFORE
-// it -- so the unit names a path the commit creates moments later. What IS checked is the tool
+// ⚠️ The ExecStart path may not exist yet when this runs, and that is correct rather than
+// sloppy: the committed binary is laid down by guestfirmware.BinCommit, which runs after the
+// control port opens (BinCommit's doc says why it cannot run earlier), while rendering runs before
+// it -- so the unit names a path the commit creates moments later. What is checked is the tool
 // profile, because that is the image's half and the one an old image lacks.
 func units() map[string]string {
 	agent := filepath.Join(guestfirmware.BinDir(), "briard-guest-agent")
@@ -184,27 +180,25 @@ func units() map[string]string {
 	members := chain.Members()
 	u := map[string]string{}
 
-	// NODE STORAGE -- every tier this node holds, and the DRBD resource on top of them.
-	// NOT a promoter chain member and NOT started at boot: the HOST starts it,
-	// once per bring-up, after writing /run/briard/node-storage.json.
+	// Node storage -- every tier this node holds, and the DRBD resource on top of them. Not a
+	// promoter chain member and not started at boot: the host starts it, once per bring-up,
+	// after writing /run/briard/node-storage.json. It runs on every node, witness included: a
+	// diskless node builds no tier and still needs its `.res` written and its resource attached.
 	//
 	// No [Install] section: storage bring-up provably cannot run before the host has dressed the
 	// guest, which is fine (the host is always present at guest start -- `-no-reboot`, and the
 	// agent is the guest's sole supervisor). The unit does not even exist until the agent that
 	// execs it has written it.
 	//
-	// It runs on EVERY node, witness included: a diskless node builds no tier and still needs
-	// its `.res` written and its resource attached.
+	// ⚠️ RemainAfterExit=no, deliberately: the host starts this unit at every bring-up, including
+	// a re-adopt of a warm guest, and `systemctl start` on a unit that stayed "active" would be a
+	// silent no-op -- the `.res` never re-asserted, the attach never re-tried. Every step it takes
+	// is idempotent by construction (a returning node activates its VG and stops), so re-running
+	// is the cheaper guarantee.
 	//
-	// ⚠️ RemainAfterExit=no, deliberately: the host starts
-	// this unit at EVERY bring-up, including a re-adopt of a warm guest, and `systemctl start`
-	// on a unit that stayed "active" would be a silent no-op -- the `.res` never re-asserted,
-	// the attach never re-tried. Every step it takes is idempotent by construction (a returning
-	// node activates its VG and stops), so re-running is the cheaper guarantee.
-	//
-	// ⚠️ THE COMMITTED PATH DIRECTLY, never through the pivot's picker: the
-	// picker's trial flag is keyed by the binary's NAME, so a unit that reached the agent
-	// through it would arm a trial every time storage came up.
+	// ⚠️ The committed path directly, never through the pivot's picker: the picker's trial flag is
+	// keyed by the binary's name, so a unit that reached the agent through it would arm a trial
+	// every time storage came up.
 	u[nodeStorageUnit] = `[Unit]
 Description=Briard node storage (tiers, and the DRBD resource on top of them)
 
@@ -215,45 +209,42 @@ Environment=PATH=` + tools + `
 ExecStart=` + agent + ` --node-storage
 `
 
-	// THE HAND-OVER, AND THE REFUSAL TO TAKE IT STRAIGHT BACK. One unit owns the
-	// whole sequence because the ORDER is the design: mask BEFORE demoting.
+	// The hand-over, and the refusal to take it straight back. One unit owns the whole sequence
+	// because the order is the design: mask before demoting. Measured on a lone node,
+	// drbd-reactor re-promotes about 2s after a demote completes, so a hold bolted on after the
+	// demote loses that race. Masking first means the promotion is refused rather than undone:
+	// `systemctl start drbd-services@r0.target` fails outright, drbd-promote@ never runs, DRBD's
+	// role never moves, and there is no second mount/unmount cycle to pay for.
 	//
-	// Measured on a lone node: drbd-reactor re-promotes about 2s after a demote completes. So a
-	// hold bolted on AFTER the demote loses that race. Masking first means the promotion is
-	// REFUSED rather than undone: `systemctl start drbd-services@r0.target` fails outright,
-	// drbd-promote@ never runs, DRBD's role never moves, and there is no second mount/unmount
-	// cycle to pay for.
+	// Each step is an image-side tool taking this agent's chain list as arguments. The topology
+	// dispatch, the mask, the shim and the unmount are the image's -- they name store paths and
+	// do not change with a release; the agent supplies the one thing only it knows: which units
+	// the chain is made of, and in which order to stop them. That is the whole cut: image
+	// contributes the tools, agent contributes the facts.
 	//
-	// EACH STEP IS AN IMAGE-SIDE TOOL taking this agent's chain list as arguments.
-	// The topology dispatch, the mask, the shim and the unmount are the image's -- they name
-	// store paths and they do not change with a release. What the agent supplies is the one
-	// thing only it knows: WHICH units the chain is made of, and in which order to stop them.
-	// That is the whole cut: image contributes the tools, agent contributes the facts.
+	// ⚠️ Only a node that holds the resource may hand it on (briard-hold-only-if-holding), and that
+	// is not defensive programming -- without it the standby masks itself on every boot.
+	// Measured: a member whose start job fails with result `dependency` fires `OnFailure=` exactly
+	// like one that failed on its own, and on the node that loses the promotion race every member
+	// does. ExecCondition rather than ExecStartPre: 1..254 skips the unit and does not mark it
+	// failed, so a Secondary quietly declines instead of failing into FailureAction=reboot.
 	//
-	// ⚠️ ONLY A NODE THAT HOLDS THE RESOURCE MAY HAND IT ON, which is briard-hold-only-if-holding,
-	// and it is not defensive programming -- without it the STANDBY masks itself on every boot.
-	// Measured: a member whose start job fails with result `dependency` fires `OnFailure=`
-	// exactly like one that failed on its own, and on the node that loses the promotion race
-	// every member does. ExecCondition rather than ExecStartPre: 1..254 SKIPS the unit and does
-	// NOT mark it failed, so a Secondary quietly declines instead of failing into
-	// FailureAction=reboot.
+	// ⚠️ On a flock, step 2 stops drbd-promote@, not the target, and that is a barrier rather than
+	// a preference: `systemctl stop drbd-services@r0.target` returns as soon as the target is
+	// down -- measured, with the volume still mounted, and the hold ended in a reboot. The members
+	// are `After=drbd-promote@`, so waiting for the promote unit is the only spelling that waits
+	// for all of them. The lone node has no promote unit to wait on, so its stop names every
+	// member, in reverse -- the argument list below.
 	//
-	// ⚠️ STEP 2 STOPS drbd-promote@, NOT THE TARGET, on a flock, and that is a barrier rather
-	// than a preference: `systemctl stop drbd-services@r0.target` returns as soon as the TARGET
-	// is down -- measured, with the volume still mounted, and the hold ended in a reboot.
-	// The members are `After=drbd-promote@`, so waiting for the promote unit is the only
-	// spelling that waits for all of them. The lone node has no promote unit to wait on, so its
-	// stop NAMES every member, in reverse -- the argument list below.
-	//
-	// ⚠️ RELEASE CLEARS THE START LIMIT TOO, and that is not housekeeping. Without the reset the
+	// ⚠️ Release clears the start limit too, and that is not housekeeping: without the reset the
 	// member is still inside its StartLimitIntervalSec window when the hold ends, so the next
 	// promotion starts a member systemd immediately refuses -- and the hold length would be
 	// silently pinned to that window.
 	//
-	// ⚠️ journalctl --sync LAST, and the reason is FailureAction=reboot: a node that reboots
-	// because it could not release the resource must leave the reason on disk first.
+	// ⚠️ journalctl --sync last, because of FailureAction=reboot: a node that reboots because it
+	// could not release the resource must leave the reason on disk first.
 	//
-	// ⚠️ IT CARRIES THE PROFILE even though every Exec line here is absolute, and the reason is
+	// ⚠️ It carries the profile even though every Exec line here is absolute, because of
 	// upstream's shim: `drbd-service-shim.sh` is someone else's shell, and what it resolves by
 	// bare name is not ours to assume. This profile is a superset of the default systemd service
 	// PATH a NixOS unit would get, so the shim loses nothing -- at the one step whose failure mode
@@ -276,14 +267,12 @@ ExecStopPost=-` + tool("briard-hold-restart") + " " + chain.Target + `
 ExecStopPost=-` + tool("journalctl") + ` --sync
 `
 
-	// 1. PRIMARY STORAGE -- format on first use, mount the replicated volume. The
-	// FILESYSTEM half: node storage did the block work on every node, and this runs only where
-	// the volume is actually mounted, which is the one node that promoted.
-	//
-	// A oneshot may carry Restart=on-failure -- only `always`/`on-success` are refused for this
-	// Type, and a oneshot that exits cleanly is never restarted -- so the budget is uniform
-	// across the chain rather than "the simple ones retry and the oneshots get exactly one
-	// attempt".
+	// 1. Primary storage -- format on first use, mount the replicated volume. The filesystem
+	// half: node storage did the block work on every node, and this runs only where the volume
+	// is actually mounted, which is the one node that promoted. A oneshot may carry
+	// Restart=on-failure -- only `always`/`on-success` are refused for this Type, and a oneshot
+	// that exits cleanly is never restarted -- so the budget is uniform across the chain rather
+	// than "the simple ones retry and the oneshots get exactly one attempt".
 	u[primaryStorageUnit] = `[Unit]
 Description=Briard primary storage (the replicated volume, mounted on the primary)
 ` + chainEdges(0, members) + chainMemberFailure + `
@@ -297,26 +286,26 @@ ExecStart=` + agent + ` --primary-storage
 ExecStop=` + agent + ` --primary-storage-stop
 `
 
-	// 3. APPS -- CONVERGE-AT-PROMOTION. Once the volume is mounted and the VIP is held, read
+	// 3. Apps -- converge-at-promotion. Once the volume is mounted and the VIP is held, read
 	// every manifest under its `.apps/`, render, warm and start them. This node makes itself
-	// match the VOLUME, so what a node was told -- or whether it was even up when the install ran
-	// -- stops deciding what the household gets after a failover. AFTER the VIP (shared/chain):
+	// match the volume, so what a node was told -- or whether it was even up when the install ran
+	// -- stops deciding what the household gets after a failover. After the VIP (shared/chain):
 	// an app reads the network it starts on, and the household LAN is part of that network.
 	//
-	// ITS FAILURE IS LOUD, BECAUSE IT IS A MEMBER. A member that gives up fires the hold
+	// Its failure is loud, because it is a member: a member that gives up fires the hold
 	// (chainMemberFailure), which stops the whole chain -- the VIP with it -- and hands the
 	// resource on, so a node that cannot converge does not keep the service address. While it
-	// is still retrying, the address is up with no reverse proxy behind it (the reverse
-	// proxy Requires= this unit), and a primary that answers nothing on the VIP is already
-	// reported unhealthy. Built as a side-effect that shrugs, converge would put fallible work on
-	// the promotion path and leave the silent-healthy hole exactly as dangerous: a gate that
-	// shrugs is not a gate.
+	// is still retrying, the address is up with no reverse proxy behind it (the reverse proxy
+	// Requires= this unit), and a primary that answers nothing on the VIP is already reported
+	// unhealthy. Built as a side-effect that shrugs, converge would put fallible work on the
+	// promotion path and leave the silent-healthy hole exactly as dangerous: a gate that shrugs
+	// is not a gate.
 	//
-	// THE APP UNITS THEMSELVES ARE NOT MEMBERS, which is what makes "an app error alerts
-	// but never demotes" mechanically true -- drbd-reactor never sees them, so a crashed
-	// container cannot deactivate the target. A crash is the container unit's own Restart=
-	// (agent/quadlet), and the STOP is ExecStop below, because reverse-order chain unwinding
-	// would otherwise leave containers running on a volume about to be unmounted.
+	// The app units themselves are not members, which is what makes "an app error alerts but
+	// never demotes" mechanically true -- drbd-reactor never sees them, so a crashed container
+	// cannot deactivate the target. A crash is the container unit's own Restart= (agent/quadlet),
+	// and the stop is ExecStop below, because reverse-order chain unwinding would otherwise leave
+	// containers running on a volume about to be unmounted.
 	u[appsUnit] = `[Unit]
 Description=Briard apps, converged from the replicated volume at promotion
 ` + chainEdges(2, members) + chainMemberFailure + `
@@ -331,16 +320,16 @@ ExecStop=` + agent + ` --converge-stop
 `
 
 	// 2. VIP -- claim the service address and gratuitous-ARP it so the L2 segment learns its
-	// (new) home. BOTH the address and the device are agent-determined: net.configure writes
-	// VIP_ADDR + VIP_DEV to vip.env, and this unit reads that file and NOTHING ELSE.
+	// (new) home. Both the address and the device are agent-determined: net.configure writes
+	// VIP_ADDR + VIP_DEV to vip.env, and this unit reads that file and nothing else.
 	//
-	// THE FILE IS REQUIRED, not optional, and there is no baked device or address behind it.
-	// It can only be missing if something started this unit that the agent did not
-	// configure -- which the promoter gate makes impossible, since drbd-reactor itself is
-	// agent-started. So "no VIP configuration" is an error rather than a guess: a fallback guess
-	// would claim the service address on the replication NIC.
+	// The file is required, not optional, and there is no baked device or address behind it. It
+	// can only be missing if something started this unit that the agent did not configure --
+	// which the promoter gate makes impossible, since drbd-reactor itself is agent-started. So
+	// "no VIP configuration" is an error rather than a guess: a fallback guess would claim the
+	// service address on the replication NIC.
 	//
-	// Wants= THE RENEWAL TIMER, said from this side because a runtime unit has no `systemctl
+	// Wants= the renewal timer, said from this side because a runtime unit has no `systemctl
 	// enable` to act on an [Install] section. A weak edge: a timer that will not start must not
 	// keep the VIP from coming up.
 	u[vipUnit] = `[Unit]
@@ -359,16 +348,13 @@ ExecStartPost=-` + tool("briard-vip-arping") + `
 ExecStop=` + tool("briard-vip-down") + `
 `
 
-	// 2b. Ten-minute lease renewal, for as long as this node holds the VIP.
-	//
-	// NOT A CHAIN MEMBER, deliberately: a renewal that fails must never be able to demote a
-	// serving node. Nothing Requires it, its failure propagates
-	// nowhere, and the real consequence of a renewal going wrong is a NAK, which dhcpcd's own
-	// hook handles as an address change rather than as a unit failure.
-	//
-	// PartOf the VIP, so it stops when the node gives the address up; the first tick is ten
-	// minutes after the VIP is taken, because the lease is fresh at promotion and an immediate
-	// renewal would be pure noise.
+	// 2b. Ten-minute lease renewal, for as long as this node holds the VIP. Deliberately not a
+	// chain member: a renewal that fails must never be able to demote a serving node. Nothing
+	// Requires it, its failure propagates nowhere, and the real consequence of a renewal going
+	// wrong is a NAK, which dhcpcd's own hook handles as an address change rather than as a unit
+	// failure. PartOf the VIP, so it stops when the node gives the address up; the first tick is
+	// ten minutes after the VIP is taken, because the lease is fresh at promotion and an
+	// immediate renewal would be pure noise.
 	u[vipRenewTimer] = `[Unit]
 Description=Renew the Briard VIP's DHCP lease every ten minutes
 PartOf=` + vipUnit + `
@@ -391,34 +377,32 @@ EnvironmentFile=` + vipEnvPath + `
 ExecStart=` + tool("briard-vip-renew") + `
 `
 
-	// 4. THE REVERSE PROXY -- answer the VIP on :80 and terminate HTTPS on :443, and publish the
+	// 4. The reverse proxy -- answer the VIP on :80 and terminate HTTPS on :443, and publish the
 	// household's mDNS names.
 	//
 	// Cert/key live on the DRBD volume so they replicate and survive failover; the proxy
-	// hot-reloads them, so a renewal is gap-free. ⚠️ A MISSING CERT IS NOT A FAILURE: :443
+	// hot-reloads them, so a renewal is gap-free. ⚠️ A missing cert is not a failure: :443
 	// simply does not answer until a cert exists while :80 keeps serving, which is the shipped
-	// state of a free node, since a cert needs a domain.
+	// state of a free node, since a cert needs a domain. No -routes: the table has a compiled-in
+	// default (shared/routes.Path) this unit deliberately does not restate. Ordered after
+	// briard-apps, which is what makes the table exist before the reverse proxy reads it.
 	//
-	// NO -routes: the table has a compiled-in default (shared/routes.Path) this unit deliberately
-	// does not restate. Ordered AFTER briard-apps, which is what makes the table exist before
-	// the reverse proxy reads it.
+	// Through the pivot: the picker runs the copy the host pushed, and nothing else -- the image
+	// bakes no reverse proxy. READY means "listening", which is what a trial agent reads as its
+	// verdict on the pushed copy.
 	//
-	// THROUGH THE PIVOT: the picker runs the copy the host pushed, and nothing
-	// else -- the image bakes no reverse proxy. READY means "listening", which is what a trial
-	// agent reads as its verdict on the pushed copy.
-	//
-	// ⚠️ THE PICKER IS THE REASON THIS UNIT HAS A PATH AT ALL. The reverse proxy is a
+	// ⚠️ The picker is the reason this unit has a PATH at all. The reverse proxy is a
 	// self-contained Go binary and needs none -- but `briard-bin-exec` is shell, and it `rm`s the
 	// trial flag as it execs. A runtime unit gets no default PATH from nixpkgs, and a picker that
 	// cannot consume its own single-use flag would let a crashing candidate re-trial forever.
 	//
-	// A TRANSIENT CRASH MUST NOT MOVE THE RESOURCE. Without RestartMode=direct the
-	// auto-restart's stop job deactivates drbd-reactor's target -- which unmounts the data volume
-	// and demotes the node on ONE crash, measured, with a peer taking the resource about half the
-	// time. `direct` restarts through activating instead of failed, so dependents are not
-	// notified of the temporary failure, and it is what lets the StartLimit above finally
-	// accumulate. NOT on primary-storage/apps/vip: for those, failure really does mean this
-	// node must not hold the volume.
+	// A transient crash must not move the resource. Without RestartMode=direct the auto-restart's
+	// stop job deactivates drbd-reactor's target -- which unmounts the data volume and demotes the
+	// node on one crash, measured, with a peer taking the resource about half the time. `direct`
+	// restarts through activating instead of failed, so dependents are not notified of the
+	// temporary failure, and it is what lets the StartLimit above finally accumulate. Not on
+	// primary-storage/apps/vip: for those, failure really does mean this node must not hold the
+	// volume.
 	u[reverseProxyUnit] = `[Unit]
 Description=Briard reverse proxy (serves the VIP on :80/:443)
 After=` + appsUnit + `
@@ -433,7 +417,7 @@ RestartSec=2
 TimeoutStartSec=10
 `
 
-	// 5. THE HOUSEHOLD DASHBOARD: loopback only, behind the reverse proxy, which forwards
+	// 5. The household dashboard: loopback only, behind the reverse proxy, which forwards
 	// every name it does not route here. A chain member for the reason the reverse proxy is one --
 	// its device registry lives on the volume, and only the primary has it -- under the same
 	// hold settings. It reads the routing table converge wrote and Home Assistant's
@@ -452,9 +436,9 @@ RestartSec=2
 TimeoutStartSec=10
 `
 
-	// THE LONE NODE'S TARGET: the promoter chain with no promoter. A home with one
+	// The lone node's target: the promoter chain with no promoter. A home with one
 	// diskful member runs no DRBD, so nothing generates drbd-services@r0.target for it; this
-	// static target carries the IDENTICAL member list in the identical order, with the same
+	// static target carries the identical member list in the identical order, with the same
 	// Wants/After the reactor writes onto its target -- so a lone node and a flock run one
 	// chain, and the members cannot tell which target started them. A lone node's bring-up ends
 	// in `systemctl start` of this where a flock's ends in starting drbd-reactor; no [Install],
@@ -468,19 +452,18 @@ After=` + strings.Join(members, " ") + `
 }
 
 // WriteUnits renders every unit this agent owns into /run/systemd/system and reloads systemd, so
-// that what the host is about to start is the unit this binary defines.
+// that what the host is about to start is the unit this binary defines. It runs before the
+// control port opens, and before anything else the agent's start does (cmd/briard-guest-agent's
+// runGuest): the host's gate is the port, not READY, so anything rendered after the port is a
+// unit the first bring-up verb can ask for and not find -- the very crash this file exists to
+// remove.
 //
-// WHERE IT RUNS: before the control port opens, and before anything else the agent's start does
-// (cmd/briard-guest-agent's runGuest). The host's gate is the PORT, not READY, so anything
-// rendered after the port is a unit the first bring-up verb can ask for and not find -- the very
-// crash this file exists to remove.
-//
-// A FAILURE HERE IS FATAL TO THE START, on purpose. The only realistic cause is an image with no
-// tool profile, i.e. a pushed agent that is newer than the image beneath it. Refusing to serve is
+// A failure here is fatal to the start, on purpose. The only realistic cause is an image with no
+// tool profile, i.e. a pushed agent newer than the image beneath it, and refusing to serve is
 // what makes that safe: a trial agent that exits takes the whole staged set down with it (the
 // picker restores the committed binaries, guestfirmware.BinStartup), so the node keeps running
 // the release it already had instead of promoting into units it cannot support. Stopping the host
-// from OFFERING that upgrade at all is the upgrade floor's job, which this does not replace.
+// from offering that upgrade at all is the upgrade floor's job, which this does not replace.
 func WriteUnits(ctx context.Context, x Executor) error {
 	if tools := toolsBin(); !isDir(tools) {
 		return fmt.Errorf("guest units: no tool profile at %s -- this image predates the tool profile and cannot run this agent", tools)
@@ -495,16 +478,15 @@ func WriteUnits(ctx context.Context, x Executor) error {
 	sort.Strings(names)
 	for _, n := range names {
 		p := filepath.Join(dir, n)
-		// ⚠️ A MASK LIVES AT THE SAME PATH AS THE UNIT, and that is systemd's design rather than
-		// a clash of ours: `systemctl mask --runtime <u>` IS a symlink from /run/systemd/system/<u>
-		// to /dev/null. So the renderer and the mask are two writers of one path, and the rule
-		// has to be that the mask wins -- otherwise an agent restart would silently un-refuse a
-		// node that had been told to stay out, which on the reboot path is a node reclaiming the
-		// house before anyone has verified its new generation (handover -keep-masked).
-		//
-		// Lstat, not Stat: a mask points at /dev/null, which exists, so following the link would
-		// make every mask look like an ordinary file. Our own renders are always regular files,
-		// so "symlink here" means "somebody masked this".
+		// ⚠️ A mask lives at the same path as the unit, by systemd's design rather than a clash of
+		// ours: `systemctl mask --runtime <u>` is a symlink from /run/systemd/system/<u> to
+		// /dev/null. So the renderer and the mask are two writers of one path, and the mask has to
+		// win -- otherwise an agent restart would silently un-refuse a node that had been told to
+		// stay out, which on the reboot path is a node reclaiming the house before anyone has
+		// verified its new generation (handover -keep-masked). Lstat, not Stat: a mask points at
+		// /dev/null, which exists, so following the link would make every mask look like an
+		// ordinary file. Our own renders are always regular files, so "symlink here" means
+		// "somebody masked this".
 		if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
@@ -523,21 +505,20 @@ func WriteUnits(ctx context.Context, x Executor) error {
 	return nil
 }
 
-// sweep removes units a PREVIOUS agent rendered here and this one does not.
+// sweep removes units a previous agent rendered here and this one does not. The case is a
+// downgrade inside one boot, a path the product actually takes: a refused release is reverted by
+// pushing the previous bundle and restarting the agent's unit (guestfirmware). /run is tmpfs, so
+// a reboot would clear this by itself -- but a revert is not a reboot, and it would otherwise
+// leave the newer agent's units pointing at the older agent's binary: the defect this file exists
+// to remove with the ages swapped, and the harder direction to read, because the unit would look
+// freshly written.
 //
-// THE CASE IS A DOWNGRADE INSIDE ONE BOOT, and it is a path the product actually takes: a
-// refused release is reverted by pushing the previous bundle and restarting the agent's unit
-// (guestfirmware). /run is tmpfs, so a reboot would clear this by itself -- but a
-// revert is not a reboot, and what it would otherwise leave behind is the newer agent's units
-// pointing at the older agent's binary. That is the defect this file exists to remove with the
-// ages swapped, and the harder direction to read, because the unit would look freshly written.
-//
-// ⚠️ IT DELETES BY PREFIX, so what else may write a `briard-*` unit into this directory is the
-// whole safety argument, and the answer is NOTHING but a mask of a unit this agent renders
+// ⚠️ It deletes by prefix, so what else may write a `briard-*` unit into this directory is the
+// whole safety argument, and the answer is nothing but a mask of a unit this agent renders
 // (MaskRendered), which is in `want` and so never swept. drbd-reactor's generated units and
 // the hold's `--runtime` mask are all named for the DRBD resource (`drbd-services@r0.target`),
 // and the app units converge renders are podman quadlets: they live under
-// /run/containers/systemd and are expanded by a systemd GENERATOR into /run/systemd/generator*,
+// /run/containers/systemd and are expanded by a systemd generator into /run/systemd/generator*,
 // never here (agent/quadlet). A component that ever does write one here has to be taught to
 // this function in the same change -- enumerate, do not assume the prefix stays ours.
 func sweep(dir string, want map[string]string) error {
@@ -567,15 +548,13 @@ func sweep(dir string, want map[string]string) error {
 	return nil
 }
 
-// MaskRendered makes one of the units above unstartable, and UnmaskRendered puts it back.
-//
-// THEY EXIST BECAUSE THE RENDERER OWNS THE PATH A MASK WANTS. `systemctl mask
-// --runtime` refuses outright when a real file is already there ("Failed to mask unit: File
+// MaskRendered makes one of the units above unstartable, and UnmaskRendered puts it back. They
+// exist because the renderer owns the path a mask wants: `systemctl mask --runtime` refuses
+// outright when a real file is already there ("Failed to mask unit: File
 // '/run/systemd/system/briard-chain.target' already exists"), which breaks `handover
 // -keep-masked` on every lone node. So the file is removed first, and systemd is still what
-// defines a mask; we only get out of its way.
-//
-// The daemon-reload is not optional in either direction: systemd caches the unit file it loaded,
+// defines a mask; we only get out of its way. The daemon-reload is not optional in either
+// direction: systemd caches the unit file it loaded,
 // so a file swapped for a symlink (or back) is invisible until it re-reads -- the same reason the
 // hold's release pairs its `rm -f` with one.
 func MaskRendered(ctx context.Context, x Executor, unit string) error {
@@ -591,7 +570,7 @@ func MaskRendered(ctx context.Context, x Executor, unit string) error {
 	return nil
 }
 
-// UnmaskRendered drops the mask and RE-RENDERS, because removing the symlink leaves no unit file
+// UnmaskRendered drops the mask and re-renders, because removing the symlink leaves no unit file
 // at all -- the render that would have written one was skipped for as long as the mask stood.
 // Going through WriteUnits rather than writing the one file keeps one definition of what a unit
 // is, and its daemon-reload is the one this needs.
@@ -602,7 +581,7 @@ func UnmaskRendered(ctx context.Context, x Executor, unit string) error {
 	return WriteUnits(ctx, x)
 }
 
-// isDir asks the question the refusal above actually cares about: a tool profile that is a FILE,
+// isDir asks the question the refusal above actually cares about: a tool profile that is a file,
 // or a dangling /etc symlink, is as unusable as one that is absent, and all three have to route
 // to the same refusal rather than to a unit that fails at exec time.
 func isDir(p string) bool {

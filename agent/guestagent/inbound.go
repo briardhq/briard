@@ -21,50 +21,48 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// The INBOUND channel: the first thing in this system that lets an app's container ask the
-// guest agent for something. Everything else briard does to an app goes the other way — files
-// written into a stopped container, HTTP dialled at a running one — and the asymmetry was not an
+// The inbound channel: the first thing in this system that lets an app's container ask the guest
+// agent for something. Everything else briard does to an app goes the other way — files written
+// into a stopped container, HTTP dialled at a running one — and the asymmetry was not an
 // accident, so reversing it for one feature deserves its own file and its own rules.
 //
-// WHY IT HAS TO EXIST. The generic snapshot hook fires at CONTAINER start, which is the
-// only boundary the guest agent can see from outside. Home Assistant restarts itself far more
-// often than its container does — `homeassistant.restart` exits 100 and s6 re-runs the service —
-// and each of those is a stopped window where a snapshot is application-consistent. The container
-// unit stays active throughout, so there is no transition to poll for and no signal to subscribe
-// to: the only thing that knows is the process inside, and it needs a way to say so AND to be
-// told when it may proceed.
+// It has to exist because the generic snapshot hook fires at container start, the only boundary
+// the guest agent can see from outside, while Home Assistant restarts itself far more often than
+// its container does — `homeassistant.restart` exits 100 and s6 re-runs the service — and each
+// of those is a stopped window where a snapshot is application-consistent. The container unit
+// stays active throughout, so there is no transition to poll for and no signal to subscribe to:
+// only the process inside knows, and it needs a way to say so and to be told when it may proceed.
 //
-// ⚠️ THE CALLER IS UNTRUSTED, and this is the rule the whole design hangs off. The socket is
-// bind-mounted into the app's container, so everything running as that app can reach it —
-// for Home Assistant that includes every custom component the household ever installed from HACS.
-// Without this channel a compromised Home Assistant could not reach the guest agent at all. So:
+// ⚠️ The caller is untrusted, the rule the whole design hangs off. The socket is bind-mounted into
+// the app's container, so everything running as that app can reach it — for Home Assistant, every
+// custom component the household ever installed from HACS. Without this channel a compromised
+// Home Assistant could not reach the guest agent at all. So:
 //
-//   - THE CALLER DOES NOT NAME ITSELF. It presents a TOKEN minted per app at converge and
-//     mounted read-only into that app's container alone, and the agent maps that back to a
-//     name. An `app` field in the request would be a field a hostile custom component could
-//     set; a token it can only hold if it was given one.
-//   - NO VERB NAMES A PATH. Every path is derived from the resolved app (quadlet.DataRoot,
-//     quadlet.SnapshotMember). A verb taking a path is a verb that reads or writes anywhere the
-//     agent can.
-//   - NO VERB CHOOSES WHAT IS DESTROYED OR REWRITTEN. The ring prunes itself and records events
-//     after every take, but both are derived from the ring on disk; restoring and
-//     deleting on request stay on the host's side, where the caller is the product.
-//   - EVERY VERB IS BOUNDED. A start replaces the start still pending before it (replacePending),
-//     so a hostile or looping caller holds ONE pending member however often it calls, and cannot
-//     fill the replicated volume, which is the full-volume failure arriving by a new road. What such a
-//     caller costs is a take and a delete per call, one call at a time (ListenInbound).
+//   - The caller does not name itself. It presents a token minted per app at converge and mounted
+//     read-only into that app's container alone, and the agent maps that back to a name. An `app`
+//     field in the request would be one a hostile custom component could set; a token it can only
+//     hold if it was given one.
+//   - No verb names a path. Every path is derived from the resolved app (quadlet.DataRoot,
+//     quadlet.SnapshotMember); a verb taking a path reads or writes anywhere the agent can.
+//   - No verb chooses what is destroyed or rewritten. The ring prunes itself and records events
+//     after every take, but both are derived from the ring on disk; restoring and deleting on
+//     request stay on the host's side, where the caller is the product.
+//   - Every verb is bounded. A start replaces the start still pending before it (replacePending),
+//     so a hostile or looping caller holds one pending member however often it calls, and cannot
+//     fill the replicated volume — the full-volume failure arriving by a new road. Such a caller
+//     costs a take and a delete per call, one call at a time (ListenInbound).
 //
-// ONE REQUEST, ONE RESPONSE, THEN THE CONNECTION IS DONE. No session and no state carried
-// between calls: every answer is derived from the ring on disk and the manifest on the volume.
+// One request, one response, then the connection is done: no session and no state carried
+// between calls, every answer derived from the ring on disk and the manifest on the volume.
 //
-// ⚠️ ONE SOCKET AND A PER-APP TOKEN, NOT A SOCKET PER APP. Per-app sockets would make identity a
-// property of the transport, which is genuinely stronger — but they also make the LISTENER SET a
-// function of the app list, and the only thing that knows that list is converge, which runs in
-// two processes (the host's app.converge verb and briard-apps' one-shot). That forces systemd to
-// own the binds — template units, a converge step to start instances, socket activation, fd
-// inheritance, an idle-exit handler — and puts the logic in a short-lived process while
-// everything it reasons about lives in the long-running agent: a great deal of machinery to buy
-// a property a per-app secret already provides (ListenInbound).
+// ⚠️ One socket and a per-app token, not a socket per app. Per-app sockets would make identity a
+// property of the transport, which is genuinely stronger — but they also make the listener set a
+// function of the app list, which only converge knows, and converge runs in two processes (the
+// host's app.converge verb and briard-apps' one-shot). That forces systemd to own the binds —
+// template units, a converge step to start instances, socket activation, fd inheritance, an
+// idle-exit handler — and puts the logic in a short-lived process while everything it reasons
+// about lives in the long-running agent: a great deal of machinery to buy a property a per-app
+// secret already provides (ListenInbound).
 
 // InboundVerb is a request this channel accepts. The set is closed and deliberately tiny; read
 // the trust rules above before adding to it.
@@ -72,17 +70,15 @@ type InboundVerb string
 
 const (
 	// VerbAppStarting says "my app is about to start, and I am holding it until you
-	// answer". The WAIT is the point: the caller blocks before handing over to the real
+	// answer". The wait is the point: the caller blocks before handing over to the real
 	// entrypoint, so whatever the agent does happens while the app is genuinely stopped.
 	VerbAppStarting InboundVerb = "app.starting"
 )
 
-// inboundRequest is one call.
-//
-// It carries a TOKEN and never an app name, and the difference is the whole trust story: the
-// token was minted for one app and written where only that app's container can read it,
-// so a caller cannot name itself — it can only present something it was given. An `app` field
-// here would be a field a hostile custom component could set.
+// inboundRequest is one call. It carries a token and never an app name, and the difference is
+// the whole trust story (the file header's first rule): the token was minted for one app and
+// written where only that app's container can read it, so a caller cannot name itself — it can
+// only present something it was given.
 type inboundRequest struct {
 	Verb  InboundVerb `json:"verb"`
 	Token string      `json:"token"`
@@ -96,9 +92,7 @@ type inboundResponse struct {
 }
 
 // ServeInbound reads one request from r, resolves who sent it, serves it, and writes one response
-// to w.
-//
-// An error is reported to the caller AND returned, because the two readers are different: the
+// to w. An error is both reported to the caller and returned, because the two readers differ: the
 // caller logs it and carries on (it must never fail a household's app over this), while the
 // return value is what reaches the agent's journal for a human to read afterwards.
 func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) error {
@@ -123,7 +117,7 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 	if err := dec.Decode(&req); err != nil {
 		return reply(inboundResponse{Error: "malformed request"})
 	}
-	// WHO IS CALLING, BEFORE WHAT THEY WANT. Resolution is the only thing that stands between a
+	// Who is calling, before what they want. Resolution is the only thing that stands between a
 	// workload and this channel, so it happens once, up front, and nothing below it can be
 	// reached without it. The refusal deliberately says nothing about which tokens exist.
 	app, ok := resolveCaller(ctx, x, req.Token)
@@ -132,7 +126,7 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 	}
 	switch req.Verb {
 	case VerbAppStarting:
-		// FROM INSIDE A RUNNING CONTAINER: Home Assistant restarting itself, which is the one
+		// From inside a running container: Home Assistant restarting itself, which is the one
 		// boundary nothing outside the container can see -- and one whose previous instance the
 		// clean-stop marker says nothing about.
 		defer signalProxy(ctx, x)
@@ -154,7 +148,7 @@ func ServeInbound(ctx context.Context, x Executor, r io.Reader, w io.Writer) err
 // disk and the manifest on the volume, so a handler process that has never run before reaches the
 // same answer as one that has.
 //
-// containerStart says this is the CONTAINER's own start (the rendered unit's pre-start) rather than
+// containerStart says this is the container's own start (the rendered unit's pre-start) rather than
 // a restart inside a container that stayed up -- the only caller that may read the clean-stop
 // marker, since the marker is a claim about the last container stop.
 func startingMember(ctx context.Context, x Executor, app string, containerStart bool) (string, error) {
@@ -169,11 +163,11 @@ func startingMember(ctx context.Context, x Executor, app string, containerStart 
 	if err != nil {
 		return "", fmt.Errorf("read the running manifest: %w", err)
 	}
-	// WHAT THE BYTES ARE, and only the container's own start may ask. The marker is a
-	// claim about the last STOP, so it belongs to the boundary where the container stopped and
-	// started again — not to Home Assistant restarting itself inside a container that never went
-	// down, where the previous instance ended the way HA's own restart ends and the marker has
-	// nothing to say about it.
+	// What the bytes are, and only the container's own start may ask: the marker is a claim
+	// about the last stop, so it belongs to the boundary where the container stopped and started
+	// again — not to Home Assistant restarting itself inside a container that never went down,
+	// where the previous instance ended the way HA's own restart ends and the marker has nothing
+	// to say about it.
 	cons := quadlet.Quiesced
 	if containerStart {
 		// A promotion after the other node died, or this node's own power cut: nothing shut the
@@ -191,14 +185,13 @@ func startingMember(ctx context.Context, x Executor, app string, containerStart 
 		App:     app,
 		Trigger: trigger,
 		TakenAt: at,
-		// WHAT THE BYTES ARE, derived above rather than assumed here. A container start reads the
-		// clean-stop marker, because "nothing is running" and "the data was flushed" are different
-		// facts and a promotion after a dead primary is where they come apart; a restart inside a
-		// running container has no such question to ask.
+		// What the bytes are, derived above rather than assumed here: "nothing is running" and
+		// "the data was flushed" are different facts, and a promotion after a dead primary is
+		// where they come apart.
 		Consistency: cons,
 		Manifest:    string(raw),
 		Event:       ev,
-		// A START WAITS FOR ITS BOOT's verdict before it is evaluated (recordMember).
+		// A start waits for its boot's verdict before it is evaluated (recordMember).
 		Pending: trigger == quadlet.TriggerStart,
 	}
 	sidecar, err := json.Marshal(meta)
@@ -222,21 +215,20 @@ func startingMember(ctx context.Context, x Executor, app string, containerStart 
 // subprocess stays outside it: best-effort by design, it cannot share a lock with this process.
 var ringMu sync.Mutex
 
-// recordMember is what every take does once its member exists: evaluate it, add any
-// reasons that finds to the member they land on, let its app hold it, and prune. One function for
-// every way a member is taken (a start, the host's data.member, the quiesced clock sample, the
-// recorder restore's undo point), so the history cannot depend on which door a sample came
-// through.
+// recordMember is what every take does once its member exists: evaluate it, add any reasons that
+// finds to the member they land on, let its app hold it, and prune. One function for every way a
+// member is taken (a start, the host's data.member, the quiesced clock sample, the recorder
+// restore's undo point), so the history cannot depend on which door a sample came through.
 //
-// A START IS NOT EVALUATED HERE: what its boot reveals is part of its evaluation, and the pre-start
-// hook cannot wait for a boot. It is written pending, replaces the start still pending before it,
-// and EvaluateStarts evaluates it once the boot has a verdict. Every other sample is evaluated now.
+// A start is not evaluated here: what its boot reveals is part of its evaluation, and the
+// pre-start hook cannot wait for a boot. It is written pending, replaces the start still pending
+// before it, and EvaluateStarts evaluates it once the boot has a verdict. Every other sample is
+// evaluated now.
 //
-// AFTER the take, never before: pruning first would mean a failed take leaves the ring shorter for
-// nothing, and a member is only replaceable once its successor exists.
-//
-// BEST-EFFORT, like the prune: the caller may be holding a household's app stopped, and a row
-// missing from its history is a smaller loss than an app that would not start.
+// It runs after the take, never before: pruning first would mean a failed take leaves the ring
+// shorter for nothing, and a member is only replaceable once its successor exists. Best-effort,
+// like the prune: the caller may be holding a household's app stopped, and a row missing from
+// its history is a smaller loss than an app that would not start.
 func recordMember(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
 	ringMu.Lock()
 	defer ringMu.Unlock()
@@ -254,7 +246,7 @@ func recordMember(ctx context.Context, x Executor, member string, meta quadlet.S
 // sampled gives the member's app its say (apps.Sampled) before the prune, so a hold it places
 // counts there.
 //
-// NOT FOR THE RECORDER RESTORE'S OWN SAMPLE: it holds the database the check just found damaged,
+// Not for the recorder restore's own sample: it holds the database the check just found damaged,
 // which is no restore candidate.
 func sampled(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
 	if meta.Trigger == quadlet.TriggerHassDBRestoreBefore {
@@ -272,7 +264,7 @@ func sampled(ctx context.Context, x Executor, member string, meta quadlet.Snapsh
 		at, _ := quadlet.SnapshotMemberTime(e.Member)
 		return apps.RingMember{Path: e.Member, App: quadlet.AppSidecar(e.Member), At: at, Quiesced: e.Meta.Consistency == quadlet.Quiesced}
 	}
-	// THE MEMBER AS THE RING HOLDS IT, not as the caller took it: replacing a pending start can
+	// The member as the ring holds it, not as the caller took it: replacing a pending start can
 	// carry a weaker consistency onto it, and the hold may trust only what the sidecar says.
 	var all []apps.RingMember
 	var self *apps.RingMember
@@ -290,20 +282,18 @@ func sampled(ctx context.Context, x Executor, member string, meta quadlet.Snapsh
 	}
 }
 
-// replacePending deletes the starts still pending before a new one. A start with no
-// verdict yet stands for a boot that never finished, so the new start's boot is the one its
-// verdict is about, and content is compared from the last EVALUATED sample to the new start.
-// An evaluated start is never replaced: "change something, restart" keeps its row.
+// replacePending deletes the starts still pending before a new one. A start with no verdict yet
+// stands for a boot that never finished, so the new start's boot is the one its verdict is about,
+// and content is compared from the last evaluated sample to the new start. An evaluated start is
+// never replaced: "change something, restart" keeps its row. This is what bounds a crash loop,
+// and a caller hammering the socket: one pending member per app, however often it starts.
 //
-// THIS IS WHAT BOUNDS A CRASH LOOP, and a caller hammering the socket: one pending member per
-// app, however often it starts.
-//
-// THE REPLACED BOOTS' RENAMES ARE CARRIED. A rename the replaced boot made is in the new member
+// The replaced boots' renames are carried: a rename the replaced boot made is in the new member
 // already, so the new boot has nothing left to rename and its verdict would find nothing. What is
 // new here over the replaced member goes into the new sidecar's Resets, to land with the verdict.
 // So is a crash-consistent label (below).
 //
-// ⚠️ A DELETE, GATED ON A POSITIVE READ: the sidecar parsed, and it says a pending
+// ⚠️ A delete, gated on a positive read: the sidecar parsed, and it says a pending
 // start with no event. listMembers leaves out what it cannot read, so an unreadable member is
 // kept. The carried renames are written first, and a failed write keeps the old members.
 func replacePending(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta) {
@@ -337,7 +327,7 @@ func replacePending(ctx context.Context, x Executor, member string, meta quadlet
 			meta.Resets, changed = carried, true
 		}
 	}
-	// THE WEAKER CONSISTENCY IS CARRIED TOO. A Home Assistant container start takes two members
+	// The weaker consistency is carried too. A Home Assistant container start takes two members
 	// seconds apart: the unit's pre-start, which reads the clean-stop marker, and the `run`
 	// wrapper's, which cannot and says quiesced. After a promotion or a power cut the first says
 	// crash, and the second holds the same bytes, so keeping it must not upgrade the claim.
@@ -387,13 +377,12 @@ func union(lists ...[]string) []string {
 
 // settle is one sample's evaluation, whoever calls it: it closes the older samples still pending
 // as replaced, registers what the evaluation finds (plus `extra`, a start's health reason), and
-// records the sample as evaluated with the health it carries forward.
-//
-// A CRASH LOOP IS ONE EVALUATION. The pending starts before this sample are closed without being
-// evaluated, and this one is compared with the newest EVALUATED sample, so what the loop's first
-// start brought in is still found, and its reasons land on the last point before all of it.
+// records the sample as evaluated with the health it carries forward. A crash loop is one
+// evaluation: the pending starts before this sample are closed without being evaluated, and this
+// one is compared with the newest evaluated sample, so what the loop's first start brought in is
+// still found, and its reasons land on the last point before all of it.
 func settle(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, e quadlet.SnapshotEntry, extra []quadlet.Reason, at time.Time) {
-	// THE BASELINE FIRST, while the loop's starts still read as pending: closed, they would look
+	// The baseline first, while the loop's starts still read as pending: closed, they would look
 	// evaluated, and the newest of them would be what this sample is compared with.
 	prev, hasPrev := previousEvaluated(members, e.Member)
 	eAt, _ := quadlet.SnapshotMemberTime(e.Member)
@@ -440,25 +429,24 @@ func previousEvaluated(members []quadlet.SnapshotEntry, member string) (quadlet.
 // evaluate is a new member's one evaluation: the member its reasons land on, and the
 // reasons, or none when nothing is registered.
 //
-// COMPARE ONLY IF THE APP RAN BETWEEN THE TWO. The previous member is never a *-before sample when
-// they are compared: the app was stopped for it and did not run again until the next start. A
-// *-before member itself IS compared with the one before it, so edits made just before an update
-// are caught, and its finding lands on that earlier member rather than on the operation's own.
+// Compare only if the app ran between the two. The previous member is never a *-before sample
+// when they are compared: the app was stopped for it and did not run again until the next start.
+// A *-before member itself is compared with the one before it, so edits made just before an
+// update are caught, and its finding lands on that earlier member rather than on the operation's
+// own.
 //
-// A comparison can find two things at once, a change and a reset, and a start's
-// evaluation may add its health (`extra`); all happened in the same interval, so all are reasons on
-// the same point. Nothing found, at a member that is not an operation's own point, is quiet time
-// (quadlet.QuietPoint).
-//
-// A START'S BOOT RESETS ARE ITS OWN (meta.Resets): read after the boot, so they are not in
-// the member and are counted whatever prev is. The earlier side's are not found again: they were
-// its boot's, already landed.
+// A comparison can find a change and a reset at once, and a start's evaluation may add its health
+// (`extra`); all happened in the same interval, so all are reasons on the same point. Nothing
+// found, at a member that is not an operation's own point, is quiet time (quadlet.QuietPoint). A
+// start's boot resets are its own (meta.Resets): read after the boot, so they are not in the
+// member and are counted whatever prev is. The earlier side's are not found again: they were its
+// boot's, already landed.
 func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, prev quadlet.SnapshotEntry, member string, meta quadlet.SnapshotMeta, extra []quadlet.Reason) (quadlet.SnapshotEntry, []quadlet.Reason) {
 	var found []quadlet.Reason
 	var resets []string
 	if !prev.Meta.Trigger.Before() {
 		if m, _, err := manifest.Parse([]byte(meta.Manifest)); err == nil {
-			// The clock's sample is the one taken while the app RUNS.
+			// The clock's sample is the one taken while the app runs.
 			changed, rs, err := apps.Detect(ctx, x, m, prev.Member, member, meta.Trigger == quadlet.TriggerClock)
 			if err != nil {
 				log.Printf("ring %s: could not compare %s with %s: %v", meta.App, path.Base(prev.Member), path.Base(member), err)
@@ -487,7 +475,7 @@ func evaluate(ctx context.Context, x Executor, members []quadlet.SnapshotEntry, 
 // addReasons adds reasons to an existing member's event, or gives it one. `at` is the
 // evaluation's time, which becomes the event's creation time if it is new.
 //
-// A QUIET EVENT NEVER SHARES ITS RECORD, so quiet is only ever added to a member with no event.
+// A quiet event never shares its record, so quiet is only ever added to a member with no event.
 func addReasons(ctx context.Context, x Executor, point quadlet.SnapshotEntry, rs []quadlet.Reason, at time.Time) {
 	meta := point.Meta
 	var kinds []string
@@ -503,14 +491,13 @@ func addReasons(ctx context.Context, x Executor, point quadlet.SnapshotEntry, rs
 	}
 }
 
-// writeMeta replaces an existing member's sidecar; `what` names the change for the log.
+// writeMeta replaces an existing member's sidecar; `what` names the change for the log. It says
+// whether the sidecar now holds meta, for the one caller that must not go on otherwise
+// (replacePending).
 //
-// ⚠️ A REPLACE, NEVER A REWRITE IN PLACE: a sidecar truncated by a power cut is a member nobody
+// ⚠️ A replace, never a rewrite in place: a sidecar truncated by a power cut is a member nobody
 // can describe, which the ring then neither offers nor prunes. So tmp + rename, and `sync -f`
 // because the next node to read this may be the one that promotes after this one dies.
-//
-// It says whether the sidecar now holds meta, for the one caller that must not go on otherwise
-// (replacePending).
 func writeMeta(ctx context.Context, x Executor, member string, meta quadlet.SnapshotMeta, what string) bool {
 	b, err := json.Marshal(meta)
 	if err != nil {
@@ -538,7 +525,7 @@ func writeMeta(ctx context.Context, x Executor, member string, meta quadlet.Snap
 const startEvalTick = 10 * time.Second
 
 // EvaluateStarts evaluates each pending start sample once its boot has a verdict, until
-// ctx ends. It runs in the LONG-RUNNING agent, beside the inbound listener, because the pre-start
+// ctx ends. It runs in the long-running agent, beside the inbound listener, because the pre-start
 // hook that takes a start sample cannot wait for the boot it precedes. Everything it decides is
 // read from the ring and the volume, so a restart of this process loses nothing: a pending sample
 // is still pending on disk.
@@ -564,15 +551,14 @@ func EvaluateStarts(ctx context.Context, x Executor) {
 	}
 }
 
-// evaluatePending evaluates an app's newest pending start if its boot has a verdict: HEALTHY
-// as soon as it is, anything else once apps.HealthGate has passed since the start. A booting
-// app refuses connections and answers 5xx, so nothing but healthy is conclusive early.
+// evaluatePending evaluates an app's newest pending start if its boot has a verdict: healthy as
+// soon as it is, anything else once apps.HealthGate has passed since the start. A booting app
+// refuses connections and answers 5xx, so nothing but healthy is conclusive early.
 //
-// UNHEALTHY REGISTERS ONLY ON A TRANSITION: the newest evaluated sample carried healthy (or no
-// verdict yet). The reason lands on the sample before the start, which is what undoing it restores.
-//
-// SO DOES A BOOT'S RESET: what the app set aside as undecodable during this boot is in
-// the LIVE data and not in the start's member, which holds the undecodable original. Undoing to
+// Unhealthy registers only on a transition: the newest evaluated sample carried healthy (or no
+// verdict yet). The reason lands on the sample before the start, which is what undoing it
+// restores. So does a boot's reset: what the app set aside as undecodable during this boot is in
+// the live data and not in the start's member, which holds the undecodable original. Undoing to
 // the start would put that file back and the next boot would set it aside again, so the reset is
 // the boot's verdict on the start's data, like health.
 func evaluatePending(ctx context.Context, x Executor, app string, now time.Time) {
@@ -612,28 +598,26 @@ func evaluatePending(ctx context.Context, x Executor, app string, now time.Time)
 	pruneRing(ctx, x, app, now)
 }
 
-// THE CLEAN-STOP MARKER: the one fact that says whether an app's data was FLUSHED,
-// which is the question quadlet.Consistency actually asks and the one a stopped container does not
-// answer.
+// The clean-stop marker: the one fact that says whether an app's data was flushed, which is the
+// question quadlet.Consistency actually asks and the one a stopped container does not answer.
 //
-// ⚠️ A STOPPED CONTAINER IS NOT THE SAME FACT AS FLUSHED DATA. The member taken as an app
-// starts after a promotion has nothing running either — but the old primary never shut the app
-// down, so those bytes are whatever it left, and the same holds for the first start after a node's
-// own power cut. Labelling those `quiesced` because nothing was running at the take would be the
+// ⚠️ A stopped container is not the same fact as flushed data. The member taken as an app starts
+// after a promotion has nothing running either — but the old primary never shut the app down, so
+// those bytes are whatever it left, and the same holds for the first start after a node's own
+// power cut. Labelling those `quiesced` because nothing was running at the take would be the
 // field saying the opposite of the truth precisely when it matters.
 //
-// SO THE STOP WRITES IT AND THE START CONSUMES IT. A container unit that stops cleanly runs
+// So the stop writes it and the start consumes it: a container unit that stops cleanly runs
 // ExecStopPost with SERVICE_RESULT=success and the marker lands here; a node that dies writes
-// nothing. It lives on the REPLICATED volume beside the manifests, never inside the data
-// subvolume, because the node that reads it next may not be the node that wrote it — which is
-// exactly the failover case. Absent means crash-consistent, which is also what an app starting
-// for the first time on a volume somebody else provisioned would see, so provision writes one too.
+// nothing. It lives on the replicated volume beside the manifests, never inside the data
+// subvolume, because the node that reads it next may not be the one that wrote it — exactly the
+// failover case. Absent means crash-consistent, which is also what an app starting for the first
+// time on a volume somebody else provisioned would see, so provision writes one too.
 //
-// ⚠️ ITS LIMIT, stated rather than papered over: a clean unit stop is not proof the application
-// flushed. podman stops a container with a signal and a timeout, and a workload that ignores both
-// is killed while the unit still ends `success`. It is the same evidence the upgrade point has
-// claimed — one stop, believed — and it is strictly better than assuming every
-// start had one.
+// ⚠️ Its limit: a clean unit stop is not proof the application flushed. podman stops a container
+// with a signal and a timeout, and a workload that ignores both is killed while the unit still
+// ends `success`. It is the same evidence the upgrade point has claimed — one stop, believed —
+// and strictly better than assuming every start had one.
 func cleanStopPath(app string) string { return manifestDir + "/" + app + ".clean" }
 
 // RecordAppStop writes that marker, or removes it when the stop was not clean. It is what the
@@ -644,7 +628,7 @@ func RecordAppStop(ctx context.Context, x Executor, app, result string) error {
 		return err
 	}
 	if result != "success" {
-		// A failed, killed or timed-out stop leaves NO claim behind. Removing rather than leaving
+		// A failed, killed or timed-out stop leaves no claim behind. Removing rather than leaving
 		// whatever was there keeps "absent means unflushed" true after a stop that half-happened.
 		_, err := x.Run(ctx, "rm", "-f", cleanStopPath(app))
 		return err
@@ -671,14 +655,13 @@ func consumeCleanStop(ctx context.Context, x Executor, app string) quadlet.Consi
 	return quadlet.Quiesced
 }
 
-// THE BACKUP RESTORE: a household restoring one of Home Assistant's OWN
-// backups, which is a different operation from undoing to one of our members and has its own
-// *-before sample.
+// The backup restore: a household restoring one of Home Assistant's own backups, a different
+// operation from undoing to one of our members, with its own *-before sample.
 //
-// THE SEQUENCE IT READS. The household asks a live HA for the restore; HA writes its marker inside
-// /config and exits 100. The wrapper's notification lands in the restart that follows and sees the
-// marker: that is the hass-restore-before sample, taken on data HA has not touched yet. HA's
-// restore process then unlinks the marker right after parsing and BEFORE the wipe (its own
+// The sequence it reads: the household asks a live HA for the restore; HA writes its marker
+// inside /config and exits 100. The wrapper's notification lands in the restart that follows and
+// sees the marker: that is the hass-restore-before sample, taken on data HA has not touched yet.
+// HA's restore process then unlinks the marker right after parsing and before the wipe (its own
 // "prevent a boot loop" step), wipes /config, extracts the tar, and exits 100 again. The second
 // notification sees no marker and is an ordinary start, which is not compared with the *-before
 // sample: the app did not run between them, the restore did.
@@ -698,11 +681,10 @@ func hassRestore(x Executor, app string, rawManifest []byte) (string, bool) {
 	return "", false
 }
 
-// backupName is what the history calls the backup, read out of HA's marker.
-//
-// BEST-EFFORT AND SANITISED, because the content is written by the app rather than by us: the
-// format has changed upstream before (a bare path, then JSON carrying one), and it lands in a line
-// an operator reads. So: the path under a "path" key if it parses as JSON, else the whole body if
+// backupName is what the history calls the backup, read out of HA's marker. Best-effort and
+// sanitised, because the content is written by the app rather than by us: the format has changed
+// upstream before (a bare path, then JSON carrying one), and it lands in a line an operator
+// reads. So: the path under a "path" key if it parses as JSON, else the whole body if
 // it looks like one, reduced to its base name, stripped of anything unprintable and capped. A
 // marker we cannot read at all still names the restore — "a backup" is the honest answer, and the
 // timestamps either side say which one it was.
@@ -728,24 +710,22 @@ func backupName(body []byte) string {
 	return "backup " + name
 }
 
-// takeSnapshot makes one ring member: the read-only subvolume and the sidecar beside it.
+// takeSnapshot makes one ring member: the read-only subvolume and the sidecar beside it. It
+// refuses a collision rather than resolving it: members are a series (quadlet.SnapshotMember),
+// distinct by construction, so nothing legitimately supersedes anything.
 //
-// REFUSE A COLLISION; do not resolve it. Members are a series (quadlet.SnapshotMember), distinct
-// by construction, so nothing legitimately supersedes anything.
-//
-// ⚠️ A DELETE-BEFORE-TAKE IS FATAL TO A RING: it would silently destroy a member whenever two
+// ⚠️ A delete-before-take is fatal to a ring: it would silently destroy a member whenever two
 // landed in the same second -- losing history inside the one function whose job is keeping it.
 // Taking over an existing one is no better: `btrfs subvolume snapshot` given an existing
-// directory creates the new snapshot INSIDE it, which on a read-only member fails with
+// directory creates the new snapshot inside it, which on a read-only member fails with
 // "Read-only file system" -- an error naming the filesystem rather than the collision. Refusing
 // makes the case loud and leaves the earlier member intact.
 //
-// THE SIDECAR, AND WHY THE MEMBER GOES IF IT CANNOT BE WRITTEN. It cannot live inside the member
-// (read-only from the instant it exists) and so cannot be atomic with it. The history and the
-// restore path both need a member's event and the manifest it was taken under, and an unlabelled
-// subvolume is worse than no member at all: it is something a human must identify by hand before
-// trusting it with their data. So the invariant is "every member has a sidecar", bought by undoing
-// the half-made one.
+// The sidecar cannot live inside the member (read-only from the instant it exists), so it cannot
+// be atomic with it. The history and the restore path both need a member's event and the manifest
+// it was taken under, and an unlabelled subvolume is worse than no member at all: something a
+// human must identify by hand before trusting it with their data. So the invariant is "every
+// member has a sidecar", bought by removing the member when its sidecar cannot be written.
 func takeSnapshot(ctx context.Context, x Executor, run func(string, ...string) error, dataDir, member, sidecar string) error {
 	if _, err := x.Run(ctx, "btrfs", "subvolume", "show", member); err == nil {
 		return fmt.Errorf("snapshot %s already exists -- refusing to replace a ring member", member)
@@ -771,7 +751,7 @@ func takeSnapshot(ctx context.Context, x Executor, run func(string, ...string) e
 
 // ringMembers lists one app's members, oldest first.
 //
-// The NAME IS THE INDEX: quadlet.SnapshotMember puts the app and a fixed-width UTC stamp in it,
+// The name is the index: quadlet.SnapshotMember puts the app and a fixed-width UTC stamp in it,
 // so this needs no sidecar read and no parsing of btrfs output. A ring of a thousand members
 // costs one listing and a sort.
 func ringMembers(ctx context.Context, x Executor, app string) []string {
@@ -784,7 +764,7 @@ func ringMembers(ctx context.Context, x Executor, app string) []string {
 	var names []string
 	for _, n := range strings.Fields(string(out)) {
 		// The sidecars are named after their members, so they parse as members too. Skipping
-		// them by suffix keeps this about SUBVOLUMES, which is what both callers mean.
+		// them by suffix keeps this about subvolumes, which is what both callers mean.
 		if strings.HasSuffix(n, ".json") {
 			continue
 		}
@@ -794,8 +774,8 @@ func ringMembers(ctx context.Context, x Executor, app string) []string {
 			names = append(names, n)
 		}
 	}
-	// ⚠️ SORT ON THE PARSED TIME, NOT THE NAME. A member is `<app>-<trigger>-<stamp>`, so the
-	// TRIGGER sits between the app and the stamp and dominates any string comparison: every
+	// ⚠️ Sort on the parsed time, not the name. A member is `<app>-<trigger>-<stamp>`, so the
+	// trigger sits between the app and the stamp and dominates any string comparison: every
 	// `-clock-` member sorts before every `-start-` one whatever their times, and every reader that
 	// asks for "the newest" or "the one before" would get the alphabet's answer. Lexical order is
 	// chronological only within one trigger.
@@ -808,22 +788,19 @@ func ringMembers(ctx context.Context, x Executor, app string) []string {
 }
 
 // pruneRing brings an app's ring back to what the history keeps (quadlet.RetentionPrune, where
-// the policy and its reasoning live). This is the enforcement, and it is the GUEST's because the
+// the policy and its reasoning live). This is the enforcement, and it is the guest's because the
 // host is not in the start path on a promotion or a crash restart.
 //
-// IT READS THE SIDECARS, because what a member is kept for is the event it anchors. A member whose
-// sidecar cannot be read is not listed, so it is never pruned: the ring deletes only what it can
-// describe.
+// It reads the sidecars, because what a member is kept for is the event it anchors; a member
+// whose sidecar cannot be read is not listed, so it is never pruned — the ring deletes only what
+// it can describe. The clock comes from the caller, the same instant the take used: a prune that
+// asked the clock again would be answering a question one call later than the one it was asked.
 //
-// THE CLOCK COMES FROM THE CALLER, the same instant the take used. A prune that asked the clock
-// again would be answering a question one call later than the one it was asked.
-//
-// BEST-EFFORT, ALWAYS. The caller is holding a household's app stopped waiting for an answer,
-// so a member that will not delete is logged and stepped over — a ring one member too long is
-// nothing; an app that would not start because a delete failed is an outage.
-//
-// Both sidecars go with their member, and after it: a member with no sidecar is the state the
-// take path refuses to leave behind, so the delete must not create one either.
+// Best-effort, always: the caller is holding a household's app stopped waiting for an answer, so
+// a member that will not delete is logged and stepped over — a ring one member too long is
+// nothing; an app that would not start because a delete failed is an outage. Both sidecars go
+// with their member, and after it: a member with no sidecar is the state the take path refuses to
+// leave behind, so the delete must not create one either.
 func pruneRing(ctx context.Context, x Executor, app string, now time.Time) {
 	members, err := listMembers(ctx, x, app)
 	if err != nil {
@@ -842,18 +819,16 @@ func pruneRing(ctx context.Context, x Executor, app string, now time.Time) {
 	}
 }
 
-// ListenInbound binds the one inbound socket and serves it until ctx ends.
+// ListenInbound binds the one inbound socket and serves it until ctx ends. It runs in the
+// long-running agent, which the per-app token makes possible: the identity is carried by the
+// request, so the listener needs to know nothing in advance (the file header says why not a
+// socket per app). One socket, bound unconditionally at agent start, whether this node runs zero
+// apps or five.
 //
-// IT RUNS IN THE LONG-RUNNING AGENT, which the per-app token makes possible: the identity is
-// carried by the request, so the listener needs to know nothing in advance (the file header says
-// why not a socket per app). One socket, bound unconditionally at agent start, whether this node
-// runs zero apps or five.
-//
-// ⚠️ THE SOCKET DIES WITH THIS PROCESS, and the agent restarts when the host link drops (the
+// ⚠️ The socket dies with this process, and the agent restarts when the host link drops (the
 // unit's Restart=always, one host connection per run). So a container starting in the seconds
 // around a host reconnect finds nothing listening, gets a refused connection, and starts without
-// a member -- the `|| true` case. That is the cost of the listener living here; it is bounded and
-// benign.
+// a member -- the `|| true` case: the cost of the listener living here, bounded and benign.
 func ListenInbound(ctx context.Context, x Executor) error {
 	ensureToolsOnPath()
 	if err := os.MkdirAll(apps.RunDir(), 0o755); err != nil {
@@ -869,7 +844,7 @@ func ListenInbound(ctx context.Context, x Executor) error {
 	if err != nil {
 		return fmt.Errorf("inbound: listen: %w", err)
 	}
-	// 0660 AND THE MOUNT, not one or the other. The bind mount is what puts this in front of a
+	// 0660 and the mount, not one or the other. The bind mount is what puts this in front of a
 	// container at all; the mode is what keeps every other reader on the node off it. Neither is
 	// the authentication -- that is the token -- but a channel that acts on a household's data
 	// should not be reachable by anything that merely knows the path.
@@ -885,13 +860,11 @@ func ListenInbound(ctx context.Context, x Executor) error {
 			}
 			return err
 		}
-		// ONE AT A TIME, deliberately. The work is a btrfs snapshot of one app's subvolume;
-		// two at once would race the same ring and turn one of them into a collision refusal for
-		// no reason. The load is an app start.
-		//
-		// The caller is untrusted, so it does not get to hold this open: a container that
-		// connects and says nothing is bounded by the deadline rather than by parking the
-		// channel for every other app's next start.
+		// One at a time, deliberately: the work is a btrfs snapshot of one app's subvolume, two at
+		// once would race the same ring and turn one of them into a collision refusal for no
+		// reason, and the load is an app start. The caller is untrusted, so it does not get to
+		// hold this open: a container that connects and says nothing is bounded by the deadline
+		// rather than by parking the channel for every other app's next start.
 		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 		if err := ServeInbound(ctx, x, conn, conn); err != nil {
 			log.Printf("inbound: %v", err)
@@ -900,18 +873,17 @@ func ListenInbound(ctx context.Context, x Executor) error {
 	}
 }
 
-// resolveCaller maps a request's token to the app that was given it.
+// resolveCaller maps a request's token to the app that was given it. An empty or absent token
+// resolves to nothing: there is no anonymous caller.
 //
-// THE DIRECTORY NAME IS THE MAPPING. Each app has one directory named for it, holding
-// everything briard hands that app -- the token among them -- and mounted read-only into its
-// container. So resolving a caller is reading one directory listing, and the agent needs no
-// table, no cache and no notification when an app arrives on a node that was never told about
-// it. That last property is what the per-app socket design could not have at any price.
+// The directory name is the mapping. Each app has one directory named for it, holding everything
+// briard hands that app -- the token among them -- and mounted read-only into its container, so
+// resolving a caller is reading one directory listing, and the agent needs no table, no cache and
+// no notification when an app arrives on a node that was never told about it: the property the
+// per-app socket design could not have at any price.
 //
-// CONSTANT TIME, and not as a ritual: the caller can retry as fast as it likes against a secret
+// Constant time, and not as a ritual: the caller can retry as fast as it likes against a secret
 // this process holds, which is the shape a comparison timing leak is actually exploitable in.
-//
-// An empty or absent token resolves to nothing. There is no anonymous caller.
 func resolveCaller(ctx context.Context, x Executor, token string) (string, bool) {
 	// A short token is refused before anything is read. It cannot be one of ours -- they are 32
 	// random bytes, hex -- and this keeps an empty or missing token from ever walking the
@@ -941,7 +913,7 @@ func resolveCaller(ctx context.Context, x Executor, token string) (string, bool)
 // ToolsBin is the image's tool profile, for a caller that must put it on PATH itself.
 //
 // The generic pre-start hook is that caller: it is an ExecStartPre on a unit podman's
-// quadlet generator writes, and teaching the RENDERER about the image's profile would give a pure
+// quadlet generator writes, and teaching the renderer about the image's profile would give a pure
 // function of the manifest a second thing to know. The entry point sets its own PATH instead, so
 // the rendered line stays one absolute path and an app name.
 func ToolsBin() string { return toolsBin() }
@@ -967,7 +939,7 @@ func TakeStartMember(ctx context.Context, x Executor, app string) (string, error
 // (TakeStartMember) and Home Assistant restarting inside it (the inbound verb) -- whatever the
 // member's outcome.
 //
-// BEST-EFFORT, like the take: a reverse proxy that is not running yet (a promotion starts apps
+// Best-effort, like the take: a reverse proxy that is not running yet (a promotion starts apps
 // before the reverse proxy) asks at its own start instead, and a missed recheck costs client
 // addresses, never a request.
 func signalProxy(ctx context.Context, x Executor) {
@@ -976,31 +948,28 @@ func signalProxy(ctx context.Context, x Executor) {
 	}
 }
 
-// ensureToolsOnPath puts the image's tool profile on this process's PATH.
+// ensureToolsOnPath puts the image's tool profile on this process's PATH: the code that needs the
+// tools puts them there, rather than every caller remembering to. Prepended, never replacing: a
+// caller that already set a good PATH keeps it.
 //
-// ⚠️ THE RING SHELLS OUT TO btrfs, so every entry point that can take a member needs the profile
+// ⚠️ The ring shells out to btrfs, so every entry point that can take a member needs the profile
 // — and not every one of them is started by a unit that provides it. In the product the listener
-// runs inside `run --guest`, whose unit carries btrfs on its PATH; the generic pre-start hook is an
-// ExecStartPre on a unit the RENDERER writes, which deliberately carries no profile
+// runs inside `run --guest`, whose unit carries btrfs on its PATH; the generic pre-start hook is
+// an ExecStartPre on a unit the renderer writes, which deliberately carries no profile
 // (agent/quadlet); and an agent-less rig starts the listener on its own. Without this the channel
 // works end to end, the token resolves, and the take fails with `exec: "btrfs": executable file
 // not found in $PATH`.
-//
-// So the code that needs the tools puts them there, rather than every caller remembering to.
-// Prepended, never replacing: a caller that already set a good PATH keeps it.
 func ensureToolsOnPath() {
 	if tools := ToolsBin(); !strings.Contains(os.Getenv("PATH"), tools) {
 		os.Setenv("PATH", tools+":"+os.Getenv("PATH"))
 	}
 }
 
-// listMembers is one app's ring as a reader sees it: every member, with the sidecar beside
-// it, oldest first.
-//
-// A MEMBER WITH NO READABLE SIDECAR IS SKIPPED, not reported half-formed. The take path removes a
-// member it could not label, so one here means something outside the ring made it -- a human's
-// copy, an interrupted older build -- and the history must not offer a household a rollback point
-// whose code identity nobody knows.
+// listMembers is one app's ring as a reader sees it: every member, with the sidecar beside it,
+// oldest first. A member with no readable sidecar is skipped, not reported half-formed: the take
+// path removes a member it could not label, so one here means something outside the ring made
+// it -- a human's copy, an interrupted older build -- and the history must not offer a household
+// a rollback point whose code identity nobody knows.
 func listMembers(ctx context.Context, x Executor, app string) ([]quadlet.SnapshotEntry, error) {
 	if err := safeUnitName(app); err != nil {
 		return nil, err
