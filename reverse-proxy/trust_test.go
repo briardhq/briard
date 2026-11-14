@@ -120,7 +120,7 @@ func TestForwardedForOnlyToAAppThatAcceptsIt(t *testing.T) {
 	}
 }
 
-// The agent signals BEFORE the app has opened a socket, so the probe must wait for a plain
+// The agent signals before the app has opened a socket, so the probe must wait for a plain
 // answer first: a header sent to an app that is still starting would read its 503 as a verdict.
 func TestTheProbeWaitsForTheAppToComeUp(t *testing.T) {
 	fastProbes(t)

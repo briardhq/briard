@@ -21,7 +21,7 @@ func (r *rig) uninstalled(t *testing.T, app string, at time.Time) {
 	must(t, os.MkdirAll(filepath.Join(r.app.snapshotsPath, filepath.Base(quadlet.SnapshotMember(app, quadlet.TriggerUninstall, at))), 0o755))
 }
 
-// UNINSTALL IS TWO STEPS: the first press shows what is kept and until when, asking the host only
+// Uninstall is two steps: the first press shows what is kept and until when, asking the host only
 // what the app holds; the confirmation sends one app-uninstall -- "now" only from its own button --
 // and lands on the Apps page; a refusal is said on the page between.
 func TestUninstallIsTwoSteps(t *testing.T) {
@@ -69,7 +69,7 @@ func TestUninstallIsTwoSteps(t *testing.T) {
 	}
 }
 
-// THE KEPT COPY IS ON ITS CARD: an uninstalled app's Available card says until when, with Delete
+// The kept copy is on its card: an uninstalled app's Available card says until when, with Delete
 // now; the app installed has none, and Delete now asks before it deletes.
 func TestAKeptCopyIsOnItsCard(t *testing.T) {
 	r := newRig(t)

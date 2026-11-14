@@ -1,14 +1,12 @@
 package main
 
-// THE STATE GALLERY: every page in every state it can be in, rendered to files a person clicks
-// through and a script screenshots. The dashboard's look is judged from renders, never from
-// prose, and this table is the record of which states exist -- a section with a state missing
-// here has a state nobody has looked at. Skipped unless DASHBOARD_GALLERY names the directory to
-// write into (a test tool's switch, not product configuration); it asserts only that every state
-// renders, so a template error in a rarely reached branch fails here before a household finds it.
-//
-// Every render runs on a fixed clock and fixed fixtures, so two runs of the gallery differ only
-// where the templates do -- which is what a screenshot diff is for.
+// The state gallery: every page in every state it can be in, rendered to files a person clicks
+// through and a script screenshots. The look is judged from renders, never from prose, and this
+// table records which states exist: one missing here is a state nobody has looked at. Skipped
+// unless DASHBOARD_GALLERY names the directory to write into (a test tool's switch, not product
+// configuration); it asserts only that every state renders, so a template error in a rarely
+// reached branch fails here before a household finds it. A fixed clock and fixed fixtures make two
+// runs differ only where the templates do, which is what a screenshot diff is for.
 
 import (
 	"encoding/json"
@@ -204,7 +202,7 @@ var (
 )
 
 var galleryStates = []galleryState{
-	// THE HOME PAGE, through a household's life with it.
+	// The home page, through a household's life with it.
 	{"home-first-open", "The first open after the install: Home Assistant ready for its first open, the name offered, the backup's key not yet saved, this laptop the only device.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{Name: galleryName})
@@ -242,7 +240,7 @@ var galleryStates = []galleryState{
 			r.ha.mu.Unlock()
 			return home(t, r, c, port)
 		}},
-	// HOME ASSISTANT's card, every state.
+	// Home Assistant's card, every state.
 	{"home-first-run", "The first screen: nothing installed, the name and the key both still owed -- and only the chooser shows, one thing at a time.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			notInstalled(t, r)
@@ -316,7 +314,7 @@ var galleryStates = []galleryState{
 			must(t, os.WriteFile(filepath.Join(r.dir, "routes.json"), raw, 0o644))
 			return home(t, r, c, port)
 		}},
-	// THE NAME's card, every state.
+	// The name's card, every state.
 	{"home-casa-pending", "The claim sent: waiting for the email's link.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{State: casa.ClaimPending, Name: galleryName, Email: "ana@example.org"})
@@ -356,7 +354,7 @@ var galleryStates = []galleryState{
 			r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: galleryName, Email: "ana@example.org", Resolves: dashboard.CasaResolves})
 			return address(t, r, c, port)
 		}},
-	// THE BACKUP's card, every state.
+	// The backup's card, every state.
 	{"backup-off", "The nightly backup turned off; the folder kept.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
@@ -461,7 +459,7 @@ var galleryStates = []galleryState{
 			r.reissue("curl/8.9.1", nil)
 			return devices(t, r, c, port)
 		}},
-	// THE SECTIONS, as they stand at the two ends of the home's life.
+	// The sections, as they stand at the two ends of the home's life.
 	{"address-first-open", "The web address page on the first open: the name offered, nothing registered.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{Name: galleryName})
@@ -573,7 +571,7 @@ var galleryStates = []galleryState{
 			}
 			return apps(t, r, c, port)
 		}},
-	// AN UPDATE ON OFFER, and the press: the home, the apps page and the app's own page.
+	// An update on offer, and the press: the home, the apps page and the app's own page.
 	{"home-update-offered", "The catalog offers Home Assistant 2026.9.4 over the 2026.8.0 it runs: the badge, the line, the Update button.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
@@ -611,7 +609,7 @@ var galleryStates = []galleryState{
 			}
 			return home(t, r, c, port)
 		}},
-	// THE OTHER PAGES.
+	// The other pages.
 	{"refused", "A browser the home does not trust.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) { return "/", nil }},
 	{"join-waiting", "A new device showing its quick-connect code.",

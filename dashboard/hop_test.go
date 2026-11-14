@@ -39,8 +39,8 @@ func cookieNamed(resp *http.Response, name string) *http.Cookie {
 	return nil
 }
 
-// THE HOP: a browser trusted on the alias follows the dashboard's own link to the name through
-// the alias's /hop, arrives with a code, and is trusted on the name as the SAME device -- one
+// The hop: a browser trusted on the alias follows the dashboard's own link to the name through
+// the alias's /hop, arrives with a code, and is trusted on the name as the same device -- one
 // row, nothing typed. A browser that opens the name by itself is never sent to the alias (one
 // that cannot resolve `.local` would be stranded there): it is refused, and sees quick-connect.
 func TestTrustHopsFromTheAliasToTheName(t *testing.T) {
@@ -106,7 +106,7 @@ func TestTrustHopsFromTheAliasToTheName(t *testing.T) {
 	}
 }
 
-// A NAME WITH NO CERTIFICATE IS SENT BACK ON HTTP: the casa name reached through a private
+// A name with no certificate is sent back on HTTP: the casa name reached through a private
 // network's own DNS records, nothing claimed, has no certificate, so the hop -- and a gated
 // app's open -- must not send the browser to HTTPS it cannot load.
 func TestANameWithNoCertificateIsReachedOverHTTP(t *testing.T) {
@@ -125,7 +125,7 @@ func TestANameWithNoCertificateIsReachedOverHTTP(t *testing.T) {
 	}
 }
 
-// THE PAGE NAMES ITS APPS THE WAY IT WAS REACHED: under the household's name on the name, by
+// The page names its apps the way it was reached: under the household's name on the name, by
 // `.local` otherwise -- and a page reached by `.local` or an address, while the name resolves
 // with a certificate, is offered the name once, at the top.
 func TestAppsAreNamedTheWayThePageWasReached(t *testing.T) {

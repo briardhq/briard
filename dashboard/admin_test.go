@@ -59,11 +59,10 @@ func newFakePort() *fakePort {
 	return &fakePort{answer: make(chan api.DirectiveOutcome, 1), waiting: make(chan struct{}, 1)}
 }
 
-// "SET UP HOME ASSISTANT": the button relays exactly one app-install directive
-// to the host and nothing else; while the host works the page says so and polls itself; a second
-// click while it runs asks nothing more; a refusal from the host is shown with its reason and the
-// CLI; success is forgotten the moment the routes table lists the app, and the ordinary card
-// takes over.
+// Set up Home Assistant: the button relays exactly one app-install directive to the host and
+// nothing else; while the host works the page says so and polls itself; a second click while it
+// runs asks nothing more; a refusal is shown with its reason and the CLI; success is forgotten
+// once the routes table lists the app, and the ordinary card takes over.
 func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
@@ -74,8 +73,7 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 	if !strings.Contains(body, `action="/install/home-assistant"`) || !strings.Contains(body, "Install Home Assistant") || strings.Contains(body, `http-equiv="refresh"`) {
 		t.Fatalf("the not-installed card offers no button, or the idle page polls: %s", body)
 	}
-	// Untrusted cannot press it, and pressing for an app the catalog has no manifest for is
-	// refused.
+	// Untrusted cannot press it; an app the catalog has no manifest for is refused.
 	if resp := r.do("POST", "/install/home-assistant", nil, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("install with no session = %d, want 401", resp.StatusCode)
 	}
@@ -168,10 +166,10 @@ func TestSetUpHomeAssistantRelaysOneInstallToTheHost(t *testing.T) {
 	}
 }
 
-// THE FIRST RUN PICKS SEVERAL: the chooser ticks Files and Home Assistant, the household's
-// choice goes to the host as ONE install, Files first (being small) and nothing the catalog
-// cannot install, the app on its way names the one behind it, and a failure on the second leaves
-// the first installed and the second saying why.
+// The first run picks several: the chooser ticks Files and Home Assistant, the choice goes to the
+// host as one install, Files first (being small) and nothing the catalog cannot install, the app
+// on its way names the one behind it, and a failure on the second leaves the first installed and
+// the second saying why.
 func TestTheChooserInstallsASetAsOneAct(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
@@ -229,9 +227,9 @@ func TestTheChooserInstallsASetAsOneAct(t *testing.T) {
 	}
 }
 
-// THE SERIAL PORT ITSELF, with a unix socket standing in for the character device: one JSON
-// line out, the answer with the matching ID back, and lines that are not the answer (an ID-less
-// failure for someone else's half-line, another request's outcome) skipped.
+// The serial port itself, a unix socket standing in for the character device: one JSON line out,
+// the answer with the matching ID back, and other lines (an ID-less failure for someone else's
+// half-line, another request's outcome) skipped.
 func TestSerialPortSubmitMatchesTheOutcomeByID(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "port")
 	ln, err := net.Listen("unix", sock)
@@ -295,10 +293,9 @@ func TestSerialPortSubmitMatchesTheOutcomeByID(t *testing.T) {
 	}
 }
 
-// THE WIRE IS MULTIPLEXED: an install's request is open for minutes, and the app page's reads
-// go out beside it on the same wire and come back first; the install's answer still finds its
-// request. A host that drops the wire fails every request waiting on it, and the next one
-// opens the wire again.
+// The wire is multiplexed: an install's request is open for minutes, the app page's reads go out
+// beside it and come back first, and the install's answer still finds its request. A host that
+// drops the wire fails every request waiting on it, and the next one reopens it.
 func TestSerialPortCarriesAReadBesideAnInstall(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "port")
 	ln, err := net.Listen("unix", sock)

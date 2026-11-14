@@ -93,7 +93,7 @@ func TestCasaClaimIsOfferedRelayedAndFollowed(t *testing.T) {
 	}
 }
 
-// FROM OUTSIDE YOUR HOME: the tile names the two apps the setup page covers, shows the address
+// From outside your home: the tile names the two apps the setup page covers, shows the address
 // a household types into them -- claimed or not -- and links the page; no router port is offered.
 func TestSecureAccessShowsTheAddressForAway(t *testing.T) {
 	r := newRig(t)

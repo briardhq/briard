@@ -10,15 +10,14 @@ import (
 	"testing"
 )
 
-// TestAppIsTheWord fails on "service" where an app is meant. What a household installs from
-// the catalog is an APP everywhere in this repo: in identifiers, wire and file names, messages,
-// comments and docs. The word "service" keeps only its other meanings, each spelled out below,
-// so a new use reads as one of them or fails here -- a convention alone lets the word drift
-// back, which is why this is a test.
+// TestAppIsTheWord fails on "service" where an app is meant. What a household installs from the
+// catalog is an app everywhere in this repo: identifiers, wire and file names, messages, comments
+// and docs. "service" keeps only its other meanings, each spelled out below, so a new use reads as
+// one of them or fails here; a convention alone lets the word drift back.
 //
-// The check removes every allowed use from a line and refuses what is left. To use the word in
-// one of its other meanings, write it the way the list below recognises (`systemd service`,
-// `service NIC`, `name service`, ...); to add a meaning, add it here with the reason.
+// The check removes every allowed use from a line and refuses what is left. To use another
+// meaning, write it the way the list recognises (`systemd service`, `service NIC`, `name
+// service`, ...); to add a meaning, add it here with the reason.
 func TestAppIsTheWord(t *testing.T) {
 	allowed := []*regexp.Regexp{
 		// systemd and NixOS: units, their sections and options, and the OS module tree.

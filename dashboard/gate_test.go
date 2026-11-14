@@ -150,7 +150,7 @@ func TestAGatedAppsCardOpensIt(t *testing.T) {
 	}
 }
 
-// THE HOME LISTS THE APPS: one card, a row per installed app with Open where it has a page and
+// The home lists the apps: one card, a row per installed app with Open where it has a page and
 // Details where its card lives, and a few suggestions, Files first while it is not
 // installed. The per-app cards are the Apps page's and each app's own.
 func TestTheHomeListsTheAppsAndSuggestsMore(t *testing.T) {

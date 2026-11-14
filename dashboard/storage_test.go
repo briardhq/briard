@@ -55,11 +55,11 @@ func answerUsage(port *fakePort, members string) *usageAnswers {
 	return u
 }
 
-// THE STORAGE CARD loads itself: the page asks nothing of it, and offers a way without a script.
-// While the guest measures, the card has the totals and the counts and asks again; once it has
-// the numbers it says each area on disk with its size before compression beside it where
-// compression shrank it, the history's size and count, and the room -- and stops asking. An app
-// keeping nothing in its files area has no files rows.
+// The storage card loads itself: the page asks nothing of it, and offers a way without a script.
+// While the guest measures, the card has the totals and counts and asks again; once measured it
+// says each area on disk (with its size before compression where compression shrank it), the
+// history's size and count, and the room, and stops asking. An app keeping nothing in its files
+// area has no files rows.
 func TestTheStorageCardLoadsItselfAndStopsAskingOnceMeasured(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
@@ -135,7 +135,7 @@ func TestTheStorageCardLoadsItselfAndStopsAskingOnceMeasured(t *testing.T) {
 	}
 }
 
-// AN APP WITH A CACHE HAS ITS ROW AND A CLEAR: what the cache holds, a word on what clearing
+// An app with a cache has its row and a Clear: what the cache holds, a word on what clearing
 // does, and the room said as covering it. The Clear asks the host to empty the app's cache, once,
 // and answers with the card saying so; without a script it comes back to the card's page.
 func TestTheCacheHasItsRowAndAClear(t *testing.T) {

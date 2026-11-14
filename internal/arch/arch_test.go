@@ -37,12 +37,10 @@ func moduleRoot(t *testing.T) string {
 	}
 }
 
-// TestHostSeamDiscipline enforces CONTRIBUTING.md invariant 1 (host seam
-// discipline): the agent's orchestration lives in agent/host, which reaches every
-// provider only through its seam interface. The concrete provider implementations
-// (netbird, libvirt) are wired in at main and injected — host must never
-// import them, directly or transitively. It may import agent/drbd, the
-// observe-and-report package (guarded separately by invariant 2).
+// TestHostSeamDiscipline enforces CONTRIBUTING.md invariant 1 (host seam discipline): agent/host,
+// the orchestration, reaches every provider only through its seam interface. The concretes
+// (netbird, libvirt) are wired in at main and injected; host must never import them, directly or
+// transitively. It may import agent/drbd, the observe-and-report package (guarded by invariant 2).
 func TestHostSeamDiscipline(t *testing.T) {
 	forbidden := []string{"netbird", "libvirt"}
 	cmd := exec.Command("go", "list", "-deps", "briard.io/agent/host")
@@ -143,17 +141,14 @@ func TestNoForcePromote(t *testing.T) {
 	}
 }
 
-// TestNoDirectPromoteDemote enforces CONTRIBUTING.md invariant 2 at the exec
-// surface: the agent observes failover, never drives it — drbd-reactor runs the
-// lifecycle. The text
-// scan above catches `primary --force` written as one token, but the surface that
-// actually matters is a call shelling out to `drbdadm`/`drbdsetup` with a
-// `primary`/`secondary` verb as *separate* string arguments (force or not — any
-// direct promote/demote is drbd-reactor's job). Parse every non-test .go file and
-// flag any single call that passes both a command literal and a role-verb literal.
-// It passes while no call does (guestagent calls drbdadm adjust / create-md / up /
-// disconnect / new-current-uuid and drbdsetup status) and fails the day someone
-// adds a direct promotion at the exec surface.
+// TestNoDirectPromoteDemote enforces CONTRIBUTING.md invariant 2 at the exec surface: the agent
+// observes failover, never drives it; drbd-reactor runs the lifecycle. The text scan above catches
+// `primary --force` as one token, but the surface that matters is a call to `drbdadm`/`drbdsetup`
+// with `primary`/`secondary` as separate string arguments (force or not: any direct
+// promote/demote is drbd-reactor's job). It parses every non-test .go file and flags any call
+// passing both a command literal and a role-verb literal. It passes while no call does
+// (guestagent calls drbdadm adjust / create-md / up / disconnect / new-current-uuid and drbdsetup
+// status) and fails the day someone adds a direct promotion there.
 func TestNoDirectPromoteDemote(t *testing.T) {
 	cmds := map[string]bool{"drbdadm": true, "drbdsetup": true}
 	roles := map[string]bool{"primary": true, "secondary": true}
@@ -217,17 +212,16 @@ func TestNoDirectPromoteDemote(t *testing.T) {
 	}
 }
 
-// THE FENCE THAT MAKES THE GUEST CHAIN STAND STILL. The guest image's input
-// hash (flake.nix guestInputPackages) must cover every Go package the FIRMWARE
-// (agent/cmd/briard-guest-firmware) links, or an edit outside the list would ship a changed baked
-// binary under an unchanged inputs hash -- and `publish-release.sh stage` would then REUSE the old
-// image. `go list` is the truth; the flake carries a copy; this keeps them equal, in both
-// directions: a package the firmware does not link must not be hashed either, or the chain churns
-// for nothing.
+// The fence that makes the guest chain stand still. The guest image's input hash (flake.nix
+// guestInputPackages) must cover every Go package the firmware (agent/cmd/briard-guest-firmware)
+// links, or an edit outside the list ships a changed baked binary under an unchanged inputs hash,
+// and `publish-release.sh stage` reuses the old image. `go list` is the truth and the flake a
+// copy; this keeps them equal both ways, since a package the firmware does not link must not be
+// hashed either, or the chain churns for nothing.
 //
-// And the firmware must not link agent/guestagent. That is the whole point of the split: the
-// agent is PUSHED, so an edit to it has no business rebuilding a 400 MB image. Listing it would
-// satisfy the equality above and lose the property, so it is refused by name.
+// And the firmware must not link agent/guestagent, the whole point of the split: the agent is
+// pushed, so an edit to it has no business rebuilding a 400 MB image. Listing it would satisfy the
+// equality above and lose the property, so it is refused by name.
 func TestGuestInputsCoverTheFirmware(t *testing.T) {
 	root := moduleRoot(t)
 	cmd := exec.Command("go", "list", "-deps", "./agent/cmd/briard-guest-firmware")
@@ -282,20 +276,17 @@ func TestGuestInputsCoverTheFirmware(t *testing.T) {
 	}
 }
 
-// THE RIG'S COPY OF THE PROMOTER CHAIN, HELD TO THE PRODUCT'S.
+// The rig's copy of the promoter chain, held to the product's. nixosTest/lib.nix writes its own
+// drbd-reactor snippet: the harness bakes it, and the rigs that supply their own reactor config
+// take it from there rather than restate the member list. Nix cannot import Go, so the list is
+// genuinely duplicated, and a copy "kept in step by hand" is a promise nothing enforces.
 //
-// nixosTest/lib.nix writes its own drbd-reactor snippet: the harness bakes it, and the rigs that
-// supply their own reactor config take it from there rather than restate the member list. Nix
-// cannot import Go, so the list is genuinely duplicated there -- and a copy "kept in step BY
-// HAND" is exactly the kind of promise nothing enforces.
-//
-// A rig whose list is SHORT does not merely differ, it never starts the missing members: the
-// reverse proxy and the dashboard are members too, and a stale snippet would promote a node
-// that serves nothing while every assertion about the mount and the VIP still passes. That is
-// the failure this guard exists for, and it is invisible to every other test.
-//
-// Reading the nix as text rather than evaluating it is the point: `nix eval` needs the whole
-// module system and a working store, and this has to run inside the per-commit `go test`.
+// A rig whose list is short does not merely differ, it never starts the missing members: the
+// reverse proxy and the dashboard are members too, so a stale snippet promotes a node that serves
+// nothing while every assertion about the mount and the VIP passes. That is the failure this guard
+// exists for, invisible to every other test. The nix is read as text, not evaluated, on purpose:
+// `nix eval` needs the whole module system and a working store, and this runs inside the
+// per-commit `go test`.
 func TestRigPromoterSnippetMatchesTheChain(t *testing.T) {
 	root := moduleRoot(t)
 	b, err := os.ReadFile(filepath.Join(root, "nixosTest", "lib.nix"))

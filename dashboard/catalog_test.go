@@ -234,12 +234,12 @@ func offering(update bool) dashboard.Catalog {
 	return c
 }
 
-// AN UPDATE THE CATALOG OFFERS is a badge, a line naming both versions and the undo, and an
+// An update the catalog offers is a badge, a line naming both versions and the undo, and an
 // Update button on the app's card wherever it shows; the app's own page also says what Briard
-// does around it. The press relays one app-install, as Install does; while it runs the card
-// says it is updating and polls itself, and the home is not "setting up". An update that did
-// not finish says so with the host's reason and a retry; one that did hides the offer until
-// the host's view drops it.
+// does around it. The press relays one app-install, as Install does; while it runs the card says
+// updating and polls itself, and the home is not "setting up". An update that did not finish
+// says so with the host's reason and a retry; one that did hides the offer until the host's view
+// drops it.
 func TestAnOfferedUpdateIsShownPressedAndTaken(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()

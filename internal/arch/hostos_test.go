@@ -18,24 +18,22 @@ var hostOSPackages = []string{"agent/platform", "agent/nic", "agent/reportcard",
 // hostOSLiterals are the string constants that mean "this line only runs on Linux":
 // the service manager and its journal, iproute2 and drbdadm; hostOSPrefixes are the paths
 // that do (the pseudo-filesystems, systemd's runtime directory and /etc). They are what a
-// per-OS backend REPLACES, so a file that is not tagged for one OS has no business naming them.
+// per-OS backend replaces, so a file that is not tagged for one OS has no business naming them.
 var hostOSLiterals = []string{"systemctl", "systemd-run", "ip", "drbdadm", "journalctl"}
 
 var hostOSPrefixes = []string{"/proc/", "/sys/", "/run/systemd", "/etc/"}
 
-// TestHostOSCallsStayBehindTheSeam is what keeps the host-OS seam's cut from decaying back into a
-// comment. `GOOS=windows go build ./...` cannot do this job alone: it catches a Linux-only
-// SYMBOL (syscall.Statfs), but exec.Command("systemctl", ...) and os.ReadFile("/proc/net/route")
-// compile perfectly on Windows and fail -- or quietly read "" -- only when someone runs them
-// there. So the shell-level and procfs-level dependency needs an assertion of its own, and this
-// is it: the seam's other half, across every package that has a Windows arm.
-//
-// It reads string LITERALS out of the AST rather than grepping, so the rationale comments above
-// these calls (which necessarily name systemd, iproute2 and /proc) do not trip it.
+// TestHostOSCallsStayBehindTheSeam keeps the host-OS seam's cut from decaying back into a comment.
+// `GOOS=windows go build ./...` catches a Linux-only symbol (syscall.Statfs), but
+// exec.Command("systemctl", ...) and os.ReadFile("/proc/net/route") compile on Windows and fail,
+// or quietly read "", only when run there. So the shell- and procfs-level dependency needs its own
+// assertion: this, the seam's other half, across every package with a Windows arm. It reads
+// string literals out of the AST rather than grepping, so the rationale comments above these
+// calls (which necessarily name systemd, iproute2 and /proc) do not trip it.
 //
 // Adding a host-OS call is not forbidden; putting it in a shared file is. The fix is always the
-// same: the mechanism goes in a _linux.go file with a _windows.go counterpart, and the policy above
-// it stays shared where both platforms read it and the tests reach it.
+// mechanism in a _linux.go file with a _windows.go counterpart, the policy above it staying shared
+// where both platforms read it and the tests reach it.
 func TestHostOSCallsStayBehindTheSeam(t *testing.T) {
 	root := moduleRoot(t)
 	fset := token.NewFileSet()
@@ -51,7 +49,7 @@ func TestHostOSCallsStayBehindTheSeam(t *testing.T) {
 			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 				continue
 			}
-			// _linux.go / _windows.go ARE the backends -- naming the mechanism is their whole job.
+			// _linux.go / _windows.go are the backends: naming the mechanism is their whole job.
 			if strings.HasSuffix(name, "_linux.go") || strings.HasSuffix(name, "_windows.go") {
 				continue
 			}
@@ -85,7 +83,7 @@ func TestHostOSCallsStayBehindTheSeam(t *testing.T) {
 				return true
 			})
 		}
-		// The scan finding nothing must mean it LOOKED. A rename that emptied a package's file
+		// The scan finding nothing must mean it looked. A rename that emptied a package's file
 		// list would otherwise leave a test that passes by inspecting nothing.
 		if checked == 0 {
 			t.Fatalf("%s: scanned no shared files: the guard is vacuous", pkg)

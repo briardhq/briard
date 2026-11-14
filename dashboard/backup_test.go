@@ -177,7 +177,7 @@ func card(page, id string) string {
 	return rest
 }
 
-// THE SCHEDULE says when it runs and how long ago the last run was -- red when it did not finish,
+// The schedule says when it runs and how long ago the last run was -- red when it did not finish,
 // and no sizes -- with Back up now and the switch; off, the folder kept and the switch back on.
 func TestTheScheduleCard(t *testing.T) {
 	r, c, _ := backupRig(t)
@@ -223,7 +223,7 @@ func TestTheScheduleCard(t *testing.T) {
 	}
 }
 
-// BACK UP NOW asks the host to start the run and does not wait for it; the card says the run is
+// Back up now asks the host to start the run and does not wait for it; the card says the run is
 // going and polls until the host says how it ended, then the page says so once: what it added,
 // or why not. A refusal is shown, and nothing polls.
 func TestBackUpNowFollowsTheRunToItsEnd(t *testing.T) {
@@ -283,7 +283,7 @@ func TestBackUpNowFollowsTheRunToItsEnd(t *testing.T) {
 	}
 }
 
-// THE FOLDER card: the current folder in the field, Change, no rules; one off-site line --
+// The Folder card: the current folder in the field, Change, no rules; one off-site line --
 // uploaded, waiting, none found, or (Linux) Briard can't tell; the adopt prompt for a folder
 // another key made; and where the earlier backups are.
 func TestTheFolderCard(t *testing.T) {
@@ -342,9 +342,9 @@ func answerFolder(port *fakePort, check *dashboard.BackupFolderCheck, why string
 	port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: string(raw)}
 }
 
-// CHANGE READS THE FOLDER FIRST and says what is there -- or why it cannot be used, in place of
-// the question -- and only the confirmation moves the backup: with the key, for a folder another
-// key made.
+// Change reads the folder first and says what is there (or, in place of the question, why it
+// cannot be used); only the confirmation moves the backup, with the key for a folder another key
+// made.
 func TestChangeReadsTheFolderFirst(t *testing.T) {
 	r, c, port := backupRig(t)
 	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true})
@@ -418,7 +418,7 @@ func TestChangeReadsTheFolderFirst(t *testing.T) {
 	}
 }
 
-// THE BACKUPS card: the folder's backups newest first and the run that failed since the newest,
+// The Backups card: the folder's backups newest first and the run that failed since the newest,
 // each with when, what this machine's run added (none for an earlier install's), its status and
 // its Details; the retention under it. The page does not wait for it: the card loads itself, or,
 // with no script, renders in the page behind its link.
@@ -465,7 +465,7 @@ func TestTheBackupsCard(t *testing.T) {
 	}
 }
 
-// A BACKUP'S DETAILS: when, by whom, what it added and holds, and its apps -- installed here or
+// A backup's details: when, by whom, what it added and holds, and its apps -- installed here or
 // not -- each with a Restore into the confirmation. One no longer in the folder is not found.
 func TestABackupsDetails(t *testing.T) {
 	r, c, port := backupRig(t)
@@ -494,9 +494,9 @@ func TestABackupsDetails(t *testing.T) {
 	}
 }
 
-// A RESTORE ASKS FIRST, in words that say the app goes back and what it has now is kept -- or,
-// for an app this machine does not have, that it is installed. Then it relays one backup-restore,
-// the card follows it while it runs, says how it ended once, and is a list again.
+// A restore asks first, saying the app goes back and what it has now is kept (or, for an app this
+// machine does not have, that it is installed). Then it relays one backup-restore; the card
+// follows it while it runs, says how it ended once, and is a list again.
 func TestARestoreFromTheBackupConfirmsThenRuns(t *testing.T) {
 	r, c, port := backupRig(t)
 	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true})
@@ -595,9 +595,9 @@ func TestTheBackupsCardOfAFolderWithNoBackupYet(t *testing.T) {
 	}
 }
 
-// A SETTING'S PAGE SHOWS IT DONE: the host pushes its view on its next tick, so the answer to a
-// move waits for the view that has the new folder before sending the browser back -- and a host
-// that never pushes leaves the page as it was once the wait is up, rather than holding it.
+// A setting's page shows it done: the host pushes its view on its next tick, so the answer to a
+// move waits for the view with the new folder before sending the browser back; a host that never
+// pushes leaves the page as it was once the wait is up, rather than holding it.
 func TestAMoveComesBackToThePageShowingIt(t *testing.T) {
 	r, c, port := backupRig(t)
 	r.app.viewWait = 5 * time.Second

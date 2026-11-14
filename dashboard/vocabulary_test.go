@@ -1,11 +1,11 @@
 package main
 
-// THE VOCABULARY: the class names a template may use, and the only ones. A page that reads as
-// one thing is built from a short list of parts; every class outside the list is a part nobody
-// named, and an inline style is a part nobody can find. Two lists, held here in the open so
-// adding to either is a visible act: Basecoat's components the templates use, each checked to
-// exist in the built stylesheet, and THE PARTS of Briard's own, each defined in css/input.css --
-// checked both ways, so neither a template's unknown class nor a part nothing uses survives.
+// The vocabulary: the class names a template may use, and the only ones. A page that reads as one
+// thing is built from a short list of parts; a class outside the list is a part nobody named, an
+// inline style a part nobody can find. Two lists, held here so adding to either is a visible act:
+// the Basecoat components the templates use, each checked to exist in the built stylesheet, and
+// Briard's own parts, each defined in css/input.css -- checked both ways, so neither a template's
+// unknown class nor a part nothing uses survives.
 
 import (
 	"io/fs"

@@ -206,7 +206,7 @@ func check(r *rig, c *http.Cookie) (int, string) {
 	return r.loopback("GET", "/gate/check?app=mealie", c.Value, nil)
 }
 
-// THE REVERSE PROXY'S CHECK MAKES MEALIE'S FIRST ACCOUNT THE USER'S AND NAMES IT: the shipped
+// The reverse proxy's check makes Mealie's first account the user's and names it: the shipped
 // password no longer works, the account keeps its username and carries the record's name and
 // placeholder email, and briard's own account is an admin beside it. A later check asks Mealie
 // nothing it could count as a failed login; a check for another app asks Mealie nothing at all.
@@ -240,7 +240,7 @@ func TestTheCheckTakesOverMealiesFirstAccount(t *testing.T) {
 	}
 }
 
-// WHATEVER MEALIE'S ACCOUNTS SAY IS WHAT THE REVERSE PROXY DOES: the user renamed inside Mealie,
+// Whatever Mealie's accounts say is what the reverse proxy does: the user renamed inside Mealie,
 // briard's own account deleted or no longer an admin -- each is followed at the next check, with
 // nothing kept on briard's side to fall out of step.
 func TestTheCheckFollowsMealiesAccounts(t *testing.T) {
@@ -270,7 +270,7 @@ func TestTheCheckFollowsMealiesAccounts(t *testing.T) {
 	}
 }
 
-// A MEALIE THE USER BROUGHT -- a backup of a Mealie they ran before, imported or restored --
+// A Mealie the user brought -- a backup of a Mealie they ran before, imported or restored --
 // opens as its oldest admin, unrenamed: there is no first account to take over, and nothing is
 // signed in to by password.
 func TestABroughtMealieOpensAsItsOldestAdmin(t *testing.T) {
@@ -322,8 +322,8 @@ func TestATakeoverCutShortIsFinishedByTheNextCheck(t *testing.T) {
 	}
 }
 
-// A PASSWORD CHANGE BEATEN TO IT BY AN EARLIER CHECK'S -- one the reverse proxy stopped waiting
-// for, which Mealie finished all the same -- is that same end: the takeover goes on to the rename.
+// A password change beaten to it by an earlier check's (one the reverse proxy stopped waiting
+// for, which Mealie finished all the same) is that same end: the takeover goes on to the rename.
 // A change that failed with the shipped password still answering refuses the check.
 func TestAPasswordChangeBeatenToItFinishesTheTakeover(t *testing.T) {
 	r, f := mealieRig(t)
@@ -344,7 +344,7 @@ func TestAPasswordChangeBeatenToItFinishesTheTakeover(t *testing.T) {
 	}
 }
 
-// A CHECK THE REVERSE PROXY STOPPED WAITING FOR RUNS TO ITS END: the reverse proxy gives up while
+// A check the reverse proxy stopped waiting for runs to its end: the reverse proxy gives up while
 // Mealie's admin tool runs, and the takeover is finished all the same.
 func TestACheckTheProxyStoppedWaitingForStillFinishes(t *testing.T) {
 	r, f := mealieRig(t)

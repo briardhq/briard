@@ -12,9 +12,9 @@ import (
 	"briard.io/shared/dashboard"
 )
 
-// LIVE PULL PROGRESS: the total from the host's pull record, finished layers from
-// podman's store (only those created since the pull started), the layer in flight from the
-// unit's private tmp -- and no bar at all without a record.
+// Live pull progress: the total from the host's pull record, finished layers from podman's store
+// (only those created since the pull started), the layer in flight from the unit's private tmp --
+// and no bar at all without a record.
 func TestPullProgressAddsFinishedLayersAndTheOneInFlight(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()

@@ -19,9 +19,9 @@ import (
 	"briard.io/shared/routes"
 )
 
-// fakeHA is Home Assistant's onboarding surface as the dashboard uses it, with the shapes
-// measured against a real Home Assistant: unauthenticated status, a user step that returns a code and refuses
-// once done, an analytics step behind a bearer, the token exchange, and the core state.
+// fakeHA is Home Assistant's onboarding surface as the dashboard uses it, shapes measured against
+// a real Home Assistant: unauthenticated status, a user step that returns a code and refuses once
+// done, an analytics step behind a bearer, the token exchange, and the core state.
 type fakeHA struct {
 	mu       sync.Mutex
 	done     map[string]bool
@@ -184,7 +184,7 @@ func (r *rig) trustAs(ua string) *http.Cookie {
 	return nil
 }
 
-// THE CODE IS THE WHOLE OF THE BOOTSTRAP: nothing without it, a trusted device with it, and it
+// The code is the whole of the bootstrap: nothing without it, a trusted device with it, and it
 // works exactly once.
 func TestCodeIsTheOnlyDoorAndItIsOneTime(t *testing.T) {
 	r := newRig(t)
@@ -238,9 +238,9 @@ func TestExpiredCodeIsRefusedAndDropped(t *testing.T) {
 	}
 }
 
-// A SPENT CODE DOES NOT STRAND THE BROWSER THAT SPENT IT: the terminal prints one link
-// and a person clicks it twice, so a code that opens nothing falls back to the session the
-// browser is already carrying. A browser carrying none, or a cookie that is not a session, is
+// A spent code does not strand the browser that spent it: the terminal prints one link and a
+// person clicks it twice, so a code that opens nothing falls back to the session the browser is
+// already carrying. A browser carrying none, or a cookie that is not a session, is
 // refused -- reaching this port teaches nothing.
 func TestASpentCodeFallsBackToTheSession(t *testing.T) {
 	r := newRig(t)
@@ -270,10 +270,10 @@ func TestASpentCodeFallsBackToTheSession(t *testing.T) {
 	}
 }
 
-// THE BUTTON, on a fresh Home Assistant: the first user is made from the account the host handed
-// over, analytics is marked with the CONTROL CHANNEL's token (the browser's code stays unspent),
+// The button, on a fresh Home Assistant: the first user is made from the account the host handed
+// over, analytics is marked with the control channel's token (the browser's code stays unspent),
 // and the browser is sent to HA's own onboarding page carrying that code and the state its
-// frontend checks -- hassUrl without the trailing slash, clientId with it.
+// frontend checks: hassUrl without the trailing slash, clientId with it.
 func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
@@ -314,7 +314,7 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	if an != "Bearer sys-access" {
 		t.Errorf("analytics was marked with %q; want the control channel's token", an)
 	}
-	// The password is generated and FORGOTTEN: nothing on the volume, nothing on the
+	// The password is generated and forgotten: nothing on the volume, nothing on the
 	// page. Every later open is minted, and the household sets its own in HA's People settings.
 	entries, _ := os.ReadDir(filepath.Join(r.dir, "state"))
 	for _, e := range entries {
@@ -332,7 +332,7 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	if strings.Contains(string(buf[:n]), u["password"]) {
 		t.Error("the page shows the generated password")
 	}
-	// User step done, the rest not: a code MINTED for the owner, and the onboarding
+	// User step done, the rest not: a code minted for the owner, and the onboarding
 	// page resumes with it -- the same callback shape as the first open, no user created.
 	resp = r.do("POST", "/open/home-assistant", c, nil)
 	loc, _ = url.Parse(resp.Header.Get("Location"))
@@ -361,7 +361,7 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	if state.HassURL != "http://briard-home-assistant.local" || state.ClientID != "http://briard-home-assistant.local/" {
 		t.Errorf("later-open state = %+v", state)
 	}
-	// The page offers the button on a set-up HA too: that IS the later open.
+	// The page offers the button on a set-up HA too: that is the later open.
 	req, _ = http.NewRequest("GET", r.srv.URL+"/", nil)
 	req.AddCookie(c)
 	page, err = http.DefaultClient.Do(req)
@@ -373,9 +373,9 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	}
 }
 
-// THE MINTER MINTS FOR THE OWNER AND NOBODY ELSE: with no owner it refuses, and the
-// dashboard SAYS SO with the plain address, rather than minting for some admin. A Home Assistant
-// our integration is not loaded on gets the same honesty and its own login screen.
+// The minter mints for the owner and nobody else: with no owner it refuses, and the dashboard says
+// so, with the plain address, rather than minting for some admin. A Home Assistant our integration
+// is not loaded on gets the same honesty and its own login screen.
 func TestOpenSurfacesARefusedMint(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
@@ -410,7 +410,7 @@ func TestOpenSurfacesARefusedMint(t *testing.T) {
 	}
 }
 
-// RUNNING IS THE BOUNDARY, NOT A 200: a Home Assistant that answers HTTP but has not
+// RUNNING is the boundary, not a 200: a Home Assistant that answers HTTP but has not
 // reached RUNNING gets no user step.
 func TestOpenRefusesWhileHomeAssistantIsStarting(t *testing.T) {
 	r := newRig(t)
@@ -507,12 +507,11 @@ func (r *rig) registry() registry {
 	return reg
 }
 
-// THE DEVICE LIST AND REVOKE: every trusted device is on the page with a label a
-// person can tell apart and "this device" on the one looking; revoking one takes it out of the
-// registry and nothing else -- the revoked cookie is refused, the others keep working, and the
-// page points at Home Assistant's own profile for the HA session it still holds. A device
-// revoking itself is signed out, cookie cleared; the last one may go, and a fresh code is the
-// way back in.
+// The device list and revoke: every trusted device is on the page with a label a person can tell
+// apart and "this device" on the one looking. Revoking one takes it out of the registry and
+// nothing else: the revoked cookie is refused, the others keep working, and the page points at
+// Home Assistant's own profile for the HA session it still holds. A device revoking itself is
+// signed out, cookie cleared; the last one may go, and a fresh code is the way back in.
 func TestDevicesAreListedAndRevokedFromTheRegistryOnly(t *testing.T) {
 	r := newRig(t)
 	laptop := r.reissue("Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0", nil)
@@ -612,7 +611,7 @@ func TestDevicesAreListedAndRevokedFromTheRegistryOnly(t *testing.T) {
 	}
 }
 
-// ONE BROWSER, ONE ROW: a household that keeps the `briard open` link as a bookmark
+// One browser, one row: a household that keeps the `briard open` link as a bookmark
 // re-mints a session on a browser that already has one, and the row it replaces goes with it --
 // the list names devices, not visits. The retired cookie stops working, the browser's new one
 // works, and no other device is touched.
@@ -640,7 +639,7 @@ func TestANewSessionRetiresTheOneItReplaces(t *testing.T) {
 		t.Errorf("the phone = %d, want 200 (another device's row is not touched)", resp.StatusCode)
 	}
 	// A device let in by quick-connect replaces nothing: the request that approves it carries the
-	// APPROVER's cookie, and that device keeps its row.
+	// approver's cookie, and that device keeps its row.
 	j := r.ask(t, "curl/8.0")
 	r.approve(t, again, j.code)
 	if _, status := j.poll(t); status != http.StatusSeeOther {
@@ -731,7 +730,7 @@ func (r *rig) approve(t *testing.T, c *http.Cookie, code string) *http.Response 
 	return resp
 }
 
-// QUICK-CONNECT: the new device shows a code, a trusted device types it, and the new
+// Quick-connect: the new device shows a code, a trusted device types it, and the new
 // device is let in -- the session goes to the request's own cookie, never to the code. Nobody
 // else can approve, the wrong code approves nothing, an approval is collected once, and the
 // code alone (no join cookie) collects nothing.
@@ -840,7 +839,7 @@ func TestQuickConnectExpiresAndIsBounded(t *testing.T) {
 	}
 }
 
-// EVERY WAY INTO HOME ASSISTANT OPENS A NEW TAB, and the password pointer is the People page
+// Every way into Home Assistant opens a new tab, and the password pointer is the People page
 // (/config/person -- the short list of people, not /config/users, which also shows briard's own
 // system user). The dashboard stays open in its tab; Home Assistant is a separate app.
 func TestHomeAssistantOpensInANewTab(t *testing.T) {

@@ -108,10 +108,10 @@ func fixed(t routes.Table) func() *routing {
 	return func() *routing { return r }
 }
 
-// The shipped state of a fresh node: nothing installed. The VIP must still ANSWER -- every name
-// the node does not route goes to the dashboard, which is where the household gets in -- and
-// /healthz must say the node is ready rather than sick. A node reporting unhealthy forever
-// because no app was ever installed is the zombie state this guards against.
+// The shipped state of a fresh node: nothing installed. The VIP must still answer (every name the
+// node does not route goes to the dashboard, where the household gets in) and /healthz must say
+// the node is ready, not sick: a node unhealthy forever because no app was ever installed is the
+// zombie state this guards against.
 func TestZeroAppReverseProxy(t *testing.T) {
 	dash := newDashboard(t)
 	srv := httptest.NewServer(newRouter(fixed(routes.Table{}), dash.url()))
@@ -143,7 +143,7 @@ func TestZeroAppReverseProxy(t *testing.T) {
 }
 
 // At unit scale: a request whose Host names a runtime-installed app reaches that app through the
-// reverse proxy. A reverse proxy with ONE backend baked at guest-build time would leave every
+// reverse proxy. A reverse proxy with one backend baked at guest-build time would leave every
 // runtime-installed app unreachable on :80/:443; this property is keyed on the name rather than
 // on there being exactly one thing to forward to.
 func TestRoutesByHostToTheNamedApp(t *testing.T) {
@@ -162,7 +162,7 @@ func TestRoutesByHostToTheNamedApp(t *testing.T) {
 	}})))
 	defer srv.Close()
 
-	// Each name reaches ITS OWN app. Two apps behind one address is the whole reason the reverse
+	// Each name reaches its own app. Two apps behind one address is the whole reason the reverse
 	// proxy needs a table rather than a backend.
 	for host, want := range map[string]string{
 		"briard-brave-elf-home-assistant.local": "home-assistant-ok",
@@ -185,10 +185,10 @@ func TestRoutesByHostToTheNamedApp(t *testing.T) {
 	}
 }
 
-// /healthz IS THE NODE'S, ALWAYS, which N apps force: one backend could forward the question
-// to itself; N cannot, and an app that is down must not make the
-// node it runs on read as broken — the OS health gate and the rollback reflex read this, and
-// converge-at-promotion puts app failures deliberately outside the promoter's reach.
+// /healthz is the node's, always, which N apps force: one backend could forward the question to
+// itself; N cannot, and an app that is down must not make its node read as broken. The OS health
+// gate and the rollback reflex read this, and converge-at-promotion puts app failures
+// deliberately outside the promoter's reach.
 func TestHealthIsTheNodesOwnAnswerNotAApps(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "wedged", http.StatusServiceUnavailable)
@@ -212,13 +212,12 @@ func TestHealthIsTheNodesOwnAnswerNotAApps(t *testing.T) {
 	}
 }
 
-// An app routed by name whose backend the reverse proxy must NOT expose. mosquitto is the live
-// case, and it is a security property, not a nicety: its manifest port is the broker's management
-// API, which mosquitto.conf binds where only this guest reaches it (the private pod's own
-// namespace; loopback under host networking) — and the reverse proxy runs inside that same
-// guest, so forwarding to it by name would republish a guest-only endpoint on the LAN. The
-// name is still ours (it resolves to the VIP, where MQTT is listening), so the answer says so
-// instead of 404ing.
+// An app routed by name whose backend the reverse proxy must not expose; mosquitto is the live
+// case, and it is a security property, not a nicety. Its manifest port is the broker's management
+// API, bound by mosquitto.conf where only this guest reaches it (the private pod's own namespace;
+// loopback under host networking), and the reverse proxy runs in that same guest, so forwarding
+// to it by name would republish a guest-only endpoint on the LAN. The name is still ours (it
+// resolves to the VIP, where MQTT listens), so the answer says so instead of 404ing.
 func TestRoutedButNotFronted(t *testing.T) {
 	var reached bool
 	mgmt := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -227,9 +226,9 @@ func TestRoutedButNotFronted(t *testing.T) {
 	}))
 	defer mgmt.Close()
 	srv := httptest.NewServer(bareRouter(fixed(routes.Table{Apps: []routes.App{
-		// A REACHABLE address, deliberately: the node can and does probe it (it is what the health
-		// floor GETs), so a test whose app had no address at all would prove only that the reverse
-		// proxy cannot reach what does not exist.
+		// A reachable address, deliberately: the node does probe it (it is what the health floor
+		// GETs), and a test whose app had no address would prove only that the reverse proxy
+		// cannot reach what does not exist.
 		named("mosquitto", "briard-brave-elf-mosquitto.local", mgmt.URL),
 	}})))
 	defer srv.Close()
@@ -264,9 +263,9 @@ func TestInstalledButUnnamed(t *testing.T) {
 	}
 }
 
-// The table is rewritten UNDER a running reverse proxy — that is what an install is — so it must be
-// picked up without a restart, and a write caught half-done must cost nothing. Same discipline as
-// the cert, and for a bigger stake: a bad parse that emptied the table would take every app in the
+// The table is rewritten under a running reverse proxy (that is what an install is), so it must
+// be picked up without a restart, and a write caught half-done must cost nothing. Same discipline
+// as the cert, for a bigger stake: a bad parse that emptied the table would take every app in the
 // household off its name at once.
 func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -318,7 +317,7 @@ func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 		t.Errorf("on a half-written table = %d %q, want the last good route kept", code, body)
 	}
 
-	// An UNINSTALL is an empty table, and it must take effect — "keep the last good one" is for a
+	// An uninstall is an empty table, and it must take effect — "keep the last good one" is for a
 	// table that will not parse, never for one that parses and says less than it used to.
 	write(marshal(routes.Table{}), t0.Add(6*time.Second))
 	if code, _ := getHost(t, srv.URL, "/", "briard-brave-elf-fixture.local"); code != http.StatusServiceUnavailable {
@@ -329,11 +328,11 @@ func TestRoutesHotReloadAndSurviveABadWrite(t *testing.T) {
 	}
 }
 
-// What the proxy passes through matters as much as that it does. Home Assistant answers 400
-// to an X-Forwarded-For header from a proxy it has not been told to trust, so adding one to an
-// app that has not said it accepts it (forwardTrust; nothing has, here) silently breaks
-// the flagship app behind the reverse proxy. And the client's Host has to survive: an app
-// builds its absolute URLs from it, and it is also the thing that CHOSE this backend.
+// What the proxy passes through matters as much as that it does. Home Assistant answers 400 to an
+// X-Forwarded-For header from a proxy it has not been told to trust, so adding one for an app that
+// has not said it accepts it (forwardTrust; nothing has, here) silently breaks the flagship app.
+// And the client's Host has to survive: an app builds its absolute URLs from it, and it is also
+// what chose this backend.
 func TestProxyPassesTheClientHostAndNoForwardedHeaders(t *testing.T) {
 	var gotHost string
 	var gotXFF []string
@@ -409,9 +408,8 @@ func servedSerial(t *testing.T, addr string) int64 {
 	return conn.ConnectionState().PeerCertificates[0].SerialNumber.Int64()
 }
 
-// The proxy terminates TLS and forwards to the backend, and HOT-RELOADS the cert when it
-// changes on disk (no restart) -- the property that makes renewal gap-free. A
-// failed reload keeps serving the last good cert.
+// The proxy terminates TLS, forwards to the backend, and hot-reloads the cert when it changes on
+// disk (no restart), which makes renewal gap-free. A failed reload keeps the last good cert.
 func TestCertHotReloadAndProxy(t *testing.T) {
 	dir := t.TempDir()
 	certPath, keyPath := dir+"/fullchain.pem", dir+"/key.pem"
@@ -457,7 +455,7 @@ func TestCertHotReloadAndProxy(t *testing.T) {
 		t.Fatalf("after renewal served serial = %d, want the hot-reloaded 2", got)
 	}
 
-	// A half-written (garbage) cert must NOT drop TLS: keep serving the last good one.
+	// A half-written (garbage) cert must not drop TLS: keep serving the last good one.
 	if err := os.WriteFile(certPath, []byte("not a pem"), 0o644); err != nil {
 		t.Fatal(err)
 	}

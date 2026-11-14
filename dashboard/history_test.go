@@ -78,7 +78,7 @@ func answerMembers(port *fakePort) {
 	}()
 }
 
-// THE HISTORY: the page lists the EVENTS the host's ring holds, and says the two
+// The history: the page lists the events the host's ring holds, and says the two
 // things a list of times cannot -- which points the app has to recover from, and which ones move
 // its version as well as its data. A sample that anchors nothing is not a row.
 func TestHistoryListsWhatTheHostReports(t *testing.T) {
@@ -111,7 +111,7 @@ func TestHistoryListsWhatTheHostReports(t *testing.T) {
 			t.Errorf("the page does not say %q:\n%s", want, body)
 		}
 	}
-	// NEWEST FIRST on a page, which is the one place this differs from the CLI's listing.
+	// Newest first on a page, which is the one place this differs from the CLI's listing.
 	if strings.Index(body, "Updated to") > strings.Index(body, "Ran normally") {
 		t.Errorf("the rows are oldest-first on a page that is read from the top:\n%s", body)
 	}
@@ -175,7 +175,7 @@ func TestHistoryConfirmsBeforeUndoing(t *testing.T) {
 	}
 	port.mu.Unlock()
 
-	// CONFIRMED: exactly one app-restore, naming the point VERBATIM -- never an index into a
+	// Confirmed: exactly one app-restore, naming the point verbatim -- never an index into a
 	// listing that anything taking a member makes stale.
 	resp = postForm(t, r, "/undo", c, url.Values{"point": {member}, "confirm": {"yes"}, "what": {"x"}})
 	resp.Body.Close()
@@ -309,7 +309,7 @@ func TestHistoryMarksAnAppThatDidNotStart(t *testing.T) {
 	}
 }
 
-// TestHistoryShowsTheHouseholdsHours: times on the page are in the zone the guest holds NOW, read
+// TestHistoryShowsTheHouseholdsHours: times on the page are in the zone the guest holds now, read
 // from its link at the render, not Go's time.Local -- which this process fixed at its first use,
 // before the host pushed the zone. Tokyo, because it is +9 with no DST, so the hour cannot match
 // UTC or the test machine's zone by accident.

@@ -45,8 +45,8 @@ func TestTheUsersRecordFromItsSeed(t *testing.T) {
 	}
 }
 
-// THE RECORD IS WRITTEN ONCE: a later open's seed is ignored, and a file without an id -- here a
-// handoff-shaped one -- is no record and is replaced.
+// The record is written once: a later open's seed is ignored, and a file without an id (here a
+// handoff-shaped one) is no record and is replaced.
 func TestTheUsersRecordIsWrittenOnce(t *testing.T) {
 	a := newApp("", "", t.TempDir(), "")
 	if _, err := a.account(); err == nil {

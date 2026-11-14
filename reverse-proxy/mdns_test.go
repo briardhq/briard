@@ -32,7 +32,7 @@ func table(flock string) routes.Table {
 }
 
 // What a household gets: the flock's own name and the bare alias, one per app, all at the VIP --
-// and the SRV record pointed at the APP's own name, never at the flock's and never at a
+// and the SRV record pointed at the app's own name, never at the flock's and never at a
 // hostname. The last part matters most: a node-scoped target sends every device on the LAN to
 // the machine that has just stopped being Primary.
 func TestTheWorldIsTheFlockNameEveryAppNameAndTheDeclaredRecords(t *testing.T) {
@@ -71,7 +71,7 @@ func TestTheWorldIsTheFlockNameEveryAppNameAndTheDeclaredRecords(t *testing.T) {
 	}
 }
 
-// A node with no minted flock name publishes NOTHING rather than a guess: `briard-.local` is worse
+// A node with no minted flock name publishes nothing rather than a guess: `briard-.local` is worse
 // than silence, and the rule is routes.FlockHostName's. The apps have no names either, because
 // the agent materialises those from the same empty flock.
 func TestAnUnnamedFlockPublishesNothing(t *testing.T) {
@@ -147,10 +147,10 @@ func TestSameNoticesEveryChangeThatMatters(t *testing.T) {
 	}
 }
 
-// Two nodes of one flock publish BYTE-IDENTICAL records, which is why failover needs no
-// announcement to correct anything: the VIP's address does not change when it moves, so the only
-// thing a promotion changes is which machine answers. This is the assumption the decision to ship
-// no announcer rests on, so it is asserted rather than remembered.
+// Two nodes of one flock publish byte-identical records, which is why failover needs no
+// announcement to correct anything: the VIP's address does not change when it moves, so a
+// promotion changes only which machine answers. Shipping no announcer rests on this, so it is
+// asserted rather than remembered.
 func TestBothNodesOfAFlockPublishTheSameRecords(t *testing.T) {
 	primary := mdnsWorldFor("192.168.1.100", "brave-elf", table("brave-elf"))
 	peer := mdnsWorldFor("192.168.1.100", "brave-elf", table("brave-elf"))
@@ -174,7 +174,7 @@ func TestTheVIPIsWhatWasCLAIMEDNotWhatWasConfigured(t *testing.T) {
 	if got := mdnsVIP(live, cfg); got != "192.168.1.50" {
 		t.Errorf("with no live file the VIP read %q, want the configured 192.168.1.50", got)
 	}
-	// Once briard-vip has claimed one, THAT is the address -- under DHCP it is the only thing
+	// Once briard-vip has claimed one, that is the address -- under DHCP it is the only thing
 	// that knows, and a name pointing at the configured-but-not-taken address resolves nowhere.
 	write(t, live, "VIP_ADDR=192.168.1.100/24\n")
 	if got := mdnsVIP(live, cfg); got != "192.168.1.100" {
@@ -189,7 +189,7 @@ func TestTheVIPIsWhatWasCLAIMEDNotWhatWasConfigured(t *testing.T) {
 	}
 }
 
-// systemd's EnvironmentFile shape, and the empty states that are NOT errors: a file that does not
+// systemd's EnvironmentFile shape, and the empty states that are not errors: a file that does not
 // exist yet is a node that has not got there, not a node that is broken.
 func TestEnvValueReadsTheUnitsFileShape(t *testing.T) {
 	dir := t.TempDir()
@@ -212,8 +212,8 @@ func TestEnvValueReadsTheUnitsFileShape(t *testing.T) {
 }
 
 // What the host reads back when something asks (its controller report, `briard doctor`). It is
-// derived from what is really being served, so
-// a node that publishes nothing says so by the file's ABSENCE -- the answer a Secondary gives.
+// derived from what is really served, so a node publishing nothing says so by the file's absence,
+// the answer a Secondary gives.
 func TestThePublishedNameIsWhatIsServedNotWhatWasAsked(t *testing.T) {
 	p := t.TempDir() + "/mdns.published"
 	w := mdnsWorldFor("192.168.1.100", "brave-elf", table("brave-elf"))

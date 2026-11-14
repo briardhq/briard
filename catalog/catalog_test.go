@@ -1,18 +1,16 @@
 //go:build catalog
 
-// Package catalog checks the published catalog, which lives in its own repository and is laid
-// here by `nix build .#catalog-test` from the pinned `catalog` flake input (or another one given
-// with --override-input). It has no code: the test is the point. The build tag keeps a plain
-// `go test ./...` from compiling it, so a checkout without the files reports nothing rather than
-// a pass it never earned.
+// Package catalog checks the published catalog (its own repository), laid here by `nix build
+// .#catalog-test` from the pinned `catalog` flake input or one given with --override-input. It
+// has no code: the test is the point. The build tag keeps a plain `go test ./...` from compiling
+// it, so a checkout without the files reports nothing rather than an unearned pass.
 //
-// It parses every version file with the SAME function a node uses, so the schema check that
-// would otherwise happen for the first time on a household's node happens here instead. The
-// failures it is built to catch are the cheap ones that are expensive live: an image reference
-// that is not digest-pinned, a container name that is not a slug, a missing or duplicated
-// primary, a health path that is not a path — every one of them a manifest a node will refuse
-// AFTER the list verified and the fetch succeeded. And it holds the entries to what Briard's own
-// code for each app assumes, which nothing at runtime would notice drifting apart.
+// It parses every version file with the same function a node uses, so the schema check happens
+// here rather than first on a household's node. It catches the failures cheap here and expensive
+// live (an image not digest-pinned, a container name not a slug, a missing or duplicated primary,
+// a health path that is not a path), each a manifest a node refuses only after the list verified
+// and the fetch succeeded. And it holds the entries to what Briard's code for each app assumes,
+// which nothing at runtime would notice drifting apart.
 package catalog
 
 import (
@@ -71,14 +69,13 @@ func TestEveryVersionFileParses(t *testing.T) {
 	}
 }
 
-// TestTheListNamesItsVersionFiles parses the list with the function a node uses and checks what
-// ties it to the files beside it: an app is installable when it has a version file, so an app
-// with files and no line is one no page can show, and an entry is marked available exactly
-// when its directory is here. An available line names one of its files by version and by the
-// sha256 of its bytes -- the check a node makes before it parses the file, and the identity it
-// compares with the one it runs, so a stale line is an install refused, or an update offered for
-// nothing. An entry with no files and no mark is the point of the list: an app a household may
-// ask for.
+// TestTheListNamesItsVersionFiles parses the list as a node does and checks its ties to the files
+// beside it. An app is installable when it has a version file, so one with files and no line is
+// one no page can show; an entry is marked available exactly when its directory is here. An
+// available line names a file by version and by the sha256 of its bytes -- what a node checks
+// before parsing it and compares with the identity it runs -- so a stale line is an install
+// refused or an update offered for nothing. An entry with no files and no mark is the point of
+// the list: an app a household may ask for.
 func TestTheListNamesItsVersionFiles(t *testing.T) {
 	idx, err := manifest.ParseIndex(read(t, list))
 	if err != nil {
@@ -135,10 +132,10 @@ func current(t *testing.T, name string) []byte {
 }
 
 // TestMosquittoEntryMatchesTheProductsConfig is the cross-document check: this entry and the
-// config agent/apps renders for it are two files that must agree, written in two languages,
-// and nothing at runtime would notice them drifting apart. A port changed here and not there is a
-// health gate that can never pass; a mount changed here and not there puts the broker's retained
-// state outside the replicated volume, where a failover silently loses it.
+// config agent/apps renders for it must agree across two languages, and nothing at runtime would
+// notice them drift. A port changed on one side only is a health gate that can never pass; a
+// mount changed on one side only puts the broker's retained state outside the replicated volume,
+// where a failover silently loses it.
 func TestMosquittoEntryMatchesTheProductsConfig(t *testing.T) {
 	m, _, err := manifest.Parse(current(t, mosquitto.Name))
 	if err != nil {
@@ -158,15 +155,15 @@ func TestMosquittoEntryMatchesTheProductsConfig(t *testing.T) {
 
 // TestHomeAssistantEntryMatchesWhatTheProductAssumes is HA's half of the same check, against what
 // agent/hass takes for granted rather than a config it renders. Its scripts (plant.py, the token
-// mint) write into /config, Home Assistant's config directory in its image, so an entry mounting
-// the replicated volume anywhere else leaves the integration, the token and the household's whole
-// configuration on the container's own disk, gone at the next start. And HA exists to find the
-// devices on the household's network: off host networking its mDNS and SSDP discovery sees nothing.
+// mint) write into /config, HA's config directory in its image, so the replicated volume mounted
+// anywhere else leaves the integration, the token and the household's configuration on the
+// container's own disk, gone at the next start. And HA exists to find devices on the household's
+// network: off host networking, its mDNS and SSDP discovery sees nothing.
 //
-// ITS OWN BACKUPS ARE THE ONE NESTED MOUNT, in the unversioned tier: a second copy of its data,
-// not to be snapshotted or backed up again. Nothing else under /config may be a mount -- a
-// restore from one of those backups removes every entry of /config but `backups`, and a mount
-// point refuses its removal, leaving /config half cleared (homeassistant/backup_restore.py).
+// Its own backups are the one nested mount, in the unversioned tier: a second copy of its data,
+// not to be snapshotted or backed up again. Nothing else under /config may be a mount: a restore
+// from those backups removes every entry of /config but `backups`, and a mount point refuses its
+// removal, leaving /config half cleared (homeassistant/backup_restore.py).
 func TestHomeAssistantEntryMatchesWhatTheProductAssumes(t *testing.T) {
 	m, _, err := manifest.Parse(current(t, hass.Name))
 	if err != nil {
@@ -206,12 +203,11 @@ func TestFilesEntryMatchesWhatTheProductAssumes(t *testing.T) {
 	}
 }
 
-// MEALIE IS REACHED ONLY THROUGH THE REVERSE PROXY AND TOLD ONLY BY BRIARD. Private, with nothing
-// published: the reverse proxy is what signs the user in. Its data is one area at /app/data. And
-// its manifest sets none of the settings agent/mealie writes as files: Mealie lets an environment
-// variable win over its settings file, so an entry that set one -- the password form, the sign-in,
-// the address
-// -- would quietly overrule the product.
+// Mealie is reached only through the reverse proxy and told only by briard: private, nothing
+// published, since the reverse proxy signs the user in; its data one area at /app/data; and none
+// of the settings agent/mealie writes as files set in its manifest, because Mealie lets an
+// environment variable win over its settings file, so an entry setting one (the password form,
+// the sign-in, the address) would quietly overrule the product.
 func TestMealieEntryMatchesWhatTheProductAssumes(t *testing.T) {
 	m, _, err := manifest.Parse(current(t, mealie.Name))
 	if err != nil {
@@ -236,13 +232,12 @@ func TestMealieEntryMatchesWhatTheProductAssumes(t *testing.T) {
 	}
 }
 
-// EVERY ENTRY STATES ITS NETWORKING EXPLICITLY, even though the schema lets silence mean private.
-//
-// The schema's default is a SAFETY property -- an unknown manifest gets the least capable shape --
-// while this is a CURATION rule, and they are not in tension: in a document a human reviews before
-// it reaches every household, the deployment shape should be visible rather than inferred from an
-// absence. It also catches an entry that means host networking and says nothing: silence moves
-// Home Assistant onto a private network and takes the mDNS/SSDP discovery it exists for with it.
+// Every entry states its networking, though the schema lets silence mean private. The default is
+// a safety property (an unknown manifest gets the least capable shape); this is a curation rule,
+// and they do not conflict: in a document a human reviews before it reaches every household, the
+// deployment shape should be visible, not inferred from an absence. It also catches an entry that
+// means host networking and says nothing: silence moves Home Assistant onto a private network and
+// takes the mDNS/SSDP discovery it exists for with it.
 func TestEveryEntryDeclaresItsNetworking(t *testing.T) {
 	for _, path := range versionFiles(t) {
 		raw, err := os.ReadFile(path)
@@ -260,11 +255,11 @@ func TestEveryEntryDeclaresItsNetworking(t *testing.T) {
 	}
 }
 
-// THE BROKER IS PRIVATE AND PUBLISHES ONLY MQTT, which is the shape the port-list schema exists to make
-// expressible -- and the one entry where getting it wrong is a security regression rather than an
-// outage. Its manifest `port` is the MANAGEMENT API, which must reach the guest and nothing else:
-// private keeps it off the LAN, publishing 1883 and only 1883 is what the household actually
-// reaches, and the reverse proxy is not involved because no reverse proxy can serve MQTT.
+// The broker is private and publishes only MQTT: the shape the port-list schema exists to express,
+// and the one entry where getting it wrong is a security regression, not an outage. Its manifest
+// `port` is the management API, which must reach the guest and nothing else: private keeps it off
+// the LAN, 1883 and only 1883 is what the household reaches, and the reverse proxy is not
+// involved: none can serve MQTT.
 func TestTheBrokerIsPrivateAndPublishesOnlyMQTT(t *testing.T) {
 	m, _, err := manifest.Parse(current(t, mosquitto.Name))
 	if err != nil {
@@ -293,11 +288,10 @@ func read(t *testing.T, name string) []byte {
 	return raw
 }
 
-// EVERY ENTRY SAYS WHAT IT COSTS: the bytes a node downloads (`size`, the compressed
-// layers) and the bytes the image store holds afterwards (`installedSize`, uncompressed). The
-// first is a progress bar's denominator, the second the free-space gate's operand; a node can
-// learn neither until the pull is over. Measured with skopeo (copy, then sum the manifest's
-// layer sizes and the decompressed layers).
+// Every entry says what it costs: the bytes a node downloads (`size`, compressed layers), a
+// progress bar's denominator, and the bytes the image store then holds (`installedSize`,
+// uncompressed), the free-space gate's operand; a node can learn neither until the pull is over.
+// Measured with skopeo (copy, then sum the manifest's layer sizes and the decompressed layers).
 func TestEveryEntryDeclaresItsSizes(t *testing.T) {
 	for _, path := range versionFiles(t) {
 		m, _, err := manifest.Parse(read(t, path))
@@ -318,9 +312,8 @@ func TestEveryEntryDeclaresItsSizes(t *testing.T) {
 const imageHashes = "catalog-images.json"
 
 // TestEveryImageHasItsHash: every image a version file names has its amd64 hash. The tests pull
-// an entry's image by it, and an image without one builds with nix's placeholder hash and fails
-// every test that pulls it -- found only after the version is published, when the tests read the
-// catalog as published.
+// by it; an image without one builds with nix's placeholder hash and fails every test that pulls
+// it, found only once the tests read the catalog as published.
 func TestEveryImageHasItsHash(t *testing.T) {
 	var hashes map[string]map[string]string
 	if err := json.Unmarshal(read(t, imageHashes), &hashes); err != nil {

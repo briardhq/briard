@@ -9,16 +9,13 @@ import (
 	"testing"
 )
 
-// TestNoSecretMaterial fails on key material or credentials committed to the tree.
-// This is the unrecoverable one: a live token in a public repo cannot be withdrawn
-// once pushed, only rotated. GitHub's own push protection covers some of this, but
-// only on plans and repo visibilities we may not always be on, and it does not run
-// on a laptop before the push -- this does, as part of `go test ./...`.
-//
-// The tree holds none of these, so the guard is purely prospective.
-//
-// It guards secrets only. A pointer at the maintainers' private docs is a
-// readability defect, not a leak; TestNoPrivateReferences owns those.
+// TestNoSecretMaterial fails on key material or credentials committed to the tree: the
+// unrecoverable one, since a live token in a public repo cannot be withdrawn once pushed, only
+// rotated. GitHub's push protection covers some of this, but only on plans and repo visibilities
+// we may not always be on, and not on a laptop before the push; this runs in `go test ./...`.
+// The tree holds none of these, so the guard is purely prospective. It guards secrets only: a
+// pointer at the maintainers' private docs is a readability defect, not a leak, and
+// TestNoPrivateReferences owns those.
 func TestNoSecretMaterial(t *testing.T) {
 	patterns := map[string]*regexp.Regexp{
 		"private key block": regexp.MustCompile(`BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY`),
