@@ -63,7 +63,7 @@ func threePeerMesh() []api.MeshPeer {
 	}
 }
 
-// The serving primary adjusts the RUNNING resource in place (keeps its data): ConfigureNet to its
+// The serving primary adjusts the running resource in place (keeps its data): ConfigureNet to its
 // replication address, then Adjust with the full 3-peer config -- never BringUp (which would
 // create-md and could re-seed).
 func TestReconcileMeshPrimaryAdjustsInPlace(t *testing.T) {
@@ -94,7 +94,7 @@ func TestReconcileMeshPrimaryAdjustsInPlace(t *testing.T) {
 	}
 }
 
-// A blank second anchor joins: fresh bring-up as a NON-seed (FreshInit=false), so it attaches and
+// A blank second anchor joins: fresh bring-up as a non-seed (FreshInit=false), so it attaches and
 // resyncs as SyncTarget rather than declaring itself UpToDate (which would split-brain).
 func TestReconcileMeshBlankAnchorJoinsAndResyncs(t *testing.T) {
 	cfg := Config{Node: "anchorB", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2", DataEncryption: nodestorage.ModeAuto}
@@ -226,7 +226,7 @@ func TestReconcileMeshForwardedWitnessStartsForwarder(t *testing.T) {
 	}
 }
 
-// A forwarded-witness pairing on a node missing the forwarder identity fails BEFORE any DRBD change
+// A forwarded-witness pairing on a node missing the forwarder identity fails before any DRBD change
 // -- a mis-provisioned anchor never half-applies a pairing it can't complete.
 func TestReconcileMeshForwardedWitnessFailsWithoutIdentity(t *testing.T) {
 	cfg := Config{Node: "anchorA", Promoter: []string{"briard-vip.service"}, VIPDev: "eth2"} // no forwarder bin/cert
@@ -286,20 +286,18 @@ func TestApplyPairOutcome(t *testing.T) {
 	}
 }
 
-// THE DEFECT THIS EXISTS FOR, asserted end-to-end at the host seam: a node that was
-// paired at RUNTIME must still be in that mesh after its agent restarts, because bring-up rewrites
-// the guest's .res from cfg.Resource on every pass.
-//
-// Failable by construction rather than by timing. The "after the reboot" half rebuilds Config the
-// way ConfigFromEnv does on a fresh process -- PEERS unset, so the single-node self-peer -- and
-// then applies the restore. Without cacheMesh/cachedMesh the restore is a no-op and the assertions
-// below see 127.0.0.1 and one peer, which is what a restarted node would write.
+// The defect this exists for, asserted end-to-end at the host seam: a node paired at runtime must
+// still be in that mesh after its agent restarts, because bring-up rewrites the guest's .res from
+// cfg.Resource on every pass. Failable by construction rather than by timing: the "after the
+// reboot" half rebuilds Config as ConfigFromEnv does on a fresh process (PEERS unset, so the
+// single-node self-peer) and then applies the restore. Without cacheMesh/cachedMesh the restore
+// is a no-op and the assertions see 127.0.0.1 and one peer, what a restarted node would write.
 func TestPairedMeshSurvivesAnAgentRestart(t *testing.T) {
 	dir := t.TempDir()
 	cache := filepath.Join(dir, "mesh.json")
 
 	// Before: this node knows only what the install gave it -- no PEERS, so a mesh of one on
-	// loopback. This is the shipped single-node state, and the thing that must NOT come back.
+	// loopback. This is the shipped single-node state, and the thing that must not come back.
 	lone := drbd.Resource{Name: "r0", Device: "/dev/drbd0", Peers: []drbd.Peer{
 		{Name: "anchorA", NodeID: 0, Address: "127.0.0.1:7789", Disk: drbd.DataDevice},
 	}}
@@ -378,13 +376,12 @@ func TestCachedMeshFallsBackWhenUnusable(t *testing.T) {
 	}
 }
 
-// THE HOST WITNESS-FORWARDER IS RE-CREATED AT BRING-UP. It is a transient systemd unit
-// on purpose, so a HOST reboot ends it -- and without this restore applyPair is the only thing that
-// starts one, while the cloud sends a pair directive on demand rather than on registration. A mesh
-// restored from the cache would then name a witness address nothing listens on.
-//
-// Driven through restoreWitnessHop rather than bringUp, which launches qemu: this is the decision
-// (does this node need a hop, and what does it start).
+// The host witness-forwarder is re-created at bring-up. It is a transient systemd unit on purpose,
+// so a host reboot ends it; without this restore applyPair is the only thing that starts one, and
+// the cloud sends a pair directive on demand rather than on registration, so a mesh restored from
+// the cache would name a witness address nothing listens on. Driven through restoreWitnessHop
+// rather than bringUp (which launches qemu): this is the decision, whether this node needs a hop
+// and what it starts.
 func TestWitnessHopIsRestoredAtBringUp(t *testing.T) {
 	dir := t.TempDir()
 	cache := filepath.Join(dir, "mesh.json")
@@ -416,7 +413,7 @@ func TestWitnessHopIsRestoredAtBringUp(t *testing.T) {
 		t.Fatal("bring-up did not re-create the witness hop: after a host reboot the transient unit " +
 			"is gone and nothing else ever starts one")
 	}
-	// The SAME hop the pairing established -- listening where the .res says the witness peer is.
+	// The same hop the pairing established -- listening where the .res says the witness peer is.
 	if w.started.Listen != "10.11.9.1:7789" || w.started.Target != "witness.briard.example:7788" {
 		t.Errorf("restored forwarder = %+v, want the witness peer's mesh address -> the cloud proxy", w.started)
 	}
@@ -435,7 +432,7 @@ func TestWitnessHopIsRestoredAtBringUp(t *testing.T) {
 	}
 }
 
-// The two nodes that must NOT start a hop, so the restore cannot become a thing every node does.
+// The two nodes that must not start a hop, so the restore cannot become a thing every node does.
 func TestWitnessHopSkippedWhereThereIsNone(t *testing.T) {
 	t.Run("a mesh with no cloud witness", func(t *testing.T) {
 		cfg := witnessCfg("anchorA") // Mesh is the zero value: never paired, so Witness is nil
@@ -457,9 +454,9 @@ func TestWitnessHopSkippedWhereThereIsNone(t *testing.T) {
 	})
 }
 
-// A hop that cannot start WARNS and lets bring-up continue -- deliberately the opposite of
-// the promoter gate's "absence of configuration is an error", because this node can still serve on 2/3 with
-// its peer and failing bring-up would leave it serving nothing at all (the promoter is gated).
+// A hop that cannot start warns and lets bring-up continue, deliberately the opposite of the
+// promoter gate's "absence of configuration is an error": this node can still serve on 2/3 with
+// its peer, and failing bring-up would leave it serving nothing at all (the promoter is gated).
 func TestWitnessHopFailureIsLoudNotFatal(t *testing.T) {
 	cfg := witnessCfg("anchorA")
 	cfg.ForwarderBin = "" // a node without the forwarder binary: bringUpWitness refuses
@@ -478,11 +475,10 @@ func TestWitnessHopFailureIsLoudNotFatal(t *testing.T) {
 	}
 }
 
-// A PAIRING THAT CANNOT BE PERSISTED IS A FAILED PAIRING, not a warning, though the guest has
-// already applied the mesh: an uncached pairing is not a meshed node, it is a node that un-meshes
-// itself on its next guest reboot, which is the defect the host-held mesh cache exists to end.
-// The outcome the cloud sees must say so, because Pair is idempotent and a re-delivery is the
-// thing that fixes it.
+// A pairing that cannot be persisted is a failed pairing, not a warning, though the guest has
+// already applied the mesh: an uncached pairing is a node that un-meshes itself on its next guest
+// reboot, the defect the host-held mesh cache exists to end. The outcome the cloud sees must say
+// so, because Pair is idempotent and a re-delivery is what fixes it.
 func TestPairFailsWhenTheMeshCannotBePersisted(t *testing.T) {
 	// A cache path whose parent cannot be created: MkdirAll over a regular file is ENOTDIR. A
 	// deterministic write failure with no permissions games, so it behaves the same as root.
@@ -510,7 +506,7 @@ func TestPairFailsWhenTheMeshCannotBePersisted(t *testing.T) {
 		t.Errorf("outcome = %+v, want failed: an unpersisted mesh is a node that will come back "+
 			"un-meshed, and reporting done would hide exactly that", out)
 	}
-	// The guest-side apply still HAPPENED -- we do not half-undo a pairing -- so the operator needs
+	// The guest-side apply still happened -- we do not half-undo a pairing -- so the operator needs
 	// the failure to say that rather than read as "nothing was done".
 	if f.adjusted == nil {
 		t.Error("the guest-side apply was skipped; this test no longer covers the case it was for")
@@ -553,10 +549,10 @@ func (m meshReader) MDNSPublished(context.Context) (string, error)   { return ""
 func (m meshReader) MDNSOther(context.Context) (string, error)       { return "", nil }
 func (m meshReader) VIP(context.Context, string) (string, error)     { return "", nil }
 
-// A GUEST REPLICATING TO PEERS THE HOST HAS NO RECORD OF IS AN ALERT. Such a node is
-// serving and replicating right now, and will come back a mesh-of-one on its next guest reboot,
-// because bring-up rewrites the .res from cfg.Resource. Nothing else on this node reports it: the
-// redundancy alerter is gated on the very peer count that is missing, so it is not even built.
+// A guest replicating to peers the host has no record of is an alert: such a node serves and
+// replicates right now, and comes back a mesh-of-one on its next guest reboot, because bring-up
+// rewrites the .res from cfg.Resource. Nothing else on this node reports it: the redundancy
+// alerter is gated on the very peer count that is missing, so it is not even built.
 func TestForgottenMeshAlerts(t *testing.T) {
 	// The host's view: a lone node, which is what an absent/corrupt mesh cache leaves behind.
 	cfg := Config{Node: "anchorA", Resource: drbd.Resource{Name: "r0", Peers: []drbd.Peer{{Name: "anchorA"}}}}
@@ -580,7 +576,7 @@ func TestForgottenMeshAlerts(t *testing.T) {
 	}
 }
 
-// The three states that must stay SILENT, so a rare alert keeps its meaning.
+// The three states that must stay silent, so a rare alert keeps its meaning.
 func TestForgottenMeshStaysQuiet(t *testing.T) {
 	lone := drbd.Resource{Name: "r0", Peers: []drbd.Peer{{Name: "anchorA"}}}
 	meshed := drbd.Resource{Name: "r0", Peers: []drbd.Peer{{Name: "anchorA"}, {Name: "anchorB"}, {Name: "w"}}}
@@ -603,7 +599,7 @@ func TestForgottenMeshStaysQuiet(t *testing.T) {
 			cfg.warnIfMeshForgotten(context.Background(), tc.r, fn, func(string, ...any) {})
 			for _, al := range fn.alerts {
 				// A host that knows its mesh asserts the record is there; the store drops that
-				// when nothing is open, so only an OPEN here is an alert.
+				// when nothing is open, so only an open here is an alert.
 				if al.Kind == notify.Open {
 					t.Errorf("alerted on %s: %+v", tc.name, al)
 				}
@@ -629,7 +625,7 @@ func pairedRes() drbd.Resource {
 	}}
 }
 
-// ★ A LONE NODE'S FIRST PAIRING IS A CONVERSION: it runs no DRBD to adjust, so the
+// ★ A lone node's first pairing is a conversion: it runs no DRBD to adjust, so the
 // primary's side records the mesh and reboots the guest -- and never Adjusts, never BringUps.
 func TestReconcileMeshLonePrimaryConvertsThroughAReboot(t *testing.T) {
 	dir := t.TempDir()
@@ -651,7 +647,7 @@ func TestReconcileMeshLonePrimaryConvertsThroughAReboot(t *testing.T) {
 	}
 }
 
-// ★ THE REMOVAL: refused unless this node is serving and UpToDate; a still-replicated
+// ★ The removal: refused unless this node is serving and UpToDate; a still-replicated
 // remainder adjusts in place; a remainder of one records the mesh, asserts the one-shot disable
 // intent, and reboots.
 func TestApplyUnpair(t *testing.T) {

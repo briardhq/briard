@@ -53,16 +53,13 @@ func TestResourcesGuestErrorDegradesToAgentOnly(t *testing.T) {
 	}
 }
 
-// A ZERO-APP node still reads the appliance.
-//
-// A gate on the app count ("no payload, so skip the guest read", meant for a witness) is equally
-// true of the shipped zero-app anchor: what the install leaves behind, and the whole free tier.
-// Those nodes have a guest, and load average, journal size, podman-store size and the guest's
-// KERNEL ERRORS are node-scoped facts that need neither a unit nor a data dir. Skipping the read
-// loses all of them, so a zero-app anchor's kernel problems would be invisible to the soak oracle.
-//
-// So this asserts the read HAPPENS and carries the node-scoped series, with no per-app entries
-// because there are no apps.
+// A zero-app node still reads the appliance. A gate on the app count ("no payload, so skip the
+// guest read", meant for a witness) also catches the shipped zero-app anchor, what the install
+// leaves behind and the whole free tier. Those nodes have a guest, and load average, journal size,
+// podman-store size and the guest's kernel errors are node-scoped facts needing neither a unit nor
+// a data dir; skipping the read loses all of them, hiding even a zero-app anchor's kernel problems
+// from the soak oracle. So the read must happen and carry the node-scoped series, with no per-app
+// entries.
 func TestResourcesZeroAppNodeStillReadsTheAppliance(t *testing.T) {
 	cfg := Config{} // the empty set: nothing installed, the shipped state
 	r := &recordingReader{fakeStatus: fakeStatus{res: telemetry.NodeResources{Load1: 0.4, LogSizeKB: 900, KernelErrors: []string{"oops"}}}}
@@ -85,7 +82,7 @@ func TestResourcesZeroAppNodeStillReadsTheAppliance(t *testing.T) {
 	}
 }
 
-// recordingReader captures WHICH units the telemetry probe asked systemd about -- the whole point
+// recordingReader captures which units the telemetry probe asked systemd about -- the whole point
 // of the pairing, so the assertion has to be on the argument, not on the returned numbers.
 type recordingReader struct {
 	fakeStatus
@@ -135,10 +132,9 @@ func TestResourcesProbesTheServingUnit(t *testing.T) {
 	}
 }
 
-// N APPS, EACH MEASURED SEPARATELY. Summing them was the alternative and it is
-// the one that loses the signal: NRestarts exists to make a crash-loop loud, and one app
-// flapping inside a total reads as a small climb. So the probe names every app and the oracle
-// gets one series per name.
+// N apps, each measured separately, so the oracle gets one series per name. Summing them loses
+// the signal: NRestarts exists to make a crash-loop loud, and one app flapping inside a total
+// reads as a small climb.
 func TestResourcesMeasuresEveryApp(t *testing.T) {
 	cfg := Config{Apps: []model.AppSpec{
 		{Name: "home-assistant", DataDir: "/var/lib/briard/home-assistant", Unit: "briard-home-assistant-app.service"},

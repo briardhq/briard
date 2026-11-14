@@ -17,7 +17,7 @@ func TestVersionBanner(t *testing.T) {
 		}
 	})
 
-	// The failable half: an unstamped binary must SAY it is unstamped rather than
+	// The failable half: an unstamped binary must say it is unstamped rather than
 	// logging a blank where the version goes. A blank reads as a formatting bug and
 	// invites the reporter to skip the field; "development build" is a fact.
 	t.Run("unstamped build says so", func(t *testing.T) {
@@ -37,11 +37,10 @@ func TestVersionBanner(t *testing.T) {
 	})
 }
 
-// The banner is logged by Run before anything can fail, so that a bug report from an
-// agent that died during bring-up still carries the build id. Asserting on Run itself
-// would mean booting QEMU; this pins the contract Run depends on instead -- that the
-// value it passes is Config.Version, which is buildVersion unless AGENT_VERSION
-// overrides it.
+// Run logs the banner before anything can fail, so a bug report from an agent that died
+// during bring-up still carries the build id. Asserting on Run would mean booting QEMU, so
+// this pins the contract Run depends on: it passes Config.Version, which is buildVersion
+// unless AGENT_VERSION overrides it.
 func TestVersionBannerUsesConfiguredVersion(t *testing.T) {
 	t.Setenv("AGENT_VERSION", "from-env-9.9.9")
 	cfg := ConfigFromEnv()

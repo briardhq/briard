@@ -12,7 +12,7 @@ import (
 	"briard.io/shared/notify"
 )
 
-// THE ADDRESS MOVED, SAID ONCE: the first address is only remembered; the same address, a failed
+// A moved address is said once: the first address is only remembered; the same address, a failed
 // read and a node holding none say nothing; a new one is one Event naming both; and the record
 // survives a restart, since a restart is when the address most likely changes.
 func TestAddressMovedIsSaidOnce(t *testing.T) {

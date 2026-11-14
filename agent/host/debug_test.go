@@ -9,23 +9,20 @@ import (
 	"briard.io/shared/api"
 )
 
-// THE GATE, AND IT MUST FAIL IF SOMEBODY WIDENS IT. Every local-only kind is refused
-// when it arrives on the cloud's down-channel and accepted on the local admin door. Enumerating
-// localOnlyKinds rather than naming them by hand is deliberate: a local-only verb added to that
-// table without a thought about the cloud edge gets this assertion for free. A verb added to
-// dispatch but NOT to the table is caught only if the companion test below names it.
-//
-// The acceptance half matters as much as the refusal: a gate that refused both origins would
-// pass a refusal-only test while having broken the verb outright.
+// The gate, and this test must fail if somebody widens it: every local-only kind is refused on the
+// cloud's down-channel and accepted on the local admin door. It enumerates localOnlyKinds
+// deliberately, so a verb added to that table without a thought about the cloud edge gets this
+// assertion for free; a verb added to dispatch but not to the table is caught only if the
+// companion test below names it. The acceptance half matters as much as the refusal: a gate that
+// refused both origins would pass a refusal-only test while having broken the verb outright.
 func TestLocalOnlyKindsAreRefusedFromTheCloud(t *testing.T) {
 	if len(localOnlyKinds) == 0 {
 		t.Fatal("localOnlyKinds is empty -- this test would assert nothing")
 	}
-	// No QMPSock, so the act itself also fails -- with a message of its own. THE STATE IS
-	// THEREFORE NOT THE DISCRIMINATOR: a refused directive and an attempted one both come back
-	// Failed here, so a test checking only State would still pass with the gate deleted. What
-	// separates "the cloud may not ask" from "this node has no guest to open" is the Detail and
-	// the journal line, and those carry the claim.
+	// No QMPSock, so the act itself also fails, with a message of its own. The state is therefore
+	// not the discriminator: a refused directive and an attempted one both come back Failed, so a
+	// test checking only State would pass with the gate deleted. The Detail and the journal line
+	// separate "the cloud may not ask" from "this node has no guest to open", and carry the claim.
 	cfg := Config{}
 	for kind := range localOnlyKinds {
 		var logged strings.Builder
@@ -46,7 +43,7 @@ func TestLocalOnlyKindsAreRefusedFromTheCloud(t *testing.T) {
 		}
 
 		// Same kind, local door: it reaches the handler. It may fail here for want of a guest or
-		// a monitor, which is the point -- it got PAST the gate to a different outcome.
+		// a monitor, which is the point -- it got past the gate to a different outcome.
 		o = cfg.dispatch(context.Background(), api.Directive{ID: "d1", Kind: kind}, originLocal, nil, nil, nil, nil, nil, nil, logf)
 		if strings.Contains(o.Detail, "local admin socket") {
 			t.Errorf("kind %q was refused on the LOCAL door too: %q", kind, o.Detail)
@@ -67,10 +64,9 @@ func TestDebugKindsAreClassifiedLocalOnly(t *testing.T) {
 	}
 }
 
-// Origin is a PARAMETER, and this is the assertion that it cannot become a field on the wire
-// type instead. api.Directive is what the cloud sends: an origin field on it would be the
-// sender's own claim about itself, so a cloud could simply say "local" and walk through the gate.
-// Marshalling a Directive must therefore carry no origin at all.
+// Origin is a parameter, and this asserts it cannot become a field on the wire type instead:
+// api.Directive is what the cloud sends, and an origin field would be the sender's own claim, so a
+// cloud could say "local" and walk through the gate. A marshalled Directive carries no origin.
 func TestDirectiveCarriesNoOrigin(t *testing.T) {
 	b, err := json.Marshal(api.Directive{Kind: api.DirectiveDebugArm})
 	if err != nil {

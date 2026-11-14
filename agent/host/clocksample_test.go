@@ -56,7 +56,7 @@ func TestClockSampleTakesOneAnInterval(t *testing.T) {
 }
 
 // TestClockSampleCountsAnyRecentMember: "hourly unless a recent one exists". A start the guest
-// sampled is a sample, and an agent that restarted with an empty record must read the RING rather
+// sampled is a sample, and an agent that restarted with an empty record must read the ring rather
 // than take a member of bytes that have not changed.
 func TestClockSampleCountsAnyRecentMember(t *testing.T) {
 	cfg, f, took, _ := clockFixture(t)
@@ -115,10 +115,9 @@ func metaOf(t *testing.T, raw string) quadlet.SnapshotMeta {
 	return meta
 }
 
-// TestClockSampleIsCrashConsistentWhenTheAppCannotHoldStill: it is the ONE member taken against a
-// running app, and the undo picker and the recorder check are entitled to know that before
-// trusting it. A Home Assistant that is down, too old for the view, or whose lock broke all land
-// here.
+// TestClockSampleIsCrashConsistentWhenTheAppCannotHoldStill: it is the one member taken against a
+// running app, so the undo picker and the recorder check are entitled to know before trusting it.
+// A Home Assistant that is down, too old for the view, or whose lock broke all land here.
 func TestClockSampleIsCrashConsistentWhenTheAppCannotHoldStill(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
 	f.held = false
@@ -136,9 +135,9 @@ func TestClockSampleIsCrashConsistentWhenTheAppCannotHoldStill(t *testing.T) {
 	if meta.Trigger != quadlet.TriggerClock {
 		t.Errorf("meta = %+v, want a clock member", meta)
 	}
-	// AND IT SAYS SO. "The clock sample is crash-consistent again" is how a household would
-	// find out that Home Assistant stopped answering, or that an upgrade moved the API this
-	// leans on -- silence would make that invisible until somebody read a sidecar.
+	// And it says so: "the clock sample is crash-consistent again" is how a household would learn
+	// that Home Assistant stopped answering, or that an upgrade moved the API this leans on;
+	// silence would hide that until somebody read a sidecar.
 	if !strings.Contains(strings.Join(logged, "\n"), "without holding the app still") {
 		t.Errorf("nothing said the app did not hold still: %v", logged)
 	}
@@ -159,10 +158,10 @@ func TestClockSampleIsQuiescedWhenTheAppHeldStill(t *testing.T) {
 	}
 }
 
-// TestTheHostNeverClaimsTheAppHeldStill is the rule that keeps the class honest across the
-// channel: the host renders `crash` and the GUEST upgrades it, because only the guest
-// watched the app hold. A host that rendered `quiesced` hopefully would make every failure
-// between here and the snapshot into a member that lies.
+// TestTheHostNeverClaimsTheAppHeldStill keeps the class honest across the channel: the host
+// renders `crash` and only the guest upgrades it, because only the guest watched the app hold. A
+// host that rendered `quiesced` hopefully would turn every failure between here and the snapshot
+// into a member that lies.
 func TestTheHostNeverClaimsTheAppHeldStill(t *testing.T) {
 	cfg, f, took, n := clockFixture(t)
 	f.held = true // the guest upgrades it; what the HOST asked for is what this is about
@@ -381,7 +380,7 @@ func (f *fakeFilesTick) SupportsFilesTick() bool { return true }
 // finish ends the running tick with this report.
 func (f *fakeFilesTick) finish(r guestagent.FilesTickReport) { f.running, f.report = false, &r }
 
-// EVERY FIVE MINUTES, ON THE NODE THAT HOLDS THE VOLUME, AND NEVER WAITED FOR: the loop starts a
+// Every five minutes, on the node that holds the volume, and never waited for: the loop starts a
 // tick, keeps cycling while it runs, collects its report, and starts the next one five minutes
 // after the last began.
 func TestTheUserTickRunsEveryFiveMinutesAndIsNeverWaitedFor(t *testing.T) {
@@ -411,8 +410,8 @@ func TestTheUserTickRunsEveryFiveMinutesAndIsNeverWaitedFor(t *testing.T) {
 	}
 }
 
-// SHORT REACHES THE HOUSEHOLD, as an open condition with the free space in it; a tick that
-// measured nothing (no app has a files area yet) says nothing either way.
+// A short user tier reaches the household, as an open condition with the free space in it; a tick
+// that measured nothing (no app has a files area yet) says nothing either way.
 func TestAShortUserTierReachesTheHousehold(t *testing.T) {
 	cfg, n := Config{Node: "n1"}, &fakeNotifier{}
 	for _, rep := range []guestagent.FilesTickReport{

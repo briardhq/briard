@@ -152,7 +152,7 @@ func TestParseGateRejectsAVersionPrefixCollision(t *testing.T) {
 	}
 }
 
-// The dial leaves FROM the host's system-subnet address when it is given one -- the guest's side
+// The dial leaves from the host's system-subnet address when it is given one -- the guest's side
 // sees that source, which is the only thing a standby with no LAN address can reply to. Two
 // loopback addresses stand in for the host's two (127.0.0.2 is local on Linux without config).
 func TestReadGateDialsFromTheHostSystemAddress(t *testing.T) {

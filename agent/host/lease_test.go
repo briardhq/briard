@@ -151,7 +151,7 @@ func TestLeaseFirstBringUpDiscovers(t *testing.T) {
 	}
 }
 
-// THE REFUSAL: the router offers the host's own address (it keyed on the L2 source), or nothing
+// The refusal: the router offers the host's own address (it keyed on the L2 source), or nothing
 // answers. Never requested, said once in the line the installer ends on, with the remedy.
 func TestLeaseRefusesWhatIsNotTheFlocks(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -197,7 +197,7 @@ func TestLeaseRefusesWhatIsNotTheFlocks(t *testing.T) {
 	}
 }
 
-// A RESTART KEEPS THE ADDRESS by INIT-REBOOT, never a DISCOVER. NAK: the fresh guest holds
+// A restart keeps the address by INIT-REBOOT, never a DISCOVER. NAK: the fresh guest holds
 // nothing, so a DISCOVER follows. Silence: the address is kept -- a router slower than this
 // machine to come back from a power cut -- and nothing new is asked for.
 func TestLeaseBringUpKeepsTheRecordedAddress(t *testing.T) {
@@ -235,7 +235,7 @@ func TestLeaseBringUpKeepsTheRecordedAddress(t *testing.T) {
 	}
 }
 
-// An ADOPTED guest is holding the recorded address: it is pushed as it stands, nothing is sent
+// An adopted guest is holding the recorded address: it is pushed as it stands, nothing is sent
 // at bring-up, and the renewal asks at once.
 func TestLeaseAdoptedGuestKeepsItsAddress(t *testing.T) {
 	r := newLeaseRig(t)
@@ -248,7 +248,7 @@ func TestLeaseAdoptedGuestKeepsItsAddress(t *testing.T) {
 	}
 }
 
-// THE RENEWAL, and rule 2: a lost lease relaunches the guest and sends no DISCOVER -- the guest
+// The renewal, and rule 2: a lost lease relaunches the guest and sends no DISCOVER -- the guest
 // still holds the address until it is relaunched. A silent router leaves the address in place.
 func TestLeaseRenewal(t *testing.T) {
 	r := newLeaseRig(t)
@@ -275,7 +275,7 @@ func TestLeaseRenewal(t *testing.T) {
 	}
 }
 
-// A REFUSED node asks again, and a first lease relaunches the guest to push it.
+// A refused node asks again, and a first lease relaunches the guest to push it.
 func TestLeaseRefusalEndsWithALease(t *testing.T) {
 	r := newLeaseRig(t)
 	r.wire.offerErr = nic.ErrNoAnswer
@@ -328,9 +328,9 @@ func (r *leaseRig) expired(addr string) {
 	r.l.store(leaseRecord{Addr: addr, Renew: clock.Add(-2 * time.Hour), Until: clock.Add(-time.Hour)}, r.logf)
 }
 
-// AN EXPIRED ADDRESS IS NEVER PUSHED UN-ASKED. A fresh guest holds nothing, so the bring-up
-// DISCOVERs with the address as its hint. The record survives a silence, so the hint is there on
-// the next ask -- and a refused node asks by DISCOVER first, never by keeping an address its guest
+// An expired address is never pushed un-asked. A fresh guest holds nothing, so the bring-up sends
+// a DISCOVER with the address as its hint; the record survives a silence, so the hint is there on
+// the next ask, and a refused node asks by DISCOVER first, never by keeping an address its guest
 // was not given. An adopted guest holds the address, so it is pushed as it stands and asked at once.
 func TestLeaseExpiredRecord(t *testing.T) {
 	t.Run("fresh: DISCOVER with the hint", func(t *testing.T) {
@@ -372,7 +372,7 @@ func TestLeaseExpiredRecord(t *testing.T) {
 	})
 }
 
-// THE PROBE: expired, the INIT-REBOOT unanswered, and the router answering ARP. The VIP goes
+// The probe: expired, the INIT-REBOOT unanswered, and the router answering ARP. The VIP goes
 // silent, a DISCOVER carries the hint, and the link always comes back. Its three outcomes, and the
 // two gates that keep it from running through an outage or every minute.
 func TestLeaseProbe(t *testing.T) {
@@ -417,7 +417,7 @@ func TestLeaseProbe(t *testing.T) {
 		if !slices.Equal(r.quiet, []bool{true, false}) {
 			t.Errorf("link levers %v", r.quiet)
 		}
-		// THE SECOND GATE: the next renewal, inside leaseProbeEvery, does not probe again.
+		// The second gate: the next renewal, inside leaseProbeEvery, does not probe again.
 		r.wire.sent, r.quiet = nil, nil
 		r.l.renew(context.Background(), r.logf)
 		if len(r.quiet) != 0 || slices.Contains(r.wire.sent, "DISCOVER hint 192.168.7.120") {
@@ -442,9 +442,9 @@ func TestLeaseProbe(t *testing.T) {
 	})
 }
 
-// THE LINK'S EDGES ASK NOW, on the substrate with no notification: the carrier coming back, or the
-// host's own address on it changing. The first reading only records; a carrier going away and an
-// address lost with it ask nothing.
+// The link's edges ask at once, on the substrate with no notification: the carrier coming back,
+// or the host's own address on it changing. The first reading only records; a carrier going away
+// and an address lost with it ask nothing.
 func TestLeaseWatchAsksOnAnEdge(t *testing.T) {
 	r := newLeaseRig(t)
 	r.holding("192.168.7.120/24")
@@ -503,7 +503,7 @@ func TestLeaseWatchAsksOnAnEdge(t *testing.T) {
 	}
 }
 
-// ONLY A SILENT PROBE WAITS. One that renewed starts no clock: the next expiry with no answer --
+// Only a silent probe waits: one that renewed starts no clock: the next expiry with no answer --
 // the cable moved and back, a router rebooted again -- probes at once.
 func TestLeaseProbeAfterARenewalIsNotSpaced(t *testing.T) {
 	r := newLeaseRig(t)
@@ -519,9 +519,9 @@ func TestLeaseProbeAfterARenewalIsNotSpaced(t *testing.T) {
 	}
 }
 
-// MOVED OFF THE VIP'S NETWORK: the INIT-REBOOT unanswered, and the host's own address on the link
-// -- read after the exchange -- outside the VIP's subnet. A running guest takes the NAK path; a
-// guest at its bring-up just DISCOVERs. No LAN address at all is no evidence, and neither is the
+// Moved off the VIP's network: the INIT-REBOOT unanswered, and the host's own address on the link
+// (read after the exchange) outside the VIP's subnet. A running guest takes the NAK path; a guest
+// at its bring-up just sends a DISCOVER. No LAN address at all is no evidence, and neither is the
 // node's own system-subnet address.
 func TestLeaseMovedOffTheNetwork(t *testing.T) {
 	for _, tc := range []struct {
@@ -571,7 +571,7 @@ func TestLeaseMovedOffTheNetwork(t *testing.T) {
 	}
 }
 
-// NEVER UP WHILE THE UPLINK IS DOWN: the probe gives the link back at the bridge member's carrier,
+// Never up while the uplink is down: the probe gives the link back at the bridge member's carrier,
 // as the link mirror holds it -- down when the member is down or the bridge holds none -- and up on
 // a substrate with no member to follow (an ipvtap station, whose own carrier the probe never runs
 // without, since the router answered ARP over it).

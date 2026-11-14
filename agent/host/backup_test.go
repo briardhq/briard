@@ -813,7 +813,7 @@ func TestThePageMayRestoreFromTheBackup(t *testing.T) {
 	}
 }
 
-// `briard backup` waits for the run IT asked for: an ending older than the ask (last night's) is
+// `briard backup` waits for the run it asked for: an ending older than the ask (last night's) is
 // not its answer; the kicked run's is, success or failure, said as the scheduler said it.
 func TestBackupNowWaitsForTheRunItAskedFor(t *testing.T) {
 	cfg, _ := liveBackup(t, filepath.Join(t.TempDir(), "Briard Backup"))
@@ -917,7 +917,7 @@ func askFolder(cfg Config, g any, req api.BackupFolder) (api.DirectiveOutcome, d
 	return o, c
 }
 
-// A FOLDER IS READ BEFORE THE BACKUP MOVES: empty says so with no read; one holding backups is
+// A folder is read before the backup moves: empty says so with no read; one holding backups is
 // read with this household's key through the candidate root -- set for the read, cleared after --
 // and counted, this household's and an earlier install's; one another key made says so; the
 // folder in use, anything checkBackupFolder refuses, and a second read while one goes are refused
@@ -984,7 +984,7 @@ func TestAFolderIsReadBeforeTheBackupMoves(t *testing.T) {
 	}
 }
 
-// THE CONFIRMED MOVE: into an empty folder or one of this household's, the folder changes and the
+// The confirmed move: into an empty folder or one of this household's, the folder changes and the
 // old one is remembered; into another key's, only with that key, adopted in the same act -- and a
 // key that does not open it leaves the backup where it was, the record as it was.
 func TestTheConfirmedMoveAdoptsOrStaysWhereItWas(t *testing.T) {
@@ -1108,7 +1108,7 @@ func docsRig(t *testing.T) (cfg Config, read func(string) (string, error), docs 
 	return cfg, read, docs, logged
 }
 
-// WHEREVER DOCUMENTS IS: the folder follows the account's Documents when OneDrive moves it -- no
+// Wherever Documents is: the folder follows the account's Documents when OneDrive moves it -- no
 // act, nothing written -- and while the account is logged off the last answer stands, across an
 // agent restart too. Never read, the value is left as written: no such folder, and no guess.
 func TestTheBackupFolderIsWhereverDocumentsIs(t *testing.T) {

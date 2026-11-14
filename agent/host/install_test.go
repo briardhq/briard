@@ -55,7 +55,7 @@ func testRoots(t *testing.T) installRoots {
 		unitDir: filepath.Join(d, "units"), cliLink: filepath.Join(d, "bin", "briard")}
 }
 
-// THE TREE THE LOCAL STAGING PATH LAYS DOWN, file by file: what a node's first start reads, where
+// The tree the local staging path lays down, file by file: what a node's first start reads, where
 // it reads it. The proof against the shipped installer is the install rigs; this pins the shape
 // so a regression is a unit-test failure first.
 func TestInstallLaysTheStagingDirDown(t *testing.T) {
@@ -188,8 +188,8 @@ func TestInstallWaitReadsTheRefusal(t *testing.T) {
 	}
 }
 
-// THE IMAGE IS THE ONE THING AN INSTALL MAY LEAVE OUT: a staging dir without it -- the Store's exe
-// -- installs everything else and leaves the image to the first start, and one over a node that
+// The image is the one thing an install may leave out: a staging dir without it (the Store's exe)
+// installs everything else and leaves the image to the first start, and one over a node that
 // has an image keeps it. installedImage is the skip rule's input: the release of the image here,
 // by its manifest, and "" with no image or no manifest to say which.
 func TestInstallLeavesTheImageToTheFirstStart(t *testing.T) {

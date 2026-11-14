@@ -7,20 +7,17 @@ import (
 	"testing"
 )
 
-// ⚠️ THE ONE DUPLICATED DEFAULT IN THE PRODUCT, pinned here because it is deliberate and therefore
-// easy to let drift (owner's call).
+// ⚠️ The one duplicated default in the product, pinned here because it is deliberate and therefore
+// easy to let drift (owner's call). scripts/agent/briard-update is frozen, agent-independent
+// shell: it replaces the agent, so it must not ask the agent anything. Its unit hands it config.env
+// as an EnvironmentFile, but config.env carries a key only when an operator named one, so on an
+// ordinary install the script needs its own answer for the two values it cannot do without.
 //
-// scripts/agent/briard-update is FROZEN, agent-independent shell: it is what replaces the agent, so
-// it must not ask the agent anything. Its unit hands it config.env as an EnvironmentFile, but
-// config.env carries a key only when an operator named one -- so on an ordinary install there is
-// nothing to read and the script needs its own answer for the two values it cannot do without.
-//
-// Two literals, one meaning. This test is what keeps them one: a release that moves the channel or
-// the keyring in config.go and forgets the script would leave every node updating from the old
-// place, which is the failure that cannot be fixed by an update.
+// Two literals, one meaning, kept one by this test: a release that moves the channel or the
+// keyring in config.go and forgets the script would leave every node updating from the old place,
+// the failure an update cannot fix.
 func TestUpdateScriptDefaultsMatchTheAgents(t *testing.T) {
-	// Cleared, so what is compared is the agent's DEFAULT rather than whatever this process
-	// happens to have in its environment.
+	// Cleared, so the agent's default is compared rather than this process's environment.
 	os.Unsetenv("CHANNEL_URL")
 	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "agent", "briard-update"))
 	if err != nil {

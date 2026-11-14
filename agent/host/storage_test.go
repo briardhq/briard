@@ -24,17 +24,14 @@ func pairRes() drbd.Resource {
 	return r
 }
 
-// ★ THE FENCE THAT MAKES THE SPEC AND THE .RES NAME ONE DEVICE. The host tells the guest which VG
-// and LV to build, and separately tells DRBD which mapper path to attach; if those two stop
-// composing to the same string the node creates a volume and then attaches nothing. Nothing else
-// in the tree holds both halves.
-//
-// PROVEN ABLE TO FAIL by the second half: a peer whose Disk is the raw disk is refused rather
-// than brought up. That is a LIVE path, not a hypothetical: `parsePeers` normalises any PEERS
-// value to the seam LV, but `meshTarget` copies Disk verbatim off the wire from the cloud's
-// pairing directive (pair.go) -- so the mesh a joiner is handed is the one thing that can still
-// name a device this node does not build, and a joiner that attaches nothing is the worst place
-// to find out.
+// ★ The fence that makes the spec and the .res name one device. The host tells the guest which VG
+// and LV to build, and separately tells DRBD which mapper path to attach; if those stop composing
+// to the same string the node creates a volume and attaches nothing, and nothing else in the tree
+// holds both halves. The second half proves it able to fail: a peer whose Disk is the raw disk is
+// refused rather than brought up. That path is live: `parsePeers` normalises any PEERS value to
+// the seam LV, but `meshTarget` copies Disk verbatim from the cloud's pairing directive (pair.go),
+// so a joiner's mesh is the one thing that can still name a device this node does not build, and
+// a joiner that attaches nothing is the worst place to find out.
 func TestStorageSpecFencesTheBackingDevice(t *testing.T) {
 	cfg := Config{Node: "n1", DataEncryption: nodestorage.ModeAuto}
 	spec, err := cfg.StorageSpec(demoRes(), false, false)
@@ -55,7 +52,7 @@ func TestStorageSpecFencesTheBackingDevice(t *testing.T) {
 		t.Error("a .res attaching the raw disk was accepted; the node would build an LV and attach nothing")
 	}
 
-	// A PEER THAT IS NOT US IS NOT OURS TO JUDGE: the mesh is written once and shipped to every
+	// A peer that is not us is not ours to judge: the mesh is written once and shipped to every
 	// node, and DRBD picks its stanza by hostname. Refusing on someone else's line would make a
 	// node fail over a device it never touches.
 	other := demoRes()
@@ -146,7 +143,7 @@ func TestConfigFromEnvDataEncryption(t *testing.T) {
 	}
 }
 
-// THE TWO-LV LAYOUT REACHES THE SPEC: the metadata LV by the name the .res's
+// The two-LV layout reaches the spec: the metadata LV by the name the .res's
 // `meta-disk` will look for, the replicated device the mount unit will read, and the peer-slot
 // count the metadata is created with -- all from the constants the .res itself is rendered from.
 func TestStorageSpecCarriesTheMetadataLayout(t *testing.T) {
@@ -170,7 +167,7 @@ func TestStorageSpecCarriesTheMetadataLayout(t *testing.T) {
 	}
 }
 
-// THE TOPOLOGY RULE: a resource is worth running only with two DISKFUL members. A lone
+// The topology rule: a resource is worth running only with two diskful members. A lone
 // anchor mounts its data LV directly; an anchor beside a witness is that same lone anchor (the
 // witness holds no copy); and a witness in such a mesh is a spec that must not exist.
 func TestStorageSpecLoneNode(t *testing.T) {

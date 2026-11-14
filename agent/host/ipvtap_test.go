@@ -90,7 +90,7 @@ func TestIPvtapCopierLeavesTheVIPOnABlip(t *testing.T) {
 	}
 }
 
-// THE GATE. An address the host holds on the parent is never copied: ipvlan would accept it and
+// The gate: an address the host holds on the parent is never copied: ipvlan would accept it and
 // the host would drop off the LAN. Read each tick, so a host lease that moves is seen.
 func TestIPvtapCopierNeverCopiesTheHostsAddress(t *testing.T) {
 	r := newCopierRig(true)

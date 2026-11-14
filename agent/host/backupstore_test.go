@@ -34,8 +34,8 @@ func storeRig(t *testing.T) (*backupStore, *httptest.Server, map[string]bool) {
 	return s, srv, owned
 }
 
-// restic runs the real client against the store. NOT SKIPPED WHEN MISSING: the dev shell carries
-// it, and a test that passes by not running proves nothing.
+// restic runs the real client against the store, deliberately not skipped when missing: the dev
+// shell carries it, and a test that passes by not running proves nothing.
 func restic(t *testing.T, url string, args ...string) string {
 	t.Helper()
 	bin, err := exec.LookPath("restic")
@@ -83,7 +83,7 @@ func TestRealResticRoundTripsThroughTheStore(t *testing.T) {
 		}
 	}
 
-	// THE EXIT GUARANTEE: the folder is a standard repository on its own, no briard serving it.
+	// The exit guarantee: the folder is a standard repository on its own, no briard serving it.
 	cmd := exec.Command("restic", "--repo", s.dir, "--no-cache", "--quiet", "check", "--read-data")
 	cmd.Env = append(os.Environ(), "RESTIC_PASSWORD=correct horse")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -275,7 +275,7 @@ func TestTheStoreAnswersNothingWhileTheBackupIsOff(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	// Said as OFF, not as a missing folder: the run's report carries this, and "the folder is not
+	// Said as off, not as a missing folder: the run's report carries this, and "the folder is not
 	// there" would send the household looking for a disk.
 	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "turned off") {
 		t.Fatalf("status %d %q while off, want 503 saying it is off", resp.StatusCode, body)
@@ -332,7 +332,7 @@ func TestRealResticMovesByStartingFreshOrContinuing(t *testing.T) {
 	}
 }
 
-// THE CANDIDATE ROOT, against real restic: a repository served under /candidate/ reads as it does
+// The candidate root, against real restic: a repository served under /candidate/ reads as it does
 // at the root, nothing in it can be written or deleted, nothing but restic's paths is answered,
 // and nothing at all while no candidate is set.
 func TestTheCandidateRootIsReadOnly(t *testing.T) {

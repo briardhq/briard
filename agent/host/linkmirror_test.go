@@ -58,7 +58,7 @@ func recordString(b *bool) string {
 	return fmt.Sprint(*b)
 }
 
-// THE RULE, over a whole run: whatever the NIC does, and whether or not sets fail on the way,
+// The rule, over a whole run: whatever the NIC does, and whether or not sets fail on the way,
 // no set ever asks for up while the NIC is down, and after any successful tick the link is the
 // NIC's state.
 func TestLinkMirrorNeverUpWhileTheNICIsDown(t *testing.T) {

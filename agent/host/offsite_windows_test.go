@@ -11,7 +11,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// A STAND-IN SYNC CLIENT: the test registers a sync root of its own with the Cloud Files API --
+// A stand-in sync client: the test registers a sync root of its own with the Cloud Files API --
 // the call OneDrive makes for its folder -- and takes files up as placeholders itself, in sync or
 // not, so the off-site check's two reads run against the real API with no Microsoft account. What
 // it cannot stand in for is the client's own meaning of in sync, nor another user's profile read

@@ -28,7 +28,7 @@ func crashedUpgrade(t *testing.T) (*fakeInstaller, string, string) {
 	return f, priorRaw, string(staged)
 }
 
-// THE PROMISE THE UNDO EXISTS FOR: an install nobody is running any more is undone from the
+// The promise the undo exists for: an install nobody is running any more is undone from the
 // volume alone, by the same procedure a failed gate uses -- stop, put the data back from the
 // recorded point, discard the stage, converge to the accepted manifest -- in that order.
 func TestAStagedInstallIsUndoneFromTheVolumeAlone(t *testing.T) {
@@ -55,7 +55,7 @@ func TestAStagedInstallIsUndoneFromTheVolumeAlone(t *testing.T) {
 	}
 }
 
-// THE UNDO'S OWN POINT IS PINNED TO THE VERSION THAT RAN, which the volume never accepted -- read
+// The undo's own point is pinned to the version that ran, which the volume never accepted -- read
 // from the stage, not from the accepted manifest, or the history would say the data under the
 // failed version belongs to the prior one and "redo" would put back the wrong code.
 func TestTheUndoPointIsPinnedToTheStagedManifest(t *testing.T) {
@@ -74,7 +74,7 @@ func TestTheUndoPointIsPinnedToTheStagedManifest(t *testing.T) {
 	}
 }
 
-// A FRESH install has nothing to put back: no restore, the stage discarded, and the app gone.
+// A fresh install has nothing to put back: no restore, the stage discarded, and the app gone.
 func TestAStagedFreshInstallIsDiscarded(t *testing.T) {
 	staged, _ := json.Marshal(testManifest())
 	f := &fakeInstaller{staged: map[string]string{"home-assistant": string(staged)}, rollbacks: map[string]string{"home-assistant": ""}}
@@ -87,7 +87,7 @@ func TestAStagedFreshInstallIsDiscarded(t *testing.T) {
 	}
 }
 
-// A RESTORE THAT FAILS LEAVES THE STAGE IN PLACE: converge keeps holding the app back, so the
+// A restore that fails leaves the stage in place: converge keeps holding the app back, so the
 // prior version is never started on data that was not put back, and the next promotion tries again.
 func TestAnUndoWhoseRestoreFailsKeepsTheAppHeldBack(t *testing.T) {
 	f, _, _ := crashedUpgrade(t)
@@ -102,7 +102,7 @@ func TestAnUndoWhoseRestoreFailsKeepsTheAppHeldBack(t *testing.T) {
 	}
 }
 
-// AN INSTALL IN PROGRESS IS NOT A CRASHED ONE: while an act holds the slot, the check touches
+// An install in progress is not a crashed one: while an act holds the slot, the check touches
 // nothing and asks again later.
 func TestUndoWaitsWhileAnActRuns(t *testing.T) {
 	f, _, _ := crashedUpgrade(t)
@@ -118,7 +118,7 @@ func TestUndoWaitsWhileAnActRuns(t *testing.T) {
 	}
 }
 
-// A COMMIT THAT FAILS IS UNDONE like a failed gate: a staged install must never outlive the act
+// A commit that fails is undone like a failed gate: a staged install must never outlive the act
 // that staged it with the act reporting success.
 func TestAFailedCommitIsUndone(t *testing.T) {
 	cfg := catalogFor(t, testManifest())

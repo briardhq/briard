@@ -92,7 +92,7 @@ func TestDressGuestPushesWhenTheBundleDiffers(t *testing.T) {
 		t.Errorf("bin.test was asked to prove %v, want the whole set", g.tested)
 	}
 
-	// THE CHEAP GATE: a staged copy that fails its test launch refuses the dress before
+	// The cheap gate: a staged copy that fails its test launch refuses the dress before
 	// anything is armed -- and the caller records the refusal like a trial's, so the release is
 	// never pushed again and the good tree (none here) is what a later launch gets.
 	g = &fakeDresser{push: true, bundle: "v3.20260901.old0000", testErr: io.ErrUnexpectedEOF}
@@ -136,7 +136,7 @@ func TestDressGuestWithoutABundleIsANoop(t *testing.T) {
 	}
 }
 
-// THE PERMANENT REVERT: a refused release is never pushed again; the last good tree is pushed
+// The permanent revert: a refused release is never pushed again; the last good tree is pushed
 // instead, on this launch and every later one, until a new host commit names a different tree.
 func TestDressGuestFallsBackToTheLastGoodBundleForGood(t *testing.T) {
 	base := t.TempDir()
@@ -187,7 +187,7 @@ func TestDressGuestFallsBackToTheLastGoodBundleForGood(t *testing.T) {
 			t.Errorf("tree %s was pruned: %v", r, err)
 		}
 	}
-	// ...and a NEW host commit is a new attempt: the refusal no longer names the committed tree.
+	// ...and a new host commit is a new attempt: the refusal no longer names the committed tree.
 	os.Remove(filepath.Join(base, "guest"))
 	guestTree(t, base, next)
 	g = &fakeDresser{push: true, bundle: good}

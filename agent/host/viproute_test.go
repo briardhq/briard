@@ -37,7 +37,7 @@ func newTestRouter(dev, vipDev string) (*vipRouter, *routeRecorder) {
 }
 
 // The steady-state path, and the two properties that make it correct: the route points at the
-// address the guest ACTUALLY holds, via the guest's node IP over the private link (never
+// address the guest actually holds, via the guest's node IP over the private link (never
 // on-link), and a second cycle with nothing changed does not touch the network at all.
 func TestVIPRouter_InstallsThenIsQuiet(t *testing.T) {
 	v, rr := newTestRouter("briard-priv0", "eth2")
@@ -75,7 +75,7 @@ func TestVIPRouter_AddressMovedWithdrawsTheOldOne(t *testing.T) {
 }
 
 // The failover case. A node that no longer holds the VIP must not route it into its own guest:
-// the peer that took it over IS reachable over the LAN, and a stale /32 would replace a working
+// the peer that took it over is reachable over the LAN, and a stale /32 would replace a working
 // path with a black hole.
 func TestVIPRouter_DemotionWithdraws(t *testing.T) {
 	v, rr := newTestRouter("briard-priv0", "eth2")
@@ -93,12 +93,11 @@ func TestVIPRouter_DemotionWithdraws(t *testing.T) {
 	}
 }
 
-// A guest we cannot ask is a guest that is certainly not serving the household from THIS machine.
-// Withdrawing fails open -- back to the LAN, where a peer that has taken over can be reached.
-//
-// The fake still answers WITH an address alongside the error, and that is the point: were it
-// empty, the withdrawal would follow from the empty address and this test would pass with the
-// fail-open rule deleted. The error must be the only reason.
+// A guest we cannot ask is certainly not serving the household from this machine, so withdrawing
+// fails open, back to the LAN, where a peer that has taken over can be reached. The fake still
+// answers with an address alongside the error on purpose: were it empty, the withdrawal would
+// follow from the empty address and this test would pass with the fail-open rule deleted. The
+// error must be the only reason.
 func TestVIPRouter_UnreadableGuestFailsOpen(t *testing.T) {
 	v, rr := newTestRouter("briard-priv0", "eth2")
 	v.reconcile(t.Context(), fakeStatus{vip: "192.168.9.225/24"}, quiet)
@@ -153,7 +152,7 @@ func TestVIPRouter_FailedInstallRetries(t *testing.T) {
 	}
 }
 
-// A failed WITHDRAWAL must not be followed by an install, and must not be forgotten: the host
+// A failed withdrawal must not be followed by an install, and must not be forgotten: the host
 // would otherwise hold two routes to one guest and remember neither.
 func TestVIPRouter_FailedWithdrawalDoesNotInstallOver(t *testing.T) {
 	v, rr := newTestRouter("briard-priv0", "eth2")
@@ -169,16 +168,13 @@ func TestVIPRouter_FailedWithdrawalDoesNotInstallOver(t *testing.T) {
 	}
 }
 
-// A SHUTDOWN IS NOT A DEMOTION. The guest is a detached unit and keeps serving across an agent
-// stop -- and an agent restart is what a self-update IS -- so an agent on its way out must leave
-// the route alone. Withdrawing here would drop the household's reachability from its own machine
-// on every restart, for a node that never stopped serving; agent-readopt polls the VIP across a
-// restart and asserts zero dropped ticks, which is the live version of this assertion.
-//
-// The rule is enforced by two guards -- one before the read, one after, for cancellation that
-// lands mid-call -- so removing either alone leaves the other holding and this stays green. That
-// is redundancy by design, not a gap: what must never pass is BOTH being gone, and that it does
-// catch.
+// A shutdown is not a demotion. The guest is a detached unit and keeps serving across an agent
+// stop, and an agent restart is what a self-update is, so an agent on its way out must leave the
+// route alone; withdrawing would drop the household's reachability from its own machine on every
+// restart, for a node that never stopped serving. agent-readopt is the live version: it polls the
+// VIP across a restart and asserts zero dropped ticks. Two guards enforce the rule (one before
+// the read, one after for cancellation mid-call), so removing either alone stays green, by design:
+// what this catches, and what must never pass, is both being gone.
 func TestVIPRouter_ShutdownDoesNotWithdraw(t *testing.T) {
 	v, rr := newTestRouter("briard-priv0", "eth2")
 	v.reconcile(t.Context(), fakeStatus{vip: "192.168.9.225/24"}, quiet)

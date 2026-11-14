@@ -9,7 +9,7 @@ import (
 
 // numbering is the whole of subnets.go's decision surface, and it is tested here rather than in a
 // rig because every branch is a question about two inputs (what the environment says, what the
-// record says) with no network in it. The DRAW itself is agent/subnet's, tested there against a
+// record says) with no network in it. The draw itself is agent/subnet's, tested there against a
 // fabricated host; what this file pins is which of the three sources wins, and that a node is
 // never renumbered by accident.
 
@@ -46,10 +46,10 @@ func TestNumberThisNodeKeepsTheRecord(t *testing.T) {
 	}
 }
 
-// ⚠️ THE GUARD THAT KEEPS A RIG'S SUBSTRATE ITS OWN. A config that already names this node's
-// address has been numbered by somebody else -- a rig that builds its own devices, an operator, a
-// pairing's mesh spec -- and drawing there would be us overruling them. Nothing is touched, and no
-// record is written.
+// ⚠️ The guard that keeps a rig's substrate its own: a config that already names this node's
+// address was numbered by somebody else (a rig that builds its own devices, an operator, a
+// pairing's mesh spec), and drawing there would overrule them. Nothing is touched, no record
+// written.
 func TestNumberThisNodeLeavesAStatedAddressAlone(t *testing.T) {
 	cfg := cfgAt(t)
 	cfg.SystemCIDR = "10.0.0.3/24"
@@ -69,7 +69,7 @@ func TestNumberThisNodeLeavesAStatedAddressAlone(t *testing.T) {
 	}
 }
 
-// The environment wins over the record, and what wins is what gets RECORDED: a range pinned on one
+// The environment wins over the record, and what wins is what gets recorded: a range pinned on one
 // boot and forgotten on the next must not renumber the node back to the recorded value in silence.
 func TestNumberThisNodeRecordsThePin(t *testing.T) {
 	cfg := cfgAt(t)
@@ -99,7 +99,7 @@ func TestNumberThisNodeRecordsThePin(t *testing.T) {
 	}
 }
 
-// A record that does not parse reads as ABSENT rather than as a value: the format's regexp is its
+// A record that does not parse reads as absent rather than as a value: the format's regexp is its
 // assertion, and a node must never be numbered out of a typo. The well-formed line survives on its
 // own, which is the same rule that lets a node predating a pool gain only that pool.
 func TestRecordedSubnetsRejectsGarbage(t *testing.T) {

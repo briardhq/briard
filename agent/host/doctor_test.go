@@ -205,7 +205,7 @@ type certFake struct {
 
 func (f certFake) ReadCert(context.Context) (string, error) { return f.pem, nil }
 
-// End to end through dispatch on the LOCAL door: the snapshot the report loop uses, the cert read
+// End to end through dispatch on the local door: the snapshot the report loop uses, the cert read
 // on the serving node, and the checks carried home as JSON the CLI decodes.
 func TestDoctorThroughDispatch(t *testing.T) {
 	now := time.Now()
@@ -230,7 +230,7 @@ func TestDoctorThroughDispatch(t *testing.T) {
 	}
 }
 
-// WI-FI WARNS, THE SAME ON BOTH HOSTS: a Linux station over ipvtap and a Windows bridge whose member
+// Wi-Fi warns, the same on both hosts: a Linux station over ipvtap and a Windows bridge whose member
 // is a radio say the one sentence, and a wire passes. The guest works either way, so it is never a
 // failure.
 func TestDoctorWifiWarns(t *testing.T) {

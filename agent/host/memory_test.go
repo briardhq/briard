@@ -116,7 +116,7 @@ func TestMemoryGrowerDecides(t *testing.T) {
 		{"page cache is not demand: available stays high however full", memSample(900, 0), 20 * time.Minute, nil},
 		{"low, but not yet for five minutes", memSample(200, 0), 4*time.Minute + 50*time.Second, nil},
 		// The window restarts at each step and runs through the cooldown, so a guest that stays
-		// short grows once per window -- each one measured on the guest AFTER its last step.
+		// short grows once per window, each one measured on the guest after its last step.
 		{"low for five minutes: grow, and again each window it stays low",
 			memSample(200, 0), 16 * time.Minute, []time.Duration{5 * time.Minute, 10*time.Minute + 10*time.Second, 15*time.Minute + 20*time.Second}},
 		// Pressure's window is shorter than the cooldown, so the cooldown is what paces it.
@@ -137,7 +137,7 @@ func TestMemoryGrowerDecides(t *testing.T) {
 	}
 }
 
-// A condition must hold CONTINUOUSLY: one healthy sample, or one unread one, restarts its clock.
+// A condition must hold continuously: one healthy sample, or one unread one, restarts its clock.
 func TestMemoryGrowerNeedsAnUnbrokenWindow(t *testing.T) {
 	t0 := time.Unix(1_800_000_000, 0)
 	for _, gap := range []*telemetry.NodeResources{memSample(600, 0), {}} {

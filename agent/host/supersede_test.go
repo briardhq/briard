@@ -82,7 +82,7 @@ func TestDropSupersededKeepsAnImageAnotherAppPins(t *testing.T) {
 	}
 }
 
-// THE GATE: a manifest on the volume that cannot be read means "could not tell", and that must
+// The gate: a manifest on the volume that cannot be read means "could not tell", and that must
 // never take the branch that deletes -- the app it belongs to may run on the very image.
 func TestDropSupersededRemovesNothingWhenAVolumeReadFails(t *testing.T) {
 	was, _ := manifestWith(t, "home-assistant", "2026.6.0", "a")
@@ -105,8 +105,8 @@ func TestDropSupersededFreshInstallRemovesNothing(t *testing.T) {
 	}
 }
 
-// THE REAL CLIENT IS AN INSTALLER, checked at compile time. host.go reaches it through a runtime
+// The real client is an installer, checked at compile time. host.go reaches it through a runtime
 // type assertion (`r.(appInstaller)`), so a verb added to the interface with a signature the
-// client does not have builds cleanly and then fails EVERY install on a real node with "guest client
-// cannot install an app" -- nothing but this line, or a rig, would say so.
+// client lacks builds cleanly and then fails every install on a real node with "guest client
+// cannot install an app"; only this line, or a rig, would say so.
 var _ appInstaller = (*guestagent.Client)(nil)

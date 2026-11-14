@@ -14,7 +14,7 @@ import (
 	"briard.io/shared/telemetry"
 )
 
-// Telemetry off is the SHIPPED state (the install writes no TELEMETRY_PATH), so the nil writer is
+// Telemetry off is the shipped state (the install writes no TELEMETRY_PATH), so the nil writer is
 // the ordinary path and not an edge case. A Config that never started one -- which is every
 // caller of observe in these tests -- must be silently fine.
 func TestWriteTelemetryOffIsANoOp(t *testing.T) {
@@ -52,18 +52,14 @@ func TestWriteTelemetryPublishesTheSample(t *testing.T) {
 	}
 }
 
-// A TELEMETRY_PATH whose .tmp sibling is a reader-less FIFO blocks open(2) forever --
-// uninterruptibly, with no ctx to honour and no deadline that could reach it, which is precisely
-// why the write runs on a goroutine rather than under a timeout. The caller must not notice:
-// writeTelemetry hands off or drops, and returns either way.
-//
-// This is the mutation check. Put the write back inline (or make the send blocking) and this
-// test hangs on the FIRST call, as the observe loop would -- and the node's supervisor with it.
-//
-// The FIFO is a stand-in for the realistic trigger, a hung mount under TELEMETRY_PATH: an NFS or
-// FUSE path gone unresponsive, which is not exotic on a box where someone pointed telemetry at
-// shared storage. A full or read-only filesystem needs no test here -- WriteFile returns an
-// error there.
+// A TELEMETRY_PATH whose .tmp sibling is a reader-less FIFO blocks open(2) forever,
+// uninterruptibly, with no ctx to honour and no deadline that could reach it, which is why the
+// write runs on a goroutine rather than under a timeout. The caller must not notice:
+// writeTelemetry hands off or drops, and returns either way. The mutation check: put the write
+// back inline (or make the send blocking) and this test hangs on the first call, as would the
+// observe loop and the node's supervisor with it. The FIFO stands in for the realistic trigger, a
+// hung NFS or FUSE mount under TELEMETRY_PATH, not exotic on a box whose telemetry points at shared
+// storage. A full or read-only filesystem needs no test: WriteFile returns an error there.
 func TestWriteTelemetryDoesNotBlockOnAHungPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry.json")
 	if err := mkFifo(path + ".tmp"); err != nil {

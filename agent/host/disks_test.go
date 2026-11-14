@@ -15,7 +15,7 @@ import (
 	"briard.io/shared/notify"
 )
 
-// ⚠️ THE AGENT MAKES WHAT IT WAS TOLD ABOUT and nothing else: a harness that names no path for a
+// ⚠️ The agent makes what it was told about and nothing else: a harness that names no path for a
 // disk is saying it has none, and a path invented here would hand qemu a `-drive` for a file
 // nobody made.
 func TestProvisionDisksMakesOnlyWhatItWasToldAbout(t *testing.T) {
@@ -132,7 +132,7 @@ func (f *fakeGrower) StorageGrow(_ context.Context, size int64) error {
 	return nil
 }
 
-// The order is the whole mechanism: the FILE grows (thick) before QEMU is told, and QEMU before the
+// The order is the whole mechanism: the file grows (thick) before QEMU is told, and QEMU before the
 // guest fills it -- a guest resizing into a disk the VM has not grown finds nothing, and a VM grown
 // past its file would hand the guest bytes nobody paid for.
 func TestGrowStateDiskGrowsFileThenVMThenGuest(t *testing.T) {
@@ -244,7 +244,7 @@ func TestDiskAlerterWarnsOncePerEpisode(t *testing.T) {
 	}
 }
 
-// The disk-health alert: a steady count of recorded errors says nothing, a GROWING one warns,
+// The disk-health alert: a steady count of recorded errors says nothing, a growing one warns,
 // the disk's own failing verdict is critical, an unreadable read changes nothing, and only a
 // clean disk resolves. One read an hour, and never a second while one is still out.
 func TestSMARTAlerterWarnsOnGrowthAndFailure(t *testing.T) {

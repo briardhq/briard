@@ -14,7 +14,7 @@ import (
 
 func idCfg(t *testing.T) Config {
 	t.Helper()
-	// The rigs name NODE; clear it so these tests exercise the SHIPPED path unless they say
+	// The rigs name NODE; clear it so these tests exercise the shipped path unless they say
 	// otherwise. os.Unsetenv rather than t.Setenv("") -- an explicitly empty entry is a different
 	// thing to the config loader (it wins over config.env), and the shipped path has no entry.
 	os.Unsetenv("NODE")
@@ -53,7 +53,7 @@ func TestMintIdentityGivesAVirginNodeAllThree(t *testing.T) {
 	}
 }
 
-// ⚠️ THE DESTRUCTIVE ONE. A second start must read the records, never mint over them: the
+// ⚠️ The destructive one: a second start must read the records, never mint over them: the
 // replicated volume's metadata is keyed to the node id, so a fresh one is a node that no longer
 // recognises its own disk.
 func TestMintIdentityNeverRemints(t *testing.T) {
@@ -73,13 +73,11 @@ func TestMintIdentityNeverRemints(t *testing.T) {
 	}
 }
 
-// ⚠️ THE GUARD EVERY RIG DEPENDS ON, the same shape as the subnet draw's: NODE in the
-// environment means a harness owns this node's identity, so NOTHING is minted -- not the id it
-// named, and not the two it did not.
-//
-// Minting a flock id beside a named node would give every agent-* rig a random service MAC where
-// it derives one from the node name, and a random mDNS name where it publishes none.
-// Neither rig asks for either, and neither would notice until an assertion about a MAC moved.
+// ⚠️ The guard every rig depends on, the same shape as the subnet draw's: NODE in the environment
+// means a harness owns this node's identity, so nothing is minted, neither the id it named nor
+// the two it did not. A flock id minted beside a named node would give every agent-* rig a random
+// service MAC where it derives one from the node name, and a random mDNS name where it publishes
+// none; no rig asks for either, and none would notice until an assertion about a MAC moved.
 func TestMintIdentityLeavesANamedNodeAlone(t *testing.T) {
 	cfg := idCfg(t)
 	t.Setenv("NODE", "n1")

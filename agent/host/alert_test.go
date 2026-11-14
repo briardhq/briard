@@ -21,7 +21,7 @@ func (f *fakeNotifier) Notify(_ context.Context, a notify.Alert) error {
 	return nil
 }
 
-// qstat is a reading with NO peer detail -- a guest too old to report peers. The alerter may
+// qstat is a reading with no peer detail -- a guest too old to report peers. The alerter may
 // then say only what the count supports, so these readings can never classify as "alone".
 func qstat(quorate bool, connected int) model.Cluster {
 	return model.Cluster{QuorumState: model.QuorumState{Quorate: quorate, Connected: connected}}
@@ -37,7 +37,7 @@ func seen(quorate bool, connected int, peers ...model.PeerState) model.Cluster {
 var (
 	// An anchor that is up carries storage and is fully replicated -- a copy that could take
 	// over. A witness is connected but diskless, so it is a vote and never a copy: the two are
-	// what the peer COUNT cannot tell apart.
+	// what the peer count cannot tell apart.
 	anchorUp    = model.PeerState{Name: "n2", Connected: true, Diskful: true, UpToDate: true}
 	anchorGone  = model.PeerState{Name: "n2"}
 	anchor3Up   = model.PeerState{Name: "n3", Connected: true, Diskful: true, UpToDate: true}
@@ -92,7 +92,7 @@ func TestRedundancyAlerterPrimesReduced(t *testing.T) {
 	}
 }
 
-// THE GRACE IS TIME, NOT READINGS: a loop that ticks twice in the second after bring-up, before
+// The grace is time, not readings: a loop that ticks twice in the second after bring-up, before
 // the peer has connected, must not open a Critical "no second copy" that resolves seconds later.
 // A peer still absent after redundancyConvergeFor is lost, and is announced without waiting
 // for a full reading that may never come.
@@ -143,10 +143,9 @@ func TestRedundancyAlerterNilAndSingleNode(t *testing.T) {
 	}
 }
 
-// On the shipped anchor+anchor+witness flock, losing the WITNESS and losing
-// the PEER ANCHOR both read as connected 1-of-2 -- and only one of them means the household's
-// data is down to a single disk. The count cannot tell them apart; the peer list can, and the
-// owner must be told which one happened.
+// On the shipped anchor+anchor+witness flock, losing the witness and losing the peer anchor both
+// read as connected 1-of-2, and only the second leaves the household's data on a single disk.
+// The count cannot tell them apart; the peer list can, and the owner must be told which happened.
 func TestRedundancyAlerterSaysWhichCopyWentAway(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -213,10 +212,9 @@ func TestRedundancyAlerterFiresOnReducedToAlone(t *testing.T) {
 	}
 }
 
-// AN UNKNOWN IS NOT AN ALARM -- the same rule the reconnect check follows for boot ids. A guest
-// too old to report peers sends none, and the alerter must fall back to the claim the count
-// supports rather than announce a lost second copy it cannot see, or claim a surviving copy it
-// cannot see either.
+// An unknown is not an alarm (the reconnect check's rule for boot ids): a guest too old to report
+// peers sends none, and the alerter must fall back to what the count supports, announcing no lost
+// copy and claiming no surviving one it cannot see.
 func TestRedundancyAlerterWithoutPeerDetailClaimsNothing(t *testing.T) {
 	fn := &fakeNotifier{}
 	a := newRedundancyAlerter(testStore(t, fn), "n1", 2, func(string, ...any) {})
@@ -234,7 +232,7 @@ func TestRedundancyAlerterWithoutPeerDetailClaimsNothing(t *testing.T) {
 	}
 }
 
-// A peer that is connected but still resyncing is NOT a copy that can be failed over to, and
+// A peer that is connected but still resyncing is not a copy that can be failed over to, and
 // the owner is better served by the stronger statement: the second copy is not usable yet.
 func TestRedundancyAlerterResyncingPeerIsNotACopy(t *testing.T) {
 	fn := &fakeNotifier{}
@@ -312,8 +310,8 @@ func TestClockAlerterUnknownNeverFires(t *testing.T) {
 // TestAppAlerter walks the app condition through the readings a node actually takes, via
 // the real store so its dedup is the one under test: down only past the grace, a crash-loop's
 // starting readings do not break the run, a blip followed by a long start never opens, an unknown
-// says nothing, only running AND healthy resolves, and a node that hands the volume over resolves
-// what it opened -- each app on its own key.
+// says nothing, only running and healthy together resolves, and a node that hands the volume over
+// resolves what it opened -- each app on its own key.
 func TestAppAlerter(t *testing.T) {
 	ctx := context.Background()
 	t0 := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)

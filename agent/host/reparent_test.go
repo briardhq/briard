@@ -10,12 +10,10 @@ import (
 	"briard.io/agent/nic"
 )
 
-// THE TIERS, and the one that is not a duration.
-//
-// "Different subnet" is an explicit operator action rather than a longer wait: a paired node
-// that rebuilds itself on a LAN its peer is not on is a split flock,
-// which is the outcome this whole mechanism exists to avoid. Unknown takes the same answer, because
-// "we could not tell" must never be cheaper than "we could tell, and it was elsewhere".
+// The tiers, and the one that is not a duration: "different subnet" is an explicit operator action
+// rather than a longer wait, because a paired node that rebuilds itself on a LAN its peer is not on
+// is a split flock, the outcome this whole mechanism exists to avoid. Unknown takes the same
+// answer: "we could not tell" must never be cheaper than "we could tell, and it was elsewhere".
 func TestReparentWait(t *testing.T) {
 	for _, tc := range []struct {
 		rel   nic.Relation
@@ -34,11 +32,10 @@ func TestReparentWait(t *testing.T) {
 	}
 }
 
-// THE TEST FIXTURE SHRINKS DURATIONS AND NOTHING ELSE. install-macvtap uses it to drive a
-// re-parent without spending the shipped five minutes -- but "different subnet" and "cannot tell"
-// are not long waits, they are an operator's decision, and a fixture that could reach them would
-// let a rig prove a re-parent the product forbids. That is the worst thing a test knob can do, so
-// it is the thing asserted.
+// The test fixture shrinks durations and nothing else. install-macvtap uses it to drive a
+// re-parent without spending the shipped five minutes, but "different subnet" and "cannot tell"
+// are an operator's decision, not long waits; a fixture that reached them would let a rig prove a
+// re-parent the product forbids, the worst thing a test knob can do, so that is what is asserted.
 func TestReparentWaitFixtureCannotUnlockARefusal(t *testing.T) {
 	for _, rel := range []nic.Relation{nic.Elsewhere, nic.Unknown} {
 		if _, ok := reparentWait(rel, time.Millisecond); ok {
@@ -52,18 +49,17 @@ func TestReparentWaitFixtureCannotUnlockARefusal(t *testing.T) {
 	if got, ok := reparentWait(nic.SameSubnet, 2*time.Second); !ok || got != 2*time.Second {
 		t.Errorf("reparentWait(same-subnet, 2s) = %v,%v; want 2s,true", got, ok)
 	}
-	// ...and never LENGTHENS one: a fixture longer than the tier is ignored, so a stray value
+	// ...and never lengthens one: a fixture longer than the tier is ignored, so a stray value
 	// cannot make a production node more sluggish than the shipped policy.
 	if got, _ := reparentWait(nic.SameWire, time.Hour); got != reparentSameWire {
 		t.Errorf("reparentWait(same-wire, 1h) = %v; want the shipped tier", got)
 	}
 }
 
-// THE RECORDED DEVICE RETURNING OUTRANKS EVERY TIER. A NIC back in three seconds must not cost a
-// guest restart -- so the clock resets the moment the parent is visible again, and a later
-// disappearance starts a fresh wait rather than resuming the old one. Without the reset, a device
-// that flapped for six minutes would re-parent on the seventh even though it was present
-// throughout.
+// The recorded device returning outranks every tier: a NIC back in three seconds must not cost a
+// guest restart, so the clock resets the moment the parent is visible again, and a later
+// disappearance starts a fresh wait. Without the reset, a device that flapped for six minutes
+// would re-parent on the seventh though it was present throughout.
 func TestReparenterResetsWhenTheParentComesBack(t *testing.T) {
 	r := &reparenter{}
 	cfg := Config{net: &nic.Spec{Parent: "briard-no-such-parent", SystemTap: "sys0"}}
@@ -88,7 +84,7 @@ func TestReparenterResetsWhenTheParentComesBack(t *testing.T) {
 	}
 }
 
-// A node whose L2 hangs off a bridge is never re-parented: the bridge is the USER's, we never
+// A node whose L2 hangs off a bridge is never re-parented: the bridge is the user's, we never
 // created one, and a bridge that disappears is theirs to restore. Nor is a node that
 // owns no network at all.
 func TestReparenterLeavesWhatIsNotOurs(t *testing.T) {
@@ -111,7 +107,7 @@ func TestReparenterLeavesWhatIsNotOurs(t *testing.T) {
 	}
 }
 
-// The record is PET state and a round trip has to survive a process, because the whole point is
+// The record is pet state and a round trip has to survive a process, because the whole point is
 // comparing today's LAN against the one from before a reboot. A missing or corrupt file reads as
 // the zero fingerprint, which Compare answers Unknown for -- safe, and never a false match.
 func TestNetworkRecordRoundTrip(t *testing.T) {
@@ -148,14 +144,12 @@ func TestNetworkRecordRoundTrip(t *testing.T) {
 		t.Errorf("read %+v with no state dir configured", got)
 	}
 
-	// AN UNUSABLE READING NEVER OVERWRITES A GOOD RECORD. The parent is chosen at start-up and
-	// recorded after BRING-UP, seconds later, so a NIC that goes away in between reads as nothing
-	// -- and writing that would answer Unknown forever, stranding a node that could have healed
-	// itself: without this, the agent replaces a complete fingerprint with
-	// `[eth1 mac=? addr=? gw=?/?]` and then refuses to re-parent for good.
-	//
-	// Re-recorded first, because the corruption above deliberately emptied the file and comparing
-	// nothing against nothing would pass whatever the code did.
+	// An unusable reading never overwrites a good record. The parent is chosen at start-up and
+	// recorded after bring-up, seconds later, so a NIC gone in between reads as nothing; written,
+	// that would answer Unknown forever (a complete fingerprint replaced by
+	// `[eth1 mac=? addr=? gw=?/?]`, then no re-parent for good), stranding a node that could have
+	// healed itself. Re-recorded first: the corruption above deliberately emptied the file, and
+	// comparing nothing against nothing would pass whatever the code did.
 	cfg.recordNetwork(t.Context(), discard)
 	good := cfg.recordedNetwork()
 	if !good.Usable() {
@@ -170,9 +164,9 @@ func TestNetworkRecordRoundTrip(t *testing.T) {
 		t.Errorf("an unreadable device overwrote the record: %+v, was %+v", after, good)
 	}
 
-	// AN AGENT THAT OWNS NO NETWORK MUST NOT CRASH RECORDING ONE. Run calls this unconditionally
-	// after bring-up, and nil is the ordinary state on every rig and every lab node -- so this is
-	// the difference between the fleet running and the fleet panicking on the first bring-up.
+	// An agent that owns no network must not crash recording one: Run calls this unconditionally
+	// after bring-up, and nil is the ordinary state on every rig and lab node, so this is the
+	// difference between the fleet running and the fleet panicking on the first bring-up.
 	(Config{AssignmentCache: filepath.Join(dir, "assignment.json")}).recordNetwork(t.Context(), discard)
 	if _, err := os.Stat(filepath.Join(dir, "none.json")); err == nil {
 		t.Error("recorded a LAN for an agent that owns no network")
@@ -200,7 +194,7 @@ func TestNetworkRecordIsTheShapeOnDisk(t *testing.T) {
 
 func discard(string, ...any) {}
 
-// THE GATEWAY MAC IS A PROPERTY OF THE LAN, NOT OF THE MOMENT. A bring-up with the cable out or a
+// The gateway MAC is a property of the LAN, not of the moment. A bring-up with the cable out or a
 // gateway slow to answer ARP reads none, and the record must neither forget one it had for the
 // same LAN nor stay without one once the gateway answers: the tick completes it. Without the first
 // half, a restart during an outage writes `gw=192.168.78.1/?` over a complete record.

@@ -16,8 +16,8 @@ import (
 )
 
 // testUpgradeBudget is what these tests pass for Config.UpgradeBudget. Every fake here answers
-// immediately, so the value only has to be non-zero — the PRODUCTION default is asserted where it
-// is actually decided, in TestConfigFromEnv_UpgradeBudgetDefault.
+// immediately, so the value only has to be non-zero; the production default is asserted where it
+// is decided, in TestConfigFromEnv_UpgradeBudgetDefault.
 const testUpgradeBudget = time.Minute
 
 // fakeUpgrader records the upgrade call a directive drives.
@@ -117,7 +117,7 @@ func TestApplyDirectiveAgentUpdateTriggersTheUnit(t *testing.T) {
 	}
 }
 
-// The load-bearing negative: an update unit that cannot be started reports FAILED with why, and
+// The load-bearing negative: an update unit that cannot be started reports failed with why, and
 // escalates -- the running binary is kept.
 func TestApplyDirectiveAgentUpdateRefusedEscalates(t *testing.T) {
 	su := &fakeSelfUpdater{current: "v1", triggerErr: fmt.Errorf("start briard-update.service: exit status 5 (Unit briard-update.service not found.)")}
@@ -190,7 +190,7 @@ func (f *fakeUpgrader) RescueGuest(context.Context) error {
 	return f.err
 }
 
-// A rescue directive drives RescueGuest and needs NOTHING else: no payload (the node restarts
+// A rescue directive drives RescueGuest and needs nothing else: no payload (the node restarts
 // its guest on its own image, so there is nothing for a caller to name or get wrong) and no
 // AppSpec (a restart on the image is a property of the node, and a fresh install carries the
 // zero spec, so a verb that needed one could never run on a shipped node).

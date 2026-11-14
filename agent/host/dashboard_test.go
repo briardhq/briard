@@ -59,7 +59,7 @@ func TestDashboardNeedsAFlockNameAndAGuest(t *testing.T) {
 	}
 }
 
-// THE NAME FIRST, WHEN A BROWSER CAN OPEN IT: registered, found to resolve on this network, with
+// The name first, when a browser can open it: registered, found to resolve on this network, with
 // its certificate; the `.local` alias under it with the same code. Short of any of the three,
 // the alias alone -- an https link to a name without its certificate is a warning, not a page.
 func TestDashboardOffersTheNameOnceItIsUsable(t *testing.T) {

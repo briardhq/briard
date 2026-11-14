@@ -41,11 +41,11 @@ func TestNetSpecMacvtap(t *testing.T) {
 	}
 }
 
-// A BRIDGE PARENT IS A DIFFERENT NODE, and the narrowing is what makes the config true rather
-// than merely quiet: a second tap and a private link do not exist on this substrate, so naming
-// them would render the guest a NIC it cannot use. ONE port, the guest makes its own
-// service identity on top, and the host's address is on the bridge: a /32 and one on-link route to its own
-// guest, never the /24 that would claim the whole system subnet on the host's primary device.
+// A bridge parent is a different node, and the narrowing makes the config true rather than merely
+// quiet: a second tap and a private link do not exist on this substrate, so naming them would
+// render the guest a NIC it cannot use. One port, the guest makes its own service identity on
+// top, and the host's address is on the bridge: a /32 and one on-link route to its own guest,
+// never the /24 that would claim the whole system subnet on the host's primary device.
 func TestNetSpecAndSubstrateOnABridge(t *testing.T) {
 	s := macvtapCfg().netSpec("br0", true, false)
 	if !s.Bridge || s.SystemTap != "briard-drbd0" {
@@ -54,7 +54,7 @@ func TestNetSpecAndSubstrateOnABridge(t *testing.T) {
 	if s.ServiceTap != "" || s.PrivTap != "" {
 		t.Errorf("a bridge parent has one port and no private link, got %+v", s)
 	}
-	// THE PREFIX AND THE ROUTE ARE THE ASSERTION: a /32, and the one route that makes it reach the
+	// The prefix and the route are the assertion: a /32, and the one route that makes it reach the
 	// guest -- without the route the host's /32 is on-link to nothing and the guest's node IP is
 	// unreachable from the host (the reboot gate, the backup store's replies).
 	want := []nic.Addr{{CIDR: "10.42.7.129/32", Dev: "br0"}}
@@ -90,11 +90,10 @@ func TestApplySubstrateMacvtapDefaultsTheMode(t *testing.T) {
 	if cfg.ServiceTap != "briard0" || cfg.WitnessTap != "briard-priv0" {
 		t.Errorf("nothing should have been narrowed: %+v", cfg)
 	}
-	// A rig that set NET_MODE itself keeps it -- the environment still wins where the substrate
-	// is not the thing deciding. Only a NON-EMPTY value can say so, and that is not
-	// a gap: platform.NetBridge IS the empty string, so "configured as by-name" and "not
-	// configured" are the same value. Unset means DERIVE, and on a non-bridge parent the
-	// derivation is macvtap -- which is what the assertion above pins.
+	// A rig that set NET_MODE itself keeps it: the environment still wins where the substrate is
+	// not the thing deciding. Only a non-empty value can say so, which is no gap: platform.NetBridge
+	// is the empty string, so "configured as by-name" and "not configured" are the same value.
+	// Unset means derive, and on a non-bridge parent that is macvtap, as pinned above.
 	pinned := macvtapCfg()
 	pinned.NetMode = platform.NetMacvtap
 	if got := pinned.applySubstrate(false).NetMode; got != platform.NetMacvtap {
@@ -102,12 +101,11 @@ func TestApplySubstrateMacvtapDefaultsTheMode(t *testing.T) {
 	}
 }
 
-// AN AGENT WITH NO DEVICE NAMES OWNS NO NETWORK, and must say so immediately rather than wait.
-//
-// This is a failable assertion about an UNBOUNDED LOOP, which is why it carries a deadline of its
-// own: awaitNetwork's exit condition is a successful Converge, and Converge on a spec with no
-// SystemTap can never succeed -- so without the guard this call never returns, which hangs every
-// agent/host test that drives Run() and any real node configured that way.
+// An agent with no device names owns no network, and must say so immediately rather than wait.
+// The test carries its own deadline because it is a failable assertion about an unbounded loop:
+// awaitNetwork exits on a successful Converge, which a spec with no SystemTap never reaches, so
+// without the guard the call never returns, hanging every agent/host test that drives Run() and
+// any real node so configured.
 func TestAwaitNetworkReturnsWhenThereIsNoNetworkToOwn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -155,9 +153,9 @@ func (c *degradedClient) ReportMetrics(context.Context, string, []api.MetricAggr
 	return nil
 }
 
-// A NODE WITH NO USABLE GUEST DEVICE STILL HAS A VOICE. It reports the identity half
-// -- who it is, what it runs, unhealthy -- rather than going silent for as long as it stays
-// degraded, which is the one tier where being told matters most: the household cannot fix it.
+// A node with no usable guest device still has a voice: it reports the identity half (who it is,
+// what it runs, unhealthy) rather than going silent while degraded, the one tier where being told
+// matters most, because the household cannot fix it.
 func TestReportDegradedSendsIdentityAndRefusesTerminally(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, Version: "v3.test"}
 	cc := &degradedClient{give: []api.Directive{
@@ -180,7 +178,7 @@ func TestReportDegradedSendsIdentityAndRefusesTerminally(t *testing.T) {
 		t.Errorf("status = %+v, want no state claimed by a node that is not serving", st)
 	}
 
-	// EVERY directive is refused, and refused TERMINALLY. A directive merely ignored is one the
+	// Every directive is refused, and refused terminally: a directive merely ignored is one the
 	// controller re-delivers forever, which turns a degraded node into a retry loop against a
 	// cloud that cannot help it.
 	if len(dg.pending) != 2 {
@@ -191,7 +189,7 @@ func TestReportDegradedSendsIdentityAndRefusesTerminally(t *testing.T) {
 			t.Errorf("outcome = %+v, want a terminal failure with a reason", o)
 		}
 	}
-	// ...and they ride the NEXT report, so the controller actually learns of them.
+	// ...and they ride the next report, so the controller actually learns of them.
 	cfg.reportDegraded(t.Context(), dg, discard)
 	if len(cc.got) != 2 || len(cc.got[1].Outcomes) != 2 {
 		t.Fatalf("second report = %+v, want it to carry both refusals", cc.got)

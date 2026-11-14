@@ -74,10 +74,10 @@ func TestServeLocalRoundTrip(t *testing.T) {
 	}
 }
 
-// TestServeLocalRejectsBeforeTheLoop pins the two refusals the door makes on its OWN, without
-// bothering the observe loop. The assertion that matters is the negative one: a malformed or
-// kindless request must never reach dispatch, because dispatch's unknown-kind path is a log line
-// and an admin who typo'd a verb deserves an error, not a silent success.
+// TestServeLocalRejectsBeforeTheLoop pins the two refusals the door makes on its own. The negative
+// assertion is the one that matters: a malformed or kindless request must never reach dispatch,
+// whose unknown-kind path is a log line, and an admin who typo'd a verb deserves an error, not a
+// silent success.
 func TestServeLocalRejectsBeforeTheLoop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -94,10 +94,9 @@ func TestServeLocalRejectsBeforeTheLoop(t *testing.T) {
 			reqs := make(chan localRequest, 1)
 			go serveLocal(ctx, sock, "", reqs, quiet)
 
-			// A stand-in observe loop that ALWAYS answers, so a regression that lets a bad
-			// request through fails on the assertion below rather than hanging the suite on a
-			// reply that never comes. A test whose failure mode is a stall is one CI reports
-			// as a timeout ten minutes later, with no clue which invariant broke.
+			// A stand-in observe loop that always answers, so a regression that lets a bad
+			// request through fails the assertion below instead of stalling the suite, which CI
+			// reports as a timeout ten minutes later with no clue which invariant broke.
 			reached := make(chan api.Directive, 1)
 			go func() {
 				select {

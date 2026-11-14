@@ -413,7 +413,7 @@ func TestCasaViewIsPushedAgainEachSession(t *testing.T) {
 	}
 }
 
-// THE PAGE IS TOLD THE ADDRESS, CLAIMED OR NOT: it is what a household types to reach Briard
+// The page is told the address, claimed or not: it is what a household types to reach Briard
 // from away. A failed read keeps the last one; a moved address is pushed again.
 func TestCasaViewCarriesTheAddressUnclaimed(t *testing.T) {
 	r := newCasaRig(t)
@@ -434,9 +434,9 @@ func TestCasaViewCarriesTheAddressUnclaimed(t *testing.T) {
 	}
 }
 
-// A SLOW WORKER NEVER HOLDS THE TICK. The poll and the address write run off the loop and
-// answer on a later tick, so a tick with a Worker that takes half a second returns at once --
-// and the answers still land: the claim registers and the address is written once they do.
+// A slow Worker never holds the tick: the poll and the address write run off the loop and answer
+// on a later tick, so a tick with a Worker that takes half a second returns at once, and the
+// answers still land (the claim registers, the address is written).
 func TestCasaSlowCloudDoesNotHoldTheTick(t *testing.T) {
 	r := newCasaRig(t)
 	r.cloud.slow = 500 * time.Millisecond
@@ -522,10 +522,10 @@ func (r *casaRig) registered(t *testing.T) {
 	r.tickUntilWritten(t, 1)
 }
 
-// THE NAME IS USED ONLY ONCE THE HOUSE RESOLVES IT. Public DNS first, waited on and never
-// skipped: until 1.0.0.1 or 8.8.8.8 answers the VIP, the household's resolver is not asked at
-// all. Either public resolver is enough. Then the household's answer is final for the address;
-// a moved address starts again.
+// The name is used only once the house resolves it. Public DNS first, waited on and never
+// skipped: until 1.0.0.1 or 8.8.8.8 (either is enough) answers the VIP, the household's resolver
+// is not asked at all. Then the household's answer is final for the address; a moved address
+// starts again.
 func TestCasaResolveCheckGatesTheName(t *testing.T) {
 	r := newCasaRig(t)
 	r.dns.set(func(d *fakeDNS) { d.public = map[string][]string{"1.0.0.1": nil, "8.8.8.8": nil} })
@@ -652,7 +652,7 @@ func TestCasaRecheckAsksAgain(t *testing.T) {
 	}
 }
 
-// A NEW NETWORK IS A NEW RESOLVER: the verdict found on one network is forgotten when the host
+// A new network is a new resolver: the verdict found on one network is forgotten when the host
 // finds itself on another, and both steps run again there. The same network read again keeps it,
 // and so does a network that cannot be read.
 func TestCasaResolveCheckRunsAgainOnANewNetwork(t *testing.T) {
