@@ -1,11 +1,12 @@
 #!/bin/sh
 # briard-update: converge this node to the release channel.
 #
-# SHIPPED VERBATIM and FROZEN: a signed artifact of the host chain that install.sh copies
-# into place, never a heredoc. The freeze is the safety property -- this is dumb shell, so a bug
-# in the volatile agent can never wedge the thing that replaces it -- and it is frozen by
-# necessity: it launches the replacement of the binary, so no release can be what fixes it. What
-# shipping adds is that the file is versioned, diffable and covered by the release signature.
+# SHIPPED VERBATIM and FROZEN: a signed artifact of the host chain that the agent install
+# (briard-agent install) copies into place, never a heredoc. The freeze is the safety property
+# -- this is dumb shell, so a bug in the volatile agent can never wedge the thing that replaces
+# it -- and it is frozen by necessity: it launches the replacement of the binary, so no release
+# can be what fixes it. What shipping adds is that the file is versioned, diffable and covered
+# by the release signature.
 #
 # ⚠️ IT HAS NO PRODUCT KNOWLEDGE, and that is the whole design: five steps -- read the channel and
 # keyring, read the target, download the pointer's agent, have the committed agent check it

@@ -24,9 +24,10 @@ set -eu
 # ---- what this script needs to know -------------------------------------------------
 # ⚠️ THE KNOBS ARE NOT HERE, and adding one back is the mistake. Every `BRIARD_*` in the
 # environment reaches the agent, which copies it into config.env with the prefix stripped --
-# `BRIARD_CPU=qemu64` becomes `CPU=qemu64` -- so the installer carries no list of them, no
-# defaults for them and no documentation of them. What each key means and what it defaults to is
-# agent/host/config.go's, which is a binary the channel can fix.
+# `BRIARD_CPU=qemu64` becomes `CPU=qemu64` -- all but the four that configure the install itself
+# (BRIARD_ARTIFACTS, BRIARD_RELEASE, BRIARD_UNIT_DIR, BRIARD_CONFIG). So the installer carries
+# no list of them, no defaults for them and no documentation of them. What each key means and
+# what it defaults to is agent/host/config.go's, which is a binary the channel can fix.
 #
 # Below is the short list this script READS, because it acts on it before any agent runs.
 PREFIX=/opt/briard
@@ -62,7 +63,7 @@ fetch_url() { # url dest -- TLS download for the bootstrap agent (curl or wget, 
 [ "$(id -u)" = 0 ] || die "run as root (curl ... | sudo sh)"
 
 # ---- 1. the agent that installs ----------------------------------------------------
-# The ONLY artifact this script fetches: everything heavy (the qemu bundle, the 2.5 GB guest
+# The ONLY artifact this script fetches: everything heavy (the qemu bundle, the guest
 # image) is the agent's to fetch, AFTER its report card has admitted the host. Asking before
 # taking is what lets a refusal say "nothing was installed" truthfully.
 BOOT=""
