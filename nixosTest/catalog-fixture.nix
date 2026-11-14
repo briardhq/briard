@@ -1,26 +1,25 @@
-# A catalogued app's fixture, read from the version the catalog's list names for it -- the
-# `catalog` flake input's catalog/<app>/<version>.json, as catalog/latest.json names it, is the one
-# place an app's name, version, networking, container, mounts, port, health path, memory and sizes
-# are written, so a test runs what the catalog ships and a version bump touches nothing here.
+# A catalogued app's fixture, read from the version the catalog's list names: the `catalog` flake
+# input's catalog/<app>/<version>.json, as catalog/latest.json names it, is the one place an
+# app's name, version, networking, container, mounts, port, health path, memory and sizes are
+# written, so a test runs what the catalog ships and a version bump touches nothing here.
 #
-# THE EDGE (`edge = true`): the fixture is the app's PREVIOUS version -- the next lower version
-# file beside the listed one -- with the listed one as its variant `next`, so a test can install
-# the one and upgrade to the other (app-edge.nix). The two files must differ only where a new
-# upstream release moves them: version, image, size and installedSize. Anything else that differs
-# is a change somebody made, not an upstream release, and evaluation refuses it.
+# The edge (`edge = true`): the fixture is the app's previous version (the next lower version file
+# beside the listed one), with the listed one as its variant `next`, so a test can install one and
+# upgrade to the other (app-edge.nix). The two files may differ only where an upstream release
+# moves them (version, image, size, installedSize); anything else is a change somebody made, and
+# evaluation refuses it.
 #
-# THE IMAGE is pulled by the entry's own digest. The catalog pins the multi-arch INDEX; pullImage
-# copies with `--override-arch`, so the amd64 image under it is resolved, never stored. What
-# cannot be derived is the hash nix demands of the fetch: pullImage repacks the image into a
-# docker-archive, and that archive's hash is no digest a registry knows. It lives in
-# the catalog's catalog-images.json, keyed on the entry's image ref, one per arch. It is not a manifest field: a
-# node never needs it, and it moves when nixpkgs' skopeo does, which as identity would offer every
-# household an update to the same app. An entry missing there builds with the fake hash and fails
-# printing the real one, which is what goes in the file.
+# The image is pulled by the entry's own digest. The catalog pins the multi-arch index; pullImage
+# copies with `--override-arch`, so the amd64 image under it is resolved, never stored. The hash
+# nix demands of the fetch cannot be derived (pullImage repacks into a docker-archive whose hash
+# no registry knows), so it lives in the catalog's catalog-images.json, keyed on the image ref,
+# one per arch. Not a manifest field: a node never needs it, and it moves with nixpkgs' skopeo,
+# which as identity would offer every household an update to the same app. A missing entry
+# builds with the fake hash and fails printing the real one, which is what goes in the file.
 #
-# The fixture still names the archive's digest rather than the registry's (fixture-app.nix
-# says why), so a test proves the entry's fields, not its exact bytes. A variant carries its own
-# version, env and image but the base's sizes.
+# The fixture names the archive's digest, not the registry's (fixture-app.nix says why), so a
+# test proves the entry's fields, not its exact bytes. A variant carries its own version, env and
+# image but the base's sizes.
 {
   pkgs,
   # The catalog (the flake input) and the app in it.

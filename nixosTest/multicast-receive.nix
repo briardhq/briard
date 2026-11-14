@@ -1,30 +1,30 @@
-# A testScript helper, spliced into each install rig's script: does a group the guest JOINED reach
-# the guest from the household's L2? Shared by install-macvtap, install-bridge and install-wifi --
-# one assertion per substrate, so the three cannot drift apart.
+# A testScript helper spliced into install-macvtap, install-bridge and install-wifi (one assertion
+# for every substrate, so they cannot drift): does a group the guest joined reach it from the
+# household L2?
 #
-# mDNS is asserted on its own, and it is not enough. It is one group, and the mDNS name is only
-# the VISIBLE casualty when the macvtap drops every group the guest joined: SSDP and the
-# discovery Chromecast, Sonos and HomeKit ride are dropped with it, silently. This pins the
-# general property to a second group, a routable one (the SSDP group), where a bridge's snooping
-# treats it differently from the link-local 224.0.0.x block mDNS lives in.
+# mDNS, asserted on its own, is not enough: it is one group, and the mDNS name is only the
+# visible casualty when the macvtap drops every group the guest joined; SSDP and the discovery
+# Chromecast, Sonos and HomeKit ride go silently with it. This pins the general property to a
+# second, routable group (SSDP), which bridge snooping treats differently from the link-local
+# 224.0.0.x block mDNS lives in.
 #
-# THE GUEST'S KERNEL IS THE LISTENER. The guest joins the group over the debug shell (an address
-# with `autojoin`, iproute2 alone -- the image carries no listener of ours, and a rig that baked one
-# in would be testing a different image), and the observer sends a group-specific IGMP query. A
-# member answers with a membership report; the query reaches that kernel only if every filter on
-# the way in passed a frame addressed to the group's MAC. The join is what an integration does in
-# the product; it grants no datapath the product lacks.
+# The guest kernel is the listener. The guest joins over the debug shell (an `autojoin` address,
+# iproute2 alone: the image carries no listener of ours, and a rig that baked one in would test a
+# different image); the observer sends a group-specific IGMP query, which reaches that kernel only
+# if every inbound filter passed a frame addressed to the group MAC, and a member answers with a
+# report. The join is what an integration does in the product; it grants no datapath the product
+# lacks.
 #
-# ⚠️ NOT 224.0.0.1. A general query to all-hosts would need no join, and would pass on a node
-# whose child lacks ALLMULTI: the host kernel joins all-hosts on the macvtap/ipvtap child
-# itself (it has IPv4 enabled), so that MAC is in the child's filter whatever the guest does.
+# ⚠️ Not 224.0.0.1: a general query to all-hosts needs no join and would pass on a node whose child
+# lacks ALLMULTI, because the host kernel joins all-hosts on the macvtap/ipvtap child itself (it has
+# IPv4 enabled), so that MAC is in the child filter whatever the guest does.
 #
-# ⚠️ WHEN THE OBSERVER LISTENS IS PART OF THE ASSERTION, as with mDNS's announcements: a join
-# sends unsolicited reports of its own, which would satisfy a capture taken too early. So the
-# capture is shown silent before the query is sent, and after the guest leaves, a query must
-# draw nothing -- the answer came from the guest's membership, not from anyone else on the L2.
+# ⚠️ When the observer listens is part of the assertion, as with mDNS announcements: a join sends
+# unsolicited reports that would satisfy a capture taken too early. So the capture is shown silent
+# before the query, and after the guest leaves a query must draw nothing: the answer came from the
+# guest membership, not from anyone else on the L2.
 #
-# The address is `scope link` so the guest's own VIP reads, which take the first scope-global
+# The address is `scope link` so the VIP reads of the guest, which take the first scope-global
 # address on the device, never see it.
 { pkgs }:
 ''

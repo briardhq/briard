@@ -1,18 +1,15 @@
-# Witness loss under a WAN outage: the survivor must REFUSE to promote.
+# Witness loss under a WAN outage: the survivor must refuse to promote.
 #
-# The 2-node + cloud-witness tier leans on the cloud witness as the
-# tiebreaker. A WAN outage *removes* it (here: block the witness node). With both
-# disk nodes up that's still 2-of-3 = majority, so the cluster stays quorate and
-# keeps serving — but a *further* node loss leaves the survivor at 1-of-3 = no
-# quorum, and it must **refuse to promote**: no split-brain, no false failover.
-# This is the safety backstop under the user-facing "2 nodes → failover only while
-# your internet is up" claim — with the witness gone, a node death does NOT fail over.
+# The 2-node + cloud-witness tier uses the cloud witness as tiebreaker; a WAN outage removes it
+# (here: block the witness node). Both disk nodes up are still 2-of-3, so the cluster stays
+# quorate and serves; a further node loss leaves the survivor at 1-of-3, no quorum, and it must
+# refuse to promote: no split-brain, no false failover. This is the safety backstop under the
+# user-facing "2 nodes → failover only while your internet is up" claim.
 #
-# Complements the existing tests: drbd-witness (witness *present* → survivor+witness
-# promote) and drbd-fence (isolated primary *self-fences* on quorum loss). The path
-# neither covers is a *minority* survivor correctly refusing to become primary. Uses
-# the same diskless witness VM — the DRBD quorum mechanism is identical whether the
-# witness runs locally or in our cloud (only the deployment location differs).
+# drbd-witness covers the witness present (survivor + witness promote) and drbd-fence the
+# isolated primary self-fencing; neither covers a minority survivor refusing to become primary.
+# The same diskless witness VM serves: the DRBD quorum mechanism is identical whether the witness
+# runs locally or in our cloud (only the deployment location differs).
 { pkgs, guestModule, fixture }:
 
 let
@@ -55,7 +52,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("briard-test-fixture-install.service") # the image, warm before any promotion
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
     # The witness has no tier to build and still needs its `.res` and its attach --
-    # briard-node-storage runs on EVERY node, which is why one call covers both.
+    # briard-node-storage runs on every node, which is why one call covers both.
     witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
 
@@ -76,26 +73,24 @@ pkgs.testers.runNixOSTest {
     service_units = fixture_units(primary)
     primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
-    # THE CRASH BELOW MUST FIND AN UPTODATE REPLICA -- here to keep the refusal HONEST
-    # rather than to enable a promotion. The product's seed path syncs a joiner for real, so a crash
-    # that lands mid-resync leaves a SyncTarget, and a SyncTarget cannot promote whatever quorum
-    # says: every assertion below would hold for the wrong reason. Quorum is the claim under test,
-    # so the survivor is licensed on disk state before quorum is the only thing left refusing it --
-    # and it is waited for while the cluster is still whole, which is this act's precondition.
+    # The crash below must find an UpToDate replica, to keep the refusal honest rather than to
+    # enable a promotion. The seed path syncs a joiner for real, so a crash mid-resync leaves a
+    # SyncTarget, which cannot promote whatever quorum says: every assertion below would hold for
+    # the wrong reason. Quorum is the claim under test, so the disk state of the survivor is
+    # confirmed first, leaving quorum the only thing refusing it, and waited for while the
+    # cluster is still whole (this act's precondition).
     secondary.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
 
-    # WAN outage: the cloud witness becomes unreachable. Both disk nodes are still
-    # up = 2-of-3 = majority, so the cluster stays quorate and keeps serving.
+    # WAN outage: the witness is unreachable; 2-of-3 stays quorate and keeps serving.
     witness.block()
     primary.succeed("drbdadm role r0 | grep -q Primary")
     primary.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz")
 
-    # Now lose the primary too. The survivor is alone: 1-of-3 (dead primary +
-    # partitioned witness) = no quorum, so it must REFUSE to promote — the
-    # split-brain backstop. No failover happens (the documented 2-node-offline limit).
+    # Lose the primary too: the survivor at 1-of-3 (dead primary, partitioned witness) has no
+    # quorum and must refuse to promote. No failover happens (the documented 2-node-offline limit).
     primary.crash()
 
-    # The VIP dies with the crashed primary and does NOT move to the survivor.
+    # The VIP dies with the crashed primary and does not move to the survivor.
     secondary.wait_until_fails("curl -fsS --max-time 3 http://192.168.1.100:8080/healthz")
 
     # Give drbd-reactor ample time to (wrongly) promote, then assert it did not:

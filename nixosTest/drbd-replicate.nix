@@ -1,8 +1,7 @@
-# A real DRBD 9 resource replicating across two nodes under emulation.
-#
-# Answers "does DRBD work under emulation". Steady-state
-# only: bring a replicated volume up, write to the primary, prove the write
-# reached the peer. No drbd-reactor, no VIP, nothing killed — that is the promote and failover tests.
+# A real DRBD 9 resource replicating across two nodes under emulation ("does DRBD work under
+# emulation"). Steady state only: bring a replicated volume up, write to the primary, prove the
+# write reached the peer. No drbd-reactor, no VIP, nothing killed: those are the promote and
+# failover tests.
 { pkgs, guestModule }:
 
 let
@@ -28,18 +27,17 @@ pkgs.testers.runNixOSTest {
     for m in machines:
         m.wait_for_unit("multi-user.target")
         m.succeed("modprobe drbd")
-        # The product's storage bring-up. It create-md's with --force only because
-        # its probe found no DRBD metadata on the LV, so there is nothing to protect; that is NOT
-        # force-promotion, which stays banned tree-wide (CONTRIBUTING.md invariant 3).
+        # The product's storage bring-up. Its create-md uses --force only because its probe found
+        # no DRBD metadata on the LV, so there is nothing to protect; that is not force-promotion,
+        # which stays banned tree-wide (CONTRIBUTING.md invariant 3).
         m.succeed("briard-test-storage")
 
     # The two sides find each other on the private DRBD subnet.
     node1.wait_until_succeeds("drbdadm cstate r0 | grep -q Connected")
 
-    # Skip the initial full sync: both backing disks are blank, so we declare
-    # them in sync (--clear-bitmap). This makes node1 UpToDate, so it can be
-    # promoted *without* force-promotion — the one-time bootstrap that would
-    # otherwise need the forbidden command. (Volume id r0/0: per-node volume form.)
+    # Skip the initial full sync: both backing disks are blank, so declare them in sync
+    # (--clear-bitmap). node1 is then UpToDate and promotes without force-promotion, the one-time
+    # bootstrap that would otherwise need the forbidden command. (r0/0: per-node volume form.)
     node1.succeed("drbdadm new-current-uuid --clear-bitmap r0/0")
     node1.succeed("drbdadm primary r0")
 

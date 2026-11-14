@@ -1,11 +1,10 @@
 # 2 disk nodes + 1 diskless witness: DRBD-9 diskless quorum.
 #
-# The two-node topology: two real nodes plus a cloud
-# tiebreaker. The witness runs DRBD *diskless* (a quorum voter with no data copy)
-# and does NOT run drbd-reactor — it never runs the apps. Kill the primary
-# disk node and the lone survivor still fails over, because survivor + witness =
-# 2 of 3 = quorum; a bare 2-node cluster (1 of 2) could not. That is the whole
-# point of the diskless tiebreaker, and what makes 2-node homes genuinely HA.
+# The two-node topology: two real nodes plus a cloud tiebreaker that runs DRBD diskless (a quorum
+# voter with no data copy) and runs no drbd-reactor: it never runs the apps. Kill the primary and
+# the lone survivor still fails over: survivor + witness = 2 of 3 = quorum, where a bare 2-node
+# cluster (1 of 2) could not. That is the point of the diskless tiebreaker, and what makes 2-node
+# homes genuinely HA.
 { pkgs, guestModule, fixture }:
 
 let
@@ -52,7 +51,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("briard-test-fixture-install.service")
         m.succeed("briard-test-storage --seed" if m == node1 else "briard-test-storage")
     # The witness has no tier to build and still needs its `.res` and its attach --
-    # briard-node-storage runs on EVERY node, which is why one call covers both.
+    # briard-node-storage runs on every node, which is why one call covers both.
     witness.succeed("briard-test-storage")
     # All three connected (node1 ↔ node2 + the diskless witness). The joiner syncs from the
     # seed for real (asserted before the crash below).
@@ -76,14 +75,12 @@ pkgs.testers.runNixOSTest {
     t1 = int(json.loads(primary.succeed("curl -fsS http://192.168.1.100:8080/state"))["ticks"])
     print(f"primary={primary.name} tick={t1}")
 
-    # Kill the primary disk node. Survivor + diskless witness = 2 of 3 = quorum,
-    # so the survivor promotes and serves — the diskless-quorum win (a lone disk
-    # node would be 1 of 2 and self-fence).
+    # Kill the primary: survivor + witness = 2 of 3 = quorum, so the survivor promotes and serves
+    # (a lone disk node would be 1 of 2 and self-fence).
     survivor = next(m for m in disk_nodes if m != primary)
-    # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
-    # real, so a replica is a SyncTarget until that initial resync completes -- and a SyncTarget
-    # cannot promote. "Replicated" is the claim under test, so assert the disk state before
-    # removing the only UpToDate copy.
+    # The crash must find an UpToDate replica: the seed path syncs a joiner for real, a replica is
+    # a SyncTarget until that resync completes, and a SyncTarget cannot promote. "Replicated" is
+    # the claim under test, so assert the disk state before removing the only UpToDate copy.
     survivor.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
     primary.crash()
 

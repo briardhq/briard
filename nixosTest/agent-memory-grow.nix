@@ -1,14 +1,13 @@
-# The host agent GROWS its guest's memory on its own when the guest runs short.
+# The host agent grows its guest's memory on its own when the guest runs short.
 #
-# The real product agent boots the real guest disk at 1 GB under nested QEMU, launched with room
-# to grow (-m 1024,slots=…,maxmem=…). The test then makes the guest short of memory the one way
-# that cannot be argued with -- incompressible data in a tmpfs, which is neither page cache nor
-# anything zram can shrink -- and does nothing else. What must follow is the agent's own decision:
-# MemAvailable below the floor for the level window, one DIMM hot-added over QMP, and the guest's
-# kernel counting the memory (its MemTotal, as the resources verb reports it in the host's status
-# line). Growth lasts until the next launch, which boots back at 1 GB -- by construction, since
-# the launch reads the configured size and the minimums of the installed apps, never the grown size;
-# the unit tests hold that line.
+# The real agent boots the real guest disk at 1 GB under nested QEMU, with room to grow
+# (-m 1024,slots=…,maxmem=…). The test makes the guest short the one way that cannot be argued
+# with (incompressible data in a tmpfs: neither page cache nor anything zram can shrink) and does
+# nothing else. The agent must decide on its own: MemAvailable below the floor for the level
+# window, one DIMM hot-added over QMP, and the guest kernel counting it (MemTotal, as the
+# resources verb reports it in the host's status line). Growth lasts until the next launch, which
+# boots back at 1 GB by construction: the launch reads the configured size and the minimums of
+# the installed apps, never the grown size (the unit tests hold that line).
 { pkgs, guestDisk, agent, netWrap, dressBase }:
 let
   # Typed into the guest's root shell (the debug console), one line at a time. It leaves ~150 MB

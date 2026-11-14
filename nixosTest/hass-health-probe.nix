@@ -1,25 +1,22 @@
-# WHICH SIGNAL SAYS HOME ASSISTANT IS BROKEN? -- a discovery probe, run by hand.
+# Which signal says Home Assistant is broken? A discovery probe, run by hand.
 #
-# The history marks an event red when the app is unhealthy after it, and the signal is the
-# per-app probe (`/manifest.json`), which is in doubt: Home Assistant's recovery
-# mode keeps its frontend serving. This rig does not decide; it breaks Home Assistant one way at a
-# time and records what every candidate signal says, so the signal is chosen from evidence:
-#
+# The history marks an event red when the app is unhealthy after it, and the signal, the per-app
+# probe (`/manifest.json`), is in doubt: recovery mode keeps the frontend serving. This rig breaks
+# Home Assistant one way at a time and records every candidate signal, so the choice rests on
+# evidence:
 #   - the HTTP endpoint, `/manifest.json` (the healthPath): status and latency;
-#   - `/api/config`: `state`, `recovery_mode`, `safe_mode`;
+#   - `/api/config`: `state`, `recovery_mode`, `safe_mode`, and its status code;
 #   - config entries by state (`loaded`, `setup_error`, `setup_retry`, ...);
-#   - ERROR lines in `/api/error_log`;
+#   - ERROR lines in `/api/error_log`, and the live `.corrupt.` files;
 #   - the container unit: active state and restart count.
-#
 # The faults include a config-entry integration that fails or is not ready, and a real event-loop
-# spin during setup and after the start; every sample also records `/api/config`'s status code and
-# the live `.corrupt.` files.
+# spin during setup and after the start.
 #
-# Each fault starts from the same known-good copy of the data (a btrfs snapshot taken once Home
-# Assistant is up), is injected, and is followed by a converge-shaped restart and a 3-minute
-# window. The work is health-probe.py; this file stands Home Assistant up, takes the copy, and
-# prints the matrix. It asserts that the baseline is healthy on every signal -- a probe whose
-# control is broken measures nothing -- and that a crash is restarted.
+# Each fault starts from the same known-good copy (a btrfs snapshot of the data once Home
+# Assistant is up), is injected, then gets a converge-shaped restart and a 3-minute window.
+# health-probe.py does the work; this file stands Home Assistant up, takes the copy, prints the
+# matrix, and asserts the baseline is healthy on every signal (a probe whose control is broken
+# measures nothing) and that a crash is restarted.
 { pkgs, guestModule, fixture }:
 
 let
@@ -77,7 +74,7 @@ pkgs.testers.runNixOSTest {
         timeout=300,
     )
 
-    # THE KNOWN-GOOD COPY, taken with Home Assistant stopped so every fault starts from the same
+    # The known-good copy, taken with Home Assistant stopped so every fault starts from the same
     # flushed state. Stopping the container releases the subvolume's bind; the pod stays up.
     units = fixture_units(node1)
     node1.succeed(f"systemctl stop {units[-1]}")
@@ -101,9 +98,9 @@ pkgs.testers.runNixOSTest {
     assert matrix["baseline"]["http_200_share_last_60s"] == 1 and base.get("auth") and str(base.get("state")).upper() == "RUNNING" \
         and not base.get("recovery"), f"the control is not healthy, so nothing above means anything: {matrix['baseline']}"
 
-    # A CRASHED HOME ASSISTANT IS RESTARTED, the one product claim this probe carries. Under
-    # quadlet's default exit policy the pod goes down with its container, systemd stops the unit as
-    # its dependent, and Restart=always never fires; the pod's ExitPolicy=continue is what prevents it.
+    # A crashed Home Assistant is restarted: the one product claim this probe carries. Under the
+    # default exit policy of quadlet the pod goes down with its container, systemd stops the unit
+    # as its dependent, and Restart=always never fires; the pod's ExitPolicy=continue prevents it.
     crash = matrix["custom-crash"]
     assert crash["restarts"] > 0, f"a crashed Home Assistant was not restarted: {crash}"
   '';

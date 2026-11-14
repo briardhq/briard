@@ -1,4 +1,4 @@
-# The catalog-sign LAB HELPER, built from the real shared/manifest so a signed lab catalog is
+# The catalog-sign lab helper, built from the real shared/manifest so a signed lab catalog is
 # signed over the same bytes the product parses. Same Go module as the agent, so it shares the
 # module-wide vendorHash (one definition, vendor-hash.nix).
 { buildGoModule }:

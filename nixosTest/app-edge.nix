@@ -1,20 +1,19 @@
-# AN APP'S EDGE: its previous version to the candidate, through the real agent, the way a
-# household takes the update. One test for every catalogued app, built from two of its version
-# files (catalog-fixture.nix `edge`): install the previous version, write a marker into its data,
-# upgrade to the candidate through the real health gate, check the marker, then `briard app undo`
-# to the point the upgrade took and check that the data is the data from before it.
+# An app's edge: its previous version to the candidate, through the real agent, as a household
+# takes the update. One test per catalogued app, from two of its version files (catalog-fixture.nix
+# `edge`): install the previous version, mark its data, upgrade through the real health gate,
+# check the marker, then `briard app undo` to the point the upgrade took and check the data is
+# from before it.
 #
-# What it proves is the release, not Briard: the platform's own upgrade and undo are proven on
-# the dummy elsewhere (agent-install-undo, hass-upgrade); here the subject is whether THIS
-# upstream version comes up healthy over THAT one's data, and whether going back still works.
-# A household that skipped releases takes an untested jump; upstream's own migrations are built
-# for that, and the free catalog accepts it.
+# It proves the release, not Briard (the platform's upgrade and undo are proven elsewhere:
+# agent-install-undo, hass-upgrade): does this upstream version come up healthy over that one's
+# data, and does going back still work. A household that skipped releases takes an untested jump;
+# upstream migrations are built for that, and the free catalog accepts it.
 #
-# FAILABLE BOTH WAYS. The version a node runs is read from the agent's own status line (the
-# accepted manifest's identity, and no `!unhealthy` after it), never from what the test asked
-# for; the marker written after the upgrade must be GONE after the undo, so a pass cannot come
-# from an undo that put nothing back. `app-edge-dummy-bad` is this test over the dummy's
-# poisoning version: red by design, it is the proof the gate's verdict reaches the test.
+# Failable both ways: the running version is read from the agent's status line (the accepted
+# manifest's identity, no `!unhealthy` after it), never from what the test asked for; the marker
+# written after the upgrade must be gone after the undo, so an undo that put nothing back fails.
+# `app-edge-dummy-bad` runs this over the dummy's poisoning version: red by design, the proof the
+# gate's verdict reaches the test.
 {
   pkgs,
   guestDisk,
@@ -25,10 +24,10 @@
   fixture,
 }:
 let
-  # Room for the guest's image store, measured from what the entry says it holds: the guest
-  # loads BOTH versions' images into its state disk at boot, before the agent grows that disk for
-  # an install, so the rig makes the state disk that size up front (the agent keeps a disk that
-  # exists), and the host disk holds it.
+  # Room for the guest's image store, from what the entry says it holds: the guest loads both
+  # versions' images into its state disk at boot, before the agent grows that disk for an
+  # install, so the rig makes it that size up front (the agent keeps a disk that exists), and the
+  # host disk holds it.
   stateMB = 2048 + 4 * (fixture.installedSize / 1048576);
   diskMB = 10240 + stateMB;
 in
@@ -164,7 +163,7 @@ pkgs.testers.runNixOSTest {
             print(guest(f"dmesg | tail -40; free -m; systemctl status briard-stage --no-pager | head -5; journalctl -b --no-pager -u briard-stage -u briard-{svc}-app-image | tail -30", wait=10))
         return rc
 
-    # BOTH VERSIONS' IMAGES ARE STAGED, loaded by the guest at boot beside everything else: an
+    # Both versions' images are staged, loaded by the guest at boot beside everything else: an
     # install before the load is done finds no image and, with no registry here, cannot pull one.
     # Seconds for the dummy, minutes for two real images.
     for _ in range(120):
@@ -174,14 +173,14 @@ pkgs.testers.runNixOSTest {
         print(guest("systemctl status briard-stage --no-pager | head -8; df -h / /var/tmp /var/lib/containers; free -m; dmesg | grep -i -E \"oom|killed\" | tail -5; journalctl -b --no-pager -u briard-stage | tail -15", wait=15))
         raise Exception("the guest never finished loading the staged images")
 
-    # === THE PREVIOUS VERSION, installed and healthy, with data of its own. ===
+    # === The previous version, installed and healthy, with data of its own. ===
     assert install() == 0, "installing the previous version failed"
     running(prev_id)
     guest(f"echo before > {data}/.briard-edge-before; sync -f /var/lib/briard; echo D\"\"ONE")
     assert markers() == ("before", ""), f"the marker did not land in the app's data: {markers()}"
     print(f"{svc}: the previous version runs ({prev_id})")
 
-    # === THE CANDIDATE, through the real health gate. ===
+    # === The candidate, through the real health gate. ===
     publish("${fixture}/variants/next/catalog")
     assert install() == 0, "the upgrade to the candidate did not pass its health gate"
     running(next_id)
@@ -195,7 +194,7 @@ pkgs.testers.runNixOSTest {
     assert markers() == ("before", "after"), f"the candidate's marker did not land: {markers()}"
     print(f"{svc}: the candidate runs over the previous version's data ({next_id})")
 
-    # === AND BACK: the point the upgrade took, restored. ===
+    # === And back: the point the upgrade took, restored. ===
     history = host.succeed(f"briard-agent app history {svc}")
     print(history)
     points = re.findall(r"^\s+(\S*app-update-before\S*)\s*$", history, re.M)

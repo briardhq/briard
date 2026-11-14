@@ -1,26 +1,26 @@
-# WHAT ONE BAD SECTOR COSTS A LONE NODE: ONE FILE (the lone-node-runs-no-DRBD exit assertion; the companion flock rig's question).
+# What one bad sector costs a lone node: one file (the lone-node-runs-no-DRBD exit assertion;
+# the question of the companion flock rig).
 #
-# The companion flock rig measured the DRBD answer on this same injector: with no UpToDate diskful peer, DRBD turns
-# a single unreadable sector into a whole-volume outage in every `on-io-error` mode -- `detach`
-# drops the disk and fails everything, `pass_on` downgrades it to Inconsistent and
-# `drbd_data_accessible()` finds no UpToDate copy, and forcing UpToDate is undone by the next read
-# of the bad sector. That measurement is why a lone node runs no DRBD; this rig is the
-# other half of the argument, on the product's own stack: LVM on a dm-dust device, btrfs on the
-# data LV, the chain started from its target, a fixture serving -- then one sector under a data
-# file goes bad. The verdict is that EXACTLY ONE file becomes unreadable, every other file still
-# reads, the reverse proxy still answers, the chain stays up and nothing was held or rebooted.
+# The flock rig measured DRBD on this same injector: with no UpToDate diskful peer, one unreadable
+# sector becomes a whole-volume outage in every `on-io-error` mode (`detach` drops the disk and
+# fails everything, `pass_on` downgrades it to Inconsistent and `drbd_data_accessible()` finds no
+# UpToDate copy, and forcing UpToDate is undone by the next read of the bad sector). That is why
+# a lone node runs no DRBD. This rig is the other half, on the product stack: LVM on a dm-dust
+# device, btrfs on the data LV, the chain started from its target, a fixture serving; then one
+# sector under a data file goes bad. Verdict: exactly one file becomes unreadable, every other
+# still reads, the reverse proxy answers, the chain stays up, nothing is held or rebooted.
 #
-# THE INJECTOR IS dm-dust, as in the flock rig: `addbadblock` fails reads of one sector, in place, with
-# the filesystem mounted. The tier is built on the dust device (mkNode's tierDevice), not on
-# /dev/vdb, so the sector is bad underneath everything the product stacks on it. Encryption is
-# OFF for this rig only so the arithmetic from a btrfs chunk to a dust sector has one constant
-# layer (the LV's start on the PV) rather than two; the claim is about btrfs, which sits above
-# the cipher either way, and every other lone-node rig runs encrypted.
+# dm-dust `addbadblock` fails reads of one sector in place, with the filesystem mounted. The tier
+# is built on the dust device (mkNode's tierDevice), not /dev/vdb, so the sector is bad under
+# everything the product stacks. Encryption is off for this rig only, so a btrfs chunk maps to a
+# dust sector through one constant layer (the LV's start on the PV) rather than two; the claim is
+# about btrfs, which sits above the cipher either way, and every other lone-node rig runs
+# encrypted.
 #
-# WHERE THE BAD SECTOR GOES. btrfs data lives in chunks whose physical placement the chunk tree
-# states (`btrfs inspect-internal dump-tree -t chunk`); the first DATA chunk is filled with 1 MiB
-# files, so 1 MiB into it is inside some file's extent. Metadata is DUP and never targeted --
-# a metadata sector would be healed from its copy, which is a different (and also good) story.
+# Where the bad sector goes: the chunk tree (`btrfs inspect-internal dump-tree -t chunk`) states
+# where each data chunk lies; the first DATA chunk is filled with 1 MiB files, so 1 MiB into it is
+# inside some file's extent. Metadata is DUP and never targeted: a metadata sector would be healed
+# from its copy, a different (and also good) story.
 { pkgs, guestModule, fixture }:
 
 let
@@ -100,7 +100,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed(f"dmsetup message dusty 0 addbadblock {BAD}")
     node1.succeed("echo 3 > /proc/sys/vm/drop_caches")
 
-    # === THE VERDICT: one file, and only one =============================================
+    # === The verdict: one file, and only one =============================================
     unreadable = []
     for i in range(FILES):
         rc, out = node1.execute(f"cat /var/lib/briard/media-error/f{i} > /dev/null 2>&1")

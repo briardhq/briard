@@ -1,29 +1,25 @@
-# WHAT AN HOURLY SAMPLE COSTS HOME ASSISTANT -- a stopwatch with a verdict, run by hand.
+# What an hourly sample costs Home Assistant: a stopwatch with a verdict, run by hand.
 #
-# The history samples a running Home Assistant by the clock, and every such sample holds the
-# recorder still (a truncating WAL checkpoint plus a held transaction, agent/hass/quiesce.go).
-# At the hourly clock, this measures what that costs on a recorder with
-# real history under real write load:
-#
-#   - the pause: how long getting the lock takes and how long it is held (the product reports
-#     both, `acquire_ms` / `hold_ms`), p95 across samples;
-#   - whether the lock HOLDS, since a lock Home Assistant breaks under backlog makes the sample
-#     crash-consistent -- the anchor quietly becoming `crash`;
-#   - whether an automation notices: a probe automation is timed inside and outside samples;
+# Every clock sample of the history holds the recorder still (a truncating WAL checkpoint plus a
+# held transaction, agent/hass/quiesce.go). At the hourly clock, on a recorder with real history
+# under real write load, this measures:
+#   - the pause: lock acquire and hold time (the product reports `acquire_ms` / `hold_ms`), p95;
+#   - whether the lock holds: a lock Home Assistant breaks under backlog makes the sample
+#     crash-consistent, the anchor quietly becoming `crash`;
+#   - whether an automation notices: a probe automation timed inside and outside samples;
 #   - the space an hourly member pins, extrapolated from the churn between two samples.
+# Logged, not judged, for the recorder check (agent/hass/dbcheck.go): how often a held sample
+# still has a non-empty -wal (the check reads the main file alone, so those frames wait a night),
+# and how long its quick_check takes on this database.
 #
-# And, logged rather than judged, two numbers the recorder check (agent/hass/dbcheck.go) depends
-# on: how often a held sample still carries a non-empty -wal (the check reads the main file
-# alone, so those frames wait a night), and how long its quick_check takes on this database.
+# The history is synthetic: entities with thousands of states each, written through the REST API
+# so the recorder writes them as any state, then a writer running at each rate. quiesce-cost.py
+# does the work and prints a JSON verdict; this file stands Home Assistant up, adds the probe
+# automation, and asserts the verdict.
 #
-# The history is SYNTHETIC: entities with thousands of states each, written through the REST API
-# so the recorder writes them as it would any state, then a writer that keeps going at each rate.
-# The work is quiesce-cost.py, which prints a JSON verdict; this file stands Home Assistant up,
-# adds the probe automation, and asserts the verdict.
-#
-# ⚠️ L0 IS NESTED AND CONTENDED, so the numbers are an UPPER bound: a pass here is a pass, and a
-# fail needs a run on real hardware before it decides anything. Which is also why it is not in the
-# nightly: a verdict that moves with the box's load is not a statement about the product.
+# ⚠️ L0 is nested and contended, so the numbers are an upper bound: a pass is a pass, a fail needs
+# real hardware before it decides anything. Hence not in the nightly: a verdict that moves with
+# the box's load is not a statement about the product.
 { pkgs, guestModule, fixture }:
 
 let
@@ -33,7 +29,7 @@ let
   driver = ./quiesce-cost.py;
 
   # The probe: a state change on sensor.probe increments counter.probe, and the driver times the
-  # gap. Written BEFORE the first boot, so no restart is needed to load it: plant.py writes Home
+  # gap. Written before the first boot, so no restart is needed to load it: plant.py writes Home
   # Assistant's default only when there is no configuration yet, and appends `briard:` either way.
   probeConfig = pkgs.writeText "configuration.yaml" ''
     default_config:
@@ -122,7 +118,7 @@ pkgs.testers.runNixOSTest {
         timeout=120,
     )
 
-    # THE MEASUREMENT. Generous: seeding 100k states through REST is minutes on its own.
+    # A generous timeout: seeding 100k states through REST is minutes on its own.
     out = node1.succeed("python3 ${driver} 2>/tmp/quiesce-cost.log", timeout=3600)
     print(node1.succeed("cat /tmp/quiesce-cost.log | tail -60"))
     verdict = json.loads(out.strip().splitlines()[-1])

@@ -1,4 +1,4 @@
-# The backup-store TEST HELPER, built from the real agent/host package so backup.nix backs up into
+# The backup-store test helper, built from the real agent/host package so backup.nix backs up into
 # the store that ships rather than a stand-in REST server. Same Go module as the agent, so it shares
 # the module-wide vendorHash (one definition, vendor-hash.nix).
 { buildGoModule }:

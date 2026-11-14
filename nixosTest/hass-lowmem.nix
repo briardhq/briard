@@ -1,22 +1,20 @@
-# HOW DOES HOME ASSISTANT BEHAVE IN A 1 GB GUEST WITH ZRAM? -- a measurement, run by hand.
+# How does Home Assistant behave in a 1 GB guest with zram? A measurement, run by hand.
 #
 # The guest boots small (1 GB by default) and the agent grows it a DIMM at a time while it runs
 # (agent/host/memory.go); this rig has no host, so its 1 GB is fixed. Whether a guest that small
-# is viable, and what its memory looks like when it is
-# not, is a question for evidence: this boots the shipped guest module at 1 GB, installs the real
-# Home Assistant image onto the volume the way the product does, lets it serve, and prints a
-# timeline of the numbers the resources verb reports (the same kernel files, read the same way):
-#
+# is viable, and what its memory looks like when it is not, is a question for evidence: this
+# boots the shipped guest module at 1 GB, installs the real Home Assistant image onto the volume
+# as the product does, lets it serve, and prints a timeline of what the resources verb reports
+# (the same kernel files, read the same way):
 #   avail/total    MemAvailable / MemTotal -- counts reclaimable cache, knows nothing of swap
 #   anon           AnonPages: what only swap can reclaim
 #   zram a->b      what zram holds (uncompressed) -> the RAM that costs
-#   swpin/swpout   cumulative pages; a CLIMBING swpin is parked memory coming back
+#   swpin/swpout   cumulative pages; a climbing swpin is parked memory coming back
 #   psi_some/full  avg60 of the memory stall -- the cost users feel
 #   top cgroups    the two systemd units holding the most anonymous memory
-#
-# It asserts only what makes the numbers mean anything: the guest really has ~1 GB, and zram is
-# really active as swap (the image's module list is forced, so a zram module that was never
-# loaded would silently turn this into a no-swap run). Everything else is printed, not judged.
+# It asserts only what makes the numbers mean anything: ~1 GB really, and zram really active as
+# swap (the image's module list is forced, so a never-loaded zram module would silently make this
+# a no-swap run). Everything else is printed, not judged.
 { pkgs, guestModule, fixture }:
 
 let
@@ -46,10 +44,10 @@ let
     echo
   '';
 
-  # WHERE THE MEMORY IS, at one moment: the kernel's own accounting, then the same memory seen
-  # three ways -- per process (PSS, so a shared library is split among its users instead of being
-  # counted whole by each), per systemd unit (the cgroup's anon and file), and per tmpfs -- then
-  # the largest slab caches. Printed, never judged: it exists to find a trimming candidate.
+  # Where the memory is, at one moment: the kernel's own accounting, then the same memory per
+  # process (PSS, so a shared library is split among its users, not counted whole by each), per
+  # systemd unit (cgroup anon and file) and per tmpfs, then the largest slab caches. Printed, never
+  # judged: it exists to find a trimming candidate.
   breakdown = pkgs.writeShellScript "mem-breakdown" ''
     echo "-- meminfo (MB)"
     awk '/^(MemTotal|MemFree|MemAvailable|Buffers|Cached|Shmem|AnonPages|Mapped|Slab|SReclaimable|SUnreclaim|KernelStack|PageTables|Percpu|VmallocUsed|SwapTotal|SwapFree|Unevictable|Mlocked):/{printf "  %-14s %6d\n", $1, $2/1024}' /proc/meminfo

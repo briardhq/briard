@@ -1,17 +1,16 @@
-# A LEAK STAYS IN ITS OWN APP.
+# A leak stays in its own app.
 #
-# An app that declares a minimum memory gets a container limit of quadlet.MemoryLimitFactor
-# times it (and its minimum in swap). The renderer's unit test proves the quadlet SOURCE says so;
-# this proves the rest of the chain on a booted guest: quadlet passes the lines through into the
-# generated systemd unit, the kernel enforces them on that unit's whole cgroup, and a process that
-# grows past the limit is killed by a CGROUP out-of-memory -- the kernel names the two differently
-# -- while the app and everything beside it carry on.
+# An app declaring a minimum memory gets a container limit of quadlet.MemoryLimitFactor times it
+# (and its minimum in swap). The renderer's unit test proves the quadlet source says so; this
+# proves the rest on a booted guest: quadlet passes the lines into the generated systemd unit, the
+# kernel enforces them on that unit's whole cgroup, and a process growing past the limit is killed
+# by a cgroup out-of-memory (the kernel names the two differently) while the app and everything
+# beside it carry on.
 #
-# The leak is a process run inside the unit's cgroup rather than inside the container: the fixture
-# image holds nothing but its own binary, so there is nothing to `podman exec`. A child cgroup of
-# the unit is what a container's own processes live under too, and the unit's limit covers its
-# whole subtree, so the charge lands exactly where a leaking app's would. `tail /dev/zero` is
-# the leak: one endless line, buffered without bound.
+# The leak (`tail /dev/zero`: one endless line, buffered without bound) runs in a child cgroup of
+# the unit, not in the container: the fixture image holds only its own binary, so there is nothing
+# to `podman exec`. A container's own processes live under such a child too, and the unit limit
+# covers its whole subtree, so the charge lands exactly where a leaking app's would.
 { pkgs, guestModule }:
 
 let
@@ -30,11 +29,11 @@ pkgs.testers.runNixOSTest {
   name = "app-memory-limit";
   nodes.node1 = {
     imports = [ node ];
-    # THE PRODUCT'S VALUE, which the test framework overrides. nixpkgs' test instrumentation sets
-    # vm.panic_on_oom = mkDefault 2 so a test dies loudly on any OOM -- and mode 2 panics on a
-    # CGROUP OOM too, which turns the containment under test into a guest crash (without this
-    # line, the leak meeting the app's limit panics the kernel). The shipped guest sets
-    # nothing, so it runs the kernel default 0, where a cgroup OOM kills inside the cgroup.
+    # The product's value, which the test framework overrides: nixpkgs' test instrumentation sets
+    # vm.panic_on_oom = mkDefault 2 so a test dies loudly on any OOM, and mode 2 panics on a cgroup
+    # OOM too, turning the containment under test into a guest crash (without this line, the leak
+    # panics the kernel). The shipped guest sets nothing, so it runs the kernel default 0, where a
+    # cgroup OOM kills inside the cgroup.
     boot.kernel.sysctl."vm.panic_on_oom" = 0;
   };
 
@@ -51,7 +50,7 @@ pkgs.testers.runNixOSTest {
     install_fixture(node1)
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100:8080/healthz", timeout=120)
 
-    # 1. The GENERATED unit carries the limits: quadlet passed the [Service] lines through.
+    # 1. The generated unit carries the limits: quadlet passed the [Service] lines through.
     mem = node1.succeed(f"systemctl show -p MemoryMax --value {unit}").strip()
     swap = node1.succeed(f"systemctl show -p MemorySwapMax --value {unit}").strip()
     assert mem == str(64 << 20), f"{unit} MemoryMax={mem}, want 64 MB (4 x the declared 16)"
@@ -73,7 +72,7 @@ pkgs.testers.runNixOSTest {
     leak = node1.succeed("cat /tmp/leak.pid").strip()
     node1.wait_until_fails(f"kill -0 {leak}", timeout=60)
 
-    # 3. It was the APP's limit that stopped it, not the guest running out: a cgroup OOM, and
+    # 3. It was the app's limit that stopped it, not the guest running out: a cgroup OOM, and
     # the unit's own counter says so (memory.events counts its whole subtree).
     node1.succeed("journalctl -k --no-pager | grep -q 'Memory cgroup out of memory'")
     node1.fail("journalctl -k --no-pager | grep -v 'Memory cgroup' | grep -q 'Out of memory:'")

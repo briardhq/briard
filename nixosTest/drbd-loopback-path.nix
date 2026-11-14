@@ -1,11 +1,11 @@
-# Gating experiment — does DRBD accept a LOOPBACK per-path address via plain drbdsetup, with
-# no drbd-proxy `proxy {}` section? This is what the cloud-witness loopback-label scheme rests on: the witness would give each anchor a loopback identity label the proxy
-# source-binds to. If DRBD binds a loopback local path address and goes Connecting (rather than
-# EADDRNOTAVAIL "Configured local address not found"), the scheme is viable.
+# Gating experiment for the cloud-witness loopback-label scheme (the witness would give each
+# anchor a loopback identity label the proxy source-binds to): does DRBD accept a loopback
+# per-path address via plain drbdsetup, with no drbd-proxy `proxy {}` section? If it binds one and
+# goes Connecting (not EADDRNOTAVAIL "Configured local address not found"), the scheme is viable.
 #
-# One node, diskless, configured entirely via drbdsetup (no .res, no drbdadm): create a resource with
-# one peer whose path is local 127.0.0.1 -> remote 127.0.0.2 (both loopback). Nobody listens on the
-# remote, so a healthy result is "Connecting" (accepted + trying), NOT an address rejection.
+# One diskless node, configured entirely via drbdsetup (no .res, no drbdadm): one peer, path
+# 127.0.0.1 -> 127.0.0.2. Nobody listens on the remote, so a healthy result is "Connecting"
+# (accepted + trying), not an address rejection.
 { pkgs, guestModule }:
 
 let

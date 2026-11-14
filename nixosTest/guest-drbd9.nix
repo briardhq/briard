@@ -1,19 +1,15 @@
-# Boot the unit image and assert the 9.x DRBD module loads at runtime,
-# and that the drbd-reactor daemon does NOT come up on its own.
+# Boot the unit image on N nodes (here 2, shared L2 segment) and assert the 9.x DRBD module loads
+# at runtime and the drbd-reactor daemon does not come up on its own. No DRBD resources or
+# promoter snippet, so no app starts here: replication is drbd-replicate, promoter-driven failover
+# drbd-promote.
 #
-# It boots N nodes (here 2) running
-# the real unit config on a shared L2 segment. It does NOT configure DRBD
-# resources or a promoter snippet, so no app ever starts here —
-# replication is covered by drbd-replicate and the promoter-driven failover
-# unit by drbd-promote.
-#
-# THE PROMOTER-GATE ASSERTION LIVES HERE. This is the only test that boots the guest
-# module with nothing declared over it, so it is the only place the PRODUCT's own default is
-# observable — every other node either declares the rig over it (lib.nix, which starts the
-# reactor by hand as the product does) or runs a real agent. A daemon that ran from boot, idle
-# until a snippet appeared, would race the host agent's net.configure on every reboot of every
-# install, and on a reboot it won it would claim the service VIP on the DRBD NIC under a second
-# DHCP identity. The agent arms the promoter, so an unconfigured guest must sit inert.
+# The promoter-gate assertion lives here: the only test booting the guest module with nothing
+# declared over it, so the only place the product default is observable (every other node is
+# declared over by lib.nix, which starts the reactor by hand as the product does, or runs a real
+# agent). A daemon running from boot, idle until a snippet appeared, would race the host agent's
+# net.configure on every reboot of every install, and on a reboot it won it would claim the
+# service VIP on the DRBD NIC under a second DHCP identity. The agent arms the promoter, so an
+# unconfigured guest must sit inert.
 #
 # `pkgs` must already carry the drbd-reactor overlay; runNixOSTest makes the
 # nodes inherit it (their nixpkgs.pkgs is read-only and derived from this pkgs).
@@ -36,14 +32,12 @@ pkgs.testers.runNixOSTest {
         m.succeed("modprobe drbd")
         out = m.succeed("cat /proc/drbd")
         assert "version: 9." in out, f"expected DRBD 9.x on {m.name}, got:\n{out}"
-        # drbd-reactor is on PATH...
+        # drbd-reactor is on PATH, and its daemon is inactive at multi-user.target, nothing having
+        # pulled it in.
         m.succeed("command -v drbd-reactor")
-        # ...and its daemon is INACTIVE, having reached multi-user.target without anything
-        # pulling it in. `is-active` exits non-zero on inactive, which is what we want to see.
         m.fail("systemctl is-active drbd-reactor.service")
-        # Not masked, not broken, not missing its dependencies — just unwanted by any target.
-        # Asserting the mechanism rather than the symptom: a typo'd unit name would also read as
-        # "inactive", and would pass an assertion that stopped at the line above.
+        # Not masked, broken or missing dependencies, just wanted by no target. The mechanism, not
+        # the symptom: a typo'd unit name would also read "inactive" and pass the line above.
         loaded = m.succeed("systemctl show -p LoadState --value drbd-reactor.service").strip()
         assert loaded == "loaded", f"expected drbd-reactor loaded-but-unstarted on {m.name}, got {loaded}"
         wanted = m.succeed("systemctl show -p WantedBy --value drbd-reactor.service").strip()

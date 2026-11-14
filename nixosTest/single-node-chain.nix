@@ -1,22 +1,20 @@
-# THE LONE NODE RUNS NO DRBD.
+# The lone node runs no DRBD.
 #
-# Every user starts single-node, and with one copy DRBD protects nothing: it turns any single
-# bad block into a dead node (measured by the media-error rigs). So a lone anchor mounts its data LV directly, and the
-# promoter chain -- the same five members, in the same order -- is started by a static target
-# instead of drbd-reactor. This rig proves that topology end to end on the guest: a lone
-# node converges, serves, survives the OS-upgrade bracket's gesture, and holds-and-restarts.
-#
+# Every user starts single-node, and with one copy DRBD protects nothing: it turns any single bad
+# block into a dead node (measured by the media-error rigs). So a lone anchor mounts its data LV
+# directly, and a static target starts the promoter chain (the same five members, same order)
+# instead of drbd-reactor. This rig proves that topology end to end on the guest:
 #   1 the seam builds the LVs and formats; DRBD is nowhere (no device, no module, no .res)
-#   2 the chain converges from the target: the volume is mounted, the reverse proxy answers, a
-#     fixture installs -- and no reactor runs
-#   3 a daemon-reload (what switch-to-configuration does inside the OS upgrade's bracket) does not
+#   2 the chain converges from the target: volume mounted, reverse proxy answering, a fixture
+#     installed, and no reactor running
+#   3 a daemon-reload (what switch-to-configuration does inside the OS upgrade bracket) does not
 #     disturb the chain
-#   4 a member that spends its start limit is HELD -- the chain stops and the volume unmounts --
-#     and then RESTARTED by the hold itself, with no reboot: hold-and-restart, the lone node's
-#     symmetry with a flock's demote-and-re-promote (the chain-member contract)
+#   4 a member that spends its start limit is held (the chain stops, the volume unmounts) and then
+#     restarted by the hold itself, with no reboot: hold-and-restart, the lone node's symmetry
+#     with a flock's demote-and-re-promote (the chain-member contract)
 #
-# The status verb's second branch (Primary = chain active) is unit-tested; the install rigs
-# exercise it end to end through a real host agent. What this rig owns is the guest side.
+# The status verb's second branch (Primary = chain active) is unit-tested, and the install rigs
+# run it end to end through a real host agent; this rig owns the guest side.
 { pkgs, guestModule, fixture }:
 
 let
@@ -56,7 +54,7 @@ pkgs.testers.runNixOSTest {
     node1.wait_for_unit("briard-test-fixture-install.service")  # the image, warmed before anything promotes
     boot_id = node1.succeed("cat /proc/sys/kernel/random/boot_id").strip()
 
-    # === 1 THE SEAM, AND NO DRBD =========================================================
+    # === 1 The seam, and no DRBD =========================================================
     node1.succeed("briard-test-storage --seed")
     node1.succeed("test -b /dev/mapper/briardvol-data")
     node1.succeed("test -b /dev/mapper/briardvol-metadata")
@@ -71,7 +69,7 @@ pkgs.testers.runNixOSTest {
     node1.fail("test -e /run/briard/drbd.d/r0.res")
     print("### 1 the LVs are built, the word is alone, and DRBD is nowhere")
 
-    # === 2 THE CHAIN, FROM THE TARGET ====================================================
+    # === 2 The chain, from the target ====================================================
     node1.succeed("systemctl start briard-chain.target")
     node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
     node1.succeed("mountpoint -q /var/lib/briard")
@@ -85,7 +83,7 @@ pkgs.testers.runNixOSTest {
         node1.succeed(f"systemctl is-active {unit}")
     print("### 2 the chain converged on the bare LV and the fixture serves")
 
-    # === 3 THE BRACKET'S GESTURE =========================================================
+    # === 3 The bracket gesture ===========================================================
     since = mount_since()
     node1.succeed("systemctl daemon-reload")
     time.sleep(3)
@@ -93,7 +91,7 @@ pkgs.testers.runNixOSTest {
     node1.succeed("curl -fsS http://192.168.1.100/healthz")
     print("### 3 a daemon-reload left the chain alone")
 
-    # === 4 HOLD-AND-RESTART ==============================================================
+    # === 4 Hold-and-restart ==============================================================
     # Spend the reverse proxy's start limit (StartLimitBurst=5). Under RestartMode=direct the
     # crashes below the limit are absorbed; the one that crosses it fires OnFailure into the
     # hold, which on a lone node stops the chain, unmounts, waits, and starts it again.
