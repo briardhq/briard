@@ -1,15 +1,14 @@
 package main
 
-// THE STORAGE CARD: what an app keeps on this machine, per storage tier -- its data and its
+// The Storage card: what an app keeps on this machine, per storage tier -- its data and its
 // History, the household's files in it and their Versions -- and how far each may grow. The guest
-// measures it (app-usage, relayed by the host like the History's list); the page loads the
-// card once it is up, and the card asks again while the guest is still walking the app's areas,
-// so the page never waits on the walk.
+// measures it (app-usage, relayed by the host like the History's list); the page loads the card
+// once it is up, and the card asks again while the guest is still walking the app's areas, so the
+// page never waits on the walk.
 //
-// ON DISK IS THE NUMBER, because it is what fills the disk: the volume is compressed, so the
-// files' own size is said beside it only where compression made a difference. The History and
-// the Versions are what deleting them would free, which is why they can be far smaller than what
-// they keep.
+// On disk is the number, because it is what fills the disk: the volume is compressed, so the
+// files' own size is said beside it only where compression made a difference. The History and the
+// Versions are what deleting them would free, so they can be far smaller than what they keep.
 
 import (
 	"context"

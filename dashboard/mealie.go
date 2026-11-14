@@ -1,32 +1,29 @@
 package main
 
-// MEALIE'S USER IS FOUND BY ROLE, NEVER KEPT. The reverse proxy signs the user into Mealie by a
-// username in a header (agent/mealie), and the name it sends is read off Mealie itself at every
-// session check (gate.go): the oldest admin account that is not briard's own. Nothing about it is
-// stored on briard's side, so whatever Mealie's data says is what the reverse proxy does -- a
-// rename inside Mealie, an undo or a restore from briard's history or backup, a Mealie backup the
-// user imported from a Mealie they ran before, each is followed at the next check, within the half
-// minute the reverse proxy keeps an answer.
+// Mealie's user is found by role, never kept. The reverse proxy signs the user into Mealie by a
+// username in a header (agent/mealie), read off Mealie itself at every session check (gate.go):
+// the oldest admin account that is not briard's own. Nothing about it is stored on briard's side,
+// so the reverse proxy follows whatever Mealie's data says -- a rename inside Mealie, an undo or a
+// restore from briard's history or backup, a Mealie backup the user imported from a Mealie they
+// ran before -- at the next check, within the half minute the reverse proxy keeps an answer.
 //
-// BRIARD'S OWN ACCOUNT IS HOW IT READS THAT, AND IT IS MADE AGAIN WHENEVER IT IS GONE. Only an
-// admin lists Mealie's accounts. The reverse proxy's secret signs in any username, and Mealie makes
-// an ordinary account for a name it does not know, so the dashboard signs in as `briard-admin` -- a
-// name no OS account the record comes from is likely to carry -- which makes it on a Mealie that
-// lacks it (a fresh one, one the user deleted it from, one restored from a backup that predates
-// it), and makes it an admin, when it is not, with Mealie's own tool for that, inside its
-// container. A header makes no other account but one: a name the user changed inside Mealie in
-// the half minute the reverse proxy still sends the old one, which is an ordinary account, never
-// chosen.
+// Briard's own account is how it reads that, and it is made again whenever it is gone. Only an
+// admin lists Mealie's accounts. The reverse proxy's secret signs in any username, and Mealie
+// makes an ordinary account for a name it does not know, so the dashboard signs in as
+// `briard-admin` (a name no OS account the record comes from is likely to carry), which creates
+// it on a Mealie that lacks it (a fresh one, one the user deleted it from, one restored from a
+// backup that predates it); Mealie's own tool, inside its container, makes it an admin when it is
+// not. A header makes no other account but one: a name the user changed inside Mealie, in the
+// half minute the reverse proxy still sends the old one -- an ordinary account, never chosen.
 //
-// MEALIE'S FIRST ACCOUNT IS TAKEN OVER, NOT ADOPTED BY NAME. Mealie makes an admin whenever it
-// starts with no users, `admin` with a password and an email every copy of Mealie ships with, and
+// Mealie's first account is taken over, not adopted by name. Mealie makes an admin whenever it
+// starts with no users: `admin`, with a password and an email every copy of Mealie ships with, and
 // its API answers that password even with the login form turned off. While that email is held,
-// the password, if it still answers, is changed to one briard generates and forgets -- as Home
-// Assistant's first account's is -- and then briard's own account gives the first one the
-// record's name and a placeholder email from its username (account.go), which is what ends
-// Mealie's "first login"; its username stays `admin` (takeOver says why). It stays an ordinary
-// Mealie account, so the same data under a Mealie anywhere else signs in with the tools Mealie
-// gives everyone.
+// the password, if it still answers, is changed to one briard generates and forgets (as Home
+// Assistant's first account's is); then briard's own account gives the first one the record's
+// name and a placeholder email from its username (account.go), which ends Mealie's "first login".
+// Its username stays `admin` (takeOver says why), and it stays an ordinary Mealie account, so the
+// same data under a Mealie anywhere else signs in with the tools Mealie gives everyone.
 
 import (
 	"bytes"
@@ -148,14 +145,13 @@ func (a *app) mealieUser(ctx context.Context, s routes.App) (string, error) {
 // takeOver makes Mealie's first account the user's: its shipped password changed while it still
 // answers it -- the open door, so first -- then its name and email the record's.
 //
-// ITS USERNAME STAYS MEALIE'S `admin`. Nothing matches on it any more, and a name that never
+// Its username stays Mealie's `admin`. Nothing matches on it any more, and a name that never
 // changes is one the reverse proxy's half-minute answer cannot outlive: a Mealie back at its first
-// account is `admin` again, so a sign-in in that half minute lands on it rather than making a stray
-// account of a name it no longer has.
-//
-// A PASSWORD THAT NO LONGER ANSWERS IS NO HOLE: a takeover cut short after it, or a user who
-// changed it, leaves an account nobody signs in to by the shipped password, and the change of name
-// and email, made with briard's own account, needs none.
+// account is `admin` again, so a sign-in in that half minute lands on it rather than making a
+// stray account of a name it no longer has. A password that no longer answers is no hole: a
+// takeover cut short after it, or a user who changed it, leaves an account nobody signs in to by
+// the shipped password, and the change of name and email, made with briard's own account, needs
+// none.
 func (m mealieAPI) takeOver(ctx context.Context, own string, first mealieAccount, acct account) error {
 	var tok struct {
 		AccessToken string `json:"access_token"`

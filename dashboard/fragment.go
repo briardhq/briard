@@ -1,14 +1,13 @@
 package main
 
-// THE MOVING PARTS: a card that is on its way -- an install or an update, a Home Assistant still
+// The moving parts: a card that is on its way -- an install or an update, a Home Assistant still
 // starting, a name claim waiting on its link or its check, an undo or a restore in flight, a backup
 // running, a Storage card still measuring -- polls itself through htmx, the one script the page
-// loads, and nothing else on the page polls at all. The template puts the
-// hx-get on the card only while its part moves, and the fragment answers with the same partial
-// over the same view, so the page and its poll cannot disagree. When the part has stopped
-// moving the page's shape may have changed around it -- an install became an app card and a
-// glance, a claim became an address -- so the answer is then HX-Refresh: the page reloads once,
-// and the polling ends with it. No JS still works: the page is complete on every load.
+// loads; nothing else on the page polls. The template puts the hx-get on the card only while its
+// part moves, and the fragment answers with the same partial over the same view, so the page and
+// its poll cannot disagree. Once the part stops, the page's shape may have changed around it (an
+// install became an app card and a glance, a claim an address), so the answer is HX-Refresh: the
+// page reloads once and the polling ends. No JS still works: the page is complete on every load.
 
 import (
 	"context"
@@ -27,10 +26,9 @@ const themeScript = "if (matchMedia('(prefers-color-scheme: dark)').matches) doc
 
 // drawerScript makes the sidebar a drawer on a phone, the way Basecoat's own script would: marked
 // initialized (Basecoat hides an unmarked sidebar under its breakpoint), hidden under the
-// breakpoint and shown over it, opened by the top bar's button and closed by the backdrop --
-// the sidebar element itself, which is the overlay while open -- or Escape. At the end of the
-// body, so the elements exist; without it the phone has the page and no menu, and the page is
-// still complete.
+// breakpoint and shown over it, opened by the top bar's button and closed by the backdrop (the
+// sidebar element itself, the overlay while open) or Escape. It sits at the end of the body, so
+// the elements exist; without it the phone has the page and no menu, and the page is complete.
 const drawerScript = "var s=document.querySelector('.sidebar'),m=matchMedia('(min-width:48rem)'),fit=function(){s.setAttribute('aria-hidden',!m.matches)};" +
 	"fit();m.addEventListener('change',fit);s.setAttribute('data-sidebar-initialized','');" +
 	"document.querySelector('.topbar button').addEventListener('click',function(){s.setAttribute('aria-hidden','false')});" +
@@ -99,7 +97,7 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 		hv := a.history(ctx, name)
 		tmpl, data, moving = "history-card", hv, hv.Refresh
 	case "storage":
-		// ALWAYS ANSWERED, as the backups below: the card loads itself once, and then polls only
+		// Always answered, as the backups below: the card loads itself once, and then polls only
 		// while the guest is still measuring.
 		if !a.knows(name) {
 			http.NotFound(w, r)
@@ -107,7 +105,7 @@ func (a *app) fragment(w http.ResponseWriter, r *http.Request, self device, part
 		}
 		tmpl, data, moving = "storage-card", a.storage(ctx, name), true
 	case "backups":
-		// ALWAYS ANSWERED, unlike the parts above: the card loads itself once, and then polls only
+		// Always answered, unlike the parts above: the card loads itself once, and then polls only
 		// while a restore runs (its template says so), so a still card is a list, not an ending.
 		// Under the request's own deadline, not the fragment's ten seconds: the list is restic.
 		tmpl, data, moving = "backups-card", a.backupsCard(r.Context()), true

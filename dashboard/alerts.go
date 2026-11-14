@@ -1,18 +1,17 @@
 package main
 
-// THE ALERT LIST: what needs the household's attention on this machine, then what happened lately.
+// The alert list: what needs the household's attention on this machine, then what happened lately.
+// The page decides nothing. The host's store is the one record; the host pushes a copy to the
+// guest (dashboard.AlertsPath) when the store moves and at the start of every connection. What
+// needs attention is notify.Attention over that copy: a condition or an event at Warning or above,
+// not yet dismissed. Dismiss, the page's one act, has the host mark that record seen and it leaves
+// the list; a condition stays open until the host sees it end, and the history keeps every record
+// either way.
 //
-// The page decides nothing. The alerts are the host's -- its store is the one record, and the
-// host pushes a copy to the guest (dashboard.AlertsPath) when the store moves and at the start of every
-// connection. What needs attention is notify.Attention over that copy: a condition or an event at
-// Warning or above, not yet dismissed. The page's one act on it is Dismiss: the host marks that
-// record seen, and it leaves the list -- a condition stays open, and closes only when the host
-// sees it end; the history keeps every record either way.
-//
-// WHILE THE HOST AGENT IS AWAY the copy stops moving, and listing it would show a stale picture
-// as if it were current. So the page shows one banner instead, from the guest agent's contact
-// stamp -- the agent is unreachable, and that is the thing to fix, whatever else was open. What
-// the guest did meanwhile reaches the store as an alert once the agent is back.
+// While the host agent is away the copy stops moving, and listing it would show a stale picture as
+// current, so the page shows one banner from the guest agent's contact stamp instead: the agent is
+// unreachable, the thing to fix whatever else was open. What the guest did meanwhile reaches the
+// store as an alert once the agent is back.
 
 import (
 	"context"

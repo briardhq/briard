@@ -13,9 +13,9 @@ import (
 	"briard.io/shared/dashboard"
 )
 
-// UNINSTALLING ONE APP, from its page, and deleting what an uninstall kept, from its Available card.
-// The host does both (`app-uninstall`); this asks, with a page between the button and the act that
-// says what is kept and what goes.
+// Uninstalling one app, from its page, and deleting what an uninstall kept, from its Available
+// card. The host does both (`app-uninstall`); this asks, with a page between the button and the
+// act that says what is kept and what goes.
 
 // keptView is what an uninstall kept of an app, on its Available card.
 type keptView struct {
@@ -73,7 +73,7 @@ func (a *app) keptOf(name string) *keptView {
 	return nil
 }
 
-// requestUninstall is the app page's Uninstall and the Available card's Delete now. TWO STEPS,
+// requestUninstall is the app page's Uninstall and the Available card's Delete now. Two steps,
 // like an undo: the first press shows what is kept and what goes. The act takes the app's stop
 // and seconds more, so it is answered in the request.
 func (a *app) requestUninstall(w http.ResponseWriter, r *http.Request) {

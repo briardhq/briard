@@ -1,21 +1,20 @@
 package main
 
-// THE GATE'S DASHBOARD HALF (reverse-proxy/gate.go is the reverse proxy's). A gated app -- Files,
-// Mealie -- has no login of its own; the household reaches it with this dashboard's session, carried to the
-// app's own name the way the hop carries it between the dashboard's names:
+// The gate's dashboard half (reverse-proxy/gate.go is the reverse proxy's). A gated app -- Files,
+// Mealie -- has no login of its own; the household reaches it with this dashboard's session,
+// carried to the app's own name the way the hop carries it between the dashboard's names:
 //
 //   - GET /open/<app>, on a browser this dashboard trusts, mints a one-time code for the device's
-//     OWN token and sends the browser to the app's name with it. A browser it does not trust gets
-//     the ordinary refusal, with the address kept.
+//     own token and sends the browser to the app's name with it; an untrusted browser gets the
+//     ordinary refusal, with the address kept.
 //   - The reverse proxy redeems the code at /gate/redeem and sets the token as the app name's
 //     cookie, then asks /gate/check whether a token still stands for the app before it signs
-//     anyone in.
-//     That question comes before every way in -- an open, an address typed, a page left open --
-//     so it is where an app is made ready for the user (Mealie's first account, mealie.go).
+//     anyone in. That question precedes every way in (an open, an address typed, a page left
+//     open), so it is where an app is made ready for the user (Mealie's first account, mealie.go).
 //
-// Both answers are the reverse proxy's alone, asked over loopback: the reverse proxy never forwards
-// /gate/ from a browser, and refusing a request that came through it (it always says the scheme) is
-// the second guard.
+// Both answers are the reverse proxy's alone, over loopback: it never forwards /gate/ from a
+// browser, and refusing a request that came through it (it always says the scheme) is the second
+// guard.
 
 import (
 	"fmt"

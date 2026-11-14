@@ -3,11 +3,11 @@ package main
 // The dashboard's end of the host's admin port, and the app installs it asks for.
 //
 // Every act the page asks of the host -- an install, an undo, a backup's run or setting, a name
-// claim, a wish, a Dismiss -- is a host directive pressed from inside the guest. The dashboard
-// opens the second virtio-serial port (shared/dashboard.AdminPortDev), writes the directive as one
-// JSON line -- the protocol `briard` speaks to the host's admin socket -- and reads the outcome
-// back. It relays; it decides nothing. The host answers through the same dispatch the CLI and the cloud
-// go through, and accepts from this port only what stays inside the guest.
+// claim, a wish, a Dismiss -- is a host directive pressed from inside the guest, written as one
+// JSON line (the protocol `briard` speaks to the host's admin socket) to the second virtio-serial
+// port (shared/dashboard.AdminPortDev), with the outcome read back. The dashboard relays and
+// decides nothing. The host answers through the same dispatch the CLI and the cloud go through,
+// and accepts from this port only what stays inside the guest.
 
 import (
 	"bufio"
@@ -34,13 +34,12 @@ type adminPort interface {
 	Submit(ctx context.Context, d api.Directive) (api.DirectiveOutcome, error)
 }
 
-// serialPort is the real port: the character device, opened once and kept open, MULTIPLEXED
-// BY ID -- a virtio-serial port has one opener, and an install's request is open for minutes,
-// while the app page's History and Storage are reads the host answers beside it. Each request
-// carries a fresh ID; one reader hands every answer to the request that sent its ID and skips
-// any other line -- the host answers a stale half-line from a dashboard that died mid-write
-// with an ID-less failure, on purpose. When the wire ends, every request waiting on it hears
-// so, and the next request opens it again.
+// serialPort is the real port: the character device, opened once, kept open and multiplexed by
+// ID -- a virtio-serial port has one opener, an install's request is open for minutes, and the app
+// page's History and Storage are reads the host answers beside it. One reader hands each answer
+// to the request that sent its fresh ID and skips any other line (the host deliberately answers a
+// stale half-line from a dashboard that died mid-write with an ID-less failure). When the wire
+// ends, every waiting request hears so, and the next one reopens it.
 type serialPort struct {
 	path string
 	// open is how the wire is reached: the character device by default; a test dials a socket.
@@ -148,10 +147,10 @@ func (p *serialPort) read(f io.ReadWriteCloser) {
 	_ = f.Close()
 }
 
-// install is one app install the dashboard asked the host for, from the click until the
-// routes table lists the app (or the host said no). Update: it was the Update button on an
-// installed app -- the same directive, since an update is an install over what runs, and the
-// card says "updating" instead of turning back into a chooser.
+// install is one app install the dashboard asked the host for, from the click until the routes
+// table lists the app (or the host said no). Update: the Update button on an installed app -- the
+// same directive, since an update is an install over what runs; the card says "updating" instead
+// of turning back into a chooser.
 type install struct {
 	Started time.Time
 	Update  bool
@@ -194,10 +193,10 @@ func (v installView) Phase() string {
 	return "Installing"
 }
 
-// requestInstall is the Install button, and with update the Update button: one install in
-// flight per app, the directive relayed in the background because a pull runs minutes and
-// a browser should not hold a request that long. The page shows the state and refreshes itself.
-// An update is asked only of an app the host's view offers one for; the host decides again.
+// requestInstall is the Install button, and with update the Update button: one install in flight
+// per app, relayed in the background because a pull runs minutes and a browser should not hold a
+// request that long; the page shows the state and refreshes itself. An update is asked only of an
+// app the host's view offers one for; the host decides again.
 func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string, update bool) {
 	switch {
 	case update && !a.offered(name):
@@ -235,7 +234,7 @@ func (a *app) requestInstall(w http.ResponseWriter, r *http.Request, name string
 	http.Redirect(w, r, back(r), http.StatusSeeOther)
 }
 
-// requestInstallSet is the chooser's one Install button: every app it ticked, as ONE directive the
+// requestInstallSet is the chooser's one Install button: every app it ticked, as one directive the
 // host installs in order -- one act, because a second act while one runs is refused "busy", and a
 // queue here would be a second place holding the household's intent that dies with this process.
 // Files goes first when it is ticked: it is small, so something works within seconds.
@@ -313,10 +312,9 @@ func (a *app) requestInstallSet(w http.ResponseWriter, r *http.Request, picked [
 	http.Redirect(w, r, back(r), http.StatusSeeOther)
 }
 
-// installState is what the card shows for an app, nil when nothing was asked. A finished,
-// successful install is forgotten once the routes table lists the app, and a successful
-// update once the host's view no longer offers it -- the card's ordinary states take over from
-// there.
+// installState is what the card shows for an app, nil when nothing was asked. A successful
+// install is forgotten once the routes table lists the app, a successful update once the host's
+// view no longer offers it; the card's ordinary states take over from there.
 func (a *app) installState(name string, routed, offered bool) *installView {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -331,9 +329,9 @@ func (a *app) installState(name string, routed, offered bool) *installView {
 	v := &installView{Running: !st.Done, Update: st.Update, Updated: st.Done && !st.Failed && st.Update,
 		Failed: st.Failed, Detail: st.Detail, Since: st.Started.In(zone()).Format("15:04")}
 	if v.Running && st.Set != nil {
-		// THE HOST INSTALLS A SET IN ITS ORDER, so the table says where it is: a member it lists
-		// is installed (its own card shows it), and of the rest the first is on its way and the
-		// others wait their turn. The end of the act settles each as done or failed.
+		// The host installs a set in its order, so the table says where it is: a member it lists
+		// is installed (its own card shows it); of the rest the first is on its way and the others
+		// wait their turn. The end of the act settles each as done or failed.
 		if routed {
 			return nil
 		}

@@ -1,30 +1,27 @@
 package main
 
-// THE HOP: trust earned on one of the dashboard's names reaches the others.
-//
-// A session is a cookie, and a cookie is per host: a browser trusted on `briard.local` (the
-// address `briard open` prints second) arrives at `<flock>.briard.casa` -- the one address with a
-// real certificate -- as a stranger. Nothing a page runs can cross that line: a script on the
-// https name may not fetch the http alias (mixed content), and a cross-site fetch carries no
-// cookie anyway. A top-level navigation does both, and the household makes one whenever it
-// follows the dashboard's own link to the name, so that is the whole mechanism:
+// The hop: trust earned on one of the dashboard's names reaches the others. A session is a
+// cookie, and a cookie is per host: a browser trusted on `briard.local` (the address `briard
+// open` prints second) arrives at `<flock>.briard.casa` -- the one address with a real
+// certificate -- as a stranger. Nothing a page runs can cross that line: a script on the https
+// name may not fetch the http alias (mixed content), and a cross-site fetch carries no cookie
+// anyway. A top-level navigation does both, and the household makes one whenever it follows the
+// dashboard's own link to the name, so that is the whole mechanism:
 //
 //   - Every link the dashboard draws to the name goes through its own /hop, on the host the page
 //     is already on -- a link the browser can always follow. /hop mints a one-time code bound to
-//     that device's own session token and sends the browser on to the name with it; in a browser
-//     that holds nothing, with an empty one. The code is minted at the click, not when the page
-//     is drawn, so a page left open longer than a code lives still carries its trust.
-//   - The name redeems the code as its own cookie -- the SAME token, so Trusted devices keeps
-//     one row and revoking it revokes every name -- and shows the page that was asked for. An
-//     empty or spent code is the ordinary refusal, and the name asks a trusted device.
+//     that device's own session token (an empty code in a browser that holds nothing) and sends
+//     the browser on to the name with it. The code is minted at the click, not when the page is
+//     drawn, so a page left open longer than a code lives still carries its trust.
+//   - The name redeems the code as its own cookie -- the same token, so Trusted devices keeps one
+//     row and revoking it revokes every name -- and shows the page asked for. An empty or spent
+//     code is the ordinary refusal, and the name asks a trusted device.
 //
-// NEVER A BOUNCE. The name does not send a browser it does not trust to the alias to find out
-// whether the alias trusts it: a browser that cannot resolve `.local` -- every one reaching home
-// over a private network, and some at home -- would be left on its own "server not found" page.
-// A browser that opens the name by itself is asked the ordinary way.
-//
-// WHOSE NAME. /hop answers only for this home's own name and refuses any other, so there is no
-// open redirect through this host.
+// Never a bounce: the name does not send a browser it does not trust to the alias to learn
+// whether the alias trusts it, because a browser that cannot resolve `.local` (every one reaching
+// home over a private network, and some at home) would be left on its own "server not found"
+// page. A browser that opens the name by itself is asked the ordinary way. /hop answers only for
+// this home's own name and refuses any other, so there is no open redirect through this host.
 
 import (
 	"net"

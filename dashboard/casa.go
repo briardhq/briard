@@ -1,16 +1,15 @@
 package main
 
-// The household's name on its page: `<flock>.briard.casa`, with a real certificate,
-// claimed by typing an email and clicking the link it receives. A step the home page offers once
-// the first app is on its way, and skippable -- the anonymous install stays first-class, and
-// "Skip" is the whole of what that costs.
+// The household's name on its page: `<flock>.briard.casa`, with a real certificate, claimed by
+// typing an email and clicking the link it receives. The home page offers the step once the first
+// app is on its way, and it is skippable -- the anonymous install stays first-class, and "Skip" is
+// the whole of what that costs.
 //
-// The page decides nothing. What it shows is the host's view, pushed into dashboard.CasaPath
-// through the guest (the host holds the key and the claim; the guest is disposable), and what
-// it asks for is one directive through the admin port, casa-claim with the email, which the
-// host answers with what happened: a link is on its way, or why not. "Skip" is the page's own
-// state, on the volume beside the device registry, because it is a preference of the household
-// and not a fact about the name.
+// The page decides nothing. It shows the host's view, pushed into dashboard.CasaPath through the
+// guest (the host holds the key and the claim; the guest is disposable), and asks one directive
+// through the admin port, casa-claim with the email; the host answers a link is on its way, or why
+// not. "Skip" is the page's own state, on the volume beside the device registry, because it is a
+// preference of the household and not a fact about the name.
 
 import (
 	"context"

@@ -1,18 +1,19 @@
 package main
 
-// THE HISTORY: what happened to an app, and undoing it.
+// The History: what happened to an app, and undoing it.
 //
-// It is the dashboard's half of the ring, and it relays exactly like the install button does —
-// `app-members` to list, `app-restore` to act, both on the host's guest-may-ask allowlist because their blast radius is one app's data and code on this node. The CLI's
-// `briard app history` / `app undo` are the same two directives typed, and neither front end
-// decides anything the other does not: the rows are quadlet.History's.
+// This is the dashboard's half of the ring, relayed exactly like the install button — `app-members`
+// to list, `app-restore` to act, both on the host's guest-may-ask allowlist because their blast
+// radius is one app's data and code on this node. The CLI's `briard app history` / `app undo` are
+// the same two directives typed, and neither front end decides anything the other does not: the
+// rows are quadlet.History's.
 //
-// UNDO LANDS BEFORE THE EVENT, and everything above it goes too. Hovering a row (or tapping it on a
-// touch screen) greys it and every row above it — exactly what "Undo these changes" discards — so
-// the page shows the consequence before the button is pressed. This is deliberately the opposite of
-// Photoshop's history panel, whose states are the moment AFTER an action: ours have gaps, "after A"
-// can be hours older than "before B", and a household wants the most recent moment that excludes
-// the change.
+// Undo lands before the event, and everything above it goes too. Hovering a row (or tapping it on
+// a touch screen) greys it and every row above it — exactly what "Undo these changes" discards —
+// so the page shows the consequence before the button is pressed. This is deliberately the
+// opposite of Photoshop's history panel, whose states are the moment after an action: ours have
+// gaps, "after A" can be hours older than "before B", and a household wants the most recent moment
+// that excludes the change.
 
 import (
 	"cmp"
@@ -61,8 +62,8 @@ type historyView struct {
 	// Version is what the app runs now; OnDisk what its image holds on this machine (the
 	// manifest's installed size). Both "" when the ring is empty or says nothing.
 	Version, OnDisk string
-	Rows            []rowView // newest FIRST here, unlike the CLI: a page is read from the top
-	// Banner is the row whose undo returns an UNHEALTHY app to its last healthy state, or nil while
+	Rows            []rowView // newest first here, unlike the CLI: a page is read from the top
+	// Banner is the row whose undo returns an unhealthy app to its last healthy state, or nil while
 	// the app is healthy.
 	Banner  *rowView
 	Op      *restoreOpView
@@ -73,7 +74,7 @@ type historyView struct {
 // rowView is one event as a household reads it.
 type rowView struct {
 	Point string // the member that undoing this row puts back
-	When  string // the EVENT's time, which is what the row shows
+	When  string // the event's time, which is what the row shows
 	What  string
 	Note  string // the point's consistency phrase, empty for an ordinary clean point
 	// Back is the exact moment undoing this row goes back to — the confirm step says it, since it
@@ -210,12 +211,11 @@ func whenWords(at, now time.Time, loc *time.Location) string {
 	return at.Format("Mon 2 Jan, 15:04")
 }
 
-// runningManifest is what the app is on now, read off the NEWEST member.
-//
-// It is a derivation rather than a question asked, and it holds because of how members are taken:
-// every start takes one and the newest is never pruned, and an update always restarts the app
-// — so the newest member is pinned to the identity running now. An empty ring has no answer and
-// marks nothing, which is the right failure: an unmarked row says less, never something false.
+// runningManifest is what the app is on now, read off the newest member: a derivation rather than
+// a question asked, which holds because every start takes a member, the newest is never pruned,
+// and an update always restarts the app — so the newest member is pinned to the identity running
+// now. An empty ring has no answer and marks nothing, the right failure: an unmarked row says
+// less, never something false.
 func runningManifest(members []quadlet.SnapshotEntry) *manifest.Manifest {
 	var newest quadlet.SnapshotEntry
 	var at time.Time
@@ -239,12 +239,11 @@ func versionOf(raw string) string {
 	return m.Version
 }
 
-// requestUndo is the button, and the page between it and the act.
-//
-// TWO STEPS, ALWAYS. An undo discards everything since the point it puts back — including, on a
-// mis-click, the afternoon the household actually wanted. The confirmation names the exact moment
-// it goes back to and whether the app's version moves with it. (The undo is itself in the history
-// and can be undone; the confirmation says so rather than relying on it.)
+// requestUndo is the button, and the page between it and the act -- always two steps: an undo
+// discards everything since the point it puts back, including, on a mis-click, the afternoon the
+// household actually wanted. The confirmation names the exact moment it goes back to and whether
+// the app's version moves with it. (The undo is itself in the history and can be undone; the
+// confirmation says so rather than relying on it.)
 func (a *app) requestUndo(w http.ResponseWriter, r *http.Request) {
 	point := r.FormValue("point")
 	app, _, _, ok := quadlet.ParseSnapshotMember(point)
@@ -264,7 +263,7 @@ func (a *app) requestUndo(w http.ResponseWriter, r *http.Request) {
 	}
 	a.restores[app] = &restoreOp{Started: a.now(), What: r.FormValue("what")}
 	a.mu.Unlock()
-	// IN THE BACKGROUND, like an install: the host stops the app, puts the subvolume back and
+	// In the background, like an install: the host stops the app, puts the subvolume back and
 	// converges, and a browser should not hold a request open across it. The page refreshes and
 	// says where it got to.
 	go func() {
@@ -333,7 +332,7 @@ func appOfPath(path string) string {
 // localtime is the guest's zone link, which the host sets at every bring-up (sys.timezone).
 var localtime = "/etc/localtime"
 
-// zone is the household's timezone as the guest holds it NOW, read at each render. Not time.Local:
+// zone is the household's timezone as the guest holds it now, read at each render. Not time.Local:
 // Go fixes that at its first use, and this process starts before the host has pushed the zone, so
 // the page would show the History in UTC for the rest of the boot. No link, or one that does not
 // parse, is UTC, which is what the guest is until it is told.

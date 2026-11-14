@@ -1,17 +1,15 @@
 package main
 
-// Live pull progress: how far an app install's download has got, read off the
-// guest itself while the bytes move. Nothing here asks podman anything.
-//
-// Three local facts make a fraction:
-//   - the TOTAL is the manifest's Size, which the host wrote to the dashboard's tmpfs
+// Live pull progress: how far an app install's download has got, read off the guest itself while
+// the bytes move. Nothing here asks podman anything. Three local facts make a fraction:
+//   - the total is the manifest's Size, which the host wrote to the dashboard's tmpfs
 //     (shared/dashboard.Pull) before the first byte, because the manifest reaches the volume
 //     only after the pull;
-//   - FINISHED layers are in podman's own layer store, overlay-layers/layers.json, each with its
+//   - finished layers are in podman's own layer store, overlay-layers/layers.json, each with its
 //     compressed size and creation time -- every layer created since the pull started is this
 //     pull's, so no journal parsing and no digest matching;
-//   - the layer IN FLIGHT is the bytes under the pull unit's private tmp (PrivateTmp),
-//     which shrinks as a layer completes exactly as the finished sum grows by it.
+//   - the layer in flight is the bytes under the pull unit's private tmp (PrivateTmp), which
+//     shrinks as a layer completes exactly as the finished sum grows by it.
 //
 // The number is monotonic to within a poll, honest about what it cannot know (no total -> no
 // bar), and never reaches 100 before the routes table says the app is there.
@@ -31,8 +29,8 @@ type pullPaths struct {
 	records string // where the host's pull records land (shared/dashboard.Dir)
 	layers  string // podman's overlay-layers/layers.json
 	// tmp is the directory the pull unit's PrivateTmp roots under. /var/tmp, not /tmp: a pull
-	// stages through /var/tmp/container_images_storage<random>, and
-	// PrivateTmp gives the unit its own of BOTH, each under its own systemd-private-* root.
+	// stages through /var/tmp/container_images_storage<random>, and PrivateTmp gives the unit
+	// its own of both, each under its own systemd-private-* root.
 	tmp string
 }
 

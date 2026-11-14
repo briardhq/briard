@@ -1,15 +1,13 @@
 package main
 
-// THE CATALOG ON THE PAGE. Every app card -- installed, available, coming soon -- takes its
-// title, its function, its description and its icon from the catalog's index, as the host read
-// and verified it and pushed it here (shared/dashboard.CatalogPath). The page never fetches the
-// index and no copy of it is compiled in: before the host has pushed one, the page shows what is
-// installed and nothing it could add, because a list from any other clock would be the wrong list.
-//
-// "I WANT THIS" is a wish for an app the index lists but no manifest exists for yet. It is a
-// directive to the host like an install is: relayed, decided there, recorded on the node, and
-// read back from the view the host pushes. Pressing it again takes the wish back. The card is
-// re-rendered in place when the page's script is running, and the page reloads when it is not.
+// The catalog on the page. Every app card -- installed, available, coming soon -- takes its title,
+// function, description and icon from the catalog's index as the host read, verified and pushed it
+// (shared/dashboard.CatalogPath). The page never fetches the index and no copy is compiled in:
+// until the host pushes one, the page shows what is installed and nothing it could add, because a
+// list from any other clock would be the wrong list. "I want this" is a wish for an app the index
+// lists but no manifest exists for yet: a directive like an install, relayed, decided on the host,
+// recorded on the node and read back from the view the host pushes. Pressing it again takes the
+// wish back. The card re-renders in place when the page's script runs; otherwise the page reloads.
 
 import (
 	"context"

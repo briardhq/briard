@@ -1,17 +1,16 @@
 package main
 
-// THE USER: one person, the admin, kept as a record and never as "the household". Several users
-// are not planned, and when they come the admin stays one, with access to everything; what code
-// cannot change on that day is what an app wrote into its own database at a first sign-in, so the
-// one identity is a user from the start, in the shape whoever comes later will share.
+// The user: one person, the admin, kept as a record and never as "the household". Several users
+// are not planned; when they come the admin stays one, with access to everything. Code cannot
+// later change what an app wrote into its own database at a first sign-in, so the one identity is
+// a user from the start, in the shape whoever comes later will share.
 //
-// THE RECORD IS WRITTEN ONCE, at the first redeemed open, from what the host knew about the OS
+// The record is written once, at the first redeemed open, from what the host knew of the OS
 // account that ran `briard open` (the handoff), with the defaults applied there and nowhere else.
 // Every later open carries the same seed and it is ignored: an app keeps its own copy of the name
-// and language from its first sign-in, and matches its account on the username, so the username
-// must never move. A record with no id counts as none, so a file of another shape is replaced.
-//
-// It lives on the volume beside the device registry, and the nightly backup carries it.
+// and language from its first sign-in and matches its account on the username, so the username
+// must never move. A record with no id counts as none, so a file of another shape is replaced. The
+// record lives on the volume beside the device registry, and the nightly backup carries it.
 
 import (
 	"crypto/rand"

@@ -4,17 +4,15 @@ package main
 // folder holds (Backups, each with its Details and the apps to restore), the recovery key, and
 // where the folder is (Folder, with whether it has left this machine).
 //
-// The page decides nothing, as with the name. What it shows is the host's view, pushed into
+// The page decides nothing, as with the name. It shows the host's view, pushed into
 // dashboard.BackupPath through the guest (the host holds the key and runs the backup; the guest is
-// disposable), and what it asks for goes through the admin port -- the backup off or on, "I have
-// saved the key" and a found backup's key adopted as config-sets, a run now, a folder read and
-// then moved, the list and a restore -- which the host applies and answers.
-//
-// THE KEY IS THE POINT. A backup whose key died with the machine is worse than none: the household
-// believed it was covered. So the key is on the page, and until the household says it has a copy
-// somewhere else, the page says plainly that the backup is only as safe as this machine. That is
-// the emergency kit Home Assistant makes a gate, made a nudge here: the backup runs from the first
-// night either way.
+// disposable), and asks through the admin port, which the host applies and answers: the backup
+// off or on, "I have saved the key" and a found backup's key adopted as config-sets, a run now, a
+// folder read and then moved, the list and a restore. The key matters most: a backup whose key
+// died with the machine is worse than none, because the household believed it was covered. So the
+// key is on the page, and until the household says it has a copy elsewhere, the page says plainly
+// the backup is only as safe as this machine -- Home Assistant's emergency-kit gate, made a
+// nudge: the backup runs from the first night either way.
 
 import (
 	"context"
@@ -234,9 +232,9 @@ func (a *app) requestBackup(w http.ResponseWriter, r *http.Request, what string)
 }
 
 // awaitView waits, briefly, for the host's pushed view to show what the host just said it did.
-// The host pushes the view on its next tick, so a page that came back first would show the folder
-// or the switch as they were, and the household would take it for not done. Bounded: a host that
-// has not pushed by then leaves the page one tick behind, as it was.
+// The host pushes on its next tick, so a page back first would show the folder or the switch as
+// they were, and the household would take it for not done. A host that has not pushed by the
+// bound leaves the page one tick behind, as it was.
 func (a *app) awaitView(ctx context.Context, shown func(*backupView) bool) {
 	deadline := time.Now().Add(a.viewWait) // wall time: the page's clock may be a fixture
 	for {
@@ -292,11 +290,10 @@ func (a *app) requestBackupNow(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/backup", http.StatusSeeOther)
 }
 
-// THE FOLDER MOVE, READ FIRST: Change asks the host what the folder holds (backup-folder, no
-// Confirm) and shows it -- or the host's refusal in its place -- and only the confirmation moves
-// the backup. A folder another key made takes that key in the confirmation, so the move and the
-// adoption are one act on the host and the backup is never left in a folder this household cannot
-// open.
+// The folder move reads first: Change asks the host what the folder holds (backup-folder, no
+// Confirm) and shows it, or the host's refusal, and only the confirmation moves the backup. A
+// folder another key made takes that key in the confirmation, so the move and the adoption are one
+// act on the host and the backup is never left in a folder this household cannot open.
 
 // folderConfirmView is the page between Change and the move.
 type folderConfirmView struct {
@@ -365,19 +362,16 @@ func (a *app) requestBackupFolder(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// THE BACKUPS: what the folder holds, newest first -- an earlier install's said so -- and the runs
+// The Backups: what the folder holds, newest first (an earlier install's said so), and the runs
 // that failed since the newest backup, which the household would otherwise not see. Each backup
-// has a Details page with its apps, each with a Restore. The restore relays exactly as the
-// history's undo does -- `backup-list` to list, `backup-restore` to act, both on the host's
-// guest-may-ask allowlist -- and shares the undo's in-flight record, so one app has one restore at
-// a time whichever page asked for it.
+// has a Details page with its apps, each with a Restore, relayed exactly as the history's undo is
+// (`backup-list` to list, `backup-restore` to act, both on the host's guest-may-ask allowlist) and
+// sharing the undo's in-flight record, so one app has one restore at a time whichever page asked.
 //
-// THE LIST IS READ WHEN ASKED, never pushed: it is restic reading the repository, seconds, so the
+// The list is read when asked, never pushed: it is restic reading the repository, seconds, so the
 // card loads itself (/f/backups) and the page around it renders at once; without a script, the
-// card's link renders it in the page (/backup?list).
-//
-// NOTHING IS "LOST": the restore takes an undo point first, so the words say the app goes back,
-// and that what it has now is kept in its History.
+// card's link renders it in the page (/backup?list). Nothing is "lost": the restore takes an undo
+// point first, so the words say the app goes back and what it has now is kept in its History.
 
 // backupsCardView is the card: the backups and the failed runs, and a restore in flight or just
 // ended.
@@ -583,7 +577,7 @@ func (a *app) requestBackupRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	a.restores[app] = &restoreOp{Started: a.now(), What: r.FormValue("when"), Backup: true}
 	a.mu.Unlock()
-	// IN THE BACKGROUND, as the undo: the host reads the backup, pulls the app's image if this
+	// In the background, as the undo: the host reads the backup, pulls the app's image if this
 	// machine lacks it, and swaps the data in -- minutes, which no browser should hold a request
 	// open across.
 	go func() {
