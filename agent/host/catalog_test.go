@@ -33,8 +33,7 @@ func (r indexRing) Verify(artifact, sig []byte) error {
 
 // fakeCatalog is a published catalog: a signed index of two apps -- Home Assistant installable
 // from the start, Paperless-ngx when a test publishes it, which re-signs the index with the
-// mark. Nothing but the index is served: a refresh that asks for anything else is the shape
-// this node no longer has, and the test says so.
+// mark. Nothing but the index is served: a refresh that asks for anything else fails the test.
 type fakeCatalog struct {
 	srv  *httptest.Server
 	priv ed25519.PrivateKey
@@ -190,7 +189,7 @@ func TestCatalogFirstReadIsRetried(t *testing.T) {
 	}
 }
 
-// The wish toggles: recorded, removed, recorded again, and kept across a restart. It is refused
+// The wish toggles: recorded, kept across a restart, then removed. It is refused
 // before the index is read, for a name the index does not list, and for an app that is
 // installable (the page offers Install there).
 func TestCatalogWishTogglesAndIsRefusedWhereItMakesNoSense(t *testing.T) {

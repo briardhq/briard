@@ -98,10 +98,6 @@ func judge(t *testing.T, pre, post []hass.Entry) (guest.Verdict, string) {
 // judge the apps it curates beyond liveness, and knows nothing about anything else. The
 // negative half is the one that matters — the shipped default for every other app is the
 // floor alone.
-//
-// The unknown name here USED to be "mosquitto", which is the nicest possible demonstration of
-// what this test is for: the day the broker landed it stopped being unknown, and the
-// example had to move rather than the contract.
 func TestAssessorIsKeyedOnTheAppName(t *testing.T) {
 	cfg := Config{}
 	if a := cfg.assessorFor(hassManifest(), &probe{}, func(string, ...any) {}); a == nil {
@@ -139,13 +135,12 @@ func TestAssessorUsesTheManifestsPort(t *testing.T) {
 	}
 }
 
-// TestAFailedSampleLeavesTheInstallOnTheFloor — what replaced the old-guest test: the capability check it exercised is gone, because agent and guest closure publish
-// together and the alpha reinstalls, so a guest that cannot sample is a mismatched pair rather
-// than a supported configuration.
-//
-// The rule that DOES survive is the different one it was confused with: when the sample itself
-// fails, the install proceeds on the liveness floor. S1 never blocks or reverts a household's
-// upgrade because its own telemetry broke — and it says so, rather than degrading silently.
+// TestAFailedSampleLeavesTheInstallOnTheFloor: there is no capability check (agent and guest
+// closure publish together and the alpha reinstalls, so a guest that cannot sample is a
+// mismatched pair rather than a supported configuration), but there is this different rule:
+// when the sample itself fails, the install proceeds on the liveness floor. S1 never blocks or
+// reverts a household's upgrade because its own telemetry broke — and it says so, rather than
+// degrading silently.
 func TestAFailedSampleLeavesTheInstallOnTheFloor(t *testing.T) {
 	var logged strings.Builder
 	p := &probe{err: errors.New("the guest is not answering")}
@@ -223,7 +218,7 @@ func TestGateRefusesToJudgeUnsettled(t *testing.T) {
 	if _, _, err := a.Assess(ctx, base); err == nil {
 		t.Fatal("an unsettled signal was judged anyway")
 	}
-	// And the Gate's policy over that error: keep, never revert on our own telemetry failing.
+	// And the Gate over a baseline it never captured: a no-op, never a revert.
 	if err := (guest.Gate{Assessor: a, Logf: func(string, ...any) {}}).Judge(ctx, guest.Readiness{}); err != nil {
 		t.Fatalf("an uncaptured baseline must be a no-op, got %v", err)
 	}
@@ -242,8 +237,8 @@ func TestGateKeepsWhenTheSampleFails(t *testing.T) {
 	}
 }
 
-// TestGateWithNoAssessorIsTheFloor: the zero Readiness is what every non-Home-Assistant install
-// carries, and it must cost nothing and decide nothing.
+// TestGateWithNoAssessorIsTheFloor: the zero Readiness is what an install of an app with no
+// assessor carries, and it must cost nothing and decide nothing.
 func TestGateWithNoAssessorIsTheFloor(t *testing.T) {
 	gate := guest.Gate{Logf: func(string, ...any) {}}
 	rd := gate.Capture(context.Background())

@@ -62,9 +62,8 @@ func await(t *testing.T, what string, ch <-chan api.DirectiveOutcome, within tim
 
 // AN ACT LEAVES THE LOOP TICKING. While a sync (an act) is held open: the cycles keep coming, a
 // second act is refused busy at once, a dashboard code (a pull) is handed off beside it, and the
-// act's own outcome lands once it is released. The 2026-09-01 shape -- a guest frozen inside an
-// install, unnoticed until the budget expired -- cannot recur, because the tick that would notice
-// is still running.
+// act's own outcome lands once it is released. A guest frozen inside an install cannot go
+// unnoticed until the budget expires, because the tick that would notice is still running.
 func TestAnActOffTheLoopLeavesItTicking(t *testing.T) {
 	cfg := loopConfig(t)
 	cfg.FlockName = "brave-elf" // the dashboard pull names the page's address
