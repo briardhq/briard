@@ -36,7 +36,11 @@ func TestNoPrivateReferences(t *testing.T) {
 				`|(^|[^A-Za-z])§ ?[0-9]|INVARIANTS(\.md| §)|IDEAS\.md|(^|[^A-Za-z])V[0-9][a-z]?\.md\b|farm docs|farm/docs|docs/V[0-9]`),
 		"tracker item id": regexp.MustCompile(
 			`\[(B|M|S|V[0-9][a-z]?|DRBD)\.[0-9]+[a-z]?\]` +
-				`|(^|[^A-Za-z0-9_./-])(B|V3b|V3c|V3|V2|V1|V5|M0|DRBD)\.[0-9]+[a-z]?([^0-9A-Za-z_./-]|$)`),
+				`|(^|[^A-Za-z0-9_./-])(B|V[0-9][a-z]?|M[0-9]|S[0-9]|DRBD)\.[0-9]+[a-z]?` +
+				// What may follow an id: anything that cannot continue a name, a sentence-final dot,
+				// or a sub-item range (`B.22b-c`, `B.22b/c`); a dot or slash before more of a name
+				// (a version, a path) is not an id.
+				`([^0-9A-Za-z_./-]|$|\.([^0-9A-Za-z_]|$)|[-/]([a-z]|[0-9]+[a-z]?)([^0-9A-Za-z_./-]|$))`),
 		"maintainer note link": regexp.MustCompile(`\[\[[a-z0-9]+(-[a-z0-9]+)+\]\]`),
 	}
 
