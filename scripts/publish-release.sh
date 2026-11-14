@@ -1072,7 +1072,9 @@ gc)
 		done
 		aws s3 ls "$bucket/$c/" --endpoint-url "$endpoint" | awk '/ PRE /{print $2}' | tr -d / |
 		while read -r v; do
-			case "$v" in stable|latest) continue ;; esac
+			# The pointer directories themselves, which the loop would otherwise age out: a pointer is
+			# rewritten only when something is published to it, and `dev` can sit untouched for weeks.
+			case "$v" in stable|latest|dev) continue ;; esac
 			case " $live " in *" $v "*) echo "  keep  $c/$v (a pointer names it)"; continue ;; esac
 			pinned=""
 			for k in $keep; do
