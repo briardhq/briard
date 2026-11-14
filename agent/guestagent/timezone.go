@@ -24,10 +24,9 @@ type timezoneRequest struct {
 
 // setTimezone points /etc/localtime at the zone the host named.
 //
-// THE ZONE MUST EXIST IN THE IMAGE'S DATABASE, asked of the file rather than assumed: a link to
+// The zone must exist in the image's database, asked of the file rather than assumed: a link to
 // nothing reads as UTC everywhere, which is the state this is meant to end, and an error says so.
-//
-// REPLACED, NEVER EDITED: the new link is made beside the old one and renamed over it, so a reader
+// Replaced, never edited: the new link is made beside the old one and renamed over it, so a reader
 // sees one zone or the other.
 func setTimezone(ctx context.Context, x Executor, run func(string, ...string) error, zone string) error {
 	if len(zone) > 64 || !zoneName.MatchString(zone) {

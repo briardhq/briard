@@ -9,14 +9,12 @@ import (
 	"briard.io/shared/nodestorage"
 )
 
-// THE FILESYSTEM HALF OF STORAGE, ON THE ONE NODE THAT PROMOTED.
+// The filesystem half of storage, on the one node that promoted: briard-primary-storage.service's
+// ExecStart and ExecStop, a promoter chain member between the promotion and everything that needs
+// the volume. Where briard-node-storage does block work on every node, this does filesystem work
+// only where the volume is mounted, and the cut between them is by scope rather than by tidiness.
 //
-// briard-primary-storage.service's ExecStart and ExecStop -- a promoter chain member, between the
-// promotion and everything that needs the volume. Where briard-node-storage does block work on
-// EVERY node, this does filesystem work only where the volume is mounted, and the cut between
-// them is by scope rather than by tidiness.
-//
-// IT NEVER FORMATS. The one-time format lives in briard-node-storage, in the same process and the
+// It never formats. The one-time format lives in briard-node-storage, in the same process and the
 // same branch as the `lvcreate` that made the volume, so "this is brand new" is a fact known where
 // it is acted on rather than carried here on a marker. This path runs at every promotion, on every
 // node: it must hold no destructive operation.
@@ -28,7 +26,7 @@ func snapshotsDir() string { return strings.TrimSuffix(quadlet.SnapshotsDir, "/"
 // PrimaryStorage mounts the replicated device the node's storage spec names, and makes the
 // snapshots directory.
 //
-// The device is READ OFF THE SPEC rather than restated as a constant here: the same document the
+// The device is read off the spec rather than restated as a constant here: the same document the
 // block layer was built from says what sits on top of it, so the mount unit and the storage unit
 // cannot disagree about which device is the volume.
 func PrimaryStorage(ctx context.Context, x Executor) error {
@@ -50,24 +48,24 @@ func PrimaryStorage(ctx context.Context, x Executor) error {
 	if err := run("mkdir", "-p", dataMountRoot); err != nil {
 		return err
 	}
-	// MOUNT GUARDED, because this unit may be RETRIED: mounting an already-mounted
-	// path stacks a second mount rather than failing, so the retry has to ask first.
+	// Mount guarded, because this unit may be retried: mounting an already-mounted path stacks a
+	// second mount rather than failing, so the retry has to ask first.
 	//
-	// COMPRESSED (zstd, level 1): the volume is thick and has no resize path, so what fits in it is
+	// Compressed (zstd, level 1): the volume is thick and has no resize path, so what fits in it is
 	// what compression buys -- the recorder's SQLite pages above all, the one thing that grows in a
-	// house -- and, sitting above DRBD, it also cuts the bytes a flock replicates. LEVEL 1 because
-	// btrfs compresses each 128 KiB on its own, which leaves a higher level's larger search little
-	// to find: level 3 saves under a tenth more for about half again the CPU per byte written,
-	// and that CPU is the guest's, shared with the apps. Reading back costs the same at every level.
-	// Fedora mounts its desktops at zstd:1 for the same trade. A mount option, so it applies to what
-	// is written from now on and costs no migration, and blocks written at different levels sit
-	// side by side; files marked nodatacow are not compressed (btrfs's rule).
+	// house -- and, sitting above DRBD, it also cuts the bytes a flock replicates. Level 1 because
+	// btrfs compresses each 128 KiB on its own, leaving a higher level's larger search little to
+	// find: level 3 saves under a tenth more for about half again the CPU per byte written, and that
+	// CPU is the guest's, shared with the apps. Reading back costs the same at every level. Fedora
+	// mounts its desktops at zstd:1 for the same trade. A mount option, so it applies to what is
+	// written from now on and costs no migration, and blocks written at different levels sit side by
+	// side; files marked nodatacow are not compressed (btrfs's rule).
 	if _, err := x.Run(ctx, "mountpoint", "-q", dataMountRoot); err != nil {
 		if err := run("mount", "-o", "compress=zstd:1", spec.Resource.Device, dataMountRoot); err != nil {
 			return err
 		}
 	}
-	// SIMPLE QUOTAS, OR NO VOLUME. Every subvolume is born into the quota tree (qgroup.go), which
+	// Simple quotas, or no volume. Every subvolume is born into the quota tree (qgroup.go), which
 	// needs the mode the format set, so a volume without it is refused rather than converted:
 	// enabling quotas on a populated volume leaves what is already there owned by nobody. Read
 	// positively -- the mode file names the mode, and a volume with quotas off has no such file --
@@ -77,7 +75,7 @@ func PrimaryStorage(ctx context.Context, x Executor) error {
 		return fmt.Errorf("the volume is not in simple-quota mode (mode %q, %v): it was formatted by an older Briard and needs a reinstall", mode, err)
 	}
 	// First use: the snapshots dir. Idempotent. An app's own data subvolume is created when
-	// that app is INSTALLED (the guest's renderer makes it), so a node nobody has given a
+	// that app is installed (the guest's renderer makes it), so a node nobody has given a
 	// workload to mounts an empty volume -- which is the honest state of one.
 	return run("mkdir", "-p", snapshotsDir())
 }

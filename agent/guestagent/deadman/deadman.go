@@ -10,7 +10,7 @@ import (
 )
 
 // Episode is the persisted backoff state for one degraded stretch. It survives a deadman reboot
-// (stored node-locally, NEVER on the replicated DRBD volume) so the backoff GROWS across reboots
+// (stored node-locally, never on the replicated DRBD volume) so the backoff grows across reboots
 // instead of resetting to the burst cadence on every boot. Reset to zero the moment the host
 // agent's link returns -- and at that moment it becomes a LastEpisode, for the host to collect.
 type Episode struct {
@@ -20,11 +20,11 @@ type Episode struct {
 }
 
 // LastEpisode is a degraded stretch that is over: what the guest did while the host agent was
-// unreachable, kept for the host to collect at its next contact. THE GUEST REPORTS, THE HOST
-// ALERTS: the deadman itself has nobody to tell -- its only channel out of the house is the
-// host agent, which is the thing that was down -- so it records, and the host, once back,
-// turns the record into the owner's alert. Consumed by the host's read (the guest agent's
-// deadman.episode verb), so it is told once.
+// unreachable, kept for the host to collect at its next contact. The guest reports, the host
+// alerts: the deadman has nobody to tell (its only channel out of the house is the host agent,
+// the thing that was down), so it records, and the host, once back, turns the record into the
+// owner's alert. Consumed by the host's read (the guest agent's deadman.episode verb), so it is
+// told once.
 type LastEpisode struct {
 	Since   time.Time `json:"since"`
 	Until   time.Time `json:"until"`
@@ -55,18 +55,18 @@ type Monitor struct {
 
 	Now    func() time.Time                      // injectable clock
 	Fabric func(context.Context) (Fabric, error) // read the DRBD cluster view locally
-	Reboot func(context.Context) error           // GRACEFUL reboot (systemctl reboot)
+	Reboot func(context.Context) error           // graceful reboot (systemctl reboot)
 	Logf   func(string, ...any)                  // operational log
 	State  StateStore                            // persisted backoff across a reboot
 
-	// Gate, when set, receives every tick's verdict, which it serves to the HOST rung (gate.go).
+	// Gate, when set, receives every tick's verdict, which it serves to the host rung (gate.go).
 	// Nil in unit tests — the deadman's own behaviour does not depend on it, which is why it is
 	// published rather than consulted.
 	Gate *Gate
 
 	// LastContact, when set, is the source of truth for the last host-agent contact — a stamp file
 	// the (per-connection, crash-loop-prone) guest agent touches on each request, read by this
-	// SEPARATE long-running deadman process. It returns the zero time before the first-ever contact
+	// separate long-running deadman process. It returns the zero time before the first-ever contact
 	// (still booting / bringing up) → the deadman stays disarmed until the host has talked once, so a
 	// slow bring-up can't trip it. When nil, the in-process Contact() stamp is used (unit tests).
 	LastContact func() time.Time
@@ -141,14 +141,14 @@ func (m *Monitor) Run(ctx context.Context) error {
 // returns the updated episode + degraded flag. Pure of timing (now is passed in), so the whole
 // loop behaviour is unit-testable without a ticker or a real clock.
 func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degraded bool) (Episode, bool) {
-	// The fabric is read only to gate a reboot; a failed read is treated as NOT allowed (never
+	// The fabric is read only to gate a reboot; a failed read is treated as not allowed (never
 	// reboot on an unknown cluster). It's irrelevant while the link is alive (Decide
 	// short-circuits to Serve), so a probe error during normal operation is harmless.
 	//
-	// Note the asymmetry with the HOST rung, which treats an unreadable gate as ALLOWED. Both are
-	// "fail toward the safer answer" from where they stand: in here, not knowing the cluster means
-	// not knowing whether a peer depends on us, so we hold; out there, not reaching the gate at
-	// all means the guest is far past wedged, which is the case the host rung exists for.
+	// The host rung, asymmetrically, treats an unreadable gate as allowed. Both fail toward the
+	// safer answer from where they stand: in here, not knowing the cluster means not knowing
+	// whether a peer depends on us, so we hold; out there, not reaching the gate at all means the
+	// guest is far past wedged, which is the case the host rung exists for.
 	fab, ferr := Fabric{}, error(nil)
 	if m.Fabric != nil {
 		fab, ferr = m.Fabric(ctx)
@@ -176,7 +176,7 @@ func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degra
 			m.logf("host-agent link restored — resuming normal operation (unreachable since %s, %d reboot(s))",
 				ep.Since.Format(time.RFC3339), ep.Attempt)
 			if m.State != nil {
-				// The record for the host to collect, BEFORE the live episode is reset: a crash
+				// The record for the host to collect, before the live episode is reset: a crash
 				// between the two leaves an episode that will be reported, never one that is lost.
 				if err := m.State.SaveLast(LastEpisode{Since: ep.Since, Until: now, Reboots: ep.Attempt}); err != nil {
 					m.logf("deadman: persist the episode for the host failed: %v", err)
@@ -228,7 +228,7 @@ func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degra
 	return ep, degraded
 }
 
-// FileState persists the Episode as JSON at Path — a node-local path OUTSIDE the replicated DRBD
+// FileState persists the Episode as JSON at Path — a node-local path outside the replicated DRBD
 // volume, so it survives a reboot without being shared/overwritten across nodes — and the
 // LastEpisode beside it (LastPath), where the guest agent collects it for the host.
 type FileState struct{ Path string }

@@ -26,22 +26,19 @@ type quiescedResult struct {
 	Hold    time.Duration `json:"hold,omitempty"`
 }
 
-// quiescedMember takes one member of a RUNNING app, asking it to hold still across the
-// snapshot. It is the clock sample's verb.
+// quiescedMember takes one member of a running app, asking it to hold still across the
+// snapshot: the clock sample's verb. The order is hold, snapshot, release, label — the label last
+// because only the release knows what to write: Home Assistant reports whether its lock survived
+// the window (it breaks its own lock if the events it is buffering pile up), so the sidecar is
+// written from what the release answered rather than from what the hold hoped for.
 //
-// THE ORDER IS HOLD, SNAPSHOT, RELEASE, LABEL — and the label is last because only the release
-// knows what to write. Home Assistant reports whether its lock survived the window (it breaks its
-// own lock if the events it is buffering pile up), so the sidecar is written from what the release
-// answered rather than from what the hold hoped for.
-//
-// ⚠️ IT NEVER REFUSES TO TAKE A MEMBER. Every way this can fail — an app with no way to hold
+// ⚠️ It never refuses to take a member. Every way this can fail — an app with no way to hold
 // still, a Home Assistant that is down or too old to have the view, a lock that timed out, a
 // release that says the lock broke — ends with the member taken and the class saying
 // crash-consistent. A sample that did not happen is a hole in the ring; a sample that happened
-// and said what it is worth is the product working.
-//
-// The APP is named rather than the port, because the manifest on the volume is the one place
-// that knows how to reach it, and it is the same manifest the member is pinned to.
+// and said what it is worth is the product working. The app is named rather than the port
+// because the manifest on the volume is the one place that knows how to reach it, and it is the
+// same manifest the member is pinned to.
 func quiescedMember(ctx context.Context, x Executor, run func(string, ...string) error, req snapshotRequest) (quiescedResult, error) {
 	if err := safeUnitName(req.App); err != nil { // the name becomes a path element
 		return quiescedResult{}, err
@@ -50,7 +47,7 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 	if err := json.Unmarshal([]byte(req.Sidecar), &meta); err != nil {
 		return quiescedResult{}, fmt.Errorf("the member's sidecar does not parse: %w", err)
 	}
-	// ⚠️ THE HOST SENDS `crash` AND THE GUEST UPGRADES IT, never the other way round. A bug
+	// ⚠️ The host sends `crash` and the guest upgrades it, never the other way round. A bug
 	// anywhere below leaves the member saying the weaker, true thing; the claim to have been held
 	// still is made only by the code that watched it happen.
 	meta.Consistency = quadlet.Crash
@@ -67,7 +64,7 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 	}
 	locked := time.Now()
 	if release != nil {
-		// DEFERRED AS WELL AS CALLED BELOW, because a snapshot that fails must still let the
+		// Deferred as well as called below, because a snapshot that fails must still let the
 		// household's recorder write again: Home Assistant would take about ten seconds to notice
 		// and break its own lock, and those are ten seconds of events buffered for nothing.
 		defer func() {
@@ -114,17 +111,15 @@ func quiescedMember(ctx context.Context, x Executor, run func(string, ...string)
 	return quiescedResult{Held: meta.Consistency == quadlet.Quiesced, Why: why, Acquire: acquire, Hold: hold}, nil
 }
 
-// TakeClockMember is the quiesced take FOR A GUEST WITH NO HOST — the same
-// accommodation `--inbound-listen` and `--write-units` make, and for the same reason.
-//
-// In the product this verb arrives from the host, which owns the cadence and renders the sidecar
+// TakeClockMember is the quiesced take for a guest with no host — the same accommodation
+// `--inbound-listen` and `--write-units` make, and for the same reason. In the product this verb
+// arrives from the host, which owns the cadence and renders the sidecar
 // (agent/host/clocksample.go). The rigs that get Home Assistant running are agent-less, so without
 // this the one thing that can silently drift under us — Home Assistant's own recorder lock, an
 // internal API — would have no coverage on a real HA at all, and an L0 run would prove nothing
-// about it.
-//
-// It builds exactly what the host would send, including the `crash` the guest then upgrades, so
-// the harness supplies the trigger and nothing else. Nothing in the product invokes it.
+// about it. It builds exactly what the host would send, including the `crash` the guest then
+// upgrades, so the harness supplies the trigger and nothing else. Nothing in the product invokes
+// it.
 func TakeClockMember(ctx context.Context, x Executor, app string, at time.Time) (string, error) {
 	ensureToolsOnPath()
 	raw, err := x.ReadFile(manifestPath(app))

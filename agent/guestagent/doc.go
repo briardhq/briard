@@ -4,7 +4,7 @@
 // executes and reports; every decision stays in the host's core. Run guest-side as
 // `briard-guest-agent run --guest`.
 //
-// IT IS PUSHED, NOT BAKED. The guest image carries agent/guestfirmware alone -- the
+// It is pushed, not baked. The guest image carries agent/guestfirmware alone -- the
 // framing, the handshake, the three push verbs and os.poweroff -- and the host dresses every
 // guest with this package's binary at bring-up. That is what keeps the 400 MB guest chain still
 // while the agent moves: the image's inputs hash covers the firmware's import graph and nothing

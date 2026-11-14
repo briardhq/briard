@@ -16,18 +16,18 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// UNINSTALLING ONE APP: everything of it on the volume goes, except the copy it keeps.
+// Uninstalling one app: everything of it on the volume goes, except the copy it keeps.
 //
 // The data and files areas are kept, as they stand with the app stopped, as members named for the
-// uninstall (quadlet.TriggerUninstall): the data area's in the ring, where installing the app again
-// finds it and restores it like any other point, and the files area's beside the Versions. Their
-// sidecar carries the manifest the app ran and the "Uninstalled" event, so the members are the
-// app's whole presence on the volume until they go: at keptFor, at the household's Delete now, or
-// to the files tier's valve once a backup holds them (filestier.go). Everything else goes at once --
-// the unversioned and cache areas, the History and the Versions -- because a reinstall restores the
-// state at the uninstall, which no older copy adds to.
+// uninstall (quadlet.TriggerUninstall): the data area's in the ring, where installing the app
+// again finds it and restores it like any other point, and the files area's beside the Versions.
+// Their sidecar carries the manifest the app ran and the "Uninstalled" event, so the members are
+// the app's whole presence on the volume until they go: at keptFor, at the household's Delete
+// now, or to the files tier's valve once a backup holds them (filestier.go). Everything else goes
+// at once -- the unversioned and cache areas, the History and the Versions -- because a reinstall
+// restores the state at the uninstall, which no older copy adds to.
 //
-// THE ORDER IS THE SAFETY: the copies are taken and flushed first, then the manifest goes and the
+// The order is the safety: the copies are taken and flushed first, then the manifest goes and the
 // node converges without the app -- its pod stopped, its units and its Files view binds gone --
 // and only then are the areas deleted, so nothing holds them and nothing needs them. A crash
 // part-way leaves either the app installed with an extra member, or the app gone with areas still

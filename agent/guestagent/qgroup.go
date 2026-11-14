@@ -15,7 +15,7 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// THE QUOTA TREE: EVERY SUBVOLUME IS BORN INTO IT.
+// The quota tree: every subvolume is born into it.
 //
 // The volume is formatted with simple quotas (nodestorage.go), and its subvolumes sit in a
 // three-level tree:
@@ -27,7 +27,7 @@ import (
 // The cache and unversioned tiers have no groups of their own: an app's areas in them are charged
 // to its data group, so what it keeps to run, however the node treats it, is one share.
 //
-// A limit on a level-0 group would RESET on every restore-by-swap: the new subvolume allocates
+// A limit on a level-0 group would reset on every restore-by-swap: the new subvolume allocates
 // fresh, while the deleted original keeps its charge as a space holder. The level-1 group keeps
 // counting across the swap, which is why the limit lives there or above, and why every creation
 // passes `-i` -- a subvolume assigned after the fact is one a crash can leave outside the tree.
@@ -40,13 +40,13 @@ import (
 // already exists, and a container's start (a separate process) may race an install for the
 // same group. So the missing parts are made, and a re-read decides whether the tree is right.
 
-// THE STORAGE TIERS are named for what they hold, never for whose it is -- every area is an
-// app's, and the household's: an app's DATA is what it keeps to run (its settings, its
-// database), rolled back with it; its FILES are what the household keeps in it, never rolled
-// back, versioned; its CACHE is what it can make again; and UNVERSIONED is what it keeps
-// without copies (manifest.Tier*). Each tier is a plain directory holding one subvolume per app
-// that mounts it, so a job over a tier reads one directory and a data rollback never reaches a
-// file. These are the tiers' groups in the quota tree.
+// The storage tiers are named for what they hold, never for whose it is -- every area is an
+// app's, and the household's: an app's data is what it keeps to run (its settings, its database),
+// rolled back with it; its files are what the household keeps in it, never rolled back,
+// versioned; its cache is what it can make again; and unversioned is what it keeps without copies
+// (manifest.Tier*). Each tier is a plain directory holding one subvolume per app that mounts it,
+// so a job over a tier reads one directory and a data rollback never reaches a file. These are
+// the tiers' groups in the quota tree.
 const (
 	tierData  = 1
 	tierFiles = 2

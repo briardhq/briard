@@ -24,12 +24,12 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// THE BACKUP RUNS IN THE BACKGROUND, the recorder check's shape (dbcheck.go): data.backup starts
+// The backup runs in the background, the recorder check's shape (dbcheck.go): data.backup starts
 // it and answers at once, data.backup.result hands the report over once. A first run copies the
-// whole volume and a later one still reads every changed file; either would outlast by far the
+// whole volume and a later one still reads every changed file; either would far outlast the
 // host's short call, which its loop waits on.
 //
-// WHAT IS BACKED UP is everything a fresh install needs to come back as this household, laid out
+// What is backed up is everything a fresh install needs to come back as this household, laid out
 // under one root (backupRoot), one directory per storage tier, in two snapshots. The data's,
 // tagged data:
 //
@@ -45,40 +45,37 @@ import (
 //
 // The data is the History sample, whatever trigger took it, so consistency comes with it and
 // there is no second snapshot schedule; crash-consistent is what every nightly tool gives, and
-// waiting for a quiesced member would skip an app that never has one. Its sidecar travels with
-// it because an app's data is only usable beside the code that wrote it. The volume's facts
-// and the host's are read at run time, not at the member's: they are what the household has now.
-// Members are READ FROM THE RING, never from the request -- no path comes off the wire; the host's
-// facts arrive as content under names the guest checks.
+// waiting for a quiesced member would skip an app that never has one. Its sidecar travels with it
+// because an app's data is only usable beside the code that wrote it. The volume's facts and the
+// host's are read at run time, not at the member's: they are what the household has now. Members
+// are read from the ring, never from the request (no path comes off the wire); the host's facts
+// arrive as content under names the guest checks.
 //
-// THE REPOSITORY IS THE HOST'S: restic's REST backend, served by the host agent on the private
+// The repository is the host's: restic's REST backend, served by the host agent on the private
 // link and written into the household's folder. The request carries its URL; the guest keeps
-// neither it nor the host's facts past the run. THE KEY IS THE VOLUME'S (backupKey below).
-//
-// THE STATE IS THIS PROCESS'S, as the check's is. A restart loses a running backup and its
-// report; the lock it leaves is cleared by the next run's unlock.
+// neither it nor the host's facts past the run. The key is the volume's (backupKey below). The
+// state is this process's, as the check's is: a restart loses a running backup and its report,
+// and the next run's unlock clears the lock it leaves.
 var backups struct {
 	sync.Mutex
 	busy   bool          // a backup is running
 	report *BackupReport // the finished run's report, until the host collects it
 }
 
-// THE REPOSITORY KEY LIVES ON THE REPLICATED VOLUME, beside the certificate's private key: there
-// is one repository per household and one key opens it, so the key is the flock's, shared by
-// every node and read by whichever is Primary tonight. In a node's own state directory, each node
-// of a pair would mint a key of its own and the one that promoted next could not open what the
-// other wrote. Nothing needs the key without the volume -- the run, a restore and the page all
-// stand on it mounted -- and a household whose volume is gone has only the copy it saved.
+// The repository key lives on the replicated volume, beside the certificate's private key: one
+// repository per household and one key opens it, so the key is the flock's, shared by every node
+// and read by whichever is Primary tonight. In a node's own state directory, each node of a pair
+// would mint its own and the one that promoted next could not open what the other wrote. Nothing
+// needs the key without the volume (the run, a restore and the page all stand on it mounted), and
+// a household whose volume is gone has only the copy it saved.
 //
-// MINTED ONLY WHERE THE VOLUME IS MOUNTED (anywhere else the path is the empty mountpoint) AND
-// ONLY WHEN THE FILE IS ABSENT, never when it cannot be read: a new key over an unreadable old
-// one would orphan every snapshot the old one opens. Synced like .vip-address, for the same
-// reason: the next promotion may follow a power cut. Under one mutex, because the nightly run
-// and the page's read may both find no key at once, and two minted keys would leave the
-// repository opened under one the volume does not hold.
-//
-// Base32 in groups of four: a person copies it by hand from the dashboard, and 160 bits read
-// aloud is eight short groups.
+// Minted only where the volume is mounted (anywhere else the path is the empty mountpoint) and
+// only when the file is absent, never when it cannot be read: a new key over an unreadable old one
+// would orphan every snapshot the old one opens. Synced like .vip-address, as the next promotion
+// may follow a power cut. Under one mutex, because the nightly run and the page's read may both
+// find no key at once, and two minted keys would leave the repository opened under one the volume
+// does not hold. Base32 in groups of four: a person copies it by hand from the dashboard, and 160
+// bits read aloud is eight short groups.
 const (
 	backupKeyFile = dataMountRoot + "/.backup-key"
 	// backupKeySavedFile marks that the household said it has a copy of the key elsewhere -- the
@@ -197,11 +194,11 @@ type backupRequest struct {
 	// so the host can only ever point a run at a REST server.
 	Repository string `json:"repository"`
 	// Group is the name every snapshot is taken under and the only group the retention touches:
-	// restic groups snapshots by host for parent detection and for forget. THE HOUSEHOLD'S, not
+	// restic groups snapshots by host for parent detection and for forget. The household's, not
 	// the node's -- the flock id -- so a failover continues one ladder rather than starting a
-	// second, and a repository an earlier household wrote is never pruned by this one: its
-	// nights stay, there to restore from until somebody deletes them on purpose, rather than
-	// pushed out within two nights by a new install's near-empty data.
+	// second, and a repository an earlier household wrote is never pruned by this one: its nights
+	// stay, there to restore from until somebody deletes them on purpose, rather than pushed out
+	// within two nights by a new install's near-empty data.
 	Group string `json:"group,omitempty"`
 	// Host is the host's node-held facts a new install could not re-derive, by file name.
 	Host map[string][]byte `json:"host,omitempty"`
@@ -254,7 +251,7 @@ func startBackup(x Executor, req backupRequest) (bool, error) {
 	}
 	backups.busy = true
 	go func() {
-		// NOT THE REQUEST'S CONTEXT: that ends with the reply, and this outlives it.
+		// Not the request's context: that ends with the reply, and this outlives it.
 		rep := runBackup(context.Background(), x, req)
 		backups.Lock()
 		backups.busy, backups.report = false, &rep
@@ -375,7 +372,7 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 		return fail(err)
 	}
 
-	// THE TREE. The copies first: a run that died left them (and they may hold the host's
+	// The tree. The copies first: a run that died left them (and they may hold the host's
 	// secrets), and they are never a mount. Then a mount a dead run left is in the way of this
 	// one; not being mounted is the ordinary answer.
 	var mounted, apps []string
@@ -445,7 +442,7 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 			return fail(errors.Join(err, ierr))
 		}
 	}
-	// ONE WRITER BY CONSTRUCTION -- only the Primary runs this, one run at a time -- so a lock
+	// One writer by construction -- only the Primary runs this, one run at a time -- so a lock
 	// still in the repository is always a run that died (a guest reboot mid-run).
 	if _, err := restic("unlock"); err != nil {
 		return fail(err)
@@ -469,10 +466,10 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 	} else {
 		markKept(x, runErr, members)
 	}
-	// THE HOUSEHOLD'S FILES, AFTER THE DATA, IN A SNAPSHOT OF THEIR OWN: a library's first copy can
-	// run for hours and a folder can fill on it, and neither may cost the night its apps' backup,
-	// which has landed by now. An interrupted run is not lost either: the next reuses every block
-	// this one wrote. Nothing restores it: the household's files are never rolled back.
+	// The household's files, after the data, in a snapshot of their own: a library's first copy
+	// can run for hours and a folder can fill on it, and neither may cost the night its apps'
+	// backup, which has landed by now. An interrupted run is not lost either: the next reuses every
+	// block this one wrote. Nothing restores it: the household's files are never rolled back.
 	files := func() error {
 		members := newestFileVersions(ctx, x)
 		if len(members) == 0 {
@@ -502,7 +499,7 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 		rep.Error = strings.TrimSpace(rep.Error + "\nyour files: " + err.Error())
 		log.Printf("backup: your files: %v", err)
 	}
-	// OUR GROUP ONLY (backupRequest.Group): restic applies the policy per group and keep-* counts
+	// Our group only (backupRequest.Group): restic applies the policy per group and keep-* counts
 	// snapshots, not days, so another household's nights in this repository stay exactly as they
 	// are -- but the flag says so, rather than the policy's arithmetic. The data's and the files'
 	// snapshots have different paths, so they are two groups under the one policy.
@@ -534,32 +531,31 @@ func backupSummary(out []byte) BackupReport {
 	return rep
 }
 
-// Backup is one run in line FOR A GUEST WITH NO HOST, the accommodation CheckRecorder makes: the
+// Backup is one run in line for a guest with no host, the accommodation CheckRecorder makes: the
 // agent-less rigs drive the product's own backup through it against a real store. Nothing in the
 // product invokes it; the host's facts and the group are the host's, and a rig has neither.
 func Backup(ctx context.Context, x Executor, url string) BackupReport {
 	return runBackup(ctx, x, backupRequest{Repository: url})
 }
 
-// THE RESTORE'S GUEST HALF: one app's copy from one night of the backup, MATERIALISED AS A
-// RING MEMBER -- a read-only subvolume with a sidecar, beside the members the ring took itself.
-// Putting it back is then the ordinary restore of a member (the host's app-restore: the
-// images first, the undo point, stop, swap, the member's manifest, converge), so there is one
-// restore path and the backup joins it rather than adding a second.
+// The restore's guest half: one app's copy from one night of the backup, materialised as a ring
+// member -- a read-only subvolume with a sidecar, beside the members the ring took itself. Putting
+// it back is then the ordinary restore of a member (the host's app-restore: the images first, the
+// undo point, stop, swap, the member's manifest, converge), so the backup joins the one restore
+// path rather than adding a second.
 //
-// WHAT IT READS is what the backup wrote (runBackup): the app's data from
-// data/<app>/ and the member's own sidecar from briard/members/<app>.json, which
-// names the manifest the data was written under -- the sidecar is the member's, verbatim, except
-// for its trigger (TriggerFromBackup says where these bytes come from) and Pending (nothing is
-// waiting to evaluate it). The snapshot may be any night's, of any group in the repository
-// ("latest" for the newest), so an earlier install's nights restore the same way as this one's.
+// It reads what the backup wrote (runBackup): the app's data from data/<app>/ and the member's own
+// sidecar from briard/members/<app>.json, which names the manifest the data was written under. The
+// sidecar is the member's, verbatim, except for its trigger (TriggerFromBackup says where these
+// bytes come from) and Pending (nothing is waiting to evaluate it). The snapshot may be any
+// night's, of any group in the repository ("latest" for the newest), so an earlier install's
+// nights restore the same way as this one's.
 //
-// AN ACT, in line: it writes the ring, and the channel serves acts one at a time beside its
-// reads, so a restore that takes minutes holds up other acts but none of the host's reads.
-//
-// SIDECAR BEFORE DATA, and the member goes if either cannot be finished: a half-restored member
-// would be offered as a restore point, which is worse than none. The subvolume is created empty,
-// restic restores into it, and only then is it made read-only and labelled.
+// An act, in line: it writes the ring, and the channel serves acts one at a time beside its reads,
+// so a restore that takes minutes holds up other acts but none of the host's reads. Sidecar before
+// data, and the member goes if either cannot be finished: a half-restored member would be offered
+// as a restore point, which is worse than none. The subvolume is created empty, restic restores
+// into it, and only then is it made read-only and labelled.
 type backupRestoreRequest struct {
 	Repository string `json:"repository"`
 	Snapshot   string `json:"snapshot"`
@@ -601,7 +597,7 @@ func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreReque
 		return run("restic", append([]string{"--repo", "rest:" + req.Repository, "--password-file", backupPasswordFile, "--no-cache"}, args...)...)
 	}
 
-	// "latest" is the newest DATA snapshot: the files' own is newer every night, and holds no app.
+	// "latest" is the newest data snapshot: the files' own is newer every night, and holds no app.
 	var apps []string
 	if req.Snapshot == "latest" {
 		apps = []string{"--tag", backupDataTag}
@@ -652,21 +648,19 @@ func restoreBackupMember(ctx context.Context, x Executor, req backupRestoreReque
 	return member, nil
 }
 
-// RestoreBackupMember is one materialisation in line FOR A GUEST WITH NO HOST, as Backup is:
+// RestoreBackupMember is one materialisation in line for a guest with no host, as Backup is:
 // the agent-less rigs prove it against a real ring and a real store.
 func RestoreBackupMember(ctx context.Context, x Executor, url, snapshot, app string) (string, error) {
 	return restoreBackupMember(ctx, x, backupRestoreRequest{Repository: url, Snapshot: snapshot, App: app}, time.Now())
 }
 
-// THE LIST, for the Backup page's restore: every backup the repository holds, newest first, each
+// The list, for the Backup page's restore: every backup the repository holds, newest first, each
 // with the apps it carries -- their version and when their data was taken, read from the members'
 // sidecars the backup put beside the data (briard/members/<app>.json), one `restic dump` of that
 // directory per backup, as a tar. Any group's: an earlier machine's backups in an adopted folder
-// restore the same way, and Own says which are this household's.
-//
-// A READ WITH NO LOCK, so it neither waits for a running backup nor holds one up, and with a
-// password file of its own: its cleanup must never remove the one a running backup or restore
-// is still to read.
+// restore the same way, and Own says which are this household's. A read with no lock, so it
+// neither waits for a running backup nor holds one up, and with a password file of its own: its
+// cleanup must never remove the one a running backup or restore is still to read.
 type backupListRequest struct {
 	Repository string `json:"repository"`
 	Group      string `json:"group"`
@@ -770,14 +764,14 @@ func backupApps(archive []byte) []dashboard.BackupApp {
 	return apps
 }
 
-// THE ADOPTION: a repository in the folder that the volume's key does not open -- an earlier
-// install's, or one made with another key -- opened once with the key the household typed, to
-// ADD this household's key to its key set. restic repositories hold a set of keys, so nothing is
+// The adoption: a repository in the folder that the volume's key does not open (an earlier
+// install's, or one made with another key) is opened once with the key the household typed, to add
+// this household's key to its key set. restic repositories hold a set of keys, so nothing is
 // replaced: the volume's key never changes (the page keeps showing the one key, the save-your-key
 // story stays true, and a folder it opened before still opens), the earlier key still works, and
-// the typed key is used for this one command and then gone. From the next night the repository
-// is this household's to write -- under its own group (backupRequest.Group), so the earlier
-// nights stay exactly as they are.
+// the typed key is used for this one command and then gone. From the next night the repository is
+// this household's to write, under its own group (backupRequest.Group), so the earlier nights stay
+// exactly as they are.
 type backupAdoptRequest struct {
 	Repository string `json:"repository"`
 	Password   string `json:"password"`
@@ -839,7 +833,7 @@ func adoptBackup(ctx context.Context, x Executor, req backupAdoptRequest) error 
 	return nil
 }
 
-// AdoptBackup is one adoption in line FOR A GUEST WITH NO HOST, as Backup is.
+// AdoptBackup is one adoption in line for a guest with no host, as Backup is.
 func AdoptBackup(ctx context.Context, x Executor, url, password string) error {
 	return adoptBackup(ctx, x, backupAdoptRequest{Repository: url, Password: password})
 }

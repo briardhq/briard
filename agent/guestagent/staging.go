@@ -7,36 +7,32 @@ import (
 	"strings"
 )
 
-// STAGE, THEN COMMIT: an app install is not the volume's identity until its health gate says so.
+// Stage, then commit: an app install is not the volume's identity until its health gate says so.
 //
-// An install has to put the new manifest on the volume BEFORE its gate decides, because converge
+// An install has to put the new manifest on the volume before its gate decides, because converge
 // renders from the volume. Written straight over `<name>.json`, it would leave a window of minutes
-// in which the volume named a version nothing had accepted -- and anything that interrupted the
+// in which the volume named a version nothing had accepted, and anything that interrupted the
 // install inside it (a power cut, an agent restart, a failover) would leave the household
 // converging to that version for good, because what the revert needed would live only in the
-// installing process's memory.
+// installing process's memory. So the volume holds the install in two files beside the accepted
+// manifest, and every fact the undo needs is one of them:
 //
-// So the volume holds the install in two files beside the accepted manifest, and every fact the
-// undo needs is one of them:
-//
-//	<name>.json       the ACCEPTED manifest -- untouched until the commit
-//	<name>.json.next  the STAGED manifest -- its presence is what "an install is pending" means
+//	<name>.json       the accepted manifest -- untouched until the commit
+//	<name>.json.next  the staged manifest -- its presence is what "an install is pending" means
 //	<name>.rollback   the ring member that puts the data back, absent when there is none (a fresh
 //	                  install, or a re-install of the same manifest)
 //
-// The commit is ONE rename, `.json.next` over `.json`. Nothing else is the decision, so there is
+// The commit is one rename, `.json.next` over `.json`. Nothing else is the decision, so there is
 // no state in which the install is half-accepted. Undoing is the same procedure whichever way the
 // install ended -- a gate that failed, or a crash nobody saw -- because it reads only these files
 // (agent/host's undo): stop, put the data back, discard the stage, converge to the accepted.
 //
 // Converge holds every staged app back except the one an install names as live: a node that
-// promotes onto a pending install does NOT start it -- neither the staged version, which nothing
+// promotes onto a pending install does not start it -- neither the staged version, which nothing
 // accepted, nor the accepted one, whose data the staged version may already have migrated. The
-// app stays down until the host's undo has put the data back, which is the only order in
-// which starting it is safe.
-//
-// Flock-scoped, so on the replicated volume and `sync -f`'d: the node that finishes the undo may
-// be a different node from the one that started the install.
+// app stays down until the host's undo has put the data back, the only order in which starting it
+// is safe. Flock-scoped, so on the replicated volume and `sync -f`'d: the node that finishes the
+// undo may be a different node from the one that started the install.
 const (
 	verbAppStage   = "app.stage"   // ensure the data, record the rollback point, write .json.next
 	verbAppCommit  = "app.commit"  // .json.next -> .json, then drop .rollback
@@ -90,8 +86,8 @@ func writeDurably(x Executor, run func(string, ...string) error, path, body stri
 // (nothing pending; the accepted manifest still stands) or a `.json.next` whose `.rollback` is
 // already durable.
 //
-// A STALE `.rollback` IS REMOVED when this install has none. One left by an earlier install that
-// crashed after its discard would otherwise be read as THIS install's rollback point, and undoing
+// A stale `.rollback` is removed when this install has none. One left by an earlier install that
+// crashed after its discard would otherwise be read as this install's rollback point, and undoing
 // a fresh install would put back some other day's data.
 func stageApp(ctx context.Context, x Executor, run func(string, ...string) error, req appStageRequest) error {
 	if req.Name == "" || req.DataDir == "" || req.Manifest == "" {
@@ -123,7 +119,7 @@ func stageApp(ctx context.Context, x Executor, run func(string, ...string) error
 	return nil
 }
 
-// commitApp serves app.commit: the rename IS the decision, flushed before the rollback
+// commitApp serves app.commit: the rename is the decision, flushed before the rollback
 // point is dropped, so a crash between the two leaves an accepted install with a leftover
 // `.rollback` -- which the next stage overwrites or removes -- and never a pending one without it.
 func commitApp(ctx context.Context, x Executor, run func(string, ...string) error, name string) error {
@@ -201,7 +197,7 @@ func stagedNames(ctx context.Context, x Executor) ([]string, error) {
 	return names, nil
 }
 
-// AppStage records an install on the volume WITHOUT making it the identity: the data it needs,
+// AppStage records an install on the volume without making it the identity: the data it needs,
 // the rollback point ("" for none) and the staged manifest (app.stage).
 func (g *Client) AppStage(ctx context.Context, name, dataDir string, subdirs []string, manifest, rollback string) error {
 	return g.c.Call(ctx, verbAppStage, appStageRequest{

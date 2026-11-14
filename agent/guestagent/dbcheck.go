@@ -15,18 +15,15 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// THE RECORDER CHECK RUNS IN THE BACKGROUND, and the restore does not.
+// The recorder check runs in the background, and the restore does not. The check reads read-only
+// members and can take minutes on a big database, far past the host's short call, which its loop
+// waits on; so verbHassDBCheck starts it in this long-running process and answers at once, and the
+// host collects the report with verbHassDBCheckResult on a later cycle. The restore stops Home
+// Assistant and writes its data, so it is an act (verbHassDBRestore), serialised with every other
+// act. Neither runs while the other does.
 //
-// The check reads read-only members and can take minutes on a big database, far past the host's
-// short call, which its loop waits on. So verbHassDBCheck starts it in this long-running process
-// and answers at once, and the host collects the report with verbHassDBCheckResult on a later
-// cycle.
-//
-// The restore stops Home Assistant and writes its data, so it is an act (verbHassDBRestore),
-// serialised with every other act. Neither runs while the other does.
-//
-// THE STATE IS THIS PROCESS'S. A restart loses a running check and its report; the check's own
-// hold is cleared by the next night's check, which the host starts as usual.
+// The state is this process's: a restart loses a running check and its report, and the check's
+// own hold is cleared by the next night's check, which the host starts as usual.
 var dbChecks struct {
 	sync.Mutex
 	busy   bool           // a check or a restore is running
@@ -37,7 +34,7 @@ var dbChecks struct {
 // not when a check or a restore is running, or when a finished check's report has not been
 // collected: that report may name a restore, and a new check must not replace it unread.
 //
-// NO DEADLINE ON THE CHECK. It only reads, and it walks back through as many copies as it takes
+// No deadline on the check: it only reads, and it walks back through as many copies as it takes
 // to find a clean one; each read is bounded on its own (agent/hass's checkTimeout).
 func startDBCheck(x Executor) bool {
 	dbChecks.Lock()
@@ -47,7 +44,7 @@ func startDBCheck(x Executor) bool {
 	}
 	dbChecks.busy = true
 	go func() {
-		// NOT THE REQUEST'S CONTEXT: that ends with the reply, and this outlives it.
+		// Not the request's context: that ends with the reply, and this outlives it.
 		rep := hassDBCheck(context.Background(), x)
 		dbChecks.Lock()
 		dbChecks.busy, dbChecks.report = false, &rep
@@ -118,7 +115,7 @@ func hassDBCheck(ctx context.Context, x Executor) hass.DBReport {
 }
 
 // hassDBRestore puts the recorder database back from the member the check named. The member is
-// READ BACK FROM THE RING, never trusted from the payload, and the gate is asked again
+// read back from the ring, never trusted from the payload, and the gate is asked again
 // (hass.Restorable) before anything stops.
 func hassDBRestore(ctx context.Context, x Executor, run func(string, ...string) error, member string) error {
 	dbChecks.Lock()
@@ -162,21 +159,21 @@ func hassDBRestore(ctx context.Context, x Executor, run func(string, ...string) 
 // restored data in a staged copy, take the hass-db-restore-before sample carrying the event, swap
 // the copy in, start it again.
 //
-// NOTHING LIVE IS EDITED. The staged copy is a writable snapshot of the live subvolume, taken
-// with Home Assistant stopped, and the database is put into it there. Only then is it exchanged
-// with the live subvolume, in one rename(2) (RENAME_EXCHANGE): either the live data is the
-// restored copy or it is what it was. So every failure deletes the staged copy and starts Home
+// Nothing live is edited. The staged copy is a writable snapshot of the live subvolume, taken
+// with Home Assistant stopped, and the database is put into it there; only then is it exchanged
+// with the live subvolume, in one rename(2) (RENAME_EXCHANGE), so the live data is either the
+// restored copy or what it was. Every failure therefore deletes the staged copy and starts Home
 // Assistant on its own data: nothing changed, and nothing is left stopped. The replaced subvolume
 // is deleted after the start.
 //
-// THE SAMPLE IS THE UNDO, taken once the copy is ready and before the swap: undoing the event
+// The sample is the undo, taken once the copy is ready and before the swap: undoing the event
 // puts the damaged database back. Taken any earlier, a failure while staging would leave a
 // History row saying the database was restored when it was not; a swap that fails after it
 // removes it for the same reason. Nothing is compared against a *-before sample, so the restore
 // registers no change of its own.
 //
-// ONLY THE UNITS THAT WERE RUNNING are stopped and started. Container units, never the pod: a pod
-// stop kills the containers out from under their units, which land in `failed` rather than
+// Only the units that were running are stopped and started, and container units, never the pod:
+// a pod stop kills the containers out from under their units, which land in `failed` rather than
 // stopping cleanly (quadlet.Rendered.ContainerUnits).
 func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string) error, m manifest.Manifest, rawManifest string, from hass.Member, dir string) error {
 	rendered, err := quadlet.Render(m, "")
@@ -203,7 +200,7 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 	}
 
 	// A staging name beside the live subvolume, on the same btrfs so the exchange is a rename. A
-	// leftover SUBVOLUME is a restore that died before or after its swap, and is ours to clear.
+	// leftover subvolume is a restore that died before or after its swap, and is ours to clear.
 	// Anything else there is not ours, and it is in the way: `btrfs subvolume snapshot` into an
 	// existing directory nests the copy inside it rather than failing.
 	root := quadlet.DataRoot(hass.Name)
@@ -237,10 +234,10 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 		return unchanged("flush the staged copy", err)
 	}
 
-	// QUIESCED ONLY ON THE CLEAN-STOP MARKER, the evidence every other member reads: the unit's
-	// own ExecStopPost writes it when systemd says the stop succeeded. A stop that returned is
-	// not that -- Home Assistant stopped while still booting exits non-zero, and nothing then says
-	// it flushed -- and an app that was not running may have died. Read, not consumed: the start
+	// Quiesced only on the clean-stop marker, the evidence every other member reads: the unit's
+	// own ExecStopPost writes it when systemd says the stop succeeded. A stop that returned is not
+	// that -- Home Assistant stopped while still booting exits non-zero, and nothing then says it
+	// flushed -- and an app that was not running may have died. Read, not consumed: the start
 	// below is what spends it.
 	cons := quadlet.Crash
 	if _, err := x.ReadFile(cleanStopPath(hass.Name)); err == nil && len(active) > 0 {
@@ -281,7 +278,7 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 	return err
 }
 
-// CheckRecorder and RestoreRecorder are the recorder check's two halves FOR A GUEST WITH NO HOST,
+// CheckRecorder and RestoreRecorder are the recorder check's two halves for a guest with no host,
 // the same accommodation TakeClockMember makes: the rigs that run Home Assistant are agent-less,
 // and this is how they drive the product's own check and restore against a real one. The check
 // runs in line here; its background runner is the verb's. Nothing in the product invokes them.

@@ -1,21 +1,19 @@
 package guestagent
 
-// FILES' VIEW: one folder per installed app under files.ViewDir, holding the directories that
+// Files' view: one folder per installed app under files.ViewDir, holding the directories that
 // app's manifest mounts, each a bind of the real one, plus that app's Versions under names a
 // person reads. Files (agent/files) mounts the root once, with slave propagation, so the binds
-// made here reach the running container and it never restarts for another app's sake.
+// made here reach the running container and it never restarts for another app's sake. The data
+// and unversioned tiers are bound read-write, the household's to edit; files and its Versions
+// read-only; the cache not at all, being the app's to throw away.
 //
-// A BIND IS KEPT TRUE BY ASKING, NOT BY HOOKING EVERY ACT. A bind holds the directory it was
-// made from, so a restore that swaps an app's area leaves it showing the old, deleted copy, and
-// an edit made through it vanishes. Rather than teach every act that replaces an area to rebind,
-// the view is re-derived whenever it is refreshed and a bind is replaced exactly when its folder
-// no longer resolves to the same directory as its source (device and inode, which btrfs gives
-// every subvolume its own of). Converge refreshes it, so an install, an undo, a rollback and a
-// promotion are seen at once; the files tick refreshes it, so a new Version, a renamed title or
-// anything missed is seen within the tick.
-//
-// The data and unversioned tiers are bound read-write, the household's to edit; files and its
-// Versions read-only; the cache not at all, being the app's to throw away.
+// A bind is kept true by asking, not by hooking every act that replaces an area. A bind holds the
+// directory it was made from, so after a restore swaps an app's area it shows the old, deleted
+// copy, and an edit made through it vanishes. So the view is re-derived at each refresh, and a
+// bind is replaced exactly when its folder no longer resolves to the same directory as its source
+// (device and inode; btrfs gives every subvolume its own). Converge refreshes it, so an install,
+// an undo, a rollback and a promotion are seen at once; the files tick does too, so a new
+// Version, a renamed title or anything missed is seen within the tick.
 
 import (
 	"context"

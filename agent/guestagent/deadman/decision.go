@@ -1,12 +1,12 @@
 // Package deadman is the guest-side host-agent deadman: the guest's
 // fail-safe reflex when its host agent goes silent. Every host control call refreshes a
 // last-seen-agent stamp; after T_deadman with no contact the guest reboots — a graceful reboot
-// whose promoter teardown demotes cleanly, so the reboot IS the failover trigger — but ONLY when
-// RebootAllowed says going down cannot cost anyone ELSE their quorum.
+// whose promoter teardown demotes cleanly, so the reboot is the failover trigger — but only when
+// RebootAllowed says going down cannot cost anyone else their quorum.
 //
-// The guest goes FIRST, deliberately. The host holds the same reflex from outside (host/
-// guestrecover.go) on a longer window, so the graceful in-guest reboot gets its chance before the
-// host resorts to power-cycling the VM. Ordering it the other way would spend a clean demote —
+// The guest goes first, deliberately. The host holds the same reflex from outside
+// (host/guestrecover.go) on a longer window, so the graceful in-guest reboot gets its chance
+// before the host resorts to power-cycling the VM. The other order would spend a clean demote —
 // and the DRBD metadata that comes with it — on every incident where the kernel was still fine
 // and only the agent had wedged.
 //
@@ -28,7 +28,7 @@ const (
 	// Serve — the host-agent link is alive (or just returned): normal operation, and the
 	// degraded episode (attempt count / backoff) resets.
 	Serve Action = iota
-	// Hold — the deadman has fired, but do NOT reboot: rebooting would tip the cluster below
+	// Hold — the deadman has fired, but do not reboot: rebooting would tip the cluster below
 	// quorum (a quorum-critical node — that would outage a peer that is still serving), the
 	// cluster could not be read, or we are still within the cadence since the last reboot. Keep
 	// serving.
@@ -65,12 +65,12 @@ type Input struct {
 // Decide is the entire decision:
 //
 //	link alive                           → Serve
-//	deadman fired, NOT allowed           → Hold   (quorum-critical: never outage a surviving peer)
+//	deadman fired, not allowed           → Hold   (quorum-critical: never outage a surviving peer)
 //	deadman fired, allowed, backing off  → Hold   (wait out the inter-reboot cadence)
 //	deadman fired, allowed, cadence done → Reboot
 //
 // The load-bearing property: Reboot is returned only when RebootAllowed, so the reflex can never
-// be what drops a cluster below quorum. It is NOT "never causes an outage": a lone node reboots
+// be what drops a cluster below quorum. It is not "never causes an outage": a lone node reboots
 // itself, a brief outage of a node that had already lost its agent and would otherwise stay
 // wedged forever (see RebootAllowed).
 func Decide(in Input) Action {
@@ -89,13 +89,11 @@ func Decide(in Input) Action {
 // RebootCadence is the interval between successive reboots once the first one has failed to fix
 // anything. It never becomes "stop": a persistently degraded node keeps gently retrying, which is
 // both a standing chance that whatever wedged it clears and a visible sign of degradation for a
-// remote fix to catch.
-//
-// It is FLAT rather than an exponential ramp because a lone node reboots too (RebootAllowed). A
-// ramp starting at 30s is fine when a peer is carrying the workload; on a lone node every attempt
-// is a real interruption, and a handful of them in the first few minutes is a worse experience
-// than the wedge. One immediate attempt — which fixes the transient case — and then a slow,
-// steady two hours.
+// remote fix to catch. It is flat rather than an exponential ramp because a lone node reboots too
+// (RebootAllowed): a ramp starting at 30s is fine when a peer is carrying the workload, but on a
+// lone node every attempt is a real interruption, and a handful of them in the first few minutes
+// is a worse experience than the wedge. One immediate attempt — which fixes the transient case —
+// and then a slow, steady two hours.
 const RebootCadence = 2 * time.Hour
 
 // Backoff is the minimum interval between successive deadman reboots in one degraded episode.
@@ -120,7 +118,7 @@ const (
 
 	// SelfUpdateWindow is the worst-case host-agent absence across a self-update: a candidate that
 	// never starts fails at TimeoutStartSec (60s in briard-agent.service; the 180s here leaves
-	// headroom over it), plus the revert, the previous agent's start and re-adopt. The INVARIANT
+	// headroom over it), plus the revert, the previous agent's start and re-adopt. The invariant
 	// (TestInvariantDeadmanExceedsSelfUpdateWindow): DefaultDeadman > SelfUpdateWindow — so an
 	// update always converges or auto-reverts before the deadman can fire. Threshold-only; no
 	// protocol.
@@ -146,39 +144,39 @@ func EffectiveDeadman(base, window time.Duration, seed string) time.Duration {
 // quorate), so the gate answers precisely when the host agent — the normal source of everything
 // — is gone.
 type Fabric struct {
-	Peers     int  // peers CONFIGURED for this resource, connected or not (self excluded)
+	Peers     int  // peers configured for this resource, connected or not (self excluded)
 	Connected int  // how many of those are currently Connected
 	Quorate   bool // this node has quorum right now, i.e. DRBD lets it write
 }
 
-// RebootAllowed is THE gate, and the same one on both rungs of the ladder: the deadman calls it
+// RebootAllowed is the gate, and the same one on both rungs of the ladder: the deadman calls it
 // to decide whether to reboot itself, and the host reads its answer from the gate (gate.go) to
 // decide whether to power-cycle a guest that has stopped answering. One definition, so the two
 // rungs cannot drift into disagreeing about when a reboot is safe.
 //
-// It is deliberately NOT "am I doing useful work". A guest that has lost its host agent is
-// degraded BY POLICY — most operations run through the host, the link is otherwise stable, and
-// the alternative is reasoning forever about the availability of no-agent scenarios. So serving
-// is never a reason for a node to stay up; it is only ever a reason not to take someone ELSE
-// down. Hence the three clauses below are three different arguments, not one formula:
+// It is deliberately not "am I doing useful work". A guest that has lost its host agent is
+// degraded by policy — most operations run through the host, the link is otherwise stable, and
+// the alternative is reasoning forever about the availability of no-agent scenarios — so serving
+// is never a reason for a node to stay up; it is only ever a reason not to take someone else
+// down. The three clauses below are three different arguments, not one formula:
 //
-//	SINGLE NODE — there is no cluster to disrupt. Quorum is guaranteed the moment it comes back
+//	Single node — there is no cluster to disrupt. Quorum is guaranteed the moment it comes back
 //	(it is the only voter), the data is on its own disk, and a one-node install makes no
 //	high-availability promise to break. This is the common shape of a briard install. It must
-//	be STATED, not derived from the majority formula: by that formula a lone node's departure
-//	loses quorum, so it would hold, and the reflex would be INERT on most of the fleet -- a node
+//	be stated, not derived from the majority formula: by that formula a lone node's departure
+//	loses quorum, so it would hold, and the reflex would be inert on most of the fleet -- a node
 //	wedged and silent forever.
 //
-//	ALREADY FAILED — this node has no quorum, so DRBD has already stopped it writing and it is
+//	Already failed — this node has no quorum, so DRBD has already stopped it writing and it is
 //	serving nobody. Nothing is preserved by staying up, and a reboot is free and occasionally
 //	curative — the partitioned-anchor case (WAN out, cloud witness unreachable).
 //
-//	SURVIVES WITHOUT ME — the peers I can still see form a majority on their own, so my
+//	Survives without me — the peers I can still see form a majority on their own, so my
 //	departure leaves the cluster quorate and a peer takes the workload. This is the case the
 //	gate was built for: a 3-voter cluster with one member already down, where a second
 //	self-removal would drop the survivor below majority and outage the house.
 //
-// Connected counts peers connected TO ME; peers connected to each other but partitioned from me
+// Connected counts peers connected to me; peers connected to each other but partitioned from me
 // do not count. Conservative in the right direction — it can only withhold a reboot.
 func RebootAllowed(f Fabric) bool {
 	if f.Peers == 0 {

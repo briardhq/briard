@@ -15,22 +15,22 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// AN APP'S SHARE OF THE VOLUME, as its page shows it: per tier, what its group holds -- its
-// current data and its history together, exact and on disk -- and how much of that is history.
+// An app's share of the volume, as its page shows it: per tier, what its group holds -- its current
+// data and its history together, exact and on disk -- and how much of that is history.
 //
-// THE SPLIT IS ONE WALK OF THE CURRENT DATA, never of the history. Simple quotas charge a byte to
+// The split is one walk of the current data, never of the history. Simple quotas charge a byte to
 // the subvolume that wrote it, so a ring member's own group holds almost nothing and no group
-// separates the two; and adding up the members counts every byte they share once per member.
-// compsize reads the extent tree and counts each extent once, so what it finds under the current
-// data is that data on disk, and the history is the group less it -- what deleting the history
-// would free. du will not do: on btrfs it reports a file's bytes before compression, whatever
-// its flags, and the volume is compressed. The same walk reports those bytes too, which is what
-// the files would take uncompressed.
+// separates the two, and adding up the members counts every shared byte once per member. compsize
+// reads the extent tree and counts each extent once, so what it finds under the current data is
+// that data on disk, and the history is the group less it -- what deleting the history would free.
+// du will not do: on btrfs it reports a file's bytes before compression, whatever its flags, and
+// the volume is compressed. The same walk reports those bytes too, as what the files would take
+// uncompressed.
 //
-// THE WALK IS PULLED, NEVER SCHEDULED: only a request starts one, only when the last walk of that
-// area is older than usageFresh or measured a different subvolume (an undo swaps the area for
-// another), and one at a time in the background -- a library of photos is minutes of reading.
-// The totals, the history's count and the cap are read fresh on every request.
+// The walk is pulled, never scheduled: only a request starts one, only when that area's last walk
+// is older than usageFresh or measured a different subvolume (an undo swaps the area for another),
+// and one at a time in the background -- a library of photos is minutes of reading. The totals,
+// the history's count and the cap are read fresh on every request.
 
 const usageFresh = 10 * time.Minute
 
@@ -114,7 +114,7 @@ func appUsage(ctx context.Context, x Executor, app string, now time.Time) (dashb
 			mine++
 		}
 	}
-	// AN APP'S UNVERSIONED AREA IS PART OF ITS DATA, as the household sees it: what the app keeps,
+	// An app's unversioned area is part of its data, as the household sees it: what the app keeps,
 	// in the same group. Its cache is charged there too, and said apart, because it can be emptied.
 	data, unversioned := walked(quadlet.DataRoot(app)), walked(quadlet.Area(manifest.TierUnversioned, app))
 	cache := walked(quadlet.Area(manifest.TierCache, app))
@@ -142,7 +142,7 @@ func startUsageWalk(x Executor, areas []string, asked time.Time) {
 	}
 	usageWalks.busy = true
 	go func() {
-		// NOT THE REQUEST'S CONTEXT: that ends with the reply, and this outlives it.
+		// Not the request's context: that ends with the reply, and this outlives it.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 		defer cancel()
 		for _, area := range areas {

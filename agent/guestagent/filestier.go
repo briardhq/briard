@@ -16,15 +16,15 @@ import (
 	"briard.io/agent/quadlet"
 )
 
-// THE FILES TIER'S TICK: the versions and the allocation rule, one job every five minutes.
+// The files tier's tick: the versions and the allocation rule, one job every five minutes.
 //
-// THE VERSIONS are the History mechanism with a file-version product's retention: one trigger,
+// The versions are the History mechanism with a file-version product's retention: one trigger,
 // the clock, hourly, taken live (crash-consistent always; nothing evaluates it), kept hourly for
 // a day, daily for a week, weekly to thirty days, nothing older. They sit under
 // filesVersionsDir with the History's names and sidecars, and each is born into its app's files
 // group, so its Versions spend that app's own cap.
 //
-// THE ALLOCATION RULE gives the files tier whatever the data tier does not need, and keeps it
+// The allocation rule gives the files tier whatever the data tier does not need, and keeps it
 // there by shedding old Versions when the household's files need the room:
 //
 //	slack    = (raw used − charged) + one metadata chunk     what btrfs keeps for itself, and room to grow it
@@ -33,21 +33,21 @@ import (
 //	target   = max(1 GB, 5 % × filesCap)
 //
 // dataUsed is everything charged outside the files tier. The slack is measured, not guessed: what
-// the disk holds (each metadata copy counted) less what the quota tree charges is the
-// filesystem's own trees and the second copy of every metadata block, and one more metadata chunk
-// is kept free so btrfs can always allocate the next one.
+// the disk holds (each metadata copy counted) less what the quota tree charges is the filesystem's
+// own trees and the second copy of every metadata block, and one more metadata chunk is kept free
+// so btrfs can always allocate the next one.
 //
-// The cap is the files aggregate's limit, re-set only when it changes. The data tier has no
-// limit of its own: its reserve is the cap's headroom, so a growing app lowers the cap and the
-// valve answers. THE VALVE, while filesFree is under the target, deletes an uninstalled app's
-// kept copy that a finished backup holds, else the oldest version older than a day, of any app;
-// after each it waits for the space to come back and re-reads. It is blind by design -- simple
-// quotas carry no per-snapshot exclusive number -- and it never touches an installed app's History
-// or a version younger than a day: when those hold the space, the uploader meets EDQUOT and the
-// house keeps running. Short says the valve could not keep five days of Versions, which is the
-// household's warning before the uploader's error.
+// The cap is the files aggregate's limit, re-set only when it changes. The data tier has no limit
+// of its own: its reserve is the cap's headroom, so a growing app lowers the cap and the valve
+// answers. While filesFree is under the target, the valve deletes an uninstalled app's kept copy
+// that a finished backup holds, else the oldest version older than a day, of any app; after each
+// it waits for the space to come back and re-reads. It is blind by design (simple quotas carry no
+// per-snapshot exclusive number), and it never touches an installed app's History or a version
+// younger than a day: when those hold the space, the uploader meets EDQUOT and the house keeps
+// running. Short says the valve could not keep five days of Versions, which is the household's
+// warning before the uploader's error.
 //
-// NO APP TAKES THE LAST OF ITS TIER'S FREE SPACE. Each app's group in each tier is limited to
+// No app takes the last of its tier's free space. Each app's group in each tier is limited to
 //
 //	appCap = max(90 % × (used + free), used + free − R)
 //
@@ -59,9 +59,9 @@ import (
 // target no smaller than R, and a data area's free space is filesFree and the headroom: while the
 // household has not been warned, no app in either tier is at its cap.
 //
-// THE HOST SCHEDULES IT AND TELLS THE HOUSEHOLD; the work is here because only the guest mounts
-// the volume. It runs in the guest's background, one at a time, like the recorder check: a
-// valve that waits on the cleaner must hold neither the host's loop nor the channel.
+// The host schedules it and tells the household; the work is here because only the guest mounts
+// the volume. It runs in the guest's background, one at a time, like the recorder check: a valve
+// that waits on the cleaner must hold neither the host's loop nor the channel.
 
 const (
 	versionInterval    = time.Hour
@@ -121,7 +121,7 @@ func startFilesTick(x Executor) bool {
 	}
 	filesTicks.busy = true
 	go func() {
-		// NOT THE REQUEST'S CONTEXT: that ends with the reply, and this outlives it.
+		// Not the request's context: that ends with the reply, and this outlives it.
 		rep := filesTick(context.Background(), x, time.Now().UTC())
 		// The ring has just changed, and Files names its members: the view follows it here,
 		// and catches anything else that moved since it was last refreshed.
@@ -160,7 +160,7 @@ func filesTick(ctx context.Context, x Executor, now time.Time) FilesTickReport {
 		return nil
 	}
 
-	// THE RING: a member for every area whose newest is an hour old, and its retention at the take.
+	// The ring: a member for every area whose newest is an hour old, and its retention at the take.
 	ring := fileVersions(ctx, x)
 	for _, app := range filesApps(ctx, x) {
 		var newest time.Time
@@ -200,7 +200,7 @@ func filesTick(ctx context.Context, x Executor, now time.Time) FilesTickReport {
 		}
 	}
 
-	// THE KEPT COPIES' END: an uninstalled app's copy goes at keptFor, whatever the tier holds.
+	// The kept copies' end: an uninstalled app's copy goes at keptFor, whatever the tier holds.
 	kept := slices.DeleteFunc(keptCopies(ctx, x), func(k keptCopy) bool {
 		if now.Sub(k.at) <= keptFor {
 			return false
@@ -213,7 +213,7 @@ func filesTick(ctx context.Context, x Executor, now time.Time) FilesTickReport {
 		return true
 	})
 
-	// THE ALLOCATION. Nothing to bound until an app has a files area.
+	// The allocation. Nothing to bound until an app has a files area.
 	use, err := volumeUsage(ctx, x)
 	if err != nil {
 		failed("read the volume's usage", err)
@@ -238,7 +238,7 @@ func filesTick(ctx context.Context, x Executor, now time.Time) FilesTickReport {
 	}
 	measure()
 
-	// THE VALVE: first an uninstalled app's kept copy, oldest first, once a finished backup holds it
+	// The valve: first an uninstalled app's kept copy, oldest first, once a finished backup holds it
 	// -- either tier's: a data copy's room comes back to the files tier through the cap -- then the
 	// oldest eligible Version, anywhere; until there is room or nothing to shed. Short speaks of the
 	// Versions alone: shedding a kept copy is not yet cutting the household's files' history.
@@ -289,7 +289,7 @@ func filesTick(ctx context.Context, x Executor, now time.Time) FilesTickReport {
 		}
 	}
 
-	// THE APPS' CAPS, from what the valve left: each tier's free space and the share it keeps back.
+	// The apps' caps, from what the valve left: each tier's free space and the share it keeps back.
 	tiers := map[string]struct{ free, keep int64 }{
 		dataAgg:  {rep.Volume - rep.Slack - rep.DataUsed - rep.FilesUsed, max(300*mb, rep.Volume/100)},
 		filesAgg: {rep.FilesFree, max(300*mb, rep.FilesCap/100)},
