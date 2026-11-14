@@ -1,12 +1,11 @@
 // Package telemetry holds the node's resource-footprint telemetry -- the numeric input to
-// the soak's *trend* oracle. It lives outside shared/api deliberately: this
-// data does NOT cross the host↔cloud wire (shared/api is the closed, audited allowlist of
-// what leaves the house -- privacy-as-schema). It rides only the internal
-// paths: the host↔guest control channel (the guest returns it to the host) and the
-// host→lab collector file the soak reads out-of-band. Removing it from shared/api is the
-// point -- the cloud stops receiving agent/app RSS+FDs, load, log/store sizes, guest
-// kernel errors. A product-health subset (volume used/free, crash-loop restarts) is re-added
-// to shared/api *deliberately* if/when the cloud consumes it.
+// the soak's *trend* oracle. It lives outside shared/api deliberately: this data does NOT
+// cross the host↔cloud wire (shared/api is the closed, audited allowlist of what leaves the
+// house -- privacy-as-schema). It rides only the internal paths: the host↔guest control
+// channel (the guest returns it to the host) and the host→lab collector file the soak reads
+// out-of-band. The cloud receives none of the agent/app RSS+FDs, log/store sizes or guest
+// kernel errors; the product-health subset it does receive (volume used, load) is picked out
+// field by field into shared/api's MetricsReport by the host's dashboardMetrics allowlist.
 package telemetry
 
 // NodeResources is the resource telemetry a node measures each observe cycle -- the
@@ -23,11 +22,10 @@ type NodeResources struct {
 	AgentRSSKB int64 `json:"agent_rss_kb,omitempty"` // host agent (product daemon) resident set
 	AgentFDs   int   `json:"agent_fds,omitempty"`    // host agent open file descriptors
 
-	// Payloads is one entry per app the node runs, in the node's own app order. It
-	// replaces the Payload* scalars: a node holds a SET of apps, and the three
-	// numbers are per-app facts, so summing them would be a different measurement wearing the
-	// same field name -- a crash-loop in one of N dilutes into a small climb in the total, which
-	// is exactly the signal NRestarts exists to make loud. Empty on a witness and on the shipped
+	// Payloads is one entry per app the node runs, in the node's own app order. Per app, never
+	// summed: a node holds a SET of apps, and the three numbers are per-app facts, so a sum
+	// would be a different measurement -- a crash-loop in one of N dilutes into a small climb in
+	// the total, which is exactly the signal NRestarts exists to make loud. Empty on a witness and on the shipped
 	// zero-app node; the fields BELOW are node-scoped and come back regardless.
 	//
 	// Widening here is cheap in a way NodeStatus is not: telemetry is the internal host->lab
@@ -64,7 +62,7 @@ type NodeResources struct {
 	// guest is reachable only over it -- not machinectl/journalctl, which hit the L1 container and
 	// its shared host kernel. The guest reports mechanism (each app unit's NRestarts; recent
 	// warning+ kernel lines, normally empty); the oracle applies policy (a climb; a bad-pattern
-	// scan). Complements ShellSubstrate, which covers the host/L1 layer (qemu OOM, KVM).
+	// scan). Complements the soak's own probes of the host/L1 layer (qemu OOM, KVM).
 	KernelErrors []string `json:"kernel_errors,omitempty"` // recent guest kernel warning+ lines
 
 	// DMTargets is every device-mapper table line the guest holds, as `<name>: <table>`. It is
@@ -90,10 +88,10 @@ type NodeResources struct {
 
 // AppResources is one app's footprint inside the appliance. Name is the app's own
 // name, so the oracle can say WHICH app leaked or crash-looped rather than that something on
-// the node did -- the reason these went plural rather than being summed.
+// the node did -- the reason these are per app rather than summed.
 type AppResources struct {
 	Name     string `json:"name"`
-	RSSKB    int64  `json:"rss_kb,omitempty"`   // the app unit's cgroup resident set
-	FDs      int    `json:"fds,omitempty"`      // its open fds (leaks earlier than RSS)
+	RSSKB    int64  `json:"rss_kb,omitempty"`   // the app unit's cgroup anon memory (page cache excluded)
+	FDs      int    `json:"fds,omitempty"`      // its unit MainPID's open fds: the supervisor's, not the container's
 	Restarts uint64 `json:"restarts,omitempty"` // its unit NRestarts (crash-loop)
 }

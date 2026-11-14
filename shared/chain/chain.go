@@ -3,15 +3,13 @@
 //
 // IT IS ONE LIST BECAUSE IT HAS TO BE. The order is a dependency, not a preference: the host
 // hands it to drbd-reactor as the start-list, and the guest agent writes it into every member's
-// `Requires=`/`After=` and into the lone node's target. Two spellings of one order is
-// two things that can disagree, and the way they disagree is a promotion that half-starts. It
-// used to live in four places -- the host's reactor config, the image's `chainMembers`, the
-// image's target, and the image's hold -- kept in step by hand; the ones in the image are gone
-// now that the agent renders the units, and the remaining two Go consumers read this.
+// `Requires=`/`After=`, into the lone node's target and into its hold. Two spellings of one
+// order is two things that can disagree, and the way they disagree is a promotion that
+// half-starts.
 //
 // ⚠️ THE RIG'S COPY IS THE ONE THIS CANNOT REACH. nixosTest/lib.nix writes its own reactor
 // snippet in nix, which cannot import Go -- so internal/arch asserts the two are equal rather
-// than trusting the comment that used to say "kept in step BY HAND".
+// than trusting them to be kept in step by hand.
 package chain
 
 // Target is the lone node's chain target: the promoter chain with no promoter. A home
@@ -37,12 +35,10 @@ const Target = "briard-chain.target"
 // mechanically true: drbd-reactor never sees them, so a crashed container cannot deactivate the
 // target.
 //
-// Nothing here is conditional on an app existing. The old conditional membership existed
-// because naming a unit the guest does not define fails the WHOLE ordered chain, and a
-// zero-app node has no app unit to name -- but briard-apps is rendered
-// unconditionally, exactly as briard-primary-storage and briard-vip are, so there is nothing
-// left to make conditional. It takes no arguments, and that is the end state converge-at-promotion was
-// after: the chain is the same units on every anchor in the fleet.
+// Nothing here is conditional on an app existing, and nothing may be: naming a unit the guest
+// does not define fails the WHOLE ordered chain. briard-apps is rendered unconditionally, as
+// briard-primary-storage and briard-vip are, so a zero-app node names only units it has, and the
+// chain is the same units on every anchor in the fleet.
 //
 // THE REVERSE PROXY IS A MEMBER AND CARRIES THE HOUSEHOLD'S mDNS NAMES. On a
 // node with no `.casa` domain the reverse proxy routes `byHost` against the app's own `.local`

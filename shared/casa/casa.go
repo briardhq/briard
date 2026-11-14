@@ -10,8 +10,8 @@
 // registration, and from then on the node authenticates by SIGNING requests rather than by
 // presenting a secret. Two verifiers, and one of them is the cloud itself: a bearer token
 // shown to the cloud on every request would let a compromised cloud impersonate any node to
-// the Worker, which is the one thing the design moved the zone token to the Worker to
-// prevent. A signature is bound to one request (the name, what it asks, and when), so a
+// the Worker, which is the one thing keeping the zone token in the Worker, not the cloud,
+// exists to prevent. A signature is bound to one request (the name, what it asks, and when), so a
 // captured request is not an owned name, and nothing stored in the cloud or the Worker is a
 // secret.
 //

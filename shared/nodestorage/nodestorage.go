@@ -2,25 +2,22 @@
 // guest's briard-node-storage.service reads to build every tier this node holds.
 //
 // IT EXISTS BECAUSE STORAGE POLICY IS THE HOST'S (a node-scoped fact the host holds
-// durably and pushes at bring-up). The seam first shipped as a BOOT unit whose only
-// inputs were facts it could read off the machine -- today /proc/cpuinfo -- and that shape cannot
-// carry a decision anybody made: the moment there is one (do not encrypt this node; force
-// Adiantum; here is a key) a boot unit has nowhere to read it from. That is precisely why
-// Adiantum went unbuilt in (c) -- it was specified as an install-time opt-in, and an install-time
-// value had no channel to the guest at boot. This document is that channel, and the unit that
-// reads it is started by the host rather than by multi-user.target.
+// durably and pushes at bring-up). A BOOT unit whose only inputs are facts it can read off the
+// machine (/proc/cpuinfo) cannot carry a decision anybody made -- do not encrypt this node; use
+// Adiantum; here is a key -- and an install-time choice has no other channel to the guest. This
+// document is that channel, and the unit that reads it is started by the host rather than by
+// multi-user.target.
 //
 // THE PRECEDENT IS shared/routes: one JSON document under /run that one side writes and another
 // reads, node-local and on tmpfs, so it cannot outlive the boot it describes. It is a LIST of
-// tiers because a node holds tiers -- one today (the replicated data volume), a bulk/NAS tier
-// later -- and a per-tier document is the shape that does not have to be re-cut when the second
-// one arrives.
+// tiers because a node holds tiers -- one today (the data volume), a bulk/NAS tier later -- and a
+// per-tier document is the shape that does not have to be re-cut when the second one arrives.
 //
 // WHAT IS DELIBERATELY NOT HERE: the drbd-reactor promoter snippet. Arming the promoter is its
-// own verb and deliberately the LAST act of bring-up, so a document named
-// node-storage that also carried the promotion chain would be exactly the drift the seam's own
-// fence exists to catch. Storage brings the resource up to `/dev/drbd0 attached`
-// and stops there.
+// own verb and deliberately the LAST act of bring-up, so a document named node-storage that also
+// carried the promotion chain would be exactly the drift the seam's own fence exists to catch.
+// Storage brings the resource up to `/dev/drbd0 attached` (on a lone node, the data LV) and stops
+// there.
 package nodestorage
 
 import (
@@ -35,12 +32,12 @@ import (
 // node building a layout nobody asked for on this launch.
 const Path = "/run/briard/node-storage.json"
 
-// TierData is the tier every diskful node holds: the replicated volume DRBD attaches to, and the
-// only tier there is today. Named so the second one (bulk/NAS, fenced out of v3b) arrives as an
+// TierData is the tier every diskful node holds: the volume DRBD attaches to (a lone node mounts
+// it directly), and the only tier there is today. Named so a second one (bulk/NAS) arrives as an
 // entry beside it rather than as a re-cut of this document.
 const TierData = "data"
 
-// Mode is a tier's encryption policy -- the knob (b)/(c) had nowhere to put.
+// Mode is a tier's encryption policy.
 type Mode string
 
 const (
@@ -57,9 +54,8 @@ const (
 	// somebody deciding.
 	ModeOff Mode = "off"
 	// ModeAdiantum encrypts with a cipher that does not need AES instructions -- the AES-less
-	// fallback (c) specified and could not build. NEVER PROMOTED, and the item is explicit
-	// about it: it is a documented opt-in for hardware that has no acceleration, not a second
-	// default. A fleet that splits on the AES axis splits on something hardware-determined and
+	// fallback. NEVER PROMOTED: it is a documented opt-in for hardware that has no
+	// acceleration, not a second default. A fleet that splits on the AES axis splits on something hardware-determined and
 	// reportable; a fleet that splits on taste does not.
 	ModeAdiantum Mode = "adiantum"
 )
@@ -86,7 +82,7 @@ func (m Mode) Valid() bool {
 // document.
 type Tier struct {
 	// Name is what this tier is called in logs, the report card and later specs -- "data" for
-	// the replicated volume every node has today. Unique within a spec.
+	// the data volume every diskful node has today. Unique within a spec.
 	Name string `json:"name"`
 	// Device is the raw block device the tier is built on, e.g. /dev/vdb. A HARDWARE FACT of
 	// the VM the host builds, which is why it can be stated here rather than discovered.
@@ -143,14 +139,14 @@ func MetadataBytes(dataBytes int64, maxPeers int) int64 {
 }
 
 // Resource is the DRBD half of the node's storage bring-up: the host-rendered .res file, and the
-// two facts that decide what is done with it.
+// facts that decide what is done with it.
 type Resource struct {
 	// Name is the resource, e.g. "r0".
 	Name string `json:"name"`
-	// Device is the replicated block device the resource presents, e.g. /dev/drbd0 -- what the
-	// .res names as `device` and what briard-primary-storage mounts. Carried so the mount unit
-	// reads the device off the same document the block layer was built from rather
-	// than restating a constant beside it.
+	// Device is what briard-primary-storage mounts: the replicated block device the resource
+	// presents (e.g. /dev/drbd0, the .res's `device`), or the data LV on a node that is not
+	// Replicated. Carried so the mount unit reads the device off the same document the block
+	// layer was built from rather than restating a constant beside it.
 	Device string `json:"device"`
 	// Replicated says the resource is real: DRBD runs on this node, the .res is written, the
 	// metadata is created and attached, and Device is the DRBD device. False is a LONE node:
@@ -158,8 +154,8 @@ type Resource struct {
 	// no metadata, no promoter, since with no second copy DRBD only turns a bad block into a
 	// dead node -- and Device names that LV. The host decides it from the mesh (two or more
 	// DISKFUL members; a witness beside one anchor holds no copy), the guest carries it out at
-	// bring-up and reads it back for everything that used to key on DRBD state. A joiner and a
-	// witness are always replicated.
+	// bring-up and reads it back for everything that would otherwise key on DRBD state. A joiner
+	// and a witness are always replicated.
 	Replicated bool `json:"replicated,omitempty"`
 	// Convert is the ONE-SHOT intent that lifts the refuse cell: a node whose spec says
 	// alone but whose metadata LV holds DRBD metadata is refused, because that is what a forgotten
@@ -185,12 +181,11 @@ type Resource struct {
 	// of a NEW flock, so once its metadata is created the resource may be declared UpToDate
 	// (skip the initial sync) and the volume formatted once. A joiner is hard-wired false.
 	//
-	// It is only half, and the other half is what retires /run/briard/data.fresh:
-	// "did we just create this LV" was an inference from `drbdadm create-md`'s exit code, an
-	// inference ENCRYPTION BROKE -- dm-crypt returns ciphertext for sectors nobody has written,
-	// so create-md's blank-probe found "some data" on every fresh encrypted node. One program
-	// now runs both `lvcreate` and `create-md`, so it knows in-process and no marker has to
-	// carry the fact between two components.
+	// It is only half. The other half, "did we just create this LV", is known in-process: one
+	// program runs both `lvcreate` and `create-md`, so no marker carries the fact between
+	// components. It must never be inferred from `drbdadm create-md`'s blank-probe: dm-crypt
+	// returns ciphertext for sectors nobody has written, so the probe finds "some data" on every
+	// fresh encrypted node.
 	FreshInit bool `json:"freshInit,omitempty"`
 }
 

@@ -2,9 +2,8 @@ package model
 
 // Role is a node's declared flock function: anchor = diskful voter
 // that may host the workload; diskless = member with no storage peer (carries
-// the witness vote and/or radio duties). Plain machines have no role — today
-// the agent still defaults to anchor (flock-scoped roles land with the
-// placement work).
+// the witness vote and/or radio duties). "" is reserved for plain machines,
+// which have no role; the agent's ROLE defaults to anchor.
 type Role string
 
 const (
@@ -23,27 +22,27 @@ const (
 // QuorumState is this node's SERVING state -- is it the write authority for the home's data
 // right now, and is it allowed to be -- read as ground truth. The agent follows it; it never
 // overrides it. On a flock it is DRBD's view (role and quorum, `drbdsetup status`), which is
-// where the names come from. It is computed in ONE place, the guest's node-status verb, and
-// readers ask Serving() for "does this node hold the house" rather than spelling the answer
-// from the fields -- so a node that runs no DRBD (a lone anchor) is made to read as
-// Primary and quorate by that verb alone, and no reader learns a second shape.
+// where the names come from. It is computed in ONE place, the guest's node-status verb
+// (`drbd.status`), and readers ask Serving() for "does this node hold the house" rather than
+// spelling the answer from the fields -- so a node that runs no DRBD (a lone anchor) is made to
+// read as Primary (its chain target active) and quorate by that verb alone, and no reader learns
+// a second shape.
 type QuorumState struct {
 	Primary   bool `json:"primary"`   // is this node the write authority (on a flock: the DRBD primary)?
 	Quorate   bool `json:"quorate"`   // is it allowed to write (on a flock: does it have quorum)?
 	Connected int  `json:"connected"` // peers connected right now
-	// This node's OWN storage, in the same terms PeerState reports for everyone else
-	//. Their absence was load-bearing rather than an oversight: a node could say
-	// Whether a PEER was a viable failover target but not whether IT was one — so the
-	// OS-upgrade gate had nothing node-local to ask a Secondary, and asked the VIP instead,
-	// which on a Secondary is answered by the peer. Same sample, same parse.
+	// This node's OWN storage, in the same terms PeerState reports for everyone else: what lets
+	// a node say whether IT is a viable failover target, not only whether a peer is. The
+	// OS-upgrade gate asks a Secondary this rather than the VIP, which on a Secondary the peer
+	// answers. Same sample, same parse.
 	Diskful  bool `json:"diskful"`  // carries real storage — false for a diskless witness
 	UpToDate bool `json:"uptodate"` // every volume this node carries is UpToDate
 }
 
 // Serving reports whether this node holds the house right now: it is the write authority and
-// allowed to write. THE predicate for "is this node serving" -- every reader that used to spell
-// it Primary ∧ Quorate, or read Primary alone to mean it, asks here, so the answer is derived
-// once and the lone-node branch lands in the verb that fills the fields, never at a call site.
+// allowed to write. THE predicate for "is this node serving": readers ask here rather than
+// spelling Primary ∧ Quorate or reading Primary alone to mean it, so the answer is derived once
+// and the lone-node branch lives in the verb that fills the fields, never at a call site.
 // A Primary that has lost quorum is not serving: DRBD refuses its writes (on-no-quorum=io-error)
 // and the reactor demotes it. Narrower questions stay on the fields: Quorate alone is
 // participation (a standby's whole job), Diskful/UpToDate are what the node carries, and
@@ -78,13 +77,13 @@ func (p PeerState) CanTakeOver() bool { return p.Connected && p.Diskful && p.UpT
 // "can a peer take over", so reading the two halves from separate calls would tear
 // across exactly the state change being decided about.
 //
-// QuorumState is embedded, not nested, so the wire keys stay where they were: this
-// rides the existing drbd.status verb, and an agent on either side of the version
+// QuorumState is embedded, not nested, so its wire keys are top-level as in a bare
+// QuorumState: this rides the drbd.status verb, and an agent on either side of a version
 // skew reads what it knows and ignores the rest.
 //
-// Peers deliberately do NOT ride the cloud wire — shared/api's NodeStatus keeps the
-// three-field QuorumState summary. This is an input to a local decision, not
-// product-health telemetry, and widening the closed allowlist is a visible act.
+// Peers deliberately do NOT ride the cloud wire — shared/api's NodeStatus carries the
+// QuorumState alone. This is an input to a local decision, not product-health
+// telemetry, and widening the closed allowlist is a visible act.
 type Cluster struct {
 	QuorumState
 	Peers []PeerState `json:"peers,omitempty"`
@@ -106,10 +105,9 @@ type AppSpec struct {
 	Name    string // e.g. "home-assistant"
 	DataDir string // path on the DRBD volume
 
-	// Units is the ordered set of systemd units the promoter starts for this app, between
-	// the data mount and the VIP, as the quadlet renderer produced them: the pod first, then its
-	// members, because starting a pod unit does NOT start its containers (proven by the
-	// quadlet spike).
+	// Units is the app's systemd units in start order, as the quadlet renderer produced them:
+	// the pod first, then its members, because starting a pod unit does NOT start its
+	// containers.
 	Units []string
 	// Unit is the single unit Start/Stop/Health act on — the container that actually serves, so
 	// "is the app up?" keeps one answer even when the pod has several members.
@@ -138,12 +136,10 @@ type AppSpec struct {
 // The app names it explicitly: its units come from the quadlet renderer
 // (briard-<app>-<container>.service, plus a pod unit) and the SERVING container is the one
 // whose state is the app's state. The zero spec names nothing, which is the honest answer —
-// asking systemd about a unit assembled from an empty name is what once reported "inactive"
-// forever.
+// asking systemd about a unit assembled from an empty name reports "inactive" forever.
 //
-// It stays a method rather than a bare field read because the derivation was written twice: the
-// guest manager resolved it correctly while the host's resource telemetry rebuilt
-// "podman-<name>.service" inline, which names nothing on a runtime-installed app — so the
-// footprint, and with it the crash-loop counter, read zero for exactly the apps users install.
-// One definition, on the type that carries the fact.
+// A method rather than a bare field read so that no caller rebuilds the name: a guessed
+// "podman-<name>.service" names nothing on a runtime-installed app, and the footprint, and with
+// it the crash-loop counter, would read zero for exactly the apps users install. One definition,
+// on the type that carries the fact.
 func (s AppSpec) ServingUnit() string { return s.Unit }

@@ -10,7 +10,12 @@
 // reset.
 //
 // It also carries what the host knows about the OS account, because that is where the account
-// is visible: the dashboard creates Home Assistant's first user from it.
+// is visible: it seeds the user's record, from which the dashboard creates Home Assistant's first
+// user.
+//
+// Beside the handoff, the package holds the rest of the host→guest contract for the page: the
+// files the host keeps the dashboard told through (catalog, casa, backup, alerts, a pull in
+// flight) and the shapes the host relays back over the admin port.
 package dashboard
 
 import (
@@ -163,8 +168,8 @@ type Pull struct {
 }
 
 // CasaPath is where the host keeps the dashboard told about the household's casa name:
-// written through `dashboard.casa` whenever the host's view changes and again at
-// every bring-up, because the guest is disposable and this is the host's fact, not the
+// written through `dashboard.casa` whenever the host's view changes and again at the start of
+// every connection, because the guest is disposable and this is the host's fact, not the
 // guest's. The dashboard renders it; the claim itself is a directive it asks for through the
 // admin port, and the host decides.
 const CasaPath = Dir + "/casa.json"
@@ -240,8 +245,9 @@ func (c Catalog) Releases() []AppRelease {
 
 // AlertsPath is that copy ([]notify.Record, oldest first): written through `dashboard.alerts` at
 // the first cycle of every connection and whenever the store records something, because the
-// store is the host's and the guest is disposable. Every reader only displays it; nothing
-// acknowledges an alert from here.
+// store is the host's and the guest is disposable. Every reader only displays it; nothing writes
+// to it. The dashboard's Dismiss is a directive to the host over the admin port, and the host's
+// next copy carries the result.
 const AlertsPath = AlertsDir + "/alerts.json"
 
 // ContactStampPath is the last-seen-host-agent stamp: the guest agent bumps its mtime on every

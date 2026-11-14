@@ -3,27 +3,26 @@
 // Package sdnotify sends systemd service-manager notifications (sd_notify(3)) over the
 // $NOTIFY_SOCKET datagram socket — no cgo, no dependency, just the documented protocol.
 //
-// The host agent runs under `Type=notify`: systemd considers the unit
-// "started" only once it receives READY=1, and self-update hangs the whole commit decision
-// off that — ExecStartPost (the commit) runs only after READY, and a trial that never sends it
-// trips TimeoutStartSec and reverts. So Ready() is the one piece of agent code in the update
-// loop: the new binary proving itself.
+// The host agent runs under `Type=notify`: systemd considers the unit "started" only once it
+// receives READY=1, and self-update hangs the whole commit decision off that — the updater
+// starts the new agent and commits only once the start returns READY; a candidate that never
+// sends it trips TimeoutStartSec and is reverted. So Ready() is the new binary proving itself.
 //
-// WHAT READY ASSERTS, AND WHAT IT DELIBERATELY DOES NOT. It asserts that THE AGENT
-// started — config read, loop entered. It does NOT assert that the node is healthy, and it used
-// to: the agent sent READY on first healthy convergence, which coupled a supervisor's readiness
-// to the health of the thing it supervises. Two costs, and the first is fatal. systemd arms the
-// watchdog only once start-up COMPLETES, so an agent whose guest never converged never left
-// `activating` and never armed its watchdog — leaving the recovery ladder, the one stretch of
-// code that exists for a broken guest, the one stretch with no watchdog over it. And it made
+// WHAT READY ASSERTS, AND WHAT IT DELIBERATELY DOES NOT. It asserts that THE AGENT started —
+// config read, about to enter its loop. It does NOT assert that the node is healthy: sending
+// READY on first healthy convergence would couple a supervisor's readiness to the health of the
+// thing it supervises. Two costs, and the first is fatal. systemd arms the watchdog only once
+// start-up COMPLETES, so an agent whose guest never converged would never leave `activating`
+// and never arm its watchdog — leaving the recovery ladder, the one stretch of code that exists
+// for a broken guest, the one stretch with no watchdog over it. And it would make
 // TimeoutStartSec answer to three incompatible requirements at once. A supervisor is ready when
 // it can supervise; a broken guest is work for a healthy agent, not evidence of a sick one.
 //
 // The gate that rides on it is thinner as a result — "the binary runs" rather than "the node is
-// healthy" — and that is a deliberate trade, not an oversight. It still catches
-// a binary that will not exec, panics immediately, or cannot parse its config. What it stopped
-// catching, it never really caught: an agent restart re-adopts a guest that was already running,
-// so a healthy guest after an update mostly restates that it was healthy before one.
+// healthy" — and that is a deliberate trade, not an oversight. It still catches a binary that
+// will not exec, panics immediately, or cannot parse its config. What it does not catch, a
+// health gate would barely catch either: an agent restart re-adopts a guest that was already
+// running, so a healthy guest after an update mostly restates that it was healthy before one.
 package sdnotify
 
 import (
@@ -39,8 +38,8 @@ var adopted atomic.Pointer[string]
 
 // Adopt takes ownership of $NOTIFY_SOCKET: it remembers the path and REMOVES the variable from
 // this process's environment, so no child this process execs can inherit the socket. Call it
-// once, early, from a process that is itself the unit's main PID — the host agent does, before it
-// starts anything.
+// once, early, from a process that is itself the unit's main PID — the host agent, the guest
+// agent and the guest firmware each do, before they start anything.
 //
 // WHY, and it is not tidiness. $NOTIFY_SOCKET is an ordinary environment variable, so
 // every child inherits it — and `systemctl`, which the agent shells out to constantly, ends each
@@ -85,9 +84,9 @@ func Ready() error { return notify("READY=1") }
 // WATCHDOG_USEC while the unit is running and kills the unit on a miss (WatchdogSignal=,
 // SIGABRT by default). No-op when $NOTIFY_SOCKET is unset.
 //
-// Cheap by construction — one datagram to a socket systemd already holds open — which is what
-// makes it reasonable to call from many sites rather than budgeting them. You do not pay per
-// ping; you pay per GAP.
+// Cheap by construction — one datagram to a socket systemd already holds open — so pinging
+// often (the host agent's beat sends one every third of the watchdog period) costs nothing. You
+// do not pay per ping; you pay per GAP.
 func Watchdog() error { return notify("WATCHDOG=1") }
 
 // Notify sends a raw sd_notify state string (e.g. "STATUS=...", "RELOADING=1").

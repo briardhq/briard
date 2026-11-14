@@ -12,9 +12,9 @@ import (
 
 // SMTPConfig configures outbound email delivery. Addr is host:port; From is the sender, a bare
 // address or one with a display name ("Briard <noreply@briard.io>") -- the header carries it
-// whole, the envelope only its address. Username/Password enable PLAIN auth against the relay; leave them empty for an
-// unauthenticated relay (a trusted internal MTA, or the tests' local sink). Stdlib net/smtp only
-// (CONTRIBUTING.md: no SDK) -- no mail-provider SDK.
+// whole, the envelope only its address. Username/Password enable PLAIN auth against the relay;
+// leave them empty for an unauthenticated relay (a trusted internal MTA, or the tests' local
+// sink). Stdlib net/smtp only -- no mail-provider SDK.
 type SMTPConfig struct {
 	Addr     string
 	From     string

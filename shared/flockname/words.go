@@ -1,5 +1,5 @@
 // The curated word lists a flock name is drawn from. FROZEN AND APPEND-ONLY -- see the package
-// doc in flockname.go for why, and words_test.go for the assertion that enforces it.
+// doc in flockname.go for why, and TestListsAreAppendOnly for the assertion that enforces it.
 //
 // Derived from dustinkirkland/golang-petname (Apache-2.0), snapshotted 2026-08-08 at 449+449
 // words and curated down to 422+424. Vendored rather than imported DELIBERATELY: upstream
@@ -18,7 +18,7 @@
 //     as their non-animal sense first (molly, racer, glider, monitor, monarch), or are
 //     unsettling rather than friendly (ghost, ghoul, goblin, troll, monster, satyr, yeti).
 //
-// What it deliberately KEPT: `elf` and `alien` (short and good-humoured -- owner's call), and
+// What it deliberately KEPT: `elf` and `alien` (short and good-humoured), and
 // the five breeds `dane`, `akita`, `corgi`, `bengal`, `kodiak`, because they are real animals
 // and the list keeps sixteen other breeds (labrador, poodle, beagle, collie, husky, whippet,
 // mastiff, spaniel, terrier, shepherd, bulldog, malamute, doberman, airedale, foxhound,

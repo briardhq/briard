@@ -1,11 +1,11 @@
-// Package notify is the v1 alerting seam: the one signal that leaves the home.
+// Package notify is the north-bound alerting seam: the one signal that leaves the home.
 //
-// v0/v1 has no product cloud, so the agent delivers alerts out of the household itself
-// (the "v1 shortcut") -- primarily the degraded-redundancy warning ("you've lost your
-// backup node, one failure from an outage") derived from the DRBD/quorum state the agent
-// already reads. Delivery is behind this Notifier seam so it's swappable (ntfy today,
-// webhook/email later); v2's cloud reclaims the same responsibility through the same
-// north-bound seam, so the agent code doesn't change when it lands.
+// The host agent raises every alert through a Notifier -- the degraded-redundancy warning
+// ("you've lost your backup node, one failure from an outage") derived from the DRBD/quorum
+// state it already reads, and the rest -- and its alert store records each one before pushing
+// it out of the household (to ntfy when a topic is configured). Delivery is behind this seam so
+// it is swappable: the cloud delivers through the same Notifier (ntfy to the operator, SMTP to
+// the household), and the agent code does not change with the channel.
 package notify
 
 import (
@@ -102,14 +102,16 @@ func Attention(recs []Record) []Record {
 	return out
 }
 
-// Notifier delivers an Alert out of the home. Implementations: Ntfy (the v1 default,
-// zero-setup push) and Log (no external dependency -- records locally, the standalone
-// fallback). Delivery is best-effort: a failed Notify is logged by the caller, never fatal.
+// Notifier delivers an Alert out of the home. Implementations here: Ntfy (zero-setup push),
+// SMTP (email), Tee (fan-out) and Nop; the host agent's alert store is one too, recording each
+// alert before it pushes. Delivery is best-effort: a failed Notify is logged by the caller,
+// never fatal.
 type Notifier interface {
 	Notify(ctx context.Context, a Alert) error
 }
 
-// Tee fans an Alert out to every notifier (the operator's copy plus the home owner's email). Best-effort -- it delivers to all channels, then returns the joined errors (nil if all
+// Tee fans an Alert out to every notifier (the operator's copy plus the home owner's email).
+// Best-effort -- it delivers to all channels, then returns the joined errors (nil if all
 // succeeded), so one failed channel never suppresses the others. A nil/empty Tee is a no-op.
 func Tee(notifiers ...Notifier) Notifier { return teeNotifier(notifiers) }
 
@@ -129,8 +131,7 @@ func (t teeNotifier) Notify(ctx context.Context, a Alert) error {
 }
 
 // Nop is a Notifier that delivers nowhere -- the default when no external endpoint is
-// configured. The node still records every alert in its own store, so Nop just means
-// "don't also push it out of the home".
+// configured (the cloud's operator copy without a topic; SMTP without a relay).
 func Nop() Notifier { return nopNotifier{} }
 
 type nopNotifier struct{}
@@ -138,9 +139,9 @@ type nopNotifier struct{}
 func (nopNotifier) Notify(context.Context, Alert) error { return nil }
 
 // Ntfy posts alerts to an ntfy topic URL (e.g. https://ntfy.sh/my-briard-abc123) -- a
-// dead-simple pub/sub that a phone app subscribes to, no account, so it's the ideal "one
-// signal that leaves home" for v1. The body is the message; the title + priority + tags
-// ride in headers (ntfy's documented HTTP contract). Stdlib only (CONTRIBUTING.md: no client framework).
+// dead-simple pub/sub that a phone app subscribes to, no account. The body is the message; the
+// title + priority + tags ride in headers (ntfy's documented HTTP contract). Stdlib only
+// (CONTRIBUTING.md: no client framework).
 func Ntfy(url string) Notifier {
 	return ntfyNotifier{url: url, hc: &http.Client{Timeout: 10 * time.Second}}
 }

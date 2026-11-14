@@ -1,5 +1,5 @@
-// Package tlspipe is the generic byte-stream transport under the cloud witness's TLS auth proxy
-// : a bidirectional relay (Pipe) and the anchor-side Forwarder (listen localhost ->
+// Package tlspipe is the generic byte-stream transport under the cloud witness's TLS auth proxy:
+// a bidirectional relay (Pipe) and the anchor-side Forwarder (listen localhost ->
 // mTLS dial-out -> Pipe). It is the public, on-node half -- the server-side auth / one-connection
 // gate / cert->flock policy stays closed in the cloud witness, which reuses only Pipe from here.
 //
