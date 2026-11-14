@@ -18,26 +18,23 @@ import (
 //
 // So the deadman answers for it. This process already computes RebootAllowed every tick, already
 // survives the per-connection guest agent's crash-loop as its own long-running unit, and already
-// runs precisely when the host agent is gone. Giving it a socket costs one more listener; the
-// alternative was a second in-guest daemon with its own lifecycle to go wrong, which is the
-// problem rather than a solution to it.
+// runs precisely when the host agent is gone. Giving it a socket costs one more listener; a
+// second in-guest daemon would be one more lifecycle to go wrong.
 //
-// RAW TCP, NOT HTTP, and that is load-bearing rather than taste: the guest binary is built
-// its own main (briard-guest-agent) so it links no host subsystem (the same fence that makes
-// this package duplicate notify's level strings instead of importing them). `net` alone is a much
-// smaller thing to pull in, and one line of key=value text needs nothing more.
+// RAW TCP, NOT HTTP: one line of key=value text needs nothing more.
 //
 // It READS NOTHING from the connection. There is no request to parse, so there is no parser to
-// get wrong: accept, write one line, close. That was cheap insurance when the link was private and
-// point-to-point. It answers on this node's own address, which rides the LAN's L2, so the listener
-// is not hidden by addressing -- reading nothing is what makes that safe.
+// get wrong: accept, write one line, close. It answers on this node's own address, which rides
+// the LAN's L2, so the listener is not hidden by addressing -- reading nothing is what makes that
+// safe.
 
-// GatePort is where the gate answers. Adjacent to DRBD's 7789, and the only fixed number left on
-// this path: the ADDRESS is the node's own, agent-assigned and flock-scoped, so it
-// cannot be a constant here and must not be one anywhere else either.
+// GatePort is where the gate answers. Adjacent to DRBD's 7789, and the only fixed number on this
+// path: the ADDRESS is the node's own, agent-assigned and flock-scoped, so it cannot be a
+// constant here and must not be one anywhere else either -- the node IP is assigned once and
+// travels over the channel.
 //
-// Nothing spells the gate's address twice, which is why no cross-language drift guard is needed
-// for it: the node IP is assigned once and travels over the channel.
+// PAIRED with guest-image/disk-image.nix's BRIARD_GATE_ADDR (":7790"), which the deadman unit
+// listens on. Different languages, so no shared import.
 const GatePort = 7790
 
 // GateAddr is the address the host dials to read a guest's reboot gate: that node's node IP, the
@@ -60,11 +57,11 @@ const GateProto = "briard-gate/1"
 // until the first publish -- correct rather than merely safe, since the host reads "unknown" the
 // same as unreachable and proceeds, which is what it would do with no gate at all.
 //
-// It deliberately does NOT report the guest's uptime, though an early version did, so the host
-// could avoid power-cycling a guest that had just rebooted itself. That guard proved unnecessary:
-// `-no-reboot` means every guest restart ends the VM's unit, so the HOST is the one that starts it
-// and already knows when. A second, weaker source of the same fact -- one that exists only while
-// the deadman is still answering -- would only be a way for the two to disagree.
+// It deliberately does NOT report the guest's uptime, though "did the guest just reboot itself?"
+// looks like a question for the guest: `-no-reboot` means every guest restart ends the VM's unit,
+// so the HOST is the one that starts it and already knows when. A second, weaker source of the
+// same fact -- one that exists only while the deadman is still answering -- would only be a way
+// for the two to disagree.
 type Gate struct {
 	Now  func() time.Time     // injectable clock (tests)
 	Logf func(string, ...any) // operational log

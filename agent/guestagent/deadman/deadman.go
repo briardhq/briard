@@ -39,16 +39,14 @@ type StateStore interface {
 	SaveLast(LastEpisode) error
 }
 
-// Monitor is the guest-side deadman driver. It watches the host-agent link
-// (refreshed by Contact on every served request) and, on prolonged silence, reboots — but only
-// when Decide says it's quorum-safe. Every side-effecting dependency is injected, so Run is
-// exercised in unit tests without DRBD, systemd, or a real reboot.
+// Monitor is the guest-side deadman driver. It watches the host-agent link and, on prolonged
+// silence, reboots — but only when Decide says it's quorum-safe. Every side-effecting dependency
+// is injected, so Run is exercised in unit tests without DRBD, systemd, or a real reboot.
 //
-// It lives in-process with the (per-connection) guest agent: Run is started once per agent
-// lifetime and keeps evaluating while the serve loop blocks waiting for the host — so a silent-
-// but-connected host (stamp not refreshed) and a disconnected dead host (agent waits, no
-// requests) are both caught. lastContact resets per lifetime, which is correct: the agent only
-// (re)starts right after a disconnect (recent contact) or at boot.
+// In production it is its own long-running process (the briard-deadman unit,
+// guestagent.RunDeadman) reading the contact stamp through LastContact, because the
+// per-connection guest agent restarts in a loop while the host is down and would reset an
+// in-process timer. Contact is the in-process stamp the unit tests drive.
 type Monitor struct {
 	Node   string        // jitter seed (this node's name) — a stable per-node spread
 	Base   time.Duration // T_deadman base (DefaultDeadman)
@@ -61,9 +59,9 @@ type Monitor struct {
 	Logf   func(string, ...any)                  // operational log
 	State  StateStore                            // persisted backoff across a reboot
 
-	// Gate, when set, receives every tick's verdict so the HOST rung can read it over the private
-	// link (gate.go). Nil in unit tests and in any build with no such link — the deadman's own
-	// behaviour does not depend on it, which is why it is published rather than consulted.
+	// Gate, when set, receives every tick's verdict, which it serves to the HOST rung (gate.go).
+	// Nil in unit tests — the deadman's own behaviour does not depend on it, which is why it is
+	// published rather than consulted.
 	Gate *Gate
 
 	// LastContact, when set, is the source of truth for the last host-agent contact — a stamp file
@@ -77,7 +75,8 @@ type Monitor struct {
 	lastContact time.Time
 }
 
-// Contact records that the host agent just talked to us — call it on every served request.
+// Contact records that the host agent just talked to us — the in-process stamp, used when
+// LastContact is nil.
 func (m *Monitor) Contact() {
 	m.mu.Lock()
 	m.lastContact = m.now()
@@ -138,7 +137,7 @@ func (m *Monitor) Run(ctx context.Context) error {
 	}
 }
 
-// Evaluate runs one deadman tick: read quorum, Decide, and act (reboot / alert / persist). It
+// evaluate runs one deadman tick: read quorum, Decide, and act (reboot / log / persist). It
 // returns the updated episode + degraded flag. Pure of timing (now is passed in), so the whole
 // loop behaviour is unit-testable without a ticker or a real clock.
 func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degraded bool) (Episode, bool) {
@@ -191,9 +190,8 @@ func (m *Monitor) evaluate(ctx context.Context, now time.Time, ep Episode, degra
 		}
 	case Hold:
 		if !degraded {
-			// Now the only two ways to reach Hold, and the first is finally a true statement:
-			// single-node and already-lost-quorum both take the Reboot branch (RebootAllowed), so
-			// a node that holds really does have a peer depending on it.
+			// Entering Hold means not allowed: the fabric was unreadable, or a peer depends on
+			// us -- single-node and already-lost-quorum both take the Reboot branch (RebootAllowed).
 			reason := "quorum-critical (rebooting would drop a serving peer)"
 			if ferr != nil {
 				reason = fmt.Sprintf("cluster state unreadable (%v)", ferr)

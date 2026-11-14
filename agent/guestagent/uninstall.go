@@ -122,7 +122,8 @@ func uninstallApp(ctx context.Context, x Executor, run func(string, ...string) e
 			return fmt.Errorf("stop %s: %w", app, err)
 		}
 	}
-	// Files' view too when Files itself went, which converge no longer refreshes.
+	// Files' view too: converge refreshes it only while Files is installed, so not when Files
+	// itself went.
 	if err := refreshFilesView(ctx, x); err != nil {
 		log.Printf("app.uninstall %s: %v; Files shows what it can", app, err)
 	}

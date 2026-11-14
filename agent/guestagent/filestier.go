@@ -39,11 +39,12 @@ import (
 //
 // The cap is the files aggregate's limit, re-set only when it changes. The data tier has no
 // limit of its own: its reserve is the cap's headroom, so a growing app lowers the cap and the
-// valve answers. THE VALVE deletes the oldest version older than a day, of any app, waits
-// for the space to come back, and re-reads, while filesFree is under the target. It is blind by
-// design -- simple quotas carry no per-snapshot exclusive number -- and it never touches an app's
-// History or a version younger than a day: when those hold the space, the uploader meets EDQUOT and
-// the house keeps running. Short says the valve could not keep five days of Versions, which is the
+// valve answers. THE VALVE, while filesFree is under the target, deletes an uninstalled app's
+// kept copy that a finished backup holds, else the oldest version older than a day, of any app;
+// after each it waits for the space to come back and re-reads. It is blind by design -- simple
+// quotas carry no per-snapshot exclusive number -- and it never touches an installed app's History
+// or a version younger than a day: when those hold the space, the uploader meets EDQUOT and the
+// house keeps running. Short says the valve could not keep five days of Versions, which is the
 // household's warning before the uploader's error.
 //
 // NO APP TAKES THE LAST OF ITS TIER'S FREE SPACE. Each app's group in each tier is limited to
