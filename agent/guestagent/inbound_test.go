@@ -44,7 +44,7 @@ func ringExec(members ...string) *fakeExec {
 		}
 	}
 	members = slices.Clone(members) // the caller's slice is theirs; the listing below edits this one
-	// THE LISTING FOLLOWS THE TAKES AND DELETES, so a prune after a take sees the member it just
+	// The listing follows the takes and deletes, so a prune after a take sees the member it just
 	// took -- which is what makes every earlier plain sample replaceable.
 	f.runFn = func(name string, args []string) ([]byte, error) {
 		// The run directory holds the per-app dirs and plenty that is not one.
@@ -118,7 +118,7 @@ func tookMember(t *testing.T, f *fakeExec) (string, quadlet.SnapshotMeta) {
 	return took, meta
 }
 
-// A CONTAINER START WHOSE DATA WAS NEVER FLUSHED. This is the case quadlet.Consistency
+// A container start whose data was never flushed: the case quadlet.Consistency
 // exists for and the one a stopped container cannot answer: after a promotion nothing is running
 // either, but the old primary never shut the app down.
 func TestStartAfterAnUncleanStopSaysSo(t *testing.T) {
@@ -135,7 +135,7 @@ func TestStartAfterAnUncleanStopSaysSo(t *testing.T) {
 	}
 }
 
-// TestACleanStopMakesTheNextMemberQuiesced, and SPENDS the claim: the marker says the last stop
+// TestACleanStopMakesTheNextMemberQuiesced, and spends the claim: the marker says the last stop
 // flushed this data, which stops being true the moment the container runs again.
 func TestACleanStopMakesTheNextMemberQuiesced(t *testing.T) {
 	f := restoreRig("")
@@ -193,7 +193,7 @@ func TestInboundRecordsTheBackupRestore(t *testing.T) {
 		t.Errorf("event = %+v, want the backup restore naming the backup", meta.Event)
 	}
 
-	// THE SECOND RESTART, after HA has consumed its own marker, seconds later: an ordinary start.
+	// The second restart, after HA has consumed its own marker, seconds later: an ordinary start.
 	// The restore's point is not a pending start, so the start does not replace it.
 	delete(f.files, quadlet.DataRoot("home-assistant")+"/app/"+hass.RestoreMarker)
 	f.runs = nil
@@ -276,10 +276,10 @@ func TestInboundStartingTakesAMember(t *testing.T) {
 	if !strings.Contains(meta.Manifest, "2026.7.1") {
 		t.Errorf("sidecar manifest = %q, want the version on the volume", meta.Manifest)
 	}
-	// QUIESCED, and STATED rather than left to be inferred: this is the app announcing its own
+	// Quiesced, and stated rather than left to be inferred: this is the app announcing its own
 	// restart from inside the container, holding itself stopped until answered. A member that
-	// does not say what its bytes are is one the integrity check may not use and the picker cannot rank, which
-	// is the whole reason the field exists.
+	// does not say what its bytes are is one the integrity check may not use and the picker
+	// cannot rank, which is the whole reason the field exists.
 	if meta.Consistency != quadlet.Quiesced {
 		t.Errorf("consistency = %q, want quiesced", meta.Consistency)
 	}
@@ -297,10 +297,9 @@ func markPending(f *fakeExec, name string) {
 
 // TestAStartReplacesTheStartStillPending: a crash loop restarts every few seconds, and
 // a start whose boot has no verdict yet stands for a boot that never finished. The new start is
-// taken, and the pending one goes, sidecar and all, so a loop holds ONE pending member.
-//
-// It is also the abuse bound. The caller is a container, so this is what stops anything running
-// as the app from filling the replicated volume on purpose (the full-volume failure by a new road).
+// taken, and the pending one goes, sidecar and all, so a loop holds one pending member. It is
+// also the abuse bound: the caller is a container, so this is what stops anything running as the
+// app from filling the replicated volume on purpose (the full-volume failure by a new road).
 func TestAStartReplacesTheStartStillPending(t *testing.T) {
 	base := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-time.Hour)), quadlet.SnapshotsDir)
 	pending := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
@@ -348,7 +347,7 @@ func TestAStartDoesNotTouchAnotherAppsPendingStart(t *testing.T) {
 	}
 }
 
-// TestAnUnreadablePendingStartIsKept: the delete is gated on the sidecar SAYING
+// TestAnUnreadablePendingStartIsKept: the delete is gated on the sidecar saying
 // pending. One that cannot be read says nothing, and the answer to "I could not tell" is keep.
 func TestAnUnreadablePendingStartIsKept(t *testing.T) {
 	pending := strings.TrimPrefix(quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-5*time.Second)), quadlet.SnapshotsDir)
@@ -377,13 +376,11 @@ func TestInboundIgnoresStrangersInTheSnapshotsDir(t *testing.T) {
 	}
 }
 
-// TestInboundRequestCannotNameItsApp is the trust boundary, asserted.
-//
-// The socket is shared by every participating container, and everything running as an app can
-// reach it — for Home Assistant, every custom component the household ever installed. So the
-// identity comes from the TOKEN and nothing else in the request may touch it: a caller that could
-// name its own app would act for any other, which with one shared socket is the whole point
-// of failure.
+// TestInboundRequestCannotNameItsApp is the trust boundary, asserted. The socket is shared by
+// every participating container and reachable by everything running as an app — for Home
+// Assistant, every custom component the household ever installed — so identity comes from the
+// token and nothing else in the request may touch it: a caller that could name its own app would
+// act for any other, which with one shared socket is the whole point of failure.
 func TestInboundRequestCannotNameItsApp(t *testing.T) {
 	f := ringExec()
 	serve(t, f, `{"verb":"app.starting","app":"mosquitto","path":"/etc","token":"`+haToken+`"}`)
@@ -405,7 +402,7 @@ func TestInboundRequestCannotNameItsApp(t *testing.T) {
 	}
 }
 
-// TestInboundRefusesACallerItCannotIdentify: with one shared socket the token IS the boundary, so
+// TestInboundRefusesACallerItCannotIdentify: with one shared socket the token is the boundary, so
 // everything that is not a minted token has to land in the same place — refused, before any verb
 // is reached and before anything is written.
 func TestInboundRefusesACallerItCannotIdentify(t *testing.T) {
@@ -456,7 +453,7 @@ func TestInboundRefusesAnUnknownVerb(t *testing.T) {
 		t.Errorf("error = %q, want the rejected verb named", resp.Error)
 	}
 	// Resolving the caller necessarily reads the token directory, so "ran nothing" is the wrong
-	// bar. What must not happen is any of the WORK: an unrecognised verb touches no subvolume.
+	// bar. What must not happen is any of the work: an unrecognised verb touches no subvolume.
 	for _, r := range f.runs {
 		if r[0] == "btrfs" {
 			t.Errorf("an unknown verb reached the volume: %v", f.runs)
@@ -487,7 +484,7 @@ func TestInboundAlwaysAnswers(t *testing.T) {
 	}
 }
 
-// TestInboundRejectsAAppNameThatIsAPath: the app name is the name of the DIRECTORY holding the
+// TestInboundRejectsAAppNameThatIsAPath: the app name is the name of the directory holding the
 // token on /run, and it then becomes a path element in every path the verb derives. Writing
 // there takes root, so this is defence in depth rather than a live hole -- but the cost of being
 // wrong is a verb pointed at an arbitrary subvolume, and the check is one line.
@@ -551,7 +548,7 @@ func TestListenInboundOverARealSocket(t *testing.T) {
 	if first := ask(); strings.Contains(first, `"error"`) {
 		t.Fatalf("first request errored: %s", first)
 	}
-	// THE SECOND CALLER IS THE POINT. A listener that served one connection and stopped would
+	// The second caller is the point: a listener that served one connection and stopped would
 	// leave the next app start with nothing to talk to, silently.
 	if second := ask(); second == "" {
 		t.Fatal("a second caller got nothing")
@@ -616,7 +613,7 @@ func TestInboundRefusesAShortTokenWithoutReadingAnything(t *testing.T) {
 
 // ringOf builds `n` plain, evaluated members for an app, oldest first, one second apart.
 //
-// ⚠️ MINUTES AGO, NEVER HOURS: quiet time registers once a stretch is quadlet.QuietAfter old, so a
+// ⚠️ Minutes ago, never hours: quiet time registers once a stretch is quadlet.QuietAfter old, so a
 // fixture hours in the past would put a quiet event into every prune test.
 func ringOf(app string, n int) []string {
 	var out []string
@@ -663,7 +660,7 @@ func TestRingReplacesSamplesThatAnchorNothing(t *testing.T) {
 	if len(gone) != len(existing)-2 {
 		t.Fatalf("pruned %v, want every earlier sample but the quiet point and the pending start's baseline", gone)
 	}
-	// THE OLDEST GO FIRST, so an interrupted prune has dropped the least useful ones.
+	// The oldest go first, so an interrupted prune has dropped the least useful ones.
 	for i, name := range gone {
 		if name != existing[i+1] {
 			t.Errorf("pruned[%d] = %q, want %q -- the oldest first", i, name, existing[i+1])
@@ -712,7 +709,7 @@ func TestRingLeavesAnotherAppAlone(t *testing.T) {
 }
 
 // TestRingPrunesAnEventThatHasAgedOut: the history's ages have to reach the disk, which means the
-// prune has to be asked about a CLOCK.
+// prune has to be asked about a clock.
 func TestRingPrunesAnEventThatHasAgedOut(t *testing.T) {
 	ring := ringOf("home-assistant", 2)
 	f := ringExec(ring...)
@@ -745,11 +742,10 @@ func (f *fakeExec) ran(argv ...string) bool {
 }
 
 // TestListMembersSkipsWhatItCannotIdentify: the picker offers a household a rollback point, so an
-// entry it cannot describe must not appear at all.
-//
-// The take path REMOVES a member it could not label, so a member with no readable sidecar here
-// means something outside the ring made it -- a human's copy, an interrupted older build. Offering
-// it would mean offering a restore whose code identity nobody knows.
+// entry it cannot describe must not appear at all. The take path removes a member it could not
+// label, so one with no readable sidecar was made outside the ring -- a human's copy, an
+// interrupted older build -- and offering it would offer a restore whose code identity nobody
+// knows.
 func TestListMembersSkipsWhatItCannotIdentify(t *testing.T) {
 	good := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-time.Hour))
 	bare := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, time.Now().Add(-2*time.Hour))
@@ -779,7 +775,7 @@ func TestListMembersSkipsWhatItCannotIdentify(t *testing.T) {
 }
 
 // TestListMembersIsOldestFirstAcrossTriggers: the picker shows a timeline, so the order is the
-// answer -- and it must be by TIME, which member NAMES do not give (the trigger sits between the
+// answer -- and it must be by time, which member names do not give (the trigger sits between the
 // app and the stamp; see ringMembers).
 func TestListMembersIsOldestFirstAcrossTriggers(t *testing.T) {
 	newClock := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, time.Now().Add(-time.Hour))
@@ -795,7 +791,7 @@ func TestListMembersIsOldestFirstAcrossTriggers(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("listed %d members, want 2: %+v", len(got), got)
 	}
-	// By NAME the start sorts last; by TIME it is two days older and comes first.
+	// By name the start sorts last; by time it is two days older and comes first.
 	if got[0].Member != oldStart {
 		t.Errorf("first = %q, want the 48h-old start %q", got[0].Member, oldStart)
 	}
@@ -841,7 +837,7 @@ func recordRing(members ...string) *fakeExec {
 }
 
 // TestADetectedChangeLandsOnThePointBeforeIt is the model: the change happened between
-// two samples, so undoing it puts back the EARLIER one -- which is where its reason is written.
+// two samples, so undoing it puts back the earlier one -- which is where its reason is written.
 // Written by replacement, so a power cut cannot leave a half-written sidecar.
 func TestADetectedChangeLandsOnThePointBeforeIt(t *testing.T) {
 	now := time.Now()
@@ -875,7 +871,7 @@ func TestADetectedChangeLandsOnThePointBeforeIt(t *testing.T) {
 // TestNothingIsComparedAgainstABeforeSample: a *-before sample is taken with the app stopped, and
 // the app does not run again until the next start, so what differs across that gap is the
 // operation's own doing -- an update's migration, an undo's rewind -- and never a household's.
-// A *-before sample IS compared with the one before it: edits made just before an update are
+// A *-before sample is compared with the one before it: edits made just before an update are
 // caught, and land on that earlier point rather than on the operation's.
 func TestNothingIsComparedAgainstABeforeSample(t *testing.T) {
 	now := time.Now()
@@ -906,7 +902,7 @@ func TestNothingIsComparedAgainstABeforeSample(t *testing.T) {
 }
 
 // TestQuietTimeRegistersAtTheStretchStart: the safety net for everything the detectors miss. A
-// stretch with nothing found gets its restore point at its START, once it is QuietAfter old.
+// stretch with nothing found gets its restore point at its start, once it is QuietAfter old.
 func TestQuietTimeRegistersAtTheStretchStart(t *testing.T) {
 	now := time.Now()
 	evAt, s0At := now.Add(-10*time.Hour), now.Add(-9*time.Hour)
@@ -926,7 +922,7 @@ func TestQuietTimeRegistersAtTheStretchStart(t *testing.T) {
 		t.Errorf("pruned %v; every member is still a point or the newest", deleted(f))
 	}
 
-	// A LATER QUIET SAMPLE CHANGES NOTHING, and the sample it replaces is pruned.
+	// A later quiet sample changes nothing, and the sample it replaces is pruned.
 	later := now.Add(time.Hour)
 	third := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, later)
 	f.runFn(`btrfs`, []string{"subvolume", "snapshot", "-r", "x", third}) // into the fake's listing
@@ -978,7 +974,7 @@ func TestTheHostsTakesAreRecordedToo(t *testing.T) {
 }
 
 // TestAResetAndAChangeShareTheirPoint: one comparison can find both, and both happened in the same
-// interval, so they are two reasons on ONE record -- the point before the sample that found them.
+// interval, so they are two reasons on one record -- the point before the sample that found them.
 func TestAResetAndAChangeShareTheirPoint(t *testing.T) {
 	now := time.Now()
 	prevAt := now.Add(-time.Hour)
@@ -1074,7 +1070,7 @@ func TestAStartWaitsForItsBootsVerdict(t *testing.T) {
 		t.Errorf("the point before the start carries %+v, want unhealthy", ev)
 	}
 
-	// THE SECOND UNHEALTHY START IS NOT A TRANSITION.
+	// The second unhealthy start is not a transition.
 	again := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, now.Add(10*time.Minute))
 	f.runFn(`btrfs`, []string{"subvolume", "snapshot", "-r", "x", again})
 	pendingStart(f, now.Add(10*time.Minute), "same")
@@ -1103,7 +1099,7 @@ func TestAHealthyStartIsEvaluatedAtOnce(t *testing.T) {
 }
 
 // TestACrashLoopIsOneEvaluation: the loop's starts are closed as replaced, and the newest is
-// compared with the last EVALUATED sample -- so what the loop's first start brought in is found,
+// compared with the last evaluated sample -- so what the loop's first start brought in is found,
 // and lands on the point before all of it.
 func TestACrashLoopIsOneEvaluation(t *testing.T) {
 	now := time.Now()
@@ -1144,7 +1140,7 @@ const brokenEntries = "core.config_entries.corrupt.2026-09-28T10:00:00"
 
 // TestABootsResetLandsOnThePointBeforeTheStart: the start's member was taken before the
 // boot, so it holds the undecodable store; undoing to it would bring the reset straight back. What
-// the boot set aside is read from the LIVE data at the verdict and lands on the sample before.
+// the boot set aside is read from the live data at the verdict and lands on the sample before.
 func TestABootsResetLandsOnThePointBeforeTheStart(t *testing.T) {
 	now := time.Now()
 	baseAt := now.Add(-time.Hour)
@@ -1168,7 +1164,7 @@ func TestABootsResetLandsOnThePointBeforeTheStart(t *testing.T) {
 		t.Errorf("the start records %q as its boot's resets", got)
 	}
 
-	// THE NEXT SAMPLE HOLDS THE RENAME, and must not find it again: it was this boot's, and has
+	// The next sample holds the rename, and must not find it again: it was this boot's, and has
 	// landed. Without the start's record the clock would put a second reset on the start itself.
 	clockAt := now.Add(time.Hour)
 	clock := quadlet.SnapshotMember("home-assistant", quadlet.TriggerClock, clockAt)

@@ -182,7 +182,7 @@ func TestNodeStorageVerbLandsTheSpecAndStartsTheUnit(t *testing.T) {
 	}
 }
 
-// A spec the GUEST cannot understand is refused at the verb, with the host still listening,
+// A spec the guest cannot understand is refused at the verb, with the host still listening,
 // rather than inside a unit whose only report is an exit code. Unknown fields included: the host
 // and the pushed agent ship together, so a field one side does not know means they have drifted.
 func TestNodeStorageVerbRefusesADriftedSpec(t *testing.T) {
@@ -206,7 +206,7 @@ func TestNodeStorageVerbRefusesADriftedSpec(t *testing.T) {
 }
 
 // Adjust (runtime mesh growth) rewrites the .res with the new peer set and runs
-// `drbdadm adjust` -- and CRUCIALLY never create-md's: the serving primary's disk is never
+// `drbdadm adjust` -- and crucially never create-md's: the serving primary's disk is never
 // touched when a second anchor joins, so its UpToDate replica can't be wiped or re-seeded.
 func TestAdjustRewritesConfigAndAdjustsNeverCreatesMD(t *testing.T) {
 	f := &fakeExec{}
@@ -230,7 +230,7 @@ func TestAdjustRewritesConfigAndAdjustsNeverCreatesMD(t *testing.T) {
 }
 
 // A single node has no DRBD address (a lone node runs no DRBD) -- ConfigureNet with an
-// empty dev/CIDR must skip addressing entirely and ONLY record the VIP device (the unified layout:
+// empty dev/CIDR must skip addressing entirely and only record the VIP device (the unified layout:
 // eth1 is the idle DRBD NIC, the VIP lives on eth2). Failable: any `ip` call would be wrong.
 func TestConfigureNetVIPOnlySkipsAddressing(t *testing.T) {
 	f := &fakeExec{}
@@ -269,14 +269,13 @@ func TestConfigureNet(t *testing.T) {
 	}
 }
 
-// RENUMBERING: the NIC already holds an old address (the node's island subnet) and ConfigureNet is
-// called with the new one (the adopter's: identity is flock-scoped). `ip addr replace` alone would leave BOTH,
-// so the stale one must be deleted, and the new one must be on the NIC before it goes.
-//
-// Failable by construction: with the prune removed this test sees two commands instead of four and
-// no `addr del` at all. It is the only place that catches it, because on a node that never had an
-// address add-without-remove and add-with-remove are the same thing, and the rest of the suite
-// agrees with both.
+// Renumbering: the NIC holds an old address (the node's island subnet) and ConfigureNet is called
+// with the new one (the adopter's: identity is flock-scoped). `ip addr replace` alone would leave
+// both, so the stale one must be deleted, and the new one must be on the NIC before it goes.
+// Failable by construction: with the prune removed this test sees two commands instead of four
+// and no `addr del`. It is the only place that catches it: on a node that never had an address,
+// add-without-remove and add-with-remove are the same thing, and the rest of the suite agrees
+// with both.
 func TestConfigureNetPrunesStaleAddress(t *testing.T) {
 	f := &fakeExec{output: []byte(
 		"2: eth1    inet 10.0.0.2/24 scope global eth1\\       valid_lft forever\n" +
@@ -333,7 +332,7 @@ func TestAppHealth(t *testing.T) {
 	if got, err := dial(t, f).AppHealth(context.Background(), "http://127.0.0.1:1/healthz"); err != nil || got {
 		t.Errorf("unreachable: got (%v,%v), want (false,nil)", got, err)
 	}
-	// An app that takes the connection and does not answer -> not healthy, and INSIDE the
+	// An app that takes the connection and does not answer -> not healthy, and inside the
 	// five seconds the host's status cycle gives its calls, with no deadline from the caller:
 	// a verdict, never the silence the host counts toward a dead guest.
 	held := make(chan struct{})
@@ -368,12 +367,11 @@ func TestHandshake(t *testing.T) {
 	}
 }
 
-// The successor of an agent that died MID-CALL re-attaches to the same channel with the
-// dead session's reply still in it, and guestfirmware's resync separates the two sessions BY
-// ID -- so the frame that decides it is the one every session has in common: the reply
-// to its first request, the hello. Two real sessions over one BUFFERED stream, which is
-// what QEMU's chardev is (the guest port stays open, so bytes outlive the host process
-// that was going to read them).
+// The successor of an agent that died mid-call re-attaches to the same channel with the dead
+// session's reply still in it, and guestfirmware's resync separates the two sessions by id, so
+// the frame that decides it is the one every session has in common: the reply to its first
+// request, the hello. Two real sessions over one buffered stream, which is what QEMU's chardev is
+// (the guest port stays open, so bytes outlive the host process that was going to read them).
 func TestHandshakeResyncsPastADeadSessionsHelloReply(t *testing.T) {
 	host, guest := socketPair(t)
 	taken := make(chan struct{}, 2) // buffered: session 2's signal is never read
@@ -399,7 +397,7 @@ func TestHandshakeResyncsPastADeadSessionsHelloReply(t *testing.T) {
 	if _, err := g.Handshake(context.Background()); err != nil {
 		t.Fatalf("re-adopted handshake: %v", err)
 	}
-	// The verb AFTER the handshake is where a wrong match surfaces: a handshake that matched
+	// The verb after the handshake is where a wrong match surfaces: a handshake that matched
 	// the orphan leaves the real reply for this call to trip over.
 	if err := g.ReactorStart(context.Background(), "r0", ""); err != nil {
 		t.Fatalf("first verb after a re-adopted handshake: %v", err)
@@ -407,7 +405,7 @@ func TestHandshakeResyncsPastADeadSessionsHelloReply(t *testing.T) {
 }
 
 // deadReader is the host end of a session whose process was killed with a request on the
-// wire: writes reach the guest, reads never return. Close is a no-op -- the CHANNEL
+// wire: writes reach the guest, reads never return. Close is a no-op -- the channel
 // outlives the process, which is the premise of the whole resync.
 type deadReader struct {
 	io.Writer
@@ -417,7 +415,7 @@ type deadReader struct {
 func (d deadReader) Read([]byte) (int, error) { <-d.blocked; return 0, io.EOF }
 func (d deadReader) Close() error             { return nil }
 
-// socketPair connects two ends over a real unix socket. BUFFERED, unlike net.Pipe: a
+// socketPair connects two ends over a real unix socket. Buffered, unlike net.Pipe: a
 // reply nobody has read yet must not block the guest's next read, which is exactly what
 // the orphaned-reply case needs (and what QEMU's chardev does).
 func socketPair(t *testing.T) (host, guest net.Conn) {
@@ -454,7 +452,7 @@ func TestSupportsBeforeHandshakeIsOptimistic(t *testing.T) {
 	}
 }
 
-// A HANDSHAKE REFUSES NOTHING. A guest advertising a verb set the host has never heard
+// A handshake refuses nothing. A guest advertising a verb set the host has never heard
 // of -- an older bundle a revert pinned, a firmware from another image -- is still driven, and
 // only the paths that need what it does not serve step aside. The channel is what fixes a node,
 // so closing it is never the safe answer.
@@ -506,16 +504,14 @@ func TestSetHostname(t *testing.T) {
 	if f.hostname != "n1" {
 		t.Errorf("hostname = %q, want n1", f.hostname)
 	}
-	// AND IT PERSISTS NOTHING, which is the same rule read the other way round.
-	//
-	// syscall.Sethostname does not survive a guest reboot, so a hostname and a `.res` naming this
-	// node must share one LIFETIME: a durable `.res` beside an ephemeral name lets a rebooted guest
-	// run as "guest" against its own config saying `on n1`, and drbd-reactor promotes into the
-	// mismatch at boot, parking the node quorate-but-never-Primary with no VIP and no address.
-	// The `.res` is EPHEMERAL, so both are re-derived from the host at every bring-up and nothing
-	// can promote before that bring-up has happened. Asserting the ABSENCE of a persisted name
-	// (a node-id file) is what stops one arriving as a well-meant restore-at-boot: a third copy
-	// on disk is a third thing that can be wrong.
+	// And it persists nothing, the same rule read the other way round. syscall.Sethostname does
+	// not survive a guest reboot, so the hostname and the `.res` naming this node must share one
+	// lifetime: a durable `.res` beside an ephemeral name lets a rebooted guest run as "guest"
+	// against its own `on n1`, and drbd-reactor promotes into the mismatch at boot, parking the
+	// node quorate-but-never-Primary with no VIP and no address. The `.res` is ephemeral, so both
+	// are re-derived from the host at every bring-up and nothing can promote before it. Asserting
+	// the absence of a persisted name (a node-id file) stops one arriving as a well-meant
+	// restore-at-boot: a third copy on disk is a third thing that can be wrong.
 	for path := range f.files {
 		if strings.Contains(path, "node-id") {
 			t.Errorf("sys.hostname wrote %s -- the name is node-scoped and re-pushed at every "+
@@ -532,11 +528,10 @@ func TestConfigureNetWritesVIPDev(t *testing.T) {
 	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.2/24", VIPDev: "eth2", VIPAddr: ""}); err != nil {
 		t.Fatal(err)
 	}
-	// SYSTEM_DEV rides along, and the VIP unit's STOP path is why: a standby must
-	// bring a DEDICATED service NIC down, because the flock MAC on it is shared with the peer and
-	// a Secondary emitting from it teaches the switch the wrong port -- while a
-	// link-down on the DRBD NIC would take replication with it. The guest cannot tell those apart
-	// from VIP_DEV alone, and it may not guess.
+	// SYSTEM_DEV rides along for the VIP unit's stop path: a standby must bring a dedicated
+	// service NIC down (the flock MAC on it is shared with the peer, and a Secondary emitting from it
+	// teaches the switch the wrong port), while a link-down on the DRBD NIC would take replication
+	// with it. The guest cannot tell those apart from VIP_DEV alone, and it may not guess.
 	if got := f.files[vipEnvPath]; got != "VIP_DEV=eth2\nSYSTEM_DEV=eth1\n" {
 		t.Errorf("%s = %q, want VIP_DEV=eth2 + SYSTEM_DEV=eth1", vipEnvPath, got)
 	}
@@ -555,8 +550,8 @@ func TestConfigureNetWritesVIPMAC(t *testing.T) {
 	}
 }
 
-// A WITNESS claims no VIP, so it gets no file at all -- SYSTEM_DEV must not create one on its own.
-// briard-vip.service takes vip.env as a REQUIRED EnvironmentFile, so a file written for a node
+// A witness claims no VIP, so it gets no file at all -- SYSTEM_DEV must not create one on its own.
+// briard-vip.service takes vip.env as a required EnvironmentFile, so a file written for a node
 // whose promoter must never run is a unit that has quietly become startable.
 func TestConfigureNetWritesNoVIPEnvForAWitness(t *testing.T) {
 	f := &fakeExec{}
@@ -569,10 +564,10 @@ func TestConfigureNetWritesNoVIPEnvForAWitness(t *testing.T) {
 	}
 }
 
-// The VIP ADDRESS is the LAN's, not ours: baking it would make the product work only on one
-// subnet and fail GREEN everywhere else. ConfigureNet must record it beside
-// the device -- and RECORD rather than APPLY it, since the promoter chain claims the address on
-// promotion and a guest that configured it here would hold the VIP while Secondary.
+// The VIP address is the LAN's, not ours: baking it would make the product work only on one
+// subnet and fail green everywhere else. ConfigureNet must record it beside the device, not
+// apply it: the promoter chain claims the address on promotion, and a guest that configured it
+// here would hold the VIP while Secondary.
 func TestConfigureNetWritesVIPAddr(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
@@ -601,9 +596,8 @@ func TestConfigureNetOmitsUnsetVIPAddr(t *testing.T) {
 }
 
 // The flock's visible name goes to its own file, which the reverse proxy re-reads to republish
-// it -- and touches NOTHING
-// about addressing. That separation is the whole point of the three-way identifier split: a name
-// is a label, an address is an identity, so a rename must never be an addressing call.
+// it, and touches nothing about addressing: the whole point of the three-way identifier split.
+// A name is a label, an address is an identity, so a rename must never be an addressing call.
 func TestSetMDNSNameWritesNameAndRepublishes(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
@@ -613,7 +607,7 @@ func TestSetMDNSNameWritesNameAndRepublishes(t *testing.T) {
 	if got := f.files[mdnsEnvPath]; got != "FLOCK_NAME=brave-elf\n" {
 		t.Errorf("%s = %q, want FLOCK_NAME=brave-elf", mdnsEnvPath, got)
 	}
-	// A RENAME RUNS NOTHING. The reverse proxy re-reads this file on its own tick, so shelling
+	// A rename runs nothing. The reverse proxy re-reads this file on its own tick, so shelling
 	// out to make the rename take effect would be a second way to do it -- and the one that can
 	// fire on a Secondary, which runs no reverse proxy and holds no address to publish a name for.
 	if len(f.runs) != 0 {
@@ -626,7 +620,7 @@ func TestSetMDNSNameWritesNameAndRepublishes(t *testing.T) {
 	}
 }
 
-// An empty name publishes NOTHING rather than `briard-.local`. Every agent-less harness and every
+// An empty name publishes nothing rather than `briard-.local`. Every agent-less harness and every
 // node with no minted flock name sends "", and a guess is worse than silence.
 func TestSetMDNSNameIgnoresEmpty(t *testing.T) {
 	f := &fakeExec{}
@@ -642,11 +636,10 @@ func TestSetMDNSNameIgnoresEmpty(t *testing.T) {
 	}
 }
 
-// THE ASSERTION THIS FEATURE EXISTS FOR. The name we asked for is not evidence of the name in
-// force, so MDNSPublished must report what the reverse proxy RECORDS it is answering for --
-// here `brave-elf-2`, while brave-elf was asked for -- and never echo the request.
-// Reporting the request would rebuild the baked-name defect exactly: a name present, plausible, and not what
-// anyone thinks it is.
+// The assertion this feature exists for: the name we asked for is not evidence of the name in
+// force, so MDNSPublished must report what the reverse proxy records it is answering for (here
+// `brave-elf-2`, while brave-elf was asked for), never echo the request. Echoing it would rebuild
+// the baked-name defect exactly: a name present, plausible, and not what anyone thinks it is.
 func TestMDNSPublishedReportsTheRenamedName(t *testing.T) {
 	f := &fakeExec{files: map[string]string{mdnsPublishedPath: "brave-elf-2\n"}}
 	g := dial(t, f)
@@ -736,7 +729,7 @@ func demoResource() drbd.Resource {
 }
 
 // demoStorage is the host-rendered spec BringUp carries: one data tier and the resource on
-// top of it. What the guest DOES with it is briard-node-storage.service's business and is tested
+// top of it. What the guest does with it is briard-node-storage.service's business and is tested
 // against the real steps in nodestorage_test.go; here the question is what crosses the channel.
 func demoStorage(fresh bool) nodestorage.Spec {
 	return nodestorage.Spec{
@@ -750,7 +743,7 @@ func demoStorage(fresh bool) nodestorage.Spec {
 	}
 }
 
-// A data node's bring-up is TWO acts, and the order between them is the guarantee:
+// A data node's bring-up is two acts, and the order between them is the guarantee:
 // every block-level step through one unit, and only then the promoter armed -- so nothing can
 // promote before the volume it would mount exists.
 func TestBringUpDataNode(t *testing.T) {
@@ -784,7 +777,7 @@ func TestBringUpDataNode(t *testing.T) {
 	}
 }
 
-// A witness's bring-up: the same storage call (its spec builds no tier) and NO promoter -- the
+// A witness's bring-up: the same storage call (its spec builds no tier) and no promoter -- the
 // load-bearing negative, since a diskless node that could promote would serve from nothing.
 func TestBringUpWitness(t *testing.T) {
 	f := &fakeExec{}
@@ -891,10 +884,9 @@ func TestDataSnapshotCommand(t *testing.T) {
 }
 
 // TestDataSnapshotRefusesAnExistingMember: a collision is refused, never cleared by a delete.
-//
-// `btrfs subvolume snapshot` given an existing directory writes INSIDE it -- on a read-only
-// member, failing with "Read-only file system". Members are a series, so nothing legitimately
-// supersedes anything and a collision means two landed in the same second. Deleting there would
+// `btrfs subvolume snapshot` given an existing directory writes inside it, which on a read-only
+// member fails with "Read-only file system". Members are a series, so nothing legitimately
+// supersedes anything and a collision means two landed in the same second; deleting there would
 // destroy history inside the verb whose job is keeping it, so it refuses and the earlier member
 // survives.
 func TestDataSnapshotRefusesAnExistingMember(t *testing.T) {
@@ -947,7 +939,7 @@ func TestSidecarPathMatchesTheRenderer(t *testing.T) {
 	}
 }
 
-// The ORDER is the safety property: verify the restore point, materialise the
+// The order is the safety property: verify the restore point, materialise the
 // replacement beside the live subvolume, and only then destroy the live one. Asserted as a
 // sequence because any reordering is the bug -- deleting first would leave the household with
 // nothing at all whenever the restore point was missing or unreadable.
@@ -971,7 +963,7 @@ func TestDataRestoreCommands(t *testing.T) {
 	}
 }
 
-// EVERY ROLLBACK EMPTIES THE CACHE, before the data is touched: the cache's subvolume is
+// Every rollback empties the cache, before the data is touched: the cache's subvolume is
 // deleted and made again in the app's data group, holding the directories it held, so the
 // containers' mounts find them. A restore point that is not there costs the cache nothing.
 func TestARollbackEmptiesTheCacheFirst(t *testing.T) {
@@ -1021,10 +1013,9 @@ func TestARollbackEmptiesTheCacheFirst(t *testing.T) {
 // TestDataReplaceSweepsTheStagedCopyBeforeItGoesLive, and the order is the property: a
 // member taken around a household's own backup restore carries the request that started it, and
 // HA's wipe deliberately keeps the tar -- so an unswept restore hands HA both again and the
-// household lands straight back where they were trying to leave.
-//
-// ON THE STAGED COPY, never the live one. The rename is what makes any of this visible, so a crash
-// leaves either the old subvolume or a swept one and never a half-swept live one.
+// household lands straight back where they were trying to leave. The sweep runs on the staged
+// copy, never the live one: the rename is what makes any of it visible, so a crash leaves either
+// the old subvolume or a swept one, never a half-swept live one.
 func TestDataReplaceSweepsTheStagedCopyBeforeItGoesLive(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
@@ -1069,10 +1060,10 @@ func TestDataReplaceRefusesAPathOutsideTheMember(t *testing.T) {
 	}
 }
 
-// AND THE LIVE SUBVOLUME SURVIVES A BAD RESTORE POINT, which is the whole point of the order: an
+// And the live subvolume survives a bad restore point, which is the whole point of the order: an
 // unusable source must cost the household nothing.
 //
-// Only the SOURCE probe fails here, and that is deliberate -- a fake that errors on everything
+// Only the source probe fails here, and that is deliberate -- a fake that errors on everything
 // would pass this assertion no matter which order the code ran in, because nothing would get far
 // enough to delete. This is the shape that actually distinguishes verify-first from delete-first.
 func TestDataRestoreRefusesAnUnusableRestorePoint(t *testing.T) {
@@ -1112,10 +1103,9 @@ func TestSystemPathReadsCurrentSystem(t *testing.T) {
 	}
 }
 
-// Os.poweroff must return BEFORE the machine goes down, or the reply races the
-// shutdown and the host sees a dead channel -- indistinguishable from a guest that crashed,
-// which is the one thing a clean-shutdown path must never look like. --no-block is what
-// buys that, so it is asserted rather than assumed.
+// os.poweroff must return before the machine goes down, or the reply races the shutdown and the
+// host sees a dead channel, indistinguishable from a guest that crashed -- the one thing a
+// clean-shutdown path must never look like. --no-block buys that, so it is asserted.
 func TestPowerOffDoesNotBlockOnTheShutdown(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
@@ -1129,7 +1119,7 @@ func TestPowerOffDoesNotBlockOnTheShutdown(t *testing.T) {
 }
 
 // cancellingExec is the guest's own shutdown, modelled at the only point that matters: the
-// command cancels the serve context WHILE IT IS STILL RUNNING, exactly as `systemctl poweroff`
+// command cancels the serve context while it is still running, exactly as `systemctl poweroff`
 // makes PID 1 SIGTERM this agent before systemctl itself has exited. It then reports its own
 // context the way exec.CommandContext does -- a child killed by cancellation surfaces as
 // ctx.Err(), not as an exit status -- so an attached handler fails here and a detached one
@@ -1147,15 +1137,13 @@ func (c *cancellingExec) Run(ctx context.Context, name string, args ...string) (
 	return nil, c.cmdErr
 }
 
-// os.poweroff must survive the cancellation IT CAUSES. The shutdown this verb asks for
-// is what stops this agent, so a handler running on the dispatch context is killed by its own
-// success and answers "context canceled" for a request that worked -- which the host cannot tell
-// from a refusal, so it escalates to the ACPI power button and the clean-shutdown assertion in
-// guest-rescue goes red.
-//
-// It is reachable BECAUSE the serve loop holds the port open until the reply is written, so the
-// error is delivered rather than lost. Both halves are asserted here -- the command outlives the
-// cancellation (cmdErr), and the answer still reaches the host (PowerOff's return).
+// os.poweroff must survive the cancellation it causes. The shutdown it asks for stops this agent,
+// so a handler on the dispatch context is killed by its own success and answers "context
+// canceled" for a request that worked; the host cannot tell that from a refusal, escalates to the
+// ACPI power button, and the clean-shutdown assertion in guest-rescue goes red. That error reaches
+// the host because the serve loop holds the port open until the reply is written. Both halves are
+// asserted: the command outlives the cancellation (cmdErr), and the answer still reaches the host
+// (PowerOff's return).
 func TestPowerOffOutlivesTheCancellationItCauses(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1174,16 +1162,15 @@ func TestPowerOffOutlivesTheCancellationItCauses(t *testing.T) {
 	}
 }
 
-// signalledExec is the SECOND way the shutdown kills the command that asked for it, and the one
-// detaching the context does not cover. With the handler detached from the dispatch context, systemd is still
-// the one tearing the unit down: the default KillMode is control-group, so its SIGTERM reaches
-// `systemctl` directly and the child dies by SIGNAL rather than by cancellation. Nothing about
-// that is a refusal -- the machine really is going down, which is precisely WHY the signal came.
-//
-// The manager says so, and says it the awkward way: `is-system-running` prints `stopping` on
-// stdout and exits NON-ZERO, because it exits 0 only for `running`. Both halves are deliberate
-// here. A handler that reads the probe's STATUS instead of its OUTPUT sees a failed probe on top
-// of a failed command and reports a refusal -- the bug this fixture exists to catch.
+// signalledExec is the second way the shutdown kills the command that asked for it, the one
+// detaching the handler from the dispatch context does not cover: systemd still tears the unit
+// down, and with the default KillMode=control-group its SIGTERM reaches `systemctl` directly, so
+// the child dies by signal rather than by cancellation. That is no refusal -- the machine really
+// is going down, which is precisely why the signal came. The manager says so the awkward way:
+// `is-system-running` prints `stopping` on stdout and exits non-zero (0 only for `running`), and
+// the fixture does both on purpose. A handler that reads the probe's exit status instead of its
+// output sees a failed probe on top of a failed command and reports a refusal -- the bug this
+// fixture exists to catch.
 type signalledExec struct {
 	fakeExec
 	state string // what the manager reports: "stopping" for the real shutdown, "running" for a refusal
@@ -1211,11 +1198,10 @@ func (s *signalledExec) asked(what string) bool {
 	return false
 }
 
-// THE COMMAND DIED AND THE REQUEST WORKED, and only the manager can say so. Without this the
+// The command died and the request worked, and only the manager can say so. Without this the
 // host reads `signal: terminated` as a refusal and presses the ACPI button on a guest already
-// shutting down, and the clean-shutdown assertion goes red.
-//
-// Fails if the handler returns the command's error, which PowerOff then reports.
+// shutting down, and the clean-shutdown assertion goes red. Fails if the handler returns the
+// command's error, which PowerOff then reports.
 func TestPowerOffTrustsTheManagerNotTheExitStatus(t *testing.T) {
 	x := &signalledExec{state: "stopping"}
 	cconn, sconn := net.Pipe()
@@ -1226,7 +1212,7 @@ func TestPowerOffTrustsTheManagerNotTheExitStatus(t *testing.T) {
 	if err := g.PowerOff(context.Background()); err != nil {
 		t.Errorf("a command killed by the shutdown it started is not a refusal, got %v", err)
 	}
-	// It must have ASKED. Without this the test passes just as well for a handler that swallows
+	// It must have asked. Without this the test passes just as well for a handler that swallows
 	// every error unconditionally -- the other way to make it green, and the wrong one, since
 	// that reports a shutdown which never started with exactly as much confidence.
 	if !x.asked("systemctl is-system-running") {
@@ -1234,12 +1220,11 @@ func TestPowerOffTrustsTheManagerNotTheExitStatus(t *testing.T) {
 	}
 }
 
-// AND THE ALARM MUST SURVIVE. A machine that is not stopping is a refusal the host has to hear,
-// whatever the command did, and it has to keep the ORIGINAL text: "which route refused" is the
+// And the alarm must survive. A machine that is not stopping is a refusal the host has to hear,
+// whatever the command did, and it has to keep the original text: "which route refused" is the
 // first thing anyone reading the escalation needs (TestStopCleanlyReportsAGuestThatWillNotGoDown
-// in agent/host pins the same property one level up).
-//
-// This is what stops the fix above from degenerating into "ignore every failure".
+// in agent/host pins the same property one level up). It stops the behaviour above (trusting the
+// manager) from degenerating into "ignore every failure".
 func TestPowerOffStillRefusesWhenNothingIsStopping(t *testing.T) {
 	x := &signalledExec{state: "running"}
 	cconn, sconn := net.Pipe()
@@ -1267,14 +1252,12 @@ func TestReactorPauseResumeCommands(t *testing.T) {
 	}
 	// No maintenance marker: nothing in the guest switches the OS on its own, so there is nothing
 	// autonomous to hold off during a managed op. Pause stops the daemon (apps + Primary stay
-	// up); resume restarts it (re-adopts, no demote).
-	//
-	// TWO COMMANDS, NOT FOUR, AND THE ABSENCE IS THE ASSERTION. Pause does not `rm`
-	// drbd-reactor's `Before=` drop-in and daemon-reload to defuse the promote-vs-stop deadlock:
-	// that defusal lives on drbd-reactor.service's ExecStop, which also covers the stops this
-	// verb never sees -- a shutdown, the deadman's reboot, a host reboot -- so a copy here would
-	// only be a second place to keep right. If these commands come back, they came back for a
-	// reason that needs writing down.
+	// up); resume restarts it (re-adopts, no demote). Two commands, not four, and the absence is
+	// the assertion: pause does not `rm` drbd-reactor's `Before=` drop-in and daemon-reload to
+	// defuse the promote-vs-stop deadlock. That defusal lives on drbd-reactor.service's ExecStop,
+	// which also covers the stops this verb never sees (a shutdown, the deadman's reboot, a host
+	// reboot), so a copy here would only be a second place to keep right. If these commands come
+	// back, they came back for a reason that needs writing down.
 	want := [][]string{
 		{"systemctl", "stop", "drbd-reactor.service"},
 		{"systemctl", "start", "drbd-reactor.service"},
@@ -1321,7 +1304,7 @@ func TestWaitPrimaryTimesOut(t *testing.T) {
 	}
 }
 
-// BringUpGuest end-to-end over a REAL unix socket (the prod transport shape): a
+// BringUpGuest end-to-end over a real unix socket (the prod transport shape): a
 // fake guest listens, serves, and reports Primary -> bring-up converges.
 func TestBringUpGuestOverUnixSocket(t *testing.T) {
 	sock := filepath.Join(testsock.Dir(t), "ctl.sock")
@@ -1345,13 +1328,11 @@ func TestBringUpGuestOverUnixSocket(t *testing.T) {
 	}
 }
 
-// Bring-up must put a runtime-installed app's units back BEFORE it starts the
-// promoter. The units live on the guest's tmpfs, so a reboot erases them while the host's
-// manifest cache survives — and drbd-reactor, started at the end of BringUp, would otherwise
-// promote into a chain naming units that do not exist.
-//
-// The ordering is the assertion, not merely that both happened: a render that lands after
-// ReactorStart is the bug with extra steps.
+// Bring-up must put a runtime-installed app's units back before it starts the promoter. The units
+// live on the guest's tmpfs, so a reboot erases them while the host's manifest cache survives, and
+// drbd-reactor, started at the end of BringUp, would otherwise promote into a chain naming units
+// that do not exist. The ordering is the assertion, not merely that both happened: a render that
+// lands after ReactorStart is the bug with extra steps.
 func TestBringUpRendersAppUnitsBeforeStartingThePromoter(t *testing.T) {
 	f := &fakeExec{}
 	g := dial(t, f)
@@ -1388,7 +1369,7 @@ func TestBringUpRendersAppUnitsBeforeStartingThePromoter(t *testing.T) {
 		return -1
 	}
 	reload := idx("systemctl", "daemon-reload")
-	// The warm is an EXISTS CHECK, not a start: starting the .image unit is `podman image pull`,
+	// The warm is an exists check, not a start: starting the .image unit is `podman image pull`,
 	// so an unconditional start makes every reboot need a registry. The pull path is asserted
 	// separately below.
 	warm := idx("podman", "image", "exists", "ghcr.io/x/y@sha256:abc")
@@ -1399,14 +1380,14 @@ func TestBringUpRendersAppUnitsBeforeStartingThePromoter(t *testing.T) {
 	if !(reload < warm && warm < reactor) {
 		t.Errorf("wrong order: daemon-reload=%d, warm=%d, reactor=%d — units and images must both precede the promoter", reload, warm, reactor)
 	}
-	// A present image must NOT be pulled. This is the whole of app.warm: bring-up runs after
+	// A present image must not be pulled. This is the whole of app.warm: bring-up runs after
 	// every guest reboot, and the doctrine is that running never needs network.
 	if got := idx("systemctl", "restart", "briard-app-img.service"); got >= 0 {
 		t.Errorf("bring-up started the .image unit for an image already present (step %d) — that is a registry pull on the reboot path: %v", got, f.runs)
 	}
 }
 
-// ...and when the image is genuinely MISSING, bring-up pulls it rather than refusing. Absence
+// ...and when the image is genuinely missing, bring-up pulls it rather than refusing. Absence
 // should not arise -- install warms, prewarm puts the image on every standby -- but if it does, a
 // short wait beats a node that will not come up. The two halves are asserted together because
 // either alone is satisfiable by a wrong implementation: skip-always passes the first, pull-always
@@ -1461,7 +1442,7 @@ func TestBringUpRendersNothingWithNoInstalledApp(t *testing.T) {
 }
 
 // Under DHCP the host stops choosing the VIP, so it has to be able to ask what the address turned
-// out to be. Ground truth is the interface, and the answer for an unaddressed device is "" -- NOT
+// out to be. Ground truth is the interface, and the answer for an unaddressed device is "" -- not
 // an error, because the host asks every cycle and a Secondary holding no VIP is the normal case.
 // An error there would read as a dead channel and trigger a reconnect every poll.
 func TestVIPReadsTheLiveAddress(t *testing.T) {
@@ -1515,9 +1496,9 @@ func TestFirstCIDRParsesOnlyInet(t *testing.T) {
 		{"3: eth2    inet6 fe80::1/64 scope link", ""},
 		{"garbage with no address at all", ""},
 
-		// IPv4LL is NOT an address this node holds on anyone's behalf -- it is the one the
+		// IPv4LL is not an address this node holds on anyone's behalf -- it is the one the
 		// machine gave itself when nobody answered. Reporting it would make the node probe its
-		// own link-local address, pass, and publish HEALTHY while the LAN cannot reach it.
+		// own link-local address, pass, and publish healthy while the LAN cannot reach it.
 		// "No address" is the honest answer, and it is the one that makes a data node read
 		// not-ready.
 		{"3: eth2    inet 169.254.57.250/16 brd 169.254.255.255 scope global eth2", ""},
@@ -1548,7 +1529,7 @@ func TestHandshakeReportsBootID(t *testing.T) {
 	}
 }
 
-// A guest that cannot produce a boot id must still HANDSHAKE. The handshake is what proves the
+// A guest that cannot produce a boot id must still handshake. The handshake is what proves the
 // channel is live and what carries the verb set the host drives the guest by; failing it over a
 // field no host has ever needed to drive a guest would turn a missing diagnostic into an
 // unusable node. Empty then reads as "no evidence", which is what the host's reboot check
@@ -1567,10 +1548,10 @@ func TestHandshakeWithoutBootIDStillSucceeds(t *testing.T) {
 	}
 }
 
-// THE BRIDGE SUBSTRATE'S SERVICE IDENTITY: the host hands the guest one NIC, so the guest builds
+// The bridge substrate's service identity: the host hands the guest one NIC, so the guest builds
 // the second MAC itself. Three properties, and each one is a defect if it goes.
 func TestConfigureNetMakesTheServiceNIC(t *testing.T) {
-	// `ip link show dev eth2` must FAIL for the create branch to be reached -- that is the
+	// `ip link show dev eth2` must fail for the create branch to be reached -- that is the
 	// existence check, and a fake that succeeds at everything would silently test the other half.
 	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		if len(args) >= 4 && args[0] == "link" && args[1] == "show" && args[3] == "eth2" {
@@ -1590,7 +1571,7 @@ func TestConfigureNetMakesTheServiceNIC(t *testing.T) {
 		if len(r) > 2 && r[1] == "link" && r[2] == "add" {
 			add = r
 		}
-		// (1) NEVER brought up here. `ip link add` leaves the device down and that IS the standby
+		// (1) Never brought up here. `ip link add` leaves the device down and that is the standby
 		// discipline: a Secondary holding the flock MAC up teaches the switch the wrong port for
 		// the VIP. briard-vip.service owns the up, on promotion.
 		if len(r) >= 6 && r[1] == "link" && r[2] == "set" && r[4] == "eth2" && r[5] == "up" {
@@ -1605,7 +1586,7 @@ func TestConfigureNetMakesTheServiceNIC(t *testing.T) {
 	if !reflect.DeepEqual(add, want) {
 		t.Errorf("create = %v, want %v", add, want)
 	}
-	// (3) The MAC is set AT CREATION. A macvlan comes up holding a kernel-random MAC, and a frame
+	// (3) The MAC is set at creation. A macvlan comes up holding a kernel-random MAC, and a frame
 	// emitted before a follow-up `link set address` teaches the switch a port for an address
 	// nobody owns -- so an argv that sets it afterwards is a real, narrow defect.
 	for i, a := range add {
@@ -1616,7 +1597,7 @@ func TestConfigureNetMakesTheServiceNIC(t *testing.T) {
 	t.Errorf("the flock MAC is not set in the create call: %v", add)
 }
 
-// Under macvtap the host built the device, so the guest must create NOTHING -- the failable half
+// Under macvtap the host built the device, so the guest must create nothing -- the failable half
 // of the test above, and the one that keeps this from firing on the default substrate.
 func TestConfigureNetMakesNoNICUnderMacvtap(t *testing.T) {
 	f := &fakeExec{output: []byte("2: eth1    inet 10.7.7.1/24 scope global eth1\\       valid_lft forever")}
@@ -1633,7 +1614,7 @@ func TestConfigureNetMakesNoNICUnderMacvtap(t *testing.T) {
 	}
 }
 
-// An EXISTING service NIC has its MAC re-asserted rather than assumed. The flock MAC is
+// An existing service NIC has its MAC re-asserted rather than assumed. The flock MAC is
 // flock-scoped, so an adoption changes it under a device that outlives the change;
 // without this the joiner keeps presenting its old flock's identity on the LAN.
 func TestConfigureNetReassertsTheFlockMAC(t *testing.T) {
@@ -1654,12 +1635,10 @@ func TestConfigureNetReassertsTheFlockMAC(t *testing.T) {
 	t.Errorf("an existing service NIC kept whatever MAC it had; runs = %v", f.runs)
 }
 
-// TestTheAppSpecificVerbsAreAdvertisedAndLandOnTheirOwnApp. Each has to be in the
-// handshake or a capability-checking host cannot see it however well the switch handles it, and
-// each has to reach the ONE app it is named for.
-//
-// There is no app name in the request: the app is in the verb, so a request naming an app the
-// verb is not for cannot be expressed — which is the better version of refusing it.
+// TestTheAppSpecificVerbsAreAdvertisedAndLandOnTheirOwnApp. Each has to be in the handshake or a
+// capability-checking host cannot see it however well the switch handles it, and each has to
+// reach the one app it is named for. The request carries no app name (the app is in the verb), so
+// naming an app the verb is not for cannot be expressed — the better version of refusing it.
 func TestTheAppSpecificVerbsAreAdvertisedAndLandOnTheirOwnApp(t *testing.T) {
 	g := dial(t, &fakeExec{})
 	if _, err := g.Handshake(context.Background()); err != nil {
@@ -1686,11 +1665,10 @@ func TestTheAppSpecificVerbsAreAdvertisedAndLandOnTheirOwnApp(t *testing.T) {
 	if !strings.Contains(err.Error(), mosquitto.Name) {
 		t.Fatalf("the probe verb did not reach the broker's probe: %v", err)
 	}
-	// The nudge is the one that must NOT fail here, and that asymmetry is the point:
-	// its caller fires it after every install without knowing what the node runs, so a volume with
-	// no Home Assistant on it is an ANSWER — nobody to tell — rather than the failure the two
-	// sampling verbs above correctly report. Reporting it as one would put a scary line in the log
-	// of every broker-only install.
+	// The nudge alone must not fail here: its caller fires it after every install without knowing
+	// what the node runs, so a volume with no Home Assistant is an answer (nobody to tell), not the
+	// failure the two sampling verbs above correctly report. Reporting it as one would put a scary
+	// line in the log of every broker-only install.
 	told, err := g.HassNudge(context.Background())
 	if err != nil {
 		t.Fatalf("a guest with no Home Assistant failed the nudge instead of answering it: %v", err)
@@ -1701,7 +1679,7 @@ func TestTheAppSpecificVerbsAreAdvertisedAndLandOnTheirOwnApp(t *testing.T) {
 }
 
 // dashboard.handoff writes the code the household dashboard admits a browser on:
-// beside its final name, 0600 BEFORE the move, then moved in -- so the dashboard never reads half
+// beside its final name, 0600 before the move, then moved in -- so the dashboard never reads half
 // a code and nothing but root ever sees one.
 func TestDashboardHandoffIsWrittenPrivatelyThenMovedIn(t *testing.T) {
 	x := &fakeExec{}
@@ -1882,7 +1860,7 @@ func TestBringUpLoneNode(t *testing.T) {
 	}
 }
 
-// ★ THE SECOND BRANCH OF THE ONE PREDICATE: a lone node reads as Primary and quorate
+// ★ The second branch of the one predicate: a lone node reads as Primary and quorate
 // when its chain target is active, Diskful and UpToDate always, with nobody connected -- so
 // Serving() follows the chain and the standby rule's PeerCanTakeOver() says no.
 func TestStatusLoneNodeReadsFromTheChain(t *testing.T) {
@@ -1939,13 +1917,12 @@ func TestReactorVerbsOnALoneNode(t *testing.T) {
 			t.Errorf("a lone node's pause/resume ran %v", r)
 		}
 	}
-	// ⚠️ BOTH MASK DIRECTIONS GO THROUGH THE RENDERER, because the chain target is
-	// a file this agent writes into the very directory `mask --runtime` wants to put its
-	// /dev/null symlink in. Masking clears the file first and reloads (systemd caches the unit
-	// it loaded, and refuses to mask over an existing file at all); unmasking re-renders,
-	// because dropping the symlink would otherwise leave no unit for the start below to find.
-	// The extra reloads in the want-lists are that, and they are the assertion: an evict that
-	// stopped reloading would mask a node that systemd still happily starts.
+	// ⚠️ Both mask directions go through the renderer: the chain target is a file this agent
+	// writes into the very directory `mask --runtime` puts its /dev/null symlink in. Masking clears
+	// the file first and reloads (systemd caches the loaded unit, and refuses to mask over an
+	// existing file at all); unmasking re-renders, or dropping the symlink leaves no unit for the
+	// start to find. The extra reloads in the want-lists are the assertion: an evict that stopped
+	// reloading would mask a node that systemd still happily starts.
 	guestWithTools(t)
 	for _, tc := range []struct {
 		name               string
@@ -1967,9 +1944,9 @@ func TestReactorVerbsOnALoneNode(t *testing.T) {
 }
 
 // TestRingTakeIsAdvertised: the ring's take is reachable only by a name an old guest does not
-// advertise, because the field it adds is one whose absence would be SILENT -- an older guest
+// advertise, because the field it adds is one whose absence would be silent -- an older guest
 // would take the call, ignore the field and report success while the volume filled with
-// unlabelled subvolumes. A NAME is the whole instrument here: Supports then refuses this
+// unlabelled subvolumes. A name is the whole instrument here: Supports then refuses this
 // one path and leaves every other working.
 func TestRingTakeIsAdvertised(t *testing.T) {
 	var advertised bool
@@ -1983,13 +1960,12 @@ func TestRingTakeIsAdvertised(t *testing.T) {
 	}
 }
 
-// TestHandshakeCarriesNoVersionNumber, and ⚠️ adding one is a decision, not a tidy-up.
-//
-// A number can only refuse the whole channel, and the channel is what fixes a node: applying a vm
-// release runs through the guest's os.* verbs, so a host that refuses the handshake can never
-// reach the image that would satisfy it. It would also have nothing to measure -- the guest agent
-// is pushed from the host's own tree, so its constants are the host's. This test pins the ABSENCE
-// on the wire, where an added field would land.
+// TestHandshakeCarriesNoVersionNumber, and ⚠️ adding one is a decision, not a tidy-up. A number
+// can only refuse the whole channel, and the channel is what fixes a node: a vm release is
+// applied through the guest's os.* verbs, so a host that refuses the handshake can never reach the
+// image that would satisfy it. Nor would it measure anything: the guest agent is pushed from the
+// host's own tree, so its constants are the host's. The absence is pinned on the wire, where an
+// added field would land.
 func TestHandshakeCarriesNoVersionNumber(t *testing.T) {
 	b, err := json.Marshal(guestfirmware.HelloReply(&fakeExec{}, guestCapabilities))
 	if err != nil {
@@ -2008,11 +1984,10 @@ func TestHandshakeCarriesNoVersionNumber(t *testing.T) {
 	}
 }
 
-// TestImageEnsureIsResidentOrPulls, and ⚠️ it must not start a unit.
-//
-// app.warm starts a rendered `.image` unit, which only exists for a manifest the node has
-// already rendered. A RESTORE asks about a member's PINNED identity -- possibly months old, quite
-// possibly never rendered here -- so the question has to be answerable by ref alone.
+// TestImageEnsureIsResidentOrPulls, and ⚠️ it must not start a unit. app.warm starts a rendered
+// `.image` unit, which only exists for a manifest the node has already rendered. A restore asks
+// about a member's pinned identity -- possibly months old, quite possibly never rendered here --
+// so the question has to be answerable by ref alone.
 func TestImageEnsureIsResidentOrPulls(t *testing.T) {
 	const ref = "ghcr.io/x/ha@sha256:abc"
 
@@ -2025,7 +2000,7 @@ func TestImageEnsureIsResidentOrPulls(t *testing.T) {
 		t.Errorf("runs = %v, want the existence check alone", f.runs)
 	}
 
-	// Absent: fetched by REF. Never `systemctl start` -- that is the unit path, and there is no
+	// Absent: fetched by ref. Never `systemctl start` -- that is the unit path, and there is no
 	// unit for a manifest this node has not rendered.
 	f = &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
 		if len(args) > 1 && args[1] == "exists" {
@@ -2046,7 +2021,7 @@ func TestImageEnsureIsResidentOrPulls(t *testing.T) {
 	}
 }
 
-// TestImageEnsureReportsAPullItCannotDo: the refusal IS the feature. A restore that cannot get
+// TestImageEnsureReportsAPullItCannotDo: the refusal is the feature. A restore that cannot get
 // the code its member was taken under must cancel before it stops anything, so this failing
 // loudly is what lets the caller leave the household exactly where it was.
 func TestImageEnsureReportsAPullItCannotDo(t *testing.T) {
@@ -2128,7 +2103,7 @@ func TestDashboardCasaIsWrittenThenMovedIn(t *testing.T) {
 	}
 }
 
-// An image the OS image itself carries is KEPT: it is loaded again at every boot, and on a node
+// An image the OS image itself carries is kept: it is loaded again at every boot, and on a node
 // with no registry it is the only copy a later install of that version can use.
 func TestImageRemoveKeepsAnImageTheOSCarries(t *testing.T) {
 	const ref = "localhost/briard-dummy@sha256:aa"
@@ -2227,7 +2202,7 @@ func TestDashboardAlertsIsWrittenThenMovedIn(t *testing.T) {
 	}
 }
 
-// os.state reads systemd's answer off STDOUT, never the exit status (non-zero for every state but
+// os.state reads systemd's answer off stdout, never the exit status (non-zero for every state but
 // `running`), and names the failed units only when there are some to name.
 func TestOSStateReportsTheStateAndTheFailedUnits(t *testing.T) {
 	for _, tc := range []struct {

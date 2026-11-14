@@ -48,7 +48,7 @@ func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]
 		if c.apps == nil {
 			return nil, errors.New("exit status 2") // no such directory
 		}
-		// The listing is the apps named PLUS whatever staging put in the directory, so a test
+		// The listing is the apps named plus whatever staging put in the directory, so a test
 		// that stages sees its own files the way the real directory would show them.
 		seen := map[string]bool{}
 		var ls []string
@@ -93,9 +93,9 @@ func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]
 	case name == "systemctl" && len(args) == 2 && (args[0] == "start" || args[0] == "restart") && c.failStart[args[1]]:
 		return []byte("Job failed"), errors.New("exit status 1")
 	case name == "podman" && len(args) == 3 && args[0] == "cp":
-		// The per-app preparation extracts a script out of the image, and converge
-		// skips an app whose extraction fails or comes back empty. failExtract models an image whose
-		// layout moved -- the case that must cost ONE app and not the node.
+		// Preparation extracts a script out of the image; converge skips an app whose extraction
+		// fails or comes back empty. failExtract models an image whose layout moved, which must
+		// cost one app, not the node.
 		if c.failExtract {
 			return []byte("Error: no such file or directory"), errors.New("exit status 125")
 		}
@@ -167,11 +167,10 @@ func TestConvergeToNothingIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestConvergeRefusesAnUnusableManifest is the other side of the line above, and the difference
-// is deliberate: ABSENT means nothing is installed (a state we ship), while a manifest that is
-// present and will not parse means this node cannot honour what the volume says it runs.
-// Promoting anyway is how a household silently loses an app -- the exact failure converge
-// exists to end -- so converge fails and the promotion fails with it.
+// TestConvergeRefusesAnUnusableManifest is the deliberate other side: an absent directory means
+// nothing is installed (a state we ship), but a present manifest that will not parse means this
+// node cannot honour what the volume says it runs. Promoting anyway silently loses the household
+// an app -- the failure converge exists to end -- so converge fails, and the promotion with it.
 func TestConvergeRefusesAnUnusableManifest(t *testing.T) {
 	x := &convergeExec{apps: []string{"dummy.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{manifestDir + "/dummy.json": "{not json"}
@@ -184,9 +183,9 @@ func TestConvergeRefusesAnUnusableManifest(t *testing.T) {
 	}
 }
 
-// TestConvergeDoesNotPullAPresentImage is the running-never-needs-network doctrine on the failover path: running and
-// failing over never need the network. Starting an .image unit IS a registry pull (measured with
-// podman's own generator), so a resident image must not have its unit started.
+// TestConvergeDoesNotPullAPresentImage is the running-never-needs-network doctrine on the
+// failover path. Starting an .image unit is a registry pull (measured with podman's own
+// generator), so a resident image must not have its unit started.
 func TestConvergeDoesNotPullAPresentImage(t *testing.T) {
 	x := dummyNode(t)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
@@ -197,18 +196,18 @@ func TestConvergeDoesNotPullAPresentImage(t *testing.T) {
 	}
 }
 
-// TestConvergePullsAMissingImage is the other half, and the pair is what makes the test bite:
-// skip-always passes the test above, pull-always passes this one, and only exists-or-pull passes
-// both. Reaching this branch means the design was not upheld (install warms, prewarm warms every
-// standby) -- but a short wait beats a node that will not come up, and the manifest's digest pins
-// the bytes so a pull returns exactly those or fails.
+// TestConvergePullsAMissingImage is the other half: skip-always passes the test above,
+// pull-always passes this one, only exists-or-pull passes both. Reaching this branch means the
+// design was not upheld (install warms, prewarm warms every standby) -- but a short wait beats a
+// node that will not come up, and the manifest's digest pins the bytes so a pull returns exactly
+// those or fails.
 func TestConvergePullsAMissingImage(t *testing.T) {
 	x := dummyNode(t)
 	x.haveImage = false
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("Converge: %v", err)
 	}
-	// RESTART: the oneshot unit that pulled once stays active, and a start of it runs nothing.
+	// Restart: the oneshot unit that pulled once stays active, and a start of it runs nothing.
 	// Only a real systemd shows that; app-install.nix removes an image under an active unit.
 	if !x.ran("systemctl", "restart", "briard-dummy-app-image.service") {
 		t.Fatalf("converge did not fetch an absent image; ran %v", x.fakeExec.runs)
@@ -216,7 +215,7 @@ func TestConvergePullsAMissingImage(t *testing.T) {
 }
 
 // TestConvergeFailsWhenAnAbsentImageCannotBeFetched: the bound on the branch above. If the pull
-// cannot happen (no WAN), converge must FAIL rather than start a partial chain -- which takes the
+// cannot happen (no WAN), converge must fail rather than start a partial chain -- which takes the
 // VIP down and surfaces honestly, instead of promoting a node that cannot serve.
 func TestConvergeFailsWhenAnAbsentImageCannotBeFetched(t *testing.T) {
 	x := dummyNode(t)
@@ -231,7 +230,7 @@ func TestConvergeFailsWhenAnAbsentImageCannotBeFetched(t *testing.T) {
 }
 
 // TestAAppThatWillNotStartDoesNotFailConverge is the failure rule: converge's
-// OWN failure demotes, an APP's failure alerts and promotes. A code fault is deterministic, so
+// own failure demotes, an app's failure alerts and promotes. A code fault is deterministic, so
 // the peer running the identical closure hits it identically and the failover only flaps; and one
 // broken app must not take the other N-1 down with it.
 func TestAAppThatWillNotStartDoesNotFailConverge(t *testing.T) {
@@ -244,8 +243,8 @@ func TestAAppThatWillNotStartDoesNotFailConverge(t *testing.T) {
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("a crashing app demoted the node: %v", err)
 	}
-	// ...and the OTHER app still ran. This is the "N-1" half, and without it the test would
-	// pass on an implementation that gave up at the first failure.
+	// ...and the other app still ran: without this "N-1" half the test passes an implementation
+	// that gives up at the first failure.
 	if !x.ran("systemctl", "start", "briard-other-app.service") {
 		t.Fatalf("one broken app stopped the others from starting; ran %v", x.fakeExec.runs)
 	}
@@ -272,7 +271,7 @@ func TestConvergeRemovesOrphanUnits(t *testing.T) {
 	}
 }
 
-// TestConvergeStopStopsWhatItStarted, in reverse. The app units are NOT chain members, so
+// TestConvergeStopStopsWhatItStarted, in reverse. The app units are not chain members, so
 // drbd-reactor stops nothing on demote -- without this the containers keep running on a volume
 // that is about to be unmounted.
 func TestConvergeStopStopsWhatItStarted(t *testing.T) {
@@ -322,7 +321,7 @@ const dummyManifestV2 = `{"name":"dummy","version":"2","network":"host","contain
 	`"mounts":[{"tier":"data","dir":"app","path":"/data"}],"primary":true,"port":8080,"healthPath":"/healthz"}]}`
 
 // TestConvergeBouncesAAppWhoseRenderingChanged is the upgrade case. systemd does not restart
-// an already-active unit on daemon-reload, so a converge that only ever STARTS would leave the
+// an already-active unit on daemon-reload, so a converge that only ever starts would leave the
 // old container serving while every file on disk described the new one — green, and wrong.
 func TestConvergeBouncesAAppWhoseRenderingChanged(t *testing.T) {
 	x := dummyNode(t)
@@ -350,22 +349,19 @@ func TestConvergeBouncesAAppWhoseRenderingChanged(t *testing.T) {
 	}
 }
 
-// THE INSTALL PATH IS ANOTHER WRITER, and forgetting that makes every upgrade a no-op. An install
-// renders the new units through app.render BEFORE asking the node to converge, so by the time
-// converge looks, the files on disk already hold the new bytes: compared against disk, nothing
-// is changed, nothing is bounced, `systemctl start` on an already-active unit does nothing, and
-// the OLD container keeps serving while the volume and the report name the new version. The
-// install's health gate then passes on the old container, and a broken version installs
-// "healthy".
-//
-// So converge compares against what IT started, not against what is on disk. This test writes the
-// new bytes to disk first, exactly as the install path does.
+// TestConvergeBouncesEvenWhenTheUnitsWereWrittenForIt: the install path is another writer. It
+// renders the new units through app.render before asking the node to converge, so against disk
+// every upgrade is a no-op: nothing is bounced, `systemctl start` on an active unit does nothing,
+// the old container keeps serving while the volume and the report name the new version, and the
+// install's health gate passes on it -- a broken version installs "healthy". So converge compares
+// against what it started, not what is on disk, and this test writes the new bytes to disk
+// first, exactly as the install path does.
 func TestConvergeBouncesEvenWhenTheUnitsWereWrittenForIt(t *testing.T) {
 	x := dummyNode(t)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
 		t.Fatalf("first Converge: %v", err)
 	}
-	// The install: the new manifest lands on the volume AND the new units are rendered to /run by
+	// The install: the new manifest lands on the volume and the new units are rendered to /run by
 	// the host, before converge is asked to make the node match.
 	x.fakeExec.files[manifestDir+"/dummy.json"] = dummyManifestV2
 	x.quadlet = []string{"briard-dummy.pod", "briard-dummy-app.container", "briard-dummy-app.image"}
@@ -393,8 +389,8 @@ func TestConvergeBouncesEvenWhenTheUnitsWereWrittenForIt(t *testing.T) {
 }
 
 // TestConvergeLeavesAnUnchangedAppAlone is the half that keeps the one above honest: bouncing
-// unconditionally would also pass it. Converge runs on every promotion AND every install, so a
-// app nobody touched must not be taken down because a DIFFERENT one was upgraded.
+// unconditionally would also pass it. Converge runs on every promotion and every install, so an
+// app nobody touched must not be taken down because a different one was upgraded.
 func TestConvergeLeavesAnUnchangedAppAlone(t *testing.T) {
 	x := &convergeExec{apps: []string{"dummy.json", "other.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{
@@ -421,11 +417,10 @@ func TestConvergeLeavesAnUnchangedAppAlone(t *testing.T) {
 }
 
 // TestConvergeVerbsAreAdvertised: the host gates the whole install on the handshake
-// (SupportsAppConverge), so a verb the dispatch switch handles but the capability list omits
-// is invisible — an install would refuse a guest that could in fact do the work.
-//
-// THE HANDSHAKE IS THE POINT, not scenery: Supports returns true before a handshake (caps nil),
-// so asserting on an un-handshaken client passes whatever the capability list says.
+// (SupportsAppConverge), so a verb the dispatch switch handles but the capability list omits is
+// invisible — an install would refuse a guest that could in fact do the work. The handshake is
+// essential: Supports returns true before one (caps nil), so an un-handshaken client passes
+// whatever the capability list says.
 func TestConvergeVerbsAreAdvertised(t *testing.T) {
 	g := dial(t, dummyNode(t))
 	if _, err := g.Handshake(context.Background()); err != nil {
@@ -441,7 +436,7 @@ func TestConvergeVerbsAreAdvertised(t *testing.T) {
 	}
 }
 
-// A Home Assistant manifest as the catalog signs one. Same shape as the dummy's; the NAME is
+// A Home Assistant manifest as the catalog signs one. Same shape as the dummy's; the name is
 // what makes it different, which is the point of the assertions below.
 const hassManifest = `{"name":"home-assistant","version":"2026.7.1","network":"host","containers":[{"name":"app",` +
 	`"image":"ghcr.io/home-assistant/home-assistant@sha256:3333333333333333333333333333333333333333333333333333333333333333",` +
@@ -454,12 +449,11 @@ func hassNode(t *testing.T) *convergeExec {
 	return x
 }
 
-// TestConvergePreparesTheControlChannel: converge is where Home Assistant's control channel gets
-// materialised, and converge is the only path that covers every node — the Primary that ran the
-// install, a survivor promoting into an app it was never told about, and every guest reboot
-// (/run is tmpfs). Doing it at install time only would leave that survivor mounting files that do
-// not exist, and podman creates a missing bind source as a DIRECTORY — a directory shadowed over
-// HA's run script is an app that can never start.
+// TestConvergePreparesTheControlChannel: Home Assistant's control channel is materialised in
+// converge, the only path every node takes — the Primary that ran the install, a survivor
+// promoting into an app it was never told about, every guest reboot (/run is tmpfs). Install-time
+// only would leave that survivor mounting missing files, and podman creates a missing bind source
+// as a directory; one shadowed over HA's run script is an app that can never start.
 func TestConvergePreparesTheControlChannel(t *testing.T) {
 	x := hassNode(t)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
@@ -503,14 +497,12 @@ func TestConvergeLeavesOtherAppsAlone(t *testing.T) {
 	}
 }
 
-// TestPreparationFailureCostsOneAppNotTheNode: preparation is the one converge step whose
-// inputs are the APP's — its image's own layout — so an app whose upstream packaging moved
-// must not take the other N-1 down with it. Converge succeeds, the node promotes, the healthy
-// app runs, and the broken one is named rather than started.
-//
-// NOT STARTING IT IS ALSO WHAT MAKES IT SAFE: the rendered unit names bind sources Prepare writes,
-// and podman creates a missing source as a root-owned directory — a container that can never start
-// and a path a later Prepare cannot fix. An unstarted unit cannot do that.
+// TestPreparationFailureCostsOneAppNotTheNode: preparation is the one converge step whose inputs
+// are the app's (its image's own layout), so an app whose upstream packaging moved must not take
+// the other N-1 down with it. Converge succeeds, the node promotes, the healthy app runs, and the
+// broken one is named rather than started. Not starting it is also what makes it safe: the
+// rendered unit names bind sources Prepare writes, and podman creates a missing source as a
+// root-owned directory — a container that can never start and a path a later Prepare cannot fix.
 func TestPreparationFailureCostsOneAppNotTheNode(t *testing.T) {
 	x := &convergeExec{
 		apps:        []string{"dummy.json", "home-assistant.json"},
@@ -538,7 +530,7 @@ func TestPreparationFailureCostsOneAppNotTheNode(t *testing.T) {
 			t.Fatalf("%s was started with no control channel prepared for it", u)
 		}
 	}
-	// Its bytes must NOT be recorded as running, or the next converge treats them as current and
+	// Its bytes must not be recorded as running, or the next converge treats them as current and
 	// never retries.
 	started := x.fakeExec.files[startedFile]
 	if strings.Contains(started, "briard-home-assistant") {
@@ -549,7 +541,7 @@ func TestPreparationFailureCostsOneAppNotTheNode(t *testing.T) {
 	}
 }
 
-// TestPreparationFailureLeavesTheOldContainerServing: on an UPGRADE whose new image cannot be
+// TestPreparationFailureLeavesTheOldContainerServing: on an upgrade whose new image cannot be
 // prepared, the running container is the old version and it is still serving. Stopping it would
 // turn a failed upgrade into an outage, so the skip covers the stop as well as the start — the
 // install path is told through the return value and reverts.
@@ -588,7 +580,7 @@ func TestConvergeWritesTheRoutingTable(t *testing.T) {
 		t.Fatalf("table = %+v, want the one installed app", tbl.Apps)
 	}
 	s := tbl.Apps[0]
-	// The ADDRESS comes from the renderer, which is the only thing that knows how the pod was
+	// The address comes from the renderer, which is the only thing that knows how the pod was
 	// wired -- host networking here, which is why it is the guest's own loopback.
 	if s.Name != "dummy" || s.Address != "127.0.0.1" || s.Health != "http://:8080/healthz" {
 		t.Errorf("entry = %+v, want the rendered address and a host-less health endpoint", s)
@@ -596,7 +588,7 @@ func TestConvergeWritesTheRoutingTable(t *testing.T) {
 	if len(s.Hosts) != 3 || s.Hosts[0] != "briard-brave-elf-dummy.local" || s.Hosts[1] != "briard-dummy.local" || s.Hosts[2] != "dummy.brave-elf.briard.casa" {
 		t.Errorf("hosts = %v, want the flock-scoped mDNS label first, the bare alias and the casa name beside it", s.Hosts)
 	}
-	// ONE FILE: the reverse proxy's mDNS responder reads these same names out of this same table,
+	// One file: the reverse proxy's mDNS responder reads these same names out of this same table,
 	// so there is no flattened second copy anyone can read while it is stale.
 	if _, ok := x.fakeExec.files["/run/briard/routes.hosts"]; ok {
 		t.Error("converge wrote a second hosts file; the publisher reads the table itself")
@@ -628,7 +620,7 @@ func TestConvergeRoutesWithoutANameWhenTheFlockHasNone(t *testing.T) {
 	}
 }
 
-// An UNINSTALL must take the route with it. Converge is the whole truth for the table exactly as
+// An uninstall must take the route with it. Converge is the whole truth for the table exactly as
 // it is for the units: a stale route is a name that resolves to an app the node no longer runs.
 func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 	x := &convergeExec{} // nothing installed
@@ -652,9 +644,9 @@ func TestConvergeToNothingEmptiesTheRoutingTable(t *testing.T) {
 	}
 }
 
-// The by-name health probe resolves through the SAME table the reverse proxy routes on, which is
+// The by-name health probe resolves through the same table the reverse proxy routes on, which is
 // the whole reason the install gate and the steady-state probe can be trusted to be asking about
-// one address. It resolves for an app with NO ROUTE too: not-fronted is a statement about the
+// one address. It resolves for an app with no route too: not-fronted is a statement about the
 // reverse proxy, never about whether the node may look. An unresolvable app is an error, never
 // an unhealthy verdict -- see the verb.
 func TestAppHealthURLResolvesThroughTheTable(t *testing.T) {
@@ -684,7 +676,7 @@ func TestAppHealthURLResolvesThroughTheTable(t *testing.T) {
 	}
 }
 
-// A flock RENAME moves the app names with it, in the table the mDNS responder also reads -- and
+// A flock rename moves the app names with it, in the table the mDNS responder also reads -- and
 // it must not re-derive the table from the volume to do it: a rename can arrive on a Secondary,
 // where the volume is not mounted, and re-rendering there would write an empty table over a good
 // one and take every route down because a name changed.
@@ -715,18 +707,18 @@ func TestRenameRoutesRewritesNamesOnly(t *testing.T) {
 	}
 }
 
-// mosquitto is in the table with a name and an address and NO ROUTE. The address is
-// real and is what the health floor probes; what must not happen is the reverse proxy forwarding LAN
-// traffic to it, because that address is the broker's MANAGEMENT API, bound to the guest's
-// loopback on purpose — and the reverse proxy runs inside that guest. A routing table that
-// fronted it would undo a deliberate bind through a mechanism that never mentions it.
+// mosquitto is in the table with a name and an address and no route. The address is real and
+// is what the health floor probes, but the reverse proxy must not forward LAN traffic to it: it
+// is the broker's management API, bound to the guest's loopback on purpose, and the reverse proxy
+// runs inside that guest. Fronting it would undo a deliberate bind through a mechanism that
+// never mentions it.
 func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	x := &convergeExec{apps: []string{"dummy.json", "mosquitto.json"}, haveImage: true}
 	x.fakeExec.files = map[string]string{
 		manifestDir + "/dummy.json":     dummyManifest,
 		manifestDir + "/mosquitto.json": mosquittoManifest,
 		mdnsEnvPath:                     "FLOCK_NAME=brave-elf\n",
-		// The broker is PRIVATE (its manifest says nothing, and silence means private), so this
+		// The broker is private (its manifest says nothing, and silence means private), so this
 		// node needs the pool net.configure hands down or it cannot render one at all.
 		podSubnetPath: "10.12.7\n",
 	}
@@ -744,7 +736,7 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	if _, ok := mq.Route(routes.ListenName); ok {
 		t.Error("the broker has a route; its management API would be republished on the LAN")
 	}
-	// It keeps its NAME and its ADDRESS: the name resolves to the VIP where MQTT is listening, and
+	// It keeps its name and its address: the name resolves to the VIP where MQTT is listening, and
 	// the address is what the health floor GETs from inside the guest. No route is one of the
 	// three, never all of them.
 	if len(mq.Hosts) != 3 || mq.Hosts[0] != "briard-brave-elf-mosquitto.local" || mq.Hosts[1] != "briard-mosquitto.local" || mq.Hosts[2] != "mosquitto.brave-elf.briard.casa" {
@@ -756,9 +748,9 @@ func TestConvergeDoesNotFrontTheBroker(t *testing.T) {
 	if _, err := appHealthURL(x, "mosquitto"); err != nil {
 		t.Errorf("the broker cannot be health-probed (%v); having no route must not decide that", err)
 	}
-	// AND IT ANNOUNCES ITSELF. The one app the household's other devices go
-	// looking for rather than type a name at -- and the record must carry MQTT's port, not the
-	// management port two lines above that the reverse proxy is being kept away from.
+	// And it announces itself, the one app the household's other devices go looking for rather
+	// than type a name at; the record must carry MQTT's port, not the management port the reverse
+	// proxy is kept away from.
 	if len(mq.Announce) != 1 {
 		t.Fatalf("the broker announces %+v, want exactly one record", mq.Announce)
 	}
@@ -789,11 +781,10 @@ func privateNode(t *testing.T) *convergeExec {
 	return x
 }
 
-// A RUNNING APP KEEPS ITS ADDRESS whatever is installed or removed around it, and that is the
-// whole reason allocation is a ledger rather than a function of the name. A pure hash is stable
-// until it collides: the loser is probed to the next slot, and then uninstalling the WINNER frees
-// the loser's own hash and moves it -- bouncing an app for a reason that has nothing to do with
-// it. This is the property that shape cannot have.
+// A running app keeps its address whatever is installed or removed around it, which is the whole
+// reason allocation is a ledger rather than a function of the name. A pure hash cannot have that
+// property: on a collision the loser is probed to the next slot, and uninstalling the winner then
+// frees the loser's own hash and moves it, bouncing an app for a reason unrelated to it.
 func TestAnAddressSurvivesOtherAppsComingAndGoing(t *testing.T) {
 	x := privateNode(t)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
@@ -828,9 +819,9 @@ func TestAnAddressSurvivesOtherAppsComingAndGoing(t *testing.T) {
 	}
 }
 
-// A REBOOT REALLOCATES, and that is safe rather than merely tolerated: the table lives in /run, so
-// it dies with the guest -- and at that moment nothing is running, so no address change can bounce
-// anything. This is the tmpfs lifetime being the correctness argument.
+// A reboot reallocates, and that is safe rather than merely tolerated: the table lives in /run and
+// dies with the guest while nothing is running, so no address change can bounce anything. The
+// tmpfs lifetime is the correctness argument.
 func TestARebootReallocatesFromNothing(t *testing.T) {
 	x := privateNode(t)
 	if _, err := Converge(context.Background(), x, ""); err != nil {
@@ -847,7 +838,7 @@ func TestARebootReallocatesFromNothing(t *testing.T) {
 	_ = before // it MAY differ; what matters is that converge succeeds and allocates from the pool
 }
 
-// A PRIVATE APP ON A NODE WITH NO POOL IS AN ERROR, never a quiet fallback. Handing it the
+// A private app on a node with no pool is an error, never a quiet fallback. Handing it the
 // guest's namespace would be host networking under another name -- granting by accident exactly
 // the capability the manifest field exists to make deliberate.
 func TestAPrivateAppRefusesWithoutAPool(t *testing.T) {
@@ -876,7 +867,7 @@ func addressOf(t *testing.T, x *convergeExec, name string) string {
 	return s.Address
 }
 
-// The pod network is created ONCE, by the node, before anything joins it -- and a node running
+// The pod network is created once, by the node, before anything joins it -- and a node running
 // only host-networked apps creates none at all, so the shipped all-host case carries no pod
 // network.
 func TestThePodNetworkIsCreatedOnlyWhenSomethingWantsOne(t *testing.T) {
@@ -912,7 +903,7 @@ func TestThePodNetworkIsCreatedOnlyWhenSomethingWantsOne(t *testing.T) {
 	}
 }
 
-// A NETWORK ON THE WRONG SUBNET FAILS THE CONVERGE rather than being adopted: the addresses this
+// A network on the wrong subnet fails the converge rather than being adopted: the addresses this
 // node allocates come from the pool it was handed, so a network carrying another range would place
 // every pod outside its own address -- reachable by nothing, with the routing table and the health
 // probe both pointing where the app is not.
