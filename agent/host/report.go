@@ -162,7 +162,9 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 		defer cancel()
 		if err := up.WriteCert(cctx, b.Cert, key); err != nil {
 			logf("directive cert (%s) failed: %v", b.Name, err)
-			escalate(ctx, n, logf, b.Name, "cert renewal", b.Name, err)
+			// No after phrase: a torn write can leave a mismatched pair on the volume (the proxy keeps
+			// serving the last good one), so neither "unchanged" nor "rolled back" is known.
+			escalate(ctx, n, logf, b.Name, "cert renewal", b.Name, "", err)
 			return failed(err.Error())
 		}
 		logf("directive cert applied: renewed cert for %s written to the volume", b.Name)
@@ -193,7 +195,7 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 		line, err := su.Trigger(sctx, u.Version)
 		if err != nil {
 			logf("directive agent-update: could not start the update unit: %v", err)
-			escalate(ctx, n, logf, "briard-agent", "agent self-update", u.Version, err)
+			escalate(ctx, n, logf, "briard-agent", "agent self-update", u.Version, afterUnchanged, err)
 			return failed(err.Error())
 		}
 		logf("directive agent-update: %s", line)
@@ -204,21 +206,32 @@ func applyDirective(ctx context.Context, d api.Directive, up upgrader, n notify.
 	}
 }
 
+// What a failed change left behind, as escalate's body says it. Each caller passes the one it
+// knows: a refusal or a failure before anything moved is unchanged, a revert that finished is
+// rolled back, and one that did not finish says so rather than reassuring the household.
+const (
+	afterUnchanged  = "; nothing changed"
+	afterRolledBack = " and rolled back"
+	afterNotUndone  = " and could not be undone"
+)
+
 // escalate raises an alert when a change to what the node runs fails: an app install or update,
-// a guest OS update or image stage, a guest bundle push, the agent's self-update, a cert renewal.
-// These are rare, so this is not fatigue, and a failure includes a revert that could not finish,
-// exactly the case a bound exists to surface instead of hanging silently. It goes through the
-// alert store like every alert, so on the free tier, with no endpoint to push to, the record is
-// still there for the person who looks after "it stopped working".
+// a guest OS update or image stage, a guest bundle push, a host bundle update, the agent's
+// self-update, a cert renewal. These are rare, so this is not fatigue, and a failure includes a
+// revert that could not finish, exactly the case a bound exists to surface instead of hanging
+// silently. It goes through the alert store like every alert, so on the free tier, with no
+// endpoint to push to, the record is still there for the person who looks after "it stopped
+// working". after is one of the after* phrases, or "" when the caller cannot tell.
 func escalate(
-	ctx context.Context, n notify.Notifier, logf func(string, ...any), subject, kind, target string, cause error) {
+	ctx context.Context, n notify.Notifier, logf func(string, ...any), subject, kind, target, after string, cause error) {
 	fireAlert(ctx, n, logf, notify.Alert{
-		// An event: the rollback already happened, there is nothing to resolve. The instance
-		// is the kind of upgrade, so a display can tell "the OS keeps failing" from one bad run.
+		// An event: whatever the failure left is already in place, there is nothing to resolve.
+		// The instance is the kind of change, so a display can tell "the OS keeps failing" from
+		// one bad run.
 		Key:      "upgrade-rolled-back:" + strings.ReplaceAll(strings.ToLower(kind), " ", "-"),
 		Kind:     notify.Event,
 		Severity: notify.Info,
 		Title:    "Briard: " + kind + " failed",
-		Body:     fmt.Sprintf("%s: %s to %s failed and rolled back — %v", subject, kind, target, cause),
+		Body:     fmt.Sprintf("%s: %s to %s failed%s — %v", subject, kind, target, after, cause),
 	})
 }

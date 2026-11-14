@@ -1655,7 +1655,7 @@ pkgs.testers.runNixOSTest {
     assert "older than the vm release requires" in out, f"the verb failed, but not on min_briard: {out!r}"
     # And the escalation reached the journal -- a refusal the owner never hears about is the
     # failure mode the alert exists for.
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest OS update.*failed and rolled back.*older than the vm release requires'", timeout=30)
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest OS update.*failed; nothing changed.*older than the vm release requires'", timeout=30)
     host.fail("/opt/briard/agent/briard-agent update -vm -to vm.99010100.nothere")
     host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")  # the record never moved
     print("the shipped node resolves its vm chain: already running the installed release; a release needing a newer briard is refused loudly")

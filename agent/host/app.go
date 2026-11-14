@@ -525,8 +525,12 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 			cfg.follow(ctx, &g, logf)
 		}
 		o := cfg.revert(ctx, g, d, m.Name, logf, cause)
+		after := afterRolledBack
+		if o.State != api.OutcomeRolledBack {
+			after = afterNotUndone // the revert itself failed; o.Detail says which step
+		}
 		// Not ctx: a gate that ran out of budget is the commonest cause, and its alert must still leave.
-		escalate(context.WithoutCancel(ctx), n, logf, m.Name, kind, m.Version, errors.New(o.Detail))
+		escalate(context.WithoutCancel(ctx), n, logf, m.Name, kind, m.Version, after, errors.New(o.Detail))
 		return o
 	}
 	if err := g.AppStage(ctx, m.Name, dataDir, quadlet.Subdirs(m), string(raw), snap); err != nil {

@@ -2205,6 +2205,22 @@ func TestARevertedInstallTellsTheOwner(t *testing.T) {
 	if len(fn.alerts) != 1 || fn.alerts[0].Key != "upgrade-rolled-back:app-install" {
 		t.Fatalf("a reverted install raised %+v, want one app-install event", fn.alerts)
 	}
+	if !strings.Contains(fn.alerts[0].Body, "failed and rolled back") {
+		t.Errorf("a finished revert says %q, want it to say rolled back", fn.alerts[0].Body)
+	}
+
+	// A revert that cannot finish must not reassure the household that it rolled back.
+	fn = &fakeNotifier{}
+	f = &fakeInstaller{primary: true, active: true, healthy: false, discardEr: errors.New("discard refused")}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel2()
+	if o := catalogFor(t, testManifest()).applyAppInstall(ctx2, f, d, fn, logf); o.State != api.OutcomeFailed {
+		t.Fatalf("outcome = %+v, want failed (the revert did not finish)", o)
+	}
+	if len(fn.alerts) != 1 || strings.Contains(fn.alerts[0].Body, "rolled back") ||
+		!strings.Contains(fn.alerts[0].Body, "could not be undone") {
+		t.Errorf("an unfinished revert raised %+v, want one alert saying it could not be undone", fn.alerts)
+	}
 
 	// A committed install.
 	fn = &fakeNotifier{}

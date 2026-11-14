@@ -838,7 +838,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// release refused on this host -- could not report it: the run has no notifier. It left one
 	// line, and the agent that came back after the revert says so. Taken once.
 	if release, reason, ok := layout.TakeFailure(); ok {
-		escalate(ctx, n, logf, "briard-agent", "host bundle update", release, errors.New(reason))
+		escalate(ctx, n, logf, "briard-agent", "host bundle update", release, afterRolledBack, errors.New(reason))
 	}
 	// The one degradation the alerter above cannot report, because the same condition is what stops
 	// it being built: a guest replicating to peers this host has no record of. Checked once, here,
