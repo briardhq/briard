@@ -138,14 +138,13 @@ type Config struct {
 	// not a config change.
 	DataSize    string
 	ControlSock string
-	// QMPSock is the host end of QEMU's monitor -- the channel to the VM itself, as opposed
-	// to ControlSock, which reaches the guest OS inside it. It is what makes a
-	// clean shutdown possible when the guest agent cannot be reached, and what a forced reset
-	// goes through. Empty = launch with no monitor (every test that never stops a VM).
+	// QMPSock is the host end of QEMU's monitor: the channel to the VM itself (ControlSock reaches
+	// the guest OS inside it). It makes a clean shutdown possible when the guest agent cannot be
+	// reached, and carries a forced reset. Empty = no monitor (every test that never stops a VM).
 	QMPSock string
-	// AdminSock is the local admin door `briard` submits directives to; "" disables it.
-	// Distinct from ControlSock in both direction and peer: that one is the agent DIALING the
-	// guest, this one is the agent LISTENING for an operator.
+	// AdminSock is the local admin door `briard` submits directives to; "" disables it. Distinct
+	// from ControlSock in both direction and peer: there the agent dials the guest, here it
+	// listens for an operator.
 	AdminSock string
 	// InstallUser is the SID of the account that installed this node on Windows -- the one that
 	// passed UAC -- and the one account the admin door and the agent's Windows service admit unelevated
@@ -153,10 +152,10 @@ type Config struct {
 	// keeps both to SYSTEM and Administrators, as a SYSTEM install leaves them. Unused on Linux,
 	// where the door is root's.
 	InstallUser string
-	// AdminPortSock is the host end of the GUEST's admin port: a second serial
-	// port qemu serves, which the guest's dashboard writes directives to and the agent answers
-	// -- the same injector semantics as AdminSock, over a wire only the host and this guest
-	// see, and restricted to directives whose effect stays inside the guest. "" = no port.
+	// AdminPortSock is the host end of the guest's admin port: a second serial port qemu serves,
+	// which the guest's dashboard writes directives to and the agent answers. Same injector
+	// semantics as AdminSock, over a wire only the host and this guest see, and restricted to
+	// directives whose effect stays inside the guest. "" = no port.
 	AdminPortSock string
 	ServiceTap    string
 	SystemTap     string
@@ -169,7 +168,7 @@ type Config struct {
 	// (guestSpec). NetWrapBin is required in macvtap mode and unused otherwise.
 	NetMode string
 	// VIPParent is the guest NIC to build VIPDev on, as a macvlan child carrying the flock MAC.
-	// Set only under the bridge substrate, where the host gives the guest ONE tap and the
+	// Set only under the bridge substrate, where the host gives the guest one tap and the
 	// service identity is therefore the guest's to make. Empty under macvtap, where the host
 	// built the device itself and the MAC is pinned at launch.
 	VIPParent  string
@@ -178,7 +177,7 @@ type Config struct {
 	// overriding the default-route selection. "" is every ordinary install.
 	NICOverride string
 	// PrivHostCIDR is this host's own end of the private host<->guest link, on its tap. Pure
-	// substrate -- nothing dials it -- but the link must be addressed at BOTH ends or avahi will
+	// substrate -- nothing dials it -- but the link must be addressed at both ends or avahi will
 	// not join the IPv4 mDNS group on it.
 	PrivHostCIDR string
 
@@ -194,48 +193,41 @@ type Config struct {
 
 	// Node identity + DRBD bring-up.
 	Node string // this node's name
-	// FlockID is the identity of the FLOCK rather than the node -- minted once by the agent into
-	// pet state at its first start (identity.go). Only the VIP's MAC derives from it, because the
-	// VIP is the one thing that must survive moving between nodes: a MAC derived from the node
-	// name means node B draws a different DHCP lease, and the address changes on failover, which
-	// is the one thing a VIP exists not to do. "" falls back to the node name (orNode), which is
-	// every harness that names the node itself.
+	// FlockID identifies the flock rather than the node; the agent mints it once into pet state
+	// at its first start (identity.go). Only the VIP's MAC derives from it, because the VIP is the
+	// one thing that must survive moving between nodes: a MAC derived from the node name means
+	// node B draws a different DHCP lease, so the address changes on failover -- the one thing a
+	// VIP exists not to do. "" falls back to the node name (orNode): every harness that names the
+	// node itself.
 	FlockID string
-	// FlockName is the flock's HUMAN-VISIBLE name (`brave-elf`), minted beside FlockID and
-	// published as `briard-<name>.local`. It is flock-scoped for the same reason the VIP
-	// is: the name resolves TO the VIP, so a node-scoped name would change identity on failover
-	// while the thing it points at did not.
-	//
-	// It carries NO mechanism -- not the MAC, not the DHCP client-id, not DRBD's `on <name>` --
-	// and that is the entire point: a rename is a label change, so it can never move the address.
-	// "" means publish nothing rather than publish a guess.
+	// FlockName is the flock's human-visible name (`brave-elf`), minted beside FlockID and
+	// published as `briard-<name>.local`. It is flock-scoped for the same reason the VIP is: the
+	// name resolves to the VIP, so a node-scoped name would change identity on failover while the
+	// thing it points at did not. It carries no mechanism (not the MAC, not the DHCP client-id, not
+	// DRBD's `on <name>`), and that is the entire point: a rename is a label change, so it can
+	// never move the address. "" means publish nothing rather than publish a guess.
 	FlockName string
 	Role      model.Role    // anchor / diskless ("" reserved for plain machines)
 	Resource  drbd.Resource // the DRBD resource this node serves
 	Promoter  []string      // the promoter chain's units in start order (shared/chain); nil on a witness
-	// AppRendered is the UNION of every runtime-installed app's units, re-derived from the
+	// AppRendered is the union of every runtime-installed app's units, re-derived from the
 	// node-local manifest cache at start-up (installedApps) beside Apps; zero when no app is
-	// installed.
-	//
-	// A union rather than a per-app value because its single consumer (bringUp's
+	// installed. A union rather than a per-app value because its single consumer (bringUp's
 	// BringUpSpec.AppUnits/AppImages) wants exactly that: every unit file to write back, every
-	// image unit to re-warm, after a guest reboot emptied /run. Unit filenames are app-prefixed by
-	// the renderer, so the merge cannot collide.
+	// image unit to re-warm, after a guest reboot emptied /run. The renderer app-prefixes unit
+	// filenames, so the merge cannot collide.
 	AppRendered quadlet.Rendered
 	Diskless    bool // this node is a diskless witness
 	FreshInit   bool // seed a fresh cluster (skip initial sync); exactly one node
-	// DataEncryption is this node's storage policy: what the guest does when it FORMATS the
-	// data tier. "auto" (the default) encrypts wherever the guest's CPU has AES
-	// and runs in the clear where it does not; "off" is somebody deciding otherwise; "adiantum"
-	// is the AES-less cipher, a documented opt-in and never promoted.
-	//
-	// IT LIVES ON THE HOST because it is a decision, and the guest's boot unit has nowhere to
-	// read a decision from. It reaches the guest in the rendered storage spec (storage.go),
-	// never as an assumption.
-	//
-	// ⚠️ It applies at FORMAT time only. A node whose tier already exists opens what is there;
-	// changing this value does not convert an installed node -- that is the `pvmove` path,
-	// and it is a verb, not a config flip.
+	// DataEncryption is this node's storage policy: what the guest does when it formats the data
+	// tier. "auto" (the default) encrypts wherever the guest's CPU has AES and runs in the clear
+	// where it does not; "off" is somebody deciding otherwise; "adiantum" is the AES-less cipher, a
+	// documented opt-in and never promoted. It lives on the host because it is a decision, and the
+	// guest's boot unit has nowhere to read a decision from; it reaches the guest in the rendered
+	// storage spec (storage.go), never as an assumption.
+	// ⚠️ It applies at format time only: a node whose tier already exists opens what is there, and
+	// changing this value does not convert an installed node -- that is the `pvmove` path, a verb,
+	// not a config flip.
 	DataEncryption nodestorage.Mode
 
 	// System/DRBD NIC address (the system subnet). When SystemDev is set -- every installed
@@ -243,26 +235,24 @@ type Config struct {
 	// can use it; "" addresses no system NIC.
 	SystemDev  string // guest NIC to address, e.g. "eth1" (the system NIC -- this node's node IP)
 	SystemCIDR string // its address/prefix, e.g. "10.0.0.1/24"
-	// SystemHostCIDR is the HOST's own address on the same system subnet, carried on its end of
+	// SystemHostCIDR is the host's own address on the same system subnet, carried on its end of
 	// the private link. It exists because a standby has no LAN presence of its own and still has
-	// to be dialable by its guest (the witness forwarder) and able to answer on-link -- and
-	// because the guest needs a source address to reply to when the host dials IT (the reboot
-	// gate). "" = this host takes no system-subnet address, which is every agent-less harness.
+	// to be dialable by its guest (the witness forwarder) and able to answer on-link, and because
+	// the guest needs a source address to reply to when the host dials it (the reboot gate).
+	// "" = this host takes no system-subnet address, which is every agent-less harness.
 	SystemHostCIDR string
-	// WitnessDev is the GUEST's name for the NIC facing the private link -- the far end of
-	// WitnessTap. Named by the host rather than assumed by the guest, which bakes no positional
-	// knowledge of its own NIC layout.
+	// WitnessDev is the guest's name for the NIC facing the private link (the far end of
+	// WitnessTap), named by the host because the guest bakes no positional knowledge of its own
+	// NIC layout.
 	WitnessDev string
-	// WitnessCIDR is the GUEST's address on the private link. Pure substrate -- nothing dials it,
-	// nothing is configured with it, and it never leaves this host's tap. It exists so avahi has a
-	// v4 address to join the mDNS group with on that NIC; without it the link speaks
-	// mDNS over IPv6 only and the name's reachability depends on a stranger's host having v6.
-	//
-	// DRAWN, like the system subnet (agent/subnet, subnets.go): the wire never touches the LAN,
-	// but the host's routing table is shared, so a fixed range could collide with a household
-	// subnet on the host itself.
+	// WitnessCIDR is the guest's address on the private link. Pure substrate: nothing dials it,
+	// nothing is configured with it, and it never leaves this host's tap. It gives avahi a v4
+	// address to join the mDNS group with on that NIC; without it the link speaks mDNS over IPv6
+	// only and the name's reachability depends on a stranger's host having v6. Drawn like the
+	// system subnet (agent/subnet, subnets.go): the wire never touches the LAN, but the host's
+	// routing table is shared, so a fixed range could collide with a household subnet on the host.
 	WitnessCIDR string
-	// PodSubnet is the pool the GUEST allocates each private app's network from, first three
+	// PodSubnet is the pool the guest allocates each private app's network from, first three
 	// octets. Drawn with this node's other ranges (agent/subnet) and handed down at every bring-up
 	// like the rest of its addressing; the host itself never configures anything in it, which is
 	// what keeps a pod unreachable from outside the guest.
@@ -270,7 +260,7 @@ type Config struct {
 	VIPDev    string // guest NIC the promoter claims the VIP on; "" = this node claims no VIP (a witness)
 	// VIPAddr is the service address the promoter claims, in CIDR form ("192.168.9.50/24").
 	// It is the LAN's address, not ours: a baked one works only on the one subnet it was baked
-	// for, and fails GREEN everywhere else (the readiness probe runs in-guest against an address
+	// for, and fails green everywhere else (the readiness probe runs in-guest against an address
 	// the guest itself owns). "" = DHCP decides -- in the guest, or through the host's lease on
 	// a single-anchor substrate (lease.go). Read through vipAddr(), which follows `config set vip`.
 	VIPAddr string
@@ -287,7 +277,7 @@ type Config struct {
 	// ControllerURL, and no bearer token exists on this path.
 	CasaURL       string
 	CasaWorkerURL string
-	// ChannelURL is the signed release channel ROOT (install.sh's $CHANNEL): what the vm chain's
+	// ChannelURL is the signed release channel root (install.sh's $CHANNEL): what the vm chain's
 	// fetches read vm/<target>/<cpu>/manifest.json from (a guest update, a first start's image).
 	// The host chain's fetch lives in the frozen unit below the agent and reads the same root
 	// baked into its script.
@@ -299,44 +289,35 @@ type Config struct {
 	NotifyURL         string        // alert endpoint (ntfy topic URL); "" -> log-only notifier
 	TelemetryPath     string        // where resource telemetry is written for the out-of-band soak collector; "" -> don't write
 	MetricsWindow     time.Duration // rollup bucket for the cloud aggregate pipeline; 0 -> 1h (production)
-	// UpgradeBudget bounds a whole-OS upgrade: stage, activate, health-gate, and — if the gate
-	// never passes — the wait before it reverts. It is therefore also THE NUMBER THAT DECIDES
-	// HOW LONG A BROKEN UPDATE LEAVES A NODE DEGRADED, which is why it is named rather than
-	// buried.
-	//
-	// Configurable so the lab does not have to spend the production interval on every gated act
-	// to observe a rollback. The production default is pinned by a test --
-	// TestConfigFromEnv_UpgradeBudgetDefault -- because a default, once configurable, needs
-	// asserting rather than assuming.
-	//
-	// ⚠️ It also bounds STAGING, the one step that goes to the network. That is the reason the
-	// default is generous and must stay so: a slow link fetching tens of MB has to fit inside it.
-	// And a value below boot-plus-settle makes a gate expire before the node is even up, which
-	// turns a broken-generation test into a timeout test that passes for the wrong reason.
+	// UpgradeBudget bounds a whole-OS upgrade: stage, activate, health-gate, and, if the gate never
+	// passes, the wait before it reverts. So it is also the number that decides how long a broken
+	// update leaves a node degraded, which is why it is named rather than buried. Configurable so
+	// the lab need not spend the production interval on every gated act to observe a rollback; the
+	// production default is pinned by TestConfigFromEnv_UpgradeBudgetDefault, because a default,
+	// once configurable, needs asserting rather than assuming.
+	// ⚠️ It also bounds staging, the one step that goes to the network, which is why the default is
+	// generous and must stay so: a slow link fetching tens of MB has to fit inside it. A value below
+	// boot-plus-settle makes a gate expire before the node is even up, turning a broken-generation
+	// test into a timeout test that passes for the wrong reason.
 	UpgradeBudget time.Duration
 
-	// What this node RUNS: the ordered set of installed apps, each naming its data dir, the
-	// units that serve it and its manifest identity. An EMPTY set is the shipped state — a
-	// witness, or a node nothing has been installed on yet. ReactorSnippet enables
-	// promoter-coordinated quiesce.
-	//
-	// It is never read from the environment: apps are installed at runtime, so this is filled
-	// from the node-local manifest cache at bring-up and from the VOLUME when this node promotes.
-	//
-	// Ordering is by name and therefore deterministic, and nothing more: making it a DEPENDENCY
-	// order is a separate decision, and needs a second real app to be decided against.
+	// What this node runs: the ordered set of installed apps, each naming its data dir, the units
+	// that serve it and its manifest identity. An empty set is the shipped state (a witness, or a
+	// node nothing has been installed on yet). Never read from the environment: apps are installed
+	// at runtime, so this is filled from the node-local manifest cache at bring-up and from the
+	// volume when this node promotes. Ordering is by name and therefore deterministic, and nothing
+	// more: making it a dependency order is a separate decision, needing a second real app to be
+	// decided against. ReactorSnippet enables promoter-coordinated quiesce.
 	Apps           []model.AppSpec
 	ReactorSnippet string
 
 	// Runtime app install. CatalogURL is the signed catalog list (its version files beside it);
-	// AppCache is the DIRECTORY where installed manifests are kept NODE-LOCALLY, one file
-	// per app, so the agent knows what it installed at bring-up — before promotion, when the
-	// replicated copies on the volume are not yet mountable. "" disables either.
-	//
-	// The manifests are stored VERBATIM: a manifest's content hash IS the app's identity
-	// (shared/manifest), so re-encoding a set into one array file would destroy the identity of
-	// every member. One file of untouched bytes per app keeps the hash true and makes
-	// install/uninstall a file op.
+	// AppCache is the directory where installed manifests are kept node-locally, one file per app,
+	// so the agent knows what it installed at bring-up, before promotion, when the replicated
+	// copies on the volume are not yet mountable. "" disables either. The manifests are stored
+	// verbatim: a manifest's content hash is the app's identity (shared/manifest), so re-encoding a
+	// set into one array file would destroy the identity of every member; one file of untouched
+	// bytes per app keeps the hash true and makes install/uninstall a file op.
 	CatalogURL string
 	AppCache   string
 
@@ -345,28 +326,24 @@ type Config struct {
 	// so here; with no such person it is defaultBackupDir. "" turns the backup off.
 	BackupDir string
 
-	// MeshCache is where a runtime pairing's MeshSpec is kept NODE-LOCALLY, for the same reason
-	// AppCache exists and to close the same hole one step further out.
-	//
-	// The mesh arrives as a cloud directive and is applied to the guest, which writes it under
-	// /run/briard/drbd.d (tmpfs; /etc/drbd.conf only includes it). But bring-up REWRITES the guest's .res from cfg.Resource on every pass, and
-	// cfg.Resource comes from the PEERS env — which an install never sets. So without this a
-	// runtime-paired anchor whose guest rebooted would come back rewritten to the single-node
-	// self-peer, against on-disk DRBD metadata recording real peers, silently. The host must
-	// durably own what it told the guest.
-	//
-	// The SPEC is cached rather than the derived drbd.Resource: it is what the cloud actually said,
-	// and the resource is re-derived from it the same way applyPair derives it. "" disables.
+	// MeshCache is where a runtime pairing's MeshSpec is kept node-locally, for the same reason
+	// AppCache exists, closing the same hole one step further out. The mesh arrives as a cloud
+	// directive and is applied to the guest, which writes it under /run/briard/drbd.d (tmpfs;
+	// /etc/drbd.conf only includes it). But bring-up rewrites the guest's .res from cfg.Resource on
+	// every pass, and cfg.Resource comes from the PEERS env, which an install never sets: without
+	// this a runtime-paired anchor whose guest rebooted would silently come back rewritten to the
+	// single-node self-peer, against on-disk DRBD metadata recording real peers. The host must
+	// durably own what it told the guest. The spec is cached rather than the derived
+	// drbd.Resource because it is what the cloud actually said; the resource is re-derived from it
+	// the same way applyPair derives it. "" disables.
 	MeshCache string
 
 	// Mesh is the last pairing this node applied, restored from MeshCache at startup. The zero
-	// value is "never paired" -- the shipped single-node state -- and reads correctly as such,
-	// since a nil Mesh.Witness is exactly "no cloud witness in this mesh".
-	//
-	// It is kept whole, rather than only the drbd.Resource derived from it, because bring-up needs
-	// the witness block too: the host-side forwarder is a transient unit that a host reboot ends,
-	// and re-creating it is what makes a restored `.res` naming the witness true rather than
-	// aspirational (restoreWitnessHop).
+	// value reads correctly as "never paired" (the shipped single-node state), since a nil
+	// Mesh.Witness is exactly "no cloud witness in this mesh". It is kept whole, not only the
+	// drbd.Resource derived from it, because bring-up needs the witness block too: the host-side
+	// forwarder is a transient unit that a host reboot ends, and re-creating it is what makes a
+	// restored `.res` naming the witness true rather than aspirational (restoreWitnessHop).
 	Mesh api.MeshSpec
 
 	// Overlay remote-reach; nil = LAN-only/standalone (the default). The agent
@@ -378,7 +355,7 @@ type Config struct {
 
 	// Release trust + self-update. UpdateKeyring is the PEM bundle of trusted Ed25519 release
 	// public keys the agent verifies the catalog, app manifests and guest releases against; the
-	// agent's OWN update is fetched and verified by the frozen unit below it, under the same
+	// agent's own update is fetched and verified by the frozen unit below it, under the same
 	// keyring file, so nothing here gates it. UpdateBase / UpdateRunDir locate the flat update
 	// slots. Version is this agent's running release id -- reported as NodeStatus.AgentVersion and
 	// used to make a re-offer of the running version an idempotent no-op.
@@ -387,12 +364,12 @@ type Config struct {
 	UpdateRunDir  string
 	Version       string
 
-	// beat is the watchdog keep-alive (systemd's on Linux, the warden's on Windows), NOT
-	// configuration: Run builds it (newBeat) and it rides here for the same reason Overlay does --
-	// so every method that already holds a cfg can reach it without threading one more argument
-	// down a call chain that is deep by design. nil is the ordinary state on Linux outside a
-	// WatchdogSec unit (dev runs, the lab fleet) and in tests, and every method on it is nil-safe,
-	// so a zero Config works everywhere.
+	// beat is the watchdog keep-alive (systemd's on Linux, the warden's on Windows), not
+	// configuration: Run builds it (newBeat) and it rides here, as Overlay does, so every method
+	// that already holds a cfg can reach it without threading one more argument down a call chain
+	// that is deep by design. nil is the ordinary state on Linux outside a WatchdogSec unit (dev
+	// runs, the lab fleet) and in tests; every method on it is nil-safe, so a zero Config works
+	// everywhere.
 	beat *beat
 
 	// telemetry is the goroutine that owns TelemetryPath, and like beat it is machinery rather
@@ -402,16 +379,15 @@ type Config struct {
 	// goroutine and not a deadline.
 	telemetry *telemetryWriter
 
-	// net is the host-side L2 this node converged to, DERIVED at start-up from the selected
-	// device rather than configured. Machinery like beat and telemetry: awaitNetwork
-	// fills it and the status tick re-asserts it, so the tick never has to re-select (which would
-	// macvtap-probe the parent on every network check). nil means "this agent does not own the
-	// network", which is every unit test and every rig that builds its own devices.
-	//
-	// A POINTER because a re-parent CHANGES it and Config is copied everywhere --
-	// into the Manager, into each observe call, into bringUp. A value here would leave the new
-	// parent visible only to the frame that wrote it, so a channel bounce would resurrect the
-	// parent that is no longer there. One goroutine writes it (the observe loop); nothing races.
+	// net is the host-side L2 this node converged to, derived at start-up from the selected device
+	// rather than configured. Machinery like beat and telemetry: awaitNetwork fills it and the
+	// status tick re-asserts it, so the tick never has to re-select (which would macvtap-probe the
+	// parent on every network check). nil means "this agent does not own the network", which is
+	// every unit test and every rig that builds its own devices. A pointer because a re-parent
+	// changes it and Config is copied everywhere (into the Manager, each observe call, bringUp): a
+	// value would leave the new parent visible only to the frame that wrote it, so a channel bounce
+	// would resurrect the parent that is no longer there. One goroutine writes it (the observe
+	// loop); nothing races.
 	net *nic.Spec
 
 	// ipvtap copies the guest's addresses onto its children when net is ipvtap (ipvtap.go).
@@ -438,12 +414,12 @@ type Config struct {
 	// there would prime on the very wake it should tell. Nil in tests that build a Config by hand.
 	sleep *sleepAlerter
 
-	// vip is VIPAddr as it stands NOW: `briard config set vip` changes it at runtime (configset.go),
+	// vip is VIPAddr as it stands now: `briard config set vip` changes it at runtime (configset.go),
 	// and every bring-up after that must carry the new value. A pointer for net's reason -- Config
 	// is copied into the Manager, into observe, into bringUp -- and read through vipAddr(). nil
 	// (every unit test) reads VIPAddr itself.
 	vip *string
-	// backupLive is BackupDir as it stands NOW, for the same reason -- `config set backup-dir`
+	// backupLive is BackupDir as it stands now, for the same reason -- `config set backup-dir`
 	// turns the backup off and on (backup.go) -- and atomic, because the store reads it from its
 	// own goroutine. Read through backupFolder().
 	backupLive *atomic.Pointer[string]
@@ -472,55 +448,53 @@ type Config struct {
 	readinessSettle time.Duration
 
 	// clock names the moment a snapshot ring member is taken. Machinery, not a knob:
-	// the member's NAME carries that timestamp, so a test that cannot pin it cannot assert the
+	// the member's name carries that timestamp, so a test that cannot pin it cannot assert the
 	// name it expects. nil = time.Now.
 	clock func() time.Time
 
-	// WedgeFIFO is a TEST FIXTURE, not a product knob: a path the observe loop opens each cycle
+	// WedgeFIFO is a test fixture, not a product knob: a path the observe loop opens each cycle
 	// so agent-watchdog.nix can wedge that goroutine on purpose. Empty everywhere but that test.
 	// See wedgeForTest for why this is explicit rather than borrowed from a defect.
 	WedgeFIFO string
 
-	// ReparentTier is a TEST FIXTURE in the same category as WedgeFIFO: it caps the re-parent
+	// ReparentTier is a test fixture in the same category as WedgeFIFO: it caps the re-parent
 	// tiers at a fixed wait so install-macvtap can drive a re-parent without spending the shipped
 	// tiers (five minutes and up) of real wall-clock observing a decision the first second
 	// already made. Zero everywhere but that test; install.sh writes no such key.
-	//
-	// ⚠️ It shrinks DURATIONS ONLY. "Different subnet" and "cannot tell" are not long waits, they
-	// are an operator's decision, and reparentWait keeps them unreachable from here — a fixture
-	// that could reach them would let a rig prove a re-parent the product forbids.
+	// ⚠️ It shrinks durations only. "Different subnet" and "cannot tell" are not long waits but an
+	// operator's decision, and reparentWait keeps them unreachable from here: a fixture that could
+	// reach them would let a rig prove a re-parent the product forbids.
 	ReparentTier time.Duration
 }
 
 // statusReader is the slice of the guest client the snapshot needs -- kept small so it's
 // unit-testable without a live control channel.
 type statusReader interface {
-	// Cluster reads this node's whole DRBD view -- its own quorum state AND its peers -- from
-	// one sample. The peers are what let the redundancy alert tell "a peer is gone" from "the
-	// only other copy of the data is gone"; they stop here and do not ride the cloud
-	// wire (shared/model.Cluster). It is the same drbd.status verb the QuorumState summary
-	// rides, so this reads strictly more from the same call rather than costing another.
+	// Cluster reads this node's whole DRBD view (its own quorum state and its peers) from one
+	// sample: the same drbd.status verb the QuorumState summary rides, so it reads strictly more
+	// from the same call rather than costing another. The peers let the redundancy alert tell "a
+	// peer is gone" from "the only other copy of the data is gone"; they stop here and do not ride
+	// the cloud wire (shared/model.Cluster).
 	Cluster(ctx context.Context, resource string) (model.Cluster, error)
 
-	// AppHealth probes the health URL from INSIDE the guest (macvtap-safe: the
+	// AppHealth probes the health URL from inside the guest (macvtap-safe: the
 	// host may not be able to reach the VIP). An error (e.g. an old guest that predates the
 	// verb) falls the caller back to the legacy host-side probeHealth.
 	AppHealth(ctx context.Context, url string) (bool, error)
-	// AppHealthOf probes ONE named app, the guest resolving its address from the routing
-	// table it converged. It answers a different question from AppHealth above: that
-	// one is the NODE's reverse proxy, this one is an app's own endpoint, and the observe loop
-	// needs both because a node can be up while an app on it is not.
+	// AppHealthOf probes one named app, the guest resolving its address from the routing table it
+	// converged. AppHealth probes the node's reverse proxy, this an app's own endpoint, and the
+	// observe loop needs both because a node can be up while an app on it is not.
 	AppHealthOf(ctx context.Context, app string) (apps.Health, error)
 	// VIP reads the address the service NIC actually holds, so the loop can probe an address
 	// the host did not choose (a lease acquired by DHCP inside the guest). Resolution is
 	// guest.ResolveHealthURL's — the observe loop and the readiness gate must answer "what do
 	// we probe?" the same way, and one rule in two packages is two rules waiting to disagree.
 	guest.VIPReader
-	// AppActive answers "is this unit up?" for ONE app, which is what per-app health
-	// rides on. It is here rather than derived from Healthy because Healthy is the
-	// reverse proxy at the VIP -- which answers 200 on a node running no apps at all.
+	// AppActive answers "is this unit up?" for one app, which per-app health rides on. It is not
+	// derived from Healthy because Healthy is the reverse proxy at the VIP, which answers 200 on a
+	// node running no apps at all.
 	AppActive(ctx context.Context, unit string) (bool, error)
-	// MDNSPublished reads the name the reverse proxy's responder ACTUALLY serves (its
+	// MDNSPublished reads the name the reverse proxy's responder actually serves (its
 	// mdns.published record), for exactly the reason VIP reads the address off the interface:
 	// the value we asked for is not evidence of the value in force. "" when this node publishes
 	// none.
@@ -537,7 +511,7 @@ type statusReader interface {
 // failover, where a survivor converges to what the volume names without ever applying a directive.
 type guestReader interface {
 	statusReader
-	// What the VOLUME says this node runs -- the truth on a node that promoted into somebody
+	// What the volume says this node runs -- the truth on a node that promoted into somebody
 	// else's install, where the node-local cache is empty by construction (adoptVolumeApps).
 	volumeReader
 	// The hourly clock sample's ring member (clocksample.go): the observe loop is the cadence,
@@ -569,12 +543,12 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		push = notify.Ntfy(cfg.NotifyURL)
 	}
 	n := newAlertStore(AlertStorePath, push, logf)
-	// THE RESTART THE INSTALL OWES (restart.go), before anything: a node whose bridge has not been
+	// The restart the install owes (restart.go), before anything: a node whose bridge has not been
 	// through a boot cannot carry the guest, and the start ends cleanly, saying so.
 	if cfg.restartGate(ctx, coldBootSince, n, logf) {
 		return nil
 	}
-	// THE WAY DOWN (stop.go). Whichever return ends Run, a context that ended as a shutdown powers
+	// The way down (stop.go). Whichever return ends Run, a context that ended as a shutdown powers
 	// the guest off on the way out, once nothing is left running to relaunch it, and returns nil:
 	// a clean exit is the one the service managers leave down.
 	ctx, cfg.down = context.WithCancelCause(ctx)
@@ -608,33 +582,33 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// the network, so a first start reads it beside the image fetch, and the first page has the
 	// list to show.
 	go cfg.catalog.watch(ctx)
-	// READY: the agent has started — config read, about to enter its loop. Deliberately NOT
-	// "the node is healthy", which a supervisor's readiness must not mean; see the sdnotify
-	// package doc for the two costs of that coupling, the fatal one being that an agent whose
-	// guest never converges would never arm its watchdog. Sent BEFORE the install's finish and
-	// bringUp so the watchdog covers them and the recovery ladder, which are the stretches that
-	// most need it, and so a first start's update, which can take longer than a start may, runs
-	// after it. No-op when not under Type=notify.
+	// READY: the agent has started (config read, about to enter its loop), deliberately not "the
+	// node is healthy", which a supervisor's readiness must not mean; see the sdnotify package doc
+	// for the two costs of that coupling, the fatal one being that an agent whose guest never
+	// converges would never arm its watchdog. Sent before the install's finish and bringUp so the
+	// watchdog covers them and the recovery ladder, the stretches that most need it, and so a
+	// first start's update, which can take longer than a start may, runs after it. No-op when not
+	// under Type=notify.
 	if err := sdnotify.Ready(); err != nil {
 		logf("sd_notify READY failed (non-fatal): %v", err)
 	}
-	// THE LOCAL ADMIN DOOR, OPENED BEFORE THE NETWORK RATHER THAN AFTER THE GUEST. The agent
-	// survives a network it cannot use, and a surviving agent nobody can ask is only half the fix:
-	// the operator standing at the box needs the door open exactly when the node is degraded. The
+	// The local admin door, opened before the network rather than after the guest: the agent
+	// survives a network it cannot use, and a surviving agent nobody can ask is only half the fix,
+	// since the operator at the box needs the door open exactly when the node is degraded. The
 	// wait loops answer on this channel while they wait; the observe loop takes it over after.
 	local := make(chan localRequest)
 	go serveLocal(ctx, cfg.AdminSock, cfg.InstallUser, local, logf)
-	// THE INSTALL'S UNFINISHED HALF (finish.go), BEFORE ANYTHING THIS NODE IS: an install that
+	// The install's unfinished half (finish.go), before anything this node is: an install that
 	// laid no guest image leaves the self-update and the image to this start, and the update is
 	// keyed to nothing of this node's, so everything a first start does past it is the current
 	// release's code rather than the installer's. It also starts the fill of this node's disks,
-	// joined before bring-up below. One stat when the image is there. A stop while it waits -- the
-	// update it started, among others -- is clean.
+	// joined before bring-up below. One stat when the image is there. A stop while it waits (by
+	// the update it started, among others) is clean.
 	fill, ferr := cfg.finishInstall(ctx, local, n, logf)
 	if ferr != nil {
 		return nil
 	}
-	// WHO THIS NODE IS, minted once on a node that has never minted (identity.go). Before
+	// Who this node is, minted once on a node that has never minted (identity.go). Before
 	// everything that is keyed to it: the DRBD `on <name>`, the VM's UUID, the service MAC, the
 	// cloud's key for this node and the name the household types. A node that cannot write down
 	// its own identity must not go on to use one -- it would mint a different id at the next boot
@@ -647,12 +621,11 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// any single observe() call, since the re-dial loop below runs many of them and a second
 	// writer on the same path would be two goroutines racing one file. nil when telemetry is off.
 	cfg.telemetry = cfg.newTelemetryWriter(ctx, logf)
-	// An app installed at RUNTIME is not described by the environment, so rebuild what this
-	// node knows about it from the node-local manifest cache before anything derives from cfg.
-	//
-	// NOT THE PROMOTER CHAIN: the chain is static, and what a node runs comes from the VOLUME at
-	// promotion, not from this cache. The cache is for everything the HOST needs before (or
-	// without) promotion -- which apps to measure and report, and the units to re-render so a
+	// An app installed at runtime is not described by the environment, so rebuild what this node
+	// knows about it from the node-local manifest cache before anything derives from cfg. Not the
+	// promoter chain: the chain is static, and what a node runs comes from the volume at
+	// promotion, not from this cache. The cache is for everything the host needs before (or
+	// without) promotion: which apps to measure and report, and the units to re-render so a
 	// standby is warm.
 	if specs, rendered, ok := cfg.installedApps(logf); ok {
 		names := make([]string, 0, len(specs))
@@ -662,8 +635,8 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		logf("installed apps %v restored from cache", names)
 		cfg.Apps, cfg.AppRendered = specs, rendered
 	}
-	// A mesh joined at RUNTIME is not described by the environment either, and it is the more
-	// dangerous of the two to forget: bring-up REWRITES the guest's .res from cfg.Resource every
+	// A mesh joined at runtime is not described by the environment either, and it is the more
+	// dangerous of the two to forget: bring-up rewrites the guest's .res from cfg.Resource every
 	// time, so a paired anchor whose guest rebooted would be rewritten back to the single-node
 	// self-peer on 127.0.0.1 — against on-disk DRBD metadata recording real peers and a different
 	// node-id. Here for installedApps' reason: everything below derives from cfg, so both restores
@@ -675,10 +648,10 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	}
 	// The update layout, read below for a reverted update's message to this agent.
 	layout := selfupdate.New(cfg.UpdateBase, cfg.UpdateRunDir)
-	// THE BACKUP FOLDER. The store serving it (started below) is up for the agent's whole life on
+	// The backup folder. The store serving it (started below) is up for the agent's whole life on
 	// every node: the guest that dials it is whichever is serving tonight. The fallback folder is
-	// the agent's own directory, so it is the one the agent makes; any other folder is the
-	// person's, and is never created here.
+	// the agent's own directory, so the agent makes it; any other folder is the person's, and is
+	// never created here.
 	if cfg.BackupDir == defaultBackupDir {
 		if err := os.MkdirAll(cfg.BackupDir, 0o700); err != nil {
 			logf("backup store: %v", err)
@@ -690,34 +663,30 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 			logf("backup: could not remember the folder: %v", err)
 		}
 	}
-	// THE CLOUD SEAM, BUILT BEFORE THE NETWORK RATHER THAN AFTER THE GUEST. None of
-	// it depends on a guest -- CloudClient is Register/Report/ReportMetrics, and Resolve needs
-	// only this node's name, role and zone -- and a degraded node needs its voice: a host whose own
-	// network is fine but whose selected device cannot carry the guest's L2 waits in awaitNetwork,
-	// and the report path must not sit behind that wait.
-	//
-	// Resolve this node's identity once at boot -- register with the cloud and cache the
-	// Assignment, or cold-boot from the cache during a cloud/WAN outage (degrade-to-local;
-	// identity is never a boot dependency). nil rep = standalone, and the resolved tenant is
-	// tagged onto every report. A FIRST boot reaches this with nothing cached, and Register being
-	// its very first call is right: a node that cannot run a guest yet is still a node the fleet
-	// should know exists.
-	//
-	// The casa name service's node half. Built whether or not this node is managed --
-	// a household claims its name from its own page, and the runner's state (a key, a claim)
-	// is pet state loaded here, once, for every channel session the loop below opens.
+	// The cloud seam, built before the network rather than after the guest: none of it depends on
+	// a guest (CloudClient is Register/Report/ReportMetrics; Resolve needs only this node's name,
+	// role and zone), and a degraded node needs its voice. A host whose own network is fine but
+	// whose selected device cannot carry the guest's L2 waits in awaitNetwork, and the report path
+	// must not sit behind that wait. Resolve registers with the cloud and caches the Assignment
+	// once at boot, or cold-boots from the cache during a cloud/WAN outage (degrade-to-local;
+	// identity is never a boot dependency); nil rep = standalone, and the resolved tenant is
+	// tagged onto every report. A first boot reaches this with nothing cached, and Register as its
+	// very first call is right: a node that cannot run a guest yet is still a node the fleet
+	// should know exists. The casa name service's node half is built whether or not this node is
+	// managed: a household claims its name from its own page, and the runner's state (a key, a
+	// claim) is pet state loaded here, once, for every channel session the loop below opens.
 	cs := cfg.newCasaRunner(cloud.NewCasa(cfg.CasaURL, cfg.CasaWorkerURL))
 	var rep cloud.CloudClient
 	if cfg.ControllerURL != "" {
 		rep = cloud.NewHTTP(cfg.ControllerURL, cfg.ControllerToken)
 	}
 	// The node tells the cloud its IANA zone at registration, so its home can be
-	// given an update window in LOCAL time. "" when the host does not say -- the cloud then
+	// given an update window in local time. "" when the host does not say -- the cloud then
 	// cannot schedule this home and treats that as a fault, which is the honest outcome.
 	assignment := cloud.Resolve(ctx, rep, cfg.AssignmentCache,
 		api.NodeInfo{NodeName: cfg.Node, Role: cfg.Role, Timezone: localTimezone("/")}, logf)
 	// The host's side of the guest's L2 -- and the substrate fork, derived here from what the
-	// selected device turns out to be. AFTER READY on purpose (awaitNetwork says why), and it can
+	// selected device turns out to be. After READY on purpose (awaitNetwork says why), and it can
 	// block indefinitely on a node with no usable device, which is the point: waiting degraded and
 	// answerable beats exiting and leaving nothing to ask.
 	dg := &degraded{rep: rep, tenant: assignment.Tenant}
@@ -725,11 +694,11 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	if err != nil {
 		return nil // ctx cancelled while waiting for a network device -- a clean shutdown
 	}
-	// THE BACKUP STORE, from here and not above: its addresses are the ones awaitNetwork
+	// The backup store, from here and not above: its addresses are the ones awaitNetwork
 	// numbered this node with. A first start has none on record until then, and a store started
 	// without them returns at once -- no backup for the agent's whole life.
 	go serveBackupStore(ctx, cfg.backupFolder, cfg.backupCandidateDir, cfg.hostNodeIP(), cfg.guestNodeIP(), logf)
-	// THE DISKS THIS NODE RUNS ON, joined before anything attaches them (disks.go): pet state only
+	// The disks this node runs on, joined before anything attaches them (disks.go): pet state only
 	// a first start makes, started by the install's finish beside the image fetch. Where the host
 	// cannot reserve without writing -- every Windows host, a filesystem without fallocate -- the
 	// fill is the one start step whose length is the disk's, so it runs off the loop, and the join
@@ -744,24 +713,23 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// asks it for the address to push.
 	cfg.lease = cfg.newVIPLeaser()
 	cfg.moved = newAddressWatch(cfg.stateDir())
-	// A NODE THAT SPENT TIME DEGRADED RE-RESOLVES ITS IDENTITY, in place. The first
-	// Resolve above ran while this node may have had no path to the cloud at all, so it fell back
-	// to the cache -- possibly an empty one on a first boot. Re-asking now that a network exists
-	// is what makes the tenant on every later report the real one.
-	//
-	// ⚠️ IN PLACE RATHER THAN BY RESTARTING. Restarting looks smaller and is not: the only way to
-	// make systemd restart us is to exit non-zero, which records `Failed with result 'exit-code'`
+	// A node that spent time degraded re-resolves its identity, in place. The first Resolve above
+	// ran while this node may have had no path to the cloud at all, so it fell back to the cache
+	// (possibly an empty one on a first boot); re-asking now that a network exists is what makes
+	// the tenant on every later report the real one.
+	// ⚠️ In place rather than by restarting, which looks smaller and is not: the only way to make
+	// systemd restart us is to exit non-zero, which records `Failed with result 'exit-code'`
 	// against a unit that did exactly what it was asked -- a false fault.
 	if dg.waited {
 		logf("network: a device is available again; re-resolving this node's identity")
 		assignment = cloud.Resolve(ctx, rep, cfg.AssignmentCache,
 			api.NodeInfo{NodeName: cfg.Node, Role: cfg.Role, Timezone: localTimezone("/")}, logf)
 	}
-	// IS THIS THE LAN WE WERE ON LAST TIME? Asked HERE, before anything overwrites the record,
-	// and acted on after the notifier exists. An operator who moved the box and set
-	// BRIARD_NIC is the only way a node legitimately reaches a different subnet -- we never do it
-	// on our own -- and what that invalidates is the collision check behind this node's drawn
-	// system subnet, which nothing else would ever notice.
+	// Is this the LAN we were on last time? Asked here, before anything overwrites the record, and
+	// acted on after the notifier exists. An operator who moved the box and set BRIARD_NIC is the
+	// only way a node legitimately reaches a different subnet (we never do it on our own), and
+	// what that invalidates is the collision check behind this node's drawn system subnet, which
+	// nothing else would ever notice.
 	movedLAN := cfg.net != nil && nic.Compare(cfg.recordedNetwork(), nic.Read(ctx, cfg.net.Parent)) == nic.Elsewhere
 	// The guest binding every act on the VM drives -- an OS update, a rescue, a reboot (osUpgrade): a
 	// guest.Manager for the health-gated phases, plus the VM handle the reboot path needs. guestCfg
@@ -770,7 +738,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		HealthURL: cfg.HealthURL,
 		// The gate resolves its own probe target per call, for the same reason the observe
 		// loop does: under DHCP the address is acquired inside the guest, and this gate is a
-		// ROLLBACK TRIGGER — probing a stale address does not fail loudly, it reverts a
+		// rollback trigger — probing a stale address does not fail loudly, it reverts a
 		// healthy node.
 		VIPDev:         cfg.VIPDev,
 		Diskless:       cfg.Diskless,
@@ -787,16 +755,15 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	var mgr *osUpgrade
 	g, client, err := cfg.bringUp(ctx, cfg.guestSpec(), logf)
 	if err != nil {
-		// ASKED TO STOP BEFORE THE GUEST WAS UP. A cancellation is the shutdown this agent was
-		// told to perform, not a failure of it — the same distinction, drawn the same way, as the
-		// observe loop below. Without it a `systemctl restart` landing during bring-up reaches
-		// main's log.Fatalf, and systemd records `Failed with result 'exit-code'` against a unit
-		// that did exactly what it was asked: a false fault in the first place anyone looks.
-		//
-		// The context is asked, not the error: the cancellation arrives wrapped in
-		// guestfirmware.ErrChannelDown -- a different sentinel from errNoChannel -- and "were we
-		// asked to stop?" needs no wrapping discipline from anything below. Logged rather than
-		// swallowed: the error still says how far bring-up had got.
+		// Asked to stop before the guest was up. A cancellation is the shutdown this agent was told
+		// to perform, not a failure of it, the distinction drawn the same way as in the observe loop
+		// below. Without it a `systemctl restart` landing during bring-up reaches main's log.Fatalf,
+		// and systemd records `Failed with result 'exit-code'` against a unit that did exactly what
+		// it was asked: a false fault in the first place anyone looks. The context is asked, not the
+		// error: the cancellation arrives wrapped in guestfirmware.ErrChannelDown (a different
+		// sentinel from errNoChannel), and "were we asked to stop?" needs no wrapping discipline
+		// from anything below. Logged rather than swallowed: the error still says how far bring-up
+		// had got.
 		if ctx.Err() != nil {
 			logf("shutting down during bring-up: %v", err)
 			return nil
@@ -804,7 +771,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		if !errors.Is(err, errNoChannel) {
 			return err
 		}
-		// THE GUEST NEVER SPOKE, AND THAT IS THE LADDER'S CASE, NOT AN EXIT. Exiting looks like a
+		// The guest never spoke, and that is the ladder's case, not an exit. Exiting looks like a
 		// clean give-up and is not, for a guest that is alive and dead inside: the next agent
 		// adopts the same qemu, and a clean exit is a normal stop to systemd (Restart=on-failure)
 		// and to the SCM alike, which stays down. So the ladder, with no prior client: it
@@ -822,7 +789,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	defer client.Close()
 	// ...and kept from here on: the renewal outlives any one guest, like the lease it keeps.
 	go cfg.lease.run(ctx, logf)
-	// NOTE: no `defer g.Stop()` — an agent restart must be transparent to the guest, and the
+	// No `defer g.Stop()`: an agent restart must be transparent to the guest, and the
 	// node's shutdown powers it off cleanly (stop.go), never kills it. The VM's forced destroy
 	// (Stop) is only ever the fallback when a clean stop fails: on the recovery ladder, a rescue,
 	// and an image rollback.
@@ -839,9 +806,9 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		}
 	}
 
-	// EVERY node with a guest gets the binding above, not only one running an app: gated on
-	// `cfg.hasApp()`, `up` would be nil on a zero-app node -- the shipped state and the whole free
-	// tier -- and its OS could not be updated. The OS is a property of the NODE; what happens to run
+	// Every node with a guest gets the binding above, not only one running an app: gated on
+	// `cfg.hasApp()`, `up` would be nil on a zero-app node (the shipped state and the whole free
+	// tier) and its OS could not be updated. The OS is a property of the node; what happens to run
 	// on top of it cannot decide whether the node can be updated.
 	//
 	// Redundancy alerting: a data node warns when it loses a replica connection while still
@@ -853,16 +820,16 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 		}
 	}
 
-	// THIS NODE IS ON A DIFFERENT NETWORK THAN IT WAS. The system subnet was drawn
-	// against the collision landscape of the old one, so that check is now stale -- and it is not
-	// ours to fix: the subnet is flock-scoped, and re-drawing it here would break a peer still
-	// holding the old one. So the node says so and keeps serving. Acted on here rather than at
-	// the comparison above because this is where a notifier exists to say it with.
+	// This node is on a different network than it was. The system subnet was drawn against the
+	// collision landscape of the old one, so that check is now stale, and it is not ours to fix:
+	// the subnet is flock-scoped, and re-drawing it here would break a peer still holding the old
+	// one. So the node says so and keeps serving. Acted on here rather than at the comparison
+	// above because this is where a notifier exists to say it with.
 	if movedLAN {
 		logf("network: this node is on a different network than the one it last served on")
 		cfg.checkMovedLAN(ctx, n, logf)
 	}
-	// ...and NOW the LAN is recorded: after bring-up, so a fingerprint of a network we never
+	// ...and now the LAN is recorded: after bring-up, so a fingerprint of a network we never
 	// actually served on cannot teach the next re-parent decision something unverified.
 	cfg.recordNetwork(ctx, logf)
 	// What building a Windows bridge cost the household's NIC, said once if it matters (fastnic.go).
@@ -873,7 +840,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	if release, reason, ok := layout.TakeFailure(); ok {
 		escalate(ctx, n, logf, "briard-agent", "host bundle update", release, errors.New(reason))
 	}
-	// The one degradation the alerter above CANNOT report, because the same condition is what stops
+	// The one degradation the alerter above cannot report, because the same condition is what stops
 	// it being built: a guest replicating to peers this host has no record of. Checked once, here,
 	// now that both the channel and the notifier exist — see warnIfMeshForgotten.
 	cfg.warnIfMeshForgotten(ctx, client, n, logf)
@@ -888,7 +855,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	}
 
 	// The admin door is already listening (above, before the network) and hands directives to
-	// `local`. Like it, everything below is started ONCE and outside the re-dial loop, so a bounced
+	// `local`. Like it, everything below is started once and outside the re-dial loop, so a bounced
 	// guest channel takes none of it down and never re-announces a standing state.
 	//
 	// The guest chain's nightly timer -- a standalone node converging its OS to stable through
@@ -902,25 +869,25 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	// for in the dashboard arrives here exactly as one the operator typed.
 	go serveAdminPort(ctx, cfg.AdminPortSock, local, logf)
 
-	// Observe with reconnect. The guest agent serves one connection then exits
-	// (systemd restarts it), and the Conn closes the channel when the guest leaves several
-	// calls unanswered at their deadlines within a minute (its liveness rule) — either way
-	// observe returns ErrChannelDown, and we re-dial + re-handshake rather than go blind.
-	// A warm guest just re-attaches and observe resumes; a guest that stays unreachable past
-	// the recovery window gets its VM restarted, indefinitely at a slow cadence, and the
-	// household is told once per incident (guestrecover.go). A cancelled ctx is a clean shutdown.
+	// Observe with reconnect. The guest agent serves one connection then exits (systemd restarts
+	// it), and the Conn closes the channel when the guest leaves several calls unanswered at their
+	// deadlines within a minute (its liveness rule); either way observe returns ErrChannelDown and
+	// we re-dial + re-handshake rather than go blind. A warm guest just re-attaches and observe
+	// resumes; one unreachable past the recovery window gets its VM restarted, indefinitely at a
+	// slow cadence, and the household is told once per incident (guestrecover.go). A cancelled
+	// ctx is a clean shutdown.
 	//
-	// TERMINAL OUTCOMES LIVE HERE, NOT IN observe. observe returns on a dead channel, so anything
-	// held in its frame goes with it — and an OS upgrade ALWAYS bounces the channel, since it
-	// restarts the guest. Held there, the outcome that most needs reporting would be the one
-	// guaranteed lost: the controller would still see the directive in flight and re-deliver it.
-	// The observed-state backstop cannot cover the gap either — it closes a directive when the
-	// reported system MATCHES the target, which is precisely what a rolled-back upgrade does not
-	// do — so a broken release would loop deterministically.
+	// Terminal outcomes live here, not in observe: observe returns on a dead channel, taking
+	// anything held in its frame with it, and an OS upgrade always bounces the channel (it
+	// restarts the guest). Held there, the outcome that most needs reporting would be the one
+	// guaranteed lost, and the controller, still seeing the directive in flight, would re-deliver
+	// it. The observed-state backstop cannot cover the gap either: it closes a directive when the
+	// reported system matches the target, precisely what a rolled-back upgrade does not do, so a
+	// broken release would loop deterministically.
 	var pendingOutcomes []api.DirectiveOutcome
 	cfg.acts = newActLane() // outlives any one observe(), like pendingOutcomes: an act spans a channel bounce
 	cfg.healthy = new(atomic.Bool)
-	// A stop ends between acts: from here the loop and its acts run until the stop AND the act in
+	// A stop ends between acts: from here the loop and its acts run until the stop and the act in
 	// flight have both happened, and no act starts once the stop has (acts.go, stopAfter).
 	ctx = cfg.acts.stopAfter(ctx, logf)
 	cfg.sleep = &sleepAlerter{read: lastSleep, lid: lidAction, shutDown: fastStartup}
@@ -935,12 +902,12 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 			return err // observe only returns nil (handled above) or ErrChannelDown
 		}
 		// How long the channel that just died had been up is the only evidence available for
-		// whether this is a NEW incident or the same guest failing again, and it has to be
+		// whether this is a new incident or the same guest failing again, and it has to be
 		// taken here — recover() is called once per drop and cannot see the stretch before it.
 		recovery.served(time.Since(served))
 		logf("control channel down (%v); reconnecting", err)
 		_ = client.Close()
-		// A RELAUNCHER IN FLIGHT KILLED THIS CHANNEL ON PURPOSE (acts.go): an OS update, a
+		// A relauncher in flight killed this channel on purpose (acts.go): an OS update, a
 		// config change, a pairing, a rescue stop the guest and bring it back. Wait for it,
 		// then adopt what it re-established -- climbing the ladder here would reboot the VM
 		// it is halfway through replacing. Nothing in flight is the other case: a guest that
@@ -978,7 +945,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 // ceiling it may grow to), so any launch -- a reboot, a recovery, an image swap -- rebuilds it
 // identically. A guest that grew boots back at its boot size (memory.go).
 //
-// ON A WIRELESS PARENT both tapped NICs carry the PARENT's MAC, the one an access point carries for
+// On a wireless parent both tapped NICs carry the parent's MAC, the one an access point carries for
 // the station, and launch as ipvtap. Read off cfg.net, the live substrate, rather than off the
 // config, so a re-parent between Wi-Fi and wire relaunches the guest the new substrate needs.
 func (cfg Config) guestSpec() platform.QEMUSpec {
@@ -1019,7 +986,7 @@ func (cfg Config) baseGuestSpec() platform.QEMUSpec {
 		ServiceTap:    cfg.ServiceTap,
 		// The service NIC carries the VIP and nothing else, so its MAC is the VIP's identity --
 		// flock-scoped, not node-scoped (see Config.FlockID). The DRBD and witness NICs stay
-		// node-derived: those MUST differ per node or the NICs collide and ARP never resolves.
+		// node-derived: those must differ per node or the NICs collide and ARP never resolves.
 		ServiceMAC: cfg.serviceMAC(),
 		SystemTap:  cfg.SystemTap,
 		SystemMAC:  deriveMAC(cfg.Node, "sys"),
@@ -1033,27 +1000,22 @@ func (cfg Config) baseGuestSpec() platform.QEMUSpec {
 	}
 }
 
-// logAcceleration records, once per bring-up, which accelerator this guest actually got --
-// asking QEMU (`query-accelerators`) rather than trusting the argv, because Accel is a fallback
-// list and the fall back to emulation is silent.
-//
-// It exists for a question that gets asked LATER: "why is this node slow?". Emulation is a
-// supported configuration, not a fault (a host with no virtualisation extensions still gets a
-// working briard, which is the point of the tcg fallback), so nothing fails and nothing alerts
-// -- and that is exactly what makes it invisible. With this line the answer is in the journal
-// from the first boot.
-//
-// The healthy case is logged too, deliberately, and it NAMES the accelerator rather than saying
-// "accelerated": a reader who cannot tell "accelerated" from "the check never ran" is no better
-// off than with silence, and on a host with more than one hypervisor available, which one won is
-// the interesting half.
+// logAcceleration records, once per bring-up, which accelerator this guest actually got, asking
+// QEMU (`query-accelerators`) rather than trusting the argv, because Accel is a fallback list and
+// the fall back to emulation is silent. It exists for a question asked later: "why is this node
+// slow?". Emulation is a supported configuration, not a fault (a host with no virtualisation
+// extensions still gets a working briard, which is the point of the tcg fallback), so nothing
+// fails and nothing alerts, which is exactly what makes it invisible; with this line the answer
+// is in the journal from the first boot. The healthy case is logged too, deliberately, naming
+// the accelerator rather than saying "accelerated": a reader who cannot tell "accelerated" from
+// "the check never ran" is no better off than with silence, and on a host with more than one
+// hypervisor available, which one won is the interesting half.
 //
 // ⚠️ Not `query-kvm`: it is KVM-shaped, so a WHPX guest reads as emulated, and its `present`
 // field says whether KVM is compiled into the binary, not anything about the host. QMP cannot
 // tell "no virt extensions" from "/dev/kvm unreadable", so the warning names both and leaves the
 // prediction to the install-time report card's virt-flags advisory, which asks the host
 // directly: that one is a prediction about a host, this is an observation about a running VM.
-//
 // Never fatal: a guest that boots and serves is not made worse by an unanswered question about
 // its accelerator.
 func logAcceleration(ctx context.Context, g *platform.Guest, spec platform.QEMUSpec, logf func(string, ...any)) {
@@ -1093,29 +1055,26 @@ func logAcceleration(ctx context.Context, g *platform.Guest, spec platform.QEMUS
 // the guest and then failed is a real error the caller must report and act on.
 var errNoChannel = errors.New("host: control channel never came up")
 
-// bringUp takes the guest from nothing to converged: launch it (or re-adopt one that
-// outlived an agent restart), establish the control channel, apply the runtime identity the
-// image does not carry, and converge DRBD.
-//
-// It is ONE call because a reboot has to redo ALL of it. A guest that comes back
-// from a reboot is the image's baked `guest` again, with unaddressed NICs: SetHostname and
-// ConfigureNet are applied at runtime and never baked, so a relaunch that re-established
-// only the control channel would leave DRBD unable to match its `on <name>` stanzas. Every
-// step here is idempotent precisely so it can be re-driven — which is also why
-// re-adopting an already-converged guest costs nothing.
+// bringUp takes the guest from nothing to converged: launch it (or re-adopt one that outlived an
+// agent restart), establish the control channel, apply the runtime identity the image does not
+// carry, and converge DRBD. It is one call because a reboot has to redo all of it: a guest back
+// from a reboot is the image's baked `guest` again, with unaddressed NICs (SetHostname and
+// ConfigureNet are applied at runtime and never baked), so a relaunch that re-established only
+// the control channel would leave DRBD unable to match its `on <name>` stanzas. Every step here
+// is idempotent precisely so it can be re-driven, which is also why re-adopting an
+// already-converged guest costs nothing.
 //
 // On success the client is live and the caller owns closing it. On any error it is closed
 // here, and the guest is left running: bring-up failing is not grounds to destroy a VM (the
 // self-fence is a separate, explicit decision).
 func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf func(string, ...any)) (*platform.Guest, *guestagent.Client, error) {
 	// Launch the guest as a transient unit (systemd on Linux, a named job object on Windows), or
-	// RE-ADOPT one already running. The guest's lifecycle is decoupled from the agent's, so an
+	// re-adopt one already running. The guest's lifecycle is decoupled from the agent's, so an
 	// agent restart (e.g. a self-update) leaves qemu serving; the restarted agent finds it active
-	// and re-adopts over the persisted control socket instead of booting a second VM.
-	//
-	// The budget bounds the whole launch -> converge phase, the launch itself included: the
-	// calls that start the VM must not run under the caller's unbounded context, and it is what
-	// lets the watchdog lease cover all of bring-up rather than only its tail.
+	// and re-adopts over the persisted control socket instead of booting a second VM. The budget
+	// bounds the whole launch -> converge phase, the launch itself included: the calls that start
+	// the VM must not run under the caller's unbounded context, and it is what lets the watchdog
+	// lease cover all of bring-up rather than only its tail.
 	bringup, cancel := context.WithTimeout(ctx, cfg.BringUpBudget)
 	defer cancel()
 	// The watchdog rides this operation's own budget: pings until bring-up finishes (the cancel
@@ -1148,19 +1107,19 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		}
 	}
 
-	// The node's storage spec, rendered by the host because storage policy is the host's.
-	// A spec this host cannot build stops bring-up here -- before the guest is
-	// asked to do anything -- rather than inside a unit whose only report is an exit code.
+	// The node's storage spec, rendered by the host because storage policy is the host's. A spec
+	// this host cannot build stops bring-up here, before the guest is asked to do anything, rather
+	// than inside a unit whose only report is an exit code.
 	//
-	// THE MEMBERSHIP THIS NODE IS IN, re-read at EVERY bring-up and not only at the agent's start:
-	// a topology transition records the mesh and reboots the guest in the same agent
-	// process, so the bring-up that follows must read what was just recorded, not what Run
-	// restored an hour ago. The same holds for a recovery relaunch: a guest power-cycled by this
-	// process after a runtime pairing must come back on the recorded mesh, not start-up's.
+	// The membership this node is in, re-read at every bring-up and not only at the agent's start:
+	// a topology transition records the mesh and reboots the guest in the same agent process, so
+	// the bring-up that follows must read what was just recorded, not what Run restored an hour
+	// ago. The same holds for a recovery relaunch: a guest power-cycled by this process after a
+	// runtime pairing must come back on the recorded mesh, not start-up's.
 	if spec, res, ok := cfg.cachedMesh(logf); ok {
 		cfg.Resource, cfg.Mesh = res, spec
 	}
-	// A JOINER NEVER SEEDS, ON ANY BOOT. FreshInit is "am I the first peer" of the mesh the
+	// A joiner never seeds, on any boot. FreshInit is "am I the first peer" of the mesh the
 	// environment described -- true on every node that was installed alone, which is every
 	// node. The recorded mesh says which of those joined blank, and that node must never
 	// declare itself UpToDate: the row that would (no metadata, LVs existing) is exactly the
@@ -1185,14 +1144,14 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 		// The guest's /run is tmpfs, so a reboot took the installed apps' units with it while the
 		// host's cache kept the manifests. Re-rendered and their images warmed here, before the
 		// chain starts, so a node -- a standby included -- is warm before it promotes;
-		// briard-apps starts the apps from the VOLUME once the mount exists.
+		// briard-apps starts the apps from the volume once the mount exists.
 		AppUnits:  cfg.AppRendered.Files,
 		AppImages: cfg.AppRendered.ImageRefs,
 	}
 	// Establish the control channel. On a fresh launch, dial patiently until qemu binds the
 	// socket (dialControl): a "connection refused" before then is a guest still starting, not a
-	// fault. On a RE-ADOPT, the prior host's disconnect bounced the in-guest agent (it serves one
-	// connection then exits, systemd restarts it), so the handshake must RETRY with a bounded
+	// fault. On a re-adopt, the prior host's disconnect bounced the in-guest agent (it serves one
+	// connection then exits, systemd restarts it), so the handshake must retry with a bounded
 	// per-attempt deadline until the guest re-serves — a single blocking handshake would eat the
 	// whole bring-up budget. reconnect() is exactly that retry loop. Either way, a channel that
 	// never comes up within the budget is errNoChannel, the ladder's case.
@@ -1221,7 +1180,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 			logf("guest bundle %q, %d capabilities", hello.Bundle, len(hello.Capabilities))
 		}
 	}
-	// DRESS THE GUEST before any real verb, on both paths: a fresh boot starts as
+	// Dress the guest before any real verb, on both paths: a fresh boot starts as
 	// firmware (its scratch is emptied at boot), and an adopt after a host commit is where the new
 	// bundle meets a guest still running the old one. A push restarts the guest agent, so the
 	// channel is re-established here and the rest of bring-up talks to the dressed guest.
@@ -1242,17 +1201,17 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	if err == nil {
 		pushTimezone(bringup, client, localTimezone("/"), logf)
 	}
-	// THE SERVICE ADDRESS: the household's if it named one, else -- on a single-anchor substrate --
-	// the lease the host holds for the flock, asked for BEFORE the guest is told (lease.go). A fresh
+	// The service address: the household's if it named one, else -- on a single-anchor substrate --
+	// the lease the host holds for the flock, asked for before the guest is told (lease.go). A fresh
 	// guest holds nothing yet, which is what lets the host DISCOVER.
 	vipAddr, hostLeases := cfg.vipAddr(), false
 	if err == nil && cfg.net != nil && vipAddr == "" {
 		vipAddr = cfg.lease.acquire(bringup, *cfg.net, !adopted, logf)
 		hostLeases = cfg.lease.active()
 	}
-	// Configure the guest's NICs when a system NIC is given -- which is EVERY installed node,
+	// Configure the guest's NICs when a system NIC is given -- which is every installed node,
 	// lone ones included: eth1 carries this node's node IP, the one address anything uses to
-	// reach it, and DRBD binds there -- OR a VIP device or address is (then ConfigureNet records
+	// reach it, and DRBD binds there -- or a VIP device or address is (then ConfigureNet records
 	// VIP_DEV/VIP_ADDR and skips addressing).
 	if err == nil && (cfg.SystemDev != "" || cfg.VIPDev != "" || vipAddr != "") {
 		err = client.ConfigureNet(bringup, guestagent.NetConfig{
@@ -1262,7 +1221,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 			PrivHostMAC: cfg.privHostMAC(bringup, logf),
 			// The same MAC the macvtap substrate pins host-side at launch, derived the same way
 			// from the same seed -- so the two substrates present the identical L2 identity and
-			// only differ in WHO creates the device holding it.
+			// only differ in who creates the device holding it.
 			VIPParent: cfg.VIPParent, VIPMAC: cfg.serviceMAC(),
 		})
 	}
@@ -1276,14 +1235,14 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 			logf("node route: %v -- this host cannot reach its guest at %s", rerr, cfg.guestNodeIP())
 		}
 	}
-	// Put this anchor's host-side hop to the cloud witness back, if its mesh has one. HERE, before
+	// Put this anchor's host-side hop to the cloud witness back, if its mesh has one. Here, before
 	// DRBD comes up and long before WaitQuorate, because a witness that is not reachable when quorum
 	// is being counted is a witness that does not vote -- see restoreWitnessHop for why it is placed
 	// at this point and why it warns rather than fails.
 	if err == nil {
 		cfg.restoreWitnessHop(bringup, client, platformWitness{}, logf)
 	}
-	// Hand the guest the flock's VISIBLE name, separately from addressing and separately from the
+	// Hand the guest the flock's visible name, separately from addressing and separately from the
 	// hostname above -- three identifiers, three calls, because that is what makes any one of them
 	// changeable without the others. "" is a node with no minted name (every harness that names
 	// the node itself): nothing is published rather than a guess.
@@ -1363,16 +1322,15 @@ func dialControl(ctx context.Context, sock string) (net.Conn, error) {
 	}
 }
 
-// A reconnect's handshake is SENT AGAIN on the same connection until something answers, every
+// A reconnect's handshake is sent again on the same connection until something answers, every
 // helloEvery for up to handshakeWindow. The guest agent exits on the EOF a host disconnect gives
-// it, and a hello written into the port between that EOF and its close is lost with the port --
-// the window is the handler it was finishing, under a second, and a thawed guest lands the
-// first hello in it more often than not. Closing on the timeout and re-dialling looks
-// equivalent and is not: it gives the fresh agent another EOF and another restart, and a thawed
-// guest comes back only on the second to sixth attempt (~100 s, measured). Resending keeps the
-// connection, so the agent that opens the port next reads the hello that was written for it and
-// nobody restarts. A guest that is truly mute is given up on after the window, and the recovery
-// ladder has it.
+// it, and a hello written into the port between that EOF and its close is lost with the port: the
+// window is the handler it was finishing, under a second, and a thawed guest lands the first
+// hello in it more often than not. Closing on the timeout and re-dialling looks equivalent and is
+// not: it gives the fresh agent another EOF and another restart, and a thawed guest comes back
+// only on the second to sixth attempt (~100 s, measured). Resending keeps the connection, so the
+// agent that opens the port next reads the hello written for it and nobody restarts. A truly
+// mute guest is given up on after the window, and the recovery ladder has it.
 const (
 	helloEvery      = 5 * time.Second
 	handshakeWindow = 30 * time.Second
@@ -1407,7 +1365,7 @@ func connectAndHandshake(ctx context.Context, sock string) (*guestagent.Client, 
 // channel drops. A cancelled ctx is a clean shutdown (nil); a dropped channel returns
 // ErrChannelDown so Run reconnects.
 //
-// pending is OWNED BY Run, not by this call: an outcome collected here must survive the channel
+// pending is owned by Run, not by this call: an outcome collected here must survive the channel
 // re-dial that an OS upgrade always causes, and a local would not.
 func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alerter *redundancyAlerter, n notify.Notifier, rep cloud.CloudClient, cs *casaRunner, agg *metricsAggregator, tenant string, local <-chan localRequest, pending *[]api.DirectiveOutcome, logf func(string, ...any)) error {
 	t := time.NewTicker(cfg.StatusEvery)
@@ -1465,25 +1423,25 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	backupPushed := ""  // the page's backup view last pushed on this connection (backup.go)
 	catalogPushed := "" // the page's catalog view, likewise (catalog.go)
 	cycle := 0
-	// Was this node Primary last cycle? The PROMOTION EDGE is when what the volume says this node
+	// Was this node Primary last cycle? The promotion edge is when what the volume says this node
 	// runs can differ from what this host remembers installing -- see adoptVolumeApps. Starts
 	// false, so a node that comes up already Primary reads the volume on its first cycle.
 	wasPrimary := false
-	// An install the volume holds STAGED and never committed is undone once this node serves
+	// An install the volume holds staged and never committed is undone once this node serves
 	// (undoPending); set at each promotion edge, cleared once nothing is pending or the undo started.
 	undoDue := false
-	// EVERY cfg.beat.Beat() below sits in front of one ctx-BOUNDED call, and that is the whole
-	// rule: the watchdog threshold is the longest gap between two pings, so a ping goes wherever
-	// a gap would otherwise open. It is not one ping per cycle -- these calls carry 5s deadlines
-	// each, so a slow-but-entirely-healthy iteration can run ~35s and would force a threshold
-	// four times larger than it needs to be. A datagram costs nothing; a gap costs detection
-	// latency. See beat.go.
+	// Every cfg.beat.Beat() below sits in front of one ctx-bounded call, and that is the whole
+	// rule: the watchdog threshold is the longest gap between two pings, so a ping goes wherever a
+	// gap would otherwise open. Not one ping per cycle: these calls carry 5s deadlines each, so a
+	// slow-but-entirely-healthy iteration can run ~35s and would force a threshold four times
+	// larger than it needs to be. A datagram costs nothing; a gap costs detection latency. See
+	// beat.go.
 	for {
 		// How long the observe half of this iteration takes -- loop top to the status line, i.e.
 		// every read the loop does before it acts. Logged on the status line so the soak's journal
 		// carries it and a slow tick shows up without anyone looking for it.
 		tickStart := time.Now()
-		// THE NETWORK CHECKS, every netCheckTicks-th tick and the loop's first (network.go).
+		// The network checks, every netCheckTicks-th tick and the loop's first (network.go).
 		if cycle%netCheckTicks == 0 {
 			// The host's side of the guest's L2, re-asserted before anything is read over it.
 			// Check-first and silent when nothing moved, which is every check on a host
@@ -1494,7 +1452,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			// ...the LAN record's gateway MAC, if the bring-up could not read it (reparent.go)...
 			cfg.completeNetworkRecord(ctx, logf)
 			// ...and the harder question the same tick is the only place to ask: has the
-			// PARENT gone away? qemu does not notice — it keeps running with a dead NIC, so the guest
+			// parent gone away? qemu does not notice — it keeps running with a dead NIC, so the guest
 			// is alive, healthy by its own account, and unreachable. Paced, because the repair costs
 			// the household a guest restart; see reparent.go for what each tier is paying for.
 			if dev, rel := rp.consider(ctx, cfg, time.Now(), logf); dev != "" {
@@ -1517,23 +1475,21 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		cfg.beat.Beat()
 		sys := cfg.currentSystem(ctx, r)
 		cfg.beat.Beat()
-		// THE ADDRESS, ONCE. Every owner that wants it this cycle -- the health URL below, the
+		// The address, once. Every owner that wants it this cycle -- the health URL below, the
 		// ipvtap copier, the host's route, the address watch, casa -- takes this one answer rather
 		// than a round trip of its own on a channel that serves one at a time; a dead channel is
 		// one failed read they all see the same way.
 		cfg.beat.Beat()
 		vip := cfg.readVIP(ctx, r)
 		st, cl, probe, err := cfg.snapshot(ctx, r, vip, sys)
-		// AHEAD of the channel-down return, and that placement is the load-bearing part. A dead
-		// channel is precisely when the local guest may have stopped serving and a PEER may have
-		// taken the VIP over -- the case where a route left pointing at our own guest replaces a
+		// Ahead of the channel-down return, and that placement is the load-bearing part: a dead
+		// channel is precisely when the local guest may have stopped serving and a peer may have
+		// taken the VIP over, the case where a route left pointing at our own guest replaces a
 		// working LAN path with a black hole. Reconciling here withdraws it; reconciling after the
-		// return would keep it exactly when it is most wrong.
-		//
-		// The route takes the cycle's raw answer, not the snapshot's health resolution, and
-		// deliberately: that one prefers the CONFIGURED address when there is one, which on a node
-		// that is not currently serving is an address this guest does not hold. A route may only
-		// follow ground truth.
+		// return would keep it exactly when it is most wrong. The route deliberately takes the
+		// cycle's raw answer, not the snapshot's health resolution, which prefers the configured
+		// address when there is one: on a node that is not currently serving, that is an address
+		// this guest does not hold. A route may only follow ground truth.
 		cfg.beat.Beat()
 		// On a wireless parent the guest's addresses are copied onto its ipvtap children first
 		// (ipvtap.go). The lease's alert and any relaunch it needs ride the same tick (lease.go).
@@ -1551,14 +1507,14 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		if errors.Is(err, guestfirmware.ErrChannelDown) {
 			return err // channel dead -> Run re-dials; a verb error just reports degraded
 		}
-		// A CLUSTER THE GUEST DID NOT ANSWER FOR IS NOT A CLUSTER THIS NODE HAS LEFT. A read
+		// A cluster the guest did not answer for is not a cluster this node has left. A read
 		// error -- a verb refused, or a deadline on a guest busy answering something else --
 		// leaves cl empty, and empty reads as "not serving" to the promotion edge below, which
 		// would take it for a demotion and then, on the next good read, for a promotion, and
 		// re-read the volume for nothing. (The redundancy alerter ignores a non-quorate reading
 		// on its own.) This cycle reports degraded and moves no edge on the state it did not get.
 		known := err == nil
-		// A node that has just PROMOTED may be running apps it was never told about: converge
+		// A node that has just promoted may be running apps it was never told about: converge
 		// renders from the volume, so the volume -- not this host's memory -- is what
 		// it is actually running. Read it once per promotion and re-derive this cycle's report, so
 		// the first status the cloud sees from a new primary already names what it serves.
@@ -1580,23 +1536,23 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			i, ok := r.(appInstaller)
 			undoDue = ok && !cfg.undoPending(ctx, i, logf)
 		}
-		// THE CLOCK SAMPLE, once an interval per app, on the node that holds the
+		// The clock sample, once an interval per app, on the node that holds the
 		// volume. Cheap on every other cycle: a time comparison and nothing else.
 		cfg.beat.Beat()
 		kctx, kcancel := context.WithTimeout(ctx, clockSampleBudget)
 		cfg.consider(kctx, r, ng, cfg.Apps, cl.Serving(), time.Now(), logf)
 		kcancel()
-		// THE RECORDER CHECK, once a night on the node that holds the volume: started in the guest's
+		// The recorder check, once a night on the node that holds the volume: started in the guest's
 		// background and collected over later cycles, so it never holds this loop (clocksample.go).
 		cfg.checkRecorder(ctx, r, dc, cfg.Apps, cl.Serving(), time.Now(), n, logf)
-		// THE BACKUP, once a night on the node that holds the volume, the same way (backup.go).
+		// The backup, once a night on the node that holds the volume, the same way (backup.go).
 		cfg.backup(ctx, r, bs, cl.Serving(), time.Now(), n, logf)
-		// THE FILES TIER, every five minutes on the node that holds the volume, the same way.
+		// The files tier, every five minutes on the node that holds the volume, the same way.
 		cfg.tickFiles(ctx, r, ut, cl.Serving(), time.Now(), n, logf)
 		cfg.beat.Beat()
 		st.Overlay = cfg.overlayStatus(ctx) // remote-reach signal (nil when no overlay)
 		st.Tenant = tenant                  // tag the report with the assigned tenant
-		// Resource telemetry is a soak leak-instrument, not product-health: it does NOT ride
+		// Resource telemetry is a soak leak-instrument, not product-health: it does not ride
 		// the report. Measured each cycle where a soak collects it (TelemetryPath, the gate the
 		// lab-only reads already sit behind) and written to the out-of-band collector file the
 		// soak reads L0-side; best-effort, never gates the observe loop. On a shipped node its one
@@ -1704,7 +1660,7 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			sm.observe(ctx, n, cfg.Node, cfg.DataDisk, time.Now(), logf) // a background smartctl every smartReadEvery
 		}
 		if rep != nil {
-			// THE REPORT RUNS OFF THE LOOP, like every cloud call: a goroutine sends it and
+			// The report runs off the loop, like every cloud call: a goroutine sends it and
 			// hands the reply back here, where the next cycle applies it -- the outcomes it
 			// carried are acked, the CSR it carried is cleared, the directives it brought are
 			// routed to their lanes. One report in flight at a time; a cycle that finds one
@@ -1762,17 +1718,17 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			goto wait
 		case rq := <-local:
 			// A directive submitted through the local door (the admin socket or the guest's admin
-			// port). Routed HERE, by the observe loop, for exactly the reason cloud directives are:
+			// port), routed here by the observe loop for exactly the reason cloud directives are:
 			// the loop decides the lane (acts.go) -- on itself for one that relaunches the guest,
 			// off it for an act or a pull -- and only one place may make that decision. Arriving
-			// on the select also WAKES the loop, so the asker isn't left waiting out a StatusEvery
-			// tick -- and then waits on, like a link change: a request is not a cycle. The tray
-			// asks for status every 5 s and the page polls while a card moves; each running the
-			// tick's reads again would double the agent's idle cost for answers the last tick
+			// on the select also wakes the loop, so the asker isn't left waiting out a StatusEvery
+			// tick, and the loop then waits on, like a link change: a request is not a cycle. The
+			// tray asks for status every 5 s and the page polls while a card moves; each running
+			// the tick's reads again would double the agent's idle cost for answers the last tick
 			// already holds.
 			//
-			// Its outcome goes back to the asker and NOWHERE ELSE — deliberately not appended to
-			// pendingOutcomes. Outcomes close the loop on an intent the cloud announced;
+			// Its outcome goes back to the asker and nowhere else, deliberately not appended to
+			// pendingOutcomes: outcomes close the loop on an intent the cloud announced, and
 			// reporting one for an ID the cloud never issued would be, at best, noise in a ledger
 			// whose whole value is that every row answers a question someone asked.
 			cfg.beat.Beat()
@@ -1792,12 +1748,11 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	}
 }
 
-// origin is the door a directive arrived through.
-//
-// IT IS A PARAMETER, NEVER A FIELD ON api.Directive. The Directive struct is the wire
-// type the cloud sends, so an origin field on it would be a claim the sender makes about itself
-// -- a cloud could simply say "local". Only the call site knows which door it read from, and a
-// call site cannot be forged. There are exactly two, both in observe().
+// origin is the door a directive arrived through. It is a parameter, never a field on
+// api.Directive: that struct is the wire type the cloud sends, so an origin field on it would be
+// a claim the sender makes about itself (a cloud could simply say "local"). Only the call site
+// knows which door it read from, and a call site cannot be forged. There are exactly two, both in
+// observe().
 type origin int
 
 const (
@@ -1812,18 +1767,17 @@ func (o origin) String() string {
 	return "cloud"
 }
 
-// localOnlyKinds are the kinds the cloud's down-channel may not carry.
+// localOnlyKinds are the kinds the cloud's down-channel may not carry. An allowlist of the
+// exceptions rather than a classification of every kind, so adding an ordinary cloud-driven kind
+// stays a one-line change and cannot be broken by forgetting this table. The cost is that a
+// future local-only verb must be added here deliberately; TestLocalOnlyKindsAreRefusedFromTheCloud,
+// which enumerates them, keeps that honest.
 //
-// An ALLOWLIST of the exceptions rather than a classification of every kind, so that adding an
-// ordinary cloud-driven kind stays a one-line change and cannot be broken by forgetting this
-// table. The cost is that a future local-only verb must be added here deliberately; the test
-// that keeps that honest is TestLocalOnlyKindsAreRefusedFromTheCloud, which enumerates them.
-//
-// What this buys is narrow, and worth stating exactly so nobody claims more: arming the debug
-// console publishes a socket inside the 0700 root QMP directory, which the cloud has no
-// filesystem path to and no directive proxies, so this is not what stops a remote root shell --
-// nothing remote could reach one anyway. It is that the cloud has no business changing a node's
-// local debug state, made structural instead of incidental.
+// What this buys is narrow, stated exactly so nobody claims more: arming the debug console
+// publishes a socket inside the 0700 root QMP directory, which the cloud has no filesystem path
+// to and no directive proxies, so this is not what stops a remote root shell (nothing remote
+// could reach one anyway). It is that the cloud has no business changing a node's local debug
+// state, made structural instead of incidental.
 var localOnlyKinds = map[string]bool{
 	api.DirectiveDebugArm:      true,
 	api.DirectiveDebugDisarm:   true,
@@ -1976,7 +1930,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectivePair || d.Kind == api.DirectiveUnpair {
 		// Runtime anchor pairing needs the guest client's mesh verbs (adjust/bring-up), not the
-		// narrow upgrader; r is that client. A topology TRANSITION -- a lone node's
+		// narrow upgrader; r is that client. A topology transition -- a lone node's
 		// first pairing, a flock ending -- also needs the one act only the upgrader owns: the
 		// guest reboot that re-runs bring-up on the recorded membership.
 		m, ok := r.(guestMesher)
@@ -2027,7 +1981,7 @@ func resourceLog(r *telemetry.NodeResources) string {
 	if r == nil {
 		return ""
 	}
-	// The node-scoped series first, then one clause per app -- NAMED, because the status line
+	// The node-scoped series first, then one clause per app -- named, because the status line
 	// is where a human looks first, and "something on this node is restarting" stops being an
 	// actionable sentence the moment a node runs more than one thing.
 	line := fmt.Sprintf(" agentRSS=%dk agentFDs=%d vol=%dk snaps=%d load1=%.2f kerr=%d",
@@ -2050,8 +2004,8 @@ func resourceLog(r *telemetry.NodeResources) string {
 // footprint always measures), so the trend oracle always has a numeric sample.
 func (cfg Config) resources(ctx context.Context, r guestReader) *telemetry.NodeResources {
 	var res telemetry.NodeResources
-	// EVERY app's footprint, and the guest is asked REGARDLESS of whether there are any: load
-	// average, journal size, podman-store size and the guest's KERNEL ERRORS are node-scoped,
+	// Every app's footprint, and the guest is asked regardless of whether there are any: load
+	// average, journal size, podman-store size and the guest's kernel errors are node-scoped,
 	// need neither a unit nor a data dir, and must not go dark on the zero-app node that is the
 	// shipped state. A node-scoped fact gated on "has an app" is the app-means-guest conflation
 	// one layer out. The guest handles the empty case (gatherResources guards each sub-read).
@@ -2077,29 +2031,26 @@ func (cfg Config) resources(ctx context.Context, r guestReader) *telemetry.NodeR
 	return &res
 }
 
-// telemetryWriter owns the ONLY goroutine that touches TelemetryPath, so that the least
+// telemetryWriter owns the only goroutine that touches TelemetryPath, so that the least
 // important thing in the observe loop cannot stop it. Every other call in that loop carries a
-// deadline. This one cannot: there is no ctx-aware file write in the standard library, so a
-// deadline handed to os.WriteFile would be decoration -- open(2) on a hung mount (an
-// unresponsive NFS or FUSE path under TELEMETRY_PATH) blocks uninterruptibly and no timer
-// reaches it. The answer is therefore isolation rather than a bound: the write happens on a
-// goroutine of its own and the loop only ever does a non-blocking send, so the worst a stuck
-// path can cost is the samples themselves.
+// deadline; this one cannot: the standard library has no ctx-aware file write, so a deadline
+// handed to os.WriteFile would be decoration (open(2) on a hung mount, an unresponsive NFS or
+// FUSE path under TELEMETRY_PATH, blocks uninterruptibly and no timer reaches it). Hence
+// isolation rather than a bound: the write runs on its own goroutine and the loop only ever does
+// a non-blocking send, so the worst a stuck path can cost is the samples themselves.
 //
-// Latest-wins, depth 1, drop when the writer is busy -- and that is not a concession forced by
-// the channel, it is what the file already meant. writeTelemetryFile publishes the newest
-// sample by atomic rename and keeps no history, so a sample the writer never got to is
-// indistinguishable from one it overwrote a cycle later.
-//
-// Except the kernel lines. Those are not a level but a stream: the guest returns only the lines
-// logged since its previous read, so a sample that is overwritten or dropped takes its lines with
-// it, and a reader sampling once a minute would see only the last tick's. They therefore ACCUMULATE
-// until the reader consumes the file -- it renames it away, and the absence is the
-// acknowledgement. Lines in a dropped sample are held by the sender for the next one.
+// Latest-wins, depth 1, drop when the writer is busy: not a concession forced by the channel but
+// what the file already meant, since writeTelemetryFile publishes the newest sample by atomic
+// rename and keeps no history, so a sample the writer never got to is indistinguishable from one
+// it overwrote a cycle later. The kernel lines are the exception, a stream rather than a level:
+// the guest returns only the lines logged since its previous read, so an overwritten or dropped
+// sample takes its lines with it, and a reader sampling once a minute would see only the last
+// tick's. They therefore accumulate until the reader consumes the file (it renames it away; the
+// absence is the acknowledgement), and the sender holds a dropped sample's lines for the next.
 type telemetryWriter struct {
 	ch chan *telemetry.NodeResources
 	// dropped edge-triggers the log below, and held keeps the kernel lines of samples that were
-	// dropped. Both are touched ONLY by the sender (observe is the sole caller of writeTelemetry,
+	// dropped. Both are touched only by the sender (observe is the sole caller of writeTelemetry,
 	// and there is one observe at a time), never by the goroutine, so they need no lock.
 	dropped bool
 	held    []string
@@ -2110,14 +2061,13 @@ type telemetryWriter struct {
 // still sees the storm.
 const maxUnreadKernelLines = 1000
 
-// newTelemetryWriter starts that goroutine, or returns nil when no path is configured -- the
-// shipped state, since install.sh sets no TELEMETRY_PATH. writeTelemetry is nil-safe, so a
-// Config built without one (every unit test, every standalone node) still works.
-//
-// The goroutine is deliberately NOT joined at shutdown. A writer wedged in open(2) cannot be
-// cancelled by anything short of the mount coming back, so waiting for it would reintroduce the
-// hang one call further out; the process exits over it instead, which is exactly what a
-// best-effort instrument should be allowed to cost.
+// newTelemetryWriter starts that goroutine, or returns nil when no path is configured (the
+// shipped state, since install.sh sets no TELEMETRY_PATH). writeTelemetry is nil-safe, so a
+// Config built without one (every unit test, every standalone node) still works. The goroutine
+// is deliberately not joined at shutdown: a writer wedged in open(2) cannot be cancelled by
+// anything short of the mount coming back, so waiting for it would reintroduce the hang one call
+// further out; the process exits over it instead, which is exactly what a best-effort instrument
+// should be allowed to cost.
 func (cfg Config) newTelemetryWriter(ctx context.Context, logf func(string, ...any)) *telemetryWriter {
 	if cfg.TelemetryPath == "" {
 		return nil
@@ -2205,18 +2155,16 @@ func (cfg Config) writeTelemetryFile(res *telemetry.NodeResources, logf func(str
 }
 
 // wedgeForTest blocks the calling goroutine for as long as WedgeFIFO names a FIFO with no
-// reader, and does nothing at all otherwise. It is a FIXTURE, named so, and it is in the product
-// deliberately.
-//
-// The watchdog exists to catch an agent that is alive but has one goroutine stuck in an
-// uninterruptible syscall -- the observe loop stopped while the runtime, the timers and every
-// other goroutine keep running -- and the test that proves it has to produce exactly that. No
-// bounded call can: the shape the watchdog must catch is precisely the shape the rest of this
+// reader, and does nothing at all otherwise. It is a fixture, named so, and in the product
+// deliberately: the watchdog exists to catch an agent that is alive but has one goroutine stuck
+// in an uninterruptible syscall (the observe loop stopped while the runtime, the timers and
+// every other goroutine keep running), and the test that proves it has to produce exactly that.
+// No bounded call can: the shape the watchdog must catch is precisely the shape the rest of this
 // file makes unreachable. So the lever is explicit rather than borrowed from a defect.
 //
 // Unset everywhere but that test. install.sh writes no such variable, and an unreadable or
-// absent path is a silent no-op -- which is the fail-safe direction, because a fixture that
-// quietly fails to engage makes agent-watchdog.nix go RED (no trip) rather than green.
+// absent path is a silent no-op, the fail-safe direction: a fixture that quietly fails to engage
+// makes agent-watchdog.nix go red (no trip) rather than green.
 func (cfg Config) wedgeForTest(logf func(string, ...any)) {
 	if cfg.WedgeFIFO == "" {
 		return
@@ -2248,15 +2196,15 @@ func parseSelfVmRSSKB(status []byte) int64 {
 // read error is returned alongside so the loop can tell a dead channel (ErrChannelDown ->
 // reconnect) from a mere degraded read (verb error -> keep observing, report degraded).
 //
-// It also returns the probe target it resolved, so the caller can SAY it: without it, "the node
+// It also returns the probe target it resolved, so the caller can say it: without it, "the node
 // reports healthy and nobody can reach it" is undiagnosable from a journal, and under DHCP the
 // address is in no config file either, so the log is the only place a human can find it.
 func (cfg Config) snapshot(ctx context.Context, r statusReader, vip guest.VIPReader, system string) (api.NodeStatus, model.Cluster, string, error) {
 	st := api.NodeStatus{NodeName: cfg.Node, Role: cfg.Role, System: system, AgentVersion: cfg.Version}
-	// The guest bundle the guest reported in its handshake, named by the RELEASE whose
+	// The guest bundle the guest reported in its handshake, named by the release whose
 	// bundle it is. The tree a guest was dressed from keeps the id of the release that first
 	// fetched it -- an unchanged bundle is hash-skipped by later host updates, never re-pushed --
-	// so a guest on the committed tree runs THIS release's bundle and is reported as such; a
+	// so a guest on the committed tree runs this release's bundle and is reported as such; a
 	// guest on anything else (a trial that reverted, a firmware that could not be dressed) is
 	// reported as what it runs, and the cloud's convergence check reads the difference. A reader
 	// that predates the field (a test fake) reports nothing, like a firmware guest.
@@ -2271,16 +2219,16 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, vip guest.VIPRea
 	cl, err := r.Cluster(rctx, cfg.Resource.Name)
 	if err != nil {
 		// The identity half still reports: what is installed is known without the guest, and a
-		// dead channel must not read as an uninstall. The STATE half is left empty, which is the
+		// dead channel must not read as an uninstall. The state half is left empty, which is the
 		// honest answer when nothing could be asked.
 		st.Apps = cfg.appStatuses(rctx, r, false)
 		return st, cl, "", err // zero QuorumState, Healthy=false
 	}
 	st.Quorum = cl.QuorumState
-	// AFTER the cluster read, because the state is only meaningful on the node that holds the
+	// After the cluster read, because the state is only meaningful on the node that holds the
 	// volume -- the apps run on whoever is Primary and nowhere else.
 	st.Apps = cfg.appStatuses(rctx, r, cl.Serving())
-	// A WITNESS is what "healthy == participating" belongs to, and role is how we know one --
+	// A witness is what "healthy == participating" belongs to, and role is how we know one --
 	// not an empty URL. Under DHCP a data node has no configured address either, and the two
 	// answers must stay apart: a witness with nothing to probe is healthy when quorate, a data
 	// node with no address is a node nobody in the house can reach.
@@ -2291,29 +2239,27 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, vip guest.VIPRea
 		// No address to probe means two opposite things, and telling them apart is the whole
 		// of this branch:
 		//
-		//   - a SECONDARY has no address because the VIP is promoter-driven and it was not
-		//     promoted. That is the system working. Its health is participation, exactly as a
-		//     witness's is -- replicating, quorate and up to date is a secondary doing its
-		//     whole job, and there is nothing else to ask it. Reporting it unhealthy would make
-		//     every correct HA pair permanently DEGRADED in the cloud's view, with a standing
-		//     "1 node unhealthy" nobody could act on.
-		//   - a PRIMARY has no address because the thing that should have given it one did
-		//     not. That is the node the house cannot reach. It stays unhealthy, and must: a
-		//     primary that reads healthy because it is quorate is a zombie.
+		//   - a secondary has none because the VIP is promoter-driven and it was not promoted:
+		//     the system working. Its health is participation, exactly as a witness's is (replicating,
+		//     quorate and up to date is its whole job; there is nothing else to ask it).
+		//     Reporting it unhealthy would leave every correct HA pair permanently degraded in
+		//     the cloud's view, a standing "1 node unhealthy" nobody could act on.
+		//   - a primary has none because whatever should have given it one did not: the node
+		//     the house cannot reach. It stays unhealthy, and must: a primary that reads healthy
+		//     because it is quorate is a zombie.
 		//
-		// Nor does the reverse proxy offer a way out of the distinction: it is a promoter-chain
-		// member, so on a secondary it is not running to answer a /healthz at all.
+		// Nor does the reverse proxy offer a way out: it is a promoter-chain member, so on a
+		// secondary it is not running to answer a /healthz at all.
 		//
-		// ...AND A SECONDARY IS ONLY STANDING BY IF THERE IS SOMEONE TO STAND BY FOR. A lone
-		// anchor beside a diskless witness, on a release whose reverse proxy fails outright, is
-		// demoted by its own OnFailure under a promotion hold; by participation alone it would
-		// then read healthy every cycle while the house is dark (measured). The fact that
-		// separates that node from a pair's standby is the one the OS gate already uses: whether
-		// a peer could take the work. A standby beside a connected, diskful, up-to-date peer is
-		// doing its whole job; a not-Primary anchor with no such peer is a house nobody holds,
-		// and that is the free-tier owner's whole picture, so it must read unhealthy. (A guest
-		// that reports no peers at all falls on the unhealthy side; the alpha ships host and
-		// guest together, so that is not a shape to be soft on.)
+		// And a secondary is only standing by if there is someone to stand by for. A lone anchor
+		// beside a diskless witness, on a release whose reverse proxy fails outright, is demoted
+		// by its own OnFailure under a promotion hold, and by participation alone would then read
+		// healthy every cycle while the house is dark (measured). What separates it from a pair's
+		// standby is what the OS gate already uses: whether a peer could take the work. A standby
+		// beside a connected, diskful, up-to-date peer is doing its whole job; a not-Primary
+		// anchor with no such peer is a house nobody holds, the free-tier owner's whole picture,
+		// so it must read unhealthy. (A guest reporting no peers at all falls on the unhealthy
+		// side; the alpha ships host and guest together, so that is not a shape to be soft on.)
 		st.Healthy = !cl.Serving() && cl.Quorate && cl.UpToDate && cl.PeerCanTakeOver()
 	} else {
 		probe = url
@@ -2348,10 +2294,10 @@ type uploadResult struct {
 
 // mdnsNames adds what the node is publishing to a snapshot -- read when something asks (the
 // controller report, `briard doctor`), not every cycle: nothing the loop decides depends on it.
-// The name this node is REALLY publishing, not the one it was configured with. A read error
-// leaves it empty rather than falling back to cfg.FlockName: echoing the requested name would
-// make a silent conflict-rename permanently invisible, which is the whole failure being
-// closed here. Empty is honest -- "we do not currently know of a published name".
+// The name is the one this node is really publishing, not the one it was configured with: a read
+// error leaves it empty rather than falling back to cfg.FlockName, because echoing the requested
+// name would make a silent conflict-rename permanently invisible, which is the whole failure
+// being closed here. Empty is honest: "we do not currently know of a published name".
 func mdnsNames(ctx context.Context, r statusReader, st *api.NodeStatus) {
 	if name, err := r.MDNSPublished(ctx); err == nil {
 		st.PublishedName = name
@@ -2383,33 +2329,30 @@ func (cfg Config) readVIP(ctx context.Context, r guest.VIPReader) vipAnswer {
 	return vipAnswer{cidr: cidr, err: err}
 }
 
-// hasApp reports whether this node runs anything at all. The shipped state is FALSE — a node
-// is installed before it is given something to run — and it is the "does it run anything" test
-// and nothing more: it says nothing about whether the node has a GUEST. A witness is Diskless; a zero-app anchor has a
-// guest, a closure and an OS the cloud may roll, and conflating the two is the bug this name exists to prevent.
+// hasApp reports whether this node runs anything at all. The shipped state is false (a node is
+// installed before it is given something to run), and it is the "does it run anything" test and
+// nothing more: it says nothing about whether the node has a guest. A witness is Diskless; a
+// zero-app anchor has a guest, a closure and an OS the cloud may roll, and conflating the two is
+// the bug this name exists to prevent.
 func (cfg Config) hasApp() bool { return len(cfg.Apps) > 0 }
 
-// appStatuses is what the node reports for the apps it has INSTALLED at runtime: one
-// entry per app, name plus manifest identity, in cfg.Apps' order (by name, per
-// installedApps).
+// appStatuses is what the node reports for the apps it has installed at runtime: one entry per
+// app, name plus manifest identity, in cfg.Apps' order (by name, per installedApps). A spec with
+// no Manifest is skipped (see the loop for why).
 //
-// A spec with no Manifest is SKIPPED (see the loop for why).
+// The identity asks the guest nothing: it is a property of what was installed (or of what the
+// volume said at promotion, see adoptVolumeApps), not of what the guest happens to answer this
+// second, so it comes off the spec, which also keeps it correct on a node whose guest is briefly
+// unreachable, where a read-through would have blanked the whole set.
 //
-// The IDENTITY asks the guest nothing: it is a property of what was installed (or of what the
-// volume said at promotion, see adoptVolumeApps), not of what the guest happens to answer
-// this second, so it comes off the spec -- which also means it stays correct on a node whose
-// guest is briefly unreachable, where a read-through would have blanked the whole set.
-//
-// The STATE has to ask, because it is the opposite kind of fact -- what the units are doing right
-// now. It is read ONLY on a Primary and only from a live channel; everywhere else
-// the field is left empty, which api.AppStatus.State defines as "does not apply / not known"
-// and explicitly not as "stopped". A Secondary is not supposed to be running anything, and a node
-// whose read failed knows nothing -- reporting either as stopped would make an ordinary standby
-// indistinguishable from a broken primary, which is the same conflation this field exists to
-// undo.
-//
-// A per-app read error leaves that ONE app empty and lets the others report. Losing the
-// whole set because one verb hiccuped is how a real outage gets hidden behind a transient.
+// The state has to ask, because it is the opposite kind of fact: what the units are doing right
+// now. It is read only on a Primary and only from a live channel; everywhere else the field is
+// left empty, which api.AppStatus.State defines as "does not apply / not known" and explicitly
+// not as "stopped". A Secondary is not supposed to be running anything, and a node whose read
+// failed knows nothing; reporting either as stopped would make an ordinary standby
+// indistinguishable from a broken primary, the same conflation this field exists to undo. A
+// per-app read error leaves that one app empty and lets the others report: losing the whole set
+// because one verb hiccuped is how a real outage gets hidden behind a transient.
 func (cfg Config) appStatuses(ctx context.Context, r appStateReader, primary bool) []api.AppStatus {
 	var out []api.AppStatus
 	for _, s := range cfg.Apps {
@@ -2430,20 +2373,17 @@ func (cfg Config) appStatuses(ctx context.Context, r appStateReader, primary boo
 					st.State = api.StateRunning
 				}
 			}
-			// ONLY WHEN IT IS RUNNING. A stopped app is not unhealthy, it is stopped, and
-			// State has already said so; probing it would spend a round trip to learn what we
-			// know and then report the same fact twice under two names. The interesting answer is
-			// the one this makes possible: running AND unhealthy — a container that came up and
-			// does not serve, which every signal we had read as fine.
-			//
-			// An ERROR LEAVES IT EMPTY rather than unhealthy. The guest cannot resolve an app
-			// it has no route for, and a node mid-converge is briefly in exactly that state; a
-			// report of "unhealthy" there would be a false alarm about a healthy household, on a
-			// field whose whole value is that someone acts on it. So does UNKNOWN: an app
-			// our login to it failed for has told us nothing.
-			//
-			// APP HEALTH is the guest's one answer (apps.Health), spelled with this
-			// field's own values, so it is carried rather than translated.
+			// Only when it is running. A stopped app is not unhealthy, it is stopped, and State
+			// has already said so; probing it would spend a round trip to learn what we know and
+			// report the same fact twice under two names. The interesting answer is the one this
+			// makes possible: running and unhealthy, a container that came up and does not serve,
+			// which every signal we had read as fine. An error leaves it empty rather than
+			// unhealthy: the guest cannot resolve an app it has no route for, and a node
+			// mid-converge is briefly in exactly that state, so "unhealthy" there would be a false
+			// alarm about a healthy household, on a field whose whole value is that someone acts
+			// on it. So does unknown: an app our login to it failed for has told us nothing. App
+			// health is the guest's one answer (apps.Health), spelled with this field's own
+			// values, so it is carried rather than translated.
 			if st.State == api.StateRunning {
 				if h, err := r.AppHealthOf(ctx, s.Name); err == nil {
 					st.Health = string(h)
@@ -2459,21 +2399,19 @@ func (cfg Config) appStatuses(ctx context.Context, r appStateReader, primary boo
 // app behind it answer. Narrow interface for DI, not a seam.
 type appStateReader interface {
 	AppActive(ctx context.Context, unit string) (bool, error)
-	// AppHealthOf probes ONE app by name, the guest resolving its address from the
+	// AppHealthOf probes one app by name, the guest resolving its address from the
 	// routing table — the steady-state twin of the install gate, and the only reason
 	// the two can be trusted to be asking about the same address.
 	AppHealthOf(ctx context.Context, app string) (apps.Health, error)
 }
 
-// appLog renders the reported apps for the status line -- "name@identity" per app,
-// which is what a version change looks like from outside, plus "!unhealthy" for one that is
-// RUNNING and not serving.
-//
-// The mark is here rather than only on the cloud wire because a signal that reaches only the cloud
-// is a signal the free tier never gets, and this is the one state nothing else on the node makes
-// visible: the unit is up, the promoter is deliberately not watching it, and the
-// reverse proxy answers for the node. Empty means not asked or not applicable and prints nothing --
-// a standby would otherwise look like a node full of broken apps.
+// appLog renders the reported apps for the status line: "name@identity" per app, which is what a
+// version change looks like from outside, plus "!unhealthy" for one that is running and not
+// serving. The mark is here rather than only on the cloud wire because a signal that reaches only
+// the cloud is a signal the free tier never gets, and this is the one state nothing else on the
+// node makes visible: the unit is up, the promoter is deliberately not watching it, and the
+// reverse proxy answers for the node. Empty means not asked or not applicable and prints
+// nothing; a standby would otherwise look like a node full of broken apps.
 func appLog(svcs []api.AppStatus) string {
 	parts := make([]string, 0, len(svcs))
 	for _, s := range svcs {
@@ -2511,26 +2449,23 @@ func orDash(s string) string {
 	return s
 }
 
-// serviceMAC is the flock-scoped MAC the VIP rides -- the one identity a failover MOVES, which is
-// why it is derived from the FLOCK id rather than the node's (see Config.FlockID). One function
+// serviceMAC is the flock-scoped MAC the VIP rides -- the one identity a failover moves, which is
+// why it is derived from the flock id rather than the node's (see Config.FlockID). One function
 // because two substrates need the same answer for different reasons: macvtap pins it on the
-// host's service-side macvtap at launch, and bridge mode hands it to the GUEST, which builds the device
-// itself. Two derivations would be two chances for the substrates to disagree about
-// who this flock is.
+// host's service-side macvtap at launch, and bridge mode hands it to the guest, which builds the
+// device itself. Two derivations would be two chances for the substrates to disagree about who
+// this flock is.
 func (cfg Config) serviceMAC() string { return deriveMAC(orNode(cfg.FlockID, cfg.Node), "svc") }
 
 // privDev is the guest's name for the private-link NIC, or "" when this substrate has no private
-// link at all.
-//
-// WitnessDev alone is NOT the question, and the difference is a bring-up failure rather than a
-// cosmetic one. WitnessDev defaults to "eth3" unconditionally (config.go), but under the bridge
-// substrate there is no third NIC: one tap is all Windows can express, so the private link does
-// not exist and its jobs live on the shared L2. Sending the guest the NAME of a device that is
-// not there makes it try to bring that device up, which fails, which fails the whole
-// net.configure -- so the node never converges, on the substrate that has no other way to work.
-//
-// The TAP is the honest question: the host end is the thing whose existence decides whether there
-// is a link, and the agent already refuses to route over an absent one (setNodeRoute, vipRouter).
+// link at all. WitnessDev alone is not the question, and the difference is a bring-up failure
+// rather than a cosmetic one: WitnessDev defaults to "eth3" unconditionally (config.go), but under
+// the bridge substrate there is no third NIC (one tap is all Windows can express), so the private
+// link does not exist and its jobs live on the shared L2. Sending the guest the name of a device
+// that is not there makes it try to bring that device up, which fails the whole net.configure, so
+// the node never converges, on the substrate that has no other way to work. The tap is the
+// honest question: the host end is the thing whose existence decides whether there is a link,
+// and the agent already refuses to route over an absent one (setNodeRoute, vipRouter).
 func (cfg Config) privDev() string {
 	if cfg.WitnessTap == "" {
 		return ""
@@ -2540,7 +2475,7 @@ func (cfg Config) privDev() string {
 
 // deriveUUID is the guest's DMI product UUID, a pure function of the node name. systemd
 // initialises /etc/machine-id from the VM's product UUID when the OS disk carries none, so a
-// guest whose OS is disposable is still the SAME machine every boot -- one journal, one DHCP
+// guest whose OS is disposable is still the same machine every boot -- one journal, one DHCP
 // identity -- without a byte of persisted state. Name-based (version 5 bits) so it is visibly
 // derived rather than random; keyed with a prefix so it can never collide with deriveMAC's
 // hash space even though nothing compares the two.
@@ -2552,7 +2487,7 @@ func deriveUUID(node string) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// currentSystem reports the guest RELEASE this node runs (`vm.<date>.<inputs>`), what
+// currentSystem reports the guest release this node runs (`vm.<date>.<inputs>`), what
 // NodeStatus.System carries: the OS moves only by swapping the image, so the host
 // is the authority on which release its guest boots, and the record it rewrites when an image
 // commits (the release's signed manifest, seeded at install) is the truth. Empty for a
