@@ -3,8 +3,11 @@ package guestagent
 import (
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+
+	"briard.io/agent/guestagent/deadman"
 )
 
 // TestVolumePathsMatchGuestImage guards the one cross-language pairing that "shared types live in
@@ -61,4 +64,18 @@ func nixLet(t *testing.T, src, name string) string {
 		t.Fatalf("guest-image config no longer defines %q — the pairing test cannot find it", name)
 	}
 	return m[1]
+}
+
+// TestGatePortMatchesGuestImage pairs the reboot gate's port: the host dials deadman.GatePort, the
+// guest's deadman unit listens on guest-image/disk-image.nix's BRIARD_GATE_ADDR. Drifted, the host
+// reads every gate as unreachable, which it takes as no opinion, so a guest whose reboot would
+// drop the cluster below quorum is rebooted anyway, and nothing fails to say so.
+func TestGatePortMatchesGuestImage(t *testing.T) {
+	raw, err := os.ReadFile("../../guest-image/disk-image.nix")
+	if err != nil {
+		t.Fatalf("read guest disk image: %v", err)
+	}
+	if got, want := nixLet(t, string(raw), "BRIARD_GATE_ADDR"), ":"+strconv.Itoa(deadman.GatePort); got != want {
+		t.Errorf("constant drift: the deadman unit listens on BRIARD_GATE_ADDR = %q but the host dials port %d", got, deadman.GatePort)
+	}
 }

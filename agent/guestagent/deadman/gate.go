@@ -27,7 +27,8 @@ import (
 // path: the address is the node's own, agent-assigned and flock-scoped, so it cannot be a
 // constant here and must not be one anywhere else either -- the node IP is assigned once and
 // travels over the channel. Paired with guest-image/disk-image.nix's BRIARD_GATE_ADDR (":7790"),
-// which the deadman unit listens on; different languages, so no shared import.
+// which the deadman unit listens on; different languages, so no shared import, and
+// TestGatePortMatchesGuestImage pins the two together.
 const GatePort = 7790
 
 // GateAddr is the address the host dials to read a guest's reboot gate: that node's node IP, the
