@@ -20,10 +20,9 @@ import (
 	"briard.io/agent/selfupdate"
 )
 
-// runHost is the default (untagged) build's host path: boot the guest, drive bring-up,
-// observe status. Importing host here (not in main.go) is what once let a `-tags guest` build
-// exclude host and everything it pulls in (platform, net/http, crypto/tls). Config comes
-// from the environment for now; the north-bound shared/api report/config seam is wired here.
+// runHost is the host agent: boot the guest, drive bring-up, observe status (host.Run, which
+// wires everything else), under the config host.ConfigFromEnv reads -- the environment over
+// config.env.
 func runHost(ctx context.Context) error {
 	return host.Run(ctx, host.ConfigFromEnv(), log.Printf)
 }
@@ -35,11 +34,11 @@ func runGuestShutdown(ctx context.Context, qmpSock string) error {
 }
 
 // runFetchInstall downloads + verifies the signed artifact sets of BOTH chains into dest
-// (install.FetchRelease). The channel root, the release to install and the release keyring PEM
-// come from the environment: BRIARD_CHANNEL_URL + BRIARD_RELEASE + BRIARD_KEYRING. It lives
-// here, not main.go; the guest is its own main and never links install/net/http (the trim).
+// (install.FetchRelease). The channel root, the release to install (default stable) and the
+// release keyring PEM come from the environment: BRIARD_CHANNEL_URL + BRIARD_RELEASE +
+// BRIARD_KEYRING.
 //
-// `briard install` fetches through the same function. The flag stays for the installer that
+// `briard-agent install` fetches through the same function. The flag stays for the installer that
 // predates the verb: an install.sh saved to disk heals forward to current stable ("old
 // installer, new artifacts", scripts/publish-release.sh), so a bootstrap must still answer the
 // --report-card / --fetch-install pair that installer calls before laying the files down itself.
@@ -112,9 +111,9 @@ func selfTest(ctx context.Context, path, dir, keyring string) error {
 }
 
 // runUpdate is the update unit's verb: the whole self-update (install.Update), run on the fresh
-// binary the unit just pulled. The layout comes from the env the unit passes through (UPDATE_BASE /
-// UPDATE_RUN_DIR), and the smoke test's accelerator and CPU from the node's own config, so the
-// staged qemu is proven the way this node launches its guest.
+// copy of the target's agent the unit fetched. The layout comes from the env the unit passes
+// through (UPDATE_BASE / UPDATE_RUN_DIR), and the smoke test's accelerator and CPU from the node's
+// own config, so the staged qemu is proven the way this node launches its guest.
 func runUpdate(ctx context.Context, target string) (string, error) {
 	base := os.Getenv("BRIARD_CHANNEL_URL")
 	if base == "" {
@@ -147,9 +146,8 @@ func runUpdate(ctx context.Context, target string) (string, error) {
 
 // runStageManifest writes dir/manifest.json describing the artifacts staged in dir as one
 // release of one chain -- the release pipeline's writer, so the bytes a release publishes are
-// described by the same code that installs them (agent/install.WriteManifest). Host-side for
-// the same reason as runFetchInstall: it lives in the install package, which the guest
-// trim excludes.
+// described by the same code that installs them (agent/install.WriteManifest). Host-side: the
+// guest agent is its own main and never links the install package.
 func runStageManifest(dir, chain, platform, version, system, minBriard, vm, inputs string) error {
 	return install.WriteManifest(dir, chain, platform, version, system, minBriard, vm, inputs)
 }
@@ -157,8 +155,8 @@ func runStageManifest(dir, chain, platform, version, system, minBriard, vm, inpu
 // runInstall is `briard-agent install [-wait]`, the installer's body (host.Install). Without
 // -wait: the machine report card, then the layout -- the card FIRST, so a refusal is truthful
 // when it says nothing was installed and its disk check measures a disk the install has not
-// eaten into. With -wait: the closing, once the installer has enabled the agent's
-// systemd or Windows service (host.InstallWait). Failures read as the installer's own
+// eaten into. With -wait: the closing, once install.sh has enabled the agent's unit
+// (host.InstallWait). Failures read as the installer's own
 // (`briard: ERROR: ...`), since that is whose output they are.
 func runInstall(args []string) int {
 	fs := flag.NewFlagSet("briard install", flag.ContinueOnError)

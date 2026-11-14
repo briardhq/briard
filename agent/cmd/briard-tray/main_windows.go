@@ -617,8 +617,9 @@ func exists(p string) bool {
 // displayName and language are what Home Assistant's first user is created with when the page is
 // opened before anyone has set it up -- `briard open`'s account details, read the Windows way.
 // displayName is this person's display name, the seed of the name on their Briard profile:
-// os/user asks GetUserNameEx(NameDisplay) for the process's own token -- the tray runs as the
-// person -- and falls back to the username, which the dashboard treats as no name.
+// os/user reads the full name of the process's own account -- the tray runs as the person -- from
+// the domain on a domain-joined machine, else the account's own record (NetUserGetInfo), and
+// falls back to the username, which the dashboard treats as no name.
 func displayName() string {
 	u, err := user.Current()
 	if err != nil {

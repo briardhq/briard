@@ -3,11 +3,13 @@
 // drbd-reactor runs at promotion. It is its OWN main so that what the guest links is
 // an import graph, not a build tag: this package imports guestagent and what guestagent needs,
 // and nothing of the host -- no channel fetcher, no self-update layout, no CLI, no report card,
-// no QEMU launcher. `internal/arch` asserts the fence, and the flake hashes exactly this graph
-// to decide when the guest image changed.
+// no QEMU launcher. The host PUSHES this binary, so it is not in the guest image's input hash;
+// that hash covers the baked firmware (agent/cmd/briard-guest-firmware), which internal/arch
+// fences.
 //
-// The argv is the contract the image's units and the pushed bundle share (guest-image/
-// disk-image.nix, configuration.nix, the pushed-binary picker passes it through verbatim):
+// The argv is the contract the guest's units share -- the image's (guest-image/disk-image.nix)
+// and the ones this agent renders (guestagent.WriteUnits); the pushed-binary picker passes it
+// through verbatim:
 //
 //	briard-guest-agent run --guest      serve the host (Type=notify; READY once the port is open)
 //	briard-guest-agent run --deadman    the host-agent watchdog, its own unit
@@ -56,9 +58,9 @@ func main() {
 	os.Exit(2)
 }
 
-// runDaemon is `run --guest` or `run --deadman`: the two long-running modes. There is no default
-// mode here -- the host agent is a different binary -- so a bare `run` is refused rather than
-// guessed.
+// runDaemon is `run --guest`, `run --deadman` or a harness's `run --inbound-listen`: the
+// long-running modes. There is no default mode here -- the host agent is a different binary -- so
+// a bare `run` is refused rather than guessed.
 func runDaemon(args []string) {
 	fs := flag.NewFlagSet("briard-guest-agent run", flag.ExitOnError)
 	guest := fs.Bool("guest", false, "serve the host over the virtio-serial control channel")
@@ -69,8 +71,8 @@ func runDaemon(args []string) {
 	// SIGTERM/SIGINT cancels the context so a `systemctl stop` is a clean shutdown rather than a
 	// kill. Installing this handler removes Go's default "SIGTERM terminates the process": every
 	// path under this context is responsible for noticing cancellation itself, and a path parked
-	// in a blocking syscall notices nothing -- which is why runGuest closes its port and holds a
-	// deadline.
+	// in a blocking syscall notices nothing -- which is why the serve loop closes the port under
+	// its read (guestfirmware.ServeFrames) and runGuest holds a deadline.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -81,7 +83,7 @@ func runDaemon(args []string) {
 	switch {
 	case *deadman:
 		// The deadman runs as its OWN guest unit (briard-deadman), decoupled from the
-		// per-connection guest agent, which crash-loops while the host is down.
+		// per-connection guest agent, which restarts in a loop while the host is down.
 		if err := guestagent.RunDeadman(ctx); err != nil {
 			log.Fatalf("deadman: %v", err)
 		}
@@ -90,19 +92,15 @@ func runDaemon(args []string) {
 			log.Fatalf("guest agent: %v", err)
 		}
 	case *inboundListen:
-		// FOR A GUEST WITH NO HOST, the same accommodation --write-units makes and for
-		// the same reason. In the product the inbound listener runs INSIDE the long-running agent
-		// (runGuest below), which is the whole point of it -- the logic lives where everything it
-		// reasons about lives, rather than in something short-lived beside it. But the agent-less
-		// rigs run no `run --guest` at all (nixosTest/lib.nix says so in as many words: there is
-		// no host on the other end of a control channel), and they are the ONLY rigs that get
-		// Home Assistant running. Without this the channel is unreachable in every test we have,
-		// and an L0 run would prove nothing about it.
+		// FOR A GUEST WITH NO HOST, the same accommodation --write-units makes and for the same
+		// reason. In the product the inbound listener runs INSIDE the long-running agent (runGuest
+		// below), where everything it reasons about lives. But the agent-less rigs run no `run
+		// --guest` at all (nixosTest/lib.nix: there is no host on the other end of a control
+		// channel), and they are the ONLY rigs that get Home Assistant running; without this the
+		// channel is unreachable in every test, and an L0 run would prove nothing about it.
 		//
-		// Nothing in the product invokes this. The harness supplies the trigger the host would
-		// have supplied, and nothing else.
-		// The start evaluator rides along for the same reason: it is the other half of the ring
-		// that lives in the long-running agent.
+		// Nothing in the product invokes this. The start evaluator rides along for the same
+		// reason: it is the other half of the ring that lives in the long-running agent.
 		go guestagent.EvaluateStarts(ctx, guestfirmware.NewOSExecutor())
 		if err := guestagent.ListenInbound(ctx, guestfirmware.NewOSExecutor()); err != nil {
 			log.Fatalf("inbound channel: %v", err)
@@ -113,12 +111,13 @@ func runDaemon(args []string) {
 	}
 }
 
-// runInternal is the flag-shaped surface a unit file invokes: converge-at-promotion, in the
-// guest. briard-apps.service runs these as a promoter CHAIN MEMBER between the
-// data mount and the VIP, so the exit code is load-bearing: a non-zero ExecStart fails the whole
-// promotion, the node never claims the VIP, and a primary with no address is already reported
-// unhealthy. Converge failing is a node that cannot serve, and it must say so rather than
-// promote into a broken state. (AN APP that fails to start is a different thing and never
+// runInternal is the flag-shaped surface: what the guest's units invoke (converge, storage, the
+// app hooks) and the helpers below that only a harness with no host invokes.
+//
+// --converge is converge-at-promotion: briard-apps.service runs it as a promoter CHAIN MEMBER
+// after the data mount and the VIP, so the exit code is load-bearing: a non-zero ExecStart fails
+// the whole promotion. Converge failing is a node that cannot serve, and it must say so rather
+// than promote into a broken state. (AN APP that fails to start is a different thing and never
 // reaches here; Converge logs it and returns nil.)
 func runInternal(args []string) {
 	fs := flag.NewFlagSet("briard-guest-agent", flag.ExitOnError)
@@ -186,9 +185,9 @@ func runInternal(args []string) {
 	}
 
 	if *appStarting != "" {
-		// THE GENERIC HOOK: every catalogued app gets a member at container start,
-		// which is the only boundary visible from outside the container. Home Assistant adds its
-		// OWN restarts through the inbound channel; everything else has just this.
+		// THE GENERIC HOOK: every catalogued app gets a member at container start (each container
+		// that mounts its data), the only boundary visible from outside the container. Home
+		// Assistant adds its OWN restarts through the inbound channel; everything else has just this.
 		//
 		// THE RENDERED LINE CARRIES NO TOOL PROFILE, deliberately: the renderer is a pure function
 		// of the manifest and teaching it about the image would give it a second thing to know. The
@@ -198,7 +197,7 @@ func runInternal(args []string) {
 		// ⚠️ NEVER FAILS THE START, which is why the rendered line carries systemd's `-` prefix as
 		// well: a household losing its app because a snapshot could not be taken is the wrong
 		// trade, and the belt-and-braces is deliberate because `-` alone hides WHY. The exit code
-		// is 0 either way; the journal carries the reason.
+		// is 0 either way; the journal carries the reason (agent/quadlet renders the line).
 		detail, err := guestagent.TakeStartMember(ctx, guestfirmware.NewOSExecutor(), *appStarting)
 		if err != nil {
 			log.Printf("app-starting %s: %v (starting anyway)", *appStarting, err)
@@ -222,7 +221,7 @@ func runInternal(args []string) {
 
 	if *dbCheck || *dbRestore != "" {
 		// FOR A GUEST WITH NO HOST, like --clock above: the product reaches these through the
-		// host's verbs, and the agent-less rigs that run a real Home Assistant through here. The
+		// host's verbs, and the agent-less rigs that run a real Home Assistant reach them here. The
 		// report goes to stdout as JSON, for the harness to read; the log goes to stderr.
 		x := guestfirmware.NewOSExecutor()
 		if *dbRestore != "" {
@@ -296,7 +295,7 @@ func runInternal(args []string) {
 	}
 
 	if *converge || *convergeStop {
-		// Converge's skip list is DROPPED here on purpose: this is drbd-reactor's call, and a
+		// Converge's skip list is DROPPED here on purpose: this is drbd-reactor's call, and an
 		// app it could not prepare must not fail the unit -- briard-apps is a chain
 		// member, so exiting non-zero would take the promotion down over one app's
 		// packaging. Converge has already logged which one and declined to start it. The install
@@ -326,8 +325,8 @@ func runInternal(args []string) {
 // timing depends on this process actually ending.
 func runGuest(ctx context.Context) error {
 	x := guestfirmware.NewOSExecutor()
-	// THE UNITS THIS BINARY OWNS, BEFORE ANYTHING ELSE: the guest image no longer
-	// defines them, so nothing this agent is about to do -- the trial verdict below, the host's
+	// THE UNITS THIS BINARY OWNS, BEFORE ANYTHING ELSE: the guest image does not
+	// define them, so nothing this agent is about to do -- the trial verdict below, the host's
 	// first bring-up verb after the port -- can name a unit until it has been written. Ordering
 	// it ahead of the trial is also what makes a trial honest: a staged agent is judged on the
 	// units IT writes, not on the ones its predecessor left behind.
@@ -342,7 +341,8 @@ func runGuest(ctx context.Context) error {
 	// ITS OWN GOROUTINE, and a failure to bind is logged rather than returned. The agent's job is
 	// serving the host; an app's own snapshot notifications are worth strictly less than that,
 	// and a node that would not serve its household because a socket path was busy is the wrong
-	// trade. Same posture the wrapper takes with `|| true`, one level up.
+	// trade. Same posture Home Assistant's wrapper (agent/hass/run.sh) takes with `|| true`, one
+	// level up.
 	go func() {
 		if err := guestagent.ListenInbound(ctx, x); err != nil {
 			log.Printf("inbound channel: %v; apps' own restarts will not be snapshotted", err)
@@ -371,7 +371,7 @@ func runGuest(ctx context.Context) error {
 	// binary had left to prove, and NOTHING HAS BEEN SERVED YET. The host's gate is the port, not
 	// READY -- so anything committed after the first verb is a set the units bring-up starts
 	// cannot exec (briard-node-storage names the committed path directly). BinCommit says why in
-	// full, with the run that measured it.
+	// full.
 	guestfirmware.BinCommit(ctx, x, log.Printf)
 
 	go func() {
@@ -392,7 +392,7 @@ func runGuest(ctx context.Context) error {
 	// A clean EOF: the host disconnected (a host-agent restart, a re-adopt). Hand the port back
 	// so qemu buffers the next host request instead of losing it, then pause before exiting --
 	// with the host end gone for good the reopened port returns EOF at once, and without this
-	// pause Restart=always spun ~48 times in 30 s.
+	// pause Restart=always restarts it ~48 times in 30 s.
 	conn.Close()
 	select {
 	case <-ctx.Done():

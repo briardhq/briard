@@ -1,7 +1,8 @@
-// Command witness-forwarder is the anchor side of the DRBD cloud-witness link: it
-// listens on a localhost address (the anchor's DRBD dials it as if it were the witness peer) and
-// tunnels each connection over mTLS to the cloud witness-proxy, presenting the anchor's client
-// cert. So the anchor's DRBD kernel speaks only plaintext-localhost; all WAN exposure is this hop.
+// Command witness-forwarder is the anchor side of the DRBD cloud-witness link, run on the host
+// (platform.StartForwarder): it listens on the witness peer's mesh address, which the guest's DRBD
+// dials over its private witness link to the host (host bringUpWitness), and tunnels each
+// connection over mTLS to the cloud witness-proxy, presenting the anchor's client cert. So DRBD's
+// kernel socket speaks plaintext only over that trusted link; all WAN exposure is this hop.
 //
 //	witness-forwarder -addr 127.0.0.1:7789 -target witness.example:7788 \
 //	    -cert n1.crt -key n1.key -ca briard-ca.crt -servername witness.test
