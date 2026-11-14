@@ -520,10 +520,10 @@ type statusReader interface {
 	// rides on. It is here rather than derived from Healthy because Healthy is the
 	// reverse proxy at the VIP -- which answers 200 on a node running no apps at all.
 	AppActive(ctx context.Context, unit string) (bool, error)
-	// MDNSPublished reads the name avahi ACTUALLY published, for exactly the reason VIP reads the
-	// address off the interface: the value we asked for is not evidence of the value in force.
-	// avahi conflict-renames on a collision silently, so two flocks in one house can even SWAP
-	// names across a reboot with nothing telling anyone. "" when this node publishes none.
+	// MDNSPublished reads the name the reverse proxy's responder ACTUALLY serves (its
+	// mdns.published record), for exactly the reason VIP reads the address off the interface:
+	// the value we asked for is not evidence of the value in force. "" when this node publishes
+	// none.
 	MDNSPublished(ctx context.Context) (string, error)
 	// MDNSOther reads the address of another briard the reverse proxy heard answering the shared
 	// `briard.local` at bring-up; "" when none. The one fact behind the doctor's two-households
