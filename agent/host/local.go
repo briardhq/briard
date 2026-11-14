@@ -11,7 +11,7 @@
 // sees little production use cannot rot: it is a different doorway onto a permanently hot path,
 // exercised by every cloud-driven install.
 //
-// Root-only by construction: the socket is created 0600 and the agent runs as root. On Windows the
+// Root-only by construction: the socket is set to 0600 and the agent runs as root. On Windows the
 // socket's DACL is the same gate -- connect needs write on the socket file there too -- and admits
 // SYSTEM, Administrators and the install user's account alone (restrictDoor).
 package host

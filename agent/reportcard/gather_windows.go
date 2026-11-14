@@ -74,7 +74,8 @@ var procSendARP = windows.NewLazySystemDLL("iphlpapi.dll").NewProc("SendARP")
 
 // AddressAnswers reports whether something on the LAN answers ARP for cidr's address. SendARP asks
 // the wire itself: for an address with no route of its own it ARPs for the address on the
-// default-route adapter (measured), so no temporary route is needed the way Linux needs one.
+// default-route adapter (measured), so no caller needs the temporary route Linux's
+// subnet.LANProbe adds around it.
 func AddressAnswers(cidr string) bool {
 	ip, _, err := net.ParseCIDR(cidr)
 	if err != nil || ip.To4() == nil {

@@ -146,7 +146,7 @@ func TakeClockMember(ctx context.Context, x Executor, app string, at time.Time) 
 }
 
 // quiesceApp asks the registry for this app's way of holding still, reading the manifest
-// on the volume for how to reach it. A nil release with a reason is the ordinary answer for a
+// on the volume for how to reach it. A nil release with a reason is the ordinary answer for an
 // app that has none, and for one that could not be asked.
 func quiesceApp(ctx context.Context, x Executor, app string) (func(context.Context) (bool, error), string) {
 	raw, err := x.ReadFile(manifestPath(app))

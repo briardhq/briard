@@ -280,7 +280,7 @@ func (c *cappedLog) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// elevateHint is the refusal when it does not.
+// elevateHint is the refusal when elevated is false.
 const elevateHint = "run as administrator"
 
 // elevated reports whether this process holds an administrator's full token -- what an install or

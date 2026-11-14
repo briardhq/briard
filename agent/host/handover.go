@@ -39,7 +39,7 @@ const fsSyncTimeout = 60 * time.Second
 // evictBudget bounds the eviction itself, generously for the reason the number looks arbitrary:
 // the evict stops the apps and unmounts, and an unmount syncs. The pre-eviction flush above
 // usually means that writeback owes little (the sequencer sends a `sync` directive ahead of the
-// handover, and this function's own FsSync catches the settle window), but "usually" is not a
+// handover, and applyHandover's own FsSync catches the settle window), but "usually" is not a
 // bound, and a write-heavy app on a slow device is exactly when a handover matters most.
 //
 // It must exist at all: without it this call runs on the caller's unbounded context, on the

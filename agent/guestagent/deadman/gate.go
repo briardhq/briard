@@ -10,7 +10,7 @@ import (
 )
 
 // The gate, served outward. The host holds the same reflex from outside the VM
-// (host/guestrecover.go), and it fires on the death of the control channel, so every question
+// (agent/host/guestrecover.go), and it fires on the death of the control channel, so every question
 // that would gate its decision is one it can no longer ask: it cannot read DRBD (in the guest),
 // ask the guest agent (the thing that stopped answering), or, under the default macvtap
 // substrate, reach the VIP. So the deadman answers for it: this process already computes

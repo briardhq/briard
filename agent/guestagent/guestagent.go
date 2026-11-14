@@ -293,18 +293,18 @@ const (
 	//
 	// The naming rule is a property, not a style. Every other verb here works on any app
 	// (app.health probes whatever URL it is handed, app.converge renders whatever the volume
-	// says); these two do not: each knows one app's API, returns that app's own shape, and refuses
+	// says); these do not: each knows one app's API, returns that app's own shape, and refuses
 	// every other name. A verb set is a capability list, so it has to say what it grants: a generic
 	// `readiness` would promise a power the guest never has, while `app.home-assistant.readiness`
 	// grants exactly the one it does. The app in the name rather than in a request field leaves no
 	// name to steer from the wire and no unknown-name branch to write.
 	//
-	// Both are in the guest because both halves are: the credential is on this node's tmpfs and the
-	// app listens on the guest's loopback, which under macvtap the host cannot reach at all. Both
-	// are still dumb hands: how to talk to an app is agent/hass's and agent/mosquitto's, what the
-	// answer means is the host's (agent/host/readiness.go).
+	// The two gate verbs are in the guest because both halves are: the credential is on this
+	// node's tmpfs and the app listens on the guest's loopback, which under macvtap the host
+	// cannot reach at all. Both are still dumb hands: how to talk to an app is agent/hass's and
+	// agent/mosquitto's, what the answer means is the host's (agent/host/readiness.go).
 	//
-	// Neither is guarded by a capability check, which is the alpha policy, not an oversight: the
+	// None is guarded by a capability check, which is the alpha policy, not an oversight: the
 	// agent and the guest closure are published together and the alpha reinstalls rather than
 	// upgrading in place, so no node has a guest older than its agent. A guest that does not know
 	// one of these is a mismatched pair, a fault worth seeing as one, not a configuration to
@@ -1766,15 +1766,16 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// reply to a host-originated packet would go out the wrong door.
 			//
 			// ⚠️ The neighbour entry is why this link can be unnumbered at all, found by capture,
-			// not by reasoning. This NIC has no address, so an ARP for the host has no source
-			// address on the outgoing interface, and arp_announce=2 makes the kernel borrow one
-			// from another NIC: eth0's slirp address, 10.0.2.15, which is also what every other
-			// qemu user-net picks. The request goes out as "who-has <host> tell 10.0.2.15", the
-			// host sees an ARP request apparently from its own address, and never answers. Pinning
-			// the MAC means we never ask. The link is symmetric: neither end can ARP usefully
-			// across an unnumbered wire, so both ends pin. The host's mirror is
-			// platform.SetNodeRoute, which pins for a different reason: our node IP lives on eth1
-			// while its request would arrive on this NIC, which arp_ignore=1 refuses.
+			// not by reasoning. When this NIC has no address (PrivCIDR below is optional), an ARP
+			// for the host has no source address on the outgoing interface, and arp_announce=2
+			// makes the kernel borrow one from another NIC: eth0's slirp address, 10.0.2.15,
+			// which is also what every other qemu user-net picks. The request goes out as
+			// "who-has <host> tell 10.0.2.15", the host sees an ARP request apparently from its
+			// own address, and never answers. Pinning the MAC means we never ask. The link is
+			// symmetric: neither end can ARP usefully across an unnumbered wire, so both ends
+			// pin. The host's mirror is platform.SetNodeRoute, which pins for a different reason:
+			// our node IP lives on eth1 while its request would arrive on this NIC, which
+			// arp_ignore=1 refuses.
 			if req.PrivDev != "" && req.PrivHostIP != "" {
 				if err := run("ip", "link", "set", "dev", req.PrivDev, "up"); err != nil {
 					return nil, err
@@ -1858,7 +1859,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// teaches the switch the wrong port), while a link-down on the DRBD NIC would take
 			// replication with it. Only the agent knows which is which; the guest bakes no
 			// positional knowledge (briard-vip-down, vipDown, in guest-image/configuration.nix).
-			// Inside the VIPDev branch on purpose: a node with no VIP device is a witness, which
+			// Gated on VIPDev on purpose: a node with no VIP device is a witness, which
 			// has no promoter and never starts briard-vip, and writing this file for it would hand
 			// a unit that must not run a required EnvironmentFile it now satisfies.
 			if req.VIPDev != "" && req.Dev != "" {

@@ -5,7 +5,7 @@
 // RebootAllowed says going down cannot cost anyone else their quorum.
 //
 // The guest goes first, deliberately. The host holds the same reflex from outside
-// (host/guestrecover.go) on a longer window, so the graceful in-guest reboot gets its chance
+// (agent/host/guestrecover.go) on a longer window, so the graceful in-guest reboot gets its chance
 // before the host resorts to power-cycling the VM. The other order would spend a clean demote —
 // and the DRBD metadata that comes with it — on every incident where the kernel was still fine
 // and only the agent had wedged.

@@ -490,7 +490,7 @@ func (u *osUpgrade) resolved(ctx context.Context, n notify.Notifier, r *guestRec
 // the owner's phone.
 //
 // The caller supplies the whole situation sentence rather than a fragment after a fixed lead: "no
-// answer from the guest for <window>" is true on the wedged path and false on the crash-loop one,
+// answer from the VM for <window>" is true on the wedged path and false on the crash-loop one,
 // where the guest was answering seconds ago and nothing waited ten minutes for it. An owner-facing
 // sentence that is sometimes untrue is worse than a vaguer one that is always true.
 //
@@ -657,7 +657,7 @@ func (u *osUpgrade) RescueGuest(ctx context.Context) error {
 // RebootGuest stops the guest cleanly and brings it back up, so the bring-up re-reads what was
 // just recorded: a topology transition's membership (node-storage then runs the spec × disk
 // table), a `config set vip`, a newly leased address. It is the recovery ladder's power cycle,
-// called on purpose, and on this type rather than beside it for the reason RescueGuest is: a
+// called on purpose, and on this type rather than beside it for the reason recover is: a
 // second owner of the VM+channel+Manager swap would be a second way to do it.
 func (u *osUpgrade) RebootGuest(ctx context.Context) error {
 	_, err := u.rebootGuest(ctx)

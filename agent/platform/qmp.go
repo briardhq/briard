@@ -99,7 +99,7 @@ func dialQMP(ctx context.Context, path string) (*qmpConn, error) {
 	return q, nil
 }
 
-// Execute sends one command and returns its result. Asynchronous events (SHUTDOWN,
+// execute sends one command and returns its result. Asynchronous events (SHUTDOWN,
 // POWERDOWN, RESET, …) can arrive at any time, including between the command and its reply,
 // so they are skipped rather than mistaken for one -- the single subtlety of the protocol.
 func (q *qmpConn) execute(cmd string, args any) (json.RawMessage, error) {
@@ -464,7 +464,7 @@ func DebugConsolePath(qmpSock string) string {
 }
 
 // DebugArm points the guest's debug console (ttyS1) at a unix socket, on a guest that is already
-// running, and returns the path QEMU is now serving. The backend moves, not the port: QEMU cannot
+// running; QEMU listens on consoleSock. The backend moves, not the port: QEMU cannot
 // hot-add a serial port at all (`device_add isa-serial` is refused outright with "Bus 'isa.0' does
 // not support hotplugging", measured on the machine type qemuArgs asks for), but it will change a
 // chardev under a live frontend, which is why serialArgs gives every guest the port up front with

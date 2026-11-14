@@ -28,7 +28,7 @@ var (
 // Do nothing, "sleeps" for sleep, hibernate or shut down, "" when there is no lid or no answer.
 func lidAction() string {
 	// SYSTEM_POWER_CAPABILITIES opens with three BOOLEANs: power button, sleep button, lid. The
-	// buffer is larger than the struct, so only the leading byte the answer needs is ours to read.
+	// buffer is larger than the struct, so only the third byte, the lid's, is ours to read.
 	var caps [256]byte
 	if ok, _, _ := procGetPwrCapabilities.Call(uintptr(unsafe.Pointer(&caps[0]))); ok == 0 || caps[2] == 0 {
 		return ""

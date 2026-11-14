@@ -105,7 +105,7 @@ func tool(name string) string { return filepath.Join(toolsBin(), name) }
 // UNIT_ATOM_PROPAGATE_STOP on UNIT_REQUIRED_BY). So the promoter target's default `Requires=` on
 // its members would demote the node on every crash: `Restart=` enqueues its auto-restart with job
 // mode JOB_RESTART_DEPENDENCIES, which propagates a TRY_RESTART up to the target, which stops
-// drbd-promote@ (PartOf) -- measured, taking the resource away from a live peer in 2 of 5
+// drbd-promote@ (PartOf) -- measured, handing the resource to the peer in 2 of 5
 // reverse-proxy crashes. With `target-as = Wants` (agent/drbd/config.go) nothing upstream reacts
 // to a member at all, which is right for a crash and wrong for a member that has genuinely given
 // up.

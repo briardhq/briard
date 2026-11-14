@@ -305,7 +305,7 @@ func ConfigFromEnv() Config {
 // parsePeers parses the PEERS env into the full DRBD connection mesh. It is the same value on
 // every node (DRBD identifies self by matching the guest hostname to an `on <name>` stanza), so
 // NodeID is the entry's position and the ordering must be identical fleet-wide. Each entry is
-// "name@host[:port]/disk": host defaults to port 7789; disk "none" (or empty) is a diskless
+// "name@host[:port]/disk": port defaults to 7789; disk "none" (or empty) is a diskless
 // witness, anything else is a diskful node. The field is a flag, not a path: a diskful node's
 // backing is one value fleet-wide (drbd.DataDevice, the LV the guest's seam unit builds), so a
 // mesh string that could name a different device per node would only be a way to disagree with

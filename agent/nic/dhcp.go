@@ -13,10 +13,10 @@ import (
 
 // The flock's lease, asked for by the host. On a single-anchor substrate (an ipvtap child of a
 // wireless station, the Windows bridge) the guest's frames leave with the host's L2 source, so a
-// router that keys leases on the source, or on a chaddr the substrate rewrote to it, hands the
-// guest the host's own address. A router keys on the payload's chaddr, never the frame's source
-// (every relay and every bridged VM rests on that), so the host asks in a frame of its own whose
-// chaddr is the flock's MAC, and the guest is handed the answer.
+// router that reads a chaddr the substrate rewrote to it hands the guest the host's own address.
+// A router keys on the payload's chaddr, never the frame's source (every relay and every bridged
+// VM rests on that), so the host asks in a frame of its own whose chaddr is the flock's MAC, and
+// the guest is handed the answer.
 //
 // One identity: chaddr = the flock MAC and client-id 01:<flock MAC>, the same pair the guest's own
 // client presents on a wired substrate. Chaddr-keyed and client-id-keyed routers both resolve it

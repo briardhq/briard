@@ -567,8 +567,8 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	// install or a failed sample keep it silently: S1 must never revert a household's app on the
 	// strength of its own telemetry breaking.
 	//
-	// ⚠️ A Hold currently reaches only the log. On the free tier that is nobody (the surface it
-	// needs is not built yet); the rollback window and the user remain the backstop until then.
+	// ⚠️ A Hold reaches only the log. On the free tier that is nobody (no surface carries it
+	// further); the rollback window and the user remain the backstop.
 	if err := gate.Judge(ctx, readiness); err != nil {
 		logf("app install %s failed the readiness gate (%v); reverting", m.Name, err)
 		return revert(err)

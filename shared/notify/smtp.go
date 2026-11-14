@@ -60,7 +60,7 @@ func Send(ctx context.Context, cfg SMTPConfig, to, subject, body string) error {
 		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, host)
 	}
 	msg := message(from, to, subject, body, time.Now())
-	// Smtp.SendMail is blocking and not context-aware; run it off the loop so the caller's
+	// smtp.SendMail is blocking and not context-aware; run it off the loop so the caller's
 	// timeout ctx bounds the alert path (a slow MTA must not wedge the per-tenant alert tick).
 	// The buffered channel lets a late send drain without leaking the goroutine forever.
 	errc := make(chan error, 1)
