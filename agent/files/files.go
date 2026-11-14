@@ -7,7 +7,8 @@
 // licence to hold this, as it is for Home Assistant's control channel and mosquitto's config.
 //
 // WHAT IT SEES IS A VIEW, NOT THE TIERS. The guest agent keeps /run/briard/files-view as one
-// folder per app holding the directories that app's manifest mounts, each a bind of the real one,
+// folder per app holding the directories that app's manifest mounts outside its cache tier, each
+// a bind of the real one (agent/guestagent/filesview.go),
 // and Files mounts that tree once with slave propagation, so a bind the agent makes or replaces
 // later reaches the running container. Binding each app directory into Files' own unit instead
 // would go stale the moment a restore swapped the area underneath it -- the bind keeps the old,

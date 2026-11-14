@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	// MaxManifestSize bounds the download before anything is parsed or verified. An app
-	// manifest is a short JSON document; 1 MiB is vast headroom and still a hard ceiling.
+	// maxManifestSize bounds every catalog download (the list, its signature, a version file)
+	// before anything is parsed or verified. Each is a short document; 1 MiB is vast headroom
+	// and still a hard ceiling.
 	maxManifestSize = 1 << 20
 	sigSuffix       = ".sig"
 )
@@ -33,7 +34,7 @@ type Verifier interface {
 
 // Catalog fetches signed app manifests from the published catalog (a signed,
 // versioned, static, mirrorable artifact at a dumb URL, the apt-mirror shape rather than an
-// API). URL is the signed LIST a node reads (`…/catalog/latest.json`, served from briard.io);
+// API). URL is the signed LIST a node reads (`…/catalog/latest.json`, served from get.briard.io);
 // every app version a list names is a file beside it, `<app>/<version>.json`. Client is
 // optional.
 //
@@ -42,9 +43,10 @@ type Verifier interface {
 // everything down to the image bytes, and every version ever published stays where it is,
 // readable by whoever still needs it, without being signed again.
 //
-// Operation never depends on our liveness: a fetched manifest is kept on the DRBD volume as the
-// app's identity, so an installed app keeps running, failing over and rolling back with
-// the catalog unreachable. This type is only ever on the INSTALL path, never the failover path.
+// Operation never depends on our liveness: a fetched manifest is kept on the replicated volume as
+// the app's identity, so an installed app keeps running, failing over and rolling back with
+// the catalog unreachable. This type is only on the install path and the catalog's own watcher
+// (agent/host/catalog.go), never the failover path.
 type Catalog struct {
 	URL      string
 	Verifier Verifier

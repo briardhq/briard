@@ -17,7 +17,7 @@ import (
 // with a detached signature over the same bytes made by the release key; rigs read `dev.json`,
 // the same shape. It is the only signed document in the catalog: a line names an app's version
 // file beside it, `<name>/<version>.json`, by the sha256 of its exact bytes, so a mirror that
-// cannot forge the list can forge neither the list nor any manifest it names.
+// cannot forge the signature can forge neither the list nor any manifest it names.
 //
 // THE LIST SAYS WHICH APPS ARE INSTALLABLE. An entry marked available names its version and
 // identity; the rest are listed so a household can ask for them. Omission is the LESS capable
@@ -32,8 +32,8 @@ import (
 // where an SVG's styles and scripts cannot reach the page, and it is checked here as well so a
 // catalog cannot ship markup that a less careful renderer would inline.
 const (
-	// maxIndexSize bounds the whole document. Forty apps with inline vector icons weigh well
-	// under 100 KB; the cap leaves room without letting a broken publish hand a node a
+	// maxIndexSize bounds the whole document. Some forty apps with inline vector icons weigh
+	// about 120 KB; the cap leaves room without letting a broken publish hand a node a
 	// megabyte of prose.
 	maxIndexSize = 300 << 10
 	// maxIconSize bounds one decoded icon. Vector marks from a curated collection run 1 to 12

@@ -10,10 +10,10 @@
 // was made for readiness assessors (agent/host/readiness.go), for the same reason.
 //
 // THE DEFAULT IS ALWAYS NOTHING. An unknown name gets no binds, no preparation and the plain
-// HTTP reach line -- precisely what every app got before any of this existed. Adding an
-// entry here is how an app gets more; nothing here can take anything away.
+// HTTP reach line -- exactly what its manifest describes. Adding an entry here is how an app
+// gets more; nothing here can take anything away.
 //
-// It is deliberately a switch and not a plugin system. Two entries is not a framework, the set
+// It is deliberately a switch and not a plugin system. Four entries is not a framework, the set
 // is small by design, and a table keyed on strings that anyone can extend is the shape that
 // turns a curated catalog into an expression language.
 package apps
@@ -46,19 +46,13 @@ type Executor interface {
 
 // THE NODE-SIDE LAYOUT: one directory per app, one socket for the agent.
 //
-// ⚠️ THE INBOUND CHANNEL STARTED AS A SOCKET PER APP, and the swap is worth recording because
-// the first version was a reasonable-looking mistake. Per-app sockets made a caller's identity
-// a property of the transport -- structurally unforgeable, which is attractive when the caller is
-// a workload. But it also made the listener set a function of the APP LIST, and the only thing
-// that knows that list is converge, which runs in two different processes (the host's verb and
-// drbd-reactor's one-shot). That forced systemd to own the binds, which forced template units, a
-// converge step to start instances, socket activation, fd inheritance and an idle-exit handler --
-// and left the logic in a short-lived process while everything it reasons about lives in the
-// long-running agent. A great deal of machinery downstream of one decision.
-//
-// A token buys the same property for a fraction of it: minted per app at converge, written
-// where only that app's container can read it, resolved by the agent at request time -- which
-// also means the agent needs no advance knowledge of the app list at all.
+// ⚠️ ONE SOCKET AND A PER-APP TOKEN, NOT A SOCKET PER APP. Per-app sockets would make a caller's
+// identity a property of the transport, but they make the listener set a function of the APP
+// LIST, which only converge knows -- and that forces systemd to own the binds, with all the
+// machinery that brings (agent/guestagent/inbound.go has the full trade). A token buys the same
+// property for a fraction of it: minted per app at converge, written where only that app's
+// container can read it, resolved by the agent at request time -- so the agent needs no advance
+// knowledge of the app list at all.
 //
 // It lives HERE rather than in agent/hass because it is not one app's knowledge, and not in
 // agent/guestagent because that package imports this one and the renderer needs the paths.
@@ -66,12 +60,9 @@ type Executor interface {
 // ONE DIRECTORY PER APP, NAMED FOR IT, mounted read-only as /briard inside that app's
 // container and holding everything the product hands that app. The token is simply one of
 // the things in it, which is why it costs no mount of its own — the same way Home Assistant's
-// control token, its planted integration and its s6 wrapper already ride that directory.
-//
-// The convention was already half here: agent/mosquitto's dir is /run/briard/mosquitto, and only
-// agent/hass's was named for its Go package rather than its app. Regularising it is what
-// makes "the DIRECTORY name is the mapping" true, which is what lets the agent resolve a caller
-// by reading /run/briard rather than keeping a table.
+// control token, its planted integration and its s6 wrapper ride that directory. "The DIRECTORY
+// name is the mapping" is what lets the agent resolve a caller by reading /run/briard rather
+// than keeping a table.
 const (
 	defaultRunDir = "/run/briard"
 	// AppMount is where an app's own directory appears inside its container.
@@ -87,8 +78,8 @@ const (
 	// makes the runtime create that destination under an already-mounted parent: EROFS here, the
 	// container never starts, and podman has left a root-owned directory where a socket belongs
 	// — which poisons the path for every later attempt, the exact failure Prepare's own comment
-	// describes. It WAS written as /briard/inbound.sock; TestNoBindNestsInsideAnother is what
-	// keeps the class out rather than this comment.
+	// describes. /briard/inbound.sock looks right and is exactly this bug;
+	// TestNoBindNestsInsideAnother is what keeps the class out rather than this comment.
 	InboundMount = "/briard-agent.sock"
 )
 
@@ -141,11 +132,10 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 		out = mealie.Volumes(m, c)
 	}
 	// THE APP'S OWN DIRECTORY, read-only, and it is the product's general shape rather than
-	// one app's arrangement -- which is why it lives here and not in agent/hass, where the
-	// same mount used to be spelled out. Everything briard hands an app goes in it: Home
-	// Assistant's control token, its planted integration, its s6 wrapper, and the inbound token
-	// for any app that has one. An app needing none of that gets no directory and no
-	// mount.
+	// one app's arrangement -- which is why it lives here and not in agent/hass. Everything
+	// briard hands an app goes in it: Home Assistant's control token, its planted integration,
+	// its s6 wrapper, Files' config, and the inbound token for any app that has one. An app
+	// needing none of that gets no directory and no mount.
 	if NeedsAppDir(m, c) {
 		out = append(out, AppDir(m.Name)+":"+AppMount+":ro")
 	}
@@ -203,7 +193,7 @@ func Quiesce(ctx context.Context, x Executor, m manifest.Manifest, port int, con
 // report, the app-update gate and the history alike. Node health (api.NodeStatus.Healthy) and the
 // S1 readiness gate are different questions with their own names.
 //
-// FOUR VALUES, each one plain fact (owner, 2026-09-27): healthy; unhealthy; STARTING, which means
+// FOUR VALUES, each one plain fact: healthy; unhealthy; STARTING, which means
 // still booting and nothing else; and unknown, which means the app has told us nothing — our
 // login to it failing, or it stopping. Starting is not a kind of unknown: an app still starting
 // once HealthGate has passed is not working (Settled).
@@ -225,8 +215,8 @@ const (
 const HealthGate = 5 * time.Minute
 
 // Settled is the verdict once HealthGate has passed since the start: an app still starting is
-// unhealthy, and every other answer stands. The gate reverts on unhealthy and never on unknown
-// (owner, 2026-09-27), and the history records the same verdict the gate acts on.
+// unhealthy, and every other answer stands. The gate reverts on unhealthy and never on unknown,
+// and the history records the same verdict the gate acts on.
 func (h Health) Settled() Health {
 	if h == Starting {
 		return Unhealthy
@@ -381,10 +371,11 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	// promoting into an app it was never told about, and every guest reboot -- which is
 	// exactly the set of moments the mount it lands in is (re)made.
 	//
-	// IT ROTATES PER CONVERGE, and that is the same custody the HA control token already has:
-	// /run is tmpfs, so a value cannot outlive the boot that minted it, and a token read out of
-	// a backup or a snapshot is worth nothing. Consumers know it from t=0 -- the container is
-	// started after this -- so there is no return channel and nothing to refresh.
+	// IT ROTATES PER CONVERGE, where the HA control token is kept for the boot: both sides read
+	// the file at every call (agent/hass/notify.py, the agent's resolveCaller), so a fresh value
+	// needs no restart, no return channel and nothing to refresh. /run is tmpfs, so a value
+	// cannot outlive the boot that minted it, and a token read out of a backup or a snapshot is
+	// worth nothing.
 	if WantsInboundAny(m) {
 		if err := mintInboundToken(ctx, x, m.Name); err != nil {
 			return fmt.Errorf("apps: mint %s's inbound token: %w", m.Name, err)
@@ -472,20 +463,18 @@ func GateHeader(m manifest.Manifest) string {
 // Reach is the sentence `briard app install` ends on: where the household now finds the
 // thing it just installed.
 //
-// LEAD WITH THE NAME, the doctrine install.sh already prints under -- the name stays true if the
-// address moves, and under DHCP the VIP is acquired in-guest, so a plausible-but-wrong address is
-// the failure this function exists to end. No published name (a witness, or FLOCK_NAME unset) means no
-// URL to promise: say the port and stop.
+// LEAD WITH THE NAME, the doctrine the installer's hand-over prints under -- the name stays true
+// if the address moves, and under DHCP the VIP is acquired in-guest, so a plausible-but-wrong
+// address is the failure this function exists to end. No published name (a witness, or
+// FLOCK_NAME unset) means no URL to promise: say the port and stop.
 //
-// THE NAME IS THE APP'S OWN: `briard-<flock>-<app>.local`, on the reverse
-// proxy's :80, rather than the flock name and the app's port. That is the whole user-facing
-// payoff of the routing table -- a port in the address was the shape of a node that could only
-// reach an app by going around the reverse proxy.
+// THE NAME IS THE APP'S OWN, on the reverse proxy's :80, rather than the flock name and the
+// app's port: the bare alias `briard-<app>.local` is printed, and only when the flock-scoped
+// `briard-<flock>-<app>.local` exists. That is the whole user-facing payoff of the routing table.
 //
-// The default assumes the manifest's port is the app's HTTP entry point, which is true of every
-// app whose entry point IS its HTTP endpoint. mosquitto is the first entry where it is not: what it
-// publishes for the household is MQTT on 1883, while the manifest's port is the management
-// endpoint the liveness floor probes, bound to the guest's loopback. Telling a user to open that
+// The default assumes the manifest's port is the app's HTTP entry point. mosquitto is where it
+// is not: what it publishes for the household is MQTT on 1883, while the manifest's port is the
+// management endpoint the liveness floor probes, bound inside its pod. Telling a user to open that
 // in a browser would hand them a dead link for an app that is working perfectly -- and no
 // reverse proxy can front it either, which is why its name resolves but does not serve.
 func Reach(m manifest.Manifest, flock string) string {
@@ -552,7 +541,7 @@ func protocol(m manifest.Manifest) string {
 // FALSE FOR mosquitto, and this is a security property rather than a nicety. Its manifest `port`
 // is the broker's **management API**, which `mosquitto.conf` binds inside the container on
 // purpose, with the reason written at the listener: "it is still not exposed, because nothing
-// outside the guest has any business reading it". The reverse proxy runs INSIDE that guest, so
+// outside this guest has any business reading it". The reverse proxy runs INSIDE that guest, so
 // routing to it by name would republish that endpoint on the LAN — undoing a deliberate bind
 // through a mechanism that never mentions it. What a household actually reaches on the broker is
 // MQTT on 1883, which no reverse proxy can serve anyway.
@@ -563,15 +552,15 @@ func protocol(m manifest.Manifest) string {
 // the REVERSE PROXY may serve, never what the node may ask.
 //
 // The keying is the same as everything else in this package — the catalog name, product-side, code
-// we ship and review. A manifest cannot say it, which is the point: a publisher must not be able to
-// hand itself the reverse proxy. That changes when a manifest can declare its own networking and
-// exposure, and this becomes the fallback for entries that say nothing.
+// we ship and review. A manifest can declare its networking and its published ports, but never
+// this, which is the point: a publisher must not be able to hand itself the reverse proxy.
 func Fronted(m manifest.Manifest) bool {
 	return m.Name != mosquitto.Name
 }
 
 // Announce is what this app wants said about itself on the household LAN: the mDNS
-// service records converge writes into the routing table for the guest's publisher to claim.
+// service records converge writes into the routing table for the reverse proxy's mDNS responder
+// to answer.
 //
 // THE DEFAULT IS SILENCE, like everything else here. An app that answers HTTP is already
 // reachable by the name the reverse proxy serves it under, and browsing types it into a category it
@@ -603,7 +592,7 @@ func Announce(m manifest.Manifest, flock string) []routes.Announcement {
 }
 
 // WantsInboundAny reports whether any container of an app wants the inbound channel -- what
-// converge asks before starting the socket unit, which is per APP rather than per container.
+// Prepare asks before minting the app's inbound token, which is per APP rather than per container.
 func WantsInboundAny(m manifest.Manifest) bool {
 	for _, c := range m.Containers {
 		if WantsInbound(m, c) {

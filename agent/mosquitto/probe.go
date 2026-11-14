@@ -49,7 +49,7 @@ const ProbeTopic = "briard/probe"
 // connect" two different findings rather than one ambiguous failure.
 const versionTopic = "$SYS/broker/version"
 
-// probeWait bounds each subscribe. A retained message is delivered on subscribe, so this is not a
+// probeWait bounds each subscribe, in seconds (mosquitto_sub's -W). A retained message is delivered on subscribe, so this is not a
 // poll interval — it is how long to wait for a broker that is not going to answer. Short, because
 // it is spent twice inside an install window that has to finish or revert.
 const probeWait = 5

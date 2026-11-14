@@ -14,18 +14,15 @@
 //     not model is not merely refused but UNSAYABLE. The discipline this demands: model only what
 //     catalogued apps need, expand deliberately, or it becomes a compose reimplementation.
 //
-//     Host networking is the one capability that IS sayable, and modelling it is what made this
-//     property true rather than aspirational: it was named here as unsayable while the renderer
-//     granted it to every app unconditionally, so the doctrine described a schema the code did
-//     not implement. `Network` now carries it, silence means private (omission yields the LESS
-//     capable shape, which is the property working as stated), and asking for host is a deliberate
-//     act recorded in the identity hash.
+//     Host networking is the one capability that IS sayable (`Network`): silence means private,
+//     so omission yields the LESS capable shape, and asking for host is a deliberate act recorded
+//     in the identity hash.
 //
 //     ⚠️ THE TEST FOR THE NEXT FIELD, because the risk here is not one bad field
 //     but a plausible fourth, fifth and sixth: a field earns its place only if a CATALOGUED app
 //     cannot be operated correctly without it, AND the alternative is worse than the field. Host
 //     networking passes both — Home Assistant cannot find devices without it, and the alternative
-//     was granting it to everyone forever. "Some app might want it", "compose has it", and
+//     is granting it to every app. "Some app might want it", "compose has it", and
 //     "it would be more flexible" are not arguments; the answer to those is a curated catalog.
 //
 //     Validate() is the second half of that boundary. A renderer writes INI, so every string
@@ -34,10 +31,9 @@
 //     schema closed by omission. Names are checked as slugs for the same reason — they become
 //     path elements and unit names, where "../" is arbitrary file write as root.
 //
-//  3. Its CONTENT HASH IS THE APP IDENTITY, replacing the single OCI digest that
-//     .payload-image held. That transitively pins the whole container set, preserves the
-//     content-addressed / node-independent property, and drops into the existing
-//     upgrade path unchanged: a new manifest is a new identity -> announce -> snapshot ->
+//  3. Its CONTENT HASH IS THE APP IDENTITY. That transitively pins the whole container set,
+//     keeps the identity content-addressed and node-independent, and gives the upgrade path
+//     its shape: a new manifest is a new identity -> announce -> snapshot ->
 //     switch -> health-gate -> roll back to the previous manifest, already on the volume.
 package manifest
 
@@ -72,9 +68,8 @@ var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // prevent.
 //
 // The optional `:<port>` after the first component is load-bearing, not decoration: a registry on
-// a non-default port (`registry.example.com:5000/foo@sha256:…`) is an ordinary deployment, and an
-// earlier version of this pattern had no `:` at all and silently refused every one of them. The
-// integration test caught it by running exactly that shape.
+// a non-default port (`registry.example.com:5000/foo@sha256:…`) is an ordinary deployment, and a
+// pattern without it silently refuses every one of them.
 var digestRef = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*(:[0-9]{1,5})?(/[a-zA-Z0-9._-]+)*@sha256:[a-f0-9]{64}$`)
 
 // ErrInvalid wraps every schema violation, so a caller can refuse a whole manifest on one check.
@@ -103,15 +98,16 @@ type Manifest struct {
 	// two to four times (Home Assistant 2026.7.1: 622 MB down, 2.49 GB on disk). Two scalars
 	// rather than a layer table: the digest above already commits to every layer, and podman's
 	// own store knows each finished layer's size; the totals are the only numbers a node cannot
-	// learn until the pull is over. Both or neither; zero means the entry predates the fields
-	// (no bar, no gate).
+	// learn until the pull is over. Size also bounds each image pull (quadlet.PullTimeout).
+	// Both or neither; zero means unmeasured (no bar, no gate, the default pull bound).
 	Size          int64 `json:"size,omitempty"`
 	InstalledSize int64 `json:"installedSize,omitempty"`
 	// MinMemoryMB is the memory the app needs to run, in MB: its settled footprint with room
 	// for its own startup, not its worst case. The node boots its guest with at least the system's
 	// share plus every installed app's minimum, and grows the guest to it before installing
-	// one more -- anything above it is found at runtime, by growth. Zero means the entry does not
-	// say (the app counts for nothing until it needs more).
+	// one more -- anything above it is found at runtime, by growth. It also sizes each
+	// container's memory limit (agent/quadlet). Zero means the entry does not say (the app counts
+	// for nothing until it needs more, and has no limit).
 	MinMemoryMB int `json:"minMemoryMB,omitempty"`
 	// Network is the pod's networking mode: "host" or "private". SILENCE MEANS PRIVATE, which is
 	// property 2 in the small: omission yields the LESS capable shape, so a manifest that says
@@ -129,13 +125,8 @@ type Manifest struct {
 	// devices on the household LAN, and the HASS periphery skews the same way (ESPHome, Music
 	// Assistant). A broker, a media server or a photo app wants a private pod and to be reached
 	// through the reverse proxy or a published port — which is why the default is the one that does
-	// not hand a container the household's LAN.
-	//
-	// ⚠️ THE FIELD IS WHY THIS SCHEMA'S SECOND PROPERTY IS TRUE AGAIN. The package doc has always
-	// named host networking as a capability the schema makes UNSAYABLE, while the renderer granted
-	// it to every app unconditionally. Modelling it is what makes the doctrine describe the
-	// code: the manifest's silence now MEANS something, and saying "host" is a deliberate,
-	// reviewable act recorded in the identity hash.
+	// not hand a container the household's LAN, and saying "host" is a deliberate, reviewable act
+	// recorded in the identity hash.
 	Network string `json:"network,omitempty"`
 	// Ports are the container ports this app PUBLISHES to the household, each reachable at the
 	// node's service address on the same number. A list rather than a host:container map: for every
@@ -143,9 +134,9 @@ type Manifest struct {
 	// expressing the identity function.
 	//
 	// THE CATALOG PICKS THEM, which makes this a node-level allocation decided in a published
-	// document — safe because the catalog is curated and hand-checked for conflicts, which is the
-	// same argument that refused a runtime port-collision pre-flight. Two entries
-	// wanting one port is a review failure, not a runtime one.
+	// document — safe because the catalog is curated and hand-checked for conflicts, which is also
+	// why there is no runtime port-collision pre-flight. Two entries wanting one port is a review
+	// failure, not a runtime one.
 	//
 	// It is how an app that CANNOT be fronted reaches anyone. A reverse proxy can serve HTTP and
 	// nothing else, so mosquitto's MQTT on 1883 has no route and never will; publishing is the
@@ -177,8 +168,8 @@ type Container struct {
 	// Exactly one container carries it, because "is the app serving?" must have one answer.
 	Primary bool `json:"primary,omitempty"`
 	// Port is the primary container's listening port, and HealthPath its readiness path. Both
-	// are meaningful only on the primary; the reverse proxy's -backend/-backend-health are
-	// built from them.
+	// are meaningful only on the primary; the routing table's route and health URL are built
+	// from them (agent/guestagent's routesFor).
 	Port       int    `json:"port,omitempty"`
 	HealthPath string `json:"healthPath,omitempty"`
 }
@@ -325,8 +316,8 @@ func (m Manifest) Validate() error {
 			return fmt.Errorf("%w: container name %q is not a slug", ErrInvalid, c.Name)
 		}
 		if seen[c.Name] {
-			// Duplicate names would collide on both the unit name and the data subdirectory,
-			// so two containers would silently share one directory.
+			// Duplicate names would collide on the unit and container name
+			// (quadlet.ContainerName), so one container would silently replace the other.
 			return fmt.Errorf("%w: duplicate container name %q", ErrInvalid, c.Name)
 		}
 		seen[c.Name] = true
@@ -404,13 +395,12 @@ func safeValue(what, v string) error {
 // catalog entry and a node cannot disagree about what a manifest meant.
 //
 // NetworkPrivate is also what an ABSENT field means, and both spellings are accepted: the explicit
-// word is clearer in a catalog entry a human reviews, while silence keeps every manifest written
-// before the field existed valid and private.
+// word is clearer in a catalog entry a human reviews, and silence means the same.
 const (
 	NetworkHost    = "host"
 	NetworkPrivate = "private"
 )
 
 // HostNetwork reports whether this app's pod shares the guest's network namespace. The one
-// question the renderer asks, so that "" and "private" cannot be handled differently by accident.
+// question every reader asks (the renderer, converge, agent/mosquitto), so that "" and "private" cannot be handled differently by accident.
 func (m Manifest) HostNetwork() bool { return m.Network == NetworkHost }

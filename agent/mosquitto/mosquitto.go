@@ -8,13 +8,11 @@
 // -- so SOMETHING has to put a config file in front of it. Doing that from the product, keyed on
 // the catalog name, is the same call the readiness registry made and rests on the
 // same fact: the catalog is curated precisely so Briard can encode how each app is operated.
-// agent/hass is the first instance of this shape; this is the second.
 //
 // WHAT IT DOES NOT DO, which is most of it. The broker needs no control channel, no credential
 // and nothing read out of its image: Prepare writes one file, and the app is otherwise the
-// plain shape the manifest describes. It gets the liveness floor and no readiness assessor
-// (agent/host/readiness.go), because "the broker is answering" is the whole of what a broker
-// being ready means -- a differential gate would have nothing to differ.
+// plain shape the manifest describes. Its readiness assessor (agent/host/readiness.go) writes a
+// token into the broker's retained state and reads it back (probe.go).
 package mosquitto
 
 import (
@@ -51,8 +49,7 @@ const MQTTPort = 1883
 // Protocol is what a client must SPEAK to the published port, and it is product knowledge for the
 // same reason MQTTPort and ServiceType are: a manifest names ports and never protocols, so without
 // it the install verb can only say "point clients at <name>:1883" -- an address with no
-// instruction attached to it. A later change generalised that sentence off mosquitto and the word went
-// with it; tier 4 caught the loss.
+// instruction attached to it.
 const Protocol = "MQTT"
 
 // ServiceType is the mDNS service type a broker is found under, and it is product knowledge for
@@ -63,8 +60,8 @@ const Protocol = "MQTT"
 // in eclipse-mosquitto -- the daemon has no notion of announcing its own existence -- so a broker
 // sitting on a household LAN is invisible to the Tasmota- and ESPHome-class devices that look
 // `_mqtt._tcp` up precisely in order to find one. The announcement therefore has to come from
-// outside the container, which for us costs nothing: the guest already runs avahi and
-// already publishes the app's name from the routing table.
+// outside the container, which for us costs nothing: the reverse proxy's mDNS responder already
+// answers for the app's name from the routing table (agent/apps.Announce).
 //
 // `_mqtt._tcp` is the registered type for plain MQTT (`_secure-mqtt._tcp` is the TLS one, which
 // this broker does not speak).
@@ -88,9 +85,9 @@ const (
 //go:embed mosquitto.conf
 var confSource string
 
-// Executor is the guest-side command runner. Structurally identical to agent/hass's, and
-// deliberately its own: a package that needs two verbs should not import another app's
-// interface to name them.
+// Executor is the guest-side command runner. Structurally identical to agent/hass's and
+// agent/apps', and deliberately its own: an app package should not import another app's
+// interface to name its verbs.
 type Executor interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 	WriteFile(path string, data []byte) error
@@ -106,14 +103,6 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	return []string{confPath + ":" + containerConf + ":ro"}
 }
 
-// Prepare materialises the config on this node. Called by converge before the container starts,
-// on every node that promotes -- the installer, the survivor that was never told about this
-// app, and every guest reboot.
-//
-// A FAILURE HERE COSTS THIS APP AND NOT THE NODE: converge skips an app it could not
-// prepare and starts the rest (agent/guestagent/converge.go). Skipping is also what keeps podman
-// from creating the missing bind source as a root-owned DIRECTORY over the container's config
-// path, which no later Prepare could fix.
 // bindToken is the placeholder mosquitto.conf carries for the management listener's address, and
 // substituting it is why Prepare takes the manifest rather than just the node.
 //
@@ -121,11 +110,9 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 // constant in the file. Under a PRIVATE pod, 0.0.0.0 is that pod's namespace -- the guest reaches
 // the management API across the pod network, and the LAN cannot, because only `ports` are
 // published and this is not one of them. Under HOST networking the pod IS the guest, so 0.0.0.0
-// would be every interface the household can see.
-//
-// It also removes an ordering hazard rather than merely expressing a preference: a config flipped
-// to 0.0.0.0 one commit before the network mode would publish the management API to the LAN for
-// exactly that long. Derived from the manifest, the two cannot be out of step in either direction.
+// would be every interface the household can see. Derived from the manifest, the bind and the
+// network mode can never be changed separately, so the management API is never on the LAN even
+// for a moment.
 const bindToken = "@BIND@"
 
 func bindAddress(m manifest.Manifest) string {
@@ -135,6 +122,14 @@ func bindAddress(m manifest.Manifest) string {
 	return "0.0.0.0"
 }
 
+// Prepare materialises the config on this node. Called by converge before the container starts,
+// on every node that promotes -- the installer, the survivor that was never told about this
+// app, and every guest reboot.
+//
+// A FAILURE HERE COSTS THIS APP AND NOT THE NODE: converge skips an app it could not
+// prepare and starts the rest (agent/guestagent/converge.go). Skipping is also what keeps podman
+// from creating the missing bind source as a root-owned DIRECTORY over the container's config
+// path, which no later Prepare could fix.
 func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	if m.Name != Name {
 		return nil
@@ -144,10 +139,8 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	}
 	// The token is the contract between this function and the embedded file; if the file stops
 	// carrying it, the broker would silently listen wherever the literal left behind says.
-	//
-	// CHECKED BEFORE THE REPLACE, because that is the half that actually catches it: a Replace of a
-	// token that is not there is a silent NO-OP, so a check only afterwards catches a SECOND
-	// placeholder and never a missing one -- which is precisely the case this paragraph describes.
+	// CHECKED BEFORE THE REPLACE, because a Replace of a token that is not there is a silent
+	// NO-OP: the check afterwards catches only a SECOND placeholder, never a missing one.
 	if !strings.Contains(confSource, bindToken) {
 		return fmt.Errorf("mosquitto: the config template no longer carries %s", bindToken)
 	}
