@@ -1,32 +1,32 @@
-# An install INTERRUPTED INSIDE ITS HEALTH GATE is undone at the agent's next start, from the
-# volume alone.
+# An install interrupted inside its health gate is undone at the next start of the agent, from
+# the volume alone.
 #
-# An install has to put the new manifest on the volume before its gate decides, so for the
-# gate's whole window the volume holds a version nothing has accepted. It holds it STAGED, beside
-# the accepted manifest, with the rollback point that undoes its data (agent/guestagent/staging.go)
-# -- so an installer that dies in that window leaves nothing that only its memory knew. This rig
-# kills one there, with SIGKILL, on the worst shape there is: an upgrade to a version that has
-# already POISONED the app's data and never becomes healthy. The agent that systemd starts in
-# its place must find the staged install, put the data back from the recorded point, discard the
-# stage and converge to the version the volume accepted -- the same undo a failed gate runs.
+# An install must put the new manifest on the volume before its gate decides, so for the whole
+# gate window the volume holds a version nothing has accepted. It holds it staged, beside the
+# accepted manifest, with the rollback point that undoes its data (agent/guestagent/staging.go),
+# so an installer that dies in that window leaves nothing that only its memory knew. This rig
+# SIGKILLs one there, on the worst shape there is: an upgrade to a version that has already
+# poisoned the app data and never becomes healthy. The agent systemd starts in its place must
+# find the staged install, put the data back from the recorded point, discard the stage and
+# converge to the version the volume accepted: the same undo a failed gate runs.
 #
-# FAILABLE BOTH WAYS. Before the kill the rig asserts the stage and the rollback point are on the
+# Failable both ways: before the kill the rig asserts the stage and the rollback point are on the
 # volume and the data is poisoned, so a pass cannot come from an install that never got that far;
-# after it, the poison must be gone, the stage gone, the accepted manifest the old version and the
+# after it, the poison and the stage must be gone, the accepted manifest the old version and the
 # app healthy again.
 #
-# AND THE QUOTA TREE, on the same volume, because this is the rig where the real agent both
-# installs an app and restores its data by swap. Every subvolume the product made must be born
-# into the tree (the app's area in each tier, the area the undo put back), the
-# volume must be in simple-quota mode, and a limit on the app's group must stop ROOT with full
-# capabilities -- after the swap, which is when a limit held on the subvolume itself would
-# have reset. Each assertion proves itself live: the write the limit stops goes through once
-# `quota_override` is set, and the tree check flags a stray subvolume made without `-i`.
+# The quota tree too, on the same volume, since this is the rig where the real agent both
+# installs an app and restores its data by swap: every subvolume the product made must be born
+# into the tree (the app area in each tier, the area the undo put back), the volume must be in
+# simple-quota mode, and a limit on the app group must stop root with full capabilities after
+# the swap, which is when a limit held on the subvolume itself would have reset. Each assertion
+# proves itself live: the write the limit stops goes through once `quota_override` is set, and
+# the tree check flags a stray subvolume made without `-i`.
 #
-# AND THE OTHER TIERS, since the fixture mounts one of each: the undo empties the app's cache (a
-# newer version's cache beside older data is how a downgrade breaks an app) and leaves its
-# unversioned area; the Storage card counts the unversioned area as data and the cache apart; and
-# the card's Clear empties the cache and starts the app again on the new one.
+# And the other tiers, since the fixture mounts one of each: the undo empties the app cache (a
+# cache from a newer version beside older data is how a downgrade breaks an app) and leaves its
+# unversioned area; the Storage card counts the unversioned area as data and the cache apart;
+# and the Clear on the card empties the cache and starts the app again on the new one.
 { pkgs, guestDisk, agent, netWrap, dressBase, fixture }:
 pkgs.testers.runNixOSTest {
   name = "agent-install-undo";
@@ -42,7 +42,7 @@ pkgs.testers.runNixOSTest {
       virtualisation.qemu.options = [ "-cpu" "host" ];
       environment.systemPackages = [ pkgs.qemu agent pkgs.iproute2 pkgs.curl pkgs.darkhttpd pkgs.socat ];
 
-      # A REAL systemd service, so SIGKILL is a crash systemd restarts -- the shape a power cut of
+      # A real systemd service, so SIGKILL is a crash systemd restarts -- the shape a power cut of
       # the agent alone takes, and the one an installed node is in.
       systemd.services.briard-agent = {
         description = "Briard host agent (install-undo proof)";
@@ -129,7 +129,7 @@ pkgs.testers.runNixOSTest {
         staging = [f for f in ls.group(1).split() if f.endswith((".json", ".json.next", ".rollback"))]
         return staging, int(ticks.group(1) or 0)
 
-    # === THE GOOD VERSION, installed and committed: one accepted manifest, nothing staged. ===
+    # === The good version, installed and committed: one accepted manifest, nothing staged. ===
     rc, out = host.execute(f"briard-agent app install {svc} 2>&1")
     print(f"install v0: rc={rc}\n{out}")
     assert rc == 0, f"installing the good version failed (rc={rc}):\n{out}"
@@ -160,7 +160,7 @@ pkgs.testers.runNixOSTest {
     guest(f"echo newer > {cache}/cache/stale; head -c 4194304 /dev/urandom > {unversioned}/keep/kept.bin; sync -f /var/lib/briard; echo D\"\"ONE")
     cache_before = rootid(cache)
 
-    # === THE BROKEN UPGRADE, killed inside its gate. ===
+    # === The broken upgrade, killed inside its gate. ===
     publish("${fixture}/variants/bad/catalog")
     # From here only: the good install already logged the same "waiting for health" line.
     before = host.succeed("journalctl -u briard-agent -n1 --show-cursor | sed -n 's/^-- cursor: //p'").strip()
@@ -183,7 +183,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("systemctl kill -s KILL briard-agent")
     print("agent killed inside the gate")
 
-    # === THE AGENT SYSTEMD STARTS IN ITS PLACE UNDOES IT. ===
+    # === The agent systemd starts in its place undoes it. ===
     try:
         host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{cursor}' | grep -q 'undo {svc}: back on what the volume accepted'", timeout=600)
     finally:
@@ -204,7 +204,7 @@ pkgs.testers.runNixOSTest {
     assert rootid(cache) != cache_before, "the undo did not make the cache again"
     print("the undo emptied the cache and kept the unversioned area")
 
-    # === THE QUOTA TREE. ===
+    # === The quota tree. ===
     import hashlib
 
     def group(tier, app):
@@ -250,7 +250,7 @@ pkgs.testers.runNixOSTest {
     assert groups[data_group][1] == [aggregate(1)], f"{data_group} is under {groups[data_group][1]}"
     assert groups[files_group][1] == [aggregate(2)], f"{files_group} is under {groups[files_group][1]}"
 
-    # === THE FILES TIER'S TICK: the allocation rule's cap, the valve, the warning. ===
+    # === The files tier tick: the allocation rule's cap, the valve, the warning. ===
     # The real agent's tick, which runs at its start and every five minutes after; a restart is
     # how this rig asks for one now. The volume is 3 GB, so the rule leaves a cap a test can fill.
     def last_tick(after, want, timeout=900):
@@ -306,11 +306,11 @@ pkgs.testers.runNixOSTest {
     assert "short=false" in line, f"a fresh install is short: {line}"
     assert "alert open files-storage-short" not in host.succeed("journalctl -u briard-agent -o cat"), "a fresh install warned"
 
-    # === WHAT THE APP STORES, as its page's Storage card asks it: the real agent relays it, the
-    # guest walks the real volume with compsize. 32 MiB of text in the live area first, which zstd
-    # shrinks many times over: du would call it 32 MiB, and on the disk it is a fraction of that.
-    # Beside it the 4 MiB kept in the unversioned area, counted as data, and 2 MiB in the cache,
-    # said apart and in neither the data nor its history.
+    # === What the app stores, as the Storage card on its page asks it: the real agent relays it,
+    # the guest walks the real volume with compsize. First 32 MiB of text in the live area, which
+    # zstd shrinks many times over (du would call it 32 MiB; on the disk it is a fraction), beside
+    # the 4 MiB kept in the unversioned area, counted as data, and 2 MiB in the cache, said apart
+    # and in neither the data nor its history.
     import json, time
     text = f"/var/lib/briard/data/{svc}/storage-text"
     guest(f'yes "the storage card reads the extent tree" | head -c 33554432 > {text}; head -c 2097152 /dev/urandom > {cache}/cache/blob; sync -f {text}; echo D""ONE', wait=8)
@@ -343,9 +343,9 @@ pkgs.testers.runNixOSTest {
     assert m and (dat["members"], fil["members"]) == (int(m.group(1)), int(m.group(2))), f"the card counts {dat['members']}/{fil['members']} snapshots:\n{out}"
     guest(f"rm -f {text}; sync -f /var/lib/briard; echo D\"\"ONE")
 
-    # THE CARD'S CLEAR, through the real agent: the app stopped, its cache emptied and made again,
-    # the app started again on it -- a new start of its container, whose bind source exists or
-    # podman would refuse it, serving again.
+    # The Clear on the card, through the real agent: the app stopped, its cache emptied and made
+    # again, the app started again on it -- a new start of its container, whose bind source
+    # exists or podman would refuse it, serving again.
     def started():
         out = guest(f'echo S""TART=$(systemctl show -p ActiveEnterTimestampMonotonic --value briard-{svc}-${fixture.container}.service)')
         m = re.search(r"START=(\d+)", out)
@@ -424,7 +424,7 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds(f"journalctl -u briard-agent -o cat --after-cursor='{after}' | grep -q 'alert open files-storage-short'", timeout=60)
     print("the files tier is capped by the rule, its valve sheds the oldest history, and at the floor it warns")
 
-    # === UNINSTALL, AND INSTALLING AGAIN, through the real agent. The data and the files are kept
+    # === Uninstall, and installing again, through the real agent. The data and the files are kept
     # as copies named for the uninstall, and everything else of the app goes: every area, every
     # other copy, the manifest, the running app. Installing it again puts back the data the app
     # wrote and the household's file -- from the kept copy, not the catalog, which still offers

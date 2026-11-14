@@ -1,32 +1,30 @@
-# The free-local install on a WIRELESS station: the ipvtap substrate, over real 802.11 framing.
-#
-# A pure delta over install-macvtap.nix, which owns the mode-independent chain. What this proves:
-#   1. THE SUBSTRATE IS DERIVED FROM THE DEVICE. Nothing tells the install it is on Wi-Fi: the
-#      host's default route is on wlan0, a genuine 802.11 station, so the selector picks it and the
-#      agent builds ipvtap children on it. The report card ADMITS it, yellow, with the reason.
-#   2. THE ACCESS POINT IS REAL. mac80211_hwsim radios, hostapd as the access point and
-#      wpa_supplicant on the host's station. The access point carries one MAC per station by
-#      itself; nothing here imitates that rule. A control on the same radio shows it: a macvlan
-#      child (a MAC of its own) cannot reach the router, an ipvlan child (the station's MAC) can.
-#   3. THE FLOCK HOLDS ITS OWN LEASE BEHIND THE HOST'S MAC, from a router that keys leases on
-#      chaddr alone (dnsmasq --dhcp-ignore-clid, the shape of an ISP router). The host asks for it
-#      under the flock's chaddr from the station's L2 source, and hands it to the guest, whose own
+# The free-local install on a wireless station: the ipvtap substrate, over real 802.11 framing.
+# A pure delta over install-macvtap.nix, which owns the mode-independent chain. It proves:
+#   1. The substrate is derived from the device. Nothing tells the install it is on Wi-Fi: the
+#      host default route is on wlan0, a genuine 802.11 station, so the selector picks it and the
+#      agent builds ipvtap children on it. The report card admits it, yellow, with the reason.
+#   2. The access point is real: mac80211_hwsim radios, hostapd as the access point,
+#      wpa_supplicant on the host station. The access point carries one MAC per station by
+#      itself (nothing here imitates that rule), as a control on the same radio shows: a macvlan
+#      child (a MAC of its own) cannot reach the router, an ipvlan child (the station MAC) can.
+#   3. The flock holds its own lease behind the host MAC, from a router that keys leases on
+#      chaddr alone (dnsmasq --dhcp-ignore-clid, the shape of an ISP router). The host asks under
+#      the flock chaddr from the station L2 source and hands the lease to the guest, whose own
 #      DHCP client never runs on this substrate.
-#   4. THE COPY WORKS: the household reaches the guest at its VIP, and the lease RENEWS -- by
+#   4. The copy works: the household reaches the guest at its VIP, and the lease renews, by
 #      INIT-REBOOT from the host, whose broadcast ACK needs nothing copied.
-#   5. THE HOST STAYS ON ITS LAN, and reaches its guest over the private link.
+#   5. The host stays on its LAN and reaches its guest over the private link.
 #
-# With `refuse`, as install-wifi-refuse, the router leases only machines it knows (dnsmasq
-# --dhcp-ignore=tag:!known, the station's MAC known), so it leases the flock's chaddr nothing.
-# That proves the refusal end to end -- the installer ends on the agent's words, nothing is copied,
-# the host keeps its LAN, the doctor says why -- and then the remedy those words name:
-# `briard config set vip`, and the named address serves.
+# With `refuse` (install-wifi-refuse) the router leases only machines it knows (dnsmasq
+# --dhcp-ignore=tag:!known, the station MAC known), so the flock chaddr gets nothing. That proves
+# the refusal end to end (the installer ends on the words of the agent, nothing is copied, the
+# host keeps its LAN, the doctor says why), then the remedy those words name: `briard config set
+# vip`, and the named address serves.
 #
 # The household (router, access point, a client) lives in a network namespace inside the one VM,
 # holding the second radio: hwsim radios share one medium, so a second VM would hear nothing.
-#
 # What a radio here cannot say, and a real access point must: real drivers and firmware, and an
-# access point that proxy-ARPs for its stations. The host's DHCP client here is dhcpcd.
+# access point that proxy-ARPs for its stations. The host DHCP client here is dhcpcd.
 #
 # Heavy (a nested guest boot on the bundled qemu), rides the `install` nightly tag.
 # Run: nix build .#tests.install-wifi -L (or .#tests.install-wifi-refuse)
@@ -49,7 +47,7 @@ let
     cp ${guestDisk}/nixos.qcow2 "$out/nixos.qcow2"
   '';
   installScript = ../scripts/install.sh;
-  # An OPEN network: the access point's one-MAC-per-station rule is the same with or without a
+  # An open network: the access point's one-MAC-per-station rule is the same with or without a
   # passphrase, and a passphrase in the tree is a secret a scanner cannot tell from a real one.
   ssid = "briard-test";
   hostapdConf = pkgs.writeText "hostapd.conf" ''
@@ -82,7 +80,7 @@ pkgs.testers.runNixOSTest {
         interfaces = [ "wlan0" ];
         networks.${ssid} = { };
       };
-      # ⚠️ THE DEFAULT ROUTE IS THE ASSERTION: it is what makes the selector pick wlan0, and so
+      # ⚠️ The default route is the assertion: it is what makes the selector pick wlan0, and so
       # what derives the substrate. It comes from the household's router, by DHCP, as at home.
       networking.interfaces.wlan0.useDHCP = true;
       environment.systemPackages = [
@@ -95,14 +93,14 @@ pkgs.testers.runNixOSTest {
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")  # nested KVM present in L1 (the report card gates on it)
 
-    # --- THE HOUSEHOLD: router + access point + a client, in their own namespace, on radio 2 ---
+    # --- The household: router + access point + a client, in their own namespace, on radio 2 ---
     host.succeed("ip netns add lan && ip -n lan link set lo up")
     phy = host.succeed("cat /sys/class/net/wlan1/phy80211/name").strip()
     host.succeed(f"iw phy {phy} set netns name lan")
     host.succeed("ip -n lan addr add 192.168.7.1/24 dev wlan1")
     host.succeed("ip netns exec lan hostapd -B -P /run/lan-hostapd.pid ${hostapdConf}")
     # A two-minute lease (dnsmasq's floor), so a renewal falls inside the test: T1 is at one minute.
-    # THE ROUTER IS THE FORK between the two tests. Both key leases on chaddr alone, ignoring
+    # The router is the fork between the two tests. Both key leases on chaddr alone, ignoring
     # client-ids as an ISP router does. The refusing one also leases only machines it knows, and
     # it knows only the station -- so it leases the flock's chaddr nothing.
     station_mac = host.succeed("cat /sys/class/net/wlan0/address").strip()
@@ -125,7 +123,7 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"ip netns exec lan ping -c1 -W2 {host_ip}")
     print(f"host on the household's Wi-Fi at {host_ip}, station {station_mac}")
 
-    # --- THE CONTROL PAIR, on the same radio, before briard exists ---
+    # --- The control pair, on the same radio, before briard exists ---
     # A child with a MAC of its own (macvlan: what a macvtap gives the guest) cannot reach the
     # router through the access point. A child on the station's MAC (ipvlan: what ipvtap gives
     # it) can. Both have a static address and a namespace of their own, so neither is the host.
@@ -146,22 +144,22 @@ pkgs.testers.runNixOSTest {
     host.succeed("ip -n ctl-ipv link del ctlipv && ip netns del ctl-ipv")
     print("control: a second MAC dies at the access point; the station's MAC carries an ipvlan child")
 
-    # --- THE INSTALL: one command, no BRIARD_NIC, no BRIARD_VIP_ADDR -- the VIP is DHCP's ---
+    # --- The install: one command, no BRIARD_NIC, no BRIARD_VIP_ADDR -- the VIP comes by DHCP ---
     def install():
         code, out = host.execute(
             "BRIARD_ARTIFACTS=${staging} BRIARD_UNIT_DIR=/run/systemd/system "
             "sh ${installScript} 2>&1"
         )
         print(out)
-        # What the household's router saw, and the guest's own side of the DHCP exchange, BEFORE
+        # What the router of the household saw, and the guest side of the DHCP exchange, before
         # any verdict: a lease question is only answerable from both ends.
         print(host.succeed("cat /tmp/lan-dnsmasq.log /tmp/lan.leases"))
         print(host.execute("grep -a -i 'dhcpcd\\|briard-vip' /var/log/briard-guest-console.log | tail -60")[1])
         return code, out
 
     code, out = install()
-    # DELTA 1: the card admitted the station with a WARN and the one Wi-Fi sentence, and the agent built
-    # ipvtap children in the holding namespace -- absent from the host's own.
+    # Delta 1: the card admitted the station with a WARN and the one Wi-Fi sentence, and the agent
+    # built ipvtap children in the holding namespace, absent from the host namespace.
     assert "wlan0 is Wi-Fi" in out and "Wi-Fi can be unstable; we recommend a wired connection" in out, \
         "the report card did not warn about the wireless station with its advice"
     assert "[WARN  ] network" in out, "the network check is not a WARN"
@@ -172,11 +170,11 @@ pkgs.testers.runNixOSTest {
     host.succeed("ip link show briard-priv0")  # the private link, exactly as macvtap has it
 '' + (if refuse then ''
 
-    # --- THE REFUSAL: the router leases the flock's chaddr nothing. ---
+    # --- The refusal: the router leases the flock chaddr nothing. ---
     assert code != 0 and "cannot serve your home" in out and "briard config set vip <address>/24" in out, \
         f"the installer did not end on the agent's refusal (exit {code})"
     assert "your router leases Briard nothing of its own" in out, "the refusal does not say why"
-    # The host DID ask, under a chaddr that is not the station's -- the router logged ignoring it.
+    # The host did ask, under a chaddr that is not the station's -- the router logged ignoring it.
     import re
     asked = set(re.findall(r"DHCPDISCOVER\(wlan1\) ([0-9a-f:]{17}) ignored", host.succeed("cat /tmp/lan-dnsmasq.log")))
     assert asked and station_mac not in asked, f"no DISCOVER under the flock's chaddr was refused: {asked}"
@@ -195,7 +193,7 @@ pkgs.testers.runNixOSTest {
         "the doctor does not carry the refusal"
     print("refused, said so at install, kept the host on its LAN")
 
-    # --- THE REMEDY, as the refusal words it: name an address outside the router's DHCP range.
+    # --- The remedy, as the refusal words it: name an address outside the router's DHCP range.
     # An address the install's own gate refuses is refused here too, and changes nothing. ---
     code, said = host.execute("/usr/local/bin/briard config set vip 10.9.9.9/24 2>&1")
     print(said)
@@ -226,8 +224,8 @@ pkgs.testers.runNixOSTest {
     assert vip != host_ip, f"the guest holds the host's own address {vip}"
     print(f"the guest holds {vip}")
 
-    # DELTA 3: two chaddrs behind one station MAC. The host's lease is the station's, the flock's
-    # is its own MAC's -- on a router that ignores client-ids -- and it is the HOST that asked:
+    # Delta 3: two chaddrs behind one station MAC. The host lease carries the station MAC, the
+    # flock lease its own MAC, on a router that ignores client-ids, and the host is what asked:
     # the guest was handed the address and ran no client.
     leases = host.succeed("cat /tmp/lan.leases")
     rows = {f[2]: f for f in (l.split() for l in leases.splitlines()) if len(f) >= 5}
@@ -238,7 +236,7 @@ pkgs.testers.runNixOSTest {
     host.succeed(f"journalctl -u briard-agent -o cat | grep -q 'vip lease: {vip}/24 from 192.168.7.1'")
     host.succeed(f"grep -a -q 'briard-vip: dev=.* configured={vip}/24' /var/log/briard-guest-console.log")
 
-    # DELTA 4: the copy. The VIP is held on the service child, and the household reaches the guest.
+    # Delta 4: the copy. The VIP is held on the service child, and the household reaches the guest.
     host.succeed(f"ip -n briard-hold -4 addr show dev briard0 | grep -qw {vip}/32")
     host.wait_until_succeeds(f"ip netns exec lan curl -fsS --max-time 5 http://{vip}/healthz", timeout=120)
     print("the household reached the guest at its VIP, over the access point")
@@ -254,18 +252,18 @@ pkgs.testers.runNixOSTest {
     host.fail("journalctl -u briard-agent -o cat | grep -q 'vip lease: restarting the guest'")
     print("the host renewed the flock's lease and the guest still serves")
 
-    # DELTA 5: the host is still on its LAN and reaches its own guest over the private link.
+    # Delta 5: the host is still on its LAN and reaches its own guest over the private link.
     host.succeed(f"ip netns exec lan ping -c1 -W2 {host_ip}")
     host.succeed(f"curl -fsS --max-time 5 http://{vip}/healthz")
     host.succeed("ip -o -4 addr show dev wlan0 | grep -qw " + host_ip)
     print("the host kept its address and its LAN, and reaches its guest")
 
-    # --- THE LEASE'S PROBE ON IPVTAP: its control, then the probe itself ---
-    # THE CONTROL: with the guest's VIP silent, nothing on the LAN gets an ARP reply for it. The
-    # probe rests on that -- an ARP-checking router must find the address free -- and so does a
-    # relaunch's DISCOVER. The lever is the probe's own (QMP set_link on the service NIC). With the
-    # link down only the guest is silenced, so a reply here would be the holding namespace's /32
-    # copy answering -- which would answer for a stopped guest too.
+    # --- The lease probe on ipvtap: its control, then the probe itself ---
+    # The control: with the guest VIP silent, nothing on the LAN gets an ARP reply for it. The
+    # probe rests on that (an ARP-checking router must find the address free), and so does a
+    # relaunch DISCOVER. The lever is the one the probe uses (QMP set_link on the service NIC),
+    # which silences only the guest, so a reply here would be the /32 copy in the holding
+    # namespace, which would answer for a stopped guest too.
     def qmp(cmd):
         host.succeed("printf '%s%s' '{\"execute\":\"qmp_capabilities\"}' '" + cmd + "' | "
                      "socat -t2 - UNIX-CONNECT:/run/briard/qmp/guest.sock")
@@ -279,7 +277,7 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds(f"ip netns exec lan arping -c 1 -w 2 -I wlan1 {vip} | grep -q 'reply from'", timeout=30)
     print("with the guest's link down nothing answers for the VIP; with it up the guest does")
 
-    # THE PROBE: the router reboots having kept its leases in RAM, and is no longer authoritative,
+    # The probe: the router reboots having kept its leases in RAM, and is no longer authoritative,
     # so the host's INIT-REBOOT for the VIP meets silence until the lease expires. The router is up
     # (it answers ARP), so the host silences the VIP, DISCOVERs with it as the hint, and renews it
     # in place -- no restart of the guest, the same address.
@@ -298,7 +296,7 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds(f"ip netns exec lan curl -fsS --max-time 5 http://{vip}/healthz", timeout=60)
     print("the router forgot the lease; the host asked afresh with the VIP silent and renewed it in place")
 
-    # --- AN AGENT RESTART UNDER ITS WI-FI GUEST KEEPS THE PARENT IT STANDS ON ---
+    # --- An agent restart under its Wi-Fi guest keeps the parent it stands on ---
     # A wire with a lower metric than the station's appears beside it (a veth here: a macvtap
     # builds on it, so a re-selection would take it). The children are in briard-hold, so the
     # hot path must find them there and read their parent off the @ifN, never re-select: no

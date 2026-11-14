@@ -1,24 +1,21 @@
-# The host-agent deadman on a LONE node REBOOTS — and the reboot surfaces to the supervisor.
+# The host-agent deadman on a lone node reboots, and the reboot surfaces to the supervisor.
 #
-# Derived from the majority formula, the single-node case would hold: departing loses quorum.
-# True, and irrelevant — there is no peer to outage, quorum is guaranteed the moment it comes back,
-# and the data is on its own disk. Holding would be a reflex that did nothing at all on the shape
-# most briard installs have: the node alerts once and then sits wedged and silent indefinitely.
-# Single-node is its own clause in deadman.RebootAllowed.
+# Derived from the majority formula, the single-node case would hold (departing loses quorum):
+# true, and irrelevant. There is no peer to outage, quorum is guaranteed the moment it comes back,
+# and the data is on its own disk; holding would be a reflex that did nothing at all on the shape
+# most briard installs have, the node alerting once and then sitting wedged and silent
+# indefinitely. So single-node is its own clause in deadman.RebootAllowed.
 #
-# Single-node harness (like agent-readopt): the guest is a lone node, which runs no DRBD and reads
-# as no peers, so it exercises exactly that clause. We kill the host agent for well past
-# T_deadman (baked short via BRIARD_DEADMAN in the guest image) and prove three things:
-#
-#   1. the in-guest deadman evaluated and chose to REBOOT (its log rides the guest serial),
-#   2. QEMU EXITED rather than resetting inside itself — `-no-reboot` is what makes a guest restart
-#      an event the supervisor can see, instead of a gap in the control channel indistinguishable
-#      from every other gap,
+# Single-node harness (like agent-readopt): the guest is a lone node, which runs no DRBD and
+# reads as no peers, so it exercises exactly that clause. With the host agent killed for well
+# past T_deadman (baked short via BRIARD_DEADMAN in the guest image), it proves:
+#   1. the in-guest deadman evaluated and chose to reboot (its log rides the guest serial);
+#   2. QEMU exited rather than resetting inside itself, the assertion most worth having:
+#      `-no-reboot` makes a guest restart an event the supervisor can see, not a gap in the
+#      control channel indistinguishable from every other gap. A guest reset in place would keep
+#      the same QEMU pid, the VIP would blip, and every other check would still pass while the
+#      agent had silently stopped being able to observe or count the restarts of its charge;
 #   3. the host agent, on returning, brings the guest back.
-#
-# (2) is the assertion most worth having. A guest that reset in place would leave the same QEMU pid
-# running, the VIP would blip, and every other check here would still pass — while the agent had
-# silently stopped being able to observe or count its charge's restarts.
 #
 # Heavy (nested VM) → the `integration` tag. Run one:
 #   nix build .#tests.agent-deadman -L
@@ -82,24 +79,21 @@ pkgs.testers.runNixOSTest {
     host.wait_for_unit("multi-user.target")
     host.succeed("ls -l /dev/kvm")
 
-    # The shipped NIC contract: carrier-bearing veth parent, the guest's two LAN NICs as macvtap
-    # children in the agent's order (sys0 -> eth1, svc0 -> eth2), and the private host<->guest
-    # link as a plain tap. No macvlan shim: that would be the rig granting itself reachability
-    # the product lacks.
+    # The shipped NIC contract: a carrier-bearing veth parent, the two LAN NICs of the guest as
+    # macvtap children in the agent order (sys0 -> eth1, svc0 -> eth2), and the private
+    # host<->guest link as a plain tap (no macvlan shim: that would be the rig granting itself
+    # reachability the product lacks). The tap carries two addresses: 10.0.0.129/32, the host end
+    # of the system subnet, which is what everything here uses; and 10.11.9.1/24, the host end of
+    # the private link (PRIV_HOST_CIDR in the product), which nothing dials but which avahi needs
+    # on both ends to join the IPv4 mDNS group on the link.
     #
-    # The tap carries TWO addresses: 10.0.0.129/32, this host's own end of the system subnet,
-    # which is what everything here actually uses; and 10.11.9.1/24, the host's end of the
-    # private link (PRIV_HOST_CIDR in the product), which nothing dials but which avahi needs on
-    # both ends to join the IPv4 mDNS group on the link.
-    #
-    # THE PRIVATE LINK MATTERS TWICE HERE, and the second reason is this test's own subject: the
-    # host's recovery rung reads the guest's reboot GATE across it. The gate answers at the
-    # guest's NODE IP (10.0.0.1:7790), not a private-link address -- one address per
-    # node, whatever is asking -- and the host resolves it over this tap through the
-    # permanent neighbour entry the agent pins, because the guest will not answer ARP for an
-    # eth1 address on eth3. Without the link the gate has nowhere to be read, and the rig would
-    # prove the guest reboots while structurally unable to exercise the guard that decides
-    # whether it may.
+    # The private link matters twice here, the second reason being this test subject: the host
+    # recovery rung reads the guest reboot gate across it. The gate answers at the guest node IP
+    # (10.0.0.1:7790), not a private-link address (one address per node, whatever is asking), and
+    # the host resolves it over this tap through the permanent neighbour entry the agent pins,
+    # because the guest will not answer ARP for an eth1 address on eth3. Without the link the gate
+    # has nowhere to be read, and the rig would prove the guest reboots while structurally unable
+    # to exercise the guard that decides whether it may.
     host.succeed(
         "ip link add parent type veth peer name parent_peer && ip link set parent_peer up && ip link set parent up && "
         "ip link add link parent name sys0 type macvtap mode bridge && ip link set sys0 up && "
@@ -116,14 +110,12 @@ pkgs.testers.runNixOSTest {
     host.succeed("systemctl start briard-agent")
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q CONVERGED", timeout=900)
 
-    # THE HOST REACHES ITS GUEST AT THE NODE IP -- asserted before the VIP curl below, because it
-    # is the hop the curl depends on and a failure here says WHICH half broke: without it a failed
-    # curl does not say whether the private link or the VIP route was at fault.
-    #
-    # What it catches, concretely: the link is UNNUMBERED, so both ends pin a permanent neighbour
-    # instead of ARPing. Drop either pin and this fails -- with no address on its outgoing NIC the
-    # guest's ARP borrows a source from another one (arp_announce=2), and what it borrows is eth0's
-    # slirp address, which on this rig is the outer host's own, so nothing ever answers.
+    # The host reaches its guest at the node IP, asserted before the VIP curl because it is the hop
+    # the curl depends on: a failure here says which half broke, where a failed curl cannot tell
+    # the private link from the VIP route. The link is unnumbered, so both ends pin a permanent
+    # neighbour instead of ARPing. Drop either pin and this fails: with no address on its outgoing
+    # NIC the guest ARP borrows a source from another one (arp_announce=2), the eth0 slirp
+    # address, which on this rig is the outer host's own, so nothing ever answers.
     host.wait_until_succeeds("ping -c1 -W2 10.0.0.1", timeout=60)
     print("the host reaches its guest at the node IP over the unnumbered private link")
 
@@ -132,24 +124,24 @@ pkgs.testers.runNixOSTest {
     qemu_before = host.succeed("pgrep -f 'qemu-system-x86_64.*guest.qcow2'").strip().splitlines()[0]
     print(f"guest qemu pid before: {qemu_before}")
 
-    # === THE PROOF: kill the host agent and leave it dead well past T_deadman (baked ~8s). ===
+    # === The proof: kill the host agent and leave it dead well past T_deadman (baked ~8s). ===
     # The guest keeps running (agent lifecycle decoupled from the guest). Its deadman sees no host
-    # contact, fires — and, being a lone node with nobody to outage, must REBOOT.
+    # contact and fires, and as a lone node with nobody to outage it must reboot.
     host.succeed("systemctl stop briard-agent")
 
-    # The separate briard-deadman.service in the guest (decoupled from the crash-looping guest agent) sees
-    # the contact stamp go stale past T_deadman (~8s) and evaluates.
+    # The separate briard-deadman.service in the guest (decoupled from the crash-looping guest
+    # agent) sees the contact stamp go stale past T_deadman (~8s) and evaluates.
     host.wait_until_succeeds("grep -q 'briard-deadman' /tmp/guest-serial.log", timeout=90)
 
-    # 1) It chose to REBOOT, and said so. "degraded, holding" is what a lone node would log under a
+    # 1) It chose to reboot, and said so. "degraded, holding" is what a lone node would log under a
     # gate derived from the majority formula; if the gate is ever re-derived that way, a lone node
     # silently goes back to holding and this is the line that catches it.
     host.wait_until_succeeds("grep -q 'deadman: rebooting' /tmp/guest-serial.log", timeout=120)
     host.fail("grep -q 'degraded, holding' /tmp/guest-serial.log")
 
-    # 2) QEMU EXITED — the restart is visible to the supervisor rather than hidden inside the VM.
-    # This is `-no-reboot` doing its job, and it is what lets the host count restarts, damp a crash
-    # loop, and relaunch a stopped guest without waiting out the silence window.
+    # 2) QEMU exited: `-no-reboot` makes the restart visible to the supervisor rather than hidden
+    # inside the VM, which lets the host count restarts, damp a crash loop, and relaunch a stopped
+    # guest without waiting out the silence window.
     host.wait_until_fails(f"kill -0 {qemu_before}", timeout=180)
     host.succeed("! systemctl is-active --quiet briard-guest.service")
     print("guest rebooted itself; qemu exited and the unit stopped (visible to the supervisor)")
@@ -159,12 +151,11 @@ pkgs.testers.runNixOSTest {
     # this half is the other side of the same design: the agent is the sole policy supervisor, and
     # every restart passes through it.
     host.succeed("systemctl start briard-agent")
-    # ONE query, and it must match QEMU rather than anything mentioning the disk. A bare
+    # One query, matching QEMU rather than anything mentioning the disk: a bare
     # `pgrep -f guest.qcow2` also matches the transient `systemd-run … -drive file=/tmp/guest.qcow2`
-    # wrapper the agent launches through, so a wait would return on the wrapper, the wrapper would
-    # exit, and a second pgrep a moment later would find nothing; the wait can return before the
-    # guest unit has even started. Taking the pid from the wait's own output closes the gap
-    # between the two calls as well.
+    # wrapper the agent launches through, so a wait would return on the wrapper (possibly before
+    # the guest unit has even started), the wrapper would exit, and a second pgrep a moment later
+    # would find nothing. Taking the pid from the wait output also closes the gap between two calls.
     qemu_after = host.wait_until_succeeds(
         "pgrep -f 'qemu-system-x86_64.*guest.qcow2'", timeout=300
     ).strip().splitlines()[0]
@@ -173,13 +164,13 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=300)
     print(f"guest came back: pid {qemu_before} -> {qemu_after}, converged and serving")
 
-    # 4) The guest agent did not spend the outage crash-looping. It serves ONE host connection and
-    # exits on EOF (Restart=always puts it back on a freshly opened port), and with the host end gone
-    # for good every reopen EOFs the instant it is read — ~48 restarts in 30s without a pause. It
-    # pauses ~5s before that exit, so a whole run costs a couple of restarts. Both bounds matter:
-    # the upper one catches the busy loop coming back, the lower one catches this grep going stale
-    # against a systemd message that moved (a rename would make the assertion vacuously pass, and
-    # this is the only place that counts these).
+    # 4) The guest agent did not spend the outage crash-looping. It serves one host connection and
+    # exits on EOF (Restart=always puts it back on a freshly opened port); with the host end gone
+    # for good every reopen EOFs the instant it is read, ~48 restarts in 30s without a pause. It
+    # pauses ~5s before that exit, so a whole run costs a couple of restarts. The upper bound
+    # catches the busy loop coming back; the lower one catches this grep going stale against a
+    # systemd message that moved (a rename would make the assertion pass vacuously, and nothing
+    # else counts these).
     restarts = int(
         host.succeed(
             "grep -c 'briard-guest-agent.service: Scheduled restart job' /tmp/guest-serial.log || true"

@@ -1,38 +1,37 @@
-# A SPIKE, not a suite member: how long does a COLD converge hold the promotion when the pull it
+# A spike, not a suite member: how long does a cold converge hold the promotion when the pull it
 # has to make is very slow?
 #
-# WHY THIS EXISTS. Converging at promotion put a fetch on the promotion path. `briard-apps` is a chain
-# member, its failure fails the promotion, and `warmImage` (agent/guestagent/converge.go) answers a
-# missing image with `systemctl restart <unit>-image.service` -- a blocking `podman image pull`.
-# The comment there argues the case and is right about the design: a node that was down when the
-# install ran promotes into an app it was never told about, and fetching what it can name beats
-# a cluster-wide negotiation nothing arbitrates. What it does NOT say is how long that fetch may
-# take before something gives up, and neither does any test: `chain-member-contract` drives its
-# member failures with SIGKILL and `systemctl restart`, which fail INSTANTLY. Every rule we have
-# about the chain is a rule about a fast failure.
+# Why it exists: converging at promotion put a fetch on the promotion path. `briard-apps` is a
+# chain member whose failure fails the promotion, and `warmImage` (agent/guestagent/converge.go)
+# answers a missing image with `systemctl restart <unit>-image.service`, a blocking
+# `podman image pull`. Its comment argues the design rightly (a node that was down when the
+# install ran promotes into an app it was never told about, and fetching what it can name beats a
+# cluster-wide negotiation nothing arbitrates) but does not say how long that fetch may take
+# before something gives up, and neither does any test: `chain-member-contract` drives its member
+# failures with SIGKILL and `systemctl restart`, which fail instantly. Every rule we have about
+# the chain is a rule about a fast failure.
 #
-# THE THEORY THIS MEASURES (and it is only a theory until the run prints otherwise): nothing bounds
-# it inside the window. `briard-apps` is `Type=oneshot`, and systemd disables `TimeoutStartSec=`
-# by default for oneshot, and its unit sets none; quadlet's generated `.image` unit is a oneshot
-# too, bounded only by the TimeoutStartSec the renderer gives it (agent/quadlet PullTimeout: 45
-# minutes for a manifest with no size, as here), far past the window. If that holds, a slow pull
-# holds the resource Primary with no VIP and no apps for that long, and the demote-and-hand-over
-# the eight rules prove (chain-member-contract) never fires -- because the member never fails,
-# it just never finishes.
+# The theory measured (only a theory until the run prints otherwise): nothing bounds it inside
+# the window. `briard-apps` is `Type=oneshot`, for which systemd disables `TimeoutStartSec=` by
+# default, and its unit sets none; the quadlet `.image` unit is a oneshot too, bounded only by
+# the TimeoutStartSec the renderer gives it (agent/quadlet PullTimeout: 45 minutes for a manifest
+# with no size, as here), far past the window. If that holds, a slow pull holds the resource
+# Primary with no VIP and no apps for that long, and the demote-and-hand-over the eight rules
+# prove (chain-member-contract) never fires: the member never fails, it just never finishes.
 #
-# WHY IT IS NOT IN THE NIGHTLY. It is a stopwatch, not an assertion: its whole output is a
-# timeline, and it deliberately runs its observation window to the end rather than failing early.
-# It rides `debug` for the same reason `drbd-link-split` does -- run it by hand, read the log.
+# Not in the nightly: it is a stopwatch, not an assertion. Its whole output is a timeline, and it
+# deliberately runs its window to the end rather than failing early; it rides `debug` for the
+# same reason `drbd-link-split` does (run it by hand, read the log).
 #
-# ONE NODE, DELIBERATELY. The peer half of the question's original shape ("withhold the prewarm from one
-# anchor") is not what is unmeasured: a cold winner handing over to a warm peer is rules 5/7/8 with
-# a different trigger, and peer-image caching is expected to remove the asymmetry
-# entirely. What no topology answers is this node's own behaviour, so this rig has no peer.
+# One node, deliberately. The peer half of the original question ("withhold the prewarm from one
+# anchor") is not what is unmeasured: a cold winner handing over to a warm peer is rules 5/7/8
+# with a different trigger, and peer-image caching is expected to remove the asymmetry entirely.
+# What no topology answers is the behaviour of this node itself, so this rig has no peer.
 #
-# SLOW, NOT STALLED, and that distinction is the measurement. A stalled socket would only tell us
-# whether some stall detector exists; a transfer that is genuinely progressing the whole time is
-# what proves an absent *overall* bound. The rig throttles the registry's link with tbf and prints
-# the byte counters at both ends, so a reader can see the pull was moving the whole window.
+# Slow, not stalled, and that distinction is the measurement: a stalled socket would only show
+# whether some stall detector exists, while a transfer genuinely progressing the whole time
+# proves an absent overall bound. The rig throttles the registry link with tbf and prints the
+# byte counters at both ends, so a reader can see the pull was moving the whole window.
 { pkgs, guestModule, quadletRender }:
 let
   h = import ./lib.nix { inherit pkgs guestModule; };
@@ -40,7 +39,7 @@ let
   registryIP = "10.0.0.99";
   registryHost = "${registryIP}:5000";
 
-  # The throttle. 32 kbit/s is chosen so the LAYER cannot finish inside the window while the
+  # The throttle. 32 kbit/s is chosen so the layer cannot finish inside the window while the
   # handshake and manifest fetch still complete in seconds -- the pull must get properly under way,
   # or this measures a connect timeout rather than a transfer.
   rate = "32kbit";
@@ -85,7 +84,7 @@ pkgs.testers.runNixOSTest {
     node1 =
       { config, ... }:
       {
-        # NO `fixture`: the image must be ABSENT, which is the whole premise. Every other rig
+        # No `fixture`: the image must be absent, which is the whole premise. Every other rig
         # prewarms it precisely so converge never reaches the pull.
         imports = [ (h.mkNode { inherit resource; }) ];
         security.pki.certificateFiles = [ "${certs}/ca.crt" ];
@@ -122,7 +121,7 @@ pkgs.testers.runNixOSTest {
     for m in [node1, zregistry]:
         m.wait_for_unit("multi-user.target")
 
-    # === 1. publish the image, AT FULL SPEED ===
+    # === 1. publish the image, at full speed ===
     # The throttle goes on later: staging the registry over a 32kbit link would cost the same
     # hours the pull is about to, and the push is not the subject.
     zregistry.wait_for_open_port(5000)
@@ -146,8 +145,8 @@ pkgs.testers.runNixOSTest {
     print("promoted with zero apps -- the shipped state, before anything is installed")
 
     # === 3. install an app this node has no image for ===
-    # The manifest goes on the VOLUME, which is what converge reads. The data subvolume and its
-    # subdirectories come from the RENDERER's own sidecars rather than being restated here, so the
+    # The manifest goes on the volume, which is what converge reads. The data subvolume and its
+    # subdirectories come from the renderer sidecars rather than being restated here, so the
     # only thing missing when converge runs is the image itself.
     manifest = (
         '{"name":"fixture","version":"v0","network":"host","containers":[{'
@@ -160,14 +159,14 @@ pkgs.testers.runNixOSTest {
     node1.succeed(f"btrfs subvolume show {dataroot} >/dev/null 2>&1 || (mkdir -p $(dirname {dataroot}) && btrfs subvolume create {dataroot})")
     for sub in node1.succeed("cat /tmp/rendered/subdirs").split():
         node1.succeed(f"mkdir -p {sub}")  # in the data area, the one tier this fixture mounts
-    # The .image unit's NAME comes from the renderer too -- a name restated here would assert our
+    # The .image unit name comes from the renderer too -- a name restated here would assert our
     # own arithmetic about unit naming rather than watching the unit converge actually starts.
     image_unit = node1.succeed("cat /tmp/rendered/images").split()[0]
     print(f"the pre-warm unit converge will start: {image_unit}")
     node1.succeed("mkdir -p /var/lib/briard/.apps")
     node1.succeed("cp /tmp/manifest.json /var/lib/briard/.apps/fixture.json")
     node1.succeed("sync")
-    # THE PREMISE, asserted rather than assumed: this node cannot serve without a pull.
+    # The premise, asserted rather than assumed: this node cannot serve without a pull.
     node1.fail(f"podman image exists {ref}")
     print("manifest installed on the volume; the image is absent -- converge must fetch it")
 
@@ -184,7 +183,7 @@ pkgs.testers.runNixOSTest {
 
     tx0 = counters()
 
-    # === 5. THE MEASUREMENT ===
+    # === 5. The measurement ===
     # --no-block, because the whole question is whether this ever returns. A blocking restart would
     # hang the test driver instead of measuring the hang.
     node1.succeed("systemctl reset-failed briard-apps.service || true")
@@ -209,8 +208,8 @@ pkgs.testers.runNixOSTest {
 
     print("t     apps                  result    restarts image           role       mnt vip mask   txKB")
     settled = None
-    # LATCHED ON `activating` FIRST. `--no-block` returns before systemd has moved the unit, so
-    # the t=0 probe can still see the PREVIOUS generation's `active/stop` -- not a start substate,
+    # Latched on `activating` first. `--no-block` returns before systemd has moved the unit, so
+    # the t=0 probe can still see the previous generation's `active/stop` -- not a start substate,
     # so a bare "is it still starting?" test would declare the job settled at t=0.0s and print
     # "something DOES bound it" above a timeline showing the exact opposite. The data would be
     # right and the verdict wrong, which is the worse way round: nobody re-reads a table
@@ -253,7 +252,7 @@ pkgs.testers.runNixOSTest {
     print(node1.succeed(f"journalctl -u {image_unit} --no-pager | tail -20 || true"))
     print(node1.succeed("systemctl list-units --failed --no-pager || true"))
 
-    # THE ONE ASSERTION, and it is about the RIG rather than the product: a window in which
+    # The one assertion, and it is about the rig rather than the product: a window in which
     # nothing was transferred would have measured a stalled connection, not a slow one, and every
     # conclusion above would be about the wrong fault.
     assert tx_total > 64, f"the throttled pull moved only {tx_total} KB -- this measured a stall, not a slow transfer"
