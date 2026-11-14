@@ -1,31 +1,23 @@
-// Package quadlet renders an app manifest into podman quadlet source files.
+// Package quadlet renders an app manifest into podman quadlet source files: the swappable layer of
+// the stack the manifest decision named, manifest (published, signed, runtime-neutral) -> renderer
+// (podman/quadlet-specific) -> systemd units. shared/manifest deliberately knows nothing about
+// podman and everything podman-shaped lives in this package, so replacing the container runtime
+// replaces the renderer rather than re-cutting the published catalog.
 //
-// This is the SWAPPABLE layer of the three-part stack the manifest decision named: manifest
-// (published, signed, runtime-neutral) -> renderer (here, podman/quadlet-specific) -> systemd
-// units. shared/manifest deliberately knows nothing about podman; everything podman-shaped lives
-// in this package, so replacing the container runtime is replacing the renderer rather than
-// re-cutting the published catalog.
-//
-// IT RUNS IN THE GUEST, and the host/guest line runs through the MANIFEST rather than through
-// this package. The host owns identity: it fetches the manifest from the catalog,
-// verifies its signature against the release keyring, and writes those exact bytes to the
-// replicated volume. The guest never chooses what to run — it renders what the volume already
-// says, at promotion, from a manifest whose content hash IS the app identity.
-//
-// Rendering has to happen there because a promoting node is alone: the volume is only readable
-// once mounted, i.e. after drbd-reactor has promoted, and drbd-reactor promotes on a quorum event
-// with nothing asking the host. It is also the better place on its own terms — the renderer
-// belongs next to the podman it renders for, which is the same reason Dir gives for re-rendering
-// rather than replicating the rendered units.
-//
-// This does not soften logic-on-the-host-by-default: Render is a pure total function of the
-// manifest bytes, holding no state, no identity and no decision. What moved is which binary
+// It runs in the guest, but the host/guest line runs through the manifest: the host owns identity
+// (it fetches the manifest from the catalog, verifies its signature against the release keyring and
+// writes those exact bytes to the replicated volume), and the guest never chooses what to run,
+// rendering at promotion what the volume says, from a manifest whose content hash is the app
+// identity. Rendering must happen in the guest: a promoting node is alone, and the volume is
+// readable only once mounted, after drbd-reactor promotes on a quorum event with nothing asking the
+// host; and the renderer belongs next to the podman it renders for (Dir's reason for re-rendering
+// rather than replicating units). Logic-on-the-host-by-default still holds: Render is a pure total
+// function of the manifest bytes, with no state, identity or decision; what moved is which binary
 // executes it, not who decides.
 //
-// Quadlet is podman's own systemd generator: files under /run/containers/systemd become real
-// units at daemon-reload, which is what moves unit generation from BUILD time to RUN time. The
-// generator needs no integration — podman ships it and virtualisation.podman.enable
-// already pulls it in.
+// Quadlet is podman's own systemd generator, shipped by podman and pulled in by
+// virtualisation.podman.enable: files under /run/containers/systemd become units at daemon-reload,
+// moving unit generation from build time to run time.
 package quadlet
 
 import (
@@ -42,10 +34,10 @@ import (
 )
 
 // Dir is where quadlet reads generated units from. /run, so it is node-local and tmpfs-backed:
-// rendered units are NOT replicated and do not survive a reboot by themselves. That is
-// deliberate — the DRBD volume holds the MANIFEST as the app's identity, and every node
-// re-renders from it. Storing rendered units instead would mean replaying one podman version's
-// output onto a node that may run another.
+// rendered units are deliberately not replicated and do not survive a reboot by themselves. The
+// DRBD volume holds the manifest as the app's identity and every node re-renders from it;
+// storing rendered units instead would replay one podman version's output onto a node that may
+// run another.
 const Dir = "/run/containers/systemd"
 
 // ImagePullTimeout bounds one `.image` unit's pull when the manifest does not say how big the
@@ -54,7 +46,7 @@ const Dir = "/run/containers/systemd"
 // Render carries the measurements.
 const ImagePullTimeout = 45 * time.Minute
 
-// The bound a SIZED entry gets: a fixed allowance for everything that is not bytes
+// The bound a sized entry gets: a fixed allowance for everything that is not bytes
 // (the registry round-trips, the token dance, six layers starting at once, decompression at the
 // end), plus the download itself at the slowest link a household is asked to have. 5 Mbit/s is
 // deliberately below any broadband plan and above the mobile-tethering floor; a link slower than
@@ -88,47 +80,37 @@ type Rendered struct {
 	// briard-apps, after the data mount and the VIP). Order matters: the pod must exist before its
 	// members.
 	Units []string
-	// ContainerUnits are the per-container .service units WITHOUT the pod. They are what holds the
-	// data Volume bind, and the ONLY units a maintenance op may stop to release it — never the pod.
+	// ContainerUnits are the per-container .service units without the pod: they hold the data
+	// Volume bind and are the only units a maintenance op may stop to release it. Never the pod:
+	// `systemctl stop <pod>` makes podman `pod stop`, which kills the containers out from under
+	// their units, so each exits non-zero into `failed`; stopping a container is a graceful stop
+	// (systemd → `podman stop` → clean exit) that releases the bind and disturbs nothing else.
 	//
-	// Why never the pod: `systemctl stop <pod>` makes podman `pod stop`, which kills the member
-	// CONTAINERS out from under their systemd units, so each container unit exits non-zero and
-	// lands in `failed` — NOT a clean stop. Stopping a container directly is a graceful stop
-	// (systemd → `podman stop` → clean exit), which is what leaves the data bind released and
-	// everything else undisturbed.
-	//
-	// ⚠️ A CRASHED CONTAINER DOES NOT DEMOTE THE NODE, and must not: a code fault is
-	// DETERMINISTIC, so the peer running the identical closure hits it identically and the
-	// failover only flaps; and one broken app must not take the other N-1 down with it. The
-	// mechanism is non-membership — these units are started by briard-apps, not by the promoter,
-	// so `Requires=` never sees them and there is no propagation to fire. Recovery is the unit's
-	// own Restart= (see Render); the household hears about it through per-app health, which
+	// ⚠️ A crashed container does not demote the node, and must not: a code fault is deterministic,
+	// so the peer running the identical closure hits it too and failover only flaps; and one broken
+	// app must not take the other N-1 down. The mechanism is non-membership: briard-apps starts
+	// these units, not the promoter, so `Requires=` never sees them and nothing propagates.
+	// Recovery is the unit's own Restart= (see Render); per-app health tells the household, and
 	// reports but never gates.
 	ContainerUnits []string
-	// ImageUnits are the .image pre-warm units, which are NOT promoter members and NOT started
-	// by systemd either — every warm goes through a caller that guards the pull (see Render).
+	// ImageUnits are the .image pre-warm units, which are neither promoter members nor started
+	// by systemd — every warm goes through a caller that guards the pull (see Render).
 	ImageUnits []string
-	// ImageRefs maps each of those warm units to the image REF it obtains. It exists because
+	// ImageRefs maps each of those warm units to the image ref it obtains. It exists because
 	// starting the unit is a `podman image pull` — measured, not assumed: quadlet generates
 	// `Wants=network-online.target` + `ExecStart=podman image pull <ref>`, with no
 	// already-present short-circuit. A caller that must not touch the network (bring-up, which
 	// runs after every guest reboot) needs the ref to ask whether the pull is needed at all.
 	ImageRefs map[string]string
-	// Address is the host this app's pod answers on — a bare host, no port: the guest's own
-	// loopback under host networking, the pod's address on the node's pod pool under a private
-	// network. An app is ONE pod and a pod is ONE network namespace, so one address covers every
-	// port it listens on, and the consumers (the reverse proxy's routes, the health probe) carry
-	// only the port.
-	//
-	// IT COMES BACK FROM THE RENDERER because it is the value the networking in the .pod was
-	// written with. The caller allocates it (Render's addr) and the probe and the reverse proxy
-	// read it from here, together, rather than each assembling `127.0.0.1:<port>` for itself —
-	// which breaks for a private pod network, where the port is not on the guest's loopback at
-	// all. Empty when the caller passed none.
-	//
-	// It never reaches the catalog. A published, signed, node-independent document cannot carry a
-	// fact that differs per node and per render — and since the manifest's content hash IS the
-	// app identity, putting one there would remint the identity of every entry.
+	// Address is the bare host (no port) this app's pod answers on: the guest's own loopback under
+	// host networking, the pod's address on the node's pod pool under a private network. An app is
+	// one pod and one network namespace, so the consumers (the reverse proxy's routes, the health
+	// probe) add only the port. The caller allocates it (Render's addr); it comes back because the
+	// .pod's networking was written with it, so consumers never assemble `127.0.0.1:<port>`, which
+	// breaks for a private pod network, where the port is not on the guest's loopback. Empty when
+	// the caller passed none. It never reaches the catalog: a signed, node-independent document
+	// cannot carry a per-node, per-render fact, and since the manifest's content hash is the app
+	// identity, one there would remint every entry's identity.
 	Address string
 }
 
@@ -136,34 +118,25 @@ type Rendered struct {
 // 'briard-*'` shows exactly what we put on the box and nothing of the user's collides.
 const prefix = "briard-"
 
-// Render turns a manifest into quadlet source files.
+// Render turns a manifest into quadlet source files, avoiding two traps on purpose:
 //
-// Two traps are avoided here on purpose:
-//
-//  1. The .container does NOT reference its image as `Image=foo.image`. That form gives the
-//     container an AUTOMATIC dependency on the pull unit, which turns PROMOTION INTO A PULL —
-//     the multi-GB cold load on the failover-critical path that warm-standby exists to prevent.
-//     The container names the digest directly and sets Pull=never, so a cold node
-//     FAILS FAST instead of fetching. Defer, don't pull, on the failover path: what a promoting
-//     node may do about a missing image is converge's decision (it pulls, by digest), never a
-//     side-effect of starting a unit.
-//
-//  2. AutoUpdate is never set. Podman would change image identity behind our back, breaking
+//  1. The .container names its image digest with Pull=never, not `Image=foo.image`: that form
+//     makes the container depend on the pull unit, turning promotion into the multi-GB cold pull
+//     on the failover-critical path that warm-standby exists to prevent. A cold node fails fast
+//     instead; a missing image is converge's decision (it pulls, by digest), never a side-effect
+//     of starting a unit.
+//  2. AutoUpdate is never set: podman would change image identity behind our back, breaking
 //     announce-before-act and the health gate. Our upgrade path owns image identity.
 //
-// ⚠️ NOTHING carries an [Install] section, the .image pre-warm units included. Warm standby is a
-// node fact, but systemd is the wrong thing to entrust it to: starting an .image unit IS an
-// unconditional `podman image pull` (see ImageRefs), so a `WantedBy=multi-user.target` on one
-// pulls even when the image is already local, and fails on a node with no registry. One failed
-// unit is all it takes for `switch-to-configuration switch` to exit 4, which the agent reads as
-// a failed commit — so an [Install] here turns every OS upgrade on a node with an installed app
-// into a rollback.
-//
-// The warm never comes from here. Install, prewarm, bring-up and converge each ensure their
-// images through AppWarm/warmImage, which asks `podman image exists` before starting anything.
-// [Install] could not do that job anyway: these units live on tmpfs under Dir, so at boot they do
-// not exist yet. It fires only when something re-runs the generators after converge has written
-// them, which is precisely the switch-to-configuration case above.
+// ⚠️ Nothing carries an [Install] section, the .image pre-warm units included. Starting an .image
+// unit is an unconditional `podman image pull` (see ImageRefs), so a `WantedBy=multi-user.target`
+// would pull even when the image is local and fail on a node with no registry, and one failed
+// unit makes `switch-to-configuration switch` exit 4, which the agent reads as a failed commit:
+// every OS upgrade on a node with an installed app would roll back. Warm standby is a node fact,
+// but not systemd's: install, prewarm, bring-up and converge ensure images through
+// AppWarm/warmImage, which asks `podman image exists` first. [Install] could not do it anyway:
+// these units live on tmpfs under Dir, absent at boot, so it fires only when something re-runs
+// the generators after converge wrote them — exactly that switch-to-configuration case.
 func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	if err := m.Validate(); err != nil {
 		// Rendering an unvalidated manifest is how an injected line reaches a unit file. The
@@ -173,35 +146,31 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 	base := prefix + m.Name
 	out := Rendered{Files: map[string]string{}}
 
-	// The pod, and the ONE decision this file makes that everything else derives from.
+	// The pod, and the one decision here everything else derives from: host networking is asked
+	// for, never assumed. The manifest's silence means private (shared/manifest property 2), so an
+	// app reaches nothing but itself unless a catalog entry deliberately says otherwise and carries
+	// that word in its identity hash. The address is the caller's, since allocation sees every app
+	// on the node and this sees one manifest: the guest's loopback under host networking (nothing
+	// written into the pod), else the pod's address on the node's pod pool, given to podman here
+	// and to the reverse proxy through Rendered.Address, so "where it answers" is one fact rather
+	// than an agreement.
 	//
-	// HOST NETWORKING IS ASKED FOR, never assumed. The manifest's silence means private
-	// (shared/manifest property 2), so an app reaches nothing but itself unless a catalog entry
-	// deliberately says otherwise and carries that word in its identity hash.
-	//
-	// The address is the caller's, because allocation needs to see every app on the node and
-	// this function sees one manifest. Under host networking it is the guest's own loopback and
-	// nothing is written into the pod; under a private network it is this pod's address on the
-	// node's pod pool, and both podman and the reverse proxy are told the same value from here —
-	// the property that keeps "where it answers" a single fact rather than an agreement.
-	//
-	// ⚠️ ExitPolicy=continue IS WHAT MAKES A CRASHED CONTAINER COME BACK. Quadlet's
-	// default is `stop`: when the pod's last container exits, podman stops the pod, systemd stops
-	// the container unit as the pod's dependent, and a dependency stop suppresses the container's
-	// Restart=always -- so a crashed app stays down until something else starts it
-	// (nixosTest/hass-health-probe.nix, its custom-crash case). With `continue` the pod outlives its
-	// containers, the exit is an ordinary failure, and Restart= does its job. Stopping a pod on
-	// purpose is converge's (stopApp, and the stop of what it no longer renders).
+	// ⚠️ ExitPolicy=continue is what brings a crashed container back. Under quadlet's default
+	// `stop`, the last container exiting makes podman stop the pod, systemd stops the container
+	// unit as its dependent, and a dependency stop suppresses Restart=always, so a crashed app
+	// stays down until something else starts it (nixosTest/hass-health-probe.nix, its custom-crash
+	// case). With `continue` the pod outlives its containers, the exit is an ordinary failure, and
+	// Restart= does its job. Stopping a pod on purpose is converge's (stopApp, and the stop of what
+	// it no longer renders).
 	pod := []string{"[Pod]", "PodName=" + base, "ExitPolicy=continue"}
 	switch {
 	case m.HostNetwork():
 		pod = append(pod, "Network=host")
 	case addr != "":
-		// A named network with an address WE chose, never one podman assigns. Two reasons, and the
-		// second is why it is not merely tidier: an assigned address has to be READ BACK after the
-		// pod starts, which is a second source of truth and a value that moves when a container is
-		// recreated -- so the routing table would go stale with the app healthy and nothing
-		// watching. Writing it means a recreated container returns to the same address.
+		// A named network with an address we chose, never one podman assigns: an assigned address
+		// has to be read back after the pod starts (a second source of truth) and, worse, moves
+		// when a container is recreated, so the routing table would go stale with the app healthy
+		// and nothing watching. Written, a recreated container returns to the same address.
 		pod = append(pod, "Network="+PodNetwork, "IP="+addr)
 		for _, p := range m.Ports {
 			// Published as itself on every interface the guest holds, which is what puts a
@@ -210,7 +179,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 			pod = append(pod, fmt.Sprintf("PublishPort=%d:%d", p, p))
 		}
 	default:
-		// UNPINNED, and legitimately so: a caller with no address is one that needs unit names,
+		// Unpinned, and legitimately so: a caller with no address is one that needs unit names,
 		// image refs or file contents rather than something to start -- the host's app paths and
 		// its node-local spec cache, and the guest's recorder check. The rendering is a true
 		// description of the app, just a less specific one, and nothing starts from it: converge
@@ -230,9 +199,9 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 			"Pod=" + base + ".pod",
 			"Pull=never",
 		}
-		// Each mount is a plain DIRECTORY of the app's area in its tier, never a subvolume of
+		// Each mount is a plain directory of the app's area in its tier, never a subvolume of
 		// its own: data.restore runs `btrfs subvolume delete`, which refuses on a subvolume
-		// containing nested subvolumes, so rollback would break outright. PARENT FIRST, so a
+		// containing nested subvolumes, so rollback would break outright. Parent first, so a
 		// mount nested in another lands on top of it rather than under it: a parent's path is a
 		// prefix of its child's, so it sorts first.
 		mounts := slices.Clone(c.Mounts)
@@ -240,7 +209,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		for _, mt := range mounts {
 			lines = append(lines, "Volume="+Area(mt.Tier, m.Name)+"/"+mt.Dir+":"+mt.Path)
 		}
-		// The binds one CATALOGUED APP needs beyond its own data — Home Assistant's control
+		// The binds one catalogued app needs beyond its own data — Home Assistant's control
 		// channel, mosquitto's config (agent/apps). They cannot come from the manifest — the
 		// schema refuses host binds on purpose, so that a catalog entry cannot ask for the host —
 		// so they come from the product, keyed on the app's name. Render stays a pure
@@ -259,131 +228,104 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		for _, k := range sortedKeys(c.Env) {
 			lines = append(lines, "Environment="+k+"="+escape(c.Env[k]))
 		}
-		// THE CONTAINER SUPERVISES ITSELF. Quadlet passes a [Service] section through verbatim
-		// into the generated unit (measured against podman 5.8.2's own generator), and it emits
-		// no Restart= of its own for a container — only for the pod.
-		//
-		// It is required because the app units are NOT promoter chain members:
-		// drbd-reactor neither starts, restarts nor watches them, so without a restart policy a
-		// container that dies stays dead with nothing to bring it back. That non-membership is
-		// what makes "an app error alerts but never demotes" mechanically true, and this line
-		// is the other half of it — recovery, in the unit itself rather than in the promoter.
-		//
-		// `always` rather than `on-failure`: an app container has no legitimate exit. Its job
-		// is to keep serving, so exiting 0 is exactly as dead as exiting 1, and the pod unit's
-		// generated `on-failure` would silently accept the first. Restarts systemd itself asked
-		// for are unaffected — a `systemctl stop` (quiesce, demote) is never restarted whatever
-		// the policy says.
-		//
-		// RestartSec spaces the retries past systemd's default start-rate limit
-		// (StartLimitBurst=5 per StartLimitIntervalSec=10s), so a crash-loop retries indefinitely
-		// instead of latching to `failed` and giving up on a transient cause. The loop stays
-		// VISIBLE either way: NRestarts climbs, and the resource telemetry reads it per app.
+		// The container supervises itself: quadlet passes a [Service] section through verbatim and
+		// emits Restart= only for the pod, not a container (measured against podman 5.8.2's own
+		// generator). App units are not promoter chain members — drbd-reactor neither starts,
+		// restarts nor watches them — so without this a dead container stays dead. That
+		// non-membership makes "an app error alerts but never demotes" mechanically true; this line
+		// is the other half, recovery in the unit rather than the promoter. `always`, not
+		// `on-failure`: an app container's job is to keep serving, so exiting 0 is as dead as
+		// exiting 1, and the pod unit's generated `on-failure` would silently accept the first.
+		// Restarts systemd itself asked for are unaffected — a `systemctl stop` (quiesce, demote)
+		// is never restarted whatever the policy says. RestartSec spaces retries past systemd's
+		// default start-rate limit (StartLimitBurst=5 per StartLimitIntervalSec=10s), so a
+		// crash-loop retries indefinitely instead of latching to `failed` on a transient cause, and
+		// stays visible: NRestarts climbs, and the resource telemetry reads it per app.
 		lines = append(lines, "", "[Service]", "Restart=always", "RestartSec=5")
-		// A LEAK STAYS IN ITS OWN APP. The guest grows when it runs short, so an app that
-		// leaks would otherwise be fed DIMM after DIMM up to the host's ceiling and squeeze
-		// everything beside it on the way. The limit is relaxed on purpose -- MemoryLimitFactor
-		// times what the app declares it needs, room for its real swings -- and hard: past
-		// it, the kernel's OOM killer acts inside this unit only, and Restart= above brings the
-		// app back fresh, which is the cure for a leak. Swap is capped too, at the declared
-		// minimum, because zram is shared by the whole guest and a memory limit does not count
-		// it. An app that declares no minimum has no limit: an unmeasured entry must not be
-		// guessed into a cage. The container's processes are accounted under this unit's cgroup,
-		// so this is per container -- per app while every app is one container; an
-		// app of several would need the limit on a shared slice instead.
+		// A leak stays in its own app. The guest grows when it runs short, so a leaking app would
+		// be fed DIMM after DIMM up to the host's ceiling, squeezing everything beside it. The
+		// limit is relaxed on purpose (MemoryLimitFactor times the declared minimum, room for real
+		// swings) and hard: past it the kernel's OOM killer acts inside this unit only, and
+		// Restart= brings the app back fresh, the cure for a leak. Swap is capped at the declared
+		// minimum, because zram is shared by the whole guest and a memory limit does not count it.
+		// No declared minimum, no limit: an unmeasured entry must not be guessed into a cage. The
+		// container's processes are accounted under this unit's cgroup, so the limit is per
+		// container -- per app while every app is one container; an app of several would need it on
+		// a shared slice.
 		if m.MinMemoryMB > 0 {
 			lines = append(lines,
 				fmt.Sprintf("MemoryMax=%dM", MemoryLimitFactor*m.MinMemoryMB),
 				fmt.Sprintf("MemorySwapMax=%dM", m.MinMemoryMB))
 		}
-		// THE RING'S GENERIC HOOK: a member of this app's data, taken while the
-		// container is stopped, at the one boundary visible from outside it. Every catalogued
-		// app gets this; Home Assistant adds its own internal restarts through the inbound
-		// channel, which only it can see.
-		//
-		// ⚠️ THE LEADING `-` IS NOT OPTIONAL. Without it a snapshot that fails takes the
-		// household's app down with it, and the trade is the wrong way round: a ring missing
-		// a member is nothing, an app that will not start is an outage. The binary holds
-		// itself to the same bar and exits 0 regardless, so this is belt-and-braces — `-` alone
-		// hides the reason, and the agent's own line in the journal is what says it.
-		//
-		// ONLY a container that mounts the data. An app's other containers share its area and
-		// would each take a member of the same bytes at every start. The same start is when the
-		// app's cache is emptied, if space is short (guestagent.TakeStartMember).
+		// The ring's generic hook, for every catalogued app: a member of its data, taken while the
+		// container is stopped, at the one boundary visible from outside it (Home Assistant adds
+		// its internal restarts through the inbound channel, which only it can see). Only a
+		// container that mounts the data takes one, since an app's other containers share its area
+		// and would each take a member of the same bytes; the same start empties the app's cache if
+		// space is short (guestagent.TakeStartMember). ⚠️ The leading `-` is not optional: without
+		// it a failed snapshot takes the household's app down, and a ring missing a member is
+		// nothing while an app that will not start is an outage. The binary also exits 0
+		// regardless; `-` alone hides the reason, and the agent's own journal line is what says it.
 		if c.UsesTier(manifest.TierData) {
 			lines = append(lines, "ExecStartPre=-"+agentBin()+" --app-starting="+m.Name)
-			// AND THE OTHER HALF OF THE SAME QUESTION: a stop that ended cleanly leaves a
-			// marker saying this app's data was flushed, and the next start reads it to say
-			// what its member's bytes ARE. A node that dies writes nothing, so the member taken
-			// when a survivor promotes says crash-consistent — which it is.
-			//
-			// ⚠️ ExecStopPost, never ExecStop: it runs after the container is actually down, on
-			// every stop systemd performs, and it is the only place $SERVICE_RESULT exists. The
-			// leading `-` for the same reason the start hook has one — a household must never lose
-			// an app because a marker could not be written.
+			// The other half: a clean stop leaves a marker saying this app's data was flushed,
+			// which the next start reads to say what its member's bytes are; a node that dies
+			// writes nothing, so the member taken when a survivor promotes says crash-consistent,
+			// which it is. ⚠️ ExecStopPost, never ExecStop: it runs after the container is actually
+			// down, on every stop systemd performs, and is the only place $SERVICE_RESULT exists.
+			// The `-` for the start hook's reason: a household must never lose an app because a
+			// marker could not be written.
 			lines = append(lines, "ExecStopPost=-"+agentBin()+" --app-stopped="+m.Name)
 		}
 		out.Files[unit+".container"] = join(lines...)
 		out.Units = append(out.Units, unit+".service")
 		out.ContainerUnits = append(out.ContainerUnits, unit+".service")
 
-		// One .image unit per container. Two containers sharing a ref yield two oneshot units
-		// that ensure the same image — idempotent and harmless, and cheaper to read than a
-		// dedup table keyed on a digest.
+		// One .image unit per container; two containers sharing a ref get two idempotent, harmless
+		// oneshot units, cheaper to read than a dedup table keyed on a digest. No [Install]: a
+		// guarded caller starts it, it never starts itself (see Render's doc comment).
 		//
-		// No [Install]: this unit exists to BE started by a guarded caller, never to start
-		// itself. See Render's doc comment.
+		// TimeoutStartSec bounds the pull because nothing else does: quadlet generates Type=oneshot
+		// (measured against podman 5.8.2's own generator), for which systemd disables
+		// TimeoutStartSec= by default, and converge starts this unit on the promotion path. An
+		// unbounded pull from a registry that dribbles bytes holds the promotion open indefinitely:
+		// nixosTest/cold-converge-pull.nix measured one holding a node Primary with the volume
+		// mounted, no VIP, no apps, restarts=0 and nothing in `failed` for its whole 420 s window —
+		// nothing broken enough to alert on. The bound is PullTimeout(m.Size): the allowance plus
+		// the download at PullBitrate for an entry that says how many bytes it downloads, else
+		// ImagePullTimeout (45 minutes). Size is the app's total, so each image of a
+		// multi-container app is bounded by the whole: generous, but the only number the manifest
+		// carries.
 		//
-		// TimeoutStartSec BOUNDS THE PULL, because nothing else does. Quadlet generates a
-		// Type=oneshot unit (measured against podman 5.8.2's own generator), and systemd disables
-		// TimeoutStartSec= by default for oneshot. converge starts this unit on the PROMOTION
-		// path, so an unbounded pull from a registry that dribbles bytes holds the promotion open
-		// indefinitely: nixosTest/cold-converge-pull.nix measured a node sitting Primary with the
-		// volume mounted, no VIP, no apps, restarts=0 and nothing in `failed` for its whole 420 s
-		// window. Nothing was broken enough to alert on.
+		// ⚠️ Deliberately not tighter: the bound makes a hopeless pull loud, not failure prompt,
+		// since an expiry throws away the layer in flight. nixosTest/image-pull-resume.nix: a
+		// SIGTERM (what the timeout sends) at 43% of a 25 MiB single-layer image re-fetched the
+		// full 25 MiB (1.43x on the wire), but an image of 5x1 MiB plus one 20 MiB layer,
+		// interrupted with the small ones done and the big one at 8/20 MiB, re-requested none of
+		// the five (equal layers hide this: podman copies layers concurrently, so none has finished
+		// at the interrupt). Progress across attempts is monotonic by whole layer, so the bound has
+		// to clear the largest single layer, not the whole image: 45 minutes covers a
+		// several-hundred-MB layer at well under 2 Mbit/s (PullAllowance has the sized case). A
+		// bound shorter than a household's link needs for one layer would never converge,
+		// re-downloading the same blob until something gave up for good. It also clears
+		// self-healing faults: a 20 s outage mid-transfer was absorbed by TCP retransmission with
+		// no re-fetch (1.00x; podman's own --retry never ran), which a timeout firing then would
+		// turn into a re-download.
 		//
-		// The bound is PullTimeout(m.Size): the fixed allowance plus the download at PullBitrate
-		// for an entry that says how many bytes it downloads, ImagePullTimeout (45 minutes) for
-		// one that does not. Size is the app's total, not this container's, so a multi-container
-		// app bounds each image by the whole: generous per image, and the only number the
-		// manifest carries.
-		//
-		// ⚠️ DELIBERATELY NOT TIGHTER. The bound's job is to make a hopeless pull LOUD, not to
-		// make failure prompt, because an expiry throws away the layer in flight:
-		// nixosTest/image-pull-resume.nix measured that an interrupted layer does NOT resume — a
-		// SIGTERM (what the timeout sends) at 43% of a 25 MiB single-layer image cost the full
-		// 25 MiB again (1.43x on the wire). What survives is WHOLE LAYERS: an image of 5x1 MiB
-		// plus one 20 MiB layer, interrupted with the small ones done and the big one at 8/20 MiB,
-		// re-requested none of the five. So progress across attempts is MONOTONIC, and the bound
-		// has to clear the image's LARGEST SINGLE LAYER, not the whole image: 45 minutes covers a
-		// several-hundred-MB layer at well under 2 Mbit/s (PullAllowance has the sized case). A bound
-		// shorter than a household's link needs for one layer would never converge: it would
-		// re-download the same blob until something gave up for good. Tighter is not safer here,
-		// it is worse. (Equal layers hide this: podman copies layers CONCURRENTLY, so they advance
-		// in lockstep and none has finished at the interrupt.)
-		//
-		// It also sits well clear of the faults that heal themselves: a 20 s outage mid-transfer
-		// was absorbed by TCP retransmission with no re-fetch at all (1.00x) — podman's own
-		// --retry never ran. A timeout firing during one would turn a self-healing blip into a
-		// re-download.
-		//
-		// PrivateTmp KEEPS THE BOUND FROM BECOMING A DISK LEAK. A pull downloads every COMPRESSED
+		// PrivateTmp keeps the bound from becoming a disk leak. A pull downloads every compressed
 		// layer into /var/tmp/container_images_storage<random>/, unpacks each into the graph root
-		// as it arrives, and deletes the downloads only when the whole pull COMPLETES — a killed
-		// pull leaves them behind and podman never comes back for them (measured: three
-		// interrupted pulls left three directories). Each expiry would abandon up to the whole
-		// download — 622 MB for Home Assistant — on the guest's OS disk, where /var/tmp lives
-		// (the graph root is on the state disk), and the households that hit the timeout hit it
-		// repeatedly. (A completed pull peaks at both at once: 622 MB in /var/tmp beside 2.28 GB
-		// already unpacked, for Home Assistant.) systemd gives the unit its own /var/tmp and
-		// removes it when the unit stops, HOWEVER it stops — an ExecStopPost cleanup would not,
-		// since a SIGKILL skips it. Measured both ways: an interrupted pull leaves 0 KB behind,
-		// and a successful one lands in the graph root untouched. The private /var/tmp is
-		// DISK-BACKED — a systemd-private-*-briard-…-image.service-* directory on the root
-		// filesystem — so it does not trade the leak for an OOM on the first multi-GB image.
-		//
-		// Only on the .image unit: this one pulls and exits. The .container unit runs the app
-		// and is deliberately left alone.
+		// as it arrives, and deletes the downloads only when the whole pull completes; a killed
+		// pull leaves them, and podman never comes back for them (measured: three interrupted pulls
+		// left three directories). Each expiry would strand up to the whole download (622 MB for
+		// Home Assistant) on the guest's OS disk, where /var/tmp lives (the graph root is on the
+		// state disk), and the households that hit the timeout hit it repeatedly; a completed pull
+		// peaks at both at once (622 MB in /var/tmp beside 2.28 GB unpacked, for Home Assistant).
+		// systemd removes the unit's own /var/tmp however it stops, where an ExecStopPost cleanup
+		// is skipped by a SIGKILL; measured both ways, an interrupted pull leaves 0 KB and a
+		// successful one lands in the graph root untouched. The private /var/tmp is disk-backed
+		// (systemd-private-*-briard-…-image.service-* on the root filesystem), so it does not trade
+		// the leak for an OOM on the first multi-GB image. Only the .image unit gets it, since it
+		// pulls and exits; the .container unit runs the app and is deliberately left alone.
 		out.Files[unit+".image"] = join(
 			"[Image]",
 			"Image="+c.Image,
@@ -398,9 +340,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		}
 		out.ImageRefs[unit+"-image.service"] = c.Image
 	}
-	// Where the pod above can be reached: the address it was rendered with, returned so the
-	// reverse proxy's route and the health probe's target come from the value podman was given
-	// rather than from callers agreeing.
+	// The address the pod above was rendered with (see Rendered.Address).
 	out.Address = addr
 	return out, nil
 }
@@ -418,12 +358,12 @@ func DataRoot(app string) string { return Area(manifest.TierData, app) }
 const SnapshotsDir = "/var/lib/briard/data/.snapshots/"
 
 // snapshotStamp is the member name's time format: fixed width and UTC, so lexical order over
-// STAMPS is chronological order. Over whole names it is not (SnapshotMember).
+// stamps is chronological order. Over whole names it is not (SnapshotMember).
 const snapshotStamp = "20060102T150405Z"
 
 // A Trigger says what caused a member to be taken, and is the half of its name a human scans.
 // The set is closed because the name parser enumerates it: a trigger nobody listed is a member
-// nobody can read back. What a member is KEPT for is not its trigger but the event it anchors
+// nobody can read back. What a member is kept for is not its trigger but the event it anchors
 // (history.go).
 type Trigger string
 
@@ -432,10 +372,9 @@ const (
 	// us about its own (Home Assistant's s6 `run` wrapper), one of those. It is the only trigger
 	// a later start may replace, while it is still pending.
 	TriggerStart Trigger = "start"
-	// TriggerClock is the member taken BY THE CLOCK rather than by a start: a stable
+	// TriggerClock is the member taken by the clock rather than by a start: a stable
 	// app can run for a month without a restart, and the clock is what still samples it.
-	//
-	// It is the one member taken against a RUNNING app, so it is Crash unless the app held
+	// It is the one member taken against a running app, so it is Crash unless the app held
 	// still for it.
 	TriggerClock Trigger = "clock"
 	// The *-before samples: each is taken with the app stopped, just before an
@@ -443,27 +382,26 @@ const (
 	// until the next start, so nothing is ever compared against one (Trigger.Before).
 	//
 	// TriggerAppUpdateBefore precedes briard moving the app to another version. It is the member
-	// the upgrade-point rules say must be taken on a STOPPED container.
+	// the upgrade-point rules say must be taken on a stopped container.
 	TriggerAppUpdateBefore Trigger = "app-update-before"
 	// TriggerAppUndoBefore precedes briard putting an earlier member back, for any reason,
 	// including the automatic revert of a failed update. Undoing it is the redo.
 	TriggerAppUndoBefore Trigger = "app-undo-before"
-	// TriggerHassRestoreBefore is taken at Home Assistant's first restart of one of its OWN backup
+	// TriggerHassRestoreBefore is taken at Home Assistant's first restart of one of its own backup
 	// restores, while its marker is present. It is not a start.
 	TriggerHassRestoreBefore Trigger = "hass-restore-before"
 	// TriggerHassDBRestoreBefore precedes briard putting back Home Assistant's recorder database
 	// alone, after the nightly check found the newest copy damaged (agent/hass/dbcheck.go). It
 	// holds the damaged database, so undoing its event puts that back.
 	TriggerHassDBRestoreBefore Trigger = "hass-db-restore-before"
-	// TriggerFromBackup is a member MATERIALISED from the household's backup rather than taken
-	// off the live data: one night's copy of an app, put into the ring so that the ordinary
-	// restore can put it back. Its bytes are the backup's, so the sidecar's TakenAt is the night
-	// the backup copied (what a restore to it goes back to) while the NAME is stamped when it was
-	// materialised -- it must be the newest member until the restore has used it, or the prune
-	// would take it first. It counts as Before(): the app never ran on it, so nothing is compared
-	// against it.
+	// TriggerFromBackup is a member materialised from the household's backup rather than taken
+	// off the live data: one night's copy of an app, put into the ring so the ordinary restore can
+	// put it back. Its bytes are the backup's, so its sidecar's TakenAt is the night the backup
+	// copied (what a restore to it goes back to), while its name is stamped at materialising: it
+	// must be the newest member until the restore has used it, or the prune would take it first. It
+	// counts as Before(): the app never ran on it, so nothing is compared against it.
 	TriggerFromBackup Trigger = "from-backup"
-	// TriggerUninstall is the member an uninstall KEEPS: the app stopped, its data as it stood, and
+	// TriggerUninstall is the member an uninstall keeps: the app stopped, its data as it stood, and
 	// the manifest it ran. It outlives the app's manifest on the volume, so for 30 days it is the
 	// app's whole presence there (agent/guestagent/uninstall.go), and installing the app again is
 	// the restore of it. A data area's is in the ring; a files area's, of the same name, beside
@@ -496,7 +434,7 @@ func SnapshotMemberTime(name string) (time.Time, bool) {
 }
 
 // ParseSnapshotMember splits `<app>-<trigger>-<stamp>`. The app may itself contain dashes
-// ("home-assistant"), so it is parsed from the RIGHT: the stamp is fixed width and the trigger
+// ("home-assistant"), so it is parsed from the right: the stamp is fixed width and the trigger
 // comes from a closed set, which leaves whatever precedes them as the name.
 func ParseSnapshotMember(name string) (app string, trigger Trigger, at time.Time, ok bool) {
 	name = strings.TrimPrefix(name, SnapshotsDir)
@@ -516,19 +454,14 @@ func ParseSnapshotMember(name string) (app string, trigger Trigger, at time.Time
 	return "", "", time.Time{}, false
 }
 
-// SnapshotMember is one member's subvolume path: app, trigger and the moment it was taken.
-//
-// A SERIES, WHICH IS THE WHOLE OF THE RING: members are distinct by construction, so nothing is
-// replaced, and a take whose name already exists is refused rather than resolved.
-//
-// Second precision and UTC, so two members' TIMES compare correctly once parsed, and so two nodes
-// in different zones taking a member at the same instant agree on what it is called.
-//
-// ⚠️ THE NAME IS NOT A CHRONOLOGICAL SORT KEY, and reading it as one is a real bug this format
-// invites: the TRIGGER sits between the app and the stamp, so every `-clock-` member sorts
-// before every `-start-` one whatever their times. Readers order by SnapshotMemberTime.
-// (Trigger-before-stamp is kept because it is what makes the directory readable to a human
-// scanning it, which is the other job the name has.)
+// SnapshotMember is one member's subvolume path: app, trigger and the moment it was taken. The ring
+// is a series of members distinct by construction: nothing is replaced, and a take whose name
+// already exists is refused rather than resolved. Second precision and UTC, so times compare
+// correctly once parsed and nodes in different zones taking a member at the same instant agree on
+// its name. ⚠️ The name is not a chronological sort key, and reading it as one is a real bug the
+// format invites: the trigger sits between app and stamp, so every `-clock-` member sorts before
+// every `-start-` one whatever their times. Readers order by SnapshotMemberTime; the trigger stays
+// before the stamp because that makes the directory readable to a human scanning it.
 func SnapshotMember(app string, trigger Trigger, at time.Time) string {
 	return SnapshotsDir + app + "-" + string(trigger) + "-" + at.UTC().Format(snapshotStamp)
 }
@@ -540,31 +473,27 @@ func SnapshotMember(app string, trigger Trigger, at time.Time) string {
 // history may rely on rather than a hope.
 func SnapshotSidecar(member string) string { return member + ".json" }
 
-// AppSidecar is where a member's APP keeps its own state about it, beside the history's sidecar
+// AppSidecar is where a member's app keeps its own state about it, beside the history's sidecar
 // and never read by the history. Its existence alone holds the member, for at most RetainApp
 // (RetentionPrune); what it says is the app's business (Home Assistant's recorder check,
 // agent/hass/dbcheck.go). It ends in .json, so a listing of the ring skips it like the other.
 func AppSidecar(member string) string { return member + ".app.json" }
 
-// A Consistency says what a member's bytes ARE, which is not the question its trigger answers.
+// A Consistency says what a member's bytes are, which its trigger does not answer. Quiesced:
+// flushed by a clean stop or held still across the take, so a restore gives the app exactly what it
+// had. Crash: whatever a power cut would have left, so a restore bets on the app's own recovery —
+// measured-good for Home Assistant (WAL replay, nixosTest/hass-upgrade.nix), measured-bad for
+// mosquitto, which lost exactly the retained message somebody would roll back for
+// (nixosTest/apps-pair.nix). Which way the bet goes is per-app, so a member carries the answer
+// rather than leaving every reader to infer one.
 //
-// QUIESCED means the data was flushed by a clean stop, or held still across the take: restoring it
-// gives the app exactly what it had. CRASH means it was not — the bytes are whatever a power
-// cut would have left, and restoring one is a bet on the app's own recovery path. That bet is
-// measured-good for Home Assistant (WAL replay, nixosTest/hass-upgrade.nix) and measured-BAD for
-// mosquitto, which lost exactly the retained message somebody would roll back FOR
-// (nixosTest/apps-pair.nix). Per-app, in other words — which is why a member carries the
-// answer rather than leaving every reader to infer one.
-//
-// IT IS THE TAKER'S TO STATE, never derived from the Trigger, because ⚠️ A STOPPED CONTAINER IS
-// NOT THE SAME FACT AS FLUSHED DATA. The member taken as an app starts after a promotion has
-// nothing running either, yet the old primary never shut the app down, so its bytes are
-// crash-consistent under an ordinary `start` trigger. A container start tells the two apart by
-// the clean-stop marker its unit's ExecStopPost leaves (see Render); a taker that stopped the app
-// itself knows.
-//
-// The empty value means UNRECORDED — a member from an older briard. A reader must treat it as
-// unknown and never as quiesced: the integrity check may trust only what says so.
+// ⚠️ It is the taker's to state, never derived from the Trigger: a stopped container is not flushed
+// data. The member taken as an app starts after a promotion has nothing running either, yet the old
+// primary never shut the app down, so it is crash-consistent under an ordinary `start` trigger. A
+// container start tells the two apart by the clean-stop marker its unit's ExecStopPost leaves (see
+// Render); a taker that stopped the app itself knows. Empty means unrecorded (a member from an
+// older briard): readers treat it as unknown, never quiesced, since the integrity check may trust
+// only what says so.
 type Consistency string
 
 const (
@@ -578,14 +507,11 @@ const (
 )
 
 // Note is what a household is told about a point's consistency, in one phrase, or "" when there
-// is nothing to say.
-//
-// ONE SENTENCE, ONE PLACE. Both front ends render it — `briard app history` and the dashboard's
-// history page — and a household that heard two different descriptions of the same fact would have to
-// work out whether they meant the same thing. It stays out of our vocabulary too: "quiesced" and
-// "crash-consistent" are words for this file, not for somebody's kitchen.
-//
-// The QUIET case is quiet on purpose: most points are clean, and a note on every line is a note
+// is nothing to say. One sentence in one place, because both front ends render it (`briard app
+// history` and the dashboard's history page), and a household that heard two descriptions of the
+// same fact would have to work out whether they meant the same thing. It keeps our vocabulary out
+// too: "quiesced" and "crash-consistent" are words for this file, not for somebody's kitchen. The
+// quiet case is quiet on purpose: most points are clean, and a note on every line is a note
 // nobody reads.
 func (c Consistency) Note() string {
 	switch c {
@@ -600,19 +526,19 @@ func (c Consistency) Note() string {
 
 // SnapshotMeta is a member's sidecar — the event it is the point of, and what a restore needs.
 //
-// MANIFEST, NOT A DIGEST. The restore path re-provisions from the manifest text and re-renders
-// units from it, an app with several containers has several digests, and env, mounts, ports
-// and subdirs are identity too; the digests are inside it. It cannot be read off the member
-// either: the volume keeps manifests in `.apps/<name>.json`, a SIBLING of the data subvolume,
-// so a btrfs snapshot of the data does not capture the code identity that wrote it. Carrying it
-// here is what makes a member self-contained.
+// A manifest, not a digest: the restore path re-provisions and re-renders units from the manifest
+// text, an app with several containers has several digests, and env, mounts, ports and subdirs are
+// identity too; the digests are inside it. Nor can it be read off the member: the volume keeps
+// manifests in `.apps/<name>.json`, a sibling of the data subvolume, so a btrfs snapshot of the
+// data does not capture the code identity that wrote it. Carrying it here makes a member
+// self-contained.
 type SnapshotMeta struct {
 	App         string      `json:"app"`
 	Trigger     Trigger     `json:"trigger"`
 	TakenAt     time.Time   `json:"taken_at"`
 	Consistency Consistency `json:"consistency"` // what the bytes are; empty means an older member, unrecorded
 	Manifest    string      `json:"manifest"`    // the manifest running when it was taken, verbatim
-	// Event is the event this member is the RESTORE POINT of, or nil for a plain sample
+	// Event is the event this member is the restore point of, or nil for a plain sample
 	// (history.go). An operation writes it with its *-before member; what an evaluation finds is
 	// added to the previous member's sidecar as a reason.
 	Event *Event `json:"event,omitempty"`
@@ -624,7 +550,7 @@ type SnapshotMeta struct {
 	// healthy → unhealthy transition survives the pruning of the start that measured it. Empty
 	// means unknown.
 	Health apps.Health `json:"health,omitempty"`
-	// Resets are the renames a start's BOOT made (apps.Corrupt's form), found at its verdict
+	// Resets are the renames a start's boot made (apps.Corrupt's form), found at its verdict
 	// and landed on the sample before it -- with those of the pending starts it replaced.
 	// No member holds them before the next sample does, so a comparison with this
 	// member as the earlier side does not find them again.
@@ -697,13 +623,12 @@ func ContainerName(app, container string) string { return prefix + app + "-" + c
 // trap `Image=foo.image` sets for pulls.
 const PodNetwork = "briard"
 
-// Images renders ONLY the pre-warm units — the part of an app that has no networking in it.
+// Images renders only the pre-warm units — the part of an app that has no networking in it.
 //
-// It exists because warming is something a node does when it is NOT serving, and a node that is
-// not serving has not allocated this app an address. Rendering the whole set would demand one,
-// and the honest answer would be a placeholder written into a .pod file that converge is about to
-// overwrite. The image units depend on nothing but the manifest's digests, so this is the whole
-// truth for a prewarm rather than a subset of a lie.
+// Warming is something a node does when it is not serving, so it has not allocated this app an
+// address; rendering the whole set would demand one, and the honest answer would be a placeholder
+// in a .pod file that converge is about to overwrite. The image units depend on nothing but the
+// manifest's digests, so this is the whole truth for a prewarm rather than a subset of a lie.
 func Images(m manifest.Manifest) (Rendered, error) {
 	if err := m.Validate(); err != nil {
 		return Rendered{}, err
@@ -722,16 +647,15 @@ func Images(m manifest.Manifest) (Rendered, error) {
 // agentBin is the guest agent's absolute path, which the rendered ExecStartPre and ExecStopPost
 // must name because systemd requires an absolute path for the first word of an Exec line.
 //
-// It is the ONE node-local fact this renderer reads, and it is read rather than passed because
-// the alternative is worse: threading it through Render would put it in every caller and every
-// test for the sake of a path that is the same on every node. Render stays a pure function of the
-// manifest in the sense that matters -- the same manifest renders the same units on a node --
-// which is the property converge-at-promotion needs.
+// It is the one node-local fact this renderer reads, read rather than passed because threading
+// it through Render would put it in every caller and every test for a path that is the same on
+// every node. Render stays a pure function of the manifest in the sense converge-at-promotion
+// needs: the same manifest renders the same units on a node.
 func agentBin() string { return guestfirmware.BinDir() + "/briard-guest-agent" }
 
 // SnapshotEntry is one ring member as a reader sees it: where it is, and what its sidecar says.
 //
-// The two are kept apart deliberately. The sidecar is what the guest WROTE when the member was
+// The two are kept apart deliberately. The sidecar is what the guest wrote when the member was
 // taken and must not carry its own path -- a copied or renamed directory would then describe
 // somewhere it is not -- so the path comes from the listing that found it.
 type SnapshotEntry struct {

@@ -8,26 +8,22 @@ import (
 	apps "briard.io/agent/apps"
 )
 
-// THE HISTORY: what a household sees of the ring. Members are SAMPLES, taken at every
-// start, by the clock, and just before each operation; what the household reads is a list of
-// EVENTS, and each event is undoable because it sits on a sample, its RESTORE POINT.
+// The history: what a household sees of the ring. Members are samples, taken at every start, by the
+// clock and just before each operation; the household reads events, each undoable because it sits
+// on a sample, its restore point. An event is one record with a creation time and a set of reasons
+// that only ever grows; a restore point holds at most one, and a later finding adds a reason to it
+// rather than making another.
 //
-// ONE EVALUATION PER SAMPLE. What is found at sample T1 happened between T0 and T1, and returning
-// to T0 undoes it, so a finding is recorded on T0. Two samples are compared only if the app RAN
-// between them: a *-before sample is taken with the app stopped and the app does not run again
-// until the next start, so nothing is compared against a *-before sample (Trigger.Before), and
-// everything else is.
+// One evaluation per sample: what is found at T1 happened between T0 and T1, and returning to T0
+// undoes it, so the finding is recorded on T0. Samples are compared only if the app ran between
+// them, so never against a *-before sample (Trigger.Before): it is taken with the app stopped, and
+// the app does not run again until the next start; every other pair is compared.
 //
-// AN EVENT IS ONE RECORD with a creation time and a set of REASONS that only ever grows. At most one
-// event sits on a restore point; a later finding adds a reason to it rather than making another.
-//
-// THE INVARIANT "undo back to here" rests on: the history is ordered by restore point, and each row
-// restores its own, so undoing a row undoes exactly the rows above it and none below. Every new
-// restore point is later than the one before it, because each is the *-before sample an operation
-// takes first, the sample before the one evaluated, or a sample after the last event.
-//
-// A sample that anchors no event is REPLACED by the next one (RetentionPrune), so sampling often
-// costs nothing a household can see.
+// "Undo back to here" rests on one invariant: rows are ordered by restore point and each restores
+// its own, so undoing a row undoes exactly the rows above it and none below. Every new restore
+// point is later than the last, being the *-before sample an operation takes first, the sample
+// before the one evaluated, or a sample after the last event. A sample that anchors no event is
+// replaced by the next (RetentionPrune), so sampling often costs nothing a household can see.
 
 // A ReasonKind says why an event exists. The set is closed: an operation, a detected change, a
 // reset the app made on its own, a start that ended unhealthy, or quiet time.
@@ -38,7 +34,7 @@ const (
 	ReasonAppUpdate ReasonKind = "app-update"
 	// ReasonAppUndo is briard putting an earlier sample back, on its app-undo-before sample.
 	ReasonAppUndo ReasonKind = "app-undo"
-	// ReasonHassRestore is Home Assistant restoring one of its OWN backups, which briard sees from
+	// ReasonHassRestore is Home Assistant restoring one of its own backups, which briard sees from
 	// the inside and did not perform, on its hass-restore-before sample.
 	ReasonHassRestore ReasonKind = "hass-restore"
 	// ReasonChanged is what an app's detector found (apps.Detect).
@@ -73,7 +69,7 @@ type Reason struct {
 
 // Event is one row of an app's history as it is stored.
 type Event struct {
-	// At is the event's CREATION time, when its first reason arrived, and it is what a row shows.
+	// At is the event's creation time, when its first reason arrived, and it is what a row shows.
 	At      time.Time `json:"at"`
 	Reasons []Reason  `json:"reasons"`
 }
@@ -124,9 +120,9 @@ const (
 	QuietEvery = 24 * time.Hour
 )
 
-// sortedMembers is one app's members with a parseable name, OLDEST FIRST.
+// sortedMembers is one app's members with a parseable name, oldest first.
 //
-// ⚠️ IT ORDERS BY THE TIME IN THE NAME, never by the name itself: the trigger sits between the
+// ⚠️ It orders by the time in the name, never by the name itself: the trigger sits between the
 // app and the stamp and would dominate a string comparison. A member whose name does not
 // parse is somebody else's and is left out.
 func sortedMembers(members []SnapshotEntry) []SnapshotEntry {
@@ -162,16 +158,14 @@ func quietStart(all []SnapshotEntry) int {
 	return 0
 }
 
-// QuietPoint says which member a quiet evaluation of `member` registers a `quiet` event on, if any.
-// The caller has already found nothing at `member`, and `member` carries no event of
-// its own.
+// QuietPoint says which member a quiet evaluation of `member` registers a `quiet` event on, if
+// any. The caller has already found nothing at `member`, which carries no event of its own.
 //
-// Let S₀ be the first sample after the last event. The first quiet sample at least QuietAfter after
+// With S₀ the first sample after the last event, the first quiet sample at least QuietAfter after
 // S₀ registers quiet on S₀, and later ones change nothing. Once QuietEvery has passed since the
-// newest quiet point, the next quiet sample starts another, on the sample before it.
-//
-// ⚠️ ON THE SAMPLE BEFORE, never on `member` itself: a finding at the next sample lands on
-// `member`, and a quiet event never shares its record.
+// newest quiet point, the next quiet sample starts another — ⚠️ on the sample before it, never on
+// `member` itself: a finding at the next sample lands on `member`, and a quiet event never shares
+// its record.
 func QuietPoint(members []SnapshotEntry, member string) (SnapshotEntry, bool) {
 	at, ok := SnapshotMemberTime(member)
 	if !ok {
@@ -210,20 +204,18 @@ func QuietPoint(members []SnapshotEntry, member string) (SnapshotEntry, bool) {
 	return SnapshotEntry{}, false
 }
 
-// RetentionPrune reports which of one app's members the history no longer needs, OLDEST
-// FIRST — the order they should be deleted in, so an interrupted prune has still dropped the least
-// useful ones.
+// RetentionPrune reports which of one app's members the history no longer needs, oldest first —
+// the order to delete them in, so an interrupted prune has still dropped the least useful ones.
 //
 // A member is kept if it is the restore point of an event under RetainEvents old, of the latest
 // app-update for RetainLastUpdate, held by an app sidecar for RetainApp, a night from the backup
-// for RetainEvents from when it was put there, the NEWEST member, a start still PENDING evaluation, the newest
-// EVALUATED member (what that evaluation compares with, so pruning waits for it), or S₀, the start
-// of a quiet stretch that has no quiet point yet (QuietPoint needs it). Everything else is a
-// sample that anchors nothing, and the next one has replaced it.
-//
-// NO COUNT LIMIT, because the event rate is bounded by the sampling rate: at most one finding per
-// sample, plus the operations and one quiet point a day. A crash loop is a run of samples with
-// nothing between them to detect, so every one of them is replaced by the next.
+// for RetainEvents from when it was put there, the newest member, a start still pending
+// evaluation, the newest evaluated member (what that evaluation compares with, so pruning waits
+// for it), or S₀, the start of a quiet stretch that has no quiet point yet (QuietPoint needs it).
+// Everything else is a sample that anchors nothing, and the next one has replaced it. There is no
+// count limit, because the event rate is bounded by the sampling rate: at most one finding per
+// sample, plus the operations and one quiet point a day; a crash loop is a run of samples with
+// nothing between them to detect, each replaced by the next.
 func RetentionPrune(members []SnapshotEntry, now time.Time) []string {
 	all := sortedMembers(members)
 	if len(all) == 0 {
@@ -251,7 +243,7 @@ func RetentionPrune(members []SnapshotEntry, now time.Time) []string {
 		case ev != nil && now.Sub(ev.At) <= RetainEvents:
 		case i == lastUpdate && now.Sub(ev.At) <= RetainLastUpdate:
 		case m.App && now.Sub(at) <= RetainApp:
-		// A NIGHT FROM THE BACKUP, put in the ring to be restored: the undo point the restore takes
+		// A night from the backup, put in the ring to be restored: the undo point the restore takes
 		// next is a take, and every take prunes, so being the newest does not carry it to its own
 		// swap. Kept as long as an event, from when it was put there; after the swap it shares its
 		// extents with the live copy, and one a failed restore left goes with the window.
@@ -278,12 +270,12 @@ type HistoryRow struct {
 	Point SnapshotEntry
 }
 
-// History is one app's events, NEWEST FIRST, from its members (any order). Times in a title
+// History is one app's events, newest first, from its members (any order). Times in a title
 // are read in loc, which is the reader's.
 func History(members []SnapshotEntry, loc *time.Location) []HistoryRow {
 	var rows []HistoryRow
 	all := sortedMembers(members)
-	// BY RESTORE POINT, newest first, which is the invariant's order (see the top of this file).
+	// By restore point, newest first, which is the invariant's order (see the top of this file).
 	for i := len(all) - 1; i >= 0; i-- {
 		if ev := all[i].Meta.Event; ev != nil {
 			rows = append(rows, HistoryRow{Reasons: ev.Reasons, At: ev.At, Point: all[i]})
