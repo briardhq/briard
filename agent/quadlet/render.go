@@ -236,7 +236,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// is the other half, recovery in the unit rather than the promoter. `always`, not
 		// `on-failure`: an app container's job is to keep serving, so exiting 0 is as dead as
 		// exiting 1, and the pod unit's generated `on-failure` would silently accept the first.
-		// Restarts systemd itself asked for are unaffected — a `systemctl stop` (quiesce, demote)
+		// A stop systemd itself was asked for is unaffected — a `systemctl stop` (quiesce, demote)
 		// is never restarted whatever the policy says. RestartSec spaces retries past systemd's
 		// default start-rate limit (StartLimitBurst=5 per StartLimitIntervalSec=10s), so a
 		// crash-loop retries indefinitely instead of latching to `failed` on a transient cause, and
