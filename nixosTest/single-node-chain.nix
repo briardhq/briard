@@ -3,7 +3,7 @@
 # Every user starts single-node, and with one copy DRBD protects nothing: it turns any single
 # bad block into a dead node (measured by the media-error rigs). So a lone anchor mounts its data LV directly, and the
 # promoter chain -- the same five members, in the same order -- is started by a static target
-# instead of drbd-reactor. This rig is what single-node-promoter was for that topology: a lone
+# instead of drbd-reactor. This rig proves that topology end to end on the guest: a lone
 # node converges, serves, survives the OS-upgrade bracket's gesture, and holds-and-restarts.
 #
 #   1 the seam builds the LVs and formats; DRBD is nowhere (no device, no module, no .res)

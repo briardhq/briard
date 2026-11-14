@@ -1,10 +1,10 @@
-# Briard dummy stateful app (M0 test fixture), built from the repo's Go
+# Briard dummy stateful app (test fixture), built from the repo's Go
 # module. The binary itself is pure stdlib, but buildGoModule vendors the whole
 # module, so this
 # shares the module-wide vendorHash (one definition, vendor-hash.nix).
 #
-# It lives under nixosTest/: it is a fixture, and since the payload slot was deleted
-# nothing in the product tree refers to it at all -- the tests install it the way a
+# It lives under nixosTest/: it is a fixture, and
+# nothing in the product tree refers to it -- the tests install it the way a
 # user installs an app.
 { buildGoModule }:
 buildGoModule {

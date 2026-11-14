@@ -32,8 +32,8 @@ pkgs.testers.runNixOSTest {
     imports = [ node ];
     # THE PRODUCT'S VALUE, which the test framework overrides. nixpkgs' test instrumentation sets
     # vm.panic_on_oom = mkDefault 2 so a test dies loudly on any OOM -- and mode 2 panics on a
-    # CGROUP OOM too, which turns the containment under test into a guest crash (measured: the
-    # first run's leak met the app's limit and the kernel panicked). The shipped guest sets
+    # CGROUP OOM too, which turns the containment under test into a guest crash (without this
+    # line, the leak meeting the app's limit panics the kernel). The shipped guest sets
     # nothing, so it runs the kernel default 0, where a cgroup OOM kills inside the cgroup.
     boot.kernel.sysctl."vm.panic_on_oom" = 0;
   };

@@ -1,7 +1,8 @@
 # HOW DOES HOME ASSISTANT BEHAVE IN A 1 GB GUEST WITH ZRAM? -- a measurement, run by hand.
 #
-# The guest's memory is fixed at boot and the default (2 GB) was picked when Home Assistant was
-# the only app. Whether a smaller guest is viable, and what its memory looks like when it is
+# The guest boots small (1 GB by default) and the agent grows it a DIMM at a time while it runs
+# (agent/host/memory.go); this rig has no host, so its 1 GB is fixed. Whether a guest that small
+# is viable, and what its memory looks like when it is
 # not, is a question for evidence: this boots the shipped guest module at 1 GB, installs the real
 # Home Assistant image onto the volume the way the product does, lets it serve, and prints a
 # timeline of the numbers the resources verb reports (the same kernel files, read the same way):

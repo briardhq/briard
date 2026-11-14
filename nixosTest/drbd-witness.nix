@@ -1,6 +1,6 @@
-# 2 disk nodes + 1 diskless witness (M0b): DRBD-9 diskless quorum.
+# 2 disk nodes + 1 diskless witness: DRBD-9 diskless quorum.
 #
-# The product's primary topology: two real nodes plus a cloud
+# The two-node topology: two real nodes plus a cloud
 # tiebreaker. The witness runs DRBD *diskless* (a quorum voter with no data copy)
 # and does NOT run drbd-reactor — it never runs the apps. Kill the primary
 # disk node and the lone survivor still fails over, because survivor + witness =
@@ -54,8 +54,8 @@ pkgs.testers.runNixOSTest {
     # The witness has no tier to build and still needs its `.res` and its attach --
     # briard-node-storage runs on EVERY node, which is why one call covers both.
     witness.succeed("briard-test-storage")
-    # All three connected (node1 ↔ node2 + the diskless witness), then skip the
-    # initial sync. The per-node volume form needs the volume id (r0/0).
+    # All three connected (node1 ↔ node2 + the diskless witness). The joiner syncs from the
+    # seed for real (asserted before the crash below).
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
 
     # Only the disk nodes run the promoter; the witness just votes.

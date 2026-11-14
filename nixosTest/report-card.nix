@@ -13,8 +13,8 @@ pkgs.testers.runNixOSTest {
     # refusal is the branch worth spending a VM on. `Assess` is pure and its PASS/WARN/REFUSE
     # arithmetic is unit-tested; what only a real host can show is that the reader read THIS
     # machine, that a refusal carries its FIX rather than a bare verdict, and that the process
-    # exits non-zero. Asserting PASS instead cost 10 GB the guest never touched (659 MB resident
-    # of 10240 declared) to exercise the one branch the unit tests already own.
+    # exits non-zero. Asserting PASS instead would cost 10 GB the guest never touches to exercise
+    # the one branch the unit tests already own.
     # iproute2 present so the `ip` gate PASSes; KVM/tun depend on the runner, so the overall
     # verdict is asserted for self-consistency rather than for a value.
     virtualisation.memorySize = 2048;
@@ -32,12 +32,12 @@ pkgs.testers.runNixOSTest {
     status, out = machine.execute("briard-agent --report-card")
     print(f"report-card exit={status}:\n{out}")
 
-    # Every gate in the closed set is emitted.
+    # Each named gate is emitted (disk and the address checks are not in this list).
     for name in ["kvm", "tun", "iproute2", "systemd", "memory", "network", "mdns", "encryption"]:
         assert name in out, f"report card is missing the {name} check"
 
-    # Deterministic gates on this node PASS (concrete, non-vacuous): iproute2 installed, 8 GB RAM,
-    # a wired virtio NIC.
+    # Deterministic gates on this node PASS (concrete, non-vacuous): iproute2 installed, systemd
+    # booted, a wired virtio NIC, nss-mdns configured.
     import re
     def gate(name):
         m = re.search(r"\[(\w+)\s*\]\s+" + name + r"\b", out)
@@ -45,17 +45,15 @@ pkgs.testers.runNixOSTest {
     assert gate("iproute2") == "PASS", f"iproute2 gate = {gate('iproute2')}, want PASS"
     # Deterministic here for the same reason iproute2 is: this VM is booted by systemd, so
     # /run/systemd/system exists. The gate refuses a host booted with OpenRC/runit BEFORE anything
-    # is written -- install.sh had the guard already, but as its last branch, after ~400 MB landed.
+    # is written, not after ~400 MB has been downloaded and unpacked.
     assert gate("systemd") == "PASS", f"systemd gate = {gate('systemd')}, want PASS (this VM is systemd-booted)"
     # THE MEMORY REFUSAL, END TO END: the reader read THIS machine (2 GB, under the 3584 MB floor),
-    # and the refusal carries the FIX that makes it actionable rather than a bare verdict. Asserting
-    # PASS here instead cost 10 GB the guest never touched, to exercise the one branch `Assess`'s
-    # unit tests already own.
+    # and the refusal carries the FIX that makes it actionable rather than a bare verdict.
     #
-    # The overall verdict was ALREADY refused before this, and not by the memory gate: the test
-    # VM's root has under a gigabyte free, so the disk gate refuses and the exit-code assertion
-    # below has always run its non-zero branch. This adds a SECOND, deliberate refusal whose input
-    # the test controls, rather than one that depends on how full the builder happens to be.
+    # The memory gate is not the only refusal: the test VM's root has under a gigabyte free, so
+    # the disk gate refuses too and the exit-code assertion below runs its non-zero branch either
+    # way. The memory refusal is the deliberate one, whose input the test controls rather than
+    # how full the builder happens to be.
     assert gate("memory") == "REFUSE", f"memory gate = {gate('memory')}, want REFUSE (2 GB is under the 4 GB floor)"
     assert "add RAM to at least 4 GB" in out, f"a REFUSE must carry its fix, not just a verdict:\n{out}"
     assert "result: REFUSED" in out, f"the summary line must report the refusal:\n{out}"

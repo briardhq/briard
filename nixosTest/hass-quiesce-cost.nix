@@ -8,7 +8,7 @@
 #   - the pause: how long getting the lock takes and how long it is held (the product reports
 #     both, `acquire_ms` / `hold_ms`), p95 across samples;
 #   - whether the lock HOLDS, since a lock Home Assistant breaks under backlog makes the sample
-#     crash-consistent -- the anchor quietly becoming `crash` that the item warns about;
+#     crash-consistent -- the anchor quietly becoming `crash`;
 #   - whether an automation notices: a probe automation is timed inside and outside samples;
 #   - the space an hourly member pins, extrapolated from the churn between two samples.
 #

@@ -2,9 +2,9 @@
 # the guest from the household's L2? Shared by install-macvtap, install-bridge and install-wifi --
 # one assertion per substrate, so the three cannot drift apart.
 #
-# mDNS is asserted on its own, and it is not enough. It is one group, and the mDNS name was only
-# the VISIBLE casualty when the macvtap dropped every group the guest joined: SSDP and the
-# discovery Chromecast, Sonos and HomeKit ride were dropped with it, silently. This pins the
+# mDNS is asserted on its own, and it is not enough. It is one group, and the mDNS name is only
+# the VISIBLE casualty when the macvtap drops every group the guest joined: SSDP and the
+# discovery Chromecast, Sonos and HomeKit ride are dropped with it, silently. This pins the
 # general property to a second group, a routable one (the SSDP group), where a bridge's snooping
 # treats it differently from the link-local 224.0.0.x block mDNS lives in.
 #
@@ -16,8 +16,8 @@
 # the product; it grants no datapath the product lacks.
 #
 # ⚠️ NOT 224.0.0.1. A general query to all-hosts would need no join, and would pass on a node
-# without the fix: the host's kernel joins all-hosts on the macvtap/ipvtap child itself (it has
-# IPv4 enabled), so that MAC is in the child's filter whatever the guest does.
+# whose child lacks ALLMULTI: the host kernel joins all-hosts on the macvtap/ipvtap child
+# itself (it has IPv4 enabled), so that MAC is in the child's filter whatever the guest does.
 #
 # ⚠️ WHEN THE OBSERVER LISTENS IS PART OF THE ASSERTION, as with mDNS's announcements: a join
 # sends unsolicited reports of its own, which would satisfy a capture taken too early. So the

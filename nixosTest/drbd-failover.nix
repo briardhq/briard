@@ -1,6 +1,6 @@
 # 3-node majority topology: kill the primary, VIP + data move to a survivor.
 #
-# Same stock-unit + promoter setup as drbd-promote, now with three full nodes
+# Same stock-unit + promoter setup as drbd-promote, here with three full nodes
 # (quorum majority) and a real failure. Kill the elected primary and assert the
 # survivors — which still hold quorum (2 of 3) — promote one of their own,
 # reclaim the VIP, and serve the dummy's last persisted tick (replicated under
@@ -52,7 +52,8 @@ pkgs.testers.runNixOSTest {
         m.succeed("ip route del default 2>/dev/null || true")
         m.fail("ip route show default | grep -q .")
 
-    # Each node reaches both peers, then we skip the initial sync once.
+    # Each node reaches both peers. Only the seed skipped its initial sync; the joiners sync
+    # from it for real (asserted before the crash below).
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
 
     for m in machines:
@@ -78,8 +79,8 @@ pkgs.testers.runNixOSTest {
     print(f"primary={primary.name} tick={t1}")
 
     # THE CRASH MUST FIND AN UPTODATE REPLICA. The product's seed path syncs a joiner for
-    # real -- the hand-rolled `--clear-bitmap` these rigs used to run with every peer connected
-    # declared them all UpToDate without one -- and a SyncTarget cannot promote. "Replicated" is
+    # real -- a `--clear-bitmap` run with every peer connected would declare them all UpToDate
+    # without one -- and a SyncTarget cannot promote. "Replicated" is
     # the claim under test, so assert the disk state before removing the only UpToDate copy.
     for m in machines:
         if m != primary:

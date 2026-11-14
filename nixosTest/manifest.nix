@@ -1,12 +1,11 @@
 # The test manifest — what the tier CONTAINS, as data rather than as a build target.
 #
-# WHY THIS EXISTS. The membership, the curation and the per-test cost used to be carried by a
-# `linkFarm` per tag (`.#drbd` … `.#all`): building one realised every member, so the aggregates
-# were simultaneously the only written-down answer to "what is the tier" and a way to start ~40
-# nixosTests at once. That second property killed the box twice on 2026-09-12, and it cannot be
-# guarded from inside — a linkFarm's builder runs AFTER its members are realised, and an eval-time
+# WHY THIS EXISTS. The membership, the curation and the per-test cost are data here, not a
+# buildable aggregate per tag: building such an aggregate realises every member, which starts ~40
+# nixosTests at once and takes the machine down, and that cannot be
+# guarded from inside — a linkFarm builder runs AFTER its members are realised, and an eval-time
 # guard cannot read the machine because flakes evaluate pure. So the data stays and the
-# buildability goes: `nix build .#all` is gone, and what it knew is a text file.
+# buildability goes: no tag is a build target, and what a tag knows is a text file.
 #
 # ⚠️ NO OUTPATH, AND NOTHING IN HERE MAY CARRY STRING CONTEXT. A test's outPath is the one fact here
 # that costs a whole evaluation: naming it computes the test's entire derivation graph -- every
@@ -16,10 +15,10 @@
 # derivation as a build input -- the trap this file removes, rebuilt one level down -- so the
 # assembled text has its context discarded.
 #
-# WHY TSV AND NOT JSON. The only machine consumer is `lab/scripts/tier-concurrency.sh`, which is
-# awk throughout; a JSON nobody parses would be a second encoding of the same facts to keep in
-# step. The per-tag name lists exist for the other consumer — a person — because a tag
-# was a thing you could run and has to stay one.
+# WHY TSV AND NOT JSON. The only machine consumer is the tier scheduler of the private sibling,
+# which is awk throughout; a JSON nobody parses would be a second encoding of the same facts to
+# keep in step. The per-tag name lists exist for the other consumer — a person — because a tag
+# is still a thing you can run (CONTRIBUTING shows how, with the cap spelled out).
 { pkgs, tags, name ? "briard-test-manifest" }:
 
 let
@@ -27,7 +26,7 @@ let
 
   # CURATION, decided here and nowhere else. `debug` harnesses and the apps' `edge` tests (run by the
   # catalog run, about an upstream release) stay reachable by name and out of
-  # the tier — the same rule `allTests` encoded back when the aggregates defined it.
+  # the tier — the same rule as `allTests` in flake.nix.
   curated = lib.foldl' (a: b: a // b) { } (lib.attrValues (removeAttrs tags [ "debug" "edge" ]));
   every = curated // (tags.debug or { }) // (tags.edge or { });
 
@@ -55,7 +54,7 @@ let
   tagFile = t: pkgs.writeText "tag-${t}"
     (discard (lib.concatStringsSep "\n" (membersOf t) + "\n"));
 in
-# `all` is the reserved tag-file name for the curated set — what `.#all` used to mean. A real tag
+# `all` is the reserved tag-file name for the curated set. A real tag
 # by that name would be silently shadowed by it, so refuse to evaluate instead.
 lib.throwIf (tags ? all) "manifest.nix: `all` is reserved as the curated-set tag file" (
   pkgs.runCommand name

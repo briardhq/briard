@@ -3,13 +3,13 @@
 # From a healthy 3-node cluster, isolate the elected primary (block its network).
 # It becomes a minority of 1, loses DRBD quorum, and must self-fence: with
 # on-no-quorum=io-error its writes fail fast (no uninterruptible-I/O wedge), so
-# drbd-reactor stops the ordered unit — VIP first (ip addr del is instant and
-# doesn't wait on the apps), then the apps, then mount — and demotes. The
+# drbd-reactor stops the ordered unit — its members in reverse start order, the
+# apps before the VIP and the mount last — and demotes. The
 # majority (2 of 3) keeps quorum, promotes a survivor, and serves the VIP intact.
 #
 # The on-no-quorum decision is io-error, not suspend-io: the
 # self-fence is drbd-reactor *stopping* the unit and suspend-io would wedge that
-# stop in D-state. Both bar minority writes, so safety (Principle 3) holds.
+# stop in D-state. Both bar minority writes, so safety holds.
 { pkgs, guestModule, fixture }:
 
 let
@@ -78,8 +78,8 @@ pkgs.testers.runNixOSTest {
     primary.block()
     survivors = [m for m in machines if m != primary]
 
-    # Self-fence on the isolated node: drbd-reactor stops the ordered unit (VIP
-    # first) and demotes. VIP gone, apps stopped, DRBD no longer Primary.
+    # Self-fence on the isolated node: drbd-reactor stops the ordered unit and
+    # demotes. VIP gone, apps stopped, DRBD no longer Primary.
     primary.wait_until_fails("ip -4 addr show dev eth1 | grep -q 192.168.1.100")
     # The apps stop with the fence too, and by a different route than the VIP: they are not
     # chain members, so what stops them is briard-apps' own ExecStop unwinding
@@ -99,7 +99,7 @@ pkgs.testers.runNixOSTest {
     surv_primary = next(m for m in survivors if role(m) == "Primary")
 
     # ---- REUNION: heal the partition -> the fenced node rejoins, resyncs, and does NOT
-    # re-promote (invariants 9/10/11). The break-only half above proved the majority survives; this
+    # re-promote. The break-only half above proved the majority survives; this
     # proves the minority comes home cleanly -- the reconnection audit's core case (assert state
     # *equality* after the heal, not just that the link came back).
 
@@ -110,20 +110,20 @@ pkgs.testers.runNixOSTest {
 
     primary.unblock()
 
-    # Reconverges-after-heal (9): the ex-primary reconnects to both peers and every disk resyncs to
+    # Reconverges-after-heal: the ex-primary reconnects to both peers and every disk resyncs to
     # UpToDate -- the cluster is whole again (link-up != converged: assert the DISK state, not ping).
     for m in machines:
         m.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
         m.wait_until_succeeds("test $(drbdadm dstate r0 | tr '/' '\\n' | grep -vc UpToDate) -eq 0")
 
-    # No-spurious-action-on-heal (11): the fenced node rejoins as SECONDARY -- no re-promote, no
+    # No-spurious-action-on-heal: the fenced node rejoins as SECONDARY -- no re-promote, no
     # flap; the survivor stays the sole primary across the WHOLE cluster and keeps the VIP.
     assert role(primary) == "Secondary", f"reunited ex-primary must rejoin Secondary, got {role(primary)}"
     all_primaries = sorted(m.name for m in machines if role(m) == "Primary")
     assert all_primaries == [surv_primary.name], f"reunion must keep the survivor the sole primary, got {all_primaries}"
     surv_primary.succeed("curl -fsS http://192.168.1.100:8080/healthz")
 
-    # Resync-integrity (10): the survivor's partition-era writes actually reached the rejoined disks
+    # Resync-integrity: the survivor's partition-era writes actually reached the rejoined disks
     # -- proven END-TO-END, not just by DRBD's UpToDate claim. Fail the survivor; the two reunited
     # nodes (2/3 = quorum) promote again, and the newly-served data must be >= t3 (never rewound).
     surv_primary.crash()

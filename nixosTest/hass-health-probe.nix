@@ -1,17 +1,17 @@
 # WHICH SIGNAL SAYS HOME ASSISTANT IS BROKEN? -- a discovery probe, run by hand.
 #
-# The history marks an event red when the app is unhealthy after it, and the design names the
-# per-app probe (`/manifest.json`) as the signal while doubting it: Home Assistant's recovery
+# The history marks an event red when the app is unhealthy after it, and the signal is the
+# per-app probe (`/manifest.json`), which is in doubt: Home Assistant's recovery
 # mode keeps its frontend serving. This rig does not decide; it breaks Home Assistant one way at a
 # time and records what every candidate signal says, so the signal is chosen from evidence:
 #
-#   - the HTTP endpoint, `/manifest.json` (today's healthPath): status and latency;
+#   - the HTTP endpoint, `/manifest.json` (the healthPath): status and latency;
 #   - `/api/config`: `state`, `recovery_mode`, `safe_mode`;
 #   - config entries by state (`loaded`, `setup_error`, `setup_retry`, ...);
 #   - ERROR lines in `/api/error_log`;
 #   - the container unit: active state and restart count.
 #
-# The second pass adds a config-entry integration that fails or is not ready, and a real event-loop
+# The faults include a config-entry integration that fails or is not ready, and a real event-loop
 # spin during setup and after the start; every sample also records `/api/config`'s status code and
 # the live `.corrupt.` files.
 #

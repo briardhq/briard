@@ -7,7 +7,8 @@
 # MemAvailable below the floor for the level window, one DIMM hot-added over QMP, and the guest's
 # kernel counting the memory (its MemTotal, as the resources verb reports it in the host's status
 # line). Growth lasts until the next launch, which boots back at 1 GB -- by construction, since
-# the launch reads the configured size alone; the unit tests hold that line.
+# the launch reads the configured size and the minimums of the installed apps, never the grown size;
+# the unit tests hold that line.
 { pkgs, guestDisk, agent, netWrap, dressBase }:
 let
   # Typed into the guest's root shell (the debug console), one line at a time. It leaves ~150 MB

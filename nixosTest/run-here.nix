@@ -15,7 +15,7 @@
 # real KVM to make a claim about the machine running them; a marker fetched from somewhere else is
 # a claim about somewhere else. Substituting a test result is not a speedup, it is a category
 # error. The consequence to know: on a host that cannot meet `requiredSystemFeatures` (kvm,
-# nixos-test) a test now fails to build rather than quietly fetching someone else's verdict, which
+# nixos-test) a test fails to build rather than quietly fetching someone else's verdict, which
 # is the honest outcome.
 #
 # `overrideTestDerivation` is the supported hook for reaching the run derivation; `overrideAttrs`

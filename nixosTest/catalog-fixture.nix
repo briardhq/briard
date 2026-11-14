@@ -20,7 +20,7 @@
 #
 # The fixture still names the archive's digest rather than the registry's (fixture-app.nix
 # says why), so a test proves the entry's fields, not its exact bytes. A variant carries its own
-# version and image but the base's sizes.
+# version, env and image but the base's sizes.
 {
   pkgs,
   # The catalog (the flake input) and the app in it.

@@ -12,7 +12,7 @@
 # promote) and drbd-fence (isolated primary *self-fences* on quorum loss). The path
 # neither covers is a *minority* survivor correctly refusing to become primary. Uses
 # the same diskless witness VM — the DRBD quorum mechanism is identical whether the
-# witness runs locally or in our cloud (only the deployment location is a v2 concern).
+# witness runs locally or in our cloud (only the deployment location differs).
 { pkgs, guestModule, fixture }:
 
 let

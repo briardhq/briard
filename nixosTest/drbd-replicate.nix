@@ -1,6 +1,6 @@
 # A real DRBD 9 resource replicating across two nodes under emulation.
 #
-# Retires the open question ("DRBD under emulation"). Steady-state
+# Answers "does DRBD work under emulation". Steady-state
 # only: bring a replicated volume up, write to the primary, prove the write
 # reached the peer. No drbd-reactor, no VIP, nothing killed — that is the promote and failover tests.
 { pkgs, guestModule }:
@@ -29,7 +29,7 @@ pkgs.testers.runNixOSTest {
         m.wait_for_unit("multi-user.target")
         m.succeed("modprobe drbd")
         # The product's storage bring-up. It create-md's with --force only because
-        # it CREATED the LV a moment earlier and there is nothing on it to protect; that is NOT
+        # its probe found no DRBD metadata on the LV, so there is nothing to protect; that is NOT
         # force-promotion, which stays banned tree-wide (CONTRIBUTING.md invariant 3).
         m.succeed("briard-test-storage")
 
