@@ -42,7 +42,7 @@ func (p *probe) HassReadiness(_ context.Context, port int) ([]hass.Entry, error)
 }
 
 // The probe half of the seam. `stored` is what the app is holding: a write puts the
-// token there, a read hands it back — so a test makes the app LOSE its state by clearing it
+// token there, a read hands it back — so a test makes the app lose its state by clearing it
 // between the two calls, which is what a broken upgrade does.
 func (p *probe) MosquittoProbe(_ context.Context, token string) (mosquitto.Sample, error) {
 	p.probes++
@@ -95,15 +95,14 @@ func judge(t *testing.T, pre, post []hass.Entry) (guest.Verdict, string) {
 }
 
 // TestAssessorIsKeyedOnTheAppName is the registry's whole contract: the product knows how to
-// judge the apps it curates beyond liveness, and knows nothing about anything else. The
-// negative half is the one that matters — the shipped default for every other app is the
-// floor alone.
+// judge the apps it curates beyond liveness, and knows nothing about anything else. The negative
+// half matters most: the shipped default for every other app is the floor alone.
 func TestAssessorIsKeyedOnTheAppName(t *testing.T) {
 	cfg := Config{}
 	if a := cfg.assessorFor(hassManifest(), &probe{}, func(string, ...any) {}); a == nil {
 		t.Fatal("home-assistant got no assessor")
 	}
-	// The broker gets a different KIND of assessor, not a copy of HA's: its work is invisible to
+	// The broker gets a different kind of assessor, not a copy of HA's: its work is invisible to
 	// a sample, so it is judged on a token it was given rather than on what it reports.
 	broker := hassManifest()
 	broker.Name = mosquitto.Name
@@ -135,12 +134,11 @@ func TestAssessorUsesTheManifestsPort(t *testing.T) {
 	}
 }
 
-// TestAFailedSampleLeavesTheInstallOnTheFloor: there is no capability check (agent and guest
-// closure publish together and the alpha reinstalls, so a guest that cannot sample is a
-// mismatched pair rather than a supported configuration), but there is this different rule:
-// when the sample itself fails, the install proceeds on the liveness floor. S1 never blocks or
-// reverts a household's upgrade because its own telemetry broke — and it says so, rather than
-// degrading silently.
+// TestAFailedSampleLeavesTheInstallOnTheFloor: a sample that fails leaves the install on the
+// liveness floor, logged, not silent. S1 never blocks or reverts a household's upgrade because
+// its own telemetry broke. (No capability check: agent and guest closure publish together and
+// the alpha reinstalls, so a guest that cannot sample is a mismatched pair, not a supported
+// configuration.)
 func TestAFailedSampleLeavesTheInstallOnTheFloor(t *testing.T) {
 	var logged strings.Builder
 	p := &probe{err: errors.New("the guest is not answering")}
@@ -183,7 +181,7 @@ func TestGateHoldsOnASingleRegression(t *testing.T) {
 }
 
 // TestGateExcludesWhatWasAlreadyBroken is the reason the gate is differential at all. An
-// integration failing BEFORE the upgrade cannot be the upgrade's fault, and a gate that could not
+// integration failing before the upgrade cannot be the upgrade's fault, and a gate that could not
 // tell the difference would revert every household with one flaky device on it.
 func TestGateExcludesWhatWasAlreadyBroken(t *testing.T) {
 	v, reason := judge(t,
@@ -202,7 +200,7 @@ func TestGatePassesAHealthyUpgrade(t *testing.T) {
 	}
 }
 
-// TestGateRefusesToJudgeUnsettled: out of budget before the signal could settle is an ERROR, not
+// TestGateRefusesToJudgeUnsettled: out of budget before the signal could settle is an error, not
 // a verdict. An unsettled sample judged as though it were settled is exactly how HA's retry
 // backoff turns into a rollback of a working upgrade — and the Gate turns this error into "keep",
 // which is the safe direction.
@@ -314,7 +312,7 @@ func TestProbeCatchesAAppThatServesNobody(t *testing.T) {
 }
 
 // TestProbeWaitsForASlowStart: an app that is not serving on the first look but is on the
-// second must PASS. Judging the first sample would turn every slow start into a rollback.
+// second must pass. Judging the first sample would turn every slow start into a rollback.
 func TestProbeWaitsForASlowStart(t *testing.T) {
 	v, reason, err := judgeProbe(t, func(p *probe) { p.notServing = 1 })
 	if err != nil {
@@ -326,7 +324,7 @@ func TestProbeWaitsForASlowStart(t *testing.T) {
 }
 
 // TestProbeRefusesToBaselineABrokenApp is the confounder control, and it is the same rule the
-// config-entry gate follows: an app that was ALREADY not serving before the change cannot have
+// config-entry gate follows: an app that was already not serving before the change cannot have
 // been broken by it. No baseline means the install runs on the liveness floor alone.
 func TestProbeRefusesToBaselineABrokenApp(t *testing.T) {
 	m := hassManifest()
@@ -337,9 +335,9 @@ func TestProbeRefusesToBaselineABrokenApp(t *testing.T) {
 	if err == nil {
 		t.Fatal("an app that was not serving before the change produced a baseline")
 	}
-	// The REASON matters, and asserting it is what keeps this test from passing for the wrong one:
-	// without it, the round-trip check below would refuse this baseline anyway and the
-	// confounder rule could be deleted with every test still green.
+	// The reason is asserted so this test cannot pass for the wrong one: without it, the
+	// round-trip check would refuse this baseline anyway, and the confounder rule could be deleted
+	// with every test still green.
 	if !strings.Contains(err.Error(), "not serving clients") {
 		t.Errorf("the refusal does not name the confounder: %v", err)
 	}
@@ -383,7 +381,7 @@ func TestProbeFailureIsNeverAVerdict(t *testing.T) {
 	}
 }
 
-// TestEveryUpgradeGetsAFreshToken. The topic is RETAINED, so a token left by a previous upgrade
+// TestEveryUpgradeGetsAFreshToken. The topic is retained, so a token left by a previous upgrade
 // would still be there — and a broker that had lost everything since would hand it back, turning
 // total data loss into a Pass.
 func TestEveryUpgradeGetsAFreshToken(t *testing.T) {

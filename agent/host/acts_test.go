@@ -60,7 +60,7 @@ func await(t *testing.T, what string, ch <-chan api.DirectiveOutcome, within tim
 	}
 }
 
-// AN ACT LEAVES THE LOOP TICKING. While a sync (an act) is held open: the cycles keep coming, a
+// An act leaves the loop ticking. While a sync (an act) is held open: the cycles keep coming, a
 // second act is refused busy at once, a dashboard code (a pull) is handed off beside it, and the
 // act's own outcome lands once it is released. A guest frozen inside an install cannot go
 // unnoticed until the budget expires, because the tick that would notice is still running.
@@ -115,7 +115,7 @@ func TestAnActOffTheLoopLeavesItTicking(t *testing.T) {
 	}
 }
 
-// A STOP FINISHES THE ACT IN FLIGHT, which is what makes the stop the self-update's safe point.
+// A stop finishes the act in flight, which is what makes the stop the self-update's safe point.
 // The loop runs on: a held sync keeps the context the loop and the act share alive past the
 // stop, the loop keeps ticking (its beat, and the guest's deadman, depend on it), a new act is
 // refused, and the act completes -- "flushed", not cancelled. Only then does the loop end.
@@ -208,7 +208,7 @@ func (u heldUpgrader) RescueGuest(ctx context.Context) error {
 	}
 }
 
-// A RELAUNCHER LEAVES THE LOOP TOO, and tells Run so. While a rescue is held open: the loop keeps
+// A relauncher leaves the loop too, and tells Run so. While a rescue is held open: the loop keeps
 // ticking, the lane reports the relaunch in flight with something to wait on, another act is
 // refused busy, and the wait ends when the rescue does. Run's channel-down path reads exactly
 // this to wait instead of climbing the ladder on a channel the rescue is replacing.
@@ -264,11 +264,11 @@ func TestARelauncherOffTheLoopIsWhatRunWaitsFor(t *testing.T) {
 	}
 }
 
-// AN ACT THE CLOUD RE-DELIVERS RUNS ONCE AND ANSWERS ONCE. The controller hands a directive back
+// An act the cloud re-delivers runs once and answers once. The controller hands a directive back
 // on every report until an outcome for it arrives, and the report runs off the loop, so copies
 // arrive while the act runs and, from a report sent before it ended, after it has ended. Neither
-// copy is a new request: a copy refused as busy would report FAILED under the running act's own
-// ID, and a copy run again would repeat the whole act (an OS upgrade, staged and booted twice).
+// is a new request: refused as busy, a copy would report failed under the running act's own ID;
+// run again, it would repeat the whole act (an OS upgrade, staged and booted twice).
 func TestARedeliveredActRunsOnceAndAnswersOnce(t *testing.T) {
 	cfg := Config{Node: "n1", Role: model.RoleAnchor, StatusEvery: time.Millisecond}
 	cfg.Resource.Name = "r0"

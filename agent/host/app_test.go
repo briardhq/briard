@@ -36,7 +36,7 @@ import (
 	"briard.io/shared/notify"
 )
 
-// fakeInstaller records the ORDER of everything the install does — the install's correctness is
+// fakeInstaller records the order of everything the install does — the install's correctness is
 // an ordering property, so order is what the tests assert.
 type fakeInstaller struct {
 	warmedRefs []string     // refs handed to AppWarm, in order
@@ -45,25 +45,25 @@ type fakeInstaller struct {
 	primary    bool
 	active     bool
 	healthy    bool
-	// prior is the volume's recorded manifests, KEYED BY APP NAME — absent = fresh install.
+	// prior is the volume's recorded manifests, keyed by app name — absent = fresh install.
 	// A map rather than one string because that is the shape the volume has: a fake holding
 	// another app's manifest must not satisfy a read for this one.
 	prior map[string]string
 	// installedEr is what a read of the recorded manifest answers instead, when set.
 	installedEr error
-	// staged and rollbacks are the volume's STAGED installs (agent/guestagent/staging.go): the
+	// staged and rollbacks are the volume's staged installs (agent/guestagent/staging.go): the
 	// manifest nothing has accepted yet, and the member that undoes its data.
 	staged       map[string]string
 	rollbacks    map[string]string
 	commitEr     error
 	oldGuest     bool     // does not advertise app.installed -- an install must refuse it outright
-	noMember     bool     // advertises everything BUT data.member: a guest older than the ring
+	noMember     bool     // advertises everything but data.member: a guest older than the ring
 	noSweep      bool     // advertises data.restore but not data.replace: cannot sweep a member
 	noQuiesce    bool     // advertises the ring but not the quiesced take: the nightly falls back
 	held         bool     // the app held still across a quiesced take
 	quiesceEr    error    // the quiesced take failed outright
 	swept        []string // the relative paths each Restore was asked to remove from the member
-	free         int64    // what storage.free reports as free (0 = plenty is NOT implied; tests set it)
+	free         int64    // what storage.free reports as free (0 does not mean plenty; tests set it)
 	freeErr      error    // storage.free failing: the gate logs and the install proceeds unmeasured
 	staleRemoved []string // unit files a render was told to remove: the collateral surface
 	manifests    []string
@@ -73,7 +73,7 @@ type fakeInstaller struct {
 	renderEr     error
 	provEr       error
 	convergeEr   error
-	// convergeSkips are the apps converge reports it could not PREPARE, having started the
+	// convergeSkips are the apps converge reports it could not prepare, having started the
 	// rest. An install whose own app is named there must fail: the node is still serving the
 	// prior version.
 	convergeSkips []string
@@ -158,7 +158,7 @@ func (f *fakeInstaller) AppProvision(_ context.Context, name, _ string, _ []stri
 	return f.provEr
 }
 
-// AppInstalled answers for the app it is ASKED about: another app's manifest cannot stand in
+// AppInstalled answers for the app it is asked about: another app's manifest cannot stand in
 // for this one's.
 func (f *fakeInstaller) AppInstalled(_ context.Context, name string) (string, error) {
 	f.steps = append(f.steps, "installed?:"+name)
@@ -198,7 +198,7 @@ func (f *fakeInstaller) Restore(_ context.Context, _, src string, sweep []string
 	return f.restoreEr
 }
 
-// RestoreWithoutSweep records itself DIFFERENTLY on purpose: "the old verb was used" is the fact
+// RestoreWithoutSweep records itself differently on purpose: "the old verb was used" is the fact
 // the revert's fallback case is about, and a step that read the same as the swept one would make
 // that case unable to fail.
 func (f *fakeInstaller) RestoreWithoutSweep(_ context.Context, _, src string) error {
@@ -207,8 +207,8 @@ func (f *fakeInstaller) RestoreWithoutSweep(_ context.Context, _, src string) er
 }
 func (f *fakeInstaller) SupportsRestoreSweep() bool { return !f.oldGuest && !f.noSweep }
 
-// The QUIESCED take. `held` is what the fake app reports, and the sidecar is
-// recorded with the class the GUEST would have written — upgraded only when it held, which is the
+// The quiesced take. `held` is what the fake app reports, and the sidecar is
+// recorded with the class the guest would have written — upgraded only when it held, which is the
 // property the host's side of this must not be able to fake.
 func (f *fakeInstaller) QuiescedSnapshot(_ context.Context, app, _, dest, sidecar string) (bool, string, error) {
 	f.steps = append(f.steps, "quiesced-snapshot:"+dest)
@@ -294,7 +294,7 @@ func (f *fakeInstaller) AppStart(_ context.Context, unit string) error {
 	return f.warmEr
 }
 
-// AppWarm records the REF alongside the unit, because the whole point of the verb is that the
+// AppWarm records the ref alongside the unit, because the whole point of the verb is that the
 // two are checked and acted on separately -- a fake that dropped the ref could not tell an
 // ensure-present apart from an unconditional start.
 func (f *fakeInstaller) AppWarm(_ context.Context, unit, ref string) error {
@@ -304,7 +304,7 @@ func (f *fakeInstaller) AppWarm(_ context.Context, unit, ref string) error {
 }
 func (f *fakeInstaller) AppHealth(_ context.Context, url string) (bool, error) {
 	f.steps = append(f.steps, "health")
-	f.healthURL = url // the gate must probe the APP, not the reverse proxy
+	f.healthURL = url // the gate must probe the app, not the reverse proxy
 	if !f.healthy {
 		return false, errors.New("not ready")
 	}
@@ -312,7 +312,7 @@ func (f *fakeInstaller) AppHealth(_ context.Context, url string) (bool, error) {
 }
 
 // AppHealthOf is the by-name probe the install gate uses: the guest resolves the
-// address from its routing table, so what the host is asserted to have asked for is an APP,
+// address from its routing table, so what the host is asserted to have asked for is an app,
 // never a URL it assembled.
 func (f *fakeInstaller) AppHealthOf(_ context.Context, app string) (apps.Health, error) {
 	f.steps = append(f.steps, "health")
@@ -374,12 +374,12 @@ func catalogFor(t *testing.T, ms ...manifest.Manifest) Config {
 	}
 }
 
-// fixedNow pins the moment a ring member is named for. A member's NAME carries its timestamp,
+// fixedNow pins the moment a ring member is named for. A member's name carries its timestamp,
 // so without a pinned clock a test can only assert the shape of the name it was
 // handed — which is not an assertion about the name the product chose.
 var fixedNow = time.Date(2026, 9, 22, 10, 30, 0, 0, time.UTC)
 
-// wantMember is the member the product must name, DERIVED the way the product derives it.
+// wantMember is the member the product must name, derived the way the product derives it.
 // Restating the path as a literal is what a rename makes vacuous: a literal asserts that
 // somebody typed the same string twice, never that the caller and the renderer agree.
 func wantMember(app string, tr quadlet.Trigger) string {
@@ -411,21 +411,19 @@ func installApp(cfg Config, f *fakeInstaller) api.DirectiveOutcome {
 	return cfg.applyAppInstall(context.Background(), f, d, nil, func(string, ...any) {})
 }
 
-// TestInstallOrdersTheSteps is the core contract, and what it asserts is that there is no
-// maintenance bracket. An install writes the volume and then tells the node to
-// re-read it, so the ordering that matters is that nothing reaches the volume until the units and
-// the image exist, and that converge comes after the manifest it is meant to find.
+// TestInstallOrdersTheSteps is the core contract: no maintenance bracket. An install writes the
+// volume and then tells the node to re-read it, so nothing may reach the volume until the units
+// and the image exist, and converge must come after the manifest it is meant to find.
 func TestInstallOrdersTheSteps(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true}
 	cfg := catalogFor(t, testManifest())
 	if o := installApp(cfg, f); o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
-	// A fresh install: read the (empty) installed manifest, render+warm (which is also the
-	// PREWARM every node does), stage on the volume, converge it live, gate, commit. No snapshot: nothing is
-	// installed yet, so there is no rollback point to take. No pause/quiesce/rewrite: the chain is
-	// static, and stopping the running containers is converge's job on the apps whose
-	// rendering actually changed.
+	// A fresh install: read the (empty) installed manifest, render+warm (also the prewarm every
+	// node does), stage, converge it live, gate, commit. No snapshot: nothing is installed yet to
+	// roll back to. No pause/quiesce/rewrite: the chain is static, and stopping running containers
+	// is converge's job on the apps whose rendering actually changed.
 	want := []string{
 		"active?", "installed?:home-assistant", "render", "warm:briard-home-assistant-ha-image.service", "status", "stage:home-assistant",
 		"converge:home-assistant", "health", "commit:home-assistant", "nudge",
@@ -433,12 +431,12 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 	if strings.Join(f.steps, ",") != strings.Join(want, ",") {
 		t.Fatalf("steps = %v\nwant   %v", f.steps, want)
 	}
-	// The gate probes the APP's own endpoint (manifest port + healthPath, in-guest), NOT the
-	// reverse proxy at the VIP — the reverse proxy doesn't reflect a runtime-installed app.
+	// The gate probes the app's own endpoint (manifest port + healthPath, in-guest), never the
+	// reverse proxy at the VIP, which does not reflect a runtime-installed app.
 	if f.healthOf != "home-assistant" {
 		t.Fatalf("health probe asked about %q, want the installed app by name", f.healthOf)
 	}
-	// THE CHAIN IS NOT TOUCHED. It is static (data -> vip -> apps -> reverse-proxy -> dashboard;
+	// The chain is not touched. It is static (data -> vip -> apps -> reverse-proxy -> dashboard;
 	// the reverse proxy carries the household's names) and the installed app is not a member of
 	// it, which is what makes an app crash unable to demote the node.
 	if !slices.Equal(cfg.Promoter, []string{
@@ -449,10 +447,9 @@ func TestInstallOrdersTheSteps(t *testing.T) {
 	}
 }
 
-// TestAFailedNudgeDoesNotFailTheInstall. The app IS installed and serving by the
-// time this runs, and the fallback for a Home Assistant that would not take the event is that
-// it picks the change up at its next start. Failing
-// the install would REVERT a working app because a courtesy call did not connect.
+// TestAFailedNudgeDoesNotFailTheInstall. The app is already installed and serving when the nudge
+// runs, and a Home Assistant that would not take the event picks the change up at its next start.
+// Failing the install would revert a working app because a courtesy call did not connect.
 func TestAFailedNudgeDoesNotFailTheInstall(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true, nudgeEr: errors.New("connection refused")}
 	if o := installApp(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
@@ -460,11 +457,10 @@ func TestAFailedNudgeDoesNotFailTheInstall(t *testing.T) {
 	}
 }
 
-// TestTheNudgeIsFiredAfterTheGates, and both halves of that matter. AFTER, because an app that
-// failed its gate is reverted and there is nothing to tell Home Assistant about. And on EVERY
-// install, with no condition on which app it was: the caller holds no table of which app
-// implies what, the signal carries nothing, and the guest answers "nobody to tell" for a node with
-// no Home Assistant on its volume — modelled here by noHass.
+// TestTheNudgeIsFiredAfterTheGates, and on every install. After, because an app that failed its
+// gate is reverted and there is nothing to tell Home Assistant about. Every install, whatever the
+// app: the caller holds no table of which app implies what, the signal carries nothing, and the
+// guest answers "nobody to tell" for a node with no Home Assistant on its volume (noHass here).
 func TestTheNudgeIsFiredAfterTheGates(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: false}
@@ -493,13 +489,11 @@ func TestTheNudgeIsFiredAfterTheGates(t *testing.T) {
 
 // TestInstallWarmsBeforeTouchingTheVolume is the offline case. No unit pulls an image on its
 // own (the .image units carry no [Install] section and the containers run Pull=never), so the
-// install ensures its images itself.
-//
-// Warming at install time is also where it belongs — a human is watching and the CLI can report
-// it — and the assertion here is that an unreachable image aborts BEFORE the volume is written. A
-// node whose install failed for want of a network must be exactly as it was, not left with the
-// volume naming an app whose image nobody has (under converge-at-promotion the volume is what
-// every future promotion, on every node, renders from).
+// install ensures its images itself, where a human is watching and the CLI can report it. An
+// unreachable image must abort before the volume is written: a node whose install failed for
+// want of a network must be exactly as it was, not left with the volume naming an app whose image
+// nobody has (under converge-at-promotion every future promotion, on every node, renders from
+// the volume).
 func TestInstallWarmsBeforeTouchingTheVolume(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true, warmEr: errors.New("no route to host")}
 	o := installApp(catalogFor(t, testManifest()), f)
@@ -514,13 +508,11 @@ func TestInstallWarmsBeforeTouchingTheVolume(t *testing.T) {
 	}
 }
 
-// TestInstallRefusesWhenTheBracketIsOpen is the interim guard, and the assertion that it refuses
-// BEFORE writing anything — a refusal must leave the node exactly as it was.
-//
-// An install does not pause the promoter itself, and the guard stands deliberately: a paused
-// promoter means an OS upgrade is in flight, and starting a second operation on that node is
-// the overlap this guard exists to serialise. Dropping this check because an install takes no
-// bracket would quietly WIDEN concurrency.
+// TestInstallRefusesWhenTheBracketIsOpen is the interim guard, refusing before writing anything:
+// a refusal must leave the node exactly as it was. An install does not pause the promoter itself,
+// but the guard stands deliberately: a paused promoter means an OS upgrade is in flight, and a
+// second operation on that node is the overlap it serialises. Dropping it because an install
+// takes no bracket would quietly widen concurrency.
 func TestInstallRefusesWhenTheBracketIsOpen(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: false, healthy: true}
 	o := installApp(catalogFor(t, testManifest()), f)
@@ -541,9 +533,9 @@ func TestInstallRevertsOnAFailedHealthGate(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	cfg.HealthURL = "http://192.168.1.100/healthz"
 	f := &fakeInstaller{primary: true, active: true, healthy: false}
-	// A short budget rather than a cancelled context: the fetch must still succeed, and the point
-	// is that the gate gives up and the REVERT still runs — on its own detached deadline, since
-	// the one it inherited is exactly what just expired.
+	// A short budget rather than a cancelled context: the fetch must still succeed, then the gate
+	// gives up and the revert still runs, on its own detached deadline, since the one it inherited
+	// is exactly what just expired.
 	o := func() api.DirectiveOutcome {
 		d := api.Directive{ID: "d1", Kind: api.DirectiveAppInstall, Payload: "home-assistant"}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -553,8 +545,8 @@ func TestInstallRevertsOnAFailedHealthGate(t *testing.T) {
 	if o.State != api.OutcomeRolledBack {
 		t.Fatalf("outcome = %+v, want rolled-back", o)
 	}
-	// The revert converges a SECOND time — that is what puts the node back, since there is no
-	// chain to rewrite: the stage is discarded first and the volume then re-read. It never commits.
+	// The revert converges a second time, which puts the node back (there is no chain to rewrite):
+	// the stage is discarded first and the volume then re-read. It never commits.
 	joined := strings.Join(f.steps, ",")
 	if n := strings.Count(joined, "converge"); n != 2 {
 		t.Fatalf("converged %d times, want 2 (install then revert): %v", n, f.steps)
@@ -562,14 +554,14 @@ func TestInstallRevertsOnAFailedHealthGate(t *testing.T) {
 	if strings.Contains(joined, "commit:") {
 		t.Fatalf("a failed install was committed: %v", f.steps)
 	}
-	// The discard reaches the VOLUME before the re-converge, not after it. Reversed, the re-converge
+	// The discard reaches the volume before the re-converge, not after it. Reversed, the re-converge
 	// would hold the app back as still pending and nothing would start it.
 	if fi, ci := strings.Index(joined, "discard:"), strings.LastIndex(joined, "converge"); fi < 0 || fi > ci {
 		t.Fatalf("the stage was not discarded before the re-converge: %v", f.steps)
 	}
 }
 
-// priorManifest is the same app at an earlier version — a real UPGRADE target (same name ⇒
+// priorManifest is the same app at an earlier version — a real upgrade target (same name ⇒
 // same unit names + DataRoot, different bytes so priorApp treats it as a rollback point) — as
 // the volume records it before an upgrade: keyed by app name. The raw bytes come back too,
 // because the assertions compare against exactly what the rollback must re-record.
@@ -585,11 +577,11 @@ func priorManifest(t *testing.T) (map[string]string, string) {
 }
 
 // TestUpgradeRollsBackDataAndManifest is the (i) contract at the orchestration layer: a broken
-// UPGRADE must put back the prior app's DATA and IDENTITY, not merely take the new one out of
-// the chain. So the path snapshots before the switch, and on a tripped gate it restores the
-// subvolume and re-records the prior manifest — the app-level twin of the {code+data} OS
-// rollback. (The real btrfs/quadlet/reverse-proxy mechanics are the job of app-install-broken.nix;
-// this asserts the host drives them in the right order.)
+// upgrade must put back the prior app's data and identity, not merely take the new one out of
+// the chain. The path snapshots before the switch and, on a tripped gate, restores the subvolume
+// and re-records the prior manifest: the app-level twin of the {code+data} OS rollback.
+// app-install-broken.nix proves the real btrfs/quadlet/reverse-proxy mechanics; this asserts the
+// host drives them in the right order.
 func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 	prior, priorRaw := priorManifest(t)
 	cfg := catalogFor(t, testManifest())
@@ -605,7 +597,7 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 	}
 	joined := strings.Join(f.steps, ",")
 	snap := "snapshot:" + wantMember("home-assistant", quadlet.TriggerAppUpdateBefore)
-	// The rollback point is taken BEFORE the volume is written (stage) and before the switch.
+	// The rollback point is taken before the volume is written (stage) and before the switch.
 	si, pi := strings.Index(joined, snap), strings.Index(joined, "stage:")
 	if si < 0 || pi < 0 || si > pi {
 		t.Fatalf("snapshot must precede the stage: %v", f.steps)
@@ -614,7 +606,7 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 	if !strings.Contains(joined, "restore:"+wantMember("home-assistant", quadlet.TriggerAppUpdateBefore)) {
 		t.Fatalf("a failed upgrade did not restore the data subvolume: %v", f.steps)
 	}
-	// The volume ends up holding the PRIOR manifest and nothing staged — the identity was never
+	// The volume ends up holding the prior manifest and nothing staged — the identity was never
 	// moved off it, and the undo read its rollback point from the volume, not from memory.
 	if f.prior["home-assistant"] != priorRaw || len(f.staged) != 0 {
 		t.Fatalf("volume after the revert: accepted %q, staged %v", f.prior["home-assistant"], f.staged)
@@ -624,9 +616,9 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 	if n := strings.Count(joined, "converge"); n != 2 {
 		t.Fatalf("converged %d times, want 2 (install then revert): %v", n, f.steps)
 	}
-	// The POD is NEVER stopped — only its container. Stopping the pod makes podman kill its
-	// members out from under their units, so each lands in `failed` rather than stopping cleanly,
-	// and the container is what holds the data bind the restore needs released.
+	// Never the pod, only its container: stopping the pod makes podman kill its members out from
+	// under their units, each landing in `failed` rather than stopping cleanly, and the container
+	// is what holds the data bind the restore needs released.
 	if strings.Contains(joined, "stop:briard-home-assistant-pod.service") {
 		t.Fatalf("quiesce stopped the POD — that unmounts the shared volume: %v", f.steps)
 	}
@@ -636,11 +628,9 @@ func TestUpgradeRollsBackDataAndManifest(t *testing.T) {
 }
 
 // TestUpgradeDoesNotConvergeIfDataCannotRestore: if the data rollback itself fails, the revert
-// must NOT put the prior app back — it would run on the poisoned data. So it stops and
-// reports both failures, leaving the app down for a human.
-//
-// The lever for "do not start the app again" is simply not converging: the one app stays
-// stopped, and the node keeps serving everything else and keeps its ability to fail over.
+// must not put the prior app back, which would run on the poisoned data. It stops and reports
+// both failures, and simply does not converge: the one app stays down for a human, while the node
+// keeps serving everything else and keeps its ability to fail over.
 func TestUpgradeDoesNotConvergeIfDataCannotRestore(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: false, prior: mustPrior(t), restoreEr: errors.New("btrfs: cannot delete subvolume")}
@@ -660,9 +650,8 @@ func TestUpgradeDoesNotConvergeIfDataCannotRestore(t *testing.T) {
 }
 
 // TestAFailedFreshInstallLeavesNothingOnTheVolume: under converge the volume is the truth, so a
-// manifest nobody removed is an app
-// every future promotion, on every node in the flock, renders and tries to start. A failed FRESH
-// install must therefore remove the identity, not merely stop the units.
+// manifest nobody removed is an app every future promotion, on every node in the flock, renders
+// and tries to start. A failed fresh install must remove the identity, not merely stop the units.
 func TestAFailedFreshInstallLeavesNothingOnTheVolume(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: false} // no prior => a fresh install
@@ -681,7 +670,7 @@ func TestAFailedFreshInstallLeavesNothingOnTheVolume(t *testing.T) {
 }
 
 // TestInstallOnSecondaryRendersButDoesNotProvision: the volume is mounted only on the Primary, so
-// a secondary takes its units and stops. It must NOT write the volume — the primary owns that.
+// a secondary takes its units and stops. It must not write the volume: the primary owns that.
 func TestInstallOnSecondaryRendersButDoesNotProvision(t *testing.T) {
 	f := &fakeInstaller{primary: false, active: true, healthy: true}
 	o := installApp(catalogFor(t, testManifest()), f)
@@ -726,10 +715,10 @@ func prewarm(cfg Config, f *fakeInstaller) api.DirectiveOutcome {
 	return cfg.applyAppPrewarm(context.Background(), f, d, func(string, ...any) {})
 }
 
-// Prewarm is the warm-standby half ALONE. The assertion is the exact step list, because
-// what makes this safe to fan out to every anchor — including the one currently serving — is that
-// it touches nothing else: no stage or provision (those write the volume), no converge, no health
-// gate. An extra step here is a directive that can disturb a serving home.
+// Prewarm is the warm-standby half alone. The exact step list is asserted because touching
+// nothing else (no stage or provision, which write the volume; no converge; no health gate) is
+// what makes it safe to fan out to every anchor, the serving one included. An extra step here is
+// a directive that can disturb a serving home.
 func TestPrewarmRendersAndWarmsAndNothingElse(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true}
 	if o := prewarm(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
@@ -747,12 +736,11 @@ func TestPrewarmRendersAndWarmsAndNothingElse(t *testing.T) {
 	}
 }
 
-// Role-independence is the SAFETY property, and this is its guard. A directive sits queued between
-// enqueue and execution, and a node's role can change in that window — drbd-reactor promotes on
-// quorum events, which is nobody's decision to schedule. Were a prewarm just "an install on a
-// node that happens to be Secondary", a promotion in that window would silently convert a
-// DOWNLOAD into stage + converge + health gate, on a node mid-failover. If these two step lists
-// ever diverge, that race is open.
+// Role-independence is the safety property, and this is its guard. A node's role can change
+// while a directive sits queued (drbd-reactor promotes on quorum events, nobody's decision to
+// schedule). Were a prewarm "an install on a node that happens to be Secondary", a promotion in
+// that window would silently turn a download into stage + converge + health gate, on a node
+// mid-failover. If these two step lists ever diverge, that race is open.
 func TestPrewarmIsIdenticalOnAPrimaryAndASecondary(t *testing.T) {
 	var steps [2]string
 	for i, primary := range []bool{true, false} {
@@ -767,7 +755,7 @@ func TestPrewarmIsIdenticalOnAPrimaryAndASecondary(t *testing.T) {
 	}
 }
 
-// A prewarm that cannot pull must FAIL, not report done. The cloud gates the install on these
+// A prewarm that cannot pull must fail, not report done. The cloud gates the install on these
 // outcomes, so a peer that quietly reported success while holding no image would let the whole
 // two-phase sequence certify a home that cannot fail over — the exact thing it exists to prevent.
 func TestPrewarmFailsWhenTheImageCannotBeWarmed(t *testing.T) {
@@ -781,11 +769,9 @@ func TestPrewarmFailsWhenTheImageCannotBeWarmed(t *testing.T) {
 // cacheApp must never damage the manifest it already holds. A bare WriteFile truncates the
 // target first, so a crash inside the write leaves half a manifest -- which installedApps reads
 // as "this app is not installed", silently, on a node whose replicated manifest still names
-// what it is meant to be running.
-//
-// Blocking the temp path with a directory forces the failure after the caller has committed to
-// the write. The assertion is deliberately two-sided: a bare WriteFile returns nil AND
-// overwrites, so it fails on the first check, not merely on the second.
+// what it is meant to be running. A directory on the temp path forces the failure after the
+// caller has committed to the write. Deliberately two-sided: a bare WriteFile returns nil and
+// overwrites, so it fails the first check, not merely the second.
 func TestCacheAppFailureKeepsThePriorManifest(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{AppCache: dir}
@@ -812,7 +798,7 @@ func TestCacheAppFailureKeepsThePriorManifest(t *testing.T) {
 	}
 }
 
-// An app installed at RUNTIME must land in the live config immediately, not at the next agent
+// An app installed at runtime must land in the live config immediately, not at the next agent
 // restart. Without it the gap is invisible in the log: everything the loop derives from cfg.Apps
 // (the status report's apps, each app's footprint) leaves the new app out until a restart.
 func TestAdoptInstalledAppRefreshesLiveConfig(t *testing.T) {
@@ -843,17 +829,17 @@ func TestAdoptInstalledAppRefreshesLiveConfig(t *testing.T) {
 		if len(cfg.AppRendered.Units) == 0 {
 			t.Errorf("rendered units not adopted: %v", cfg.AppRendered.Units)
 		}
-		// The chain is NOT adopted — it is static. An install that moved it would be
-		// the node-was-told model converge exists to remove, the one that lets a survivor promote
-		// onto whatever it happened to have rendered.
+		// The chain is not adopted: it is static. An install that moved it would be the
+		// node-was-told model converge exists to remove, which lets a survivor promote onto
+		// whatever it happened to have rendered.
 		if !slices.Equal(cfg.Promoter, promoterUnits()) {
 			t.Errorf("an install moved the promoter chain to %v — it must stay static", cfg.Promoter)
 		}
 	})
-	// AFTER ANY INSTALL, the view is what the cache holds. The cache is written only by an
-	// install's commit, so a failed or rolled-back one reads back exactly what was installed
-	// before it -- and an act that installed several apps and failed on a later one has
-	// committed the earlier ones, which must be adopted like any other.
+	// After any install the view is what the cache holds. Only an install's commit writes the
+	// cache, so a failed or rolled-back one reads back exactly what was installed before it, and
+	// an act that failed on a later app has committed the earlier ones, which must be adopted like
+	// any other.
 	t.Run("a failed install adopts what the cache holds", func(t *testing.T) {
 		for _, o := range []api.DirectiveOutcome{{State: api.OutcomeRolledBack}, {State: api.OutcomeFailed, Detail: "installed files; home-assistant: did not start"}} {
 			cfg := Config{AppCache: dir}
@@ -883,10 +869,9 @@ func TestAdoptInstalledAppRefreshesLiveConfig(t *testing.T) {
 }
 
 // TestInstallSaysWhereToReachIt: a successful install hands back the address. The node holds both
-// halves -- the manifest's port and the name its own guest publishes -- and the operator holds
-// neither, so an install that reports success without them leaves the address to be guessed. A
-// stranger guessing it lands on the reverse proxy's "nothing is routed here" page and
-// reads a working install as a broken one.
+// halves (the manifest's port, the name its guest publishes) and the operator neither; a stranger
+// left to guess lands on the reverse proxy's "nothing is routed here" page and reads a working
+// install as a broken one.
 func TestInstallSaysWhereToReachIt(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	cfg.FlockName = "picked-hornet"
@@ -894,14 +879,14 @@ func TestInstallSaysWhereToReachIt(t *testing.T) {
 	if o.State != api.OutcomeDone {
 		t.Fatalf("outcome = %+v, want done", o)
 	}
-	// The APP's own name, on the reverse proxy's :80: no port, since a port would be the address
+	// The app's own name, on the reverse proxy's :80: no port, since a port would be the address
 	// of an app reached around the reverse proxy rather than through it.
 	if want := "reach it at http://briard-home-assistant.local/"; o.Detail != want {
 		t.Fatalf("Detail = %q, want %q", o.Detail, want)
 	}
 }
 
-// SEVERAL APPS ARE ONE ACT, installed in the order named, each through the whole path; the act
+// Several apps are one act, installed in the order named, each through the whole path; the act
 // says where to reach each. The first that does not come up ends it, naming what was installed
 // before it -- and nothing after it is tried.
 func TestOneActInstallsSeveralAppsInOrder(t *testing.T) {
@@ -943,10 +928,10 @@ func TestOneActInstallsSeveralAppsInOrder(t *testing.T) {
 	}
 }
 
-// ...and with NO published name there is no URL to promise. A witness, or a node whose FLOCK_NAME
-// is unset, publishes nothing over mDNS, so naming the port is the most that can be said
-// truthfully -- inventing a host for it is exactly the plausible-but-wrong address this test exists
-// to rule out. Asserted as an absence AND a presence: the port must be named, the URL must not appear.
+// ...and with no published name there is no URL to promise. A witness, or a node whose FLOCK_NAME
+// is unset, publishes nothing over mDNS, so the port is the most that can be said truthfully;
+// an invented host is the plausible-but-wrong address this test rules out. Asserted both ways:
+// the port must be named, the URL must not appear.
 func TestInstallWithoutAPublishedNameNamesOnlyThePort(t *testing.T) {
 	cfg := catalogFor(t, testManifest()) // FlockName left zero on purpose
 	o := installApp(cfg, &fakeInstaller{primary: true, active: true, healthy: true})
@@ -963,7 +948,7 @@ func TestInstallWithoutAPublishedNameNamesOnlyThePort(t *testing.T) {
 
 // manifestJSON is a minimal valid manifest for `name`, used to populate the cache directory
 // directly. Written by hand rather than through the install path on purpose: these tests are about
-// what the node does with a SET of cached manifests, not how one came to be there.
+// what the node does with a set of cached manifests, not how one came to be there.
 func manifestJSON(name, digest string) []byte {
 	return []byte(`{"name":"` + name + `","version":"1","containers":[` +
 		`{"name":"app","image":"ghcr.io/x/` + name + `@sha256:` + digest + `",` +
@@ -975,13 +960,11 @@ const (
 	digestB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
-// THE PLURAL CUT ITSELF: a node holding TWO apps must read a spec for each from the cache, and
-// must carry both renderings so a guest reboot can be replayed. (The promoter chain is static and
-// names no app, whatever the test's name says.)
-//
-// Order is by app name and nothing more. It is asserted because "deterministic across
-// restarts" is a real property (a set read back in a different order on every boot is one
-// nobody can reason about), NOT because alphabetical is meaningful.
+// The plural cut itself: a node holding two apps must read a spec for each from the cache and
+// carry both renderings so a guest reboot can be replayed. (The promoter chain is static and
+// names no app, whatever the test's name says.) Order is by app name and nothing more, asserted
+// because a set read back in a different order on every boot is one nobody can reason about, not
+// because alphabetical is meaningful.
 func TestInstalledAppsAssemblesTheChainFromAll(t *testing.T) {
 	dir := t.TempDir()
 	// Written b-then-a so a pass cannot come from the write order.
@@ -1001,7 +984,7 @@ func TestInstalledAppsAssemblesTheChainFromAll(t *testing.T) {
 	if specs[0].Name != "home-assistant" || specs[1].Name != "mosquitto" {
 		t.Errorf("order = %q,%q, want home-assistant,mosquitto (by name, deterministic)", specs[0].Name, specs[1].Name)
 	}
-	// Each spec keeps its OWN paths.
+	// Each spec keeps its own paths.
 	for _, s := range specs {
 		if want := "/var/lib/briard/data/" + s.Name; s.DataDir != want {
 			t.Errorf("%s DataDir = %q, want %q", s.Name, s.DataDir, want)
@@ -1025,7 +1008,7 @@ func TestInstalledAppsAssemblesTheChainFromAll(t *testing.T) {
 	}
 }
 
-// One bad file must cost exactly one app. The cache is read at BRING-UP, so failing the whole
+// One bad file must cost exactly one app. The cache is read at bring-up, so failing the whole
 // read on an unparseable file would leave a healthy app out of bring-up because an
 // unrelated one was corrupt -- and a node that comes back serving nothing is the outcome this
 // path exists to prevent.
@@ -1049,13 +1032,11 @@ func TestInstalledAppsSkipsOnlyTheBadFile(t *testing.T) {
 	}
 }
 
-// A SECOND APP IS ALLOWED, and it must not disturb the first. Every seam names an app --
-// NodeStatus.Apps (per-app manifest identity), the volume's .apps/<name>.json, and telemetry's
-// per-app Payloads -- so a node running two describes two.
-//
-// What matters is not that it succeeds but that the FIRST app survives it: the install must ask
-// the volume about ITS OWN app, and must not remove the other's rendered units as a renamed
-// prior's orphans.
+// A second app is allowed, and must not disturb the first. Every seam names an app
+// (NodeStatus.Apps' per-app manifest identity, the volume's .apps/<name>.json, telemetry's per-app
+// Payloads), so a node running two describes two. What matters is not that it succeeds but that
+// the first app survives: the install must ask the volume about its own app, and must not remove
+// the other's rendered units as a renamed prior's orphans.
 func TestInstallAcceptsASecondAppAndLeavesTheFirstAlone(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "mosquitto.json"), manifestJSON("mosquitto", digestB), 0o600); err != nil {
@@ -1102,14 +1083,13 @@ func TestInstallOfTheSameAppIsAnUpgrade(t *testing.T) {
 	}
 }
 
-// The install path ENSURES the image is present rather than starting its .image unit blindly.
+// The install path ensures the image is present rather than starting its .image unit blindly.
 // Starting one is a `podman image pull`, so an unconditional start cannot install an app whose
-// image was staged locally (there is no registry to pull from) and needlessly re-fetches one a
-// prewarm already placed. The ref must reach the guest, because the check is on the ref and the
-// action is on the unit -- a call that passed only the unit could not tell the two apart.
-//
-// The failure it guards against reads
-// `warm image (briard-dummy-app-image.service): ... Job for briard-dummy-app-image.service failed`.
+// image was staged locally (no registry to pull from), failing as
+// `warm image (briard-dummy-app-image.service): ... Job for briard-dummy-app-image.service failed`,
+// and needlessly re-fetches one a prewarm already placed. The ref must reach the guest: the check
+// is on the ref and the action on the unit, and a call passing only the unit could not tell them
+// apart.
 func TestInstallEnsuresTheImageRatherThanPullingIt(t *testing.T) {
 	f := &fakeInstaller{primary: true, active: true, healthy: true}
 	if o := installApp(catalogFor(t, testManifest()), f); o.State != api.OutcomeDone {
@@ -1129,23 +1109,19 @@ func TestInstallEnsuresTheImageRatherThanPullingIt(t *testing.T) {
 	}
 }
 
-// THE WIRE IDENTITY'S GROUND TRUTH: a spec must carry the identity of the
-// manifest it was installed from, and that identity must be the hash of the BYTES ON DISK.
-//
-// The distinction is the whole test. shared/manifest.Parse hashes the exact signed document
-// precisely because re-encoding a parsed struct can reorder or reformat and would mint a
-// different identity for the same signed bytes -- so an implementation that re-marshalled the
-// Manifest and hashed that would look entirely reasonable, produce a stable-looking value, and
-// disagree with every identity the catalog ever published. The expectation here is therefore
-// computed from the file, never from the struct.
+// The wire identity's ground truth: a spec must carry the identity of the manifest it was
+// installed from, and that identity must be the hash of the bytes on disk. shared/manifest.Parse
+// hashes the exact signed document because re-encoding a parsed struct can reorder or reformat;
+// hashing a re-marshalled Manifest would look reasonable, give a stable-looking value, and
+// disagree with every identity the catalog ever published. So the expectation is computed from
+// the file, never from the struct.
 func TestInstalledAppsCarriesTheManifestIdentity(t *testing.T) {
 	dir := t.TempDir()
 	want := map[string]string{}
 	for _, s := range []struct{ name, digest string }{{"home-assistant", digestA}, {"mosquitto", digestB}} {
-		// INDENTED, which is what makes this test bite. A catalog document is a signed FILE, and
-		// a file is formatted; compact fixture bytes that happen to equal json.Marshal's output
-		// cannot distinguish hashing them from hashing a re-marshalling, so the sabotage that
-		// proves this assertion would pass against a compact one.
+		// Indented, which is what makes this test bite: a signed catalog file is formatted, and
+		// compact fixture bytes that equal json.Marshal's output cannot tell hashing them from
+		// hashing a re-marshalling, so the sabotage proving this assertion would pass on them.
 		raw := indentJSON(t, manifestJSON(s.name, s.digest))
 		if err := os.WriteFile(filepath.Join(dir, s.name+".json"), raw, 0o600); err != nil {
 			t.Fatal(err)
@@ -1170,14 +1146,12 @@ func TestInstalledAppsCarriesTheManifestIdentity(t *testing.T) {
 	}
 }
 
-// What the node PUTS ON THE WIRE for its apps, and the one thing it must leave off.
-//
-// NodeStatus.Apps is compared by the cloud against a catalog hash, so an entry whose identity
-// is the empty string is worse than no entry at all: dropping it says "this node runs something I
-// cannot name", publishing it says "this node runs the app whose identity is nothing", and a
-// confirmation loop reads the second as a mismatch it can never resolve. specOf builds every spec
-// from signed manifest bytes so the case is unreachable -- asserted anyway, because it is the
-// guard that keeps it unreachable.
+// What the node puts on the wire for its apps, and the one thing it must leave off. The cloud
+// compares NodeStatus.Apps against a catalog hash, so an entry with an empty identity is worse
+// than none: dropping it says "this node runs something I cannot name"; publishing it says "the
+// app whose identity is nothing", a mismatch a confirmation loop can never resolve. specOf builds
+// every spec from signed manifest bytes, so the case is unreachable; asserted anyway, as the
+// guard that keeps it so.
 func TestAppStatusesReportOnlyAppsItCanName(t *testing.T) {
 	cfg := Config{Apps: []model.AppSpec{
 		{Name: "home-assistant", Manifest: "sha256:aa"},
@@ -1194,12 +1168,10 @@ func TestAppStatusesReportOnlyAppsItCanName(t *testing.T) {
 	}
 }
 
-// PER-APP STATE, the converge-at-promotion half. It exists because the promoter does not watch
-// these units -- keeping them out of the chain is what stops a crashed container from demoting
-// the node, and it also means nothing else notices one has died.
-//
-// The two answers are asserted together because they are only meaningful against each other: a
-// running app and a dead one, on the same node, in the same report.
+// Per-app state, the converge-at-promotion half. The promoter does not watch these units (keeping
+// them out of the chain stops a crashed container demoting the node), so nothing else notices one
+// has died. The two answers, a running app and a dead one on the same node in the same report,
+// are asserted together because each is only meaningful against the other.
 func TestAppStatusesReportPerAppState(t *testing.T) {
 	cfg := Config{Apps: []model.AppSpec{
 		{Name: "home-assistant", Manifest: "sha256:aa", Unit: "briard-home-assistant-ha.service"},
@@ -1216,10 +1188,9 @@ func TestAppStatusesReportPerAppState(t *testing.T) {
 	}
 }
 
-// A SECONDARY REPORTS NO STATE, and that is not a detail. The apps run on whoever holds the
-// volume, so a standby is SUPPOSED to be running nothing -- reporting `stopped` there would make
-// an ordinary secondary indistinguishable from a primary whose app died, which is exactly the
-// confusion this field exists to end.
+// A secondary reports no state, and that is not a detail. The apps run on whoever holds the
+// volume, so a standby is supposed to run nothing; reporting `stopped` there would make it
+// indistinguishable from a primary whose app died, the very confusion this field exists to end.
 func TestAppStatusesLeaveStateEmptyOnASecondary(t *testing.T) {
 	cfg := Config{Apps: []model.AppSpec{
 		{Name: "home-assistant", Manifest: "sha256:aa", Unit: "briard-home-assistant-ha.service"},
@@ -1230,7 +1201,7 @@ func TestAppStatusesLeaveStateEmptyOnASecondary(t *testing.T) {
 	}
 }
 
-// "We could not ask" is not "it is down" either, and a read error must cost only the ONE app
+// "We could not ask" is not "it is down" either, and a read error must cost only the one app
 // it happened to. Losing the whole set to a transient verb error is how a real outage hides.
 func TestAppStatusesLeaveStateEmptyWhenTheGuestCannotAnswer(t *testing.T) {
 	cfg := Config{Apps: []model.AppSpec{
@@ -1249,7 +1220,7 @@ func TestAppStatusesLeaveStateEmptyWhenTheGuestCannotAnswer(t *testing.T) {
 	}
 }
 
-// A witness and the shipped zero-app node report NOTHING here, and they must report it as an
+// A witness and the shipped zero-app node report nothing here, and they must report it as an
 // absent field rather than an empty list: `apps: []` on the wire says "I looked and there are
 // none", which is a claim a node with no app cache is in no position to make.
 func TestAppStatusesAreAbsentWithNoApps(t *testing.T) {
@@ -1277,7 +1248,7 @@ func mustPrior(t *testing.T) map[string]string {
 	return p
 }
 
-// The install asks the volume about THIS app, and a manifest belonging to a DIFFERENT one
+// The install asks the volume about this app, and a manifest belonging to a different one
 // must not answer for it. An unnamed read of the volume would make an install of mosquitto see
 // home-assistant's manifest as its own prior -- so it would snapshot the wrong rollback point,
 // and filesToRemove would then delete home-assistant's rendered units as a renamed prior's
@@ -1286,7 +1257,7 @@ func TestPriorAppReadsOnlyItsOwnApp(t *testing.T) {
 	other, _ := priorManifest(t) // home-assistant's manifest, on the volume
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: true, prior: other}
-	// Install a DIFFERENT app; the volume holds only home-assistant's manifest.
+	// Install a different app; the volume holds only home-assistant's manifest.
 	prior, subdirs, raw, _ := cfg.priorApp(context.Background(), f, "mosquitto", []byte(`{}`), func(string, ...any) {})
 	if prior != nil || subdirs != nil || raw != "" {
 		t.Fatalf("prior = %v/%v/%q for mosquitto, want none -- another app's manifest answered for it", prior, subdirs, raw)
@@ -1297,7 +1268,7 @@ func TestPriorAppReadsOnlyItsOwnApp(t *testing.T) {
 	}
 }
 
-// A guest that cannot name an app's identity on the volume must be refused BEFORE anything is
+// A guest that cannot name an app's identity on the volume must be refused before anything is
 // written, not driven into recording this app's manifest over whatever it already runs. Alpha
 // is reinstall-only, so "refuse loudly" is the whole answer -- there is no compat path to build.
 func TestInstallRefusesAGuestThatCannotNameAApp(t *testing.T) {
@@ -1335,11 +1306,11 @@ func (v volumeGuest) AppInstalled(_ context.Context, name string) (string, error
 
 func (v volumeGuest) SupportsAppList() bool { return !v.tooOld }
 
-// THE CONVERGED SURVIVOR. A node that promoted into somebody else's install has an EMPTY
-// node-local cache -- an install writes it only on the Primary that ran it -- while
-// converge-at-promotion has it running what the volume names. Reading the volume is what lets it
-// say so; without this it serves the app at the VIP while reporting no apps at all, which is a
-// household degraded to nothing in every view.
+// The converged survivor. A node that promoted into somebody else's install has an empty
+// node-local cache (an install writes it only on the Primary that ran it) while
+// converge-at-promotion has it running what the volume names. Reading the volume lets it say so;
+// without this it serves the app at the VIP while reporting no apps at all, a household degraded
+// to nothing in every view.
 func TestAdoptVolumeAppsOnANodeThatInstalledNothing(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{AppCache: dir}
@@ -1355,7 +1326,7 @@ func TestAdoptVolumeAppsOnANodeThatInstalledNothing(t *testing.T) {
 	if cfg.Apps[0].Name != "home-assistant" || cfg.Apps[1].Name != "mosquitto" {
 		t.Errorf("names = %q,%q, want home-assistant,mosquitto", cfg.Apps[0].Name, cfg.Apps[1].Name)
 	}
-	// The IDENTITY is what the cloud confirms a rollout against, so it must be the hash of the
+	// The identity is what the cloud confirms a rollout against, so it must be the hash of the
 	// volume's own bytes rather than anything re-derived.
 	_, want, err := manifest.Parse(manifestJSON("home-assistant", digestA))
 	if err != nil {
@@ -1367,7 +1338,7 @@ func TestAdoptVolumeAppsOnANodeThatInstalledNothing(t *testing.T) {
 	if len(cfg.AppRendered.Units) == 0 {
 		t.Error("the rendered units must come with the specs -- a standby replays them after a guest reboot")
 	}
-	// CACHED, so this node's own restart brings up what it is running rather than what it once
+	// Cached, so this node's own restart brings up what it is running rather than what it once
 	// installed (which here is nothing at all).
 	for _, name := range []string{"home-assistant", "mosquitto"} {
 		if _, err := os.ReadFile(filepath.Join(dir, name+".json")); err != nil {
@@ -1376,7 +1347,7 @@ func TestAdoptVolumeAppsOnANodeThatInstalledNothing(t *testing.T) {
 	}
 }
 
-// Every failure is SOFT, because this is a report and not a decision: a guest too old to list, or
+// Every failure is soft, because this is a report and not a decision: a guest too old to list, or
 // a read that fails, leaves the previous view standing rather than blanking what the node says it
 // runs. A stale answer beats an invented one.
 func TestAdoptVolumeAppsKeepsTheOldViewOnFailure(t *testing.T) {
@@ -1398,7 +1369,7 @@ func TestAdoptVolumeAppsKeepsTheOldViewOnFailure(t *testing.T) {
 	}
 }
 
-// A manifest the volume carries but this build cannot parse costs THAT app and no other: one
+// A manifest the volume carries but this build cannot parse costs that app and no other: one
 // unusable file must not blank a node's whole report.
 func TestAdoptVolumeAppsSkipsOnlyTheBadManifest(t *testing.T) {
 	cfg := &Config{AppCache: t.TempDir()}
@@ -1412,7 +1383,7 @@ func TestAdoptVolumeAppsSkipsOnlyTheBadManifest(t *testing.T) {
 	}
 }
 
-// upgradeWith runs an UPGRADE (a prior manifest is installed) whose floor passes, with the S1
+// upgradeWith runs an upgrade (a prior manifest is installed) whose floor passes, with the S1
 // samples the fake will answer. The settle window is squeezed to nothing: the production minute
 // is there to let HA's retry backoff run, and a fake has nothing to wait for.
 func upgradeWith(t *testing.T, f *fakeInstaller) api.DirectiveOutcome {
@@ -1433,10 +1404,10 @@ func sample(states ...string) []hass.Entry {
 	return out
 }
 
-// TestUpgradeRollsBackOnAReadinessRegression is the whole point of the readiness registry: the floor PASSES —
-// the fake reports healthy, exactly as Home Assistant answering /manifest.json with a 200 does —
-// and the upgrade is reverted anyway, because the integrations that were working stopped working.
-// Without this layer that install reports success and the household quietly loses half its house.
+// TestUpgradeRollsBackOnAReadinessRegression is the whole point of the readiness registry: the
+// floor passes (the fake reports healthy, as Home Assistant answering /manifest.json with a 200
+// does) and the upgrade is reverted anyway, because integrations that were working stopped.
+// Without this layer the install reports success and the household quietly loses half its house.
 func TestUpgradeRollsBackOnAReadinessRegression(t *testing.T) {
 	f := &fakeInstaller{readiness: [][]hass.Entry{
 		sample("loaded", "loaded"),
@@ -1447,7 +1418,7 @@ func TestUpgradeRollsBackOnAReadinessRegression(t *testing.T) {
 		t.Fatalf("outcome = %+v, want rolled-back (the floor passed; the gate above it must not)", o)
 	}
 	joined := strings.Join(f.steps, ",")
-	// The SAME {code + data} revert a failed floor drives — the verdict changes, the undo does not.
+	// The same {code + data} revert a failed floor drives — the verdict changes, the undo does not.
 	if !strings.Contains(joined, "restore:"+wantMember("home-assistant", quadlet.TriggerAppUpdateBefore)) {
 		t.Fatalf("a tripped readiness gate did not restore the data subvolume: %v", f.steps)
 	}
@@ -1457,12 +1428,9 @@ func TestUpgradeRollsBackOnAReadinessRegression(t *testing.T) {
 }
 
 // TestUpgradeCapturesTheBaselineBeforeTheSnapshot: the baseline is the confounder control, so it
-// must be a sample of the app as it was — before the rollback point is taken and before
-// anything is written to the volume.
-//
-// ⚠️ It must also stay above the `stop` before the snapshot: a baseline captured
-// after a stop is a baseline of an app that is not running, which reads as every integration
-// having regressed and would revert every upgrade. That is the `ri > qi` assertion below.
+// must sample the app as it was, before the rollback point and before anything is written to the
+// volume. ⚠️ It must also stay above the `stop` before the snapshot: a stopped app samples as every
+// integration having regressed, which would revert every upgrade (the `ri > qi` assertion).
 func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
 	f := &fakeInstaller{readiness: [][]hass.Entry{sample("loaded"), sample("loaded")}}
 	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
@@ -1490,13 +1458,12 @@ func TestUpgradeCapturesTheBaselineBeforeTheSnapshot(t *testing.T) {
 	}
 }
 
-// TestUpgradeStopsTheAppBeforeSnapshottingIt is the rollback-point rule, and `apps-pair.nix`
-// shows why it is one: taken live, the point does not contain the retained message mosquitto
-// had already accepted, so the rollback restores an empty broker.
-// A live snapshot is crash-consistent at best, and only Home Assistant is measured to survive that.
-//
-// It asserts the CONTAINER unit by name, never the pod: stopping the pod makes podman kill the
-// containers out from under their units, which land in `failed` (see quiesce).
+// TestUpgradeStopsTheAppBeforeSnapshottingIt is the rollback-point rule. `apps-pair.nix` shows
+// why: taken live, the point misses the retained message mosquitto had already accepted, so the
+// rollback restores an empty broker. A live snapshot is crash-consistent at best, and only Home
+// Assistant is measured to survive that. It asserts the container unit by name, never the pod:
+// stopping the pod makes podman kill the containers out from under their units, which land in
+// `failed` (see quiesce).
 func TestUpgradeStopsTheAppBeforeSnapshottingIt(t *testing.T) {
 	f := &fakeInstaller{readiness: [][]hass.Entry{sample("loaded"), sample("loaded")}}
 	if o := upgradeWith(t, f); o.State != api.OutcomeDone {
@@ -1553,11 +1520,10 @@ func TestFreshInstallStopsNothing(t *testing.T) {
 	}
 }
 
-// TestAFailedRollbackPointRestartsTheApp: the rule is that a failed upgrade snapshot
-// INTERRUPTS the app — not that it abandons it. The stop has already happened by then, so the
-// undo is a re-converge against the volume, which still names the PRIOR manifest because the
-// stage has not run. Without this the household loses Home Assistant because a btrfs snapshot
-// failed.
+// TestAFailedRollbackPointRestartsTheApp: a failed upgrade snapshot interrupts the app, never
+// abandons it. The stop has already happened, so the undo is a re-converge against the volume,
+// which still names the prior manifest because the stage has not run. Without this the household
+// loses Home Assistant because a btrfs snapshot failed.
 func TestAFailedRollbackPointRestartsTheApp(t *testing.T) {
 	f := &fakeInstaller{
 		readiness: [][]hass.Entry{sample("loaded"), sample("loaded")},
@@ -1589,9 +1555,8 @@ func TestAFailedRollbackPointRestartsTheApp(t *testing.T) {
 }
 
 // TestFreshInstallHasNoBaseline: a differential gate has nothing to differ against on a first
-// install — the app was not running, so there is no "was loaded" to regress from. The floor
-// is the honest gate there, and this is deliberate rather than incidental: it is also the case
-// where sampling would be asking an app that does not exist yet.
+// install: the app was not running, so there is no "was loaded" to regress from. The floor is
+// deliberately the gate there; sampling would also be asking an app that does not exist yet.
 func TestFreshInstallHasNoBaseline(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	cfg.readinessSettle = time.Millisecond
@@ -1655,9 +1620,9 @@ func TestUpgradeOfAnUnknownAppIsFloorOnly(t *testing.T) {
 }
 
 // TestInstallFailsWhenItsOwnAppWasSkipped is the other half of converge's containment. A
-// preparation failure is contained there so a promoting node keeps the apps that work — which
-// means converge SUCCEEDS while declining to start ours. For an install that is the wrong answer:
-// the old container is still serving, so the health gate below would pass on it and the install
+// preparation failure is contained there so a promoting node keeps the apps that work, which
+// means converge succeeds while declining to start ours. For an install that is the wrong
+// answer: the old container still serves, so the health gate would pass on it, and the install
 // would report a version nothing is running.
 func TestInstallFailsWhenItsOwnAppWasSkipped(t *testing.T) {
 	f := &fakeInstaller{convergeSkips: []string{"home-assistant"}}
@@ -1670,7 +1635,7 @@ func TestInstallFailsWhenItsOwnAppWasSkipped(t *testing.T) {
 	}
 }
 
-// TestInstallIgnoresAnotherAppBeingSkipped: containment cuts both ways. A DIFFERENT app
+// TestInstallIgnoresAnotherAppBeingSkipped: containment cuts both ways. A different app
 // failing to prepare is not this install's problem, and failing here would make one broken
 // catalog entry block every other install on the node.
 func TestInstallIgnoresAnotherAppBeingSkipped(t *testing.T) {
@@ -1683,14 +1648,12 @@ func TestInstallIgnoresAnotherAppBeingSkipped(t *testing.T) {
 	}
 }
 
-// PER-APP HEALTH, the by-name half, and the hole it closes is the one State could not: a
-// container that is UP while the application inside it does not serve. State says `running`, the
-// node-level Healthy is the reverse proxy answering for the NODE, and without this nothing in the
-// system can see the difference.
-//
-// It is only asked of a RUNNING app, and an unresolvable one leaves the field empty rather
-// than calling it unhealthy -- a node mid-converge has no route yet, and a false alarm on a field
-// whose whole value is that someone acts on it is worse than silence.
+// Per-app health, the by-name half, closes the hole State could not: a container that is up while
+// the application inside it does not serve. State says `running`, the node-level Healthy is the
+// reverse proxy answering for the node, and without this nothing can see the difference. It is
+// asked only of a running app, and an unresolvable one leaves the field empty rather than
+// unhealthy: a node mid-converge has no route yet, and a false alarm on a field whose whole value
+// is that someone acts on it is worse than silence.
 func TestAppStatusesReportPerAppHealth(t *testing.T) {
 	cfg := Config{Apps: []model.AppSpec{
 		{Name: "serving", Manifest: "sha256:aa", Unit: "briard-serving-app.service"},
@@ -1714,7 +1677,7 @@ func TestAppStatusesReportPerAppHealth(t *testing.T) {
 	got := cfg.appStatuses(context.Background(), r, true)
 	want := []api.AppStatus{
 		{Name: "serving", Manifest: "sha256:aa", State: api.StateRunning, Health: api.StateHealthy},
-		// THE ONE THAT MATTERS: up, and not serving.
+		// The one that matters: up, and not serving.
 		{Name: "wedged", Manifest: "sha256:bb", State: api.StateRunning, Health: api.StateUnhealthy},
 		{Name: "unrouted", Manifest: "sha256:cc", State: api.StateRunning},
 		// Not probed at all: State already says stopped, and "unhealthy" would say it twice.
@@ -1749,9 +1712,9 @@ func (f *fakeInstaller) AppPulled(_ context.Context, app string) error {
 }
 func (f *fakeInstaller) SupportsAppPulling() bool { return !f.oldGuest }
 
-// THE FREE-SPACE GATE: a manifest that says what it will hold, a guest that says
-// what it has, and a pull that could only end in a full disk refused BEFORE anything is
-// warmed, rendered or touched -- with both numbers in the sentence. Enough space installs and
+// The free-space gate: a manifest says what it will hold, a guest what it has, and a pull that
+// could only end in a full disk is refused, with both numbers, before anything is warmed, rendered
+// or touched. Enough space installs and
 // leaves the pull record for the dashboard's bar, cleared on the way out; a guest that cannot
 // measure installs unmeasured; an entry without sizes gets no gate and no bar.
 func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
@@ -1768,7 +1731,7 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 			t.Fatalf("a refused install still ran %q: %v", forbidden, f.steps)
 		}
 	}
-	// The DOWNLOAD counts too: it stages its compressed layers on the same disk until the whole
+	// The download counts too: it stages its compressed layers on the same disk until the whole
 	// pull completes, so 2.5 GB installed + 1 GiB headroom is not enough in 4 GB once the 0.6 GB
 	// being downloaded sits beside it.
 	f = &fakeInstaller{primary: true, active: true, healthy: true, free: 4000e6}
@@ -1806,7 +1769,7 @@ func TestInstallRefusesWhatWouldNotFit(t *testing.T) {
 	}
 }
 
-// THE INSTALL'S OWN BUDGET FOLLOWS THE PULL'S: an unsized entry keeps the fixed 15
+// The install's own budget follows the pull's: an unsized entry keeps the fixed 15
 // minutes; a sized one gets at least its pull bound plus the health gate, so the operation
 // cannot expire before the pull it is waiting on is allowed to finish.
 func TestInstallBudgetFollowsThePullBound(t *testing.T) {
@@ -1826,18 +1789,15 @@ func TestInstallBudgetFollowsThePullBound(t *testing.T) {
 	}
 }
 
-// TestInstallRefusesAGuestThatCannotTakeAMember: the ring is gated on the CAPABILITY, and the
-// refusal has to be its own -- a guest can be current in every other respect and still predate
-// data.member, because the host agent self-updates independently of the guest OS.
-//
-// Falling back to data.snapshot would be the tempting workaround and is the one thing that must
-// not happen: it takes an UNLABELLED member, which is precisely what the sidecar exists to
-// prevent, and the picker could then offer a household a rollback point it cannot identify.
-//
-// ⚠️ A per-path capability refusal is the only instrument there is: the channel carries no version
-// number, because one could refuse only the WHOLE channel and the channel is what fixes a node
-// (the note on the protocol version number in agent/guestfirmware/firmware.go). This is the path;
-// it refuses alone.
+// TestInstallRefusesAGuestThatCannotTakeAMember: the ring is gated on the capability, with a
+// refusal of its own: a guest can be current in every other respect and still predate
+// data.member, because the host agent self-updates independently of the guest OS. Falling back
+// to data.snapshot is the tempting workaround that must never happen: it takes an unlabelled
+// member, which the sidecar exists to prevent, and the picker could then offer a household a
+// rollback point it cannot identify. ⚠️ A per-path capability refusal is the only instrument: the
+// channel carries no version number, because one could refuse only the whole channel, and the
+// channel is what fixes a node (the protocol-version note in agent/guestfirmware/firmware.go).
+// This path refuses alone.
 func TestInstallRefusesAGuestThatCannotTakeAMember(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	f := &fakeInstaller{primary: true, active: true, healthy: true, noMember: true}
@@ -1856,7 +1816,7 @@ func TestInstallRefusesAGuestThatCannotTakeAMember(t *testing.T) {
 }
 
 // The restore's two verbs. members is the ring the fake offers; ensureEr is an image that
-// cannot be fetched, which is the case the restore must refuse BEFORE it stops anything.
+// cannot be fetched, which the restore must refuse before it stops anything.
 func (f *fakeInstaller) Members(_ context.Context, app string) ([]quadlet.SnapshotEntry, error) {
 	f.steps = append(f.steps, "members:"+app)
 	return f.members, f.membersEr
@@ -1895,12 +1855,11 @@ func restore(cfg Config, f *fakeInstaller, member string) api.DirectiveOutcome {
 	return cfg.applyAppRestore(context.Background(), f, d, func(string, ...any) {})
 }
 
-// TestRestoreRefusesBeforeItStopsAnything is the property the whole order exists for.
-//
-// A revert runs from a BROKEN state and may commit -- the household already lost the thing it is
-// undoing. A restore runs from a HEALTHY one, chosen by somebody looking at a list, so a member
-// whose images can no longer be fetched (a digest three months old that the registry has dropped)
-// must leave the app running and say so.
+// TestRestoreRefusesBeforeItStopsAnything is the property the whole order exists for. A revert
+// runs from a broken state and may commit: the household already lost the thing it is undoing. A
+// restore runs from a healthy one, chosen by somebody looking at a list, so a member whose images
+// can no longer be fetched (a three-month-old digest the registry has dropped) must leave the app
+// running and say so.
 func TestRestoreRefusesBeforeItStopsAnything(t *testing.T) {
 	cfg, f, member := ringWith(t, testManifest(), errors.New("manifest unknown"))
 	o := restore(cfg, f, member)
@@ -1919,9 +1878,9 @@ func TestRestoreRefusesBeforeItStopsAnything(t *testing.T) {
 }
 
 // TestRestoreTakesTheUndoAfterTheStop: the undo is the only way back from a mis-click, so it must
-// be a point the household can actually trust -- which means taken with the app STOPPED.
-// The images come first regardless, because that is the step that has to run
-// before anything stops, and the data is not touched until the undo is on disk.
+// be a point the household can trust, taken with the app stopped. The images come first
+// regardless, as the step that has to run before anything stops, and the data is not touched
+// until the undo is on disk.
 func TestRestoreTakesTheUndoAfterTheStop(t *testing.T) {
 	cfg, f, member := ringWith(t, testManifest(), nil)
 	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
@@ -1940,9 +1899,9 @@ func TestRestoreTakesTheUndoAfterTheStop(t *testing.T) {
 	}
 }
 
-// TestRestoreUndoIsQuiesced reads the SIDECAR rather than the order, because the order is only
+// TestRestoreUndoIsQuiesced reads the sidecar rather than the order, because the order is only
 // the mechanism: what a picker and a snapshot-integrity check act on is the class the member
-// claims. It is the ONLY member the undo takes: the start after it is the guest's.
+// claims. It is the only member the undo takes: the start after it is the guest's.
 func TestRestoreUndoIsQuiesced(t *testing.T) {
 	cfg, f, member := ringWith(t, testManifest(), nil)
 	if o := restore(cfg, f, member); o.State != api.OutcomeDone {
@@ -1990,7 +1949,7 @@ func TestRestoreRestartsTheAppWhenTheUndoFails(t *testing.T) {
 // TestRestoreSweepsTheBackupMarker: a member taken around a household's own backup
 // restore carries the request that started it, and HA's wipe keeps the tar -- so putting that
 // member back unswept replays the restore and lands them back where they were trying to leave.
-// The host names the markers from the member's OWN manifest, which is the one that says which
+// The host names the markers from the member's own manifest, which is the one that says which
 // app and which container this member holds.
 func TestRestoreSweepsTheBackupMarker(t *testing.T) {
 	cfg, f, member := ringWith(t, testManifest(), nil)
@@ -2029,7 +1988,7 @@ func TestRestoreRefusesAGuestThatCannotSweep(t *testing.T) {
 // TestRestorePutsBackTheMembersOwnManifest: {manifest + data} move together, which is what makes
 // this the {code+data} rollback reached deliberately rather than through a failed upgrade.
 func TestRestorePutsBackTheMembersOwnManifest(t *testing.T) {
-	// The node runs 2026.6.0 (priorManifest's); the member is pinned OLDER, so the two differ and
+	// The node runs 2026.6.0 (priorManifest's); the member is pinned older, so the two differ and
 	// the restore has to move the code as well as the data.
 	old := testManifest()
 	old.Version = "2026.5.0"
@@ -2078,7 +2037,7 @@ func TestRestoreRecordsTheMembersManifestNodeLocally(t *testing.T) {
 }
 
 // TestRestoreRefusesAMemberTheRingNoLongerHas: the picker's list can be stale -- pruning runs on
-// every take -- so the member is read back from the RING rather than trusted from the payload.
+// every take -- so the member is read back from the ring rather than trusted from the payload.
 func TestRestoreRefusesAMemberTheRingNoLongerHas(t *testing.T) {
 	cfg, f, _ := ringWith(t, testManifest(), nil)
 	gone := quadlet.SnapshotMember("home-assistant", quadlet.TriggerStart, fixedNow.Add(-99*time.Hour))
@@ -2167,7 +2126,7 @@ func TestRestoreRecordsTheUndoAsAnEvent(t *testing.T) {
 	}
 }
 
-// A RESTORE THAT MOVES THE CODE PULLS, and a pull is paid for before it starts: the member's image
+// A restore that moves the code pulls, and a pull is paid for before it starts: the member's image
 // was removed when its version was superseded, so a store without room for it refuses -- before
 // anything is stopped, fetched or touched -- with the same numbers an install gives.
 func TestRestoreThatPullsMakesRoomFirst(t *testing.T) {
@@ -2195,7 +2154,7 @@ func TestRestoreThatPullsMakesRoomFirst(t *testing.T) {
 	}
 }
 
-// A DATA-ONLY UNDO PULLS NOTHING, so it measures nothing and grows nothing -- even with a store
+// A data-only undo pulls nothing, so it measures nothing and grows nothing -- even with a store
 // that could not hold its image again: the image it needs is the one already running.
 func TestDataOnlyRestoreAsksForNoRoom(t *testing.T) {
 	_, raw := priorManifest(t)
@@ -2411,7 +2370,7 @@ func (g *usageGuest) Usage(_ context.Context, app string) (dashboard.AppUsage, e
 }
 func (g *usageGuest) SupportsUsage() bool { return !g.old }
 
-// THE STORAGE CARD'S READ: the app page may ask it, the cloud may not, and the guest's answer is
+// The storage card's read: the app page may ask it, the cloud may not, and the guest's answer is
 // relayed whole; a guest too old to measure is told so without being asked.
 func TestTheAppPageMayAskWhatAnAppStores(t *testing.T) {
 	if !guestMayAsk(api.Directive{Kind: api.DirectiveAppUsage}) || !localOnlyKinds[api.DirectiveAppUsage] {
@@ -2444,7 +2403,7 @@ func (g cacheGuest) EmptyCache(_ context.Context, app string) error {
 }
 func (g cacheGuest) SupportsEmptyCache() bool { return true }
 
-// THE STORAGE CARD'S CLEAR stops the app's containers, empties its cache and starts it again by
+// The storage card's clear stops the app's containers, empties its cache and starts it again by
 // converge -- in that order, and the start whether or not the emptying worked, since the app was
 // running when the household asked. Refused, with nothing stopped, for an app that keeps no
 // cache, one not installed, and a guest that cannot empty one.

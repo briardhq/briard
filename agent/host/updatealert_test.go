@@ -59,11 +59,10 @@ func TestUpdateAlerterEdges(t *testing.T) {
 	}
 }
 
-// ⚠️ THE REGRESSION THIS ALERTER IS ABOUT. The alerter must NOT prime: a node that was already
-// failing when the agent came up is the steady state of the case the alerter exists for (a
-// floored node's agent is the one agent that never gets replaced), so the FIRST reading must
-// fire. An alerter that primed like the redundancy one would be silent here forever, and this
-// test is what fails when somebody adds that symmetry back.
+// ⚠️ The regression this alerter is about: it must not prime. A node already failing when the
+// agent came up is the steady state of the case it exists for (a floored node's agent is the one
+// agent that never gets replaced), so the first reading must fire. Primed like the redundancy
+// alerter, it would be silent here forever; this test fails when somebody adds that symmetry back.
 func TestUpdateAlerterFiresOnTheFirstReading(t *testing.T) {
 	fn := &fakeNotifier{}
 	a, lay, now := newTestUpdateAlerter(t, fn)
@@ -124,9 +123,9 @@ func TestUpdateAlerterStaleVerdict(t *testing.T) {
 	}
 }
 
-// THE FREE TIER IS THE POINT. A node with no notifier configured delivers nowhere, and the
-// alert store is then the whole of the alert -- it must still be recorded there, where
-// `briard alerts` reads it.
+// The free tier is the point: a node with no notifier configured delivers nowhere, so the alert
+// store is the whole of the alert, and it must still be recorded there, where `briard alerts`
+// reads it.
 func TestUpdateAlerterRecordsWithNoNotifier(t *testing.T) {
 	a, lay, now := newTestUpdateAlerter(t, nil)
 	result(t, lay, "failed could not fetch", *now)

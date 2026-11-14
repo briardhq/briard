@@ -48,7 +48,7 @@ func stepAt(steps []string, prefix string) int {
 	return slices.IndexFunc(steps, func(s string) bool { return strings.HasPrefix(s, prefix) })
 }
 
-// AN UNINSTALL STOPS THE APP, THEN REMOVES IT KEEPING ITS DATA, and forgets it on this node: its
+// An uninstall stops the app, then removes it keeping its data, and forgets it on this node: its
 // cached manifest, its images, its open alert; and Home Assistant is told.
 func TestUninstallStopsTheAppThenRemovesItAndForgetsIt(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
@@ -77,8 +77,8 @@ func TestUninstallStopsTheAppThenRemovesItAndForgetsIt(t *testing.T) {
 	}
 }
 
-// NOW KEEPS NOTHING, and on an app already uninstalled it deletes what was kept; without it an app
-// that is not installed is refused, untouched.
+// "now" keeps nothing, and on an app already uninstalled it deletes what was kept; without it an
+// app that is not installed is refused, untouched.
 func TestUninstallNowAndNotInstalled(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	g := &uninstallGuest{fakeInstaller: &fakeInstaller{primary: true, active: true, prior: mustPrior(t)}}
@@ -101,7 +101,7 @@ func TestUninstallNowAndNotInstalled(t *testing.T) {
 	}
 }
 
-// A FAILED UNINSTALL CONVERGES, so an app whose manifest still stands is started again.
+// A failed uninstall converges, so an app whose manifest still stands is started again.
 func TestAFailedUninstallStartsTheAppAgain(t *testing.T) {
 	cfg := catalogFor(t, testManifest())
 	g := &uninstallGuest{fakeInstaller: &fakeInstaller{primary: true, active: true, prior: mustPrior(t)}, uninstallEr: errors.New("boom")}
@@ -111,7 +111,7 @@ func TestAFailedUninstallStartsTheAppAgain(t *testing.T) {
 	}
 }
 
-// INSTALLING AN UNINSTALLED APP AGAIN RESTORES WHAT IT KEPT, files too, at the version it was kept
+// Installing an uninstalled app again restores what it kept, files too, at the version it was kept
 // under -- never the catalog's over it -- and takes no undo point of the empty app.
 func TestInstallingAgainRestoresTheKeptCopy(t *testing.T) {
 	cfg := catalogFor(t, testManifest())

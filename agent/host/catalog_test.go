@@ -394,7 +394,7 @@ func TestCatalogViewIsPushedWhenItMoves(t *testing.T) {
 	Config{}.pushCatalogView(ctx, g, &fakeNotifier{}, &none, s.logf) // no catalog: nothing, no panic
 }
 
-// THE OFFER is the index's identity against the one this node runs, at every look: an app run
+// The offer is the index's identity against the one this node runs, at every look: an app run
 // under another identity has the index's version on offer; the same identity, an app not
 // installed, or an app the index cannot install offers nothing. The Home Assistant file carries
 // the same answer.
