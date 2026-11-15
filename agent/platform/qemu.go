@@ -800,6 +800,10 @@ func stopUnit(unit string) error {
 // told (BRIARD_UNIT_DIR; a hermetic install puts them in /run), nothing records where, and the
 // manager knows. A transient unit has no file of ours (systemd-run's is the manager's own, deleted
 // when it collects the unit), so that one is only stopped. The caller reloads once, after the last.
+//
+// A unit the stop leaves failed is cleared, or it stays loaded with its file gone: the disable's
+// reload can fire the Persistent= update timer on the spot, and stopping the update it started is
+// a SIGTERM that systemd records as a failure.
 func RemoveUnit(unit string) error {
 	load, err := unitShow(unit, "LoadState")
 	if err != nil {
@@ -821,6 +825,7 @@ func RemoveUnit(unit string) error {
 	if err := stopUnit(unit); err != nil {
 		return err
 	}
+	unitResetFailed(unit)
 	if transient || fragment == "" {
 		return nil
 	}
