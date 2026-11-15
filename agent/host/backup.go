@@ -28,9 +28,10 @@ import (
 //
 // It never blocks this loop (the recorder check's shape): the run starts in the guest's background
 // and, while the guest says it is running, one ordinary short call a cycle asks for the report. A
-// first run copies everything and may take an hour. Once a night whatever happens, on the node
-// that serves: a failure is logged and waits a day; an agent down at 02:00 still starts it within
-// the window, one down for the whole window skips that night. A run cut short by a guest reboot
+// first run copies everything and may take an hour. Once a night, on the node that serves: a run
+// that started inside tonight's window is tonight's, whoever started it and whichever agent life
+// it was (ranTonight), and a failure is logged and waits a day; an agent down at 02:00 still
+// starts it within the window, one down for the whole window skips that night. A run cut short by a guest reboot
 // leaves a lock the next run's unlock clears.
 const (
 	backupAt          = 2 * 60 // minutes after local midnight
@@ -76,8 +77,8 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 		return
 	}
 	b.offsite.tick(cfg.backupFolder(), cfg.readBackupRecord().Nights, now, logf)
-	// A kicked run (an adoption, `briard backup`) runs now and does not count as the night: the
-	// night still runs, and finds nearly nothing to add.
+	// A kicked run (an adoption, `briard backup`) runs now. Outside the window it does not count as
+	// the night, which still runs and finds nearly nothing to add; inside it, it is the night.
 	kicked := cfg.backupKick != nil && cfg.backupKick.Swap(false)
 	if kicked {
 		// Stamped when taken up, not when this tick began: `briard backup` waits for a run that
@@ -88,6 +89,10 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 	day := local.Format(time.DateOnly)
 	mins := local.Hour()*60 + local.Minute()
 	if !kicked && (b.done == day || mins < backupAt || mins >= backupAt+backupWindow) {
+		return
+	}
+	if !kicked && ranTonight(cfg.readBackupRecord().Nights, day, b.loc) {
+		b.done = day
 		return
 	}
 	if !kicked {
@@ -120,6 +125,19 @@ func (cfg Config) backup(ctx context.Context, g backupRunner, b *backupScheduler
 		logf("backup: the guest has a run going or a report waiting; collecting that one")
 	}
 	b.waiting = now
+}
+
+// ranTonight reports whether the record's newest run started inside the window of the local date
+// day: that run is the night, whoever started it. The record is what outlives this process, so a
+// new channel or an agent restart inside the window does not start a second run -- which, failing
+// like the first, would read as two failed nights.
+func ranTonight(nights []dashboard.BackupRun, day string, loc *time.Location) bool {
+	if len(nights) == 0 {
+		return false
+	}
+	at := nights[0].At.In(loc)
+	mins := at.Hour()*60 + at.Minute()
+	return at.Format(time.DateOnly) == day && mins >= backupAt && mins < backupAt+backupWindow
 }
 
 // collectBackup asks for a started run's report, logs it once it has come, and records it as the
@@ -168,8 +186,9 @@ func (cfg Config) collectBackup(ctx context.Context, g backupRunner, b *backupSc
 	cfg.recordNight(ctx, night, n, logf)
 }
 
-// recordNight keeps the night, newest first, and says what it means for the household: a second
-// failed night in a row opens the backup alert, a good one ends it.
+// recordNight keeps the run, newest first, and says what it means for the household: a second
+// failed run in a row opens the backup alert, a good one ends it. Every run counts, however it
+// started: a `briard backup` that fails is as much a backup that did not happen as a night.
 func (cfg Config) recordNight(ctx context.Context, night dashboard.BackupRun, n notify.Notifier, logf func(string, ...any)) {
 	var nights []dashboard.BackupRun
 	if err := cfg.updateBackupRecord(func(r *backupRecord) {
@@ -183,7 +202,7 @@ func (cfg Config) recordNight(ctx context.Context, night dashboard.BackupRun, n 
 		nights = []dashboard.BackupRun{night}
 	}
 	if night.Error == "" {
-		fireAlert(ctx, n, logf, backupWorking(cfg.Node, fmt.Sprintf("Last night's backup into %s finished.", cfg.backupFolder())))
+		fireAlert(ctx, n, logf, backupWorking(cfg.Node, fmt.Sprintf("The backup into %s finished.", cfg.backupFolder())))
 		return
 	}
 	streak := 0
@@ -195,7 +214,7 @@ func (cfg Config) recordNight(ctx context.Context, night dashboard.BackupRun, n 
 	}
 }
 
-// backupAlertAfter is how many failed nights in a row reach the household. One is a laptop lid, a
+// backupAlertAfter is how many failed runs in a row reach the household. One is a laptop lid, a
 // NAS rebooting, a sync drive not mounted yet; two is something to fix.
 const backupAlertAfter = 2
 
@@ -217,14 +236,14 @@ func (cfg Config) backupFailure(runErr string) string {
 }
 
 // backupFailing is the open alert: the copy is getting old, the data is intact -- a Warning.
-func backupFailing(node string, nights int, why string) notify.Alert {
+func backupFailing(node string, runs int, why string) notify.Alert {
 	return notify.Alert{
 		Key:      "backup",
 		Kind:     notify.Open,
 		Severity: notify.Warning,
 		Title:    "Briard: the nightly backup is not working",
-		Body: fmt.Sprintf("The last %d nights' backups on machine %s did not happen: %s. Your apps and their data are fine; "+
-			"the backup copy is what is getting old.", nights, node, why),
+		Body: fmt.Sprintf("The last %d backups on machine %s did not happen: %s. Your apps and their data are fine; "+
+			"the backup copy is what is getting old.", runs, node, why),
 	}
 }
 

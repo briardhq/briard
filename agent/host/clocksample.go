@@ -168,9 +168,11 @@ func (cfg Config) newestMember(ctx context.Context, g memberTaker, app string) (
 // runs it in the background, and while the guest says it is running one ordinary short call a
 // cycle asks for the report. The walk back through the copies has no deadline, because it only
 // reads; the restore runs in line, leased for its budget, because it stops the app and must not
-// overlap any other operation on it. Once a night whatever happens: a failure is logged and waits
-// a day; an agent down at 05:30 still starts it within the window, one down for the whole window
-// skips that night.
+// overlap any other operation on it. Once a night per agent life: a failure is logged and waits a
+// day; an agent down at 05:30 still starts it within the window, one down for the whole window
+// skips that night. The night's "done" is held in memory, so an agent restarted inside the window
+// -- the update timer can fire until 06:00 -- checks again; that costs minutes of reads, since
+// the check only reads, and a repair the first one made reads clean to the second.
 const (
 	dbCheckAt       = 5*60 + 30 // minutes after local midnight
 	dbCheckWindow   = 60        // minutes after dbCheckAt a late agent may still start it

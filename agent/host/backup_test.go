@@ -82,6 +82,41 @@ func TestTheBackupStartsOnceANightOnTheServingNode(t *testing.T) {
 	}
 }
 
+// A run that started inside tonight's window is tonight's, and the record says so after the memory
+// is gone: a new channel or an agent restart (a fresh scheduler) inside the window starts no second
+// run, which, failing like the first, would have opened the alert after one night. Whoever started
+// it: a `briard backup` inside the window is the night too, and one before the window is not.
+func TestARestartInsideTheWindowDoesNotRunTheNightAgain(t *testing.T) {
+	ctx := context.Background()
+	cfg, g, b := backupRig(t)
+	cfg.backup(ctx, g, b, true, tonightAt("02:05"), nil, quiet)
+	g.backup.running, g.backup.report = false, &guestagent.BackupReport{Error: "disk full"}
+	cfg.backup(ctx, g, b, true, tonightAt("02:06"), nil, quiet)
+	if n := len(cfg.readBackupRecord().Nights); n != 1 {
+		t.Fatalf("the record holds %d runs after tonight's, want 1", n)
+	}
+	cfg.backup(ctx, g, utcScheduler(), true, tonightAt("02:20"), nil, quiet)
+	if g.backup.starts != 1 || len(cfg.readBackupRecord().Nights) != 1 {
+		t.Fatalf("after a restart inside the window: %d starts, %d runs recorded; want 1 and 1", g.backup.starts, len(cfg.readBackupRecord().Nights))
+	}
+
+	for _, c := range []struct {
+		kicked string
+		starts int
+	}{{"02:10", 0}, {"01:30", 1}} {
+		cfg, g, _ := backupRig(t)
+		if err := cfg.updateBackupRecord(func(r *backupRecord) {
+			r.Nights = []dashboard.BackupRun{{At: tonightAt(c.kicked), Snapshot: "abc"}}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		cfg.backup(ctx, g, utcScheduler(), true, tonightAt("02:15"), nil, quiet)
+		if g.backup.starts != c.starts {
+			t.Errorf("a run at %s, then the 02:15 tick: %d starts, want %d", c.kicked, g.backup.starts, c.starts)
+		}
+	}
+}
+
 // TestTheBackupIsOffWhenTheFolderIsEmpty: BACKUP_DIR="" is the household turning it off.
 func TestTheBackupIsOffWhenTheFolderIsEmpty(t *testing.T) {
 	cfg, g, b := backupRig(t)
