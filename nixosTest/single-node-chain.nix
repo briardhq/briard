@@ -13,6 +13,9 @@
 #   4 a member that spends its start limit is held (the chain stops, the volume unmounts) and then
 #     restarted by the hold itself, with no reboot: hold-and-restart, the lone node's symmetry
 #     with a flock's demote-and-re-promote (the chain-member contract)
+#   5 a member whose start fails once is retried, not held: the chain comes up with no hold, so
+#     a oneshot's budget is real (RestartMode=direct)
+#   6 a member whose start keeps failing spends that budget, and only then is held
 #
 # The status verb's second branch (Primary = chain active) is unit-tested, and the install rigs
 # run it end to end through a real host agent; this rig owns the guest side.
@@ -119,5 +122,61 @@ pkgs.testers.runNixOSTest {
     assert node1.succeed("cat /proc/sys/kernel/random/boot_id").strip() == boot_id, "the hold REBOOTED the node"
     node1.fail("systemctl is-active drbd-reactor.service")
     print("### 4 the hold restarted the chain: serving again, same boot")
+
+    # === 5 A start that fails once is retried ============================================
+    # briard-apps fails its first start and succeeds on the retry: a manifest that does not
+    # parse, removed by a watcher the moment converge has refused it. The fault is data on the
+    # volume, never a unit file. The chain starts from its target, the shape of a promotion or
+    # the hold's own restart, so every member queued behind briard-apps sees the failed start.
+    fault = "/var/lib/briard/.apps/zz-broken.json"
+    refused = "zz-broken.json does not parse"
+
+    def apps_refusals(since):
+        return int(node1.succeed(
+            f"journalctl -q -o cat -u briard-apps.service --since=@{since} | grep -c '{refused}' || true"
+        ).strip())
+
+    def held_since(since):
+        return node1.execute(f"journalctl -q -u briard-promotion-hold.service --since=@{since} | grep -q .")[0] == 0
+
+    def restart_chain():
+        node1.succeed("systemctl stop briard-chain.target")
+        node1.wait_until_fails("mountpoint -q /var/lib/briard", timeout=60)
+        node1.wait_until_fails("systemctl is-active briard-primary-storage.service", timeout=60)
+        node1.succeed("systemctl start --no-block briard-chain.target")
+
+    time.sleep(1)  # the journal reads below are by the second; keep step 4's lines out
+    t5 = node1.succeed("date +%s").strip()
+    node1.succeed(f"echo '{{' > {fault} && sync")
+    node1.succeed(
+        "systemd-run --unit=briard-test-clear-fault --collect --setenv=PATH=\"$PATH\" "
+        f"sh -c 'until journalctl -q -o cat -u briard-apps.service --since=@{t5} | grep -q \"{refused}\"; "
+        f"do sleep 0.1; done; rm {fault}'"
+    )
+    restart_chain()
+    node1.wait_until_succeeds("systemctl is-active briard-chain.target briard-apps.service", timeout=120)
+    node1.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
+    n = apps_refusals(t5)
+    assert n == 1, f"PRECOND: the fault should have refused exactly one start, it refused {n}"
+    node1.fail(f"test -e {fault}")
+    assert not held_since(t5), "one failed start of briard-apps fired the hold"
+    for unit in fixture_units(node1):
+        node1.wait_until_succeeds(f"systemctl is-active {unit}", timeout=120)
+    print("### 5 briard-apps failed once, was retried, and the chain came up with no hold")
+
+    # === 6 A start that keeps failing is held, after its budget ==========================
+    # The same fault, left in place. Step 5 spent two of the five starts, so the budget is
+    # cleared first; the hold must come only once all five are spent.
+    node1.succeed("systemctl reset-failed briard-apps.service")
+    time.sleep(1)
+    t6 = node1.succeed("date +%s").strip()
+    node1.succeed(f"echo '{{' > {fault} && sync")
+    restart_chain()
+    node1.wait_until_succeeds(
+        f"journalctl -q -u briard-promotion-hold.service --since=@{t6} | grep -q .", timeout=120)
+    n = apps_refusals(t6)
+    assert n >= 5, f"briard-apps was held after {n} failed starts; its budget is 5"
+    node1.wait_until_fails("mountpoint -q /var/lib/briard", timeout=60)
+    print(f"### 6 briard-apps was held after {n} failed starts, and the hold stopped the chain")
   '';
 }

@@ -223,6 +223,8 @@ func TestWriteUnitsChainsTheMembersInOrder(t *testing.T) {
 // fires on the transition into failed, and the start limit decides when that is; a member rendered
 // without either would crash quietly forever while the household had no apps running, the shape
 // the budget exists to end.
+// And every member restarts directly (RestartMode=direct): without it a member enters failed on
+// its first failure, OnFailure= fires then, and the budget is never spent.
 func TestWriteUnitsEveryMemberCanHandTheResourceOn(t *testing.T) {
 	guestWithTools(t)
 	u := units()
@@ -233,6 +235,8 @@ func TestWriteUnitsEveryMemberCanHandTheResourceOn(t *testing.T) {
 		for _, want := range []string{
 			"OnFailure=" + holdUnit + "\n",
 			"OnFailureJobMode=replace-irreversibly\n",
+			"Restart=on-failure\n",
+			"RestartMode=direct\n",
 			"StartLimitIntervalSec=300\n",
 			"StartLimitBurst=5\n",
 		} {

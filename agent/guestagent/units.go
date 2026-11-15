@@ -267,17 +267,20 @@ ExecStopPost=-` + tool("briard-hold-restart") + " " + chain.Target + `
 ExecStopPost=-` + tool("journalctl") + ` --sync
 `
 
-	// 1. Primary storage -- format on first use, mount the replicated volume. The filesystem
-	// half: node storage did the block work on every node, and this runs only where the volume
-	// is actually mounted, which is the one node that promoted. A oneshot may carry
-	// Restart=on-failure -- only `always`/`on-success` are refused for this Type, and a oneshot
-	// that exits cleanly is never restarted -- so the budget is uniform across the chain rather
-	// than "the simple ones retry and the oneshots get exactly one attempt".
+	// 1. Primary storage -- mount the replicated volume. The filesystem half: node storage did the
+	// block work on every node, and this runs only where the volume is actually mounted, which is
+	// the one node that promoted. A oneshot may carry Restart=on-failure -- only
+	// `always`/`on-success` are refused for this Type, and a oneshot that exits cleanly is never
+	// restarted -- so the budget is uniform across the chain rather than "the simple ones retry and
+	// the oneshots get exactly one attempt". RestartMode=direct is what makes the retry real, on
+	// the three oneshots as on the rest: without it a failed start passes through `failed`, which
+	// fires OnFailure= at the first failure, and the hold stops the chain before the retry runs.
 	u[primaryStorageUnit] = `[Unit]
 Description=Briard primary storage (the replicated volume, mounted on the primary)
 ` + chainEdges(0, members) + chainMemberFailure + `
 [Service]
 Restart=on-failure
+RestartMode=direct
 RestartSec=2
 Type=oneshot
 RemainAfterExit=yes
@@ -311,6 +314,7 @@ Description=Briard apps, converged from the replicated volume at promotion
 ` + chainEdges(2, members) + chainMemberFailure + `
 [Service]
 Restart=on-failure
+RestartMode=direct
 RestartSec=2
 Type=oneshot
 RemainAfterExit=yes
@@ -338,6 +342,7 @@ Wants=` + vipRenewTimer + `
 ` + chainEdges(1, members) + chainMemberFailure + `
 [Service]
 Restart=on-failure
+RestartMode=direct
 RestartSec=2
 Type=oneshot
 RemainAfterExit=yes
@@ -400,9 +405,7 @@ ExecStart=` + tool("briard-vip-renew") + `
 	// stop job deactivates drbd-reactor's target -- which unmounts the data volume and demotes the
 	// node on one crash, measured, with a peer taking the resource about half the time. `direct`
 	// restarts through activating instead of failed, so dependents are not notified of the
-	// temporary failure, and it is what lets the StartLimit above finally accumulate. Not on
-	// primary-storage/apps/vip: for those, failure really does mean this node must not hold the
-	// volume.
+	// temporary failure, and it is what lets the StartLimit above finally accumulate.
 	u[reverseProxyUnit] = `[Unit]
 Description=Briard reverse proxy (serves the VIP on :80/:443)
 After=` + appsUnit + `
