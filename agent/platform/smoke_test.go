@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,7 +81,10 @@ func TestSmokeTestRefusesAMachineThatDiesOrHangs(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "exited before it ran") || !strings.Contains(err.Error(), "firmware missing") {
 		t.Fatalf("dying machine: err = %v", err)
 	}
-	hangs := fakeTree(t, goodVersion, goodDevices, goodMachines, "exec sleep 30")
+	// The hang sleeps for a time no other process on the machine is sleeping for: this test's pid
+	// in the fraction, so the check below can tell its own process from anyone's `sleep 30`.
+	hang := fmt.Sprintf("sleep 30.%d", os.Getpid())
+	hangs := fakeTree(t, goodVersion, goodDevices, goodMachines, "exec "+hang)
 	start := time.Now()
 	err = SmokeTest(context.Background(), hangs, "tcg", "", t.Logf)
 	if err == nil || !strings.Contains(err.Error(), "did not reach running") {
@@ -90,9 +94,9 @@ func TestSmokeTestRefusesAMachineThatDiesOrHangs(t *testing.T) {
 		t.Fatalf("the hang was not cut off by the smoke timeout (took %s)", took)
 	}
 	// The hung process was killed, not left behind holding the scratch dir. The fake exec's its
-	// sleep, so its whole command line is exactly `sleep 30`: matched exactly (-x), because a
+	// sleep, so its whole command line is exactly the hang: matched exactly (-x), because a
 	// substring match also hits any unrelated shell whose command text mentions the same words.
-	if out, _ := exec.Command("pgrep", "-fx", "sleep 30").Output(); strings.TrimSpace(string(out)) != "" {
+	if out, _ := exec.Command("pgrep", "-fx", hang).Output(); strings.TrimSpace(string(out)) != "" {
 		t.Errorf("the hung scratch machine is still running: pids %s", out)
 	}
 }
