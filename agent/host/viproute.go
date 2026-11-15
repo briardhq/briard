@@ -130,3 +130,43 @@ func (v *vipRouter) reconcile(ctx context.Context, r guest.VIPReader, logf func(
 	v.installed = want
 	logf("vip route: %s reachable from this host over %s", want, v.dev)
 }
+
+// The routes this host installs on the private link can be dropped from under it -- taking the
+// tap down and up removes every route and neighbour entry on it, the pinned one included -- and
+// neither the bring-up nor the reconcile above would notice: the first runs once, and the second
+// compares the guest's answer with what it remembers installing, never with the kernel. Without
+// them the household's own machine cannot open its apps while every other machine can, and the
+// host cannot reach the guest's reboot gate. So the network check asks the kernel
+// (restorePrivateLink).
+
+// linkKernel is what restorePrivateLink asks and does, as fields so a test can play the kernel.
+// Not a seam -- a test double inside one component.
+type linkKernel struct {
+	nodePresent func(platform.NodeRoute) bool
+	vipPresent  func(addr, dev, via string) bool
+	setNode     func(context.Context, platform.NodeRoute) error
+}
+
+var platformLink = linkKernel{platform.NodeRoutePresent, platform.VIPRoutePresent, platform.SetNodeRoute}
+
+// restorePrivateLink puts back what the kernel dropped: the node route and its pinned neighbour
+// at once (SetNodeRoute is idempotent), and the VIP route by forgetting that it is installed, so
+// the next reconcile installs it again -- that is still the one place the VIP route is set, and
+// the reconcile still acts only on a change. The node route first: the VIP route's next hop is
+// the address it pins. Each check is a /proc read; nothing runs unless something is missing.
+func (cfg Config) restorePrivateLink(ctx context.Context, vr *vipRouter, k linkKernel, logf func(string, ...any)) {
+	if r, ok := cfg.nodeRoute(); ok && !k.nodePresent(r) {
+		sctx, cancel := context.WithTimeout(ctx, vipVerbTimeout)
+		err := k.setNode(sctx, r)
+		cancel()
+		if err != nil {
+			logf("node route: %s is gone from %s and could not be put back: %v -- retrying next check", r.GuestIP, r.Dev, err)
+		} else {
+			logf("node route: %s was gone from %s; restored", r.GuestIP, r.Dev)
+		}
+	}
+	if vr.installed != "" && !k.vipPresent(vr.installed, vr.dev, vr.via) {
+		logf("vip route: %s is gone from %s; the next reconcile puts it back", vr.installed, vr.dev)
+		vr.installed = ""
+	}
+}

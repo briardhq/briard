@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -162,4 +163,53 @@ func ClearVIPRoute(ctx context.Context, addr, dev string) error {
 func routeAbsent(out string) bool {
 	s := strings.ToLower(out)
 	return strings.Contains(s, "no such process") || strings.Contains(s, "no such file or directory")
+}
+
+// The kernel can drop both routes and the neighbour entry under a running agent: taking the tap
+// down and up removes every route and neighbour on it, the pinned one included, and so does
+// anyone's `ip route flush`. Nothing else would notice, so the agent asks at each network check
+// whether they are still there (NodeRoutePresent, VIPRoutePresent), reading the kernel's own
+// tables in /proc rather than running `ip`: a check that runs every few seconds for the life of
+// the node must cost a file read, not a process.
+
+// routeListed reports whether table, /proc/net/route's text, holds a /32 to addr on dev through
+// via ("" for none: on-link). That file is the main table, IPv4, one route a line: the device,
+// then destination, gateway, flags, refcount, use, metric and mask, the addresses as hex in the
+// kernel's byte order.
+func routeListed(table []byte, addr, dev, via string) bool {
+	if via == "" {
+		via = "0.0.0.0"
+	}
+	for _, l := range strings.Split(string(table), "\n") {
+		f := strings.Fields(l)
+		if len(f) >= 8 && f[0] == dev && procIPv4(f[1]) == addr && procIPv4(f[2]) == via && f[7] == "FFFFFFFF" {
+			return true
+		}
+	}
+	return false
+}
+
+// neighPinned reports whether arp, /proc/net/arp's text, holds ip on dev at mac and permanent:
+// the columns are the address, the hardware type, the flags, the hardware address, the mask and
+// the device, and a permanent entry carries ATF_PERM (0x4) in its flags.
+func neighPinned(arp []byte, ip, mac, dev string) bool {
+	for _, l := range strings.Split(string(arp), "\n") {
+		f := strings.Fields(l)
+		if len(f) < 6 || f[0] != ip || f[5] != dev || !strings.EqualFold(f[3], mac) {
+			continue
+		}
+		flags, err := strconv.ParseUint(strings.TrimPrefix(f[2], "0x"), 16, 32)
+		return err == nil && flags&0x4 != 0
+	}
+	return false
+}
+
+// procIPv4 renders one of /proc/net/route's hex addresses dotted: the hex is the address's
+// network-order bytes read as a little-endian word, so the bytes come out lowest first.
+func procIPv4(h string) string {
+	v, err := strconv.ParseUint(h, 16, 32)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d.%d.%d.%d", byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }

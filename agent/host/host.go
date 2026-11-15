@@ -78,15 +78,24 @@ func (cfg Config) privHostMAC(ctx context.Context, logf func(string, ...any)) st
 // system address, or a node with no node IP. The setter is a parameter so the skip conditions can
 // be tested without a live network.
 func (cfg Config) setNodeRoute(ctx context.Context, set func(context.Context, platform.NodeRoute) error) error {
-	if cfg.WitnessTap == "" || cfg.hostNodeIP() == "" || cfg.guestNodeIP() == "" {
+	r, ok := cfg.nodeRoute()
+	if !ok {
 		return nil
 	}
-	return set(ctx, platform.NodeRoute{
+	return set(ctx, r)
+}
+
+// nodeRoute is the route setNodeRoute installs, and false when it installs none.
+func (cfg Config) nodeRoute() (platform.NodeRoute, bool) {
+	if cfg.WitnessTap == "" || cfg.hostNodeIP() == "" || cfg.guestNodeIP() == "" {
+		return platform.NodeRoute{}, false
+	}
+	return platform.NodeRoute{
 		GuestIP: cfg.guestNodeIP(),
 		Dev:     cfg.WitnessTap,
 		Src:     cfg.hostNodeIP(),
 		LLAddr:  deriveMAC(cfg.Node, "wit"),
-	})
+	}, true
 }
 
 // hostNodeIP is the host's own address on the system subnet, bare. Empty when this host takes
@@ -1448,6 +1457,10 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 			// NetworkManager manages, and NM reconciles addresses on a connection's reactivation.
 			cfg.beat.Beat()
 			cfg.convergeNetwork(ctx, logf)
+			// ...the private link's routes and pinned neighbour, which the kernel drops with the
+			// tap (viproute.go), checked before the VIP route's reconcile below so it puts back
+			// a dropped VIP route this same tick...
+			cfg.restorePrivateLink(ctx, vr, platformLink, logf)
 			// ...the LAN record's gateway MAC, if the bring-up could not read it (reparent.go)...
 			cfg.completeNetworkRecord(ctx, logf)
 			// ...and the harder question the same tick is the only place to ask: has the

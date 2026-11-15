@@ -130,3 +130,49 @@ func TestLinkMACFrom(t *testing.T) {
 		t.Errorf("linkMACFrom on an ether-less device = %q, want \"\"", got)
 	}
 }
+
+// The check reads the kernel's tables as the kernel writes them: the samples are /proc/net/route
+// and /proc/net/arp's real layout, holding the two routes and the neighbour SetNodeRoute and
+// SetVIPRoute install, next to the entries that must not count as them.
+func TestTheRoutesAreReadFromTheKernelsTables(t *testing.T) {
+	route := []byte("Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"eno1\t00000000\t010AA8C0\t0003\t0\t0\t1024\t00000000\t0\t0\t0\n" +
+		"briard-priv0\t00090B0A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n" +
+		"briard-priv0\t02090B0A\t00000000\t0005\t0\t0\t0\tFFFFFFFF\t0\t0\t0\n" +
+		"briard-priv0\tE109A8C0\t02090B0A\t0007\t0\t0\t0\tFFFFFFFF\t0\t0\t0\n")
+	arp := []byte("IP address       HW type     Flags       HW address            Mask     Device\n" +
+		"192.168.10.1     0x1         0x2         f4:fc:49:35:a0:68     *        eno1\n" +
+		"10.11.9.2        0x1         0x6         52:54:00:AB:CD:EF     *        briard-priv0\n" +
+		"10.11.9.3        0x1         0x2         52:54:00:00:00:03     *        briard-priv0\n")
+	for _, c := range []struct {
+		name           string
+		addr, dev, via string
+		want           bool
+	}{
+		{"the node route", "10.11.9.2", "briard-priv0", "", true},
+		{"the VIP route", "192.168.9.225", "briard-priv0", "10.11.9.2", true},
+		{"the VIP on-link, not via the guest", "192.168.9.225", "briard-priv0", "", false},
+		{"another device", "10.11.9.2", "eno1", "", false},
+		{"the link's /24 is no /32", "10.11.9.0", "briard-priv0", "", false},
+		{"absent", "10.11.9.7", "briard-priv0", "", false},
+	} {
+		if got := routeListed(route, c.addr, c.dev, c.via); got != c.want {
+			t.Errorf("%s: routeListed = %v, want %v", c.name, got, c.want)
+		}
+	}
+	for _, c := range []struct {
+		name         string
+		ip, mac, dev string
+		want         bool
+	}{
+		{"pinned, the MAC in either case", "10.11.9.2", "52:54:00:ab:cd:ef", "briard-priv0", true},
+		{"another MAC", "10.11.9.2", "52:54:00:ab:cd:00", "briard-priv0", false},
+		{"another device", "10.11.9.2", "52:54:00:ab:cd:ef", "eno1", false},
+		{"learned, not pinned", "10.11.9.3", "52:54:00:00:00:03", "briard-priv0", false},
+		{"absent", "10.11.9.9", "52:54:00:ab:cd:ef", "briard-priv0", false},
+	} {
+		if got := neighPinned(arp, c.ip, c.mac, c.dev); got != c.want {
+			t.Errorf("%s: neighPinned = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

@@ -237,3 +237,48 @@ func TestWantVIPRoute(t *testing.T) {
 		})
 	}
 }
+
+// A route the kernel dropped comes back at the next network check, and nothing runs while every
+// route is there: the node route and its neighbour by SetNodeRoute again, the VIP route by the
+// reconcile that follows, which installs it because it no longer believes it installed.
+func TestThePrivateLinksDroppedRoutesComeBack(t *testing.T) {
+	cfg := Config{WitnessTap: "briard-priv0", SystemCIDR: "10.0.0.1/25", SystemHostCIDR: "10.0.0.129/32", Node: "n0de"}
+	v, rr := newTestRouter("briard-priv0", "eth2")
+	r := fakeStatus{vip: "192.168.9.225/24"}
+	v.reconcile(t.Context(), r, quiet)
+
+	nodeThere, vipThere := true, true
+	var nodeSets []platform.NodeRoute
+	k := linkKernel{
+		nodePresent: func(platform.NodeRoute) bool { return nodeThere },
+		vipPresent: func(addr, dev, via string) bool {
+			if addr != "192.168.9.225" || dev != "briard-priv0" || via != "10.0.0.1" {
+				t.Errorf("asked about %s on %s via %s, not the route the reconcile installed", addr, dev, via)
+			}
+			return vipThere
+		},
+		setNode: func(_ context.Context, nr platform.NodeRoute) error { nodeSets = append(nodeSets, nr); return nil },
+	}
+	cfg.restorePrivateLink(t.Context(), v, k, quiet)
+	v.reconcile(t.Context(), r, quiet)
+	if len(nodeSets) != 0 || len(rr.sets) != 1 {
+		t.Fatalf("with every route there, the check installed: node %+v, vip %+v", nodeSets, rr.sets)
+	}
+
+	nodeThere, vipThere = false, false // the tap went down and up
+	cfg.restorePrivateLink(t.Context(), v, k, quiet)
+	v.reconcile(t.Context(), r, quiet)
+	want := platform.NodeRoute{GuestIP: "10.0.0.1", Dev: "briard-priv0", Src: "10.0.0.129", LLAddr: deriveMAC("n0de", "wit")}
+	if len(nodeSets) != 1 || nodeSets[0] != want {
+		t.Errorf("node route restored as %+v, want once as %+v", nodeSets, want)
+	}
+	if len(rr.sets) != 2 || len(rr.cleared) != 0 {
+		t.Errorf("the VIP route was not put back by the reconcile: sets %+v, cleared %v", rr.sets, rr.cleared)
+	}
+
+	// No private link, no routes of ours: nothing is asked.
+	(Config{}).restorePrivateLink(t.Context(), &vipRouter{}, linkKernel{
+		nodePresent: func(platform.NodeRoute) bool { t.Error("asked about a node route with no link"); return true },
+		vipPresent:  func(string, string, string) bool { t.Error("asked about a VIP route never installed"); return true },
+	}, quiet)
+}

@@ -804,11 +804,10 @@ pkgs.testers.runNixOSTest {
     # Non-vacuity and self-healing in one move: without the route the host is back in exactly the
     # state measured on the stranger's desktop, and a restarted agent must restore it on its own --
     # proving the route is the cause, not merely present beside the result (racing the agent at
-    # boot would not). The agent is stopped for the negative half, not to be tidy: its route
-    # reconcile (agent/host/viproute.go) acts only when the guest VIP changes, so a running agent
-    # would not notice a deleted route, and the restart makes a fresh reconcile install it. The
-    # guest keeps serving (a detached sibling unit, as the cattle reset relies on), so only the
-    # isolation is measured.
+    # boot would not). The agent is stopped for the negative half, not to be tidy: a running agent
+    # puts a dropped route back at its next network check (below), which could land before the
+    # curl. The guest keeps serving (a detached sibling unit, as the cattle reset relies on), so
+    # only the isolation is measured.
     host.succeed("systemctl stop briard-agent.service")
     host.succeed(f"ip route del {vip}/32 dev briard-priv0")
     host.fail(f"curl -fsS --max-time 5 http://{vip}/healthz")
@@ -816,6 +815,22 @@ pkgs.testers.runNixOSTest {
     host.succeed("systemctl start briard-agent.service")
     host.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=180)
     print("the agent re-established the route on its own")
+
+    # ...and a running agent puts them back too. The kernel drops every route and neighbour entry
+    # on a device that goes down, the pinned one included, and nobody restarts the agent for that:
+    # its network check (every 15 s) reads /proc/net/route and /proc/net/arp and restores what is
+    # missing. Both the VIP route and the node IP's pinned neighbour go here, so the check must
+    # read the real kernel's tables right for both; with either left out, the host cannot reach
+    # the VIP (the route's next hop is the pinned address). The cutoff is a few checks, far short
+    # of anything else that would restore them (a channel bounce, a restart).
+    host.succeed(f"ip route del {vip}/32 dev briard-priv0")
+    host.succeed(f"ip neigh del {node_ip} dev briard-priv0")
+    host.wait_until_succeeds(f"ip neigh show {node_ip} dev briard-priv0 | grep -qi permanent", timeout=60)
+    host.wait_until_succeeds(f"ip route show {vip}/32 dev briard-priv0 | grep -q 'via {node_ip}'", timeout=60)
+    host.succeed(f"curl -fsS --max-time 5 http://{vip}/healthz")
+    host.succeed("journalctl -u briard-agent | grep -q 'node route: .* was gone from briard-priv0; restored'")
+    host.succeed(f"journalctl -u briard-agent | grep -q 'vip route: {vip} is gone from briard-priv0'")
+    print("a running agent restored the dropped route and neighbour at its network check")
 
     # The name, from the host: the query can only be answered over the private link (the guest
     # multicast on the macvtap never returns here), so this catches avahi denied eth3 in the guest.
