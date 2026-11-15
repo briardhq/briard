@@ -610,10 +610,12 @@ pkgs.testers.runNixOSTest {
     # What the install (`briard-agent install`, called by install.sh) computed about this host, and
     # what the operator said (the environment, BRIARD_ prefix stripped). No defaults: an unnamed
     # key is answered from agent/host/config.go, which a release can change and a line here could
-    # not. (The writer has a third kind, BACKUP_DIR for who installed it, written only for a
-    # SUDO_USER other than root; this rig installs as root.) A whitelist, not a list of keys that
-    # must be absent, because the failure guarded is a new default written here out of habit,
-    # which then fails by name -- as does a stray BRIARD_* from the invoking environment.
+    # not. (The writer has two more kinds, absent here: BACKUP_DIR for who installed it, written
+    # only for a SUDO_USER other than root, and this rig installs as root; and what `briard config
+    # set` changed, carried over by an install over a node, and this is a first install.) A
+    # whitelist, not a list of keys that must be absent, because the failure guarded is a new
+    # default written here out of habit, which then fails by name -- as does a stray BRIARD_* from
+    # the invoking environment.
     keys = sorted(
         l.split("=")[0]
         for l in host.succeed("cat /opt/briard/config.env").splitlines()

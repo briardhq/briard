@@ -20,13 +20,19 @@ import (
 // once, into config.env, and the agent reads them once, so a setting the household has to change
 // later -- the service address, which the lease refusal asks them to change -- would otherwise
 // need an uninstall and a reinstall. This writes the same key into the same file, so config.env
-// stays the one place a setting lives (a reinstall that names it overwrites it).
+// stays the one place a setting lives. A reinstall over this node keeps what was set here unless
+// its environment names the key (writeConfig); an uninstall removes the file, and the settings
+// with it.
 //
 // Four keys. `vip` is applied here, the way a bring-up fact is applied: restart the guest, so the
 // next bring-up carries it. The backup's three (`backup-dir`, `backup-key-saved`, `backup-adopt`)
 // are answered first, by applyBackupSetting (backup.go), and applied in place -- the folder is
 // read by the host alone, and the acknowledgement is written where the key is, on the volume.
 // The command is named for the general act, so a key joins without a second verb.
+
+// configSetKeys are the config.env keys this writes: `vip`'s, and `backup-dir`'s (backup.go).
+// They are the household's decisions, made after the install, so a reinstall carries them over.
+var configSetKeys = []string{"VIP_ADDR", "BACKUP_DIR"}
 
 // configSetBudget bounds the change: the address probe, the write, and a guest restart.
 const configSetBudget = 10 * time.Minute

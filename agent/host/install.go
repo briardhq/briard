@@ -43,6 +43,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -298,11 +299,15 @@ var installOnlyKeys = map[string]bool{
 // (configset.go). The agent layers the environment on top (loadConfigFile), so a rig that exports
 // a variable still wins. Plain and greppable at 2am; 0600 because it is root's business alone.
 //
-// ⚠️ Three kinds of line, and only three: what this install laid down (the paths of what it
+// ⚠️ Four kinds of line, and only four: what this install laid down (the paths of what it
 // created or staged, and where the agent's disks go), who installed it (their backup folder, and
-// on Windows their SID: only a human at install knows whose machine it is), and what the operator
-// said, copied verbatim from the environment. Deliberately no defaults: an absent key is answered
-// from config.go's shipped default, which a release can change and a line in this file could not.
+// on Windows their SID: only a human at install knows whose machine it is), what the operator
+// said, copied verbatim from the environment, and what the household changed since with `briard
+// config set` (configSetKeys), carried over from the file this one replaces unless the
+// environment names the key. An install over a node is the upgrade path, and it must not turn a
+// backup the household turned off back on, or give its address back to DHCP. Deliberately no
+// defaults: an absent key is answered from config.go's shipped default, which a release can
+// change and a line in this file could not.
 // ⚠️ And no identifiers: the node id, the flock id and the flock name are minted once into pet
 // state at the agent's first start (identity.go), never written here.
 //
@@ -323,7 +328,20 @@ DATA_DISK=%s
 STATE_DISK=%s
 `, bundle, r.imagePath(),
 		filepath.Join(r.state, "data.img"), filepath.Join(r.state, "state.img"))
-	if dir := backupFolder(ctx); dir != "" {
+	path := filepath.Join(r.prefix, "config.env")
+	kept := keptSettings(path)
+	for _, k := range configSetKeys {
+		if v, ok := kept[k]; ok {
+			fmt.Fprintf(&b, "%s=%s\n", k, v)
+		}
+	}
+	if v, ok := kept["BACKUP_DIR"]; ok {
+		if v == "" {
+			say("nightly backups stay off, as this node had them")
+		} else {
+			say("nightly backups still go to %s", strings.Replace(v, documentsPlaceholder, "Documents", 1))
+		}
+	} else if dir := backupFolder(ctx); dir != "" {
 		fmt.Fprintf(&b, "BACKUP_DIR=%s\n", dir)
 		say("nightly backups go to %s", strings.Replace(dir, documentsPlaceholder, "Documents", 1))
 	}
@@ -346,13 +364,34 @@ STATE_DISK=%s
 	for _, l := range lines {
 		b.WriteString(l + "\n")
 	}
-	path := filepath.Join(r.prefix, "config.env")
 	// Durable, as setConfigKey writes it too: an install interrupted by a
 	// power cut leaves the last complete file, never a torn one the agent would boot on.
 	if err := atomicfile.Write(path, []byte(b.String()), 0o600, 0o755); err != nil {
 		return err
 	}
 	return os.Chmod(path, 0o600)
+}
+
+// keptSettings reads the `config set` keys from the config.env an install is about to replace,
+// as the agent reads them (KEY=value, both halves trimmed), leaving out any the installer's
+// environment names: that line comes from the environment instead. An empty value is kept, since
+// `BACKUP_DIR=` is how the household turned the backup off. No file, as on a first install,
+// keeps nothing.
+func keptSettings(path string) map[string]string {
+	kept := map[string]string{}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return kept
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		k = strings.TrimSpace(k)
+		if _, named := os.LookupEnv("BRIARD_" + k); !ok || named || !slices.Contains(configSetKeys, k) {
+			continue
+		}
+		kept[k] = strings.TrimSpace(v)
+	}
+	return kept
 }
 
 // installFile copies src to dst whole: into a temp name beside it, then renamed over, so a binary
