@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -32,6 +33,10 @@ type storageFake struct {
 	luks      luksState
 	present   map[string]bool // `test -b <path>` exit 0
 	mdPresent bool            // `drbdmeta ... dump-md` succeeds: the metadata LV holds DRBD metadata
+	// prefix is what `head -c` reads off the device: nil is a zeroed disk, the shape both allocators
+	// produce; a test meaning something else sets the bytes, or prefixErr for a read that fails.
+	prefix    []byte
+	prefixErr error
 }
 
 // exitStatus is the fake's stand-in for os/exec's *ExitError: the one thing production reads off
@@ -64,6 +69,15 @@ func (s *storageFake) storageRun(name string, args []string) ([]byte, error) {
 			// diagnostic and exits 5, which says nothing at all about what is on the disk.
 			return []byte("Device " + args[1] + " is busy.\n"), exitStatus(5)
 		}
+	case name == "head" && len(args) == 3 && args[0] == "-c":
+		if s.prefixErr != nil {
+			return []byte("head: error reading '" + args[2] + "': Input/output error\n"), s.prefixErr
+		}
+		if s.prefix != nil {
+			return s.prefix, nil
+		}
+		n, _ := strconv.Atoi(args[1])
+		return make([]byte, n), nil
 	case name == "test" && len(args) == 2 && args[0] == "-b":
 		if !s.present[args[1]] {
 			return nil, errors.New("exit status 1")
@@ -355,9 +369,9 @@ func TestNodeStorageRefusesAnUnreadableLuksProbe(t *testing.T) {
 }
 
 // The non-vacuity twin of the test above, and why the probe is three-valued rather than inverted:
-// a disk that provably has no LUKS on it -- cryptsetup's exit 1, the one code that is an answer --
-// must still be formatted. A fix that refused on every non-zero exit would pass the test above
-// and break every fresh install; this catches it.
+// a provably blank disk -- cryptsetup's exit 1 AND a zeroed prefix, the shape every fresh install
+// has -- must still be formatted. A fix that refused on every non-zero exit, or on any prefix,
+// would pass the refusal tests and break every fresh install; this catches it.
 func TestNodeStorageFormatsAProvablyBlankDisk(t *testing.T) {
 	f := newStorageFake(aesCPU)
 	f.luks = luksBlank
@@ -367,6 +381,67 @@ func TestNodeStorageFormatsAProvablyBlankDisk(t *testing.T) {
 	}
 	if !f.ran("cryptsetup", "luksFormat") {
 		t.Errorf("a provably blank disk was not formatted; runs = %v", f.runs)
+	}
+	if got, want := f.argsOf("head", "-c"), "head -c "+strconv.Itoa(luksDataBytes)+" /dev/vdb"; got != want {
+		t.Errorf("the blank check read %q, want %q: the whole prefix the format overwrites, on the device it formats", got, want)
+	}
+}
+
+// Exit 1 is cryptsetup's catch-all, not an answer: a read error, a LUKS2 header whose checksums
+// both fail, and another tool's data all exit 1 too, and formatting any of them is a crypto-erase.
+// So the format waits for a positive proof -- the prefix it overwrites, read whole, all zeros --
+// and every other read refuses before anything is written.
+//
+// ⚠️ The load-bearing assertion is that luksFormat never ran: with the provablyBlank call
+// removed, each row comes back holding `cryptsetup luksFormat ... /dev/vdb` and the volume rebuilt
+// behind it.
+func TestNodeStorageRefusesToFormatADiskThatIsNotProvablyBlank(t *testing.T) {
+	foreign := make([]byte, luksDataBytes)
+	copy(foreign[0x10040:], "_BHRfS_M") // a btrfs superblock's magic, where btrfs puts it
+	header := make([]byte, luksDataBytes)
+	copy(header, "LUKS\xba\xbe") // a LUKS2 header cryptsetup would not parse still starts with its magic
+
+	for _, tc := range []struct {
+		name      string
+		prefix    []byte
+		prefixErr error
+		want      string
+	}{
+		{"another tool's data", foreign, nil, "is not zero"},
+		{"a header that does not parse", header, nil, "byte 0 "},
+		{"a read that fails", nil, exitStatus(1), "could not read"},
+		{"a short read", make([]byte, 4096), nil, "returned 4096 bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStorageFake(aesCPU)
+			f.luks = luksBlank
+			f.prefix, f.prefixErr = tc.prefix, tc.prefixErr
+
+			err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, true))
+			if err == nil || !strings.Contains(err.Error(), "not provably blank") || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want a refusal saying %q", err, tc.want)
+			}
+			if f.ran("cryptsetup", "luksFormat") {
+				t.Fatalf("a disk that is not provably blank was formatted; runs = %v", f.runs)
+			}
+			for _, forbidden := range [][]string{{"pvcreate"}, {"vgcreate"}, {"lvcreate"}, {"mkfs.btrfs"}} {
+				if f.ran(forbidden...) {
+					t.Errorf("%v ran past the refusal; runs = %v", forbidden, f.runs)
+				}
+			}
+		})
+	}
+}
+
+// The blank check reads exactly the prefix the format writes its header into, which is only true
+// while the two constants name the same size.
+func TestBlankCheckCoversTheLuksDataOffset(t *testing.T) {
+	sectors, err := strconv.Atoi(luksDataOffset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sectors*512 != luksDataBytes {
+		t.Fatalf("luksDataOffset is %d bytes, luksDataBytes %d", sectors*512, luksDataBytes)
 	}
 }
 

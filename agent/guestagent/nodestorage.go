@@ -50,6 +50,9 @@ const (
 	// new channel verb, no cryptsetup on a Windows box, no guest that has to be up.
 	// ⚠️ The two must agree; luksheader.go's luksHeaderSize is the same number in bytes.
 	luksDataOffset = "32768"
+	// luksDataBytes is luksDataOffset in bytes: the prefix luksFormat writes its header into, and
+	// so the prefix provablyBlank must find all zeros first.
+	luksDataBytes = 32768 * 512
 	// topologyEnvPath is the shell-readable topology word, beside vip.env. Paired with
 	// guest-image/configuration.nix's topologyEnvPath.
 	topologyEnvPath = "/run/briard/topology.env"
@@ -433,8 +436,12 @@ func metadataExtents(dataBytes, extent int64, maxPeers int) int64 {
 }
 
 // luksFormat formats the tier's raw device and opens it, leaving the passphrase behind in a
-// plaintext token so no later boot needs anything from anybody.
+// plaintext token so no later boot needs anything from anybody. It formats only a device
+// provablyBlank vouches for, whichever branch brought it here.
 func luksFormat(ctx context.Context, x Executor, run func(string, ...string) error, t nodestorage.Tier, cipher, keyBits string) error {
+	if err := provablyBlank(ctx, x, t.Device); err != nil {
+		return fmt.Errorf("refusing to luksFormat %s, which is not provably blank: formatting would crypto-erase whatever is on it, so a damaged or foreign disk is left for a person to look at, and a disk meant for reuse must be zeroed first: %w", t.Device, err)
+	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return fmt.Errorf("generate the volume key: %w", err)
@@ -594,9 +601,9 @@ func cryptName(t nodestorage.Tier) string { return t.VG + "-crypt" }
 func cryptDevice(t nodestorage.Tier) string { return "/dev/mapper/" + cryptName(t) }
 
 // luksState is the three answers the format decision needs, and why it is not a bool: a device
-// that is formatted, one that provably is not, and one the probe could not read. The third is not
-// the second; collapsing them is what routes an unreadable encrypted disk into luksFormat. The
-// zero value is the conservative one on purpose.
+// that is formatted, one that is not something to open, and one the probe could not read. The
+// third is not the second; collapsing them is what routes an unreadable encrypted disk into
+// luksFormat. The zero value is the conservative one on purpose.
 type luksState int
 
 const (
@@ -609,13 +616,15 @@ const (
 // what is there or formats something new.
 //
 // ⚠️ Blank is one exit code and everything else is unreadable -- metadataPresent's one-phrase
-// rule, for the same reason. `cryptsetup` exits 1 for "not a LUKS device" and reserves the rest for
-// conditions that say nothing about the disk's contents: wrong parameters, no permission (2), out
-// of memory (3), wrong device (4), device busy (5). An error carrying no status at all (the binary
-// missing, the command never run) is unreadable too. Refusing is the safe side by a wide margin:
-// the alternative is luksFormat over a header this node could not rule out, and that header holds
-// the clear-key token, so the mistake is a crypto-erase, not a wipe something could be carved back
-// from. `pvcreate` cannot cover it: the blank probe runs one step later, after the header is gone.
+// rule, for the same reason. `cryptsetup` gives a few causes codes of their own -- no permission
+// (2), out of memory (3), wrong device (4), device busy (5) -- and those say nothing about the
+// disk's contents, so they refuse; so does an error carrying no status at all (the binary
+// missing, the command never run). Exit 1 is cryptsetup's catch-all, not proof of a blank disk:
+// "not a LUKS device", but also a read error, a header whose checksums both fail, and another
+// tool's data. So luksBlank means only "nothing here to open", and luksFormat asks
+// provablyBlank before it writes. The mistake guarded against is a crypto-erase, not a wipe
+// something could be carved back from: the header holds the clear-key token. `pvcreate` cannot
+// cover it: its blank probe runs one step later, after the header is gone.
 func isLuks(ctx context.Context, x Executor, device string) luksState {
 	_, err := x.Run(ctx, "cryptsetup", "isLuks", device)
 	if err == nil {
@@ -636,6 +645,29 @@ func exitCode(err error) (int, bool) {
 		return ec.ExitCode(), true
 	}
 	return 0, false
+}
+
+// provablyBlank is luksFormat's positive confirmation: nil only for a read of the whole prefix
+// the format overwrites that succeeded and found nothing but zeros. A disk this product allocated
+// reads as zeros (both allocators zero-fill), so anything else -- a failed read, a header that
+// would not parse, another tool's signature -- is refused rather than guessed at. `head` rather
+// than ReadFile, which reads a whole file and this needs only the prefix. Run hands back stdout
+// and stderr together, so a warning makes the output the wrong length and lands on the refusing
+// side too.
+func provablyBlank(ctx context.Context, x Executor, device string) error {
+	out, err := x.Run(ctx, "head", "-c", strconv.Itoa(luksDataBytes), device)
+	if err != nil {
+		return fmt.Errorf("could not read its first %d MiB: %w", luksDataBytes>>20, err)
+	}
+	if len(out) != luksDataBytes {
+		return fmt.Errorf("reading its first %d MiB returned %d bytes", luksDataBytes>>20, len(out))
+	}
+	for i, b := range out {
+		if b != 0 {
+			return fmt.Errorf("byte %d of its first %d MiB is not zero", i, luksDataBytes>>20)
+		}
+	}
+	return nil
 }
 
 // blockExists is how both idempotency checks are spelled: the crypt device is already open, or
