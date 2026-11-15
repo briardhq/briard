@@ -217,10 +217,10 @@ func runUninstall(args []string) int {
 		fmt.Fprint(os.Stderr, "briard uninstall: takes no arguments\n")
 		return 2
 	}
-	// Windowed: started from Windows' Installed apps, whose entry asks for an administrator's rights
-	// and starts this in a console of its own, which closes the moment this exits; there the question
-	// and the outcome are windows. Never with -yes: that is the quiet form a package manager or a
-	// script runs, with nobody there to close a window.
+	// Windowed: started from Windows' Installed apps, which starts this elevated in a console of its
+	// own that closes the moment this exits; there the question and the outcome are windows. Never
+	// with -yes: that is the quiet form a package manager or a script runs, with nobody there to
+	// close a window.
 	win := !*yes && windowed()
 	if win {
 		noQuickEdit()
@@ -229,7 +229,7 @@ func runUninstall(args []string) int {
 		tell("Briard was not uninstalled: "+uninstallElevate+".", true)
 		return 1
 	}
-	if !*yes {
+	if !*yes && !win {
 		keep := "Your DATA IS KEPT: " + dataTree + " stays, holding the data volume and this\n" +
 			"machine's identity, and installing again picks up where it left off.\n" +
 			"Add -delete-data to delete it as well; that cannot be undone.\n"
@@ -237,15 +237,30 @@ func runUninstall(args []string) int {
 			keep = "-delete-data DELETES " + dataTree + " as well: the data volume, every app's data\n" +
 				"on it, and this machine's identity. That cannot be undone.\n"
 		}
-		what := "this stops briard and its VM (cleanly), and removes its systemd or Windows services,\n" +
-			"network devices, " + installTree + " and the `briard` command.\n\n" + keep
-		if !win {
-			fmt.Fprint(os.Stderr, "briard uninstall: "+what+"\nRe-run with -yes to go ahead.\n")
+		fmt.Fprint(os.Stderr, "briard uninstall: this stops briard and its VM (cleanly), and removes its "+
+			systemUnits+",\nnetwork devices, "+installTree+" and the `briard` command.\n\n"+keep+
+			"\nRe-run with -yes to go ahead.\n")
+		return 2
+	}
+	if win {
+		// The window asks with a checkbox where the terminal takes a flag. Deleting rides a second,
+		// positive answer that names the tree; its No uninstalls nothing.
+		ok, del := confirmUninstall("Uninstall Briard?",
+			"This stops Briard and its VM (cleanly), and removes its "+systemUnits+", network devices, "+
+				installTree+" and the briard command.\n\n"+
+				"Your data is kept unless you tick the box below: "+dataTree+" stays, holding the data "+
+				"volume and this machine's identity, and installing again picks up where it left off.",
+			"Also delete my data: every app's data and this machine's identity. This cannot be undone.",
+			*deleteData)
+		if !ok {
 			return 2
 		}
-		if !confirm("T" + what[1:] + "\nUninstall Briard?") {
+		if del && !confirmDelete("Delete "+dataTree+" for good?\n\nIt holds the data volume, every app's "+
+			"data on it, and this machine's identity, and deleting it cannot be undone.\n\n"+
+			"Yes deletes it with Briard. No uninstalls nothing.") {
 			return 2
 		}
+		*deleteData = del
 	}
 	if !elevated() {
 		fmt.Fprintf(os.Stderr, "briard uninstall: %s\n", uninstallElevate)

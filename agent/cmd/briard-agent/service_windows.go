@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -292,6 +295,7 @@ const (
 	installTree      = `C:\ProgramData\briard`
 	dataTree         = `C:\ProgramData\briard\state`
 	uninstallElevate = "run it in a terminal opened as administrator"
+	systemUnits      = "Windows services"
 )
 
 var procGetConsoleProcessList = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetConsoleProcessList")
@@ -332,6 +336,92 @@ const idYes = 6
 // confirm asks text as a Yes/No question in a window.
 func confirm(text string) bool {
 	return messageBox(text, windows.MB_YESNO|windows.MB_ICONQUESTION) == idYes
+}
+
+// confirmDelete asks text as a Yes/No warning whose default is No: the answer a stray Enter gives
+// must not be the one that deletes.
+func confirmDelete(text string) bool {
+	return messageBox(text, windows.MB_YESNO|windows.MB_ICONWARNING|windows.MB_DEFBUTTON2) == idYes
+}
+
+var procTaskDialogIndirect = windows.NewLazySystemDLL("comctl32.dll").NewProc("TaskDialogIndirect")
+
+// The task dialog's numbers, from commctrl.h.
+const (
+	tdfAllowDialogCancellation = 0x0008 // Esc and the close box answer Cancel
+	tdfVerificationFlagChecked = 0x0100 // the checkbox starts ticked
+	tdcbfCancelButton          = 0x0008
+	idUninstall                = 100 // the one button of ours; Cancel is Windows' own
+	iconID                     = 1   // the icon, ../briard.rc
+)
+
+// confirmUninstall asks the windowed uninstall's question in Windows' task dialog -- a bold line,
+// the text, Uninstall and Cancel, and a checkbox with check as its label, ticked to start with when
+// checked -- and reports whether to go ahead and whether the box was ticked. The task dialog is
+// Common Controls 6, which the agent's manifest asks for (../briard.manifest); a build without it
+// asks the plain Yes/No question, the checkbox's answer left as it came.
+func confirmUninstall(instruction, content, check string, checked bool) (ok, ticked bool) {
+	if procTaskDialogIndirect.Find() != nil {
+		return confirm(instruction + "\n\n" + content), checked
+	}
+	var keep [][]uint16
+	str := func(s string) uint64 {
+		t, _ := windows.UTF16FromString(s)
+		keep = append(keep, t)
+		return uint64(uintptr(unsafe.Pointer(&t[0])))
+	}
+	var inst windows.Handle
+	windows.GetModuleHandleEx(0, nil, &inst)
+	var button bytes.Buffer // TASKDIALOG_BUTTON, packed: nButtonID, pszButtonText
+	binary.Write(&button, binary.LittleEndian, int32(idUninstall))
+	binary.Write(&button, binary.LittleEndian, str("Uninstall"))
+	btn := button.Bytes()
+	flags := uint32(tdfAllowDialogCancellation)
+	if checked {
+		flags |= tdfVerificationFlagChecked
+	}
+	// TASKDIALOGCONFIG: commctrl.h declares it packed to one byte, which no Go struct can be, so it
+	// is written field by field, in its order.
+	var b bytes.Buffer
+	for _, f := range []any{
+		uint32(160),                              // cbSize
+		uint64(0),                                // hwndParent
+		uint64(inst),                             // hInstance
+		flags,                                    // dwFlags
+		uint32(tdcbfCancelButton),                // dwCommonButtons
+		str("Briard"),                            // pszWindowTitle
+		uint64(iconID),                           // pszMainIcon: a resource of hInstance, by its id
+		str(instruction),                         // pszMainInstruction
+		str(content),                             // pszContent
+		uint32(1),                                // cButtons
+		uint64(uintptr(unsafe.Pointer(&btn[0]))), // pButtons
+		int32(idUninstall),                       // nDefaultButton
+		uint32(0),                                // cRadioButtons
+		uint64(0),                                // pRadioButtons
+		int32(0),                                 // nDefaultRadioButton
+		str(check),                               // pszVerificationText
+		uint64(0),                                // pszExpandedInformation
+		uint64(0),                                // pszExpandedControlText
+		uint64(0),                                // pszCollapsedControlText
+		uint64(0),                                // pszFooterIcon
+		uint64(0),                                // pszFooter
+		uint64(0),                                // pfCallback
+		uint64(0),                                // lpCallbackData
+		uint32(0),                                // cxWidth: Windows' own
+	} {
+		binary.Write(&b, binary.LittleEndian, f)
+	}
+	cfg := b.Bytes()
+	var pressed, tick int32
+	hr, _, _ := procTaskDialogIndirect.Call(uintptr(unsafe.Pointer(&cfg[0])),
+		uintptr(unsafe.Pointer(&pressed)), 0, uintptr(unsafe.Pointer(&tick)))
+	runtime.KeepAlive(keep)
+	runtime.KeepAlive(btn)
+	runtime.KeepAlive(cfg)
+	if hr != 0 {
+		return confirm(instruction + "\n\n" + content), checked
+	}
+	return pressed == idUninstall, tick != 0
 }
 
 // tell shows text in a window until it is closed.

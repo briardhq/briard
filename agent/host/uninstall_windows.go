@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -398,16 +399,16 @@ func (cfg Config) removeTapDriver(ctx context.Context, logf func(string, ...any)
 	// _?=, which must come last and unquoted even with spaces in it -- so the command line is
 	// written by hand rather than escaped argument by argument. Run in place, it cannot delete
 	// itself: the folder goes after, retried -- the just-run Uninstall.exe can still be held a
-	// moment after its process exits (`Access is denied`). A folder that outlasts the retry is
-	// reported, and the driver goes regardless: it, not the folder, is what another install would
-	// trip on.
+	// moment after its process exits (`Access is denied`). That wait is routine, so its note goes to
+	// the log, never to what the user reads (logf); a folder that outlasts the retry is reported, and
+	// the driver goes regardless: it, not the folder, is what another install would trip on.
 	c := exec.CommandContext(ctx, exe)
 	c.SysProcAttr = &syscall.SysProcAttr{CmdLine: windows.EscapeArg(exe) + " /S _?=" + dir}
 	if out, err := c.CombinedOutput(); err != nil {
 		return fmt.Errorf("the TAP driver's uninstaller: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	var left error
-	if err := removeRetried(dir, logf); err != nil {
+	if err := removeRetried(dir, log.Printf); err != nil {
 		left = fmt.Errorf("removing %s: %w (the folder is left; delete it by hand)", dir, err)
 	}
 	// What that uninstaller leaves: the driver package in Windows' driver store, its .sys, and the

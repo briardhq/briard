@@ -28,14 +28,16 @@ const (
 	installTree      = "/opt/briard"
 	dataTree         = "/var/lib/briard"
 	uninstallElevate = "run it as root (sudo briard uninstall ...)"
+	systemUnits      = "systemd services"
 )
 
 // windowed is false off Windows: a terminal is where `briard uninstall` runs, and its text stays
-// there. confirm, tell and noQuickEdit are never reached.
-func windowed() bool      { return false }
-func confirm(string) bool { return false }
-func tell(string, bool)   {}
-func noQuickEdit()        {}
+// there. The window functions are never reached.
+func windowed() bool                                             { return false }
+func confirmUninstall(string, string, string, bool) (bool, bool) { return false, false }
+func confirmDelete(string) bool                                  { return false }
+func tell(string, bool)                                          {}
+func noQuickEdit()                                               {}
 
 // runWarden refuses off Windows: systemd's own watchdog is the agent's outside watcher there.
 func runWarden() int {

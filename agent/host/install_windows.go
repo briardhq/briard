@@ -158,12 +158,13 @@ func (r installRoots) layDownOS(ctx context.Context, hostSrc string, say func(st
 const uninstallKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Briard`
 
 // registerUninstall lists briard in Installed apps. The command is `briard uninstall` itself, by
-// the agent's own path rather than the PATH link onPath may fail to make. That list starts it
-// with the user's own rights, so the entry asks UAC to elevate the agent -- through PowerShell,
-// the one way to ask from a command line -- and the agent runs in a console of its own, where it
-// confirms and reports in windows (runUninstall). The quiet form is what a package manager runs,
-// elevated already. The version listed is the running agent's, rewritten at every start
-// (listVersion): the agent updates itself, so one written only here would go stale.
+// the agent's own path rather than the PATH link onPath may fail to make. Both of Windows' lists
+// start it elevated -- Settings asks UAC for the command itself, so the prompt names the agent and
+// its signature; Programs and Features asks for its own helper first -- and the agent runs in a
+// console of its own, where it confirms and reports in windows (runUninstall). A wrapper that
+// asked for elevation itself would be what UAC names instead. The quiet form is what a package
+// manager runs, elevated already. The version listed is the running agent's, rewritten at every
+// start (listVersion): the agent updates itself, so one written only here would go stale.
 func registerUninstall(exe, prefix string) error {
 	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, uninstallKey, registry.SET_VALUE)
 	if err != nil {
@@ -176,8 +177,7 @@ func registerUninstall(exe, prefix string) error {
 		{"DisplayVersion", buildVersion},
 		{"DisplayIcon", exe},
 		{"InstallLocation", prefix},
-		{"UninstallString", `powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process -Verb RunAs -FilePath '` +
-			strings.ReplaceAll(exe, "'", "''") + `' -ArgumentList uninstall"`},
+		{"UninstallString", windows.EscapeArg(exe) + " uninstall"},
 		{"QuietUninstallString", windows.EscapeArg(exe) + " uninstall -yes"},
 	} {
 		if err := k.SetStringValue(v[0], v[1]); err != nil {
