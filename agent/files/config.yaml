@@ -69,3 +69,7 @@ userDefaults:
     darkMode: false
 http:
   port: 80
+  # Off: its clients sign in with a password the app mints and keeps in its cache area, which
+  # the reverse proxy never sees and which is lost with that area. A file share for other
+  # computers would be its own decision, with its own sign-in.
+  disableWebDAV: true
