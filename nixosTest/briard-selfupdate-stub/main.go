@@ -98,7 +98,7 @@ func trial(args []string) {
 }
 
 // keygen writes a raw Ed25519 private key to privOut and its PKIX-PEM public key to pubOut (the
-// release keyring the node trusts) — the offline release-signing root, stood in for by a fresh key.
+// release keyring the node trusts) — the release key, stood in for by a fresh one.
 func keygen(a []string) {
 	if len(a) != 2 {
 		fatal("keygen <privOut> <pubPemOut>")

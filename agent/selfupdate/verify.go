@@ -9,11 +9,11 @@ import (
 )
 
 // A release artifact is trusted only if it carries a valid detached Ed25519 signature from
-// the release-signing root. The agent verifies before it stages — refuse-and-stay is the whole
+// a release key. The agent verifies before it stages — refuse-and-stay is the whole
 // point: a bad or absent signature must leave the committed binary untouched, never trial an
-// unverified binary. This is the client half of the four key-management points (keyring /
-// offline-blesses-warm root / M-of-N + escrow / verify-or-refuse); full TUF (roles,
-// timestamp/snapshot freshness) is not implemented.
+// unverified binary. This is the client half of release signing: a keyring, and verify or
+// refuse. There is one release key, and its private half has an offline copy; full TUF (roles,
+// an offline root, timestamp/snapshot freshness) is not implemented.
 
 // ErrUnsigned is returned when an artifact arrives with no signature — refused, not trialed.
 var ErrUnsigned = errors.New("selfupdate: unsigned artifact refused")
@@ -31,8 +31,13 @@ var ErrBadSignature = errors.New("selfupdate: signature does not verify against 
 // iff at least one key verifies its signature, so:
 //   - key rotation is additive — ship the next public key in a release's keyring.pem before
 //     signing releases with it, and the union keeps verifying across the cutover;
-//   - a lost signing key is survivable — the offline M-of-N root blesses a fresh warm signer
-//     and its public key joins the ring; agents trust the union, no flag-day.
+//   - a leaked key is rotated the same way: a release signed with it ships a ring holding only
+//     the next key, and a node that takes it stops trusting the leaked one. A node that took a
+//     malicious release first is not saved by this, since the agent that release carried can
+//     rewrite the ring, and is reinstalled. What keeps a leaked key from reaching nodes at all is
+//     that signing is not publishing: the channel is written with a separate credential;
+//   - a lost key is survived through its offline copy. Only if every copy were lost would no
+//     release verify again, and every node would need a reinstall.
 //
 // Outside a (re)install, the ring on disk is replaced only by a release's own keyring.pem, an
 // artifact of a manifest a key already in the ring signed, so the ring widens only by a release
