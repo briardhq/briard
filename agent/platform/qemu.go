@@ -426,12 +426,21 @@ const guestStopTimeout = 75 * time.Second
 // down (PowerOffGuest) is a plain stop of this unit, so the powerdown is written once, here. No
 // ExecStop without a monitor socket: there is then no way to ask, and a unit that promises a
 // clean stop it cannot deliver is worse than one that promises nothing.
+//
+// The io_uring syscalls fail with ENOSYS, so qemu watches its descriptors with epoll. A qemu built
+// with liburing otherwise waits for events in io_uring, and the kernel counts that wait as I/O
+// wait: an idle guest shows as a host core permanently at 100% iowait in every graph of
+// `100 - idle`. Nothing else here uses io_uring (the disks set no aio=, so they use the thread
+// pool), qemu falls back on its own when io_uring is unavailable, and its CPU cost was measured
+// the same either way.
 func launchArgs(s QEMUSpec) []string {
 	args := []string{
 		"--unit=" + s.unit(),
 		"--collect", // GC a prior dead instance so re-launch doesn't hit a lingering failed unit
 		"-p", "Restart=no",
 		"-p", "Description=Briard guest VM (" + s.unit() + ")",
+		"-p", "SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register",
+		"-p", "SystemCallErrorNumber=ENOSYS",
 	}
 	if bin := shutdownBin(); bin != "" && s.QMPSock != "" {
 		args = append(args,

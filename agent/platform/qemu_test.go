@@ -364,6 +364,21 @@ func TestLaunchArgsNoMonitorNoStopContract(t *testing.T) {
 	}
 }
 
+// The guest's qemu waits in epoll, not io_uring, whose wait the kernel counts as I/O wait. Only the
+// three io_uring calls are refused, and with ENOSYS (qemu's fallback reads any failure; the
+// default action would kill qemu instead).
+func TestLaunchArgsNoIOUring(t *testing.T) {
+	args := launchArgs(QEMUSpec{Accel: "tcg", ControlSock: "/s"})
+	for _, want := range []string{
+		"SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register",
+		"SystemCallErrorNumber=ENOSYS",
+	} {
+		if i := slices.Index(args, want); i < 1 || args[i-1] != "-p" {
+			t.Errorf("guest unit missing -p %q:\n%v", want, args)
+		}
+	}
+}
+
 // TestUnitAtRest pins the reading the stop path turns on: "deactivating" is a unit that is
 // still running its ExecStop, and calling it stopped lets a Launch collide with the
 // guest it had just asked to go away. The at-rest set is deliberately small -- anything not
