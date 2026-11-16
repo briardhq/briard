@@ -176,7 +176,11 @@ func memoryArg(s QEMUSpec) string {
 
 // qemuArgs renders the QEMU argv (excluding the binary). Pure; unit-tested.
 func qemuArgs(s QEMUSpec) []string {
-	args := []string{"-machine", "accel=" + s.Accel}
+	// -nodefaults: no device qemu adds unasked -- the empty CD-ROM, the floppy, the parallel port,
+	// the VGA, the default NIC and monitor. None has a reader: grub and the kernel speak on the
+	// serial console, the monitor is QMP, and every serial port, disk and NIC below is explicit. The
+	// IDE controller stays: it is part of the pc machine itself, not a default device.
+	args := []string{"-nodefaults", "-machine", "accel=" + s.Accel + machineOpts}
 	if s.CPUModel != "" {
 		args = append(args, "-cpu", s.CPUModel)
 	}
@@ -231,8 +235,8 @@ func qemuArgs(s QEMUSpec) []string {
 	// `-device virtio-blk-pci` do not mix: qemu realises the explicit devices first and the
 	// shorthand drives last, so a -device disk (the state disk needs one: a serial is a device
 	// property) takes a lower PCI slot than a shorthand root. SeaBIOS then boots the blank state
-	// disk, and the guest sits at a grub rescue prompt on a VGA nobody captures, with an empty
-	// serial console and a host that can only say "no handshake". Explicit devices in command-line
+	// disk, and the guest sits at a grub rescue prompt with an empty serial console and a host that
+	// can only say "no handshake". Explicit devices in command-line
 	// order keep the slots ascending root < data < state (vda/vdb/vdc), and bootindex=0 on the root
 	// says which one boots whatever else is ever attached. The drive ids are what QMP addresses
 	// (block_resize on StateDriveID); a serial is what the guest finds a disk by

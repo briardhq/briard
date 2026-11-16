@@ -76,3 +76,10 @@ func ignoreNoFlags(e syscall.Errno) error {
 // of its own, so the host's would be a second copy of the same bytes, paid out of RAM a small board
 // does not have, and guest flushes are honoured either way.
 const diskCache = "none"
+
+// machineOpts is what the `-machine` line carries after the accel list. `hpet=off`: qemu's
+// emulated HPET ticks at 1 kHz in legacy mode, a pair of interrupt ioctls every millisecond on
+// qemu's main thread, for a device this guest never reads (kvm-clock is its clocksource, the
+// local APIC its timers). Measured on an idle node: qemu at ~15% of a core with it, ~7% without,
+// the main thread from ~1000 wakeups a second to 4.
+const machineOpts = ",hpet=off"

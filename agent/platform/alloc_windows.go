@@ -36,3 +36,9 @@ func setNoCOW(string) error { return nil }
 // "not in qcow2 format" (measured on the shipped bundle). Guest flushes are honoured in writeback
 // too, so what this costs is the host's second copy of the bytes, not durability.
 const diskCache = "writeback"
+
+// machineOpts is what the `-machine` line carries after the accel list: nothing on Windows. The
+// HPET's 1 kHz tick that Linux drops costs here too, but WHPX gives the guest no kvm-clock, and
+// without the HPET the guest's clocksource could fall to acpi_pm, a port exit on every clock read,
+// which would trade the tick for something worse. It stays until a WHPX guest is seen on tsc.
+const machineOpts = ""
