@@ -28,7 +28,7 @@ func TestQEMUArgsFullSpec(t *testing.T) {
 	}), " ")
 	for _, want := range []string{
 		"-nodefaults",
-		"-machine accel=kvm:tcg" + machineOpts + " ",
+		"-machine accel=kvm:tcg,hpet=off ", // the HPET's 1 kHz tick is an idle qemu's main cost
 		"-m 2048",
 		"-smp 2",
 		"-display none",
@@ -50,10 +50,6 @@ func TestQEMUArgsFullSpec(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("qemuArgs missing %q\ngot: %s", want, got)
 		}
-	}
-	// A KVM guest reads kvm-clock, never the HPET, whose 1 kHz tick is the idle qemu's main cost.
-	if runtime.GOOS == "linux" && !strings.Contains(got, "hpet=off") {
-		t.Errorf("a Linux guest must boot without the HPET\ngot: %s", got)
 	}
 }
 

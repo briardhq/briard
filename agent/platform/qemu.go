@@ -180,7 +180,13 @@ func qemuArgs(s QEMUSpec) []string {
 	// the VGA, the default NIC and monitor. None has a reader: grub and the kernel speak on the
 	// serial console, the monitor is QMP, and every serial port, disk and NIC below is explicit. The
 	// IDE controller stays: it is part of the pc machine itself, not a default device.
-	args := []string{"-nodefaults", "-machine", "accel=" + s.Accel + machineOpts}
+	//
+	// hpet=off: qemu's emulated HPET ticks at 1 kHz in legacy mode, waking qemu's main loop every
+	// millisecond to inject an interrupt, for a device the guest never reads. Its clocksource is the
+	// hypervisor's paravirtual clock (kvm-clock under KVM, the Hyper-V TSC page under WHPX) and its
+	// timers the local APIC's or Hyper-V's synthetic ones, so without the HPET it loses nothing.
+	// Measured on idle nodes: qemu from ~15% of a core to ~7% (KVM) and from ~28% to ~4% (WHPX).
+	args := []string{"-nodefaults", "-machine", "accel=" + s.Accel + ",hpet=off"}
 	if s.CPUModel != "" {
 		args = append(args, "-cpu", s.CPUModel)
 	}
