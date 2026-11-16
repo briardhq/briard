@@ -186,7 +186,17 @@ func qemuArgs(s QEMUSpec) []string {
 	// hypervisor's paravirtual clock (kvm-clock under KVM, the Hyper-V TSC page under WHPX) and its
 	// timers the local APIC's or Hyper-V's synthetic ones, so without the HPET it loses nothing.
 	// Measured on idle nodes: qemu from ~15% of a core to ~7% (KVM) and from ~28% to ~4% (WHPX).
-	args := []string{"-nodefaults", "-machine", "accel=" + s.Accel + ",hpet=off"}
+	//
+	// vmport=off: the VMware backdoor port, which the pc machine adds whenever its PS/2 controller
+	// is on; nothing in the guest speaks VMware.
+	//
+	// -no-user-config: without it qemu reads /etc/qemu/qemu.conf, so a file some other program put
+	// on the host would add its devices and options to this guest.
+	//
+	// disable_s3/disable_s4: the guest cannot suspend. A suspended guest answers nothing, so to the
+	// agent it is a hung one, and nothing here would ever wake it.
+	args := []string{"-nodefaults", "-no-user-config", "-machine", "accel=" + s.Accel + ",hpet=off,vmport=off",
+		"-global", "PIIX4_PM.disable_s3=1", "-global", "PIIX4_PM.disable_s4=1"}
 	if s.CPUModel != "" {
 		args = append(args, "-cpu", s.CPUModel)
 	}
@@ -302,17 +312,17 @@ func qemuArgs(s QEMUSpec) []string {
 	if s.ServiceTap != "" || s.SystemTap != "" || s.WitnessTap != "" {
 		// SLIRP's addressing is pinned rather than defaulted: see slirpNet.
 		args = append(args, "-netdev", "user,id=net0,net="+slirpNet+",host="+slirpGateway+",dns="+slirpDNS,
-			"-device", "virtio-net-pci,netdev=net0")
+			"-device", nicDevice+"net0")
 	}
 	if s.SystemTap != "" {
 		args = append(args,
 			"-netdev", netdevArg(systemNetdev, s.SystemTap, s.NetMode, sysFD),
-			"-device", "virtio-net-pci,netdev="+systemNetdev+macArg(s.SystemMAC))
+			"-device", nicDevice+systemNetdev+macArg(s.SystemMAC))
 	}
 	if s.ServiceTap != "" {
 		args = append(args,
 			"-netdev", netdevArg(serviceNetdev, s.ServiceTap, s.NetMode, svcFD),
-			"-device", "virtio-net-pci,netdev="+serviceNetdev+macArg(s.ServiceMAC))
+			"-device", nicDevice+serviceNetdev+macArg(s.ServiceMAC))
 	}
 	if s.WitnessTap != "" {
 		// The witness NIC is always a plain tap, even under NetMacvtap: it is the private
@@ -322,7 +332,7 @@ func qemuArgs(s QEMUSpec) []string {
 		// mode has no WitnessTap at all, so this branch is reached only under macvtap/ipvtap.
 		args = append(args,
 			"-netdev", netdevArg("net3", s.WitnessTap, NetBridge, 0),
-			"-device", "virtio-net-pci,netdev=net3"+macArg(s.WitnessMAC))
+			"-device", nicDevice+"net3"+macArg(s.WitnessMAC))
 	}
 	return args
 }
@@ -371,6 +381,11 @@ func launchExec(s QEMUSpec) []string {
 	exec = append(exec, "--")
 	return append(exec, qemu...)
 }
+
+// nicDevice starts every NIC's -device value; the netdev id follows. romfile= (empty) leaves out
+// the NIC's network-boot ROM: the guest boots from its disk, and the ROM is only firmware loaded
+// into it for nothing.
+const nicDevice = "virtio-net-pci,romfile=,netdev="
 
 // macArg renders the ",mac=" suffix for a virtio-net-pci device, or "" to let QEMU
 // pick its default. A default MAC is fine for a single guest but is identical across

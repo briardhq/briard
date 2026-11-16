@@ -28,7 +28,10 @@ func TestQEMUArgsFullSpec(t *testing.T) {
 	}), " ")
 	for _, want := range []string{
 		"-nodefaults",
-		"-machine accel=kvm:tcg,hpet=off ", // the HPET's 1 kHz tick is an idle qemu's main cost
+		"-no-user-config", // no host qemu.conf reaches the guest
+		"-machine accel=kvm:tcg,hpet=off,vmport=off ",                 // the HPET's 1 kHz tick is an idle qemu's main cost
+		"-global PIIX4_PM.disable_s3=1 -global PIIX4_PM.disable_s4=1", // a suspended guest is a hung one
+		"virtio-net-pci,romfile=,netdev=net0",                         // eth0 too boots no network ROM
 		"-m 2048",
 		"-smp 2",
 		"-display none",
@@ -39,13 +42,13 @@ func TestQEMUArgsFullSpec(t *testing.T) {
 		"virtserialport,chardev=briardadmin,name=briard.admin",
 		"file=/var/lib/briard/guest.qcow2",
 		"file=/dev/vg/drbd0",
-		"user,id=net0",                                     // eth0: SLIRP user-net, the WAN path
-		"tap,id=net1,ifname=sys0,script=no,downscript=no",  // eth1: system NIC (DRBD)
-		"virtio-net-pci,netdev=net1,mac=52:54:00:11:22:33", // its unique MAC
-		"tap,id=net2,ifname=svc0,script=no,downscript=no",  // eth2: service NIC (VIP)
-		"virtio-net-pci,netdev=net2,mac=52:54:00:aa:bb:cc", // its unique MAC
-		"tap,id=net3,ifname=wit0,script=no,downscript=no",  // eth3: witness NIC (guest<->host)
-		"virtio-net-pci,netdev=net3,mac=52:54:00:de:ad:be", // its unique MAC
+		"user,id=net0",                                              // eth0: SLIRP user-net, the WAN path
+		"tap,id=net1,ifname=sys0,script=no,downscript=no",           // eth1: system NIC (DRBD)
+		"virtio-net-pci,romfile=,netdev=net1,mac=52:54:00:11:22:33", // its unique MAC
+		"tap,id=net2,ifname=svc0,script=no,downscript=no",           // eth2: service NIC (VIP)
+		"virtio-net-pci,romfile=,netdev=net2,mac=52:54:00:aa:bb:cc", // its unique MAC
+		"tap,id=net3,ifname=wit0,script=no,downscript=no",           // eth3: witness NIC (guest<->host)
+		"virtio-net-pci,romfile=,netdev=net3,mac=52:54:00:de:ad:be", // its unique MAC
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("qemuArgs missing %q\ngot: %s", want, got)
@@ -103,9 +106,9 @@ func TestQEMUArgsMacvtap(t *testing.T) {
 	}), " ")
 	for _, want := range []string{
 		"tap,id=net1,fd=3", // system NIC on fd 3
-		"virtio-net-pci,netdev=net1,mac=52:54:00:11:22:33", // MAC still pinned
+		"virtio-net-pci,romfile=,netdev=net1,mac=52:54:00:11:22:33", // MAC still pinned
 		"tap,id=net2,fd=4", // service NIC on fd 4
-		"virtio-net-pci,netdev=net2,mac=52:54:00:aa:bb:cc",
+		"virtio-net-pci,romfile=,netdev=net2,mac=52:54:00:aa:bb:cc",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("macvtap qemuArgs missing %q\ngot: %s", want, got)
@@ -224,8 +227,8 @@ func TestLaunchExecIpvtap(t *testing.T) {
 	}
 	args := strings.Join(qemuArgs(s), " ")
 	for _, want := range []string{
-		"tap,id=net1,fd=3", "virtio-net-pci,netdev=net1,mac=" + parent,
-		"tap,id=net2,fd=4", "virtio-net-pci,netdev=net2,mac=" + parent,
+		"tap,id=net1,fd=3", "virtio-net-pci,romfile=,netdev=net1,mac=" + parent,
+		"tap,id=net2,fd=4", "virtio-net-pci,romfile=,netdev=net2,mac=" + parent,
 		"tap,id=net3,ifname=briard-wit,script=no,downscript=no", // the private link is a plain tap
 	} {
 		if !strings.Contains(args, want) {
