@@ -3,6 +3,7 @@ package hass
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"slices"
 	"strings"
@@ -55,24 +56,13 @@ func (f *dbFake) Run(_ context.Context, name string, args ...string) ([]byte, er
 		for _, p := range args[1:] {
 			delete(f.files, p)
 		}
-	case "test":
-		if f.files[args[1]] == "" {
-			return nil, errors.New("exit status 1")
-		}
-	case "ls":
-		dir := args[len(args)-1] + "/"
-		var out []string
-		for p := range f.files {
-			if rest, ok := strings.CutPrefix(p, dir); ok && !strings.Contains(rest, "/") {
-				out = append(out, rest)
-			}
-		}
-		return []byte(strings.Join(out, "\n")), nil
 	}
 	return nil, nil
 }
 
 func (f *dbFake) WriteFile(p string, data []byte) error { f.files[p] = string(data); return nil }
+func (f *dbFake) Stat(p string) (fs.FileInfo, error)    { return statIn(f.files, p) }
+func (f *dbFake) ListDir(p string) ([]string, error)    { return listIn(f.files, p) }
 func (f *dbFake) ReadFile(p string) ([]byte, error) {
 	v, ok := f.files[p]
 	if !ok {
@@ -283,6 +273,24 @@ func TestACheckingLeftByACrashIsCleared(t *testing.T) {
 	Nightly(context.Background(), f, testImage, liveDir, []Member{stale, newest})
 	if f.state(stale) != "" {
 		t.Fatalf("a stale checking survived the night: %q", f.state(stale))
+	}
+}
+
+// TestRestoreDBLeavesAnEmptyWalBehind: only a -wal with frames in it comes along; an empty one is
+// what Home Assistant creates anyway, and the stale one beside the copy still goes.
+func TestRestoreDBLeavesAnEmptyWalBehind(t *testing.T) {
+	f := newDBFake()
+	from := ringAt("a", time.Hour).Dir
+	into := "/var/lib/briard/data/home-assistant.dbrestore/config"
+	f.files[from+"/"+dbName] = "clean"
+	f.files[from+"/"+dbName+"-wal"] = ""
+	f.files[into+"/"+dbName] = "damaged"
+	f.files[into+"/"+dbName+"-wal"] = "stale"
+	if err := RestoreDB(context.Background(), f, from, into); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := f.files[into+"/"+dbName+"-wal"]; ok {
+		t.Fatalf("the copy holds a -wal %q, want none", v)
 	}
 }
 

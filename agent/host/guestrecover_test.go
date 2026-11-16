@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"net"
 	"os"
 	"strings"
@@ -280,6 +281,15 @@ func (e *bootExec) Run(_ context.Context, name string, _ ...string) ([]byte, err
 }
 func (e *bootExec) WriteFile(string, []byte) error { return errors.New("bootExec: refusing WriteFile") }
 func (e *bootExec) Sethostname(string) error       { return errors.New("bootExec: refusing Sethostname") }
+func (e *bootExec) Stat(string) (fs.FileInfo, error) {
+	return nil, errors.New("bootExec: refusing Stat")
+}
+func (e *bootExec) ListDir(string) ([]string, error) {
+	return nil, errors.New("bootExec: refusing ListDir")
+}
+func (e *bootExec) IPv4Addrs(string) ([]string, error) {
+	return nil, errors.New("bootExec: refusing IPv4Addrs")
+}
 func (e *bootExec) ReadFile(string) ([]byte, error) {
 	if e.boot == "" {
 		return nil, os.ErrNotExist // a guest too old to report one

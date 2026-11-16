@@ -102,11 +102,6 @@ func dbRig(answers map[string]string, members ...string) *fakeExec {
 			}
 			f.files[args[len(args)-1]] = v
 			return nil, nil
-		case "test":
-			if f.files[args[1]] == "" {
-				return nil, errors.New("exit status 1")
-			}
-			return nil, nil
 		case "systemctl":
 			return nil, nil // every container unit is active, and stops and starts
 		}
@@ -255,23 +250,28 @@ func TestTheDBCheckVerbIsAdvertised(t *testing.T) {
 	}
 }
 
+// heldRead holds every directory read until release is closed.
+type heldRead struct {
+	*fakeExec
+	release chan struct{}
+}
+
+func (h heldRead) ListDir(dir string) ([]string, error) {
+	<-h.release
+	return h.fakeExec.ListDir(dir)
+}
+
 // TestTheCheckRunsInTheBackground: the verb answers at once, a second start is refused while one
 // runs, the report is handed over once, and a restore is refused while the check runs.
 func TestTheCheckRunsInTheBackground(t *testing.T) {
 	ctx := context.Background()
 	release := make(chan struct{})
 	f := dbRig(nil)
-	inner := f.runFn
-	f.runFn = func(name string, args []string) ([]byte, error) {
-		if name == "ls" {
-			<-release // the check is "reading" until the test lets it go
-		}
-		return inner(name, args)
-	}
-	if !startDBCheck(f) {
+	x := heldRead{f, release} // the check is "reading" until the test lets it go
+	if !startDBCheck(x) {
 		t.Fatal("the check did not start")
 	}
-	if startDBCheck(f) {
+	if startDBCheck(x) {
 		t.Fatal("a second check started beside the first")
 	}
 	if s := dbCheckResult(); !s.Running || s.Report != nil {

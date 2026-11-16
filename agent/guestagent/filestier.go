@@ -371,12 +371,12 @@ func versionRetention(ring []fileVersion, now time.Time) []fileVersion {
 
 // filesApps is every app with a files area: the subvolumes under filesRoot.
 func filesApps(ctx context.Context, x Executor) []string {
-	out, err := x.Run(ctx, "ls", "-1", filesRoot())
+	names, err := x.ListDir(filesRoot())
 	if err != nil {
 		return nil // no user root yet: nothing has been installed
 	}
 	var apps []string
-	for _, n := range strings.Fields(string(out)) {
+	for _, n := range names {
 		if !strings.HasPrefix(n, ".") && safeUnitName(n) == nil {
 			apps = append(apps, n)
 		}
@@ -387,12 +387,12 @@ func filesApps(ctx context.Context, x Executor) []string {
 // fileVersions is every version of every app, read off the names; anything whose name is not
 // one of ours is not counted, and so never deleted.
 func fileVersions(ctx context.Context, x Executor) []fileVersion {
-	out, err := x.Run(ctx, "ls", "-1", filesVersionsDir())
+	names, err := x.ListDir(filesVersionsDir())
 	if err != nil {
 		return nil
 	}
 	var ring []fileVersion
-	for _, n := range strings.Fields(string(out)) {
+	for _, n := range names {
 		if strings.HasSuffix(n, ".json") {
 			continue
 		}

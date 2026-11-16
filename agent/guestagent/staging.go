@@ -184,12 +184,12 @@ func pendingInstalls(ctx context.Context, x Executor) ([]PendingInstall, error) 
 
 // stagedNames lists the apps with a `.json.next` on the volume.
 func stagedNames(ctx context.Context, x Executor) ([]string, error) {
-	out, err := x.Run(ctx, "ls", "-1", manifestDir)
+	entries, err := x.ListDir(manifestDir)
 	if err != nil {
 		return nil, nil // absent directory: see manifestNames
 	}
 	var names []string
-	for _, n := range nonEmptyLines(out) {
+	for _, n := range entries {
 		if strings.HasSuffix(n, ".json.next") {
 			names = append(names, strings.TrimSuffix(n, ".json.next"))
 		}

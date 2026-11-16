@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/url"
@@ -39,9 +40,123 @@ import (
 // the guest image bakes and so the only one whose change has to move the guest chain. Everything
 // here is what the host pushes on top of it as `briard-guest-agent`.
 //
-// Executor is aliased rather than re-declared: two names for one interface is how the baked half
-// and the pushed half would drift into two interfaces.
-type Executor = guestfirmware.Executor
+// Executor is the firmware's, embedded rather than re-declared so the two halves cannot drift,
+// plus what the pushed half asks of the filesystem and the network. Those are answered in-process,
+// never by spawning `test`, `ls` or `ip`: a spawned command costs the guest a few milliseconds of
+// CPU, and the host asks some of these at every tick of its loop, so on an idle node the spawning
+// was a large share of everything the guest did. They live here, not in the firmware, because the
+// firmware is baked into the guest image and an edit there would move the image.
+type Executor interface {
+	guestfirmware.Executor
+	// Stat describes the file at path, following symlinks (as `test -e` does). A missing file is
+	// an error os.IsNotExist recognises, the same contract as ReadFile.
+	Stat(path string) (fs.FileInfo, error)
+	// ListDir names a directory's entries as `ls -1` does: sorted, without the ones whose name
+	// starts with a dot. A missing directory is an error os.IsNotExist recognises.
+	ListDir(path string) ([]string, error)
+	// IPv4Addrs is a device's global IPv4 addresses as CIDRs ("192.168.1.5/24"), in the kernel's
+	// order (globalIPv4 says which count). A device that does not exist is an error.
+	IPv4Addrs(dev string) ([]string, error)
+}
+
+// osExecutor is the real guest Executor: the firmware's, and the standard library for the rest.
+type osExecutor struct{ guestfirmware.Executor }
+
+// NewOSExecutor returns the production Executor: what the guest agent's main runs with.
+func NewOSExecutor() Executor { return osExecutor{guestfirmware.NewOSExecutor()} }
+
+func (osExecutor) Stat(path string) (fs.FileInfo, error) { return os.Stat(path) }
+
+func (osExecutor) ListDir(path string) ([]string, error) {
+	entries, err := os.ReadDir(path) // sorted by name
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), ".") {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
+}
+
+func (osExecutor) IPv4Addrs(dev string) ([]string, error) {
+	ifi, err := net.InterfaceByName(dev)
+	if err != nil {
+		return nil, err
+	}
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return nil, err
+	}
+	return globalIPv4(addrs), nil
+}
+
+// globalIPv4 keeps the IPv4 addresses that are the machine's on a network, as CIDRs: not the
+// loopback, and not IPv4 link-local (169.254.0.0/16). A link-local address is one the machine
+// gave itself when nobody answered, so it is never an address we put on a NIC nor one to take
+// off, and it can never be the flock's service address -- yet it reads as an address to
+// everything downstream: reported as the VIP, it passes the in-guest health probe and the node
+// publishes healthy while nothing on the LAN can reach it. The guest is separately told not to
+// invent one (dhcpcd -L), so this is deliberately the second line of defence, not the first,
+// because the cost of being wrong here is a node that looks fine.
+func globalIPv4(addrs []net.Addr) []string {
+	var cidrs []string
+	for _, a := range addrs {
+		n, ok := a.(*net.IPNet)
+		if !ok || n.IP.To4() == nil || n.IP.IsLoopback() || n.IP.IsLinkLocalUnicast() {
+			continue
+		}
+		cidrs = append(cidrs, n.String())
+	}
+	return cidrs
+}
+
+// exists is `test -e`: the path names something, a symlink counting by what it points to.
+func exists(x Executor, path string) bool {
+	_, err := x.Stat(path)
+	return err == nil
+}
+
+// mountinfoPath lists this process's mounts, one per line; field 5 is the mount point.
+const mountinfoPath = "/proc/self/mountinfo"
+
+// isMountPoint answers what `stat -c %m p` compared with p answered: whether a filesystem is
+// mounted at p itself, rather than p being a directory of the one beneath it. An unreadable
+// mount table is "not mounted": every caller reads that as "not ours here".
+func isMountPoint(x Executor, p string) bool {
+	raw, err := x.ReadFile(mountinfoPath)
+	if err != nil {
+		return false
+	}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if f := strings.Fields(line); len(f) > 4 && unescapeMountPath(f[4]) == p {
+			return true
+		}
+	}
+	return false
+}
+
+// unescapeMountPath undoes the kernel's octal escaping of space, tab, newline and backslash in a
+// mountinfo path ("\040" for a space).
+func unescapeMountPath(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+4 <= len(s) {
+			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(n))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
 
 // DefaultPollInterval is how often BringUpGuest polls for convergence.
 const DefaultPollInterval = 500 * time.Millisecond
@@ -718,54 +833,6 @@ type NetConfig struct {
 // no VIP device, which answers "" rather than erroring.
 type netVIPRequest struct {
 	Dev string `json:"dev"`
-}
-
-// firstCIDR pulls the address out of one `ip -o -4 addr show` line:
-//
-//	2: eth2    inet 192.168.9.50/24 brd 192.168.9.255 scope global eth2\       valid_lft ...
-//
-// i.e. the field after "inet". Returns "" when there is no such field, the honest answer for an
-// unaddressed device: never a guess, and never a partially-parsed string.
-//
-// IPv4LL (169.254.0.0/16) is skipped, and not for tidiness: a link-local address is one the
-// machine gave itself when nobody answered, so it can never be the flock's service address, yet it
-// reads as an address to everything downstream. With no DHCP server on the segment, a
-// self-assigned 169.254 address reported as the VIP passes the in-guest health probe, and the node
-// publishes HEALTHY while nothing on the LAN can reach it. The guest is separately told not to
-// invent one (dhcpcd -L), so this is deliberately the second line of defence, not the first,
-// because the cost of being wrong here is a node that looks fine.
-func firstCIDR(out string) string {
-	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
-		f := strings.Fields(line)
-		for i, tok := range f {
-			if tok == "inet" && i+1 < len(f) {
-				if addr := f[i+1]; !strings.HasPrefix(addr, "169.254.") {
-					return addr
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// allCIDRs returns every global v4 address in `ip -o -4 addr show ... scope global` output, in
-// CIDR form. firstCIDR above answers "what does this NIC hold" for the VIP probe and stops at the
-// first; this answers "what must be pruned", so it cannot stop -- a NIC carrying three stale
-// addresses must give up all three. Link-local is excluded for the same reason it is there: a
-// self-assigned 169.254 is not an address we put on and not one we take off.
-func allCIDRs(out string) []string {
-	var found []string
-	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
-		f := strings.Fields(line)
-		for i, tok := range f {
-			if tok == "inet" && i+1 < len(f) {
-				if addr := f[i+1]; !strings.HasPrefix(addr, "169.254.") {
-					found = append(found, addr)
-				}
-			}
-		}
-	}
-	return found
 }
 
 // hostnameRequest carries this node's name (sys.hostname).
@@ -1660,12 +1727,11 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			// cache is on no disk yet: for a write-heavy payload the unmount flush is unbounded,
 			// and this verb is the pre-copy that bounds it.
 			//
-			// `stat -c %m` names the mount holding the path; equal to the path itself means the
-			// data volume is mounted here (a Primary). Anything else (a Secondary or witness that
-			// never mounted it) has nothing of ours to flush, which is an answer, not an error: the
-			// caller asked "make sure your dirty data is small", and it already is.
-			out, err := x.Run(ctx, "stat", "-c", "%m", dataMountRoot)
-			if err != nil || strings.TrimSpace(string(out)) != dataMountRoot {
+			// A filesystem mounted at the data root itself means the data volume is mounted here
+			// (a Primary). Anything else (a Secondary or witness that never mounted it) has nothing
+			// of ours to flush, which is an answer, not an error: the caller asked "make sure your
+			// dirty data is small", and it already is.
+			if !isMountPoint(x, dataMountRoot) {
 				return "skipped: data volume not mounted here", nil
 			}
 			if err := run("sync", "-f", dataMountRoot); err != nil {
@@ -1675,8 +1741,7 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 		case verbNetVIPForget:
 			// Only where the volume is mounted, read as fs.sync reads it: anywhere else the path
 			// is the empty mountpoint, and "forgotten" would be a claim about a file nobody saw.
-			out, err := x.Run(ctx, "stat", "-c", "%m", dataMountRoot)
-			if err != nil || strings.TrimSpace(string(out)) != dataMountRoot {
+			if !isMountPoint(x, dataMountRoot) {
 				return nil, fmt.Errorf("the data volume is not mounted here, so its remembered address cannot be forgotten")
 			}
 			// Synced, for the reason it was written synced: the next promotion may follow a
@@ -1732,8 +1797,8 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				// the new one: two plausible sources for DRBD to bind. Add first, prune second,
 				// never flush-then-add: the flush form leaves the NIC momentarily addressless, and
 				// this call runs on a node that may have a peer connected.
-				if out, err := x.Run(ctx, "ip", "-o", "-4", "addr", "show", "dev", req.Dev, "scope", "global"); err == nil {
-					for _, held := range allCIDRs(string(out)) {
+				if held, err := x.IPv4Addrs(req.Dev); err == nil {
+					for _, held := range held {
 						if held == req.CIDR {
 							continue
 						}
@@ -1889,15 +1954,16 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if req.Dev == "" {
 				return "", nil // no VIP device on this node (a witness) -- not an error
 			}
-			// `scope global` excludes link-local, so a device that is up but unaddressed reads as
-			// "" rather than as an fe80:: the caller would have to know to discard. A non-zero exit
-			// means the device is absent; that is "no address", not a failure to report one --
-			// the host asks this every cycle and a transient absence must not read as a dead channel.
-			out, err := x.Run(ctx, "ip", "-o", "-4", "addr", "show", "dev", req.Dev, "scope", "global")
-			if err != nil {
+			// Only global IPv4 addresses count, so a device that is up but unaddressed reads as ""
+			// rather than as an fe80:: or a self-assigned 169.254 the caller would have to know to
+			// discard. An error means the device is absent; that is "no address", not a failure to
+			// report one -- the host asks this every cycle and a transient absence must not read as
+			// a dead channel. The first address is the NIC's own; any later one is a secondary.
+			held, err := x.IPv4Addrs(req.Dev)
+			if err != nil || len(held) == 0 {
 				return "", nil
 			}
-			return firstCIDR(string(out)), nil
+			return held[0], nil
 		case verbNetMDNSName:
 			var req mdnsNameRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -2022,7 +2088,7 @@ var deadmanLastEpisodePath = deadman.FileState{Path: deadmanStatePath}.LastPath(
 // guard, while exiting here would cost the node its reflex entirely.
 func RunDeadman(ctx context.Context) error {
 	node, _ := os.Hostname()
-	x := guestfirmware.NewOSExecutor()
+	x := NewOSExecutor()
 	gate := &deadman.Gate{
 		Logf: func(f string, a ...any) { fmt.Fprintf(os.Stderr, "briard-deadman: "+f+"\n", a...) },
 	}
@@ -2264,11 +2330,10 @@ func clearCache(ctx context.Context, x Executor, run func(string, ...string) err
 	if out, err := x.Run(ctx, "btrfs", "subvolume", "show", area); err != nil || len(out) == 0 {
 		return nil
 	}
-	out, err := x.Run(ctx, "ls", "-1", area)
+	dirs, err := x.ListDir(area)
 	if err != nil {
-		return fmt.Errorf("ls %s: %w: %s", area, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("list %s: %w", area, err)
 	}
-	dirs := strings.Fields(string(out))
 	if err := run("btrfs", "subvolume", "delete", area); err != nil {
 		return err
 	}
@@ -2347,8 +2412,8 @@ func gatherResources(ctx context.Context, x Executor, req resourcesRequest) tele
 				// counter, and walking every pid in the cgroup each cycle is a lot of exec for a
 				// signal that mostly catches conmon/podman leaks. An fd leak inside the container
 				// is not visible here.
-				if fds, err := x.Run(ctx, "ls", "/proc/"+pid+"/fd"); err == nil {
-					sr.FDs = countLines(fds)
+				if fds, err := x.ListDir("/proc/" + pid + "/fd"); err == nil {
+					sr.FDs = len(fds)
 				}
 			}
 		}

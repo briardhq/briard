@@ -443,7 +443,7 @@ func RestoreDB(ctx context.Context, x Executor, from, into string) error {
 		return err
 	}
 	// Only a -wal with frames in it: an empty one is what Home Assistant creates anyway.
-	if run("test", "-s", from+"/"+dbName+"-wal") == nil {
+	if fi, err := x.Stat(from + "/" + dbName + "-wal"); err == nil && fi.Size() > 0 {
 		if err := run("cp", "-a", "--reflink=auto", from+"/"+dbName+"-wal", db+"-wal"); err != nil {
 			return err
 		}

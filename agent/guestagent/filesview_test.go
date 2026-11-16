@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,12 +19,11 @@ import (
 // (btrfs gives every subvolume its own device, so a restore's new area is a new id at the old
 // path), which are bound where, and the mount table the kernel would print for that.
 type viewWorld struct {
-	f       *fakeExec
-	id      map[string]string // a source directory -> its device:inode
-	mounts  map[string]string // a mount point -> the id it showed when bound
-	ro      map[string]bool
-	members []string // the files tier's Versions, by name
-	next    int
+	f      *fakeExec
+	id     map[string]string // a source directory -> its device:inode
+	mounts map[string]string // a mount point -> the id it showed when bound
+	ro     map[string]bool
+	next   int
 }
 
 func newViewWorld(t *testing.T) *viewWorld {
@@ -40,6 +38,7 @@ func newViewWorld(t *testing.T) *viewWorld {
 func (w *viewWorld) dir(p string) {
 	w.next++
 	w.id[p] = fmt.Sprintf("%d:256", w.next)
+	w.f.mkdir(p)
 }
 
 func (w *viewWorld) install(t *testing.T, name string, mounts ...manifest.Mount) {
@@ -63,22 +62,6 @@ func (w *viewWorld) install(t *testing.T, name string, mounts ...manifest.Mount)
 
 func (w *viewWorld) run(name string, args []string) ([]byte, error) {
 	switch {
-	case name == "ls" && len(args) == 2 && args[1] == manifestDir:
-		var out []string
-		for p := range w.f.files {
-			if strings.HasPrefix(p, manifestDir+"/") {
-				out = append(out, strings.TrimPrefix(p, manifestDir+"/"))
-			}
-		}
-		slices.Sort(out)
-		return []byte(strings.Join(out, "\n")), nil
-	case name == "ls" && len(args) == 2 && args[1] == filesVersionsDir():
-		return []byte(strings.Join(w.members, "\n")), nil
-	case name == "test" && args[0] == "-d":
-		if _, ok := w.id[args[1]]; ok {
-			return nil, nil
-		}
-		return nil, os.ErrNotExist
 	case name == "stat":
 		p, src := args[len(args)-2], args[len(args)-1]
 		return []byte(w.mounts[p] + "\n" + w.id[src] + "\n"), nil
@@ -167,7 +150,7 @@ func TestFilesAndTheirVersionsAreReadOnlyUnderAbsoluteNames(t *testing.T) {
 	w := homeAssistantAndFiles(t)
 	w.install(t, "photos", manifest.Mount{Tier: manifest.TierFiles, Dir: "library", Path: "/library"})
 	member := "photos-clock-20261105T130000Z"
-	w.members = []string{member, member + ".json"}
+	w.f.dirs[filesVersionsDir()] = []string{member, member + ".json"}
 	w.dir(filesVersionsDir() + "/" + member + "/library")
 	w.refresh(t)
 	for _, want := range []string{"Photos/library ro", "Photos/Versions/2026-11-05 Thu 13.00/library ro"} {

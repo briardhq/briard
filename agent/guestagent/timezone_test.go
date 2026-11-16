@@ -2,23 +2,19 @@ package guestagent
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
 // TestTheTimezoneIsLinkedByReplacement: the zone must be in the image's database, and the link is
 // made beside the old one and renamed over it.
 func TestTheTimezoneIsLinkedByReplacement(t *testing.T) {
-	f := &fakeExec{}
+	f := &fakeExec{files: map[string]string{"/etc/zoneinfo/Europe/Athens": "TZif2"}}
 	run := func(name string, args ...string) error {
 		_, err := f.Run(context.Background(), name, args...)
 		return err
 	}
 	if err := setTimezone(context.Background(), f, run, "Europe/Athens"); err != nil {
 		t.Fatal(err)
-	}
-	if !f.ran("test", "-f", "/etc/zoneinfo/Europe/Athens") {
-		t.Errorf("the zone was not looked up in the database: %v", f.runs)
 	}
 	if !f.ran("ln", "-sfn", "/etc/zoneinfo/Europe/Athens", "/etc/localtime.briard") || !f.ran("mv", "-Tf", "/etc/localtime.briard", "/etc/localtime") {
 		t.Errorf("/etc/localtime was not replaced by rename: %v", f.runs)
@@ -40,22 +36,19 @@ func TestATimezoneThatIsNotANameIsRefused(t *testing.T) {
 }
 
 // TestAZoneMissingFromTheImageIsAnError: a link to nothing reads as UTC everywhere, so it is never
-// made.
+// made -- and neither is a link to a directory of the database, which is no zone either.
 func TestAZoneMissingFromTheImageIsAnError(t *testing.T) {
-	f := &fakeExec{runFn: func(name string, _ []string) ([]byte, error) {
-		if name == "test" {
-			return nil, errors.New("exit status 1")
+	for _, zone := range []string{"Mars/Olympus_Mons", "Europe"} {
+		f := &fakeExec{files: map[string]string{"/etc/zoneinfo/Europe/Athens": "TZif2"}}
+		run := func(name string, args ...string) error {
+			_, err := f.Run(context.Background(), name, args...)
+			return err
 		}
-		return nil, nil
-	}}
-	run := func(name string, args ...string) error {
-		_, err := f.Run(context.Background(), name, args...)
-		return err
-	}
-	if err := setTimezone(context.Background(), f, run, "Mars/Olympus_Mons"); err == nil {
-		t.Fatal("a zone the image does not have was linked")
-	}
-	if f.ran("mv", "-Tf", "/etc/localtime.briard", "/etc/localtime") {
-		t.Fatal("/etc/localtime was replaced")
+		if err := setTimezone(context.Background(), f, run, zone); err == nil {
+			t.Fatalf("%s, which the image does not have as a zone, was linked", zone)
+		}
+		if f.ran("mv", "-Tf", "/etc/localtime.briard", "/etc/localtime") {
+			t.Fatalf("/etc/localtime was replaced for %s", zone)
+		}
 	}
 }

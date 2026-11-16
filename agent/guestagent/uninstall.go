@@ -211,11 +211,11 @@ func appCopies(ctx context.Context, x Executor, app string) []string {
 
 // snapshotNames lists a members' directory without the sidecars; an absent one holds none.
 func snapshotNames(ctx context.Context, x Executor, dir string) []string {
-	out, err := x.Run(ctx, "ls", "-1", dir)
+	names, err := x.ListDir(dir)
 	if err != nil {
 		return nil
 	}
-	return slices.DeleteFunc(strings.Fields(string(out)), func(n string) bool { return strings.HasSuffix(n, ".json") })
+	return slices.DeleteFunc(names, func(n string) bool { return strings.HasSuffix(n, ".json") })
 }
 
 // deleteCopy removes a member and then its sidecars, so a member never outlives its label.
@@ -238,12 +238,12 @@ type keptCopy struct {
 // installed again is that app's History, no longer a kept copy. A manifest directory that cannot
 // be listed lists none, so nothing is shed or expired on a read that did not answer.
 func keptCopies(ctx context.Context, x Executor) []keptCopy {
-	out, err := x.Run(ctx, "ls", "-1", manifestDir)
+	entries, err := x.ListDir(manifestDir)
 	if err != nil {
 		return nil
 	}
 	installed := map[string]bool{}
-	for _, n := range nonEmptyLines(out) {
+	for _, n := range entries {
 		if a, ok := strings.CutSuffix(n, ".json"); ok {
 			installed[a] = true
 		}

@@ -177,12 +177,7 @@ func TestAppInstalledReadsBack(t *testing.T) {
 // The pre-eviction flush syncs the mounted volume, and answers "skipped" -- success, not error --
 // on a node that has it unmounted: a Secondary asked to make its dirty data small is already done.
 func TestFsSyncFlushesTheMountedVolume(t *testing.T) {
-	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
-		if name == "stat" {
-			return []byte(dataMountRoot + "\n"), nil // the path IS its own mount point
-		}
-		return nil, nil
-	}}
+	f := &fakeExec{files: map[string]string{mountinfoPath: mountinfo(dataMountRoot)}} // the path IS its own mount point
 	g := dial(t, f)
 	detail, err := g.FsSync(context.Background())
 	if err != nil {
@@ -200,12 +195,7 @@ func TestFsSyncFlushesTheMountedVolume(t *testing.T) {
 // elsewhere the path is the empty mountpoint, and a "done" would be a claim about nothing.
 func TestForgetVIPDeletesTheRememberedAddress(t *testing.T) {
 	mounted := func(at string) *fakeExec {
-		return &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
-			if name == "stat" {
-				return []byte(at + "\n"), nil
-			}
-			return nil, nil
-		}}
+		return &fakeExec{files: map[string]string{mountinfoPath: mountinfo(at)}}
 	}
 	f := mounted(dataMountRoot)
 	if err := dial(t, f).ForgetVIP(context.Background()); err != nil {
@@ -224,12 +214,7 @@ func TestForgetVIPDeletesTheRememberedAddress(t *testing.T) {
 }
 
 func TestFsSyncSkipsAnUnmountedVolume(t *testing.T) {
-	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
-		if name == "stat" {
-			return []byte("/\n"), nil // the dir sits on the root fs: nothing of ours mounted
-		}
-		return nil, nil
-	}}
+	f := &fakeExec{files: map[string]string{mountinfoPath: mountinfo("/")}} // the dir sits on the root fs: nothing of ours mounted
 	g := dial(t, f)
 	detail, err := g.FsSync(context.Background())
 	if err != nil {
@@ -289,7 +274,7 @@ func TestAppVerbsRefuseAnEscapingName(t *testing.T) {
 // it is how a node that promoted into somebody else's install can say what it runs at all
 // (without it, a survivor serves an app while reporting no apps).
 func TestAppListNamesTheVolumesApps(t *testing.T) {
-	f := &fakeExec{output: []byte("dummy.json\nhome-assistant.json\nnot-a-manifest\n")}
+	f := &fakeExec{dirs: map[string][]string{manifestDir: {"dummy.json", "home-assistant.json", "not-a-manifest"}}}
 	g := dial(t, f)
 	got, err := g.AppList(context.Background())
 	if err != nil {

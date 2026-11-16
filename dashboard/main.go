@@ -36,6 +36,7 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log"
 	"math/big"
 	"net"
@@ -1334,6 +1335,14 @@ func (fileExec) WriteFile(string, []byte) error {
 
 func (fileExec) Run(context.Context, string, ...string) ([]byte, error) {
 	return nil, errors.New("dashboard: does not run commands")
+}
+
+func (fileExec) Stat(string) (fs.FileInfo, error) {
+	return nil, errors.New("dashboard: does not look at files beyond reading them")
+}
+
+func (fileExec) ListDir(string) ([]string, error) {
+	return nil, errors.New("dashboard: does not list directories")
 }
 
 // Offering says the card offers the update: there is one, and it is not already under way.

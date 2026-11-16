@@ -217,7 +217,7 @@ func restoreRecorder(ctx context.Context, x Executor, run func(string, ...string
 		return errors.Join(fmt.Errorf("%s (nothing was changed): %w", what, err), start())
 	}
 	drop()
-	if _, err := x.Run(ctx, "test", "-e", staged); err == nil {
+	if exists(x, staged) {
 		return unchanged("stage a copy of the data", fmt.Errorf("%s is in the way and is not a subvolume", staged))
 	}
 	group, err := areaGroup(ctx, x, root)

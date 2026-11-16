@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -46,12 +47,25 @@ type fakeExec struct {
 	qgroups map[string][]string
 	qlimits map[string]string // a group's limit as `qgroup limit` set it; none when absent
 	qused   map[string]int64  // a group's referenced bytes; 16384 when absent
+	// dirs are directories as a test lays them out, each with entries the files map does not
+	// hold (a subvolume, a member, a socket); a directory also exists when a file is under it, or
+	// once `mkdir -p` made it. Stat and ListDir answer from these and the files map together.
+	dirs   map[string][]string
+	blocks map[string]bool     // block devices Stat reports as such
+	addrs  map[string][]string // a NIC's global IPv4 addresses; a NIC absent here does not exist
 }
 
 func (f *fakeExec) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	f.runs = append(f.runs, append([]string{name}, args...))
 	if name == "btrfs" && len(args) > 0 && args[0] == "qgroup" {
 		return f.qgroup(args[1:])
+	}
+	if name == "mkdir" {
+		for _, a := range args {
+			if !strings.HasPrefix(a, "-") {
+				f.mkdir(a)
+			}
+		}
 	}
 	if f.runFn != nil {
 		return f.runFn(name, args)
@@ -132,6 +146,120 @@ func (f *fakeExec) ReadFile(path string) ([]byte, error) {
 func (f *fakeExec) Sethostname(name string) error {
 	f.hostname = name
 	return nil
+}
+
+// mkdir records a directory as made, with no entries of its own.
+func (f *fakeExec) mkdir(dir string) {
+	dir = filepath.Clean(dir)
+	if f.dirs == nil {
+		f.dirs = map[string][]string{}
+	}
+	if _, ok := f.dirs[dir]; !ok {
+		f.dirs[dir] = nil
+	}
+}
+
+// isDir says whether dir exists as a directory: laid out, made, or holding a file or directory.
+func (f *fakeExec) isDir(dir string) bool {
+	dir = filepath.Clean(dir)
+	if _, ok := f.dirs[dir]; ok {
+		return true
+	}
+	for p := range f.files {
+		if strings.HasPrefix(p, dir+"/") {
+			return true
+		}
+	}
+	for d := range f.dirs {
+		if strings.HasPrefix(d, dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// fakeInfo is the FileInfo the fake's Stat hands back: only the name, the mode and the size
+// carry anything.
+type fakeInfo struct {
+	name string
+	mode fs.FileMode
+	size int64
+}
+
+func (i fakeInfo) Name() string       { return i.name }
+func (i fakeInfo) Size() int64        { return i.size }
+func (i fakeInfo) Mode() fs.FileMode  { return i.mode }
+func (i fakeInfo) ModTime() time.Time { return time.Time{} }
+func (i fakeInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i fakeInfo) Sys() any           { return nil }
+
+func (f *fakeExec) Stat(path string) (fs.FileInfo, error) {
+	path = filepath.Clean(path)
+	name := filepath.Base(path)
+	switch {
+	case f.blocks[path]:
+		return fakeInfo{name: name, mode: fs.ModeDevice}, nil
+	case f.isDir(path):
+		return fakeInfo{name: name, mode: fs.ModeDir | 0o755}, nil
+	}
+	if v, ok := f.files[path]; ok {
+		return fakeInfo{name: name, mode: 0o644, size: int64(len(v))}, nil
+	}
+	// An entry a test laid out in its directory exists, as a directory unless the files map
+	// holds it.
+	if slices.Contains(f.dirs[filepath.Dir(path)], name) {
+		return fakeInfo{name: name, mode: fs.ModeDir | 0o755}, nil
+	}
+	return nil, &fs.PathError{Op: "stat", Path: path, Err: fs.ErrNotExist}
+}
+
+// ListDir lists what the real one would: the entries laid out, every file or directory below,
+// by its first name under dir, sorted, without the dot-names.
+func (f *fakeExec) ListDir(dir string) ([]string, error) {
+	dir = filepath.Clean(dir)
+	if !f.isDir(dir) {
+		return nil, &fs.PathError{Op: "open", Path: dir, Err: fs.ErrNotExist}
+	}
+	seen := map[string]bool{}
+	for _, e := range f.dirs[dir] {
+		seen[e] = true
+	}
+	under := func(p string) {
+		if rest, ok := strings.CutPrefix(p, dir+"/"); ok && rest != "" {
+			seen[strings.SplitN(rest, "/", 2)[0]] = true
+		}
+	}
+	for p := range f.files {
+		under(p)
+	}
+	for d := range f.dirs {
+		under(d)
+	}
+	var names []string
+	for n := range seen {
+		if !strings.HasPrefix(n, ".") {
+			names = append(names, n)
+		}
+	}
+	slices.Sort(names)
+	return names, nil
+}
+
+func (f *fakeExec) IPv4Addrs(dev string) ([]string, error) {
+	held, ok := f.addrs[dev]
+	if !ok {
+		return nil, fmt.Errorf("no such network interface %s", dev)
+	}
+	return held, nil
+}
+
+// mountinfo is /proc/self/mountinfo with a filesystem mounted at each of paths.
+func mountinfo(paths ...string) string {
+	var b strings.Builder
+	for i, p := range paths {
+		fmt.Fprintf(&b, "%d 1 0:%d / %s rw,relatime shared:1 - btrfs /dev/vdb rw\n", 30+i, 40+i, p)
+	}
+	return b.String()
 }
 
 // existingMetadata is a runFn simulating a data disk that already holds a DRBD replica (a
@@ -246,19 +374,18 @@ func TestConfigureNetVIPOnlySkipsAddressing(t *testing.T) {
 	}
 }
 
-// ConfigureNet addresses the system NIC (eth1): an idempotent `addr replace`, a read-back to see
-// what the NIC now holds, then a link up -- all with an explicit `dev`. With no vipDev it writes
+// ConfigureNet addresses the system NIC (eth1): an idempotent `addr replace`, a read of what the
+// NIC now holds, then a link up -- all with an explicit `dev`. With no vipDev it writes
 // no VIP file (the guest keeps its baked default). The NIC here holds only the wanted address, so
 // the read-back prunes nothing; TestConfigureNetPrunesStaleAddress is the failable half.
 func TestConfigureNet(t *testing.T) {
-	f := &fakeExec{output: []byte("2: eth1    inet 10.0.0.2/24 scope global eth1\\       valid_lft forever")}
+	f := &fakeExec{addrs: map[string][]string{"eth1": {"10.0.0.2/24"}}}
 	g := dial(t, f)
 	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.2/24", VIPDev: "", VIPAddr: ""}); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
 		{"ip", "addr", "replace", "10.0.0.2/24", "dev", "eth1"},
-		{"ip", "-o", "-4", "addr", "show", "dev", "eth1", "scope", "global"},
 		{"ip", "link", "set", "dev", "eth1", "up"},
 	}
 	if !reflect.DeepEqual(f.runs, want) {
@@ -272,43 +399,23 @@ func TestConfigureNet(t *testing.T) {
 // Renumbering: the NIC holds an old address (the node's island subnet) and ConfigureNet is called
 // with the new one (the adopter's: identity is flock-scoped). `ip addr replace` alone would leave
 // both, so the stale one must be deleted, and the new one must be on the NIC before it goes.
-// Failable by construction: with the prune removed this test sees two commands instead of four
+// Failable by construction: with the prune removed this test sees two commands instead of three
 // and no `addr del`. It is the only place that catches it: on a node that never had an address,
 // add-without-remove and add-with-remove are the same thing, and the rest of the suite agrees
 // with both.
 func TestConfigureNetPrunesStaleAddress(t *testing.T) {
-	f := &fakeExec{output: []byte(
-		"2: eth1    inet 10.0.0.2/24 scope global eth1\\       valid_lft forever\n" +
-			"2: eth1    inet 10.9.1.7/24 scope global secondary eth1\\       valid_lft forever")}
+	f := &fakeExec{addrs: map[string][]string{"eth1": {"10.0.0.2/24", "10.9.1.7/24"}}}
 	g := dial(t, f)
 	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.2/24", VIPDev: "", VIPAddr: ""}); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
 		{"ip", "addr", "replace", "10.0.0.2/24", "dev", "eth1"},
-		{"ip", "-o", "-4", "addr", "show", "dev", "eth1", "scope", "global"},
 		{"ip", "addr", "del", "10.9.1.7/24", "dev", "eth1"}, // the island address, gone
 		{"ip", "link", "set", "dev", "eth1", "up"},
 	}
 	if !reflect.DeepEqual(f.runs, want) {
 		t.Errorf("runs = %v,\nwant %v", f.runs, want)
-	}
-}
-
-// A self-assigned link-local is not ours: we never put it on, so we must not take it off. Failable
-// -- dropping the 169.254 guard in allCIDRs adds an `addr del` here.
-func TestConfigureNetLeavesLinkLocalAlone(t *testing.T) {
-	f := &fakeExec{output: []byte(
-		"2: eth1    inet 10.0.0.2/24 scope global eth1\\       valid_lft forever\n" +
-			"2: eth1    inet 169.254.57.250/16 scope global eth1\\       valid_lft forever")}
-	g := dial(t, f)
-	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.2/24", VIPDev: "", VIPAddr: ""}); err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range f.runs {
-		if len(r) > 2 && r[1] == "addr" && r[2] == "del" {
-			t.Errorf("deleted a link-local address: %v", r)
-		}
 	}
 }
 
@@ -970,6 +1077,7 @@ func TestARollbackEmptiesTheCacheFirst(t *testing.T) {
 	cache := "/var/lib/briard/cache/ha"
 	gone := false
 	f := &fakeExec{}
+	f.dirs = map[string][]string{cache: {"thumbs", "models"}}
 	f.runFn = func(name string, args []string) ([]byte, error) {
 		switch {
 		case name == "btrfs" && args[1] == "show" && args[2] == cache && gone:
@@ -986,8 +1094,6 @@ func TestARollbackEmptiesTheCacheFirst(t *testing.T) {
 			gone = true
 		case name == "btrfs" && args[1] == "create" && args[len(args)-1] == cache:
 			gone = false
-		case name == "ls" && args[1] == cache:
-			return []byte("thumbs\nmodels\n"), nil
 		}
 		return nil, nil
 	}
@@ -1441,13 +1547,35 @@ func TestBringUpRendersNothingWithNoInstalledApp(t *testing.T) {
 	}
 }
 
+// A mount point is a path with a filesystem mounted at it, read from the mount table: not a path
+// under one (a Secondary's data root sits on the root filesystem), and the kernel's octal escapes
+// undone (a space is "\040" there).
+func TestIsMountPointReadsTheMountTable(t *testing.T) {
+	f := &fakeExec{files: map[string]string{mountinfoPath: mountinfo("/", "/var/lib", `/srv/a\040b`)}}
+	for p, want := range map[string]bool{
+		"/":                true,
+		"/var/lib":         true,
+		dataMountRoot:      false,
+		"/srv/a b":         true,
+		`/srv/a\040b`:      false,
+		"/var/lib/briard/": false,
+	} {
+		if got := isMountPoint(f, p); got != want {
+			t.Errorf("isMountPoint(%q) = %v, want %v", p, got, want)
+		}
+	}
+	if isMountPoint(&fakeExec{}, "/") {
+		t.Error("an unreadable mount table read as mounted")
+	}
+}
+
 // Under DHCP the host stops choosing the VIP, so it has to be able to ask what the address turned
 // out to be. Ground truth is the interface, and the answer for an unaddressed device is "" -- not
 // an error, because the host asks every cycle and a Secondary holding no VIP is the normal case.
 // An error there would read as a dead channel and trigger a reconnect every poll.
 func TestVIPReadsTheLiveAddress(t *testing.T) {
-	f := &fakeExec{output: []byte(
-		"3: eth2    inet 192.168.9.50/24 brd 192.168.9.255 scope global eth2\\       valid_lft forever\n")}
+	// The NIC's own address first, then a secondary: the VIP is the first.
+	f := &fakeExec{addrs: map[string][]string{"eth2": {"192.168.9.50/24", "192.168.9.51/24"}}}
 	g := dial(t, f)
 	got, err := g.VIP(context.Background(), "eth2")
 	if err != nil {
@@ -1458,16 +1586,21 @@ func TestVIPReadsTheLiveAddress(t *testing.T) {
 	}
 }
 
-// A device with no global address (Secondary) answers "" and no error.
+// A device with no global address (Secondary) answers "" and no error, and so does a device that
+// is not there at all: a transient absence must not read as a dead channel.
 func TestVIPUnaddressedIsEmptyNotAnError(t *testing.T) {
-	f := &fakeExec{}
-	g := dial(t, f) // fakeExec returns nothing for the ip call
-	got, err := g.VIP(context.Background(), "eth2")
-	if err != nil {
-		t.Fatalf("an unaddressed device must not be an error: %v", err)
-	}
-	if got != "" {
-		t.Errorf("VIP = %q, want empty", got)
+	for name, addrs := range map[string]map[string][]string{
+		"unaddressed": {"eth2": nil},
+		"absent":      nil,
+	} {
+		g := dial(t, &fakeExec{addrs: addrs})
+		got, err := g.VIP(context.Background(), "eth2")
+		if err != nil {
+			t.Fatalf("%s: must not be an error: %v", name, err)
+		}
+		if got != "" {
+			t.Errorf("%s: VIP = %q, want empty", name, got)
+		}
 	}
 }
 
@@ -1484,30 +1617,6 @@ func TestVIPNoDeviceIsEmptyNotAnError(t *testing.T) {
 	}
 	if len(f.runs) != 0 {
 		t.Errorf("no device means no ip call; ran %v", f.runs)
-	}
-}
-
-// firstCIDR must take the field after "inet" and nothing else -- never a brd address, never a
-// partially-parsed string. A wrong answer here is an address the host would probe and report.
-func TestFirstCIDRParsesOnlyInet(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
-		{"3: eth2    inet 192.168.9.50/24 brd 192.168.9.255 scope global eth2", "192.168.9.50/24"},
-		{"", ""},
-		{"3: eth2    inet6 fe80::1/64 scope link", ""},
-		{"garbage with no address at all", ""},
-
-		// IPv4LL is not an address this node holds on anyone's behalf -- it is the one the
-		// machine gave itself when nobody answered. Reporting it would make the node probe its
-		// own link-local address, pass, and publish healthy while the LAN cannot reach it.
-		// "No address" is the honest answer, and it is the one that makes a data node read
-		// not-ready.
-		{"3: eth2    inet 169.254.57.250/16 brd 169.254.255.255 scope global eth2", ""},
-		// ...and it must not shadow a real address that follows it.
-		{"3: eth2    inet 169.254.57.250/16 scope global eth2\n3: eth2    inet 192.168.9.50/24 scope global eth2", "192.168.9.50/24"},
-	} {
-		if got := firstCIDR(tc.in); got != tc.want {
-			t.Errorf("firstCIDR(%q) = %q, want %q", tc.in, got, tc.want)
-		}
 	}
 }
 
@@ -2304,5 +2413,66 @@ func TestDashboardCatalogIsWrittenThenMovedIn(t *testing.T) {
 	}
 	if !slices.Contains(guestCapabilities, verbDashboardCatalog) || isAct(verbDashboardCatalog) {
 		t.Error("the push is not advertised, or waits behind acts")
+	}
+}
+
+// Only the machine's own IPv4 addresses on a network count, in the order given. IPv4
+// link-local above all: it is the address the machine gave itself when nobody answered, and
+// reported as the VIP it would pass the node's own health probe while the LAN cannot reach it.
+// It must not shadow a real address that follows it either.
+func TestGlobalIPv4KeepsOnlyTheMachinesAddresses(t *testing.T) {
+	cidr := func(s string) net.Addr {
+		ip, n, err := net.ParseCIDR(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.IP = ip
+		return n
+	}
+	got := globalIPv4([]net.Addr{
+		cidr("169.254.57.250/16"),
+		cidr("192.168.9.50/24"),
+		cidr("fe80::1/64"),
+		cidr("2001:db8::5/64"),
+		cidr("127.0.0.1/8"),
+		cidr("10.0.0.2/24"),
+		&net.IPAddr{IP: net.ParseIP("192.168.1.1")},
+	})
+	if want := []string{"192.168.9.50/24", "10.0.0.2/24"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("globalIPv4 = %v, want %v", got, want)
+	}
+	if got := globalIPv4(nil); got != nil {
+		t.Errorf("no addresses = %v, want none", got)
+	}
+}
+
+// The real executor answers what `ls -1` and `test -e` did: a directory's names sorted, without
+// the dot-names; a missing path an error os.IsNotExist recognises, for a listing and a stat alike.
+func TestTheOSExecutorListsAndStatsAsTheCommandsDid(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"b.json", ".hidden", "a.json"} {
+		if err := os.WriteFile(dir+"/"+n, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(dir+"/c", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	x := NewOSExecutor()
+	got, err := x.ListDir(dir)
+	if want := []string{"a.json", "b.json", "c"}; err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("ListDir = %v, %v; want %v", got, err, want)
+	}
+	if _, err := x.ListDir(dir + "/nope"); !os.IsNotExist(err) {
+		t.Errorf("ListDir of a missing directory = %v, want not-exist", err)
+	}
+	if fi, err := x.Stat(dir + "/c"); err != nil || !fi.IsDir() {
+		t.Errorf("Stat of a directory = %v, %v", fi, err)
+	}
+	if _, err := x.Stat(dir + "/nope"); !os.IsNotExist(err) {
+		t.Errorf("Stat of a missing path = %v, want not-exist", err)
+	}
+	if _, err := x.IPv4Addrs("briard-no-such-nic"); err == nil {
+		t.Error("IPv4Addrs of a device that does not exist was not an error")
 	}
 }

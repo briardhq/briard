@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -674,6 +675,6 @@ func provablyBlank(ctx context.Context, x Executor, device string) error {
 // the LV is already there. `test -b` rather than a stat, because the Executor is the one surface
 // the guest's shelling-out goes through and a device node is exactly what we mean.
 func blockExists(ctx context.Context, x Executor, path string) bool {
-	_, err := x.Run(ctx, "test", "-b", path)
-	return err == nil
+	fi, err := x.Stat(path)
+	return err == nil && fi.Mode()&fs.ModeDevice != 0 && fi.Mode()&fs.ModeCharDevice == 0
 }

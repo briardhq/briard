@@ -31,8 +31,7 @@ type storageFake struct {
 	// one encodes the assumption that formats an unreadable disk, and no test written against it
 	// can reach the dangerous branch.
 	luks      luksState
-	present   map[string]bool // `test -b <path>` exit 0
-	mdPresent bool            // `drbdmeta ... dump-md` succeeds: the metadata LV holds DRBD metadata
+	mdPresent bool // `drbdmeta ... dump-md` succeeds: the metadata LV holds DRBD metadata
 	// prefix is what `head -c` reads off the device: nil is a zeroed disk, the shape both allocators
 	// produce; a test meaning something else sets the bytes, or prefixErr for a read that fails.
 	prefix    []byte
@@ -50,7 +49,7 @@ func (e exitStatus) Error() string { return fmt.Sprintf("exit status %d", int(e)
 // The common case is a fresh install onto a blank disk, so that is the default; a test that means
 // something else says so.
 func newStorageFake(cpuinfo string) *storageFake {
-	s := &storageFake{fakeExec: &fakeExec{}, present: map[string]bool{}, luks: luksBlank}
+	s := &storageFake{fakeExec: &fakeExec{blocks: map[string]bool{}}, luks: luksBlank}
 	_ = s.WriteFile("/proc/cpuinfo", []byte(cpuinfo))
 	s.runFn = s.storageRun
 	return s
@@ -78,10 +77,6 @@ func (s *storageFake) storageRun(name string, args []string) ([]byte, error) {
 		}
 		n, _ := strconv.Atoi(args[1])
 		return make([]byte, n), nil
-	case name == "test" && len(args) == 2 && args[0] == "-b":
-		if !s.present[args[1]] {
-			return nil, errors.New("exit status 1")
-		}
 	case name == "vgs":
 		// A 256 MiB PV: 4 MiB extents, 63 of them once LVM has taken its label and metadata area.
 		// Two lines, because the real command warns on stderr ahead of the report and Run hands
@@ -247,14 +242,27 @@ func TestNodeStorageAdiantum(t *testing.T) {
 	}
 }
 
+// A block device is what blockExists asks after, not any path: a file or a directory at the
+// device's path is not one.
+func TestBlockExistsWantsABlockDevice(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeExec{files: map[string]string{"/dev/a": ""}, blocks: map[string]bool{"/dev/b": true}}
+	f.mkdir("/dev/c")
+	for p, want := range map[string]bool{"/dev/a": false, "/dev/b": true, "/dev/c": false, "/dev/d": false} {
+		if got := blockExists(ctx, f, p); got != want {
+			t.Errorf("blockExists(%s) = %v, want %v", p, got, want)
+		}
+	}
+}
+
 // ★ A returning node is never reformatted. Its VG is on its disk, so activating it is the whole
 // job: nothing destructive runs, create-md does not run (the probe finds the metadata), and the
 // seed-only steps are skipped even though this spec still says FreshInit, because this run did
 // not create the metadata.
 func TestNodeStorageReturningNodeTouchesNothing(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardvol-data"] = true
-	f.present["/dev/mapper/briardvol-metadata"] = true
+	f.blocks["/dev/mapper/briardvol-data"] = true
+	f.blocks["/dev/mapper/briardvol-metadata"] = true
 	f.mdPresent = true
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, true)); err != nil {
 		t.Fatal(err)
@@ -294,8 +302,8 @@ func TestNodeStorageReturningEncryptedNodeOpensItself(t *testing.T) {
 			return nil, nil
 		}
 		if name == "vgchange" {
-			f.present["/dev/mapper/briardvol-data"] = true
-			f.present["/dev/mapper/briardvol-metadata"] = true
+			f.blocks["/dev/mapper/briardvol-data"] = true
+			f.blocks["/dev/mapper/briardvol-metadata"] = true
 			return nil, nil
 		}
 		return f.storageRun(name, args)
@@ -512,7 +520,7 @@ func TestNodeStorageJoinerBuildsButNeverFormats(t *testing.T) {
 // answer is a reinstall, and the message says so.
 func TestNodeStorageRefusesAVolumeWithoutAMetadataLV(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardvol-data"] = true
+	f.blocks["/dev/mapper/briardvol-data"] = true
 	err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false))
 	if err == nil || !strings.Contains(err.Error(), "reinstall") {
 		t.Fatalf("err = %v, want a refusal that says to reinstall", err)
@@ -603,8 +611,8 @@ func TestNodeStorageLoneNodeRunsNoDRBD(t *testing.T) {
 // A returning lone node activates its VG and stops: nothing destructive, and still no DRBD.
 func TestNodeStorageReturningLoneNode(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardvol-data"] = true
-	f.present["/dev/mapper/briardvol-metadata"] = true
+	f.blocks["/dev/mapper/briardvol-data"] = true
+	f.blocks["/dev/mapper/briardvol-metadata"] = true
 	if err := nodeStorage(context.Background(), f, loneSpec(true)); err != nil {
 		t.Fatal(err)
 	}
@@ -623,8 +631,8 @@ func TestNodeStorageReturningLoneNode(t *testing.T) {
 // replicating against is a split-brain factory. Bring-up stops; the volume is not mounted.
 func TestNodeStorageLoneNodeRefusesForeignMetadata(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardvol-data"] = true
-	f.present["/dev/mapper/briardvol-metadata"] = true
+	f.blocks["/dev/mapper/briardvol-data"] = true
+	f.blocks["/dev/mapper/briardvol-metadata"] = true
 	f.mdPresent = true
 	err := nodeStorage(context.Background(), f, loneSpec(true))
 	if err == nil || !strings.Contains(err.Error(), "holds DRBD metadata") {
@@ -650,8 +658,8 @@ func TestNodeStorageFlockWritesTheTopologyWord(t *testing.T) {
 // from being marked UpToDate without a sync.
 func TestNodeStorageConvertsALoneNodeToReplicated(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardvol-data"] = true
-	f.present["/dev/mapper/briardvol-metadata"] = true
+	f.blocks["/dev/mapper/briardvol-data"] = true
+	f.blocks["/dev/mapper/briardvol-metadata"] = true
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, true)); err != nil {
 		t.Fatal(err)
 	}
@@ -689,8 +697,8 @@ func TestNodeStorageConvertsALoneNodeToReplicated(t *testing.T) {
 // what "blank join" means. FreshInit=false is what separates it from the convert row.
 func TestNodeStorageRejoinerWithOldLVsNeverSeeds(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardvol-data"] = true
-	f.present["/dev/mapper/briardvol-metadata"] = true
+	f.blocks["/dev/mapper/briardvol-data"] = true
+	f.blocks["/dev/mapper/briardvol-metadata"] = true
 	if err := nodeStorage(context.Background(), f, demoSpec(nodestorage.ModeAuto, false)); err != nil {
 		t.Fatal(err)
 	}
@@ -707,8 +715,8 @@ func TestNodeStorageRejoinerWithOldLVsNeverSeeds(t *testing.T) {
 // it) and the flock's .res goes with it; nothing else of DRBD runs.
 func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardvol-data"] = true
-	f.present["/dev/mapper/briardvol-metadata"] = true
+	f.blocks["/dev/mapper/briardvol-data"] = true
+	f.blocks["/dev/mapper/briardvol-metadata"] = true
 	f.mdPresent = true
 	spec := loneSpec(true)
 	spec.Resource.Convert = nodestorage.ConvertDisable
@@ -728,8 +736,8 @@ func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
 	}
 	// ...and without the intent the same disk is still refused: the intent is the whole lift.
 	g := newStorageFake(aesCPU)
-	g.present["/dev/mapper/briardvol-data"] = true
-	g.present["/dev/mapper/briardvol-metadata"] = true
+	g.blocks["/dev/mapper/briardvol-data"] = true
+	g.blocks["/dev/mapper/briardvol-metadata"] = true
 	g.mdPresent = true
 	if err := nodeStorage(context.Background(), g, loneSpec(true)); err == nil || g.ran("drbdmeta", "--force") {
 		t.Errorf("alone + metadata + no intent was not refused (err=%v, runs=%v)", err, g.runs)
@@ -741,8 +749,8 @@ func TestNodeStorageDisableWipesTheMetadata(t *testing.T) {
 // over it is refused, and only the phrase that means garbage lets it pass.
 func TestNodeStorageUncleanMetadataIsStillMetadata(t *testing.T) {
 	f := newStorageFake(aesCPU)
-	f.present["/dev/mapper/briardvol-data"] = true
-	f.present["/dev/mapper/briardvol-metadata"] = true
+	f.blocks["/dev/mapper/briardvol-data"] = true
+	f.blocks["/dev/mapper/briardvol-metadata"] = true
 	f.runFn = func(name string, args []string) ([]byte, error) {
 		if name == "drbdmeta" && slices.Contains(args, "dump-md") {
 			return []byte("Found meta data is \"unclean\", please apply-al first"), errors.New("exit status 255")

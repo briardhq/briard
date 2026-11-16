@@ -51,6 +51,15 @@ func newUsageVolume() *usageVolume {
 		usageFiles: compsizeTotal("45000000000", "46000000000", "46000000000"),
 	}
 	at := usageNow.Add(-time.Hour)
+	// Three of the app's data members with their sidecars, and another app's; one files member.
+	var members []string
+	for i := range 3 {
+		m := filepath.Base(quadlet.SnapshotMember(usageApp, quadlet.TriggerClock, at.Add(-time.Duration(i)*time.Hour)))
+		members = append(members, m, m+".json")
+	}
+	members = append(members, filepath.Base(quadlet.SnapshotMember("jellyfin", quadlet.TriggerClock, at)))
+	fm := filepath.Base(quadlet.SnapshotMember(usageApp, quadlet.TriggerClock, at))
+	v.dirs = map[string][]string{filepath.Clean(quadlet.SnapshotsDir): members, filesVersionsDir(): {fm, fm + ".json"}}
 	v.runFn = func(name string, args []string) ([]byte, error) {
 		v.mu.Lock()
 		defer v.mu.Unlock()
@@ -69,17 +78,6 @@ func newUsageVolume() *usageVolume {
 				return []byte(out), nil
 			}
 			return []byte("compsize: not found"), errors.New("exec: not found")
-		case name == "ls" && args[1] == quadlet.SnapshotsDir:
-			var ls []string
-			for i := range 3 {
-				m := filepath.Base(quadlet.SnapshotMember(usageApp, quadlet.TriggerClock, at.Add(-time.Duration(i)*time.Hour)))
-				ls = append(ls, m, m+".json")
-			}
-			ls = append(ls, filepath.Base(quadlet.SnapshotMember("jellyfin", quadlet.TriggerClock, at)))
-			return []byte(strings.Join(ls, "\n")), nil
-		case name == "ls" && args[1] == filesVersionsDir():
-			m := filepath.Base(quadlet.SnapshotMember(usageApp, quadlet.TriggerClock, at))
-			return []byte(m + "\n" + m + ".json"), nil
 		}
 		return nil, nil
 	}

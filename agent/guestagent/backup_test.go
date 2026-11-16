@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -39,25 +40,16 @@ func backupRig(restic map[string]func() ([]byte, error), extra ...string) (*fake
 		f.files = map[string]string{}
 	}
 	f.files[backupKeyFile] = "s3cret\n"
+	f.files[mountinfoPath] = mountinfo(dataMountRoot) // mounted here
+	// Both apps are installed (the manifest directory lists them), and the volume holds every fact
+	// a restore needs but a certificate.
+	f.dirs[manifestDir] = []string{"home-assistant.json", "mosquitto.json"}
+	f.files[dataMountRoot+"/.vip-address"] = "192.168.1.50/24\n"
+	f.files[dashboard.AccountPath] = `{"name":"owner"}`
 	inner := f.runFn
 	f.runFn = func(n string, args []string) ([]byte, error) {
-		if n == "ls" && len(args) > 1 && args[1] == filesVersionsDir() {
-			return nil, nil // neither app mounts the files tier
-		}
-		if n == "ls" && len(args) > 1 && args[1] == manifestDir {
-			return []byte("home-assistant.json\nmosquitto.json\n"), nil
-		}
-		if n == "stat" && len(args) == 3 && args[2] == dataMountRoot {
-			return []byte(dataMountRoot + "\n"), nil // mounted here
-		}
 		if n == "touch" && len(args) == 1 {
 			return nil, f.WriteFile(args[0], nil)
-		}
-		if n == "test" && len(args) == 2 && args[0] == "-e" {
-			if _, ok := f.files[args[1]]; args[1] == tlsDir || (strings.HasPrefix(args[1], dataMountRoot+"/.backup-key") && !ok) {
-				return nil, errors.New("exit status 1")
-			}
-			return nil, nil
 		}
 		if n == "restic" {
 			for _, a := range args {
@@ -275,11 +267,12 @@ func TestAFailedBackupIsTheReportNotASilence(t *testing.T) {
 // TestANodeWithNothingInstalledBacksUpNothing: no apps is the shipped state, not a failure.
 func TestANodeWithNothingInstalledBacksUpNothing(t *testing.T) {
 	f := ringExec()
+	delete(f.files, manifestPath("home-assistant"))
+	f.mkdir(manifestDir) // the manifest directory, empty
 	f.runFn = func(n string, args []string) ([]byte, error) { return nil, errors.New("no such directory") }
 	rep := runBackup(context.Background(), f, backupRequest{Repository: "http://h/"})
-	read := !slices.ContainsFunc(f.runs, func(r []string) bool { return r[0] != "ls" })
-	if rep.Error != "" || rep.Snapshot != "" || !read {
-		t.Fatalf("report %+v after %v, want nothing done but reads", rep, f.runs)
+	if rep.Error != "" || rep.Snapshot != "" || len(f.runs) != 0 {
+		t.Fatalf("report %+v after %v, want nothing done: the reads are not commands", rep, f.runs)
 	}
 }
 
@@ -396,13 +389,7 @@ func TestTheKeyIsTheVolumes(t *testing.T) {
 	// Not mounted here (a Secondary): the path is the empty mountpoint, and nothing is written to it.
 	f, _ = backupRig(nil)
 	delete(f.files, backupKeyFile)
-	inner := f.runFn
-	f.runFn = func(n string, args []string) ([]byte, error) {
-		if n == "stat" {
-			return []byte("/\n"), nil
-		}
-		return inner(n, args)
-	}
+	f.files[mountinfoPath] = mountinfo("/")
 	if k, err := backupKeyState(ctx, f, backupKeyRequest{}); err == nil {
 		t.Fatalf("minted %+v where the volume is not mounted", k)
 	}
@@ -715,17 +702,12 @@ func filesRig(userErr error) (*fakeExec, string) {
 		if n == "restic" && slices.Contains(args, backupFiles) {
 			return []byte(user), userErr
 		}
-		if n == "ls" && len(args) > 1 && args[1] == filesVersionsDir() {
-			out, err := inner(n, []string{"-1", strings.TrimSuffix(quadlet.SnapshotsDir, "/")})
-			var ha []string
-			for _, m := range strings.Fields(string(out)) {
-				if strings.HasPrefix(m, "home-assistant-") {
-					ha = append(ha, m)
-				}
-			}
-			return []byte(strings.Join(ha, "\n")), err
-		}
 		return inner(n, args)
+	}
+	for _, m := range f.dirs[filepath.Clean(quadlet.SnapshotsDir)] {
+		if strings.HasPrefix(m, "home-assistant-") {
+			f.dirs[filesVersionsDir()] = append(f.dirs[filesVersionsDir()], m)
+		}
 	}
 	var newest string
 	for _, m := range fileVersions(context.Background(), f) {

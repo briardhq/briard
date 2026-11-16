@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -40,6 +41,8 @@ type Executor interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 	WriteFile(path string, data []byte) error
 	ReadFile(path string) ([]byte, error)
+	Stat(path string) (fs.FileInfo, error)
+	ListDir(path string) ([]string, error)
 }
 
 // The node-side layout: one directory per app, one socket for the agent.

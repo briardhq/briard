@@ -33,7 +33,7 @@ func setTimezone(ctx context.Context, x Executor, run func(string, ...string) er
 		return fmt.Errorf("%s: %q is not a timezone name", verbSetTimezone, zone)
 	}
 	target := zoneinfoDir + "/" + zone
-	if _, err := x.Run(ctx, "test", "-f", target); err != nil {
+	if fi, err := x.Stat(target); err != nil || !fi.Mode().IsRegular() {
 		return fmt.Errorf("%s: %s is not in this image's timezone database", verbSetTimezone, zone)
 	}
 	tmp := localtimePath + ".briard"

@@ -25,8 +25,8 @@ import (
 
 const haToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-// ringExec is a guest with a .snapshots directory: `ls` answers with `members` (and the run
-// directory with its fixed listing), `btrfs subvolume show` always fails (nothing is at a fresh
+// ringExec is a guest with a .snapshots directory holding `members` (each with its sidecar) and a
+// run directory with its fixed entries; `btrfs subvolume show` always fails (nothing is at a fresh
 // member's path), and everything else succeeds. It is the minimum a ring's take and its
 // replacement both read.
 func ringExec(members ...string) *fakeExec {
@@ -43,17 +43,17 @@ func ringExec(members ...string) *fakeExec {
 			f.files[quadlet.SnapshotSidecar(quadlet.SnapshotsDir+n)] = string(b)
 		}
 	}
-	members = slices.Clone(members) // the caller's slice is theirs; the listing below edits this one
+	snaps := filepath.Clean(quadlet.SnapshotsDir)
+	f.dirs = map[string][]string{
+		// The members are subvolumes, so directories the files map does not hold; the caller's
+		// slice is theirs, and the listing edits this one.
+		snaps: slices.Clone(members),
+		// The run directory holds the per-app dirs and plenty that is not one.
+		apps.RunDir(): {"home-assistant", "mosquitto", "agent.sock", "node-storage.json"},
+	}
 	// The listing follows the takes and deletes, so a prune after a take sees the member it just
 	// took -- which is what makes every earlier plain sample replaceable.
 	f.runFn = func(name string, args []string) ([]byte, error) {
-		// The run directory holds the per-app dirs and plenty that is not one.
-		if name == "ls" && len(args) > 1 && args[1] == apps.RunDir() {
-			return []byte("home-assistant\nmosquitto\nagent.sock\nnode-storage.json"), nil
-		}
-		if name == "ls" {
-			return []byte(strings.Join(members, "\n")), nil
-		}
 		if len(args) > 1 && args[1] == "show" {
 			return nil, errors.New("ERROR: not a subvolume")
 		}
@@ -64,11 +64,11 @@ func ringExec(members ...string) *fakeExec {
 			return nil, nil
 		}
 		if name == "btrfs" && len(args) > 3 && args[1] == "snapshot" {
-			members = append(members, strings.TrimPrefix(args[len(args)-1], quadlet.SnapshotsDir))
+			f.dirs[snaps] = append(f.dirs[snaps], strings.TrimPrefix(args[len(args)-1], quadlet.SnapshotsDir))
 		}
 		if name == "btrfs" && len(args) > 2 && args[1] == "delete" {
 			gone := strings.TrimPrefix(args[2], quadlet.SnapshotsDir)
-			members = slices.DeleteFunc(members, func(n string) bool { return n == gone })
+			f.dirs[snaps] = slices.DeleteFunc(f.dirs[snaps], func(n string) bool { return n == gone })
 		}
 		return nil, nil
 	}
@@ -491,10 +491,8 @@ func TestInboundAlwaysAnswers(t *testing.T) {
 func TestInboundRejectsAAppNameThatIsAPath(t *testing.T) {
 	const evil = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	f := ringExec()
+	f.dirs[apps.RunDir()] = []string{"../../etc"} // an entry the run directory should never hold
 	f.runFn = func(name string, args []string) ([]byte, error) {
-		if name == "ls" && len(args) > 1 && args[1] == apps.RunDir() {
-			return []byte("../../etc"), nil
-		}
 		return nil, errors.New("ERROR: not a subvolume")
 	}
 	f.files[apps.InboundTokenPath("../../etc")] = evil
@@ -983,13 +981,7 @@ func TestAResetAndAChangeShareTheirPoint(t *testing.T) {
 	f := recordRing(prev, next)
 	haMember(f, quadlet.TriggerStart, prevAt, "- id: 1\n")
 	_, meta := haMember(f, quadlet.TriggerClock, now, "- id: 1\n- id: 2\n")
-	inner := f.runFn
-	f.runFn = func(name string, args []string) ([]byte, error) {
-		if name == "ls" && len(args) > 1 && args[1] == next+"/app/.storage" {
-			return []byte("core.entity_registry.corrupt.2026-09-27T10:00:00\ncore.restore_state"), nil
-		}
-		return inner(name, args)
-	}
+	setAside(f, next+"/app", "core.entity_registry.corrupt.2026-09-27T10:00:00", "core.restore_state")
 	recordMember(context.Background(), f, next, meta)
 	ev := eventOn(t, f, prev)
 	if !ev.Has(quadlet.ReasonChanged) || !ev.Has(quadlet.ReasonReset) || len(ev.Reasons) != 2 {
@@ -1127,13 +1119,8 @@ func TestACrashLoopIsOneEvaluation(t *testing.T) {
 // setAside makes `dir`'s .storage list what Home Assistant set aside there; dir is a member's
 // container directory or the live one.
 func setAside(f *fakeExec, dir string, names ...string) {
-	inner := f.runFn
-	f.runFn = func(name string, args []string) ([]byte, error) {
-		if name == "ls" && len(args) > 1 && args[1] == dir+"/.storage" {
-			return []byte(strings.Join(names, "\n")), nil
-		}
-		return inner(name, args)
-	}
+	f.mkdir(dir + "/.storage")
+	f.dirs[filepath.Clean(dir+"/.storage")] = names
 }
 
 const brokenEntries = "core.config_entries.corrupt.2026-09-28T10:00:00"

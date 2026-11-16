@@ -231,6 +231,7 @@ func (v *userVolume) charged() int64 {
 
 func newUserVolume(apps ...string) *userVolume {
 	v := &userVolume{fakeExec: &fakeExec{}, apps: apps, members: map[string]bool{}, volume: 100 * gb, dataUsed: 10 * gb}
+	v.mkdir(manifestDir) // the volume's manifest directory
 	v.qgroups = map[string][]string{"0/5": nil, tierQgroup(tierData): nil, tierQgroup(tierFiles): nil}
 	for _, app := range apps {
 		v.qgroups[appQgroup(tierData, app)] = []string{tierQgroup(tierData)}
@@ -238,14 +239,6 @@ func newUserVolume(apps ...string) *userVolume {
 	}
 	v.runFn = func(name string, args []string) ([]byte, error) {
 		switch {
-		case name == "ls" && args[1] == filesRoot():
-			return []byte(strings.Join(append(slices.Clone(v.apps), ".snapshots"), "\n")), nil
-		case name == "ls" && args[1] == filesVersionsDir():
-			var ls []string
-			for m := range v.members {
-				ls = append(ls, filepath.Base(m), filepath.Base(m)+".json")
-			}
-			return []byte(strings.Join(ls, "\n")), nil
 		case name == "btrfs" && args[0] == "subvolume" && args[1] == "show":
 			if v.members[args[2]] {
 				return []byte(args[2]), nil
@@ -263,6 +256,24 @@ func newUserVolume(apps ...string) *userVolume {
 		return nil, nil
 	}
 	return v
+}
+
+// ListDir answers the files tier's root (an area per app; its members' directory is a dot-name) and its
+// members (each with its sidecar) from the volume as it stands; anything else from fakeExec.
+func (v *userVolume) ListDir(dir string) ([]string, error) {
+	var ls []string
+	switch dir {
+	case filesRoot():
+		ls = slices.Clone(v.apps)
+	case filesVersionsDir():
+		for m := range v.members {
+			ls = append(ls, filepath.Base(m), filepath.Base(m)+".json")
+		}
+	default:
+		return v.fakeExec.ListDir(dir)
+	}
+	slices.Sort(ls)
+	return ls, nil
 }
 
 // Run keeps the tree's numbers true to the volume before every read of it.

@@ -61,8 +61,8 @@ func Signals(ctx context.Context, x Executor, dir string) (map[string][]byte, er
 	}
 	read(configEntries)
 	// A missing directory fails the listing, and means there is nothing in it to compare.
-	if ls, err := x.Run(ctx, "ls", "-1", dir+"/"+customComponents); err == nil {
-		for _, d := range strings.Fields(string(ls)) {
+	if ls, err := x.ListDir(dir + "/" + customComponents); err == nil {
+		for _, d := range ls {
 			read(customComponents + "/" + d + "/manifest.json")
 		}
 	}
@@ -91,8 +91,8 @@ func Corrupt(ctx context.Context, x Executor, dir string) []string {
 		if sub != "" {
 			where, prefix = dir+"/"+sub, sub+"/"
 		}
-		if ls, err := x.Run(ctx, "ls", "-1", where); err == nil {
-			for _, n := range strings.Fields(string(ls)) {
+		if ls, err := x.ListDir(where); err == nil {
+			for _, n := range ls {
 				if strings.Contains(n, corruptMark) {
 					out = append(out, prefix+n)
 				}

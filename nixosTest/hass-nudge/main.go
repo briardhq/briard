@@ -17,7 +17,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strconv"
@@ -26,8 +28,9 @@ import (
 )
 
 // runner is the smallest Executor agent/hass needs for this call: Nudge only ever reads the token
-// off tmpfs, but the interface is the package's one Executor and the other two methods have to be
-// there. Three lines, copied rather than linking the guest firmware for its NewOSExecutor.
+// off tmpfs, but the interface is the package's one Executor and the other methods have to be
+// there. A few lines, copied rather than linking the guest firmware for its NewOSExecutor; the
+// two Nudge never calls refuse rather than pretend.
 type runner struct{}
 
 func (runner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -35,6 +38,8 @@ func (runner) Run(ctx context.Context, name string, args ...string) ([]byte, err
 }
 func (runner) WriteFile(path string, data []byte) error { return os.WriteFile(path, data, 0o600) }
 func (runner) ReadFile(path string) ([]byte, error)     { return os.ReadFile(path) }
+func (runner) Stat(string) (fs.FileInfo, error)         { return nil, errors.New("hass-nudge: no Stat") }
+func (runner) ListDir(string) ([]string, error)         { return nil, errors.New("hass-nudge: no ListDir") }
 
 func main() {
 	if len(os.Args) != 2 {

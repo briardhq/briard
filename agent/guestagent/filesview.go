@@ -150,12 +150,11 @@ func filesViewWanted(ctx context.Context, x Executor) (map[string]viewBind, erro
 // viewManifests is every app on the volume, an install still being staged included: its areas
 // exist from the moment it is staged, and the household may as well see them.
 func viewManifests(ctx context.Context, x Executor) ([]manifest.Manifest, error) {
-	out, err := x.Run(ctx, "ls", "-1", manifestDir)
+	names, err := x.ListDir(manifestDir)
 	if err != nil {
 		return nil, nil // no manifest directory: nothing installed
 	}
 	byName := map[string]manifest.Manifest{}
-	names := nonEmptyLines(out)
 	slices.Sort(names) // `<app>.json` before `<app>.json.next`: the staged one wins
 	for _, n := range names {
 		if !strings.HasSuffix(n, ".json") && !strings.HasSuffix(n, ".json.next") {
@@ -234,7 +233,7 @@ func reconcileFilesView(ctx context.Context, x Executor, want map[string]viewBin
 				continue
 			}
 		}
-		if _, err := x.Run(ctx, "test", "-d", b.src); err != nil {
+		if fi, err := x.Stat(b.src); err != nil || !fi.IsDir() {
 			continue // an area not made yet (an install part-way): the next refresh binds it
 		}
 		if out, err := x.Run(ctx, "mkdir", "-p", p); err != nil {

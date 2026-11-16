@@ -539,11 +539,11 @@ func EvaluateStarts(ctx context.Context, x Executor) {
 			return
 		case <-t.C:
 		}
-		out, err := x.Run(ctx, "ls", "-1", manifestDir)
+		names, err := x.ListDir(manifestDir)
 		if err != nil {
 			continue // no volume mounted here: this node serves nothing
 		}
-		for _, n := range strings.Fields(string(out)) {
+		for _, n := range names {
 			if app, ok := strings.CutSuffix(n, ".json"); ok && safeUnitName(app) == nil {
 				evaluatePending(ctx, x, app, time.Now())
 			}
@@ -755,14 +755,14 @@ func takeSnapshot(ctx context.Context, x Executor, run func(string, ...string) e
 // so this needs no sidecar read and no parsing of btrfs output. A ring of a thousand members
 // costs one listing and a sort.
 func ringMembers(ctx context.Context, x Executor, app string) []string {
-	out, err := x.Run(ctx, "ls", "-1", quadlet.SnapshotsDir)
+	entries, err := x.ListDir(quadlet.SnapshotsDir)
 	if err != nil {
 		// An absent .snapshots dir is a node whose volume was just made, not a failure: there
 		// are no members because there is nothing to hold them.
 		return nil
 	}
 	var names []string
-	for _, n := range strings.Fields(string(out)) {
+	for _, n := range entries {
 		// The sidecars are named after their members, so they parse as members too. Skipping
 		// them by suffix keeps this about subvolumes, which is what both callers mean.
 		if strings.HasSuffix(n, ".json") {
@@ -891,14 +891,14 @@ func resolveCaller(ctx context.Context, x Executor, token string) (string, bool)
 	if len(token) < 32 {
 		return "", false
 	}
-	out, err := x.Run(ctx, "ls", "-1", apps.RunDir())
+	entries, err := x.ListDir(apps.RunDir())
 	if err != nil {
 		return "", false
 	}
 	// The run directory holds plenty that is not an app — sockets, json, the drbd drop-in
 	// dirs. Nothing needs to tell them apart: an entry with no readable token inside it is
 	// simply not a candidate, so the filter is the read itself.
-	for _, name := range strings.Fields(string(out)) {
+	for _, name := range entries {
 		want, err := x.ReadFile(apps.InboundTokenPath(name))
 		if err != nil {
 			continue

@@ -2,10 +2,13 @@ package hass
 
 import (
 	"context"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func sig(kv ...string) map[string][]byte {
@@ -105,23 +108,11 @@ func TestSentenceReadsAsOneLine(t *testing.T) {
 // fakeFS is a config directory as Signals reads it.
 type fakeFS map[string]string
 
+// Run is `find`, the one command Signals runs.
 func (f fakeFS) Run(_ context.Context, name string, args ...string) ([]byte, error) {
-	dir := args[len(args)-1]
-	if name == "find" {
-		dir = args[0]
-	}
 	var out []string
 	for p := range f {
-		rest, ok := strings.CutPrefix(p, dir+"/")
-		if !ok {
-			continue
-		}
-		if name == "ls" {
-			d, _, _ := strings.Cut(rest, "/")
-			if !slices.Contains(out, d) {
-				out = append(out, d)
-			}
-		} else if strings.HasSuffix(p, ".yaml") {
+		if strings.HasPrefix(p, args[0]+"/") && strings.HasSuffix(p, ".yaml") {
 			out = append(out, p)
 		}
 	}
@@ -136,6 +127,58 @@ func (f fakeFS) ReadFile(p string) ([]byte, error) {
 		return []byte(v), nil
 	}
 	return nil, os.ErrNotExist
+}
+func (f fakeFS) Stat(p string) (fs.FileInfo, error) { return statIn(f, p) }
+func (f fakeFS) ListDir(p string) ([]string, error) { return listIn(f, p) }
+
+// fileInfo is what statIn hands back: only the name, the mode and the size carry anything.
+type fileInfo struct {
+	name string
+	mode fs.FileMode
+	size int64
+}
+
+func (i fileInfo) Name() string       { return i.name }
+func (i fileInfo) Size() int64        { return i.size }
+func (i fileInfo) Mode() fs.FileMode  { return i.mode }
+func (i fileInfo) ModTime() time.Time { return time.Time{} }
+func (i fileInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i fileInfo) Sys() any           { return nil }
+
+// statIn answers Stat from a fake's file map: a file it holds, or a directory something is under.
+func statIn(files map[string]string, p string) (fs.FileInfo, error) {
+	if v, ok := files[p]; ok {
+		return fileInfo{name: filepath.Base(p), mode: 0o644, size: int64(len(v))}, nil
+	}
+	for k := range files {
+		if strings.HasPrefix(k, p+"/") {
+			return fileInfo{name: filepath.Base(p), mode: fs.ModeDir | 0o755}, nil
+		}
+	}
+	return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
+}
+
+// listIn answers ListDir from a fake's file map as the real one would: the first name under dir of
+// everything below it, sorted, without the dot-names; a directory nothing is under does not exist.
+func listIn(files map[string]string, dir string) ([]string, error) {
+	var names []string
+	found := false
+	for k := range files {
+		rest, ok := strings.CutPrefix(k, dir+"/")
+		if !ok {
+			continue
+		}
+		found = true
+		n, _, _ := strings.Cut(rest, "/")
+		if !strings.HasPrefix(n, ".") && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	if !found {
+		return nil, &fs.PathError{Op: "open", Path: dir, Err: fs.ErrNotExist}
+	}
+	slices.Sort(names)
+	return names, nil
 }
 
 // TestSignalsReadsOnlyTheSignals: the ring member is Home Assistant's whole config directory, and

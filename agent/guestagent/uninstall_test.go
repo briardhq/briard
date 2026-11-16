@@ -34,8 +34,26 @@ type uninstallRig struct {
 	subvols map[string]bool
 }
 
+// ListDir lists the manifests the files map holds, and any other directory's subvolumes, each
+// with its sidecar.
+func (r *uninstallRig) ListDir(dir string) ([]string, error) {
+	dir = filepath.Clean(dir)
+	if dir == manifestDir {
+		return r.fakeExec.ListDir(dir)
+	}
+	var ls []string
+	for s := range r.subvols {
+		if filepath.Dir(s) == dir {
+			ls = append(ls, filepath.Base(s), filepath.Base(s)+".json")
+		}
+	}
+	slices.Sort(ls)
+	return ls, nil
+}
+
 func newUninstallRig(raw string, subvols ...string) *uninstallRig {
 	r := &uninstallRig{fakeExec: &fakeExec{files: map[string]string{}}, subvols: map[string]bool{}}
+	r.mkdir(manifestDir) // the volume's manifest directory, which outlives its last manifest
 	if raw != "" {
 		r.files[manifestPath("dummy")] = raw
 	}
@@ -48,22 +66,6 @@ func newUninstallRig(raw string, subvols ...string) *uninstallRig {
 	}
 	r.runFn = func(name string, args []string) ([]byte, error) {
 		switch {
-		case name == "ls" && args[1] == manifestDir:
-			var ls []string
-			for p := range r.files {
-				if filepath.Dir(p) == manifestDir {
-					ls = append(ls, filepath.Base(p))
-				}
-			}
-			return []byte(strings.Join(ls, "\n")), nil
-		case name == "ls":
-			var ls []string
-			for s := range r.subvols {
-				if filepath.Dir(s) == strings.TrimSuffix(args[1], "/") {
-					ls = append(ls, filepath.Base(s), filepath.Base(s)+".json")
-				}
-			}
-			return []byte(strings.Join(ls, "\n")), nil
 		case name == "btrfs" && args[0] == "subvolume" && args[1] == "show":
 			if r.subvols[args[2]] {
 				return []byte(args[2]), nil

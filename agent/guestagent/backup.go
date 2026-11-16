@@ -88,11 +88,10 @@ var backupKeyMu sync.Mutex
 func backupKey(ctx context.Context, x Executor) (string, error) {
 	backupKeyMu.Lock()
 	defer backupKeyMu.Unlock()
-	out, err := x.Run(ctx, "stat", "-c", "%m", dataMountRoot)
-	if err != nil || strings.TrimSpace(string(out)) != dataMountRoot {
+	if !isMountPoint(x, dataMountRoot) {
 		return "", errors.New("the data volume is not mounted here")
 	}
-	if _, err := x.Run(ctx, "test", "-e", backupKeyFile); err == nil {
+	if exists(x, backupKeyFile) {
 		b, err := x.ReadFile(backupKeyFile)
 		if err != nil {
 			return "", err
@@ -151,8 +150,7 @@ func backupKeyState(ctx context.Context, x Executor, req backupKeyRequest) (Back
 			return BackupKey{}, fmt.Errorf("sync: %w: %s", err, strings.TrimSpace(string(out)))
 		}
 	}
-	_, err = x.Run(ctx, "test", "-e", backupKeySavedFile)
-	return BackupKey{Key: k, Saved: err == nil}, nil
+	return BackupKey{Key: k, Saved: exists(x, backupKeySavedFile)}, nil
 }
 
 const (
@@ -410,7 +408,7 @@ func runBackup(ctx context.Context, x Executor, req backupRequest) BackupReport 
 		}
 	}
 	for _, f := range volumeFacts {
-		if _, err := x.Run(ctx, "test", "-e", f); err != nil {
+		if !exists(x, f) {
 			continue // not every volume has every fact: no VIP set, no cert yet
 		}
 		if _, err := run("cp", "-a", f, backupFacts+"/volume/"); err != nil {

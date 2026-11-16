@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"slices"
 	"strings"
 	"testing"
 
@@ -31,8 +33,8 @@ const mosquittoManifest = `{"name":"mosquitto","version":"2.1.2","containers":[{
 // image store it asks about. Everything else falls through to fakeExec's defaults.
 type convergeExec struct {
 	fakeExec
-	apps        []string // what `ls -1 <manifestDir>` returns; nil = the directory does not exist
-	quadlet     []string // what `ls -1 <quadletDir>` returns
+	apps        []string // what <manifestDir> holds; nil = the directory does not exist
+	quadlet     []string // what <quadletDir> holds
 	haveImage   bool     // whether `podman image exists <ref>` succeeds
 	failExtract bool     // whether the per-app extraction out of the image fails
 	failStart   map[string]bool
@@ -44,24 +46,6 @@ type convergeExec struct {
 func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	c.fakeExec.runs = append(c.fakeExec.runs, append([]string{name}, args...))
 	switch {
-	case name == "ls" && len(args) == 2 && args[1] == manifestDir:
-		if c.apps == nil {
-			return nil, errors.New("exit status 2") // no such directory
-		}
-		// The listing is the apps named plus whatever staging put in the directory, so a test
-		// that stages sees its own files the way the real directory would show them.
-		seen := map[string]bool{}
-		var ls []string
-		for _, n := range c.apps {
-			seen[n] = true
-			ls = append(ls, n)
-		}
-		for f := range c.fakeExec.files {
-			if n, ok := strings.CutPrefix(f, manifestDir+"/"); ok && !seen[n] {
-				ls = append(ls, n)
-			}
-		}
-		return []byte(strings.Join(ls, "\n") + "\n"), nil
 	case name == "mv" && len(args) == 3 && args[0] == "-T" && strings.HasPrefix(args[1], manifestDir+"/"):
 		body, ok := c.fakeExec.files[args[1]]
 		if !ok {
@@ -75,8 +59,6 @@ func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]
 		return nil, nil
 	case name == "btrfs" && len(args) > 0 && args[0] == "qgroup":
 		return c.fakeExec.qgroup(args[1:])
-	case name == "ls" && len(args) == 2 && args[1] == quadletDir:
-		return []byte(strings.Join(c.quadlet, "\n") + "\n"), nil
 	case name == "podman" && len(args) >= 2 && args[0] == "network" && args[1] == "inspect":
 		if c.podNetwork == "" {
 			return nil, errors.New("exit status 125") // no such network
@@ -103,6 +85,32 @@ func (c *convergeExec) Run(ctx context.Context, name string, args ...string) ([]
 		return nil, nil
 	}
 	return nil, nil
+}
+
+// ListDir answers the two listings converge reads from the test's own lists, and any other from
+// fakeExec. The manifest directory holds the apps named plus whatever staging put in it, so a test
+// that stages sees its own files the way the real directory would show them.
+func (c *convergeExec) ListDir(dir string) ([]string, error) {
+	var names []string
+	switch dir {
+	case manifestDir:
+		if c.apps == nil {
+			return nil, &fs.PathError{Op: "open", Path: dir, Err: fs.ErrNotExist}
+		}
+		names = slices.Clone(c.apps)
+		for f := range c.fakeExec.files {
+			if n, ok := strings.CutPrefix(f, manifestDir+"/"); ok && !slices.Contains(names, n) {
+				names = append(names, n)
+			}
+		}
+	case quadletDir:
+		names = slices.Clone(c.quadlet)
+	default:
+		return c.fakeExec.ListDir(dir)
+	}
+	names = slices.DeleteFunc(names, func(n string) bool { return strings.HasPrefix(n, ".") })
+	slices.Sort(names)
+	return names, nil
 }
 
 // ran reports whether the fake saw this exact command line.

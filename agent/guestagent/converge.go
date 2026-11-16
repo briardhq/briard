@@ -494,20 +494,18 @@ func merged(svcs []convergedApp) quadlet.Rendered {
 	return all
 }
 
-// manifestNames lists the volume's manifest files, sorted. Shelling out to `ls` rather than
-// widening Executor with a directory read: the same shape gatherResources already uses, and it
-// keeps the fake that drives the tests to four methods.
+// manifestNames lists the volume's manifest files, sorted.
 func manifestNames(ctx context.Context, x Executor) ([]string, error) {
-	out, err := x.Run(ctx, "ls", "-1", manifestDir)
+	entries, err := x.ListDir(manifestDir)
 	if err != nil {
-		// Absent directory = nothing installed = the shipped state. `ls` cannot distinguish that
-		// from a genuinely broken read, and treating both as empty is the right trade: the
+		// Absent directory = nothing installed = the shipped state. Treating a genuinely broken
+		// read the same way is the right trade: the
 		// alternative is a node that refuses to promote because a directory it never had is
 		// missing.
 		return nil, nil
 	}
 	var names []string
-	for _, n := range nonEmptyLines(out) {
+	for _, n := range entries {
 		if strings.HasSuffix(n, ".json") {
 			names = append(names, n)
 		}
@@ -532,11 +530,11 @@ func writeUnits(ctx context.Context, x Executor, r quadlet.Rendered) (map[string
 	if _, err := x.Run(ctx, "mkdir", "-p", quadletDir); err != nil {
 		return nil, fmt.Errorf("converge: %s: %w", quadletDir, err)
 	}
-	out, err := x.Run(ctx, "ls", "-1", quadletDir)
+	entries, err := x.ListDir(quadletDir)
 	if err != nil {
 		return nil, fmt.Errorf("converge: list %s: %w", quadletDir, err)
 	}
-	for _, n := range nonEmptyLines(out) {
+	for _, n := range entries {
 		if !strings.HasPrefix(n, unitPrefix) {
 			continue
 		}

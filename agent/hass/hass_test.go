@@ -3,6 +3,8 @@ package hass
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,6 +35,9 @@ type fake struct {
 	// extracted is what a `podman cp` out of the image yields. "" models the copy producing
 	// nothing readable -- a directory, or a path that moved.
 	extracted string
+	// dirs are what a `podman cp` that yielded no file made: a directory, empty as far as the
+	// code can tell, until `rm -rf` takes it.
+	dirs map[string]bool
 }
 
 // withImage is a fake whose image hands over a plausible s6 run script.
@@ -61,6 +66,16 @@ func (f *fake) Run(_ context.Context, name string, args ...string) ([]byte, erro
 	if name == "podman" && len(args) == 3 && args[0] == "cp" {
 		if f.extracted != "" {
 			f.WriteFile(args[2], []byte(f.extracted))
+		} else {
+			if f.dirs == nil {
+				f.dirs = map[string]bool{}
+			}
+			f.dirs[args[2]] = true
+		}
+	}
+	if name == "rm" {
+		for _, a := range args {
+			delete(f.dirs, a)
 		}
 	}
 	return nil, nil
@@ -79,6 +94,20 @@ func (f *fake) ReadFile(path string) ([]byte, error) {
 		return []byte(v), nil
 	}
 	return nil, errors.New("no such file")
+}
+
+func (f *fake) Stat(p string) (fs.FileInfo, error) {
+	if f.dirs[p] {
+		return fileInfo{name: filepath.Base(p), mode: fs.ModeDir | 0o755}, nil
+	}
+	return statIn(f.files, p)
+}
+
+func (f *fake) ListDir(p string) ([]string, error) {
+	if f.dirs[p] {
+		return nil, nil
+	}
+	return listIn(f.files, p)
 }
 
 func (f *fake) ran(argv ...string) bool {

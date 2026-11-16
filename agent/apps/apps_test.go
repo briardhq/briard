@@ -2,6 +2,7 @@ package apps
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"slices"
 	"strings"
@@ -31,6 +32,12 @@ type noopExec struct{ runs int }
 func (n *noopExec) Run(context.Context, string, ...string) ([]byte, error) { n.runs++; return nil, nil }
 func (n *noopExec) WriteFile(string, []byte) error                         { return nil }
 func (n *noopExec) ReadFile(string) ([]byte, error)                        { return nil, nil }
+func (n *noopExec) Stat(p string) (fs.FileInfo, error) {
+	return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
+}
+func (n *noopExec) ListDir(p string) ([]string, error) {
+	return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+}
 
 // TestAnUnknownAppGetsNothing — the registry's default, which keeps a new entry from changing
 // what every other app gets: an unknown app renders, prepares and reads as if this package did
@@ -397,6 +404,12 @@ func (f *tokenExec) ReadFile(path string) ([]byte, error) {
 		return []byte(v), nil
 	}
 	return nil, os.ErrNotExist
+}
+func (f *tokenExec) Stat(p string) (fs.FileInfo, error) {
+	return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
+}
+func (f *tokenExec) ListDir(p string) ([]string, error) {
+	return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
 }
 func (f *tokenExec) ran(want ...string) bool {
 	for _, r := range f.runs {

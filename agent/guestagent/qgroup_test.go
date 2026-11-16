@@ -289,6 +289,7 @@ func TestAStartEmptiesTheCacheWhenSpaceIsShort(t *testing.T) {
 		{"two containers", two, "10000000000", 9_500_000_000, false},
 	} {
 		f := &fakeExec{files: map[string]string{manifestPath("immich"): c.manifest}}
+		f.dirs = map[string][]string{cache: {"thumbs"}}
 		f.qgroups = map[string][]string{tierQgroup(tierData): nil, group: {tierQgroup(tierData)}}
 		f.qused = map[string]int64{group: c.used}
 		if c.limit != "" {
@@ -297,9 +298,6 @@ func TestAStartEmptiesTheCacheWhenSpaceIsShort(t *testing.T) {
 		f.runFn = func(name string, args []string) ([]byte, error) {
 			if name == "btrfs" && args[1] == "show" {
 				return []byte(args[2]), nil
-			}
-			if name == "ls" && args[1] == cache {
-				return []byte("thumbs\n"), nil
 			}
 			return nil, nil
 		}

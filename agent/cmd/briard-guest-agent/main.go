@@ -98,8 +98,8 @@ func runDaemon(args []string) {
 		// channel is unreachable in every test and an L0 run proves nothing about it. The start
 		// evaluator rides along for the same reason: it is the other half of the ring that lives in
 		// the long-running agent.
-		go guestagent.EvaluateStarts(ctx, guestfirmware.NewOSExecutor())
-		if err := guestagent.ListenInbound(ctx, guestfirmware.NewOSExecutor()); err != nil {
+		go guestagent.EvaluateStarts(ctx, guestagent.NewOSExecutor())
+		if err := guestagent.ListenInbound(ctx, guestagent.NewOSExecutor()); err != nil {
 			log.Fatalf("inbound channel: %v", err)
 		}
 	default:
@@ -160,7 +160,7 @@ func runInternal(args []string) {
 		// channel to serve; this is how they get the product's own units instead of a harness's
 		// copy (nixosTest/lib.nix). A rig that declared its own could not notice the product
 		// changing them.
-		if err := guestagent.WriteUnits(ctx, guestfirmware.NewOSExecutor()); err != nil {
+		if err := guestagent.WriteUnits(ctx, guestagent.NewOSExecutor()); err != nil {
 			log.Fatalf("write-units: %v", err)
 		}
 		return
@@ -175,7 +175,7 @@ func runInternal(args []string) {
 		if *primaryStorageStop {
 			run, what = guestagent.PrimaryStorageStop, "primary-storage-stop"
 		}
-		if err := run(ctx, guestfirmware.NewOSExecutor()); err != nil {
+		if err := run(ctx, guestagent.NewOSExecutor()); err != nil {
 			log.Fatalf("%s: %v", what, err)
 		}
 		return
@@ -194,7 +194,7 @@ func runInternal(args []string) {
 		// is the wrong trade. The rendered line (agent/quadlet) also carries systemd's `-`; the
 		// belt-and-braces is deliberate, because `-` alone hides why: the exit code is 0 either
 		// way, the journal has the reason.
-		detail, err := guestagent.TakeStartMember(ctx, guestfirmware.NewOSExecutor(), *appStarting)
+		detail, err := guestagent.TakeStartMember(ctx, guestagent.NewOSExecutor(), *appStarting)
 		if err != nil {
 			log.Printf("app-starting %s: %v (starting anyway)", *appStarting, err)
 			return
@@ -207,7 +207,7 @@ func runInternal(args []string) {
 		// For a guest with no host, like --inbound-listen: the rigs that get Home Assistant running
 		// are agent-less, and this is the only way an L0 run can exercise the recorder lock against
 		// a real Home Assistant. Nothing in the product invokes it.
-		detail, err := guestagent.TakeClockMember(ctx, guestfirmware.NewOSExecutor(), *clock, time.Now())
+		detail, err := guestagent.TakeClockMember(ctx, guestagent.NewOSExecutor(), *clock, time.Now())
 		if err != nil {
 			log.Fatalf("clock %s: %v", *clock, err)
 		}
@@ -219,7 +219,7 @@ func runInternal(args []string) {
 		// For a guest with no host, like --clock: the product reaches these through the host's
 		// verbs, the agent-less rigs that run a real Home Assistant reach them here. The report
 		// goes to stdout as JSON, for the harness to read; the log goes to stderr.
-		x := guestfirmware.NewOSExecutor()
+		x := guestagent.NewOSExecutor()
 		if *dbRestore != "" {
 			if err := guestagent.RestoreRecorder(ctx, x, *dbRestore); err != nil {
 				log.Fatalf("dbrestore: %v", err)
@@ -238,7 +238,7 @@ func runInternal(args []string) {
 	if *backup != "" {
 		// For a guest with no host, like --dbcheck: the product starts it through the host's verb, in
 		// the background; an agent-less rig runs the same backup in line through here.
-		b, err := json.Marshal(guestagent.Backup(ctx, guestfirmware.NewOSExecutor(), *backup))
+		b, err := json.Marshal(guestagent.Backup(ctx, guestagent.NewOSExecutor(), *backup))
 		if err != nil {
 			log.Fatalf("backup: %v", err)
 		}
@@ -249,7 +249,7 @@ func runInternal(args []string) {
 	if *backupRestore != "" {
 		// For a guest with no host, like --backup: the product's host materialises a night through
 		// the verb and restores the member; a rig proves the materialisation here.
-		member, err := guestagent.RestoreBackupMember(ctx, guestfirmware.NewOSExecutor(), *backupRestore, *restoreSnapshot, *restoreApp)
+		member, err := guestagent.RestoreBackupMember(ctx, guestagent.NewOSExecutor(), *backupRestore, *restoreSnapshot, *restoreApp)
 		if err != nil {
 			log.Fatalf("backup-restore: %v", err)
 		}
@@ -258,7 +258,7 @@ func runInternal(args []string) {
 	}
 
 	if *backupAdopt != "" {
-		if err := guestagent.AdoptBackup(ctx, guestfirmware.NewOSExecutor(), *backupAdopt, *adoptKey); err != nil {
+		if err := guestagent.AdoptBackup(ctx, guestagent.NewOSExecutor(), *backupAdopt, *adoptKey); err != nil {
 			log.Fatalf("backup-adopt: %v", err)
 		}
 		return
@@ -271,7 +271,7 @@ func runInternal(args []string) {
 		// is why the rendered unit puts this there. Never fails a stop, as above (the rendered line
 		// carries `-` as well): a marker that could not be written costs the next member its claim
 		// to be quiesced, the safe direction.
-		if err := guestagent.RecordAppStop(ctx, guestfirmware.NewOSExecutor(), *appStopped, os.Getenv("SERVICE_RESULT")); err != nil {
+		if err := guestagent.RecordAppStop(ctx, guestagent.NewOSExecutor(), *appStopped, os.Getenv("SERVICE_RESULT")); err != nil {
 			log.Printf("app-stopped %s: %v (the next member will read as crash-consistent)", *appStopped, err)
 		}
 		return
@@ -281,7 +281,7 @@ func runInternal(args []string) {
 		// Storage is the host's decision and the guest's work: the host wrote the spec before
 		// starting this unit, so there is nothing to pass on the command line and nothing for this
 		// process to decide. A non-zero exit fails the verb the host is still waiting on.
-		if err := guestagent.NodeStorage(ctx, guestfirmware.NewOSExecutor()); err != nil {
+		if err := guestagent.NodeStorage(ctx, guestagent.NewOSExecutor()); err != nil {
 			log.Fatalf("node storage: %v", err)
 		}
 		return
@@ -300,7 +300,7 @@ func runInternal(args []string) {
 		if *convergeStop {
 			run, what = guestagent.ConvergeStop, "converge-stop"
 		}
-		if err := run(ctx, guestfirmware.NewOSExecutor()); err != nil {
+		if err := run(ctx, guestagent.NewOSExecutor()); err != nil {
 			log.Fatalf("%s: %v", what, err)
 		}
 		return
@@ -317,7 +317,7 @@ func runInternal(args []string) {
 // guestStopGrace bounds the case where even that is not enough -- the host's clean-shutdown
 // timing depends on this process actually ending.
 func runGuest(ctx context.Context) error {
-	x := guestfirmware.NewOSExecutor()
+	x := guestagent.NewOSExecutor()
 	// The units this binary owns, before anything else: the guest image does not define them, so
 	// nothing below (the trial verdict, the host's first bring-up verb after the port) can name a
 	// unit until they are written. Ordering this ahead of the trial also makes the trial honest: a

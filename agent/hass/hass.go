@@ -52,8 +52,8 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -230,6 +230,8 @@ type Executor interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 	WriteFile(path string, data []byte) error
 	ReadFile(path string) ([]byte, error)
+	Stat(path string) (fs.FileInfo, error)
+	ListDir(path string) ([]string, error)
 }
 
 // Volumes returns the extra quadlet Volume= values one container needs, which for
@@ -406,12 +408,10 @@ func describeLayout(ctx context.Context, x Executor) string {
 		if _, err := x.Run(ctx, "podman", "cp", extractCtr+":"+root, dst); err != nil {
 			continue
 		}
-		out, err := x.Run(ctx, "ls", "-1", dst)
+		names, err := x.ListDir(dst)
 		if err != nil {
 			continue
 		}
-		names := strings.Fields(string(out))
-		sort.Strings(names)
 		found = append(found, fmt.Sprintf("%s: %s", root, strings.Join(names, " ")))
 		_, _ = x.Run(ctx, "rm", "-rf", dst)
 	}

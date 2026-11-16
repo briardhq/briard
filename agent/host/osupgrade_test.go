@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -43,6 +44,18 @@ func (e *statusExec) ReadFile(string) ([]byte, error) {
 
 func (e *statusExec) Sethostname(string) error {
 	return errors.New("statusExec: refusing Sethostname")
+}
+
+func (e *statusExec) Stat(string) (fs.FileInfo, error) {
+	return nil, errors.New("statusExec: refusing Stat")
+}
+
+func (e *statusExec) ListDir(string) ([]string, error) {
+	return nil, errors.New("statusExec: refusing ListDir")
+}
+
+func (e *statusExec) IPv4Addrs(string) ([]string, error) {
+	return nil, errors.New("statusExec: refusing IPv4Addrs")
 }
 
 // dialStatus wires a real client to a real Serve over a pipe, so the fixture travels the whole
@@ -110,6 +123,15 @@ func (e *recExec) WriteFile(path string, _ []byte) error {
 
 func (e *recExec) ReadFile(string) ([]byte, error) { return nil, nil }
 func (e *recExec) Sethostname(string) error        { return nil }
+func (e *recExec) Stat(p string) (fs.FileInfo, error) {
+	return nil, &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
+}
+func (e *recExec) ListDir(p string) ([]string, error) {
+	return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+}
+func (e *recExec) IPv4Addrs(dev string) ([]string, error) {
+	return nil, errors.New("no such network interface " + dev)
+}
 
 func (e *recExec) all() []string {
 	e.mu.Lock()

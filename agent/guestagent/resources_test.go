@@ -95,8 +95,6 @@ func TestResourcesVerbGathers(t *testing.T) {
 		case cmd == "cat /sys/fs/cgroup/system.slice/briard-ha-app.service/memory.stat":
 			// anon is what the app actually holds; file is page cache and must not count.
 			return []byte("anon 90112000\nfile 4294967296\n"), nil
-		case cmd == "ls /proc/4242/fd":
-			return []byte("0\n1\n2\n3\n4\n"), nil
 		case cmd == "cat /proc/loadavg":
 			return []byte("1.50 0.9 0.7 2/300 999\n"), nil
 		case strings.HasPrefix(cmd, "df -kP"):
@@ -125,6 +123,7 @@ func TestResourcesVerbGathers(t *testing.T) {
 			return nil, nil
 		}
 	}}
+	x.dirs = map[string][]string{"/proc/4242/fd": {"0", "1", "2", "3", "4"}} // the unit's MainPID holds five fds
 	g := dial(t, x)
 	r, err := g.Resources(context.Background(), map[string]string{"ha": "podman-ha.service"}, "/var/lib/briard/data", true)
 	if err != nil {
