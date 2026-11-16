@@ -146,3 +146,32 @@ func TestPrimaryStorageStopUnmounts(t *testing.T) {
 		t.Errorf("runs = %v", f.runs)
 	}
 }
+
+// The first mount mints the backup's key, so the page, which only reads it, has one from its first
+// open; a later mount keeps it. A key that cannot be minted is logged, not a failed promotion.
+func TestPrimaryStorageMintsTheBackupKeyOnce(t *testing.T) {
+	f := newMountFake()
+	f.files[mountinfoPath] = mountinfo(dataMountRoot)
+	if err := PrimaryStorage(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	key := f.files[backupKeyFile]
+	if strings.TrimSpace(key) == "" {
+		t.Fatalf("no key minted at %s: files %v", backupKeyFile, f.files)
+	}
+	f.mounted = true
+	if err := PrimaryStorage(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	if f.files[backupKeyFile] != key {
+		t.Errorf("a second mount replaced the key: %q, was %q", f.files[backupKeyFile], key)
+	}
+
+	unmounted := newMountFake() // the mount table does not show the volume: nothing to mint on
+	if err := PrimaryStorage(context.Background(), unmounted); err != nil {
+		t.Fatalf("a key that could not be minted failed the mount: %v", err)
+	}
+	if _, ok := unmounted.files[backupKeyFile]; ok {
+		t.Error("a key was minted where the volume is not mounted")
+	}
+}

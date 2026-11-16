@@ -524,11 +524,10 @@ func (cfg Config) updateBackupRecord(change func(*backupRecord)) error {
 	return atomicfile.Write(filepath.Join(cfg.stateDir(), backupRecordName), b, 0o600, 0o700)
 }
 
-// backupView is what the page is told: the folder (in use, or the one it returns to), the record,
-// and the key with the household's word on it -- read from the volume through the guest, which
-// mints it when first asked, so the page can ask to save it from its first open. With the volume
-// not mounted there is no key and no page to show it on: the view goes without it.
-func (cfg Config) backupView(ctx context.Context, g backupViewGuest) dashboard.Backup {
+// backupView is what the page is told: the folder (in use, or the one it returns to) and the
+// record. Not the key: it lives on the volume, and the page, on the same volume, reads it there
+// (dashboard.BackupKeyPath); the host acts on the backup, never on the key.
+func (cfg Config) backupView() dashboard.Backup {
 	rec := cfg.readBackupRecord()
 	v := dashboard.Backup{Folder: cfg.backupFolder(), On: cfg.backupFolder() != "", Previous: rec.Previous, Nights: rec.Nights}
 	if !v.On {
@@ -537,17 +536,11 @@ func (cfg Config) backupView(ctx context.Context, g backupViewGuest) dashboard.B
 			v.Folder = defaultBackupDir // where turning it on goes (applyBackupSetting)
 		}
 	}
-	kctx, cancel := context.WithTimeout(ctx, backupCallTimeout)
-	defer cancel()
-	if k, err := g.DataBackupKey(kctx, false); err == nil {
-		v.Key, v.KeySaved = k.Key, k.Saved
-	}
 	return v
 }
 
 // backupViewGuest is the slice of the guest the page's copy costs.
 type backupViewGuest interface {
-	DataBackupKey(ctx context.Context, saved bool) (guestagent.BackupKey, error)
 	DashboardBackup(ctx context.Context, b dashboard.Backup) error
 }
 
@@ -560,7 +553,7 @@ func (cfg Config) pushBackupView(ctx context.Context, r any, b *backupScheduler,
 	if !ok || cfg.stateDir() == "" {
 		return
 	}
-	v := cfg.backupView(ctx, g)
+	v := cfg.backupView()
 	v.OffsiteUnknown = !offsiteCanTell
 	if b != nil {
 		v.OffsiteIn, v.OffsiteSynced = b.offsite.in, b.offsite.synced

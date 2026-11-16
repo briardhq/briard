@@ -24,6 +24,18 @@ func (r *rig) hostBacksUp(t *testing.T, v dashboard.Backup) {
 	must(t, os.WriteFile(r.app.backupPath, raw, 0o600))
 }
 
+// keyOnVolume lays out the backup key on the volume as the guest agent leaves it, and the
+// household's word that it has a copy elsewhere when saved.
+func (r *rig) keyOnVolume(t *testing.T, key string, saved bool) {
+	t.Helper()
+	must(t, os.WriteFile(r.app.backupKeyPath, []byte(key+"\n"), 0o600))
+	if saved {
+		must(t, os.WriteFile(r.app.backupKeySavedPath, nil, 0o600))
+	} else if err := os.Remove(r.app.backupKeySavedPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 func backupRig(t *testing.T) (*rig, *http.Cookie, *fakePort) {
 	r := newRig(t)
 	r.app.backupPath = filepath.Join(r.dir, "backup.json")
@@ -35,7 +47,8 @@ func backupRig(t *testing.T) (*rig, *http.Cookie, *fakePort) {
 // Each button is exactly one config-set through the admin port, and no session asks for nothing.
 func TestTheBackupButtonsAskTheHost(t *testing.T) {
 	r, c, port := backupRig(t)
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey})
+	r.keyOnVolume(t, testKey, false)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true})
 	if resp := r.form("/backup/off", nil, nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("off with no session = %d, want 401", resp.StatusCode)
 	}
@@ -74,7 +87,8 @@ func TestTheBackupButtonsAskTheHost(t *testing.T) {
 // says nothing about this home.
 func TestTheKeyIsShownToATrustedDeviceOnly(t *testing.T) {
 	r, _, _ := backupRig(t)
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/f", On: true, Key: testKey})
+	r.keyOnVolume(t, testKey, false)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/f", On: true})
 	resp := r.do("GET", "/", nil, nil)
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -89,7 +103,8 @@ func TestTheKeyIsShownToATrustedDeviceOnly(t *testing.T) {
 func TestActsReturnToThePageTheyWerePressedOn(t *testing.T) {
 	r, c, port := backupRig(t)
 	answerHistory(port, "") // the host says yes to each; the answer is not the question here
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/f", On: true, Key: testKey, KeySaved: true})
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/f", On: true})
 	post := func(referer string) string {
 		t.Helper()
 		req, _ := http.NewRequest("POST", r.srv.URL+"/backup/off", strings.NewReader(""))
@@ -188,11 +203,13 @@ func TestTheScheduleCard(t *testing.T) {
 	r.app.now = func() time.Time { return now }
 	last := dashboard.BackupRun{At: now.Add(-9 * time.Hour), Snapshot: "abc", BytesAdded: 312 << 20, Size: 3 << 30}
 
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey})
+	r.keyOnVolume(t, testKey, false)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true})
 	if s := card(r.get(t, "/backup", c), "schedule"); !strings.Contains(s, "Runs daily at 02:00. The first runs tonight.") {
 		t.Errorf("before the first run:\n%s", s)
 	}
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, Nights: []dashboard.BackupRun{last}})
+	r.keyOnVolume(t, testKey, false)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Nights: []dashboard.BackupRun{last}})
 	body := r.get(t, "/backup", c)
 	s := card(body, "schedule")
 	for _, want := range []string{"Runs daily at 02:00.", "Last run: 9 hours ago.", `action="/backup/now"`, `action="/backup/off"`, "Turn off"} {
@@ -208,14 +225,20 @@ func TestTheScheduleCard(t *testing.T) {
 			t.Errorf("unsaved key: the page lacks %q", want)
 		}
 	}
+	r.keyOnVolume(t, testKey, true) // the household's word, on the volume: the nudge goes
+	if body := r.get(t, "/backup", c); strings.Contains(body, "only on this machine") || strings.Contains(body, `action="/backup/saved"`) {
+		t.Error("saved key: the page still asks to save it")
+	}
 
 	last.Error = "the backup folder is not there"
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/f", On: true, Key: testKey, KeySaved: true, Nights: []dashboard.BackupRun{last}})
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/f", On: true, Nights: []dashboard.BackupRun{last}})
 	if s := card(r.get(t, "/backup", c), "schedule"); !strings.Contains(s, `<span class="bad">Last run: 9 hours ago, did not finish.</span>`) {
 		t.Errorf("a failed run is not red:\n%s", s)
 	}
 
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", Key: testKey, KeySaved: true})
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup"})
 	s = card(r.get(t, "/backup", c), "schedule")
 	if !strings.Contains(s, "Off. The backups already in <code>/home/ana/Briard Backup</code> are kept.") || !strings.Contains(s, `action="/backup/on"`) ||
 		!strings.Contains(s, "Turn back on") || strings.Contains(s, `action="/backup/now"`) {
@@ -230,7 +253,8 @@ func TestBackUpNowFollowsTheRunToItsEnd(t *testing.T) {
 	r, c, port := backupRig(t)
 	folder := "/home/ana/Briard Backup"
 	before := dashboard.BackupEnd{Started: time.Date(2026, 10, 30, 2, 0, 0, 0, time.UTC), Detail: "last night's"}
-	r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Key: testKey, KeySaved: true, Ended: &before})
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Ended: &before})
 
 	port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: "a backup starts now"}
 	if resp := r.form("/backup/now", c, nil); resp.StatusCode != http.StatusSeeOther {
@@ -244,7 +268,8 @@ func TestBackUpNowFollowsTheRunToItsEnd(t *testing.T) {
 	}
 	// Not taken up yet, then running: the card says so and polls, with no Back up now.
 	for _, running := range []time.Time{{}, time.Date(2026, 10, 30, 14, 5, 0, 0, time.UTC)} {
-		r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Key: testKey, KeySaved: true, Ended: &before, Running: running})
+		r.keyOnVolume(t, testKey, true)
+		r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Ended: &before, Running: running})
 		s := r.get(t, "/f/schedule", c)
 		if !strings.Contains(s, "Backing up…") || !strings.Contains(s, `hx-get="/f/schedule"`) || strings.Contains(s, `action="/backup/now"`) {
 			t.Fatalf("running (%v):\n%s", running, s)
@@ -252,7 +277,8 @@ func TestBackUpNowFollowsTheRunToItsEnd(t *testing.T) {
 	}
 	// Ended: the fragment hands over to the page, which says it once.
 	ended := dashboard.BackupEnd{Started: time.Date(2026, 10, 30, 14, 5, 0, 0, time.UTC), Detail: "backed up home-assistant: 36 files, 301 kB added (snapshot 5aa539af)"}
-	r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Key: testKey, KeySaved: true, Ended: &ended,
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Ended: &ended,
 		Nights: []dashboard.BackupRun{{At: ended.Started, Snapshot: "5aa539af", BytesAdded: 301 << 10}}})
 	resp := r.do("GET", "/f/schedule", c, nil)
 	if resp.StatusCode != http.StatusNoContent || resp.Header.Get("HX-Refresh") != "true" {
@@ -269,7 +295,8 @@ func TestBackUpNowFollowsTheRunToItsEnd(t *testing.T) {
 	port.answer <- api.DirectiveOutcome{State: api.OutcomeDone}
 	r.form("/backup/now", c, nil)
 	failed := dashboard.BackupEnd{Started: ended.Started.Add(time.Hour), Failed: true, Detail: "Fatal: unable to save snapshot"}
-	r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Key: testKey, KeySaved: true, Ended: &failed,
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: folder, On: true, Ended: &failed,
 		Nights: []dashboard.BackupRun{{At: failed.Started, Error: "the backup folder is not there"}}})
 	if s := card(r.get(t, "/backup", c), "schedule"); !strings.Contains(s, `<p class="bad">Did not finish: the backup folder is not there</p>`) {
 		t.Errorf("the failure is not said:\n%s", s)
@@ -297,7 +324,8 @@ func TestTheFolderCard(t *testing.T) {
 		page := r.get(t, "/backup", c)
 		return page[strings.Index(page, "<h2>Folder</h2>"):]
 	}
-	base := dashboard.Backup{Folder: folder, On: true, Key: testKey, KeySaved: true, Nights: nights}
+	r.keyOnVolume(t, testKey, true)
+	base := dashboard.Backup{Folder: folder, On: true, Nights: nights}
 
 	s := folderCard(base)
 	if !strings.Contains(s, `value="`+folder+`"`) || !strings.Contains(s, `method="get" action="/backup/folder"`) || strings.Contains(s, "It must already exist") {
@@ -347,7 +375,8 @@ func answerFolder(port *fakePort, check *dashboard.BackupFolderCheck, why string
 // made.
 func TestChangeReadsTheFolderFirst(t *testing.T) {
 	r, c, port := backupRig(t)
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true})
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true})
 	const to = "/home/ana/Dropbox/Briard Backup"
 	check := func(answer *dashboard.BackupFolderCheck, why string) string {
 		t.Helper()
@@ -425,7 +454,8 @@ func TestChangeReadsTheFolderFirst(t *testing.T) {
 func TestTheBackupsCard(t *testing.T) {
 	r, c, port := backupRig(t)
 	at := time.Date(2026, 10, 30, 2, 0, 0, 0, time.Local)
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true, Nights: []dashboard.BackupRun{
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Nights: []dashboard.BackupRun{
 		{At: at.Add(12 * time.Hour), Error: "the backup folder is not there"},
 		{At: at, Snapshot: "bbbb2222ffffffff", BytesAdded: 301 << 10},
 		{At: at.Add(-48 * time.Hour), Error: "older, and not shown"},
@@ -469,7 +499,8 @@ func TestTheBackupsCard(t *testing.T) {
 // not -- each with a Restore into the confirmation. One no longer in the folder is not found.
 func TestABackupsDetails(t *testing.T) {
 	r, c, port := backupRig(t)
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true})
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true})
 	answerByKind(port, "")
 	page := r.get(t, "/backup/bbbb2222", c)
 	for _, want := range []string{"Backup of Fri 30 Oct, 02:00", "Made by this machine.", "It added 301 kB, and holds 3.0 GB of data.",
@@ -499,7 +530,8 @@ func TestABackupsDetails(t *testing.T) {
 // follows it while it runs, says how it ended once, and is a list again.
 func TestARestoreFromTheBackupConfirmsThenRuns(t *testing.T) {
 	r, c, port := backupRig(t)
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true})
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true})
 	answerByKind(port, "restored from the backup, as it was at Fri 30 Oct 2026, 01:34:00, code too")
 
 	body := bodyOf(t, postForm(t, r, "/backup/restore", c, url.Values{"backup": {"bbbb2222"}, "app": {"home-assistant"}}))
@@ -562,7 +594,8 @@ func TestARestoreFromTheBackupConfirmsThenRuns(t *testing.T) {
 // A restore that fails says why, and stays said until the next restore of that app.
 func TestAFailedRestoreFromTheBackupSaysWhy(t *testing.T) {
 	r, c, port := backupRig(t)
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true, Key: testKey, KeySaved: true})
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/home/ana/Briard Backup", On: true})
 	answerByKind(port, "")
 	postForm(t, r, "/backup/restore", c, url.Values{"backup": {"bbbb2222"}, "app": {"mosquitto"}, "when": {"Fri 30 Oct, 02:00"}, "confirm": {"yes"}})
 	var cardBody string
@@ -583,7 +616,8 @@ func TestAFailedRestoreFromTheBackupSaysWhy(t *testing.T) {
 // A new install's folder holds no backup until the first run: the card says so, and offers none.
 func TestTheBackupsCardOfAFolderWithNoBackupYet(t *testing.T) {
 	r, c, port := backupRig(t)
-	r.hostBacksUp(t, dashboard.Backup{Folder: "/var/lib/briard/backup", On: true, Key: testKey, KeySaved: true})
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: "/var/lib/briard/backup", On: true})
 	go func() {
 		for range port.waiting {
 			port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: "[]"}
@@ -602,11 +636,13 @@ func TestAMoveComesBackToThePageShowingIt(t *testing.T) {
 	r, c, port := backupRig(t)
 	r.app.viewWait = 5 * time.Second
 	const old, to = "/home/ana/Briard Backup", "/home/ana/Dropbox/Briard Backup"
-	r.hostBacksUp(t, dashboard.Backup{Folder: old, On: true, Key: testKey, KeySaved: true})
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: old, On: true})
 	port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: "backups are now stored in " + to}
 	go func() {
 		time.Sleep(500 * time.Millisecond) // the host's next tick
-		raw, _ := json.Marshal(dashboard.Backup{Folder: to, On: true, Key: testKey, KeySaved: true, Previous: old})
+		r.keyOnVolume(t, testKey, true)
+		raw, _ := json.Marshal(dashboard.Backup{Folder: to, On: true, Previous: old})
 		_ = os.WriteFile(r.app.backupPath, raw, 0o600)
 	}()
 	if resp := r.form("/backup/folder", c, url.Values{"folder": {to}}); resp.StatusCode != http.StatusSeeOther {

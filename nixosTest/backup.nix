@@ -58,6 +58,9 @@ pkgs.testers.runNixOSTest {
     node1.succeed("systemctl start drbd-reactor.service")
     node1.wait_until_succeeds("drbdadm role r0 | grep -q Primary", timeout=60)
     node1.wait_until_succeeds("systemctl is-active briard-primary-storage.service", timeout=120)
+    # The mount minted the key before anything asked for it: the page only reads it, from here.
+    minted = node1.succeed("cat /var/lib/briard/.backup-key").strip()
+    assert minted, "the mount minted no key"
     install_fixture(node1)
 
     # The person's folder, made as them -- what the installer does -- and the store serving it.
@@ -101,7 +104,8 @@ pkgs.testers.runNixOSTest {
     node1.succeed(f"head -c 8M /dev/urandom > {unversioned}/backups/ha.tar")
     sample("first")
     first = backup()
-    # The key was minted on the volume by that first run, for the household alone.
+    # The run used the key the mount minted, which is for the household alone.
+    assert node1.succeed("cat /var/lib/briard/.backup-key").strip() == minted, "the run minted a second key"
     assert node1.succeed("stat -c %a /var/lib/briard/.backup-key").strip() == "600", "the key is not 0600"
     # Between the two: the app's data went in, and the tarball did not.
     assert 4 << 20 < first["bytesAdded"] < 8 << 20, f"the first night added {first['bytesAdded']} bytes"

@@ -69,18 +69,22 @@ var backups struct {
 // needs the key without the volume (the run, a restore and the page all stand on it mounted), and
 // a household whose volume is gone has only the copy it saved.
 //
-// Minted only where the volume is mounted (anywhere else the path is the empty mountpoint) and
-// only when the file is absent, never when it cannot be read: a new key over an unreadable old one
-// would orphan every snapshot the old one opens. Synced like .vip-address, as the next promotion
-// may follow a power cut. Under one mutex, because the nightly run and the page's read may both
-// find no key at once, and two minted keys would leave the repository opened under one the volume
-// does not hold. Base32 in groups of four: a person copies it by hand from the dashboard, and 160
+// Minted when the volume is mounted on the node that promoted (PrimaryStorage), so the dashboard,
+// which reads the file itself, has a key to show from the page's first open; anything that needs
+// the key before that mints it too. Only where the volume is mounted (anywhere else the path is
+// the empty mountpoint) and only when the file is absent, never when it cannot be read: a new key
+// over an unreadable old one would orphan every snapshot the old one opens. Synced like
+// .vip-address, as the next promotion may follow a power cut. Under one mutex, because two of the
+// agent's own asks (a run, a restore) may both find no key at once, and two minted keys would
+// leave the repository opened under one the volume does not hold. The mount's mint runs in its
+// own process, which the mutex does not reach; nothing races it, because it is the first member of
+// the chain and nothing else stands on the volume until it has finished. Base32 in groups of four: a person copies it by hand from the dashboard, and 160
 // bits read aloud is eight short groups.
 const (
-	backupKeyFile = dataMountRoot + "/.backup-key"
+	backupKeyFile = dashboard.BackupKeyPath
 	// backupKeySavedFile marks that the household said it has a copy of the key elsewhere -- the
 	// household's word, so the flock's, like the key it is about.
-	backupKeySavedFile = dataMountRoot + "/.backup-key-saved"
+	backupKeySavedFile = dashboard.BackupKeySavedPath
 )
 
 var backupKeyMu sync.Mutex

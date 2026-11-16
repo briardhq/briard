@@ -175,7 +175,6 @@ func setBackup(cfg Config, g *fakeBackup, key, value string) api.DirectiveOutcom
 func TestTheBackupTurnsOffAndBackOn(t *testing.T) {
 	folder := filepath.Join(t.TempDir(), "Briard Backup")
 	cfg, g := liveBackup(t, folder)
-	ctx := context.Background()
 	if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Folder = folder }); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +190,7 @@ func TestTheBackupTurnsOffAndBackOn(t *testing.T) {
 	if cfg.backupFolder() != "" {
 		t.Fatal("off did not take effect")
 	}
-	if v := cfg.backupView(ctx, &viewGuest{fakeStatus: fakeStatus{backup: g}}); v.On || v.Folder != folder {
+	if v := cfg.backupView(); v.On || v.Folder != folder {
 		t.Fatalf("off view %+v, want off and the folder it returns to", v)
 	}
 
@@ -205,10 +204,11 @@ func TestTheBackupTurnsOffAndBackOn(t *testing.T) {
 		t.Fatalf("config after on:\n%s", b)
 	}
 
-	if v := cfg.backupView(ctx, &viewGuest{fakeStatus: fakeStatus{backup: g}}); v.KeySaved {
+	if g.key.Saved {
 		t.Fatal("saved before anyone said so")
 	}
-	if o := setBackup(cfg, g, settingBackupKeySaved, "yes"); o.State != api.OutcomeDone || !cfg.backupView(ctx, &viewGuest{fakeStatus: fakeStatus{backup: g}}).KeySaved {
+	// The household's word goes to the volume, through the guest; the page reads it there.
+	if o := setBackup(cfg, g, settingBackupKeySaved, "yes"); o.State != api.OutcomeDone || !g.key.Saved {
 		t.Fatalf("saved: %+v", o)
 	}
 	if o := setBackup(cfg, g, "vip", "dhcp"); o.State != "not-a-backup-setting" {
@@ -219,8 +219,7 @@ func TestTheBackupTurnsOffAndBackOn(t *testing.T) {
 // With no folder ever recorded, on goes to the agent's own -- and the view says so while off.
 func TestTheBackupWithNoFolderGoesToTheAgentsOwn(t *testing.T) {
 	cfg, g := liveBackup(t, "")
-	ctx := context.Background()
-	if v := cfg.backupView(ctx, &viewGuest{fakeStatus: fakeStatus{backup: g}}); v.On || v.Folder != defaultBackupDir {
+	if v := cfg.backupView(); v.On || v.Folder != defaultBackupDir {
 		t.Fatalf("view %+v, want off, returning to %s", v, defaultBackupDir)
 	}
 	if o := setBackup(cfg, g, settingBackupDir, "/somewhere/else"); o.State != api.OutcomeFailed {
@@ -242,35 +241,27 @@ func TestTheGuestMayAskForTheBackupSettingsOnly(t *testing.T) {
 	}
 }
 
-// The page is told the key the volume holds -- the guest's, minted there the first time it is
-// asked -- and told again only when the view moved; a guest with no volume mounted gives the page
-// a view without the key, not no view.
+// The page is told the host's view, and told again only when it moved. Not the key: the page reads
+// that from the volume, and the slice of the guest the push takes cannot ask for it.
 func TestThePageIsToldTheViewWhenItMoves(t *testing.T) {
 	cfg, g := liveBackup(t, "/f")
 	ctx := context.Background()
 	vg := &viewGuest{fakeStatus: fakeStatus{backup: g}}
 	pushed := ""
 	cfg.pushBackupView(ctx, vg, nil, &pushed, quiet)
-	if len(vg.views) != 1 || vg.views[0].Key != g.key.Key || vg.views[0].Key == "" || !vg.views[0].On || vg.views[0].KeySaved {
+	if len(vg.views) != 1 || !vg.views[0].On || vg.views[0].Folder != "/f" {
 		t.Fatalf("first push %+v", vg.views)
 	}
 	cfg.pushBackupView(ctx, vg, nil, &pushed, quiet)
 	if len(vg.views) != 1 {
 		t.Fatal("an unchanged view was pushed again")
 	}
-	if o := setBackup(cfg, g, settingBackupKeySaved, "yes"); o.State != api.OutcomeDone {
-		t.Fatalf("saved: %+v", o)
+	if o := setBackup(cfg, g, settingBackupDir, ""); o.State != api.OutcomeDone {
+		t.Fatalf("off: %+v", o)
 	}
 	cfg.pushBackupView(ctx, vg, nil, &pushed, quiet)
-	if len(vg.views) != 2 || !vg.views[1].KeySaved {
-		t.Fatalf("the acknowledgement did not reach the page: %+v", vg.views)
-	}
-
-	none := &viewGuest{fakeStatus: fakeStatus{}} // no volume here: the verb fails
-	pushed = ""
-	cfg.pushBackupView(ctx, none, nil, &pushed, quiet)
-	if len(none.views) != 1 || none.views[0].Key != "" || !none.views[0].On {
-		t.Fatalf("push with no key %+v", none.views)
+	if len(vg.views) != 2 || vg.views[1].On {
+		t.Fatalf("turning it off did not reach the page: %+v", vg.views)
 	}
 }
 
@@ -357,7 +348,6 @@ func TestTheBackupMoves(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, g := liveBackup(t, old)
-	ctx := context.Background()
 	if err := cfg.updateBackupRecord(func(r *backupRecord) { r.Folder = old }); err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +359,7 @@ func TestTheBackupMoves(t *testing.T) {
 	if o := setBackup(cfg, g, settingBackupDir, moved); o.State != api.OutcomeDone || cfg.backupFolder() != moved {
 		t.Fatalf("move: %+v, folder %q", o, cfg.backupFolder())
 	}
-	if v := cfg.backupView(ctx, &viewGuest{fakeStatus: fakeStatus{backup: g}}); v.Folder != moved || v.Previous != old {
+	if v := cfg.backupView(); v.Folder != moved || v.Previous != old {
 		t.Fatalf("view %+v, want the new folder and the old one named", v)
 	}
 	if b, _ := os.ReadFile(os.Getenv("BRIARD_CONFIG")); !strings.Contains(string(b), "BACKUP_DIR="+moved+"\n") {

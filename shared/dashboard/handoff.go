@@ -255,9 +255,18 @@ const ContactStampPath = "/run/briard/.host-contact"
 
 // BackupPath is where the host keeps the dashboard told about the household's backup: written
 // through `dashboard.backup` whenever the host's view changes and at the start of every
-// connection, for the reason CasaPath is. It holds the repository key, so it lives in Dir, which
-// no workload sees, and the page shows it only to a trusted device.
+// connection, for the reason CasaPath is.
 const BackupPath = Dir + "/backup.json"
+
+// The repository key is not in the host's view: it lives on the replicated volume, where the
+// guest agent mints it when the volume first comes up on a serving node and where the dashboard,
+// on the same volume, reads it when it shows the Backup page. The host acts on the backup, never
+// on the key, so the key does not cross to it. BackupKeySavedPath exists once the household said
+// it has a copy of the key somewhere else. The page shows either only to a trusted device.
+const (
+	BackupKeyPath      = "/var/lib/briard/.backup-key"
+	BackupKeySavedPath = "/var/lib/briard/.backup-key-saved"
+)
 
 // Backup is that file's content: the host's view of the nightly backup, for the page.
 type Backup struct {
@@ -268,10 +277,6 @@ type Backup struct {
 	// Previous is the folder the backups went to before the household moved them: still holding
 	// the earlier backups, never touched again, theirs to delete. "" when never moved.
 	Previous string `json:"previous,omitempty"`
-	// Key is the repository key, the household's key of record; "" until the agent mints it.
-	Key string `json:"key,omitempty"`
-	// KeySaved is the household saying it has a copy of the key somewhere else.
-	KeySaved bool `json:"keySaved"`
 	// Nights are the recent finished runs, newest first; empty until there has been one.
 	Nights []BackupRun `json:"nights,omitempty"`
 	// OffsiteIn is the sync client whose folder holds the backup folder, by the name it gives

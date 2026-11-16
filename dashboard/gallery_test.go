@@ -78,7 +78,8 @@ func everyday(t *testing.T, r *rig) {
 	r.ha.mu.Unlock()
 	r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: galleryName, Email: "ana@example.org",
 		CertUntil: galleryClock.Add(80 * 24 * time.Hour), Resolves: dashboard.CasaResolves})
-	r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: galleryNights(t, "")})
+	r.keyOnVolume(t, testKey, true)
+	r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Nights: galleryNights(t, "")})
 	r.contact(t, galleryClock)
 	r.hostPushes(t, []notify.Record{
 		galleryAlert(-3*24*time.Hour, "clock", notify.Open, notify.Warning, "Clock not synchronised", "The machine's clock is 4 minutes off and no time server answers."),
@@ -206,7 +207,8 @@ var galleryStates = []galleryState{
 	{"home-first-open", "The first open after the install: Home Assistant ready for its first open, the name offered, the backup's key not yet saved, this laptop the only device.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{Name: galleryName})
-			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey})
+			r.keyOnVolume(t, testKey, false)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true})
 			r.contact(t, galleryClock)
 			r.hostPushes(t, nil)
 			return home(t, r, c, port)
@@ -245,7 +247,8 @@ var galleryStates = []galleryState{
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			notInstalled(t, r)
 			r.hostSays(t, dashboard.Casa{Name: galleryName})
-			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey})
+			r.keyOnVolume(t, testKey, false)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true})
 			r.contact(t, galleryClock)
 			r.hostPushes(t, nil)
 			return home(t, r, c, port)
@@ -358,13 +361,15 @@ var galleryStates = []galleryState{
 	{"backup-off", "The nightly backup turned off; the folder kept.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
-			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, Key: testKey, KeySaved: true, Nights: galleryNights(t, "")})
+			r.keyOnVolume(t, testKey, true)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, Nights: galleryNights(t, "")})
 			return backup(t, r, c, port)
 		}},
 	{"backup-failed-night", "Last night did not finish; the earlier backups are in another folder.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
-			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, Previous: "/home/ana/Old Briard Backup", On: true, Key: testKey, KeySaved: true,
+			r.keyOnVolume(t, testKey, true)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, Previous: "/home/ana/Old Briard Backup", On: true,
 				Nights: galleryNights(t, "the backup folder is not there")})
 			return backup(t, r, c, port)
 		}},
@@ -373,7 +378,8 @@ var galleryStates = []galleryState{
 			everyday(t, r)
 			nights := galleryNights(t, "the folder holds a backup made with another key")
 			nights[0].WrongKey = true
-			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: nights})
+			r.keyOnVolume(t, testKey, true)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Nights: nights})
 			return backup(t, r, c, port)
 		}},
 	{"backup-asked-refused", "The host refused the last thing asked of the card (a folder it will not use).",
@@ -388,7 +394,8 @@ var galleryStates = []galleryState{
 	{"backup-running", "A backup running now: the Schedule follows it.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
-			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: galleryNights(t, ""), Running: galleryClock.Add(-2 * time.Minute)})
+			r.keyOnVolume(t, testKey, true)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Nights: galleryNights(t, ""), Running: galleryClock.Add(-2 * time.Minute)})
 			return backup(t, r, c, port)
 		}},
 	{"backup-now-done", "Back up now has ended: said once, what it added.",
@@ -397,13 +404,15 @@ var galleryStates = []galleryState{
 			port.answer <- api.DirectiveOutcome{State: api.OutcomeDone}
 			r.form("/backup/now", c, nil)
 			nights := append([]dashboard.BackupRun{{At: galleryClock, Snapshot: "now", BytesAdded: 301 << 10}}, galleryNights(t, "")...)
-			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: nights, Ended: &dashboard.BackupEnd{Started: galleryClock}})
+			r.keyOnVolume(t, testKey, true)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Nights: nights, Ended: &dashboard.BackupEnd{Started: galleryClock}})
 			return backup(t, r, c, port)
 		}},
 	{"backup-linux", "On Linux: Briard cannot tell whether the folder is copied off the machine.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
-			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: galleryNights(t, ""), OffsiteUnknown: true})
+			r.keyOnVolume(t, testKey, true)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Nights: galleryNights(t, ""), OffsiteUnknown: true})
 			return backup(t, r, c, port)
 		}},
 	{"backup-list", "The Backups card rendered in the page (no script): a failed run, this household's backup, an earlier install's.",
@@ -412,7 +421,8 @@ var galleryStates = []galleryState{
 			nights := galleryNights(t, "")
 			nights[0].Snapshot = "bbbb2222"
 			nights = append([]dashboard.BackupRun{{At: time.Date(2026, 10, 30, 14, 0, 0, 0, time.Local), Error: "the backup folder is not there"}}, nights...)
-			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey, KeySaved: true, Nights: nights})
+			r.keyOnVolume(t, testKey, true)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Nights: nights})
 			answerByKind(port, "")
 			return "/backup?list", c
 		}},
@@ -463,7 +473,8 @@ var galleryStates = []galleryState{
 	{"address-first-open", "The web address page on the first open: the name offered, nothing registered.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			r.hostSays(t, dashboard.Casa{Name: galleryName})
-			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey})
+			r.keyOnVolume(t, testKey, false)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true})
 			return address(t, r, c, port)
 		}},
 	{"address-everyday", "The web address page most mornings: registered, resolving, the certificate good.",
@@ -534,7 +545,8 @@ var galleryStates = []galleryState{
 		}},
 	{"backup-first-open", "The backup page on the first open: no night yet, the key not yet saved.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
-			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true, Key: testKey})
+			r.keyOnVolume(t, testKey, false)
+			r.hostBacksUp(t, dashboard.Backup{Folder: galleryFolder, On: true})
 			return backup(t, r, c, port)
 		}},
 	{"devices-everyday", "The trusted devices page most mornings: this laptop and a phone.",

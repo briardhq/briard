@@ -198,8 +198,9 @@ type app struct {
 	// stamp of the host's last request, which says whether that copy is still current.
 	alertsPath, contactPath string
 	// backupPath is the host's view of the nightly backup (backup.go); backupAsked the host's
-	// refusal of the last thing asked from that card.
-	backupPath, backupAsked string
+	// refusal of the last thing asked from that card; backupKeyPath and backupKeySavedPath the key
+	// and the household's word on it, on the volume.
+	backupPath, backupAsked, backupKeyPath, backupKeySavedPath string
 	// backupNow is the run Back up now asked for, until the page has said how it ended (backup.go).
 	backupNow *backupNowOp
 	// catalogPath is the host's view of the catalog's index (catalog.go): every card's text and
@@ -222,7 +223,7 @@ func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
 	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now, viewWait: 15 * time.Second,
 		pending: map[string]*pending{}, hops: map[string]hop{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
 		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths, casaPath: dashboard.CasaPath,
-		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath, backupPath: dashboard.BackupPath, catalogPath: dashboard.CatalogPath, snapshotsPath: quadlet.SnapshotsDir}
+		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath, backupPath: dashboard.BackupPath, backupKeyPath: dashboard.BackupKeyPath, backupKeySavedPath: dashboard.BackupKeySavedPath, catalogPath: dashboard.CatalogPath, snapshotsPath: quadlet.SnapshotsDir}
 }
 
 const (

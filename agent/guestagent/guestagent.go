@@ -471,7 +471,8 @@ const (
 	// the store records something and at the start of every connection; the store stays the host's.
 	verbDashboardAlerts = "dashboard.alerts"
 	// dashboard.backup writes the host's view of the nightly backup for the page -- the folder,
-	// whether it runs, the last night and the key -- pushed the same way; the key stays the host's.
+	// whether it runs, the last nights -- pushed the same way. Not the key: the page reads that
+	// from the volume (dashboard.BackupKeyPath).
 	verbDashboardBackup = "dashboard.backup"
 	// dashboard.catalog writes the host's view of the catalog's index for the page -- every
 	// listed app, which are installable and which the household wished for -- pushed the same
@@ -1402,13 +1403,6 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			tmp := path + ".new"
 			if err := x.WriteFile(tmp, raw); err != nil {
 				return nil, fmt.Errorf("%s: %w", verb, err)
-			}
-			if verb == verbDashboardBackup {
-				// It carries the household's key: 0600, as the handoff's code is, and not only
-				// behind the directory's mode.
-				if out, err := x.Run(ctx, "chmod", "0600", tmp); err != nil {
-					return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))
-				}
 			}
 			if out, err := x.Run(ctx, "mv", "-f", tmp, path); err != nil {
 				return nil, fmt.Errorf("%s: %w: %s", verb, err, strings.TrimSpace(string(out)))

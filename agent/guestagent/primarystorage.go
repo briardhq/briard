@@ -3,6 +3,7 @@ package guestagent
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"briard.io/agent/quadlet"
@@ -77,7 +78,18 @@ func PrimaryStorage(ctx context.Context, x Executor) error {
 	// First use: the snapshots dir. Idempotent. An app's own data subvolume is created when
 	// that app is installed (the guest's renderer makes it), so a node nobody has given a
 	// workload to mounts an empty volume -- which is the honest state of one.
-	return run("mkdir", "-p", snapshotsDir())
+	if err := run("mkdir", "-p", snapshotsDir()); err != nil {
+		return err
+	}
+	// The backup's key, minted on the first mount and only read after: the dashboard reads the
+	// file itself when it shows the Backup page (backupKey says why the volume holds it). Logged
+	// rather than failed: a volume that cannot take one small write fails the members after this
+	// one anyway, and a key is no reason to hand the household's apps to another node; the nightly
+	// run mints it too, and reports what stopped it.
+	if _, err := backupKey(ctx, x); err != nil {
+		log.Printf("backup: no repository key yet: %v", err)
+	}
+	return nil
 }
 
 // quotaMode is the mounted volume's quota mode as the kernel states it: `squota`, `qgroup`, or an

@@ -5,10 +5,11 @@ package main
 // where the folder is (Folder, with whether it has left this machine).
 //
 // The page decides nothing, as with the name. It shows the host's view, pushed into
-// dashboard.BackupPath through the guest (the host holds the key and runs the backup; the guest is
-// disposable), and asks through the admin port, which the host applies and answers: the backup
-// off or on, "I have saved the key" and a found backup's key adopted as config-sets, a run now, a
-// folder read and then moved, the list and a restore. The key matters most: a backup whose key
+// dashboard.BackupPath through the guest (the host runs the backup; the guest is disposable), and
+// the key with the household's word on it, read from the volume itself (dashboard.BackupKeyPath:
+// the host never needs the key, so it never carries it). It asks through the admin port, which
+// the host applies and answers: the backup off or on, "I have saved the key" and a found backup's
+// key adopted as config-sets, a run now, a folder read and then moved, the list and a restore. The key matters most: a backup whose key
 // died with the machine is worse than none, because the household believed it was covered. So the
 // key is on the page, and until the household says it has a copy elsewhere, the page says plainly
 // the backup is only as safe as this machine -- Home Assistant's emergency-kit gate, made a
@@ -72,8 +73,9 @@ type backupNowOp struct {
 	Before time.Time
 }
 
-// backupState reads the host's view. Nil until the host has said anything -- a guest the host
-// never told (an older host) shows no card rather than an empty one.
+// backupState reads the host's view, and the key beside it on the volume. Nil until the host has
+// said anything -- a guest the host never told (an older host) shows no card rather than an empty
+// one. A key not minted yet reads as none, and the card says so.
 func (a *app) backupState() *backupView {
 	raw, err := os.ReadFile(a.backupPath)
 	if err != nil {
@@ -83,8 +85,13 @@ func (a *app) backupState() *backupView {
 	if err := json.Unmarshal(raw, &h); err != nil {
 		return nil
 	}
-	v := &backupView{Folder: h.Folder, On: h.On, Key: h.Key, KeySaved: h.KeySaved, OffsiteIn: h.OffsiteIn,
+	v := &backupView{Folder: h.Folder, On: h.On, OffsiteIn: h.OffsiteIn,
 		OffsiteSynced: h.OffsiteSynced, OffsiteUnknown: h.OffsiteUnknown, nights: h.Nights}
+	if k, err := os.ReadFile(a.backupKeyPath); err == nil {
+		v.Key = strings.TrimSpace(string(k))
+	}
+	_, err = os.Stat(a.backupKeySavedPath)
+	v.KeySaved = err == nil
 	if h.Previous != h.Folder {
 		v.Previous = h.Previous
 	}
