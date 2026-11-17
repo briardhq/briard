@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,7 +165,9 @@ const uninstallKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Briard
 // console of its own, where it confirms and reports in windows (runUninstall). A wrapper that
 // asked for elevation itself would be what UAC names instead. The quiet form is what a package
 // manager runs, elevated already. The version listed is the running agent's, rewritten at every
-// start (listVersion): the agent updates itself, so one written only here would go stale.
+// start (listEntry): the agent updates itself, so one written only here would go stale. So is the
+// size. The date is the install's, which is what Windows means by it. The help link is where a
+// user asks for help.
 func registerUninstall(exe, prefix string) error {
 	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, uninstallKey, registry.SET_VALUE)
 	if err != nil {
@@ -179,6 +182,9 @@ func registerUninstall(exe, prefix string) error {
 		{"InstallLocation", prefix},
 		{"UninstallString", windows.EscapeArg(exe) + " uninstall"},
 		{"QuietUninstallString", windows.EscapeArg(exe) + " uninstall -yes"},
+		{"InstallDate", time.Now().Format("20060102")},
+		{"HelpLink", "https://github.com/briardhq/briard/discussions"},
+		{"URLInfoAbout", "https://briard.io"},
 	} {
 		if err := k.SetStringValue(v[0], v[1]); err != nil {
 			return err
@@ -700,10 +706,13 @@ func StartAgent(ctx context.Context, logf func(string, ...any)) error {
 	return err
 }
 
-// listVersion keeps Installed apps' version the running agent's: the entry is the install's, and
-// an update that replaced the agent left the old number in it. Only an entry that exists is
-// written -- an agent run outside an install lists nothing.
-func listVersion(version string) error {
+// listEntry keeps Installed apps' version the running agent's and its size the tree's: the entry
+// is the install's, an update that replaced the agent left the old number in it, and the size
+// grows with the apps and the data the household keeps. The size is the whole tree, state\
+// included, since that is the disk Briard takes, and the number someone looking for what fills
+// their disk needs. Only an entry that exists is written -- an agent run outside an install
+// lists nothing.
+func listEntry(version string) error {
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, uninstallKey, registry.QUERY_VALUE|registry.SET_VALUE)
 	if errors.Is(err, registry.ErrNotExist) {
 		return nil
@@ -712,10 +721,25 @@ func listVersion(version string) error {
 		return err
 	}
 	defer k.Close()
-	if have, _, err := k.GetStringValue("DisplayVersion"); err == nil && have == version {
-		return nil
+	if have, _, err := k.GetStringValue("DisplayVersion"); err != nil || have != version {
+		if err := k.SetStringValue("DisplayVersion", version); err != nil {
+			return err
+		}
 	}
-	return k.SetStringValue("DisplayVersion", version)
+	var size int64
+	if err := filepath.WalkDir(prefixDir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil // what cannot be read is not counted: a size, not a gate
+		}
+		if info, err := d.Info(); err == nil {
+			size += info.Size()
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	// EstimatedSize is in KiB, a DWORD.
+	return k.SetDWordValue("EstimatedSize", uint32(min(size/1024, math.MaxUint32)))
 }
 
 // startMenuPath is the all-users Start menu's entry for briard.
