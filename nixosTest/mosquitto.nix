@@ -201,13 +201,12 @@ pkgs.testers.runNixOSTest {
     got = other.succeed(sub).strip()
     assert got == "before-restart", f"an appliance on another subnet got no MQTT: {got!r}"
     # The control: the same request with the reply routing withdrawn (the script briard-vip-up
-    # installs it with, run as briard-vip-down runs it) must fail, or the pass above proved nothing.
-    route = primary.succeed(
-        "grep -o '/nix/store/[^ ]*-briard-vip-reply-route' "
-        "$(systemctl show -P ExecStart briard-vip | grep -o '/[^ ;]*briard-vip-up' | head -1)").strip()
-    primary.succeed(f"set -a; . /run/briard/vip.env; {route} down")
+    # installs it with, laid beside it by the agent, run as briard-vip-down runs it) must fail, or
+    # the pass above proved nothing.
+    route = "/run/briard/scripts/briard-vip-reply-route"
+    primary.succeed(f"set -a; . /run/briard/vip.env; PATH=/etc/briard/tools/bin {route} down")
     other.fail(sub)
-    primary.succeed(f"set -a; . /run/briard/vip.env; {route} up")
+    primary.succeed(f"set -a; . /run/briard/vip.env; PATH=/etc/briard/tools/bin {route} up")
     got = other.succeed(sub).strip()
     assert got == "before-restart", f"the reply routing did not come back: {got!r}"
     print("an appliance on another subnet reached MQTT; withdrawn, it did not")

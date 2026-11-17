@@ -1,0 +1,30 @@
+#!/etc/briard/tools/bin/bash
+# Only a node that holds the resource may hand it on; without this guard the standby masks itself
+# on every boot. Measured: a member whose start job fails with result `dependency` fires
+# `OnFailure=` exactly like one that failed on its own, and on the node that loses the promotion
+# race every member does ("Multiple primaries not allowed by config" -> drbd-promote@ fails ->
+# "Dependency failed for ..." -> "Triggering OnFailure= dependencies"). The loser would run the
+# hold and mask itself for all of it: at 300s, a standby that cannot take over for five minutes
+# after a boot.
+#
+# ⚠️ On a lone node the guard is always met: no loser to protect and nobody else who could hold the
+# volume, so every member failure is this node's own to hold -- and to restart from
+# (briard-hold-restart).
+#
+# The topology word decides (node storage writes it). A missing word means "node storage has not
+# run on this boot" and an unknown one names itself rather than guessing. Both fail the step, and
+# what that means is the unit's to say (ExecCondition skips, ExecStartPre escalates).
+set -u
+if [ ! -r /run/briard/topology.env ]; then
+  echo "briard-hold-only-if-holding: no /run/briard/topology.env; node storage has not run on this boot" >&2
+  exit 1
+fi
+. /run/briard/topology.env
+case "${BRIARD_TOPOLOGY:-}" in
+  flock) drbdadm role r0 | grep -q '^Primary' ;;
+  alone) exit 0 ;;
+  *)
+    echo "briard-hold-only-if-holding: /run/briard/topology.env says '$BRIARD_TOPOLOGY', which is neither flock nor alone" >&2
+    exit 1
+    ;;
+esac

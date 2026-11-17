@@ -1,0 +1,31 @@
+#!/etc/briard/tools/bin/bash
+# Force a RENEW on a ten-minute timer, independently of the lease term.
+#
+# Not a shorter lease: asking for one (`-l`) is the wrong lever twice over. The term is the
+# server's to choose, so on a CPE that ignores a client's option 51 the flag is a silent no-op
+# we would believe had worked; where honoured, a short lease turns --lastleaseextend (a knowing
+# RFC 2131 3.7 violation kept as an exceptional safety net) into the routine state for the length
+# of any router blip. We want the lease long and the renewal frequent, and nothing in RFC 2131
+# makes a client wait for T1.
+#
+# It buys a shorter silence, not a firmer grip. A CPE reboot, the household's usual fix for
+# anything, commonly loses the lease table, and a client sitting BOUND says nothing until T1 --
+# at a router's usual 12-24h term, hours in which a fresh DISCOVER from any device can be handed
+# the address we think is ours. Ten minutes bounds that window; on dnsmasq a renewal against a
+# server that lost its table is ACKed, so the binding is recreated, not merely found gone. And
+# where we lost it anyway, a NAK inside ten minutes drives the address-changed path that a
+# briard.casa name depends on.
+#
+# ⚠️ The guard is the point of this script. `dhcpcd -N`'s documented behaviour with no instance
+# running is "starts up as normal", and measured: against an idle interface it forked a client
+# and took an address. On a standby, whose service NIC must have no LAN presence, that would put
+# a DHCP client on it claiming an address the flock's primary owns. The agent-written units
+# (agent/guestagent/units.go) already make it unreachable, since the timer lives and dies with
+# briard-vip; the guard keeps a hand-run `systemctl start` safe too.
+set -eu
+pidfile="$(dhcpcd -P "$VIP_DEV")"
+if [ ! -s "$pidfile" ] || ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+  echo "briard-vip-renew: nothing is holding $VIP_DEV; declining to start a client" >&2
+  exit 0
+fi
+exec dhcpcd -N "$VIP_DEV"

@@ -1,0 +1,10 @@
+#!/etc/briard/tools/bin/bash
+# `ip` wants the prefix, `arping` the bare address: stripped here rather than carried twice,
+# because two variables can disagree and the one that would silently win is the gratuitous ARP
+# nobody is watching. Read from the live file, not the unit environment: this runs as
+# ExecStartPost of the unit that resolved the address, and whether systemd re-reads an
+# EnvironmentFile between ExecStart and ExecStartPost must not be the reason a gratuitous ARP
+# names the wrong address. Sourcing it is one line and no assumption.
+set -eu
+. /run/briard/vip.live
+exec arping -A -c 1 -I "$VIP_DEV" "${VIP_ADDR%%/*}"

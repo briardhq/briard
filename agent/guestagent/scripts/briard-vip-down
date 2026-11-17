@@ -1,0 +1,52 @@
+#!/etc/briard/tools/bin/bash
+# Give the address back -- to the flock, not to the pool. -x exits the lease holder without
+# releasing (-k releases): a release hands the address to the router to give away before the
+# peer can claim it, the one thing a floating service address must never do.
+set -u
+# Captured before sourcing the live file, which sets VIP_ADDR to what we actually claimed.
+# Different questions: what we were configured with decides whether this NIC is ours alone;
+# what we claimed decides which address to withdraw.
+configured="${VIP_ADDR:-}"
+live=""
+if [ -r /run/briard/vip.live ]; then
+  . /run/briard/vip.live
+  live="${VIP_ADDR:-}"
+fi
+[ -n "$live" ] || live="$configured"
+dhcpcd -x "$VIP_DEV" >/dev/null 2>&1 || true
+if [ -n "$live" ]; then
+  ip addr del "$live" dev "$VIP_DEV" || true
+fi
+# The multicast route goes with the address it was added beside (briard-vip-up).
+ip route del 224.0.0.0/4 dev "$VIP_DEV" 2>/dev/null || true
+"${0%/*}/briard-vip-reply-route" down
+rm -f /run/briard/vip.live
+# Take the NIC down when it is ours alone. The MAC on a dedicated service NIC is flock-scoped,
+# so shared with the peer, and a Secondary holding it up teaches the switch the wrong port for
+# the VIP the moment it emits any frame (an IPv6 RS, an mDNS query), and traffic for the
+# service address then goes to the node that is not serving. The wrong-port class is silent:
+# nothing is down, the address is gone, and the packets still vanish.
+#
+# ⚠️ The question is the device, not where the address came from. "Down only under DHCP"
+# ("static address => the NIC is shared => leave it up") is a proxy for the thing actually
+# feared: the agent-less harnesses set VIP_DEV=eth1, the DRBD NIC, where a link-down takes
+# replication with it. On a shipped node the proxy is false: a household that sets BRIARD_VIP
+# (documented, supported) gets VIP_DEV=eth2, a dedicated service NIC shared with nothing
+# local, and under that rule every Secondary in the flock would keep the flock MAC up.
+#
+# ⚠️ Argued, not measured, and the distinction is not a formality. This makes the static path
+# behave like the DHCP path on a hazard the file already treats as real; the hazard biting is
+# not demonstrated. A wrong port needs a right port to exist, so it takes two nodes, and no
+# test in the tree moves work between two installed nodes; a one-node assertion passes
+# identically against fixed and unfixed guests, because a standby deletes the VIP address
+# either way and nobody answers ARP for an address they do not hold. Do not read the install
+# rigs' green as cover for this line.
+#
+# So ask whether this NIC is the system/DRBD NIC. net.configure writes SYSTEM_DEV beside
+# VIP_DEV, so a real node always knows; an agent-less harness never sets it and falls through
+# to the DHCP-only rule, the conservative answer for a NIC we cannot identify. The
+# `-z "$configured"` arm keeps every NIC that held a DHCP address coming down.
+if [ -z "$configured" ] || { [ -n "${SYSTEM_DEV:-}" ] && [ "$VIP_DEV" != "${SYSTEM_DEV}" ]; }; then
+  ip link set dev "$VIP_DEV" down || true
+fi
+exit 0

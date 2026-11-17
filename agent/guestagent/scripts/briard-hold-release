@@ -1,0 +1,21 @@
+#!/etc/briard/tools/bin/bash
+# The release. The unit marks this and the resets `-`: a hold that cannot tidy up must still end,
+# because leaving the mask on is the one outcome worse than releasing early.
+#
+# The topology word decides (node storage writes it). A missing word means "node storage has not
+# run on this boot" and an unknown one names itself rather than guessing. Both fail the step, and
+# what that means is the unit's to say (ExecCondition skips, ExecStartPre escalates).
+set -u
+if [ ! -r /run/briard/topology.env ]; then
+  echo "briard-hold-release: no /run/briard/topology.env; node storage has not run on this boot" >&2
+  exit 1
+fi
+. /run/briard/topology.env
+case "${BRIARD_TOPOLOGY:-}" in
+  flock) rm -f /run/systemd/system/drbd-services@r0.target; systemctl daemon-reload ;;
+  alone) : ;;
+  *)
+    echo "briard-hold-release: /run/briard/topology.env says '$BRIARD_TOPOLOGY', which is neither flock nor alone" >&2
+    exit 1
+    ;;
+esac

@@ -2067,8 +2067,15 @@ func TestReactorVerbsOnALoneNode(t *testing.T) {
 		if err := g.ReactorEvict(ctx, tc.keepMasked, tc.unmask); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		if !reflect.DeepEqual(f.runs, tc.want) {
-			t.Errorf("%s: ran %v, want %v", tc.name, f.runs, tc.want)
+		// The re-render's chmod of its scripts is WriteUnits' own (TestWriteUnitsLaysTheScripts).
+		var ran [][]string
+		for _, r := range f.runs {
+			if r[0] != "chmod" {
+				ran = append(ran, r)
+			}
+		}
+		if !reflect.DeepEqual(ran, tc.want) {
+			t.Errorf("%s: ran %v, want %v", tc.name, ran, tc.want)
 		}
 	}
 }

@@ -1,0 +1,52 @@
+#!/etc/briard/tools/bin/bash
+# The address-changed handler: one path for every cause (a NAK, a lease yielded to a host that
+# ARP-claimed it, a router that repooled while the flock had no primary), because "the address
+# changed" does not care why.
+#
+# It deliberately does not restart briard-vip, which would be wrong twice over: this hook runs
+# in briard-vip's own cgroup (dhcpcd was started from its ExecStart), so the restart would kill
+# the process asking for it, mid-flight; and it would put an ordinary address change through the
+# promoter chain -- a member whose failure trips OnFailure=briard-promotion-hold -- a
+# failover-shaped risk for a job that needs no chain. The reverse proxy binds :80 on every
+# interface and does not care what the address is; what does is the live file, the flock's
+# store, the ARP announcement and the name. The first three are done here; the name follows the
+# live file on its own (below). An expired lease needs nothing from this hook either: the
+# interface holds no address, net.vip reports "" as ground truth, and the node reads not-ready
+# by the rule that covers every other addressless data node.
+set -u
+case "${reason:-}" in
+  # The reasons that mean "we hold an address". TIMEOUT is --lastleaseextend doing its job:
+  # no server answered and we kept the lease, which is a non-event worth not reacting to.
+  BOUND|RENEW|REBIND|REBOOT|TIMEOUT|STATIC) ;;
+  *) exit 0 ;;
+esac
+[ -n "${new_ip_address:-}" ] || exit 0
+addr="${new_ip_address}/${new_subnet_cidr:-24}"
+
+# A RENEW confirming what we already hold is the common case and must be silent -- otherwise
+# every lease period would re-announce and bounce the name for no reason.
+cur=""
+if [ -r /run/briard/vip.live ]; then
+  . /run/briard/vip.live
+  cur="${VIP_ADDR:-}"
+fi
+[ "$addr" = "$cur" ] && exit 0
+
+# Withdraw the address we put on optimistically. dhcpcd removes the addresses it manages, but
+# the one applied at promotion from the flock's store is foreign to it: without this the NIC
+# holds two, and "the first address on the device" (how net.vip reads ground truth) becomes a
+# coin toss between the live one and a stale one.
+if [ -n "$cur" ]; then
+  ip addr del "$cur" dev "${interface}" || true
+fi
+ip addr replace "$addr" brd + dev "${interface}"
+printf 'VIP_ADDR=%s\n' "$addr" >/run/briard/vip.live
+# Synced like the promotion-time write: here the router hands us a different address, so the
+# stored value is actively wrong, and losing this write to the page cache leaves the flock
+# remembering an address it has already yielded. (vipLivePath is tmpfs: nothing to sync.)
+{ printf '%s\n' "$addr" >/var/lib/briard/.vip-address && sync -f /var/lib/briard/.vip-address; } 2>/dev/null || true
+VIP_DEV="${interface}" "${0%/*}/briard-vip-arping" || true
+# The name needs nothing from here: the reverse proxy publishes it and re-reads this file on
+# its own tick, so the records follow the address within seconds, with no unit to poke and no
+# ordering to get wrong.
+exit 0

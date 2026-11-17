@@ -17,10 +17,9 @@ import (
 // breaks the pairing silently; this test reads both sides and fails loudly. Chosen over a
 // generator: no build step, and the guest image is a sibling file already in the tree.
 //
-// It pairs what the image and the agent genuinely share. The tool profile is the load-bearing
-// one, the only thing they agree on by name: renamed on either side, the units point at nothing,
-// and since the agent refuses to render without it, the guest will not serve at all. The other
-// two are read by the image's own shell and written by the agent's Go.
+// It pairs what the image and the agent genuinely share: the tool profile, the only thing they
+// agree on by name. Renamed on either side, the units point at nothing, and since the agent
+// refuses to render without it, the guest will not serve at all.
 func TestVolumePathsMatchGuestImage(t *testing.T) {
 	raw, err := os.ReadFile("../../guest-image/configuration.nix")
 	if err != nil {
@@ -34,22 +33,36 @@ func TestVolumePathsMatchGuestImage(t *testing.T) {
 		t.Errorf("constant drift: Go defaultToolsBin = %q but the image publishes %q — every agent-written unit's PATH points at nothing",
 			defaultToolsBin, want)
 	}
+}
 
-	// The paths are written `${btrfsRoot}/...` in Nix; resolve that one interpolation before
-	// comparing to the Go consts, which carry the fully-expanded path.
-	root := nixLet(t, nix, "btrfsRoot")
-	for _, c := range []struct{ goName, goVal, nixName string }{
-		// The mount the agent makes and the VIP's scripts read the flock's stored address from.
-		{"dataMountRoot", dataMountRoot, "btrfsRoot"},
+// TestScriptsNameThePathsTheAgentUses pairs the embedded scripts' literals with the Go side: one
+// package now, but two languages, so nothing imports across. Each pair is a path one side writes
+// and the other reads; renamed on one side only, the failure is silent until the moment it
+// matters.
+func TestScriptsNameThePathsTheAgentUses(t *testing.T) {
+	read := func(name string) string {
+		b, err := scripts.ReadFile("scripts/" + name)
+		if err != nil {
+			t.Fatalf("read embedded script %s: %v", name, err)
+		}
+		return string(b)
+	}
+	for _, c := range []struct{ script, want, why string }{
+		// The interpreter, in the profile WriteUnits checks for it: renamed, every script fails
+		// to exec on the promotion path.
+		{"briard-vip-up", "#!" + defaultToolsBin + "/bash\n", "its interpreter"},
+		{"briard-hold-confirm", "#!" + defaultToolsBin + "/bash\n", "its interpreter"},
+		// The mount the agent makes, where the VIP's claim reads the flock's stored address.
+		{"briard-vip-up", dataMountRoot + "/.vip-address", "the stored address"},
 		// The topology word node storage writes and the hold's steps dispatch on. Renamed, every
 		// node's hold reads "node storage has not run on this boot" and skips itself -- silent
 		// until something has to hand over.
-		{"topologyEnvPath", topologyEnvPath, "topologyEnvPath"},
+		{"briard-hold-only-if-holding", topologyEnvPath, "the topology word"},
+		// Upstream's shim, under the profile's lib/drbd link.
+		{"briard-hold-confirm", strings.TrimSuffix(defaultToolsBin, "/bin") + "/lib/drbd/scripts/drbd-service-shim.sh", "the drbd shim"},
 	} {
-		nv := strings.ReplaceAll(nixLet(t, nix, c.nixName), "${btrfsRoot}", root)
-		if nv != c.goVal {
-			t.Errorf("constant drift: Go %s = %q but guest-image %s = %q — the host/guest pairing is broken",
-				c.goName, c.goVal, c.nixName, nv)
+		if !strings.Contains(read(c.script), c.want) {
+			t.Errorf("constant drift: %s does not name %s as %q", c.script, c.why, c.want)
 		}
 	}
 }

@@ -1,0 +1,64 @@
+#!/etc/briard/tools/bin/bash
+# -f names an empty config (briard-vip-dhcpcd.conf beside this script), deliberately: every
+# setting this instance has is on its command line below, where it can be read. The system's generated /etc/dhcpcd.conf says
+# `denyinterfaces ... eth2`, right for the boot-time client but refusing the very interface this
+# instance exists to lease; and it is the file a nixpkgs bump would add `duid` to, quietly
+# giving the two nodes of one flock different identities. Inheriting neither, this instance
+# cannot be surprised by either.
+#
+# dhcpcd, scoped to the service NIC and to one job: hold the binding. It does not supply the
+# address (the store or the operator did) and must not supply anything else. Every flag is
+# load-bearing:
+#
+#   <dev> as the sole interface argument makes this a separate instance from the system one,
+#     with its own pidfile and control socket ("runs as a separate instance to other dhcpcd
+#     processes"), so the service NIC can be denied at boot and leased at promotion: a boot-time
+#     client would lease it on the Secondary too, and with the flock MAC both nodes would ask
+#     one router for one lease.
+#   -G (nogateway): by default dhcpcd installs a default route from this lease, so promotion
+#     would silently re-plumb the guest's WAN path (eth0, the SLIRP route out) and demotion
+#     revert it. Routes are dhcpcd's own doing, not a hook's, so only this flag stops it.
+#   -c <hook> replaces dhcpcd-run-hooks for this instance: the stock hooks never run, resolv.conf
+#     is never rewritten, ours is the only script. -C resolv.conf is the belt to those braces,
+#     still protecting us if -c is ever dropped and the standard runner comes back.
+#   -L (noipv4ll): a service address may not be invented by the machine that serves it. Left
+#     on, dhcpcd answers "no server answered" by self-assigning 169.254.x.x -- measured: the node
+#     then probes its own link-local address, passes (it owns it), and reports HEALTHY while
+#     nobody on the LAN can reach it. A house whose router is briefly down at boot would hit it.
+#     A VIP is the flock's address or nothing; a self-assigned one is worse than none because it
+#     looks like success.
+#   -I "01:<mac>" states the client-id outright: RFC 2132 type 1 (ethernet) + the flock MAC,
+#     VIP_MAC from the agent (the NIC's own address where a harness sets none), which dhcpcd
+#     encodes as hex because the value is colon-separated. Stated, not read off the NIC: the
+#     identity is the flock's, never a property of the NIC carrying it, and it is the pair the
+#     host asks under where it holds the lease instead (a single-anchor substrate, VIP_LEASE=host
+#     below, agent/host/lease.go). One flock presents one identity, so a lease survives a
+#     failover, and dhcpcd's own shipped `duid` (a per-host DUID that, in the man page's words,
+#     "should not be copied to other hosts") cannot give two nodes of one flock different leases
+#     if a nixpkgs bump restores it.
+#     ⚠️ Never `-I ""`, the documented way to ask for the hardware-address default: it is wrong
+#     on the wire, invisibly on the command line. dhcpcd takes the literal "-h" as the client-id
+#     (dnsmasq records `00:2d:68`: type 0, then ASCII "-h"), consuming the -h option, so every
+#     node sends its system hostname ("guest") and an identical client-id, and two flocks on one
+#     LAN fight over a single lease. Never ask for a default when you can state the value.
+#   -h briard-<xxxxxx> is the flock name (option 12), from the low three bytes of the same
+#     flock MAC. It gives the router a recognisable client-list entry and makes a user-created
+#     static reservation survive failover, because name, MAC and client-id are all flock-scoped.
+#   --lastleaseextend keeps the address when no server answers, yielding it only to a host that
+#     ARP-claims it: a knowing RFC 2131 3.7 violation, right here because it covers an unplanned
+#     failover with the router down and still refuses to squat an address somebody wants.
+#   -r asks for the address we already claimed, so the replicated store wins over this node's
+#     own lease file instead of the two quietly drifting apart.
+#   -J sets the BROADCAST flag, so the server broadcasts its OFFER and ACK: the shape the host's
+#     own client sends where it holds the lease, so a router answers the flock one way whichever
+#     side asked. Harmless on every substrate.
+set -eu
+dev="$1"; want="$2"; shift 2
+mac="${VIP_MAC:-$(cat /sys/class/net/"$dev"/address)}"
+hex="${mac//:/}"
+set -- -f "${0%/*}/briard-vip-dhcpcd.conf" -c "${0%/*}/briard-vip-dhcp-hook" -L -J \
+  -G -C resolv.conf -I "01:$mac" -h "briard-${hex: -6}" --lastleaseextend "$@"
+if [ -n "$want" ]; then
+  set -- "$@" -r "${want%%/*}"
+fi
+exec dhcpcd "$@" "$dev"

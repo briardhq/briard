@@ -1,0 +1,127 @@
+#!/etc/briard/tools/bin/bash
+# Resolve the service address, claim it, and record what was actually claimed.
+#
+# Three sources, and the order is the design:
+#   1. VIP_ADDR -- an address the operator named. We set it, so we never ask about it.
+#   2. the replicated store -- the flock's address, known even to a node that has never served.
+#      This keeps a failover off the household router entirely.
+#   3. DHCP, synchronously -- only when both above are empty, i.e. the first promotion this
+#      flock has ever performed, which is where the existing doctrine already puts the
+#      exception: installing may need the network, running and failing over must not.
+#
+# The claim in cases 1 and 2 is optimistic, with no ARP probe gate. A conflict at promotion
+# was not caused by the promotion; it can only have arisen while the flock had no primary. So
+# detecting it is dhcpcd's job, afterwards, not a cost every failover pays to find someone
+# else's pre-existing condition; when it finds one it yields, and the one address-changed path
+# handles the new address.
+set -eu
+ip link set dev "$VIP_DEV" up
+mkdir -p "$(dirname /run/briard/vip.live)"
+
+configured="${VIP_ADDR:-}"
+# The host holds the lease on a single-anchor substrate, where this NIC's frames carry the
+# host's MAC: it asks under the flock's own and hands the answer down as VIP_ADDR. With none
+# handed down the router leased the flock nothing of its own -- the host has refused and said
+# so -- and a client started here would only be handed the host's own address. Claim nothing.
+if [ -z "$configured" ] && [ "${VIP_LEASE:-}" = host ]; then
+  echo "briard-vip: the host holds this address's lease and has none to give; claiming nothing on $VIP_DEV"
+  exit 0
+fi
+addr="$configured"
+if [ -z "$addr" ] && [ -r /var/lib/briard/.vip-address ]; then
+  addr="$(cat /var/lib/briard/.vip-address)"
+fi
+
+echo "briard-vip: dev=$VIP_DEV configured=${configured:-<none>} stored=$([ -r /var/lib/briard/.vip-address ] && cat /var/lib/briard/.vip-address || echo '<none>')"
+# Why there is no stored address, not merely that there is none. `stored=<none>` has three
+# causes the line above cannot tell apart -- the volume is not mounted, it is mounted and the
+# file is absent, or this flock never held an address -- and that ambiguity is the
+# lost-address bug: written on one boot ("remembered ... for the flock"), read back as <none>
+# on the next, with no log saying which. One `findmnt` and one `ls` at the moment of the read
+# settle it, in the field as well as in a harness.
+if [ -z "$configured" ] && [ ! -r /var/lib/briard/.vip-address ]; then
+  echo "briard-vip: no stored address at /var/lib/briard/.vip-address -- mount=$(findmnt -no SOURCE,FSTYPE /var/lib/briard 2>/dev/null || echo '<NOT MOUNTED>') contents=[$(ls -A /var/lib/briard 2>/dev/null | tr '\n' ' ')]"
+fi
+if [ -n "$configured" ]; then
+  # An address the operator named: claim it and hold no lease. There is nothing to renew,
+  # and asking a router about it would be asking permission for something already decided.
+  # This also keeps dhcpcd away from the agent-less harnesses, where this unit's NIC is eth1
+  # -- the DRBD link, which must never lease.
+  ip addr replace "$addr" brd + dev "$VIP_DEV"
+elif [ -n "$addr" ]; then
+  # ⚠️ `brd +` is load-bearing: it keeps the VIP continuously present across the lease. dhcpcd
+  # is about to be handed the same address, and if what we put on differs from what it wants
+  # it does not update -- it deletes and re-adds. `ip addr add X/24` leaves the broadcast
+  # unset; dhcpcd wants X.X.X.255. Measured, one variable at a time, against a real dnsmasq,
+  # counting RTM_DELADDR:
+  #
+  #   ip addr replace X/24                 -> 1 delete
+  #   ip addr replace X/24 brd +           -> 0 deletes
+  #   ...also with noprefixroute, or the full dhcpcd shape -> 0
+  #
+  # The broadcast alone is the difference. A withdrawal cannot wedge a name (the reverse proxy
+  # answers mDNS without probing), but an address that blinks is briefly not there for the ARP
+  # cache of every device mid-connection.
+  ip addr replace "$addr" brd + dev "$VIP_DEV"
+  # A lease-holder here, never a gate: -b returns immediately, so nothing downstream waits on
+  # a DHCP server. Failing to start it is not failing to serve -- the address is already up,
+  # the point of applying before asking.
+  "${0%/*}/briard-vip-dhcpcd" "$VIP_DEV" "$addr" -b || true
+else
+  # Nothing to apply: this flock has never held an address. Ask, and wait for the answer.
+  #
+  # --waitip=4 must keep the `=`: the family is an optional argument, taken by getopt_long
+  # only when attached. Written `--waitip 4`, the `4` becomes a positional, an interface name
+  # to dhcpcd (`4: interface not found`), and the option means "wait for any family". On a
+  # dual-stack household router SLAAC completes in ~0.3s while IPv4 is still ARP-probing, so
+  # dhcpcd daemonises satisfied by IPv6, the IPv4-only read below finds nothing, and this unit
+  # fails on a network where nothing is wrong. A test topology that sends no RAs cannot catch
+  # it: there "any family" and "IPv4" behave the same.
+  "${0%/*}/briard-vip-dhcpcd" "$VIP_DEV" "" --waitip=4
+  # The field after `inet`, which is the same rule net.vip reads ground truth by -- never a
+  # prefix match, which would accept an inet6 link-local and hand us an address to claim
+  # that no one in the house can reach.
+  addr="$(ip -o -4 addr show dev "$VIP_DEV" scope global |
+          sed -n 's/^.* inet \([^ ]*\).*$/\1/p' | head -n1)"
+  if [ -z "$addr" ]; then
+    echo "briard-vip: no address configured, none stored, and DHCP yielded none on $VIP_DEV" >&2
+    exit 1
+  fi
+fi
+
+# Multicast leaves on the household NIC. Multicast is local by definition, so where it goes
+# out is where the LAN is, and apps ask exactly that to find their network: Home Assistant
+# picks the interface it announces and answers mDNS on, and the address of its own URL, by the
+# source address the kernel gives it for 224.0.0.251. Without this route that is the default
+# route NIC, the user-net WAN path nothing on the LAN can reach. No `src`: the kernel takes
+# the NIC address, so a renewed lease needs nothing here. Only multicast moves; the WAN path
+# stays.
+ip route replace 224.0.0.0/4 dev "$VIP_DEV"
+"${0%/*}/briard-vip-reply-route" up
+
+printf 'VIP_ADDR=%s\n' "$addr" >/run/briard/vip.live
+# Remember it for the flock, so the peer that promotes next need not ask. Only what DHCP gave
+# us: every node knows a configured address from its own config, and storing it would blur
+# what this file means -- "the address this flock acquired". Never fatal (the address is
+# claimed either way, and the agent-less harnesses run this unit with no DRBD volume mounted)
+# but never silent: silenced, "the peer came back with no address" cannot be told apart from
+# "the store was never written". Non-fatal decides whether to stop, not whether to say nothing.
+if [ -z "$configured" ]; then
+  # ⚠️ The sync is the point, not hygiene. This file lets an unplanned failover -- when the
+  # household router is least likely to answer, and usually a power cut -- re-claim the
+  # flock address without asking anyone. Left in the page cache, it is lost in exactly that
+  # event: btrfs commits on its own schedule (30s by default), and a guest killed inside that
+  # window comes back with the volume mounted, intact, and the file absent. The router-down
+  # assertion of `install-macvtap` catches this, and it can pass by hand because a guest left
+  # running for a minute has committed while a test that restarts immediately has not.
+  # `sync -f` (syncfs), not an fsync of the file: the file is new, so its directory entry must
+  # be durable too, and syncing the volume is free at one small write per address acquisition.
+  if printf '%s\n' "$addr" >/var/lib/briard/.vip-address 2>/dev/null &&
+     sync -f /var/lib/briard/.vip-address 2>/dev/null; then
+    # The mount is named on the write as well as the read: "written here, read back
+    # empty there" is only diagnosable if both lines say which `there` they meant.
+    echo "briard-vip: remembered $addr for the flock at /var/lib/briard/.vip-address (mount=$(findmnt -no SOURCE,FSTYPE /var/lib/briard 2>/dev/null || echo '<NOT MOUNTED>'))"
+  else
+    echo "briard-vip: WARNING could not write /var/lib/briard/.vip-address -- a peer promoting next will have to ask DHCP" >&2
+  fi
+fi

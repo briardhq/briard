@@ -9,9 +9,8 @@
 # until one appears.
 { config, pkgs, lib, ... }:
 let
-  btrfsRoot = "/var/lib/briard"; # the DRBD btrfs volume mount
   # ── The storage seam ─────────────────────────────────────────────────────────────────────────
-  # The stack under the mount above is `dataDisk -> LUKS -> PV -> VG -> LV -> DRBD -> btrfs`. The
+  # The stack under the data volume's mount (/var/lib/briard) is `dataDisk -> LUKS -> PV -> VG -> LV -> DRBD -> btrfs`. The
   # VG exists for one reason: an LV can have its dm table reloaded under an open device, so
   # `pvmove` can move the backing onto an encrypted PV, or off one, while DRBD never closes its
   # device. A bare disk has no table to reload, so the seam had to exist before the encryption.
@@ -31,22 +30,21 @@ let
   # the snapshots directory is made at every promotion (agent/guestagent's snapshotsDir).
   # ⚠️ The TLS directory and the VIP's env file are not named here either: only units read them
   # (the reverse proxy's `-cert`/`-key`, briard-vip's EnvironmentFile), and the agent writes
-  # those units with its own spellings (guestagent's tlsCertPath/tlsKeyPath and vipEnvPath). The
-  # scripts below write and read the VIP's live/stored addresses, hence vipLivePath and vipAddrFile.
-  # The topology word node-storage writes beside vip.env: `flock` or `alone`, the only thing a
-  # shell unit needs to know about the spec. Paired with the Go const guestagent.topologyEnvPath
-  # and the two values its topologyEnv writes.
-  topologyEnvPath = "/run/briard/topology.env";
+  # those units with its own spellings (guestagent's tlsCertPath/tlsKeyPath and vipEnvPath), and
+  # the scripts those units run are the agent's too (below).
   # ── The image's half of a unit the agent writes ──────────────────────────────────────────────
   #
-  # The image contributes the closure; the pushed agent contributes the unit. The image bakes
-  # exactly one binary and every other briard binary rides the host bundle. A unit is mostly an
-  # ExecStart plus its binary's environment, so a unit baked here would move on the image's
-  # cadence while its binary moves on the host's: a pushed agent asking its older image for a unit
-  # that image does not define crash-loops the node with the household's app gone. The agent
-  # writes its units into /run/systemd/system at every start (the only place it can: NixOS makes
-  # /etc/systemd/system a read-only store path), so a unit can never be older than the binary that
-  # wrote it, and the defect class is unrepresentable rather than merely detectable.
+  # The image contributes the closure; the pushed agent contributes the unit and the scripts it
+  # runs. The image bakes exactly one binary and every other briard binary rides the host bundle.
+  # A unit is mostly an ExecStart plus its binary's environment, so a unit baked here would move
+  # on the image's cadence while its binary moves on the host's: a pushed agent asking its older
+  # image for a unit that image does not define crash-loops the node with the household's app
+  # gone. The agent writes its units into /run/systemd/system at every start (the only place it
+  # can: NixOS makes /etc/systemd/system a read-only store path), so a unit can never be older
+  # than the binary that wrote it, and the defect class is unrepresentable rather than merely
+  # detectable. The shell those units run (the VIP's claim and release, the promotion hold) is
+  # the same kind of thing and rides the same way: the agent embeds it and writes it beside the
+  # units (agent/guestagent/scripts), so a change to it moves the agent, never this image.
   #
   # What stays here is what a pushed binary cannot carry: the store paths. A unit's PATH is a
   # closure reference, and an agent that guessed one would fail at block-device time, the worst
@@ -73,6 +71,9 @@ let
       pkgs.util-linux # mount/umount/mountpoint/findmnt, the primary-storage half
       pkgs.iproute2 # ip, for the VIP
       pkgs.iputils # arping, for the gratuitous announcement
+      pkgs.dhcpcd # the VIP's lease holder
+      pkgs.nftables # nft, the VIP's reply routing
+      pkgs.bash # the interpreter the agent's scripts name, at this profile's fixed path
       config.systemd.package # systemctl, journalctl
       # ⚠️ The baseline NixOS gives every unit for free, restated because nothing gives it to a
       # runtime unit: nixpkgs defaults `systemd.services.<n>.path` to coreutils + findutils +
@@ -86,555 +87,20 @@ let
       # The module's podman, not `pkgs.podman` -- naming the latter ships a second,
       # differently-wrapped copy of the runtime.
       config.virtualisation.podman.package
-      # And the named tools a unit's ExecStart points at directly, because systemd wants an
-      # absolute path for the first word and the agent can only know a fixed one.
+      # And the one named tool a unit's ExecStart points at directly: the pivot's picker is frozen
+      # (it runs before any pushed binary is trusted), so it is the image's, not the agent's.
       config.briard.pivot.exec # briard-bin-exec, the frozen picker the web units go through
-      vipArping
-      vipDown
-      vipRenew
-      vipUp
-    ]
-    ++ holdSteps;
-    pathsToLink = [ "/bin" "/sbin" ];
+    ];
+    # lib/drbd for upstream's drbd-service-shim.sh, which the hold runs by its absolute path.
+    pathsToLink = [ "/bin" "/sbin" "/lib/drbd" ];
   };
   # Paired with the Go const guestagent.defaultToolsBin, which is what an agent-written unit puts
   # on its PATH. Different languages, so no shared import; the agent-side comment names this back.
   toolsEtc = "briard/tools";
-  # ⚠️ The chain is not stated here. The units that name it are written by the pushed agent,
-  # from the one Go definition both halves of the bundle read (shared/chain; the host reads it
-  # in promoterUnits()), and the steps below take it as arguments instead of baking it.
-  # A hold step with one body per topology. The word decides; a missing word means "node storage
-  # has not run on this boot" and an unknown one names itself rather than guessing. Both fail the
-  # step, and what that means is the unit's to say (ExecCondition skips, ExecStartPre escalates).
-  # A named tool in the profile, because the agent-written unit can only name a fixed path. The
-  # split is deliberate: the image keeps the dispatch and the commands (store paths, unchanged
-  # by a release); the agent passes in the one thing only it knows, the chain's members, as `"$@"`.
-  byTopology =
-    name:
-    { flock, alone }:
-    pkgs.writeShellScriptBin name ''
-      set -u
-      if [ ! -r ${topologyEnvPath} ]; then
-        echo "${name}: no ${topologyEnvPath}; node storage has not run on this boot" >&2
-        exit 1
-      fi
-      . ${topologyEnvPath}
-      case "''${BRIARD_TOPOLOGY:-}" in
-        flock) ${flock} ;;
-        alone) ${alone} ;;
-        *)
-          echo "${name}: ${topologyEnvPath} says '$BRIARD_TOPOLOGY', which is neither flock nor alone" >&2
-          exit 1
-          ;;
-      esac
-    '';
   # Where the agent drops drbd-reactor's promoter snippet. Tmpfs, and paired with the Go const
   # guestagent.reactorPath -- different languages, so no shared import; the agent-side comment
   # names this file back.
   reactorSnippetDir = "/run/briard/drbd-reactor.d";
-  # The flock's service address, replicated with the data: like the TLS material, a small
-  # flock-scoped fact at the btrfs root, written only by the node that holds the volume (only a
-  # Primary can mount it) and read by whoever promotes next. It exists so a failover never has to
-  # ask for the address. The MAC is *derived* (every node computes it from the flock id), but an
-  # address is *acquired*, known only to whoever asked the router, so it is the one piece that has
-  # to travel. Without it, a node that has never served would need a full DHCP exchange at the
-  # moment a household's network is least likely to be answering.
-  vipAddrFile = "${btrfsRoot}/.vip-address";
-  # The address this node actually claimed, written by briard-vip once it has resolved one and
-  # read by everything downstream (the gratuitous ARP, the mDNS name). Under DHCP the configured
-  # and claimed values are not the same thing, and a name or announcement must never describe an
-  # address the node did not take -- the same ground-truth rule net.vip follows.
-  vipLivePath = "/run/briard/vip.live";
-  # `ip` wants the prefix, `arping` the bare address: stripped here rather than carried twice,
-  # because two variables can disagree and the one that would silently win is the gratuitous ARP
-  # nobody is watching. Read from the live file, not the unit environment: this runs as
-  # ExecStartPost of the unit that resolved the address, and whether systemd re-reads an
-  # EnvironmentFile between ExecStart and ExecStartPost must not be the reason a gratuitous ARP
-  # names the wrong address. Sourcing it is one line and no assumption.
-  vipArping = pkgs.writeShellScriptBin "briard-vip-arping" ''
-    set -eu
-    . ${vipLivePath}
-    exec ${pkgs.iputils}/bin/arping -A -c 1 -I "$VIP_DEV" "''${VIP_ADDR%%/*}"
-  '';
-  # ── The hold's steps, as image-side tools ────────────────────────────────────────────────────
-  #
-  # The agent writes the unit that runs them, so only what it cannot carry lives here: the
-  # topology dispatch and the store paths. Steps that need the chain's members take them as
-  # arguments, so the list does not live in this file.
-  #
-  # The order is the design: mask before demoting. Measured on a one-node DRBD resource,
-  # drbd-reactor re-promotes about 2s after a demote completes, so a hold added after the demote
-  # loses that race. Masking first refuses the promotion rather than undoing it: `systemctl start
-  # drbd-services@r0.target` fails outright, drbd-promote@ never runs, DRBD's role never moves,
-  # and no second mount/unmount cycle is paid. The mask is also the only lever that says "not me,
-  # for now": everything else reactor offers is DRBD's own decision or a static handicap biasing
-  # which node wins a race. `--runtime` puts it in /run, so a reboot clears it and a hold can
-  # never outlive the boot that might have fixed its cause.
-  holdSteps = [
-    # ⚠️ Only a node that holds the resource may hand it on; without this guard the standby masks
-    # itself on every boot. Measured: a member whose start job fails with result `dependency`
-    # fires `OnFailure=` exactly like one that failed on its own, and on the node that loses the
-    # promotion race every member does ("Multiple primaries not allowed by config" ->
-    # drbd-promote@ fails -> "Dependency failed for ..." -> "Triggering OnFailure=
-    # dependencies"). The loser would run the hold and mask itself for all of it: at 300s, a
-    # standby that cannot take over for five minutes after a boot.
-    #
-    # ⚠️ On a lone node the guard is always met: no loser to protect and nobody else who could hold
-    # the volume, so every member failure is this node's own to hold -- and to restart from, below.
-    (byTopology "briard-hold-only-if-holding" {
-      flock = "${pkgs.drbd}/bin/drbdadm role r0 | ${pkgs.gnugrep}/bin/grep -q '^Primary'";
-      alone = "exit 0";
-    })
-    # A lone node needs no mask: nothing re-promotes during its hold, because it runs no reactor
-    # and the restart step below is what starts its target again.
-    (byTopology "briard-hold-refuse" {
-      flock = "${config.systemd.package}/bin/systemctl mask --runtime drbd-services@r0.target && ${config.systemd.package}/bin/systemctl daemon-reload";
-      alone = ":";
-    })
-    # Step 2 stops drbd-promote@, not the target, as a barrier rather than a preference.
-    # Measured: `systemctl stop drbd-services@r0.target` returns as soon as the target is down --
-    # `Stopped target` at 62.386, `Stopping briard-vip` at 62.388, the shim running at 62.412
-    # while the volume was still mounted, exit 11, reboot. The members are `After=drbd-promote@`,
-    # so they stop before it: waiting for the promote unit is the only spelling that waits for all
-    # of them. Its ExecStop is the ordinary demote, so the confirm below only confirms. A lone
-    # node has no promote unit, so its stop names every unit (the target, then the members in
-    # reverse, passed in by the agent): a stop of several units returns when all are down.
-    (byTopology "briard-hold-stop" {
-      flock = "${config.systemd.package}/bin/systemctl stop drbd-promote@r0.service";
-      alone = ''${config.systemd.package}/bin/systemctl stop "$@"'';
-    })
-    # The one escalation, the same cell in both topologies: a demote DRBD refused, or an unmount
-    # something still holds open. Nothing else recovers a node stuck holding a volume it has
-    # declared it cannot serve -- on a flock the peer cannot take over, alone the restart below
-    # would mount on top of it. Whoever attempts the demote owns what happens when DRBD refuses
-    # it: the unit's FailureAction=reboot.
-    (byTopology "briard-hold-confirm" {
-      flock = "${pkgs.drbd}/lib/drbd/scripts/drbd-service-shim.sh secondary-or-escalate r0";
-      alone = "! ${pkgs.util-linux}/bin/mountpoint -q ${btrfsRoot} || ${pkgs.util-linux}/bin/umount ${btrfsRoot}";
-    })
-    # The release. The unit marks this and the resets `-`: a hold that cannot tidy up must still
-    # end, because leaving the mask on is the one outcome worse than releasing early.
-    (byTopology "briard-hold-release" {
-      flock = "${pkgs.coreutils}/bin/rm -f /run/systemd/system/drbd-services@r0.target; ${config.systemd.package}/bin/systemctl daemon-reload";
-      alone = ":";
-    })
-    # Alone, the restart is ours: no reactor re-promotes, so the hold starts the chain it stopped
-    # -- hold-and-restart, forever, no reboot, as a flock does through its reactor. `--no-block`:
-    # this runs inside the hold's own stop, and the start must not wait on it. The target is
-    # `$1`, from the agent, for the same reason the stop list is.
-    (byTopology "briard-hold-restart" {
-      flock = ":";
-      alone = ''${config.systemd.package}/bin/systemctl start --no-block "$1"'';
-    })
-  ];
-
-  # The address-changed handler: one path for every cause (a NAK, a lease yielded to a host that
-  # ARP-claimed it, a router that repooled while the flock had no primary), because "the address
-  # changed" does not care why.
-  #
-  # It deliberately does not restart briard-vip, which would be wrong twice over: this hook runs
-  # in briard-vip's own cgroup (dhcpcd was started from its ExecStart), so the restart would kill
-  # the process asking for it, mid-flight; and it would put an ordinary address change through the
-  # promoter chain -- a member whose failure trips OnFailure=briard-promotion-hold -- a
-  # failover-shaped risk for a job that needs no chain. The reverse proxy binds :80 on every
-  # interface and does not care what the address is; what does is the live file, the flock's
-  # store, the ARP announcement and the name. The first three are done here; the name follows the
-  # live file on its own (below). An expired lease needs nothing from this hook either: the
-  # interface holds no address, net.vip reports "" as ground truth, and the node reads not-ready
-  # by the rule that covers every other addressless data node.
-  vipHook = pkgs.writeShellScript "briard-vip-dhcp-hook" ''
-    set -u
-    case "''${reason:-}" in
-      # The reasons that mean "we hold an address". TIMEOUT is --lastleaseextend doing its job:
-      # no server answered and we kept the lease, which is a non-event worth not reacting to.
-      BOUND|RENEW|REBIND|REBOOT|TIMEOUT|STATIC) ;;
-      *) exit 0 ;;
-    esac
-    [ -n "''${new_ip_address:-}" ] || exit 0
-    addr="''${new_ip_address}/''${new_subnet_cidr:-24}"
-
-    # A RENEW confirming what we already hold is the common case and must be silent -- otherwise
-    # every lease period would re-announce and bounce the name for no reason.
-    cur=""
-    if [ -r ${vipLivePath} ]; then
-      . ${vipLivePath}
-      cur="''${VIP_ADDR:-}"
-    fi
-    [ "$addr" = "$cur" ] && exit 0
-
-    # Withdraw the address we put on optimistically. dhcpcd removes the addresses it manages, but
-    # the one applied at promotion from the flock's store is foreign to it: without this the NIC
-    # holds two, and "the first address on the device" (how net.vip reads ground truth) becomes a
-    # coin toss between the live one and a stale one.
-    if [ -n "$cur" ]; then
-      ${pkgs.iproute2}/bin/ip addr del "$cur" dev "''${interface}" || true
-    fi
-    ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "''${interface}"
-    printf 'VIP_ADDR=%s\n' "$addr" >${vipLivePath}
-    # Synced like the promotion-time write: here the router hands us a different address, so the
-    # stored value is actively wrong, and losing this write to the page cache leaves the flock
-    # remembering an address it has already yielded. (vipLivePath is tmpfs: nothing to sync.)
-    { printf '%s\n' "$addr" >${vipAddrFile} && ${pkgs.coreutils}/bin/sync -f ${vipAddrFile}; } 2>/dev/null || true
-    VIP_DEV="''${interface}" ${vipArping}/bin/briard-vip-arping || true
-    # The name needs nothing from here: the reverse proxy publishes it and re-reads this file on
-    # its own tick, so the records follow the address within seconds, with no unit to poke and no
-    # ordering to get wrong.
-    exit 0
-  '';
-
-  # An empty config for the VIP's dhcpcd instance, deliberately: every setting it has is on its
-  # command line below, where it can be read. The system's generated /etc/dhcpcd.conf says
-  # `denyinterfaces ... eth2`, right for the boot-time client but refusing the very interface this
-  # instance exists to lease; and it is the file a nixpkgs bump would add `duid` to, quietly
-  # giving the two nodes of one flock different identities. Inheriting neither, this instance
-  # cannot be surprised by either.
-  dhcpcdConf = pkgs.writeText "briard-vip-dhcpcd.conf" "";
-
-  # dhcpcd, scoped to the service NIC and to one job: hold the binding. It does not supply the
-  # address (the store or the operator did) and must not supply anything else. Every flag is
-  # load-bearing:
-  #
-  #   <dev> as the sole interface argument makes this a separate instance from the system one,
-  #     with its own pidfile and control socket ("runs as a separate instance to other dhcpcd
-  #     processes"), so the service NIC can be denied at boot and leased at promotion: a boot-time
-  #     client would lease it on the Secondary too, and with the flock MAC both nodes would ask
-  #     one router for one lease.
-  #   -G (nogateway): by default dhcpcd installs a default route from this lease, so promotion
-  #     would silently re-plumb the guest's WAN path (eth0, the SLIRP route out) and demotion
-  #     revert it. Routes are dhcpcd's own doing, not a hook's, so only this flag stops it.
-  #   -c <hook> replaces dhcpcd-run-hooks for this instance: the stock hooks never run, resolv.conf
-  #     is never rewritten, ours is the only script. -C resolv.conf is the belt to those braces,
-  #     still protecting us if -c is ever dropped and the standard runner comes back.
-  #   -L (noipv4ll): a service address may not be invented by the machine that serves it. Left
-  #     on, dhcpcd answers "no server answered" by self-assigning 169.254.x.x -- measured: the node
-  #     then probes its own link-local address, passes (it owns it), and reports HEALTHY while
-  #     nobody on the LAN can reach it. A house whose router is briefly down at boot would hit it.
-  #     A VIP is the flock's address or nothing; a self-assigned one is worse than none because it
-  #     looks like success.
-  #   -I "01:<mac>" states the client-id outright: RFC 2132 type 1 (ethernet) + the flock MAC,
-  #     VIP_MAC from the agent (the NIC's own address where a harness sets none), which dhcpcd
-  #     encodes as hex because the value is colon-separated. Stated, not read off the NIC: the
-  #     identity is the flock's, never a property of the NIC carrying it, and it is the pair the
-  #     host asks under where it holds the lease instead (a single-anchor substrate, VIP_LEASE=host
-  #     below, agent/host/lease.go). One flock presents one identity, so a lease survives a
-  #     failover, and dhcpcd's own shipped `duid` (a per-host DUID that, in the man page's words,
-  #     "should not be copied to other hosts") cannot give two nodes of one flock different leases
-  #     if a nixpkgs bump restores it.
-  #     ⚠️ Never `-I ""`, the documented way to ask for the hardware-address default: it is wrong
-  #     on the wire, invisibly on the command line. dhcpcd takes the literal "-h" as the client-id
-  #     (dnsmasq records `00:2d:68`: type 0, then ASCII "-h"), consuming the -h option, so every
-  #     node sends its system hostname ("guest") and an identical client-id, and two flocks on one
-  #     LAN fight over a single lease. Never ask for a default when you can state the value.
-  #   -h briard-<xxxxxx> is the flock name (option 12), from the low three bytes of the same
-  #     flock MAC. It gives the router a recognisable client-list entry and makes a user-created
-  #     static reservation survive failover, because name, MAC and client-id are all flock-scoped.
-  #   --lastleaseextend keeps the address when no server answers, yielding it only to a host that
-  #     ARP-claims it: a knowing RFC 2131 3.7 violation, right here because it covers an unplanned
-  #     failover with the router down and still refuses to squat an address somebody wants.
-  #   -r asks for the address we already claimed, so the replicated store wins over this node's
-  #     own lease file instead of the two quietly drifting apart.
-  #   -J sets the BROADCAST flag, so the server broadcasts its OFFER and ACK: the shape the host's
-  #     own client sends where it holds the lease, so a router answers the flock one way whichever
-  #     side asked. Harmless on every substrate.
-  dhcpcdRun = pkgs.writeShellScript "briard-vip-dhcpcd" ''
-    set -eu
-    dev="$1"; want="$2"; shift 2
-    mac="''${VIP_MAC:-$(cat /sys/class/net/"$dev"/address)}"
-    hex="''${mac//:/}"
-    set -- -f ${dhcpcdConf} -c ${vipHook} -L -J \
-      -G -C resolv.conf -I "01:$mac" -h "briard-''${hex: -6}" --lastleaseextend "$@"
-    if [ -n "$want" ]; then
-      set -- "$@" -r "''${want%%/*}"
-    fi
-    exec ${pkgs.dhcpcd}/sbin/dhcpcd "$@" "$dev"
-  '';
-
-  # Force a RENEW on a ten-minute timer, independently of the lease term.
-  #
-  # Not a shorter lease: asking for one (`-l`) is the wrong lever twice over. The term is the
-  # server's to choose, so on a CPE that ignores a client's option 51 the flag is a silent no-op
-  # we would believe had worked; where honoured, a short lease turns --lastleaseextend (a knowing
-  # RFC 2131 3.7 violation kept as an exceptional safety net) into the routine state for the length
-  # of any router blip. We want the lease long and the renewal frequent, and nothing in RFC 2131
-  # makes a client wait for T1.
-  #
-  # It buys a shorter silence, not a firmer grip. A CPE reboot, the household's usual fix for
-  # anything, commonly loses the lease table, and a client sitting BOUND says nothing until T1 --
-  # at a router's usual 12-24h term, hours in which a fresh DISCOVER from any device can be handed
-  # the address we think is ours. Ten minutes bounds that window; on dnsmasq a renewal against a
-  # server that lost its table is ACKed, so the binding is recreated, not merely found gone. And
-  # where we lost it anyway, a NAK inside ten minutes drives the address-changed path that a
-  # briard.casa name depends on.
-  #
-  # ⚠️ The guard is the point of this script. `dhcpcd -N`'s documented behaviour with no instance
-  # running is "starts up as normal", and measured: against an idle interface it forked a client
-  # and took an address. On a standby, whose service NIC must have no LAN presence, that would put
-  # a DHCP client on it claiming an address the flock's primary owns. The agent-written units
-  # (agent/guestagent/units.go) already make it unreachable, since the timer lives and dies with
-  # briard-vip; the guard keeps a hand-run `systemctl start` safe too.
-  vipRenew = pkgs.writeShellScriptBin "briard-vip-renew" ''
-    set -eu
-    pidfile="$(${pkgs.dhcpcd}/sbin/dhcpcd -P "$VIP_DEV")"
-    if [ ! -s "$pidfile" ] || ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-      echo "briard-vip-renew: nothing is holding $VIP_DEV; declining to start a client" >&2
-      exit 0
-    fi
-    exec ${pkgs.dhcpcd}/sbin/dhcpcd -N "$VIP_DEV"
-  '';
-
-  # Replies to the household leave the way their request came in. The guest's only default route
-  # is the user-net WAN path (dhcpcd -G above): its own traffic must not depend on holding the
-  # VIP. So a reply to a client off the VIP's subnet -- one routed in without NAT: a VPN on the
-  # router, a subnet router, another VLAN of the same home -- would follow that default and be
-  # lost. While the VIP is held, table 100 holds a default via the household's router on VIP_DEV,
-  # and two kinds of traffic look it up:
-  #
-  #   - a connection that arrived on VIP_DEV. Its conntrack entry is marked on the way in and the
-  #     mark copied onto its replies: in prerouting for a published port's reply, which leaves the
-  #     pod with the pod's address and is rewritten to the VIP only after routing (so no rule on
-  #     the source address can see it), and in a route-type output chain for the guest's own
-  #     sockets, where a changed mark re-routes the packet;
-  #   - all UDP. A wildcard-bound UDP socket's source is picked by the route, so only a route can
-  #     make its reply leave from the VIP. The guest's own UDP is its DNS, to user-net's on-link
-  #     resolver, which the rule before keeps where it is.
-  #
-  # `lookup main suppress_prefixlength 0` comes first: everything main routes more specifically
-  # than its default (the VIP's own subnet, the pod networks, user-net's /24, multicast) keeps
-  # that route. Only the default is replaced.
-  #
-  # The router is the host's own gateway on the LAN the VIP lives on (VIP_ROUTER, pushed by the
-  # agent): one source for every way the address was set, since a hand-set VIP and a lease the
-  # host holds have no lease here to read one from. None given, nothing is routed and the
-  # household reaches the VIP from its own subnet only. The mark is one bit of our own, OR-ed in
-  # and matched under its mask, so it composes with netavark's marks rather than replacing them.
-  #
-  # `up` re-installs from scratch, so it is idempotent; `down` is everything `up` does, undone.
-  # Never fatal, never silent: the VIP serves its own subnet either way.
-  vipReplyRoute = pkgs.writeShellScript "briard-vip-reply-route" ''
-    set -u
-    ip=${pkgs.iproute2}/bin/ip
-    nft=${pkgs.nftables}/bin/nft
-    mark=0x40000
-    withdraw() {
-      $nft delete table inet briard-vip 2>/dev/null
-      for pref in 10790 10791 10792; do
-        while $ip rule del pref $pref 2>/dev/null; do :; done
-      done
-      $ip route flush table 100 2>/dev/null
-    }
-    withdraw
-    [ "$1" = up ] || exit 0
-    if [ -z "''${VIP_ROUTER:-}" ]; then
-      echo "briard-vip: no router named for $VIP_DEV; clients on other subnets get no reply"
-      exit 0
-    fi
-    if ! $ip route replace default via "$VIP_ROUTER" dev "$VIP_DEV" table 100 ||
-       ! $ip rule add pref 10790 lookup main suppress_prefixlength 0 ||
-       ! $ip rule add pref 10791 fwmark $mark/$mark lookup 100 ||
-       ! $ip rule add pref 10792 ipproto udp lookup 100 ||
-       ! $nft -f - <<EOF
-    table inet briard-vip {
-      chain prerouting {
-        type filter hook prerouting priority mangle; policy accept;
-        iifname "$VIP_DEV" ct state new ct mark set ct mark | $mark
-        iifname != "$VIP_DEV" ct mark & $mark == $mark meta mark set meta mark | $mark
-      }
-      chain output {
-        type route hook output priority mangle; policy accept;
-        ct mark & $mark == $mark meta mark set meta mark | $mark
-      }
-    }
-    EOF
-    then
-      withdraw
-      echo "briard-vip: WARNING could not route replies via $VIP_ROUTER on $VIP_DEV; clients on other subnets get no reply" >&2
-      exit 0
-    fi
-    echo "briard-vip: replies to other subnets leave via $VIP_ROUTER on $VIP_DEV"
-  '';
-
-  # Resolve the service address, claim it, and record what was actually claimed.
-  #
-  # Three sources, and the order is the design:
-  #   1. VIP_ADDR -- an address the operator named. We set it, so we never ask about it.
-  #   2. the replicated store -- the flock's address, known even to a node that has never served.
-  #      This keeps a failover off the household router entirely.
-  #   3. DHCP, synchronously -- only when both above are empty, i.e. the first promotion this
-  #      flock has ever performed, which is where the existing doctrine already puts the
-  #      exception: installing may need the network, running and failing over must not.
-  #
-  # The claim in cases 1 and 2 is optimistic, with no ARP probe gate. A conflict at promotion
-  # was not caused by the promotion; it can only have arisen while the flock had no primary. So
-  # detecting it is dhcpcd's job, afterwards, not a cost every failover pays to find someone
-  # else's pre-existing condition; when it finds one it yields, and the one address-changed path
-  # handles the new address.
-  vipUp = pkgs.writeShellScriptBin "briard-vip-up" ''
-    set -eu
-    ${pkgs.iproute2}/bin/ip link set dev "$VIP_DEV" up
-    mkdir -p "$(dirname ${vipLivePath})"
-
-    configured="''${VIP_ADDR:-}"
-    # The host holds the lease on a single-anchor substrate, where this NIC's frames carry the
-    # host's MAC: it asks under the flock's own and hands the answer down as VIP_ADDR. With none
-    # handed down the router leased the flock nothing of its own -- the host has refused and said
-    # so -- and a client started here would only be handed the host's own address. Claim nothing.
-    if [ -z "$configured" ] && [ "''${VIP_LEASE:-}" = host ]; then
-      echo "briard-vip: the host holds this address's lease and has none to give; claiming nothing on $VIP_DEV"
-      exit 0
-    fi
-    addr="$configured"
-    if [ -z "$addr" ] && [ -r ${vipAddrFile} ]; then
-      addr="$(cat ${vipAddrFile})"
-    fi
-
-    echo "briard-vip: dev=$VIP_DEV configured=''${configured:-<none>} stored=$([ -r ${vipAddrFile} ] && cat ${vipAddrFile} || echo '<none>')"
-    # Why there is no stored address, not merely that there is none. `stored=<none>` has three
-    # causes the line above cannot tell apart -- the volume is not mounted, it is mounted and the
-    # file is absent, or this flock never held an address -- and that ambiguity is the
-    # lost-address bug: written on one boot ("remembered ... for the flock"), read back as <none>
-    # on the next, with no log saying which. One `findmnt` and one `ls` at the moment of the read
-    # settle it, in the field as well as in a harness.
-    if [ -z "$configured" ] && [ ! -r ${vipAddrFile} ]; then
-      echo "briard-vip: no stored address at ${vipAddrFile} -- mount=$(${pkgs.util-linux}/bin/findmnt -no SOURCE,FSTYPE ${btrfsRoot} 2>/dev/null || echo '<NOT MOUNTED>') contents=[$(${pkgs.coreutils}/bin/ls -A ${btrfsRoot} 2>/dev/null | ${pkgs.coreutils}/bin/tr '\n' ' ')]"
-    fi
-    if [ -n "$configured" ]; then
-      # An address the operator named: claim it and hold no lease. There is nothing to renew,
-      # and asking a router about it would be asking permission for something already decided.
-      # This also keeps dhcpcd away from the agent-less harnesses, where this unit's NIC is eth1
-      # -- the DRBD link, which must never lease.
-      ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "$VIP_DEV"
-    elif [ -n "$addr" ]; then
-      # ⚠️ `brd +` is load-bearing: it keeps the VIP continuously present across the lease. dhcpcd
-      # is about to be handed the same address, and if what we put on differs from what it wants
-      # it does not update -- it deletes and re-adds. `ip addr add X/24` leaves the broadcast
-      # unset; dhcpcd wants X.X.X.255. Measured, one variable at a time, against a real dnsmasq,
-      # counting RTM_DELADDR:
-      #
-      #   ip addr replace X/24                 -> 1 delete
-      #   ip addr replace X/24 brd +           -> 0 deletes
-      #   ...also with noprefixroute, or the full dhcpcd shape -> 0
-      #
-      # The broadcast alone is the difference. A withdrawal cannot wedge a name (the reverse proxy
-      # answers mDNS without probing), but an address that blinks is briefly not there for the ARP
-      # cache of every device mid-connection.
-      ${pkgs.iproute2}/bin/ip addr replace "$addr" brd + dev "$VIP_DEV"
-      # A lease-holder here, never a gate: -b returns immediately, so nothing downstream waits on
-      # a DHCP server. Failing to start it is not failing to serve -- the address is already up,
-      # the point of applying before asking.
-      ${dhcpcdRun} "$VIP_DEV" "$addr" -b || true
-    else
-      # Nothing to apply: this flock has never held an address. Ask, and wait for the answer.
-      #
-      # --waitip=4 must keep the `=`: the family is an optional argument, taken by getopt_long
-      # only when attached. Written `--waitip 4`, the `4` becomes a positional, an interface name
-      # to dhcpcd (`4: interface not found`), and the option means "wait for any family". On a
-      # dual-stack household router SLAAC completes in ~0.3s while IPv4 is still ARP-probing, so
-      # dhcpcd daemonises satisfied by IPv6, the IPv4-only read below finds nothing, and this unit
-      # fails on a network where nothing is wrong. A test topology that sends no RAs cannot catch
-      # it: there "any family" and "IPv4" behave the same.
-      ${dhcpcdRun} "$VIP_DEV" "" --waitip=4
-      # The field after `inet`, which is the same rule net.vip reads ground truth by -- never a
-      # prefix match, which would accept an inet6 link-local and hand us an address to claim
-      # that no one in the house can reach.
-      addr="$(${pkgs.iproute2}/bin/ip -o -4 addr show dev "$VIP_DEV" scope global |
-              ${pkgs.gnused}/bin/sed -n 's/^.* inet \([^ ]*\).*$/\1/p' | head -n1)"
-      if [ -z "$addr" ]; then
-        echo "briard-vip: no address configured, none stored, and DHCP yielded none on $VIP_DEV" >&2
-        exit 1
-      fi
-    fi
-
-    # Multicast leaves on the household NIC. Multicast is local by definition, so where it goes
-    # out is where the LAN is, and apps ask exactly that to find their network: Home Assistant
-    # picks the interface it announces and answers mDNS on, and the address of its own URL, by the
-    # source address the kernel gives it for 224.0.0.251. Without this route that is the default
-    # route NIC, the user-net WAN path nothing on the LAN can reach. No `src`: the kernel takes
-    # the NIC address, so a renewed lease needs nothing here. Only multicast moves; the WAN path
-    # stays.
-    ${pkgs.iproute2}/bin/ip route replace 224.0.0.0/4 dev "$VIP_DEV"
-    ${vipReplyRoute} up
-
-    printf 'VIP_ADDR=%s\n' "$addr" >${vipLivePath}
-    # Remember it for the flock, so the peer that promotes next need not ask. Only what DHCP gave
-    # us: every node knows a configured address from its own config, and storing it would blur
-    # what this file means -- "the address this flock acquired". Never fatal (the address is
-    # claimed either way, and the agent-less harnesses run this unit with no DRBD volume mounted)
-    # but never silent: silenced, "the peer came back with no address" cannot be told apart from
-    # "the store was never written". Non-fatal decides whether to stop, not whether to say nothing.
-    if [ -z "$configured" ]; then
-      # ⚠️ The sync is the point, not hygiene. This file lets an unplanned failover -- when the
-      # household router is least likely to answer, and usually a power cut -- re-claim the
-      # flock address without asking anyone. Left in the page cache, it is lost in exactly that
-      # event: btrfs commits on its own schedule (30s by default), and a guest killed inside that
-      # window comes back with the volume mounted, intact, and the file absent. The router-down
-      # assertion of `install-macvtap` catches this, and it can pass by hand because a guest left
-      # running for a minute has committed while a test that restarts immediately has not.
-      # `sync -f` (syncfs), not an fsync of the file: the file is new, so its directory entry must
-      # be durable too, and syncing the volume is free at one small write per address acquisition.
-      if printf '%s\n' "$addr" >${vipAddrFile} 2>/dev/null &&
-         ${pkgs.coreutils}/bin/sync -f ${vipAddrFile} 2>/dev/null; then
-        # The mount is named on the write as well as the read: "written here, read back
-        # empty there" is only diagnosable if both lines say which `there` they meant.
-        echo "briard-vip: remembered $addr for the flock at ${vipAddrFile} (mount=$(${pkgs.util-linux}/bin/findmnt -no SOURCE,FSTYPE ${btrfsRoot} 2>/dev/null || echo '<NOT MOUNTED>'))"
-      else
-        echo "briard-vip: WARNING could not write ${vipAddrFile} -- a peer promoting next will have to ask DHCP" >&2
-      fi
-    fi
-  '';
-
-  # Give the address back -- to the flock, not to the pool. -x exits the lease holder without
-  # releasing (-k releases): a release hands the address to the router to give away before the
-  # peer can claim it, the one thing a floating service address must never do.
-  vipDown = pkgs.writeShellScriptBin "briard-vip-down" ''
-    set -u
-    # Captured before sourcing the live file, which sets VIP_ADDR to what we actually claimed.
-    # Different questions: what we were configured with decides whether this NIC is ours alone;
-    # what we claimed decides which address to withdraw.
-    configured="''${VIP_ADDR:-}"
-    live=""
-    if [ -r ${vipLivePath} ]; then
-      . ${vipLivePath}
-      live="''${VIP_ADDR:-}"
-    fi
-    [ -n "$live" ] || live="$configured"
-    ${pkgs.dhcpcd}/sbin/dhcpcd -x "$VIP_DEV" >/dev/null 2>&1 || true
-    if [ -n "$live" ]; then
-      ${pkgs.iproute2}/bin/ip addr del "$live" dev "$VIP_DEV" || true
-    fi
-    # The multicast route goes with the address it was added beside (briard-vip-up).
-    ${pkgs.iproute2}/bin/ip route del 224.0.0.0/4 dev "$VIP_DEV" 2>/dev/null || true
-    ${vipReplyRoute} down
-    rm -f ${vipLivePath}
-    # Take the NIC down when it is ours alone. The MAC on a dedicated service NIC is flock-scoped,
-    # so shared with the peer, and a Secondary holding it up teaches the switch the wrong port for
-    # the VIP the moment it emits any frame (an IPv6 RS, an mDNS query), and traffic for the
-    # service address then goes to the node that is not serving. The wrong-port class is silent:
-    # nothing is down, the address is gone, and the packets still vanish.
-    #
-    # ⚠️ The question is the device, not where the address came from. "Down only under DHCP"
-    # ("static address => the NIC is shared => leave it up") is a proxy for the thing actually
-    # feared: the agent-less harnesses set VIP_DEV=eth1, the DRBD NIC, where a link-down takes
-    # replication with it. On a shipped node the proxy is false: a household that sets BRIARD_VIP
-    # (documented, supported) gets VIP_DEV=eth2, a dedicated service NIC shared with nothing
-    # local, and under that rule every Secondary in the flock would keep the flock MAC up.
-    #
-    # ⚠️ Argued, not measured, and the distinction is not a formality. This makes the static path
-    # behave like the DHCP path on a hazard the file already treats as real; the hazard biting is
-    # not demonstrated. A wrong port needs a right port to exist, so it takes two nodes, and no
-    # test in the tree moves work between two installed nodes; a one-node assertion passes
-    # identically against fixed and unfixed guests, because a standby deletes the VIP address
-    # either way and nobody answers ARP for an address they do not hold. Do not read the install
-    # rigs' green as cover for this line.
-    #
-    # So ask whether this NIC is the system/DRBD NIC. net.configure writes SYSTEM_DEV beside
-    # VIP_DEV, so a real node always knows; an agent-less harness never sets it and falls through
-    # to the DHCP-only rule, the conservative answer for a NIC we cannot identify. The
-    # `-z "$configured"` arm keeps every NIC that held a DHCP address coming down.
-    if [ -z "$configured" ] || { [ -n "''${SYSTEM_DEV:-}" ] && [ "$VIP_DEV" != "''${SYSTEM_DEV}" ]; }; then
-      ${pkgs.iproute2}/bin/ip link set dev "$VIP_DEV" down || true
-    fi
-    exit 0
-  '';
 
 in
 {
@@ -990,7 +456,7 @@ in
     # 500ms ping deadline, i.e. a split-brain with no failure anywhere. Every address here is
     # hand-placed on the NIC that owns its traffic (net.configure, briard-vip's lease, the witness
     # link), so weak-host ARP adds nothing and only the cross-NIC ambiguity goes. The VIP
-    # takeover's gratuitous ARP is explicit (vipArping crafts its own frames) and unaffected.
+    # takeover's gratuitous ARP is explicit (briard-vip-arping crafts its own frames) and unaffected.
     boot.kernel.sysctl = {
       "net.ipv4.conf.all.arp_ignore" = 1;
       "net.ipv4.conf.default.arp_ignore" = 1;

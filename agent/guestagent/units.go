@@ -2,6 +2,7 @@ package guestagent
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,11 +37,17 @@ import (
 // (guest-image/disk-image.nix), as do the upstream DRBD units and briard-stage, whose content is
 // a build-time fact about the image rather than anything the agent knows.
 //
+// The shell those units run rides with them, for the same reason: the VIP's claim and release
+// and the promotion hold's steps are ours, and a script baked into the image would move on the
+// image's cadence while the unit naming it and the agent pushing its environment (vip.env) move
+// on the host's. They are embedded here (scripts/) and written to /run/briard/scripts before the units.
+//
 // ⚠️ And the image still owns the closure. A unit's PATH is a set of store paths, which a pushed
 // binary cannot invent; the image publishes them as one profile at ToolsBin and the agent names
-// that path. The two halves share a name and nothing else -- no manifest, no schema, no
-// handshake. An image that predates the profile has none, which WriteUnits treats as a refusal
-// to run rather than as something to work around (see below).
+// that path, and the scripts name commands only through it (their interpreter included). The two
+// halves share a name and nothing else -- no manifest, no schema, no handshake. An image whose
+// profile predates the scripts has no interpreter there, which WriteUnits treats as a refusal to
+// run rather than as something to work around (see below).
 
 // The two paths, overridable for tests exactly as guestfirmware's binDir/binRunDir are, and for
 // the same reason: everything here is an absolute path on a real guest, so a test that could not
@@ -53,7 +60,16 @@ const (
 	// `toolsEtc`, which carry the reasoning for whole-packages-not-named-commands. Different
 	// languages, so no shared import; the nix-side comment names this const back.
 	defaultToolsBin = "/etc/briard/tools/bin"
+	// defaultScriptDir is where the embedded scripts are written: tmpfs, like the units, so a boot
+	// starts with none until the agent that runs them writes them. A script names its siblings by
+	// its own directory ("${0%/*}"), so only the units below spell this path.
+	defaultScriptDir = "/run/briard/scripts"
 )
+
+// scripts are the shell the agent-written units run, one file per tool name.
+//
+//go:embed scripts
+var scripts embed.FS
 
 func unitDir() string {
 	if d := os.Getenv("BRIARD_UNIT_DIR"); d != "" {
@@ -96,6 +112,42 @@ func holdSecs() string {
 // rather than naming a bare command, because systemd requires an absolute path for the first
 // word -- PATH only reaches what the command itself then shells out to.
 func tool(name string) string { return filepath.Join(toolsBin(), name) }
+
+// script returns the absolute path of one of the agent's own scripts, as writeScripts lays it.
+func script(name string) string { return filepath.Join(scriptDir(), name) }
+
+func scriptDir() string {
+	if d := os.Getenv("BRIARD_SCRIPT_DIR"); d != "" {
+		return d
+	}
+	return defaultScriptDir
+}
+
+// writeScripts lays every embedded script at scriptDir, whole files at every start (the same
+// idempotence as the units), executable: a script runs its siblings, and dhcpcd its hook, by
+// spawning the file itself.
+func writeScripts(ctx context.Context, x Executor) error {
+	ents, err := scripts.ReadDir("scripts")
+	if err != nil {
+		return fmt.Errorf("guest scripts: %w", err)
+	}
+	var paths []string
+	for _, e := range ents {
+		b, err := scripts.ReadFile("scripts/" + e.Name())
+		if err != nil {
+			return fmt.Errorf("guest scripts: %w", err)
+		}
+		p := script(e.Name())
+		if err := x.WriteFile(p, b); err != nil {
+			return fmt.Errorf("guest scripts: write %s: %w", e.Name(), err)
+		}
+		paths = append(paths, p)
+	}
+	if out, err := x.Run(ctx, "chmod", append([]string{"0755"}, paths...)...); err != nil {
+		return fmt.Errorf("guest scripts: chmod: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
 
 // What hands the resource on when a chain member gives up; the whole finding is that it has to
 // be a state hook rather than a dependency.
@@ -256,14 +308,14 @@ FailureAction=reboot
 [Service]
 Type=simple
 Environment=PATH=` + tools + `
-ExecCondition=` + tool("briard-hold-only-if-holding") + `
-ExecStartPre=` + tool("briard-hold-refuse") + `
-ExecStartPre=-` + tool("briard-hold-stop") + " " + chain.Target + " " + strings.Join(reversed(members), " ") + `
-ExecStartPre=` + tool("briard-hold-confirm") + `
+ExecCondition=` + script("briard-hold-only-if-holding") + `
+ExecStartPre=` + script("briard-hold-refuse") + `
+ExecStartPre=-` + script("briard-hold-stop") + " " + chain.Target + " " + strings.Join(reversed(members), " ") + `
+ExecStartPre=` + script("briard-hold-confirm") + `
 ExecStart=` + tool("sleep") + ` ` + holdSecs() + `
-ExecStopPost=-` + tool("briard-hold-release") + `
+ExecStopPost=-` + script("briard-hold-release") + `
 ExecStopPost=-` + tool("systemctl") + ` reset-failed ` + strings.Join(members, " ") + `
-ExecStopPost=-` + tool("briard-hold-restart") + " " + chain.Target + `
+ExecStopPost=-` + script("briard-hold-restart") + " " + chain.Target + `
 ExecStopPost=-` + tool("journalctl") + ` --sync
 `
 
@@ -348,9 +400,9 @@ Type=oneshot
 RemainAfterExit=yes
 Environment=PATH=` + tools + `
 EnvironmentFile=` + vipEnvPath + `
-ExecStart=` + tool("briard-vip-up") + `
-ExecStartPost=-` + tool("briard-vip-arping") + `
-ExecStop=` + tool("briard-vip-down") + `
+ExecStart=` + script("briard-vip-up") + `
+ExecStartPost=-` + script("briard-vip-arping") + `
+ExecStop=` + script("briard-vip-down") + `
 `
 
 	// 2b. Ten-minute lease renewal, for as long as this node holds the VIP. Deliberately not a
@@ -379,7 +431,7 @@ After=` + vipUnit + `
 Type=oneshot
 Environment=PATH=` + tools + `
 EnvironmentFile=` + vipEnvPath + `
-ExecStart=` + tool("briard-vip-renew") + `
+ExecStart=` + script("briard-vip-renew") + `
 `
 
 	// 4. The reverse proxy -- answer the VIP on :80 and terminate HTTPS on :443, and publish the
@@ -454,15 +506,17 @@ After=` + strings.Join(members, " ") + `
 	return u
 }
 
-// WriteUnits renders every unit this agent owns into /run/systemd/system and reloads systemd, so
-// that what the host is about to start is the unit this binary defines. It runs before the
+// WriteUnits renders every unit this agent owns into /run/systemd/system, and the scripts they
+// run into /run/briard/scripts, and reloads systemd, so that what the host is about to start is
+// the unit and the script this binary defines. It runs before the
 // control port opens, and before anything else the agent's start does (cmd/briard-guest-agent's
 // runGuest): the host's gate is the port, not READY, so anything rendered after the port is a
 // unit the first bring-up verb can ask for and not find -- the very crash this file exists to
 // remove.
 //
-// A failure here is fatal to the start, on purpose. The only realistic cause is an image with no
-// tool profile, i.e. a pushed agent newer than the image beneath it, and refusing to serve is
+// A failure here is fatal to the start, on purpose. The only realistic cause is an image whose
+// tool profile is missing or predates the scripts (no interpreter at the path their first line
+// names), i.e. a pushed agent newer than the image beneath it, and refusing to serve is
 // what makes that safe: a trial agent that exits takes the whole staged set down with it (the
 // picker restores the committed binaries, guestfirmware.BinStartup), so the node keeps running
 // the release it already had instead of promoting into units it cannot support. Stopping the host
@@ -470,6 +524,11 @@ After=` + strings.Join(members, " ") + `
 func WriteUnits(ctx context.Context, x Executor) error {
 	if tools := toolsBin(); !isDir(tools) {
 		return fmt.Errorf("guest units: no tool profile at %s -- this image predates the tool profile and cannot run this agent", tools)
+	} else if _, err := os.Stat(filepath.Join(tools, "bash")); err != nil {
+		return fmt.Errorf("guest units: the tool profile at %s has no bash -- this image predates the agent's scripts and cannot run this agent", tools)
+	}
+	if err := writeScripts(ctx, x); err != nil {
+		return err
 	}
 	dir := unitDir()
 	want := units()

@@ -1,0 +1,27 @@
+#!/etc/briard/tools/bin/bash
+# Stops drbd-promote@, not the target, as a barrier rather than a preference. Measured:
+# `systemctl stop drbd-services@r0.target` returns as soon as the target is down -- `Stopped
+# target` at 62.386, `Stopping briard-vip` at 62.388, the shim running at 62.412 while the volume
+# was still mounted, exit 11, reboot. The members are `After=drbd-promote@`, so they stop before
+# it: waiting for the promote unit is the only spelling that waits for all of them. Its ExecStop
+# is the ordinary demote, so briard-hold-confirm only confirms. A lone node has no promote unit,
+# so its stop names every unit (the target, then the members in reverse, passed in by the agent):
+# a stop of several units returns when all are down.
+#
+# The topology word decides (node storage writes it). A missing word means "node storage has not
+# run on this boot" and an unknown one names itself rather than guessing. Both fail the step, and
+# what that means is the unit's to say (ExecCondition skips, ExecStartPre escalates).
+set -u
+if [ ! -r /run/briard/topology.env ]; then
+  echo "briard-hold-stop: no /run/briard/topology.env; node storage has not run on this boot" >&2
+  exit 1
+fi
+. /run/briard/topology.env
+case "${BRIARD_TOPOLOGY:-}" in
+  flock) systemctl stop drbd-promote@r0.service ;;
+  alone) systemctl stop "$@" ;;
+  *)
+    echo "briard-hold-stop: /run/briard/topology.env says '$BRIARD_TOPOLOGY', which is neither flock nor alone" >&2
+    exit 1
+    ;;
+esac

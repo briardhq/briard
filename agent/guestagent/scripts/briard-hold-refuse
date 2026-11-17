@@ -1,0 +1,30 @@
+#!/etc/briard/tools/bin/bash
+# The order is the design: mask before demoting. Measured on a one-node DRBD resource,
+# drbd-reactor re-promotes about 2s after a demote completes, so a hold added after the demote
+# loses that race. Masking first refuses the promotion rather than undoing it: `systemctl start
+# drbd-services@r0.target` fails outright, drbd-promote@ never runs, DRBD's role never moves, and
+# no second mount/unmount cycle is paid. The mask is also the only lever that says "not me, for
+# now": everything else reactor offers is DRBD's own decision or a static handicap biasing which
+# node wins a race. `--runtime` puts it in /run, so a reboot clears it and a hold can never
+# outlive the boot that might have fixed its cause.
+#
+# A lone node needs no mask: nothing re-promotes during its hold, because it runs no reactor and
+# briard-hold-restart is what starts its target again.
+#
+# The topology word decides (node storage writes it). A missing word means "node storage has not
+# run on this boot" and an unknown one names itself rather than guessing. Both fail the step, and
+# what that means is the unit's to say (ExecCondition skips, ExecStartPre escalates).
+set -u
+if [ ! -r /run/briard/topology.env ]; then
+  echo "briard-hold-refuse: no /run/briard/topology.env; node storage has not run on this boot" >&2
+  exit 1
+fi
+. /run/briard/topology.env
+case "${BRIARD_TOPOLOGY:-}" in
+  flock) systemctl mask --runtime drbd-services@r0.target && systemctl daemon-reload ;;
+  alone) : ;;
+  *)
+    echo "briard-hold-refuse: /run/briard/topology.env says '$BRIARD_TOPOLOGY', which is neither flock nor alone" >&2
+    exit 1
+    ;;
+esac

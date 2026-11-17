@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -48,7 +50,12 @@ func guestWithTools(t *testing.T) (unitDir, tools string) {
 	if err := os.MkdirAll(tools, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The interpreter the scripts name: the profile WriteUnits checks for.
+	if err := os.WriteFile(filepath.Join(tools, "bash"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("BRIARD_UNIT_DIR", unitDir)
+	t.Setenv("BRIARD_SCRIPT_DIR", t.TempDir())
 	t.Setenv("BRIARD_TOOLS_BIN", tools)
 	t.Setenv("BRIARD_BIN_DIR", "/var/lib/briard-bin")
 	return unitDir, tools
@@ -84,6 +91,67 @@ func TestWriteUnitsRendersNodeStorage(t *testing.T) {
 	// would be silently inert here (nothing enables it) and wrong the moment anything did.
 	if strings.Contains(got, "[Install]") {
 		t.Errorf("node storage must not be enablable:\n%s", got)
+	}
+}
+
+// The scripts ride with the units: every embedded one is laid at the script directory, byte for
+// byte, and made executable, and every script a unit runs is one of them. A unit naming a script
+// the agent does not lay is the image-skew defect again, one level down.
+func TestWriteUnitsLaysTheScripts(t *testing.T) {
+	dir, _ := guestWithTools(t)
+	sdir := scriptDir()
+	f := &diskExec{}
+	if err := WriteUnits(context.Background(), f); err != nil {
+		t.Fatalf("WriteUnits: %v", err)
+	}
+	ents, err := scripts.ReadDir("scripts")
+	if err != nil || len(ents) == 0 {
+		t.Fatalf("no embedded scripts: %v", err)
+	}
+	var chmodded []string
+	for _, r := range f.runs {
+		if r[0] == "chmod" && r[1] == "0755" {
+			chmodded = r[2:]
+		}
+	}
+	for _, e := range ents {
+		want, _ := scripts.ReadFile("scripts/" + e.Name())
+		p := filepath.Join(sdir, e.Name())
+		got, err := os.ReadFile(p)
+		if err != nil || string(got) != string(want) {
+			t.Errorf("%s was not laid as embedded: %v", e.Name(), err)
+		}
+		if !slices.Contains(chmodded, p) {
+			t.Errorf("%s was not made executable (chmod ran on %v)", e.Name(), chmodded)
+		}
+	}
+	units, _ := os.ReadDir(dir)
+	named := 0
+	for _, u := range units {
+		b, _ := os.ReadFile(filepath.Join(dir, u.Name()))
+		for _, m := range regexp.MustCompile(regexp.QuoteMeta(sdir)+`/([a-z-]+)`).FindAllStringSubmatch(string(b), -1) {
+			named++
+			if _, err := os.Stat(filepath.Join(sdir, m[1])); err != nil {
+				t.Errorf("%s runs %s, which the agent does not lay", u.Name(), m[1])
+			}
+		}
+	}
+	if named == 0 {
+		t.Fatal("the fixture is vacuous: no unit names a script")
+	}
+}
+
+// A profile from before the scripts has no interpreter at the path their first line names, and
+// the agent refuses it as it refuses a missing profile, rather than laying scripts that cannot
+// exec on the promotion path.
+func TestWriteUnitsRefusesAProfileWithNoBash(t *testing.T) {
+	_, tools := guestWithTools(t)
+	if err := os.Remove(filepath.Join(tools, "bash")); err != nil {
+		t.Fatal(err)
+	}
+	err := WriteUnits(context.Background(), &diskExec{})
+	if err == nil || !strings.Contains(err.Error(), "no bash") {
+		t.Fatalf("rendered against a profile with no bash: %v", err)
 	}
 }
 
