@@ -248,21 +248,22 @@ func runUninstall(args []string) int {
 		return 2
 	}
 	if win {
-		// The window asks with a checkbox where the terminal takes a flag. Deleting rides a second,
-		// positive answer that names the tree; its No uninstalls nothing.
+		// The window asks with a checkbox where the terminal takes a flag, in words anyone can read:
+		// the terminal's names the parts. Deleting rides a second, positive answer; its No
+		// uninstalls nothing.
 		ok, del := confirmUninstall("Uninstall Briard?",
-			"This stops Briard and its VM (cleanly), and removes its "+systemUnits+", network devices, "+
-				installTree+" and the briard command.\n\n"+
-				"Your data is kept unless you tick the box below: "+dataTree+" stays, holding the data "+
-				"volume and this machine's identity, and installing again picks up where it left off.",
-			"Also delete my data: every app's data and this machine's identity. This cannot be undone.",
+			"This stops Briard and removes it from this computer.\n\n"+
+				"Your apps and their data are kept unless you tick the box below, so installing Briard "+
+				"again picks up where you left off.",
+			"Also delete my apps and their data. This cannot be undone.",
 			*deleteData)
 		if !ok {
 			return 2
 		}
-		if del && !confirmDelete("Delete "+dataTree+" for good?\n\nIt holds the data volume, every app's "+
-			"data on it, and this machine's identity, and deleting it cannot be undone.\n\n"+
-			"Yes deletes it with Briard. No uninstalls nothing.") {
+		if del && !confirmDelete("Delete your apps and their data for good?\n\n"+
+			"Everything your apps keep, such as their settings and history, is deleted with Briard. "+
+			"This cannot be undone.\n\n"+
+			"Yes deletes them with Briard. No cancels, and nothing is uninstalled.") {
 			return 2
 		}
 		*deleteData = del
@@ -271,25 +272,55 @@ func runUninstall(args []string) int {
 		// Windows asks for the rights through UAC, as the installer does; elsewhere it refuses.
 		return uninstallElevated(args)
 	}
+	if win {
+		// The console stays open while the uninstall runs; its lines are kept for the end.
+		fmt.Println("Uninstalling Briard. This takes up to a minute, and this window closes by itself.")
+	}
 	var said []string
 	say := func(format string, a ...any) {
 		line := fmt.Sprintf(format, a...)
 		said = append(said, line)
-		fmt.Printf("briard: %s\n", line)
+		if !win {
+			fmt.Printf("briard: %s\n", line)
+		}
 	}
 	err := host.ConfigFromEnv().Uninstall(context.Background(), *deleteData, say)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "briard uninstall: %v\n", err)
 	}
 	if win {
-		// What the console said, kept where the user can read it.
-		if err != nil {
-			said = append(said, "Briard was NOT fully uninstalled: "+err.Error())
-		}
-		tell(strings.Join(said, "\n\n"), err != nil)
+		tell(uninstalled(said, *deleteData, err), err != nil)
 	}
 	if err != nil {
 		return 1
 	}
 	return 0
 }
+
+// uninstalled is the windowed uninstall's last word, from what the uninstall said and how it
+// ended: plain words when it worked, and when it did not, everything it did, which is what
+// someone helping needs.
+func uninstalled(said []string, deleteData bool, err error) string {
+	if err != nil {
+		return "Briard was not fully uninstalled: " + err.Error() + "\n\n" +
+			"To ask for help, open " + helpLink + " and include what the uninstall did:\n\n" +
+			strings.Join(said, "\n\n")
+	}
+	text := "Briard is uninstalled."
+	if deleteData {
+		text += " Your apps and their data are deleted."
+	} else {
+		text += "\n\nYour apps and their data are kept in " + dataTree + ", so installing Briard again " +
+			"picks up where you left off. To delete them too, delete that folder."
+	}
+	for _, l := range said {
+		if strings.Contains(l, "next restart") {
+			text += "\n\nRestart Windows to finish: a few files go then."
+			break
+		}
+	}
+	return text
+}
+
+// helpLink is where a user asks for help: the project's discussions.
+const helpLink = "https://github.com/briardhq/briard/discussions"

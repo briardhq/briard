@@ -257,6 +257,7 @@ func (cfg Config) removeFiles(deleteData bool, logf func(string, ...any)) error 
 			errs = append(errs, fmt.Errorf("%s: %w", p, err))
 		}
 	}
+	// "next restart" is what the windowed uninstall looks for to ask for the restart (cmd/briard-agent).
 	logf("%d files and folders still in use go at the next restart of Windows; restart it to finish", len(left))
 	return errors.Join(errs...)
 }

@@ -22,8 +22,8 @@ func TestAppIsTheWord(t *testing.T) {
 	allowed := []*regexp.Regexp{
 		// systemd and NixOS: units, their sections and options, and the OS module tree.
 		regexp.MustCompile(`[\w@.${}*-]*\.service\b|\[Service\]|serviceConfig|SERVICE_RESULT|systemd\.services|\bservices\.[a-z][\w-]*|(?i)(systemd|transient|OS|oneshot|template|instance) (unit|service)s?\b`),
-		// Windows: the service control manager and its API, and the agent's own Windows service.
-		regexp.MustCompile(`(?i)windows[- ]services?|service (control )?manager|service controller|\bSCM\b|svc\.\w+|mgr\.\w+|windows/svc|ERROR_SERVICE_\w+|SERVICE_[A-Z_]+|SE_SERVICE|\w*(Create|Open|Close|Delete|Query|Change|Start|Stop|Control|register|open|remove|tap|warden|agent)Service\w*|Service(Name|Running|Stopped|Restart|SpecificExitCode|Handle|Config2?|Status_?)\b|IsWindowsService|runService|serviceSDDL|service(Start|Stop)Bound`),
+		// Windows: the service control manager and its API, and the agent's own Windows services, by name too.
+		regexp.MustCompile(`(?i)windows[- ]services?|service (control )?manager|service controller|\bSCM\b|svc\.\w+|mgr\.\w+|windows/svc|ERROR_SERVICE_\w+|SERVICE_[A-Z_]+|SE_SERVICE|\w*(Create|Open|Close|Delete|Query|Change|Start|Stop|Control|register|open|remove|tap|warden|agent)Service\w*|Service(Name|Running|Stopped|Restart|SpecificExitCode|Handle|Config2?|Status_?)\b|IsWindowsService|briard-(agent|warden) services?\b|runService|serviceSDDL|service(Start|Stop)Bound`),
 		// The VIP's side of the guest: the service address, its NIC, tap and MAC.
 		regexp.MustCompile(`(?i)service[ -]?(address(es)?|nics?|macs?|taps?|ip|vip|child|identity|network|net|segment|side|link|cidr)\b|\w*Service(Tap|MAC|NIC|Netdev|Link|Address)\w*|\w*service(MAC|Netdev)\b|service[/+ ]+system|system[/+ ]+service|service on net2|service\(eth2\)`),
 		// DNS-SD (mDNS) service types, records and instances.
