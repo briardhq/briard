@@ -173,6 +173,27 @@ func TestNetworkRecordRoundTrip(t *testing.T) {
 	}
 }
 
+// The guest's router for replies to other subnets is the host's gateway on the LAN. A reading with
+// none (the router not back yet, here a parent that does not exist) falls back to the recorded
+// one, and an agent that owns no network names none.
+func TestVIPRouterFallsBackToTheRecord(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{
+		AssignmentCache: filepath.Join(dir, "assignment.json"),
+		net:             &nic.Spec{Parent: "briard-no-such-device"},
+	}
+	if got := cfg.vipRouter(t.Context()); got != "" {
+		t.Errorf("no reading and no record named router %q", got)
+	}
+	cfg.writeNetworkRecord(nic.Fingerprint{Parent: "briard-no-such-device", HostCIDR: "192.168.2.10/24", GatewayIP: "192.168.2.1"}, discard)
+	if got := cfg.vipRouter(t.Context()); got != "192.168.2.1" {
+		t.Errorf("router = %q, want the recorded 192.168.2.1", got)
+	}
+	if got := (Config{AssignmentCache: cfg.AssignmentCache}).vipRouter(t.Context()); got != "" {
+		t.Errorf("an agent that owns no network named router %q", got)
+	}
+}
+
 // The record must be readable by the shape that writes it -- a field renamed on one side only
 // would leave every future re-parent decision Unknown, which refuses silently and forever.
 func TestNetworkRecordIsTheShapeOnDisk(t *testing.T) {

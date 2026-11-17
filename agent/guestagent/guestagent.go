@@ -809,6 +809,11 @@ type netConfigureRequest struct {
 	// still the VIP's DHCP identity (VIP_MAC in vip.env).
 	VIPParent string `json:"vip_parent,omitempty"`
 	VIPMAC    string `json:"vip_mac,omitempty"`
+	// VIPRouter: the household's router on the VIP's LAN, which replies to clients on other
+	// subnets leave through while the VIP is held (VIP_ROUTER, briard-vip-reply-route). The
+	// host's own gateway there: it knows one however the address was set, and the guest knows
+	// one only when it holds the lease itself.
+	VIPRouter string `json:"vip_router,omitempty"`
 }
 
 // NetConfig is what the host tells the guest about its own networking, in one call. A struct
@@ -828,6 +833,7 @@ type NetConfig struct {
 	PodSubnet   string // the pool private app networks are allocated from, "10.12.7"; "" = none drawn
 	VIPParent   string // the NIC to build VIPDev on as a macvlan child; "" = the host already built it
 	VIPMAC      string // the flock MAC: the VIP's DHCP identity, and the MAC a VIPParent child carries
+	VIPRouter   string // the router on the VIP's LAN, for replies to other subnets; "" = none routed
 }
 
 // netVIPRequest names the device to read the live VIP from (net.vip). Empty Dev = this node has
@@ -1936,6 +1942,9 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			if req.VIPDev != "" && req.VIPLease {
 				env = append(env, "VIP_LEASE=host\n"...)
 			}
+			if req.VIPDev != "" && req.VIPRouter != "" {
+				env = append(env, "VIP_ROUTER="+req.VIPRouter+"\n"...)
+			}
 			if len(env) > 0 {
 				return nil, x.WriteFile(vipEnvPath, env)
 			}
@@ -2833,7 +2842,7 @@ func (g *Client) ConfigureNet(ctx context.Context, n NetConfig) error {
 		PrivDev: n.PrivDev, PrivCIDR: n.PrivCIDR,
 		PrivHostIP: n.PrivHostIP, PrivHostMAC: n.PrivHostMAC,
 		PodSubnet: n.PodSubnet,
-		VIPParent: n.VIPParent, VIPMAC: n.VIPMAC,
+		VIPParent: n.VIPParent, VIPMAC: n.VIPMAC, VIPRouter: n.VIPRouter,
 	}, nil)
 }
 

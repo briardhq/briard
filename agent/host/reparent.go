@@ -192,6 +192,21 @@ func (cfg Config) recordedNetwork() nic.Fingerprint {
 	return rec.Fingerprint
 }
 
+// vipRouter is the router the guest sends replies to other subnets through while it holds the
+// VIP: this host's own gateway on the LAN the guest's service NIC hangs off, which is the VIP's
+// LAN. Read now, else the recorded one: a bring-up after a power cut can beat the router back,
+// and an empty read is no evidence that the LAN changed. "" = no LAN here (an agent-less or
+// witness node), and the guest routes nothing.
+func (cfg Config) vipRouter(ctx context.Context) string {
+	if cfg.net == nil || cfg.net.Parent == "" {
+		return ""
+	}
+	if gw := nic.Read(ctx, cfg.net.Parent).GatewayIP; gw != "" {
+		return gw
+	}
+	return cfg.recordedNetwork().GatewayIP
+}
+
 // reparentWait is the tier: how long to let a candidate stand before rebuilding on it. The second
 // return is false when no wait is long enough (the machine has moved, or we cannot tell): the
 // answer is an operator rather than a timer.

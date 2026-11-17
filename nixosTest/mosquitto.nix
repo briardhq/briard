@@ -16,8 +16,12 @@
 #      name and on the port MQTT listens on, and the result is connected to. An image that
 #      advertises nothing is invisible to every appliance in the house, a broker nobody without
 #      our documentation can use.
+#   6. an appliance on another subnet, routed in without NAT (another VLAN of the same home),
+#      reaches MQTT: the broker's reply leaves its pod with the pod's address, so only the
+#      connection's own mark, not the VIP as a source, sends it to the router rather than out the
+#      guest's WAN path. Proven against a control: with the reply routing withdrawn, it fails.
 #
-# Two nodes: node2 is the off-box client, the outside from which (2), (3) and (5) are observed.
+# Two nodes: node2 is the off-box client, the outside from which (2), (3), (5) and (6) are observed.
 # node1 seeds the volume; the script takes whichever node promoted as the broker and the other
 # as the client.
 { pkgs, guestModule, fixture }:
@@ -26,6 +30,9 @@ let
   h = import ./lib.nix { inherit pkgs guestModule; };
   node = h.mkNode {
     inherit fixture;
+    # The router (6) sends replies through. The rig has none, so the client stands in for it,
+    # taking this address only for (6).
+    vipRouter = "192.168.1.254";
     resource = h.mkResource [
       { name = "node1"; id = 0; }
       { name = "node2"; id = 1; }
@@ -183,6 +190,27 @@ pkgs.testers.runNixOSTest {
     got = other.succeed(f"mosquitto_sub -h {VIP} -p {ann['port']} -t briard/test -C 1 -W 10").strip()
     assert got == "before-restart", f"the announced endpoint did not serve MQTT: {got!r}"
     print(f"a browsing device finds {ann['name']} under {ann['type']} at {host} -> {VIP}:{ann['port']}")
+
+    # (6) An appliance on another subnet. The client becomes the household router (the address
+    # vip.env names) and the appliance behind it (10.99.0.2, off the VIP's subnet), and asks from
+    # there, with no NAT on the way: the broker sees the appliance's own address.
+    other.succeed("ip addr add 192.168.1.254/24 dev eth1")
+    other.succeed("ip addr add 10.99.0.2/32 dev lo")
+    sub = "timeout 20 mosquitto_sub -h 192.168.1.100 -A 10.99.0.2 -t briard/test -C 1 -W 10"
+    print(primary.succeed("ip rule; ip route show table 100"))
+    got = other.succeed(sub).strip()
+    assert got == "before-restart", f"an appliance on another subnet got no MQTT: {got!r}"
+    # The control: the same request with the reply routing withdrawn (the script briard-vip-up
+    # installs it with, run as briard-vip-down runs it) must fail, or the pass above proved nothing.
+    route = primary.succeed(
+        "grep -o '/nix/store/[^ ]*-briard-vip-reply-route' "
+        "$(systemctl show -P ExecStart briard-vip | grep -o '/[^ ;]*briard-vip-up' | head -1)").strip()
+    primary.succeed(f"set -a; . /run/briard/vip.env; {route} down")
+    other.fail(sub)
+    primary.succeed(f"set -a; . /run/briard/vip.env; {route} up")
+    got = other.succeed(sub).strip()
+    assert got == "before-restart", f"the reply routing did not come back: {got!r}"
+    print("an appliance on another subnet reached MQTT; withdrawn, it did not")
 
     # ⚠️ Deliberately not asserted, so nobody adds it back and spends the day: the SRV target/port
     # fields as read by `avahi-browse -r`. They are correct (observed resolving to

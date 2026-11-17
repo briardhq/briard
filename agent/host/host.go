@@ -1231,6 +1231,7 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 			// from the same seed -- so the two substrates present the identical L2 identity and
 			// only differ in who creates the device holding it.
 			VIPParent: cfg.VIPParent, VIPMAC: cfg.serviceMAC(),
+			VIPRouter: cfg.vipRouter(bringup),
 		})
 	}
 	// ...and the host's own path back to it. The guest just installed its half; this is the

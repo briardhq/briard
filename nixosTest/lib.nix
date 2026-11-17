@@ -256,6 +256,10 @@ let
       # under its own name, so a test can prove what the plural coordination does — that
       # installing or upgrading one app leaves the others alone.
       fixtures ? [ ],
+      # The household router the host would push as VIP_ROUTER, which replies to clients on other
+      # subnets leave through. null = none, as for an agent with no LAN: these rigs have no router,
+      # so only a rig that stands one up names one.
+      vipRouter ? null,
     }:
     let
       allFixtures = lib.optional (fixture != null) fixture ++ fixtures;
@@ -266,7 +270,8 @@ let
       # disagree.
       vipDev = "eth1";
       vipAddr = "192.168.1.100/24";
-      vipEnvFile = pkgs.writeText "vip.env" "VIP_DEV=${vipDev}\nVIP_ADDR=${vipAddr}\n";
+      vipEnvFile = pkgs.writeText "vip.env" ("VIP_DEV=${vipDev}\nVIP_ADDR=${vipAddr}\n"
+        + lib.optionalString (vipRouter != null) "VIP_ROUTER=${vipRouter}\n");
 
       # ── The harness as the host's stand-in, for storage ───────────────────────────────────
       # Storage policy is the host's, pushed at bring-up as /run/briard/node-storage.json and

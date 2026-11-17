@@ -382,6 +382,77 @@ let
     exec ${pkgs.dhcpcd}/sbin/dhcpcd -N "$VIP_DEV"
   '';
 
+  # Replies to the household leave the way their request came in. The guest's only default route
+  # is the user-net WAN path (dhcpcd -G above): its own traffic must not depend on holding the
+  # VIP. So a reply to a client off the VIP's subnet -- one routed in without NAT: a VPN on the
+  # router, a subnet router, another VLAN of the same home -- would follow that default and be
+  # lost. While the VIP is held, table 100 holds a default via the household's router on VIP_DEV,
+  # and two kinds of traffic look it up:
+  #
+  #   - a connection that arrived on VIP_DEV. Its conntrack entry is marked on the way in and the
+  #     mark copied onto its replies: in prerouting for a published port's reply, which leaves the
+  #     pod with the pod's address and is rewritten to the VIP only after routing (so no rule on
+  #     the source address can see it), and in a route-type output chain for the guest's own
+  #     sockets, where a changed mark re-routes the packet;
+  #   - all UDP. A wildcard-bound UDP socket's source is picked by the route, so only a route can
+  #     make its reply leave from the VIP. The guest's own UDP is its DNS, to user-net's on-link
+  #     resolver, which the rule before keeps where it is.
+  #
+  # `lookup main suppress_prefixlength 0` comes first: everything main routes more specifically
+  # than its default (the VIP's own subnet, the pod networks, user-net's /24, multicast) keeps
+  # that route. Only the default is replaced.
+  #
+  # The router is the host's own gateway on the LAN the VIP lives on (VIP_ROUTER, pushed by the
+  # agent): one source for every way the address was set, since a hand-set VIP and a lease the
+  # host holds have no lease here to read one from. None given, nothing is routed and the
+  # household reaches the VIP from its own subnet only. The mark is one bit of our own, OR-ed in
+  # and matched under its mask, so it composes with netavark's marks rather than replacing them.
+  #
+  # `up` re-installs from scratch, so it is idempotent; `down` is everything `up` does, undone.
+  # Never fatal, never silent: the VIP serves its own subnet either way.
+  vipReplyRoute = pkgs.writeShellScript "briard-vip-reply-route" ''
+    set -u
+    ip=${pkgs.iproute2}/bin/ip
+    nft=${pkgs.nftables}/bin/nft
+    mark=0x40000
+    withdraw() {
+      $nft delete table inet briard-vip 2>/dev/null
+      for pref in 10790 10791 10792; do
+        while $ip rule del pref $pref 2>/dev/null; do :; done
+      done
+      $ip route flush table 100 2>/dev/null
+    }
+    withdraw
+    [ "$1" = up ] || exit 0
+    if [ -z "''${VIP_ROUTER:-}" ]; then
+      echo "briard-vip: no router named for $VIP_DEV; clients on other subnets get no reply"
+      exit 0
+    fi
+    if ! $ip route replace default via "$VIP_ROUTER" dev "$VIP_DEV" table 100 ||
+       ! $ip rule add pref 10790 lookup main suppress_prefixlength 0 ||
+       ! $ip rule add pref 10791 fwmark $mark/$mark lookup 100 ||
+       ! $ip rule add pref 10792 ipproto udp lookup 100 ||
+       ! $nft -f - <<EOF
+    table inet briard-vip {
+      chain prerouting {
+        type filter hook prerouting priority mangle; policy accept;
+        iifname "$VIP_DEV" ct state new ct mark set ct mark | $mark
+        iifname != "$VIP_DEV" ct mark & $mark == $mark meta mark set meta mark | $mark
+      }
+      chain output {
+        type route hook output priority mangle; policy accept;
+        ct mark & $mark == $mark meta mark set meta mark | $mark
+      }
+    }
+    EOF
+    then
+      withdraw
+      echo "briard-vip: WARNING could not route replies via $VIP_ROUTER on $VIP_DEV; clients on other subnets get no reply" >&2
+      exit 0
+    fi
+    echo "briard-vip: replies to other subnets leave via $VIP_ROUTER on $VIP_DEV"
+  '';
+
   # Resolve the service address, claim it, and record what was actually claimed.
   #
   # Three sources, and the order is the design:
@@ -481,6 +552,7 @@ let
     # the NIC address, so a renewed lease needs nothing here. Only multicast moves; the WAN path
     # stays.
     ${pkgs.iproute2}/bin/ip route replace 224.0.0.0/4 dev "$VIP_DEV"
+    ${vipReplyRoute} up
 
     printf 'VIP_ADDR=%s\n' "$addr" >${vipLivePath}
     # Remember it for the flock, so the peer that promotes next need not ask. Only what DHCP gave
@@ -531,6 +603,7 @@ let
     fi
     # The multicast route goes with the address it was added beside (briard-vip-up).
     ${pkgs.iproute2}/bin/ip route del 224.0.0.0/4 dev "$VIP_DEV" 2>/dev/null || true
+    ${vipReplyRoute} down
     rm -f ${vipLivePath}
     # Take the NIC down when it is ours alone. The MAC on a dedicated service NIC is flock-scoped,
     # so shared with the peer, and a Secondary holding it up teaches the switch the wrong port for

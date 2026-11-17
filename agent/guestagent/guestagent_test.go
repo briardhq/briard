@@ -657,6 +657,27 @@ func TestConfigureNetWritesVIPMAC(t *testing.T) {
 	}
 }
 
+// The router rides beside the device as VIP_ROUTER, which briard-vip-reply-route sends replies to
+// other subnets through. A witness, with no VIP device, is never handed one (the next test's file).
+func TestConfigureNetWritesVIPRouter(t *testing.T) {
+	f := &fakeExec{}
+	g := dial(t, f)
+	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.2/24", VIPDev: "eth2", VIPRouter: "192.168.2.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.files[vipEnvPath]; got != "VIP_DEV=eth2\nSYSTEM_DEV=eth1\nVIP_ROUTER=192.168.2.1\n" {
+		t.Errorf("%s = %q, want VIP_ROUTER after SYSTEM_DEV", vipEnvPath, got)
+	}
+	f = &fakeExec{}
+	g = dial(t, f)
+	if err := g.ConfigureNet(context.Background(), NetConfig{Dev: "eth1", CIDR: "10.0.0.3/24", VIPRouter: "192.168.2.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := f.files[vipEnvPath]; ok {
+		t.Errorf("a node with no VIP device got %s = %q", vipEnvPath, got)
+	}
+}
+
 // A witness claims no VIP, so it gets no file at all -- SYSTEM_DEV must not create one on its own.
 // briard-vip.service takes vip.env as a required EnvironmentFile, so a file written for a node
 // whose promoter must never run is a unit that has quietly become startable.

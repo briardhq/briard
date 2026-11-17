@@ -218,6 +218,13 @@ pkgs.testers.runNixOSTest {
     # bridge, not the install host curling itself.
     client.wait_until_succeeds("curl -fsS http://192.168.1.100/healthz", timeout=120)
     print("off-box client reached the VIP through the host's bridge")
+    # ...and from another subnet, routed in without NAT. The client is the host's gateway, so it is
+    # the router the agent hands the guest, and it asks from an address off the VIP's subnet: the
+    # reply returns only through that route. Here the VIP is hand-set (no lease carries a router)
+    # and VIP_DEV is the macvlan child the guest made, the two things install-macvtap's twin is not.
+    client.succeed("ip addr add 10.99.0.2/32 dev lo")
+    client.wait_until_succeeds("curl -fsS -m 10 --interface 10.99.0.2 http://192.168.1.100/healthz", timeout=60)
+    print("a client on another subnet reached the VIP through the router the agent named")
 
     # --- DELTA 4 (proves the guest made its own identity): from off-box, the VIP and the node IP
     # resolve to different MACs. Two identities behind one switch port is the whole shape, only

@@ -175,7 +175,8 @@ pkgs.testers.runNixOSTest {
         ];
         # On PATH so the test can run a second server by hand with a different pool under a
         # running node -- the module config is a store path.
-        environment.systemPackages = [ pkgs.dnsmasq ];
+        # curl for the client on another subnet that the router stands in for.
+        environment.systemPackages = [ pkgs.dnsmasq pkgs.curl ];
         services.dnsmasq = {
           enable = true;
           settings = {
@@ -463,6 +464,15 @@ pkgs.testers.runNixOSTest {
 
     client.wait_until_succeeds(f"curl -fsS http://{vip}/healthz", timeout=120)
     print("off-box client reached the leased VIP over the macvtap substrate")
+
+    # ...and from another subnet, routed in without NAT (a VPN on the router, another VLAN): the
+    # router asks from an address off the VIP's subnet. The guest's own default is its WAN path, so
+    # the reply reaches the router only through the route the agent handed down: the host's own
+    # gateway, pushed at bring-up as VIP_ROUTER. A mechanism the agent-less mosquitto rig proves
+    # against a control; this is the agent's half.
+    router.succeed("ip addr add 10.99.0.1/32 dev lo")
+    router.wait_until_succeeds(f"curl -fsS -m 10 --interface 10.99.0.1 http://{vip}/healthz", timeout=60)
+    print("a client on another subnet reached the VIP through the router the agent named")
 
     # The console capture itself, asserted rather than assumed: every helper reads it through
     # `2>/dev/null ... || true` (a diagnostic must not fail a test), so a missing file looks like a
