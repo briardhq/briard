@@ -1050,27 +1050,28 @@ func TestStableNoOpSaysAlreadyAtWhenTheInstalledReleaseIsTheTarget(t *testing.T)
 // deliberate edit with a failing test beside it, never a drift: the value decides whether every
 // installed node below it is told to reinstall, the loudest thing this product says to an owner.
 //
-// Why this value: the data volume is formatted with simple quotas and every subvolume is born into
-// the quota tree, which an existing volume cannot be converted to; its areas sit tier first
-// (data/, files/, cache/, unversioned/), the installed manifests in .apps/, on the VG briardvol;
-// and the guest's verbs are app.*. No earlier release's volume or guest can be carried across
-// that, so the floor turns the attempt into one refusal naming the remedy, the node still serving
-// its old release. Comparison is on the date: every release from 26110216 on can upgrade among
-// themselves; everything older must reinstall.
+// Why this value: from this release the scripts the guest's units run (the VIP's, the promotion
+// hold's) are written by the pushed guest agent and no longer baked into the image's tool
+// profile. An older agent on the newer image would start units naming scripts the image no
+// longer has, at promotion; an older image under the newer agent has no bash in its profile and
+// is refused. No release before it can be carried across that, so the floor turns the attempt
+// into one refusal naming the remedy, the node still serving its old release. Comparison is on
+// the date: every release from 26111720 on can upgrade among themselves; everything older,
+// including the dev release of the hour before, must reinstall.
 func TestTheTreeDeclaresTheFloorItMeansTo(t *testing.T) {
-	const want = "v3.26110216.07bf1e6"
+	const want = "v3.26111720.5c45882"
 	if MinUpgradeFrom != want {
 		t.Fatalf("MinUpgradeFrom = %q, want %q -- if this was deliberate, change the test and say why in the commit", MinUpgradeFrom, want)
 	}
-	// And it does what it says: a node on the stable that predates the quota format is refused,
-	// one from that hour on is not.
-	me := man(ChainBriard, PlatformHost, "v3.26110418.aaaaaaa")
+	// And it does what it says: a node on the last release with baked scripts is refused, one
+	// from that hour on is not.
+	me := man(ChainBriard, PlatformHost, "v3.26111800.aaaaaaa")
 	me.MinUpgradeFrom = MinUpgradeFrom
-	old := man(ChainBriard, PlatformHost, "v3.26103111.c3e1b51")
+	old := man(ChainBriard, PlatformHost, "v3.26111719.1e54ab7")
 	if _, err := Decide(TargetStable, me, &old, nil); !errors.Is(err, ErrTooOldToUpgrade) {
-		t.Errorf("the stable before the quota format is not refused: %v", err)
+		t.Errorf("the release before the scripts moved is not refused: %v", err)
 	}
-	ok := man(ChainBriard, PlatformHost, "v3.26110216.07bf1e6")
+	ok := man(ChainBriard, PlatformHost, "v3.26111720.5c45882")
 	if _, err := Decide(TargetStable, me, &ok, nil); err != nil {
 		t.Errorf("a release at the floor's own date was refused: %v", err)
 	}

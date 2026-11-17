@@ -87,7 +87,7 @@ var ErrTooOldToUpgrade = errors.New("install: this machine is too old to upgrade
 // ⚠️ A var, not a const, for one reason only: the wiring into a manifest cannot be tested against
 // a value that never varies, and a test that cannot fail is not a test. Nothing at runtime writes
 // it; the only other writer is TestWriteManifestCarriesTheTreesFloor, which restores it.
-var MinUpgradeFrom = "v3.26110216.07bf1e6"
+var MinUpgradeFrom = "v3.26111720.5c45882"
 
 // Decision is what Decide concluded: whether to install, and the one line saying why either way.
 type Decision struct {
