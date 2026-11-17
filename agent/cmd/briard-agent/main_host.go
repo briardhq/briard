@@ -272,9 +272,12 @@ func runUninstall(args []string) int {
 		// Windows asks for the rights through UAC, as the installer does; elsewhere it refuses.
 		return uninstallElevated(args)
 	}
+	var logged strings.Builder
 	if win {
-		// The console stays open while the uninstall runs; its lines are kept for the end.
+		// The console stays open while the uninstall runs; its lines, and what it logs (a retry, a
+		// detail), are kept for the end.
 		fmt.Println("Uninstalling Briard. This takes up to a minute, and this window closes by itself.")
+		log.SetOutput(&logged)
 	}
 	var said []string
 	say := func(format string, a ...any) {
@@ -289,6 +292,9 @@ func runUninstall(args []string) int {
 		fmt.Fprintf(os.Stderr, "briard uninstall: %v\n", err)
 	}
 	if win {
+		if l := strings.TrimSpace(logged.String()); l != "" {
+			said = append(said, strings.Split(l, "\n")...)
+		}
 		tell(uninstalled(said, *deleteData, err), err != nil)
 	}
 	if err != nil {
