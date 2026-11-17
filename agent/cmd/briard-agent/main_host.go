@@ -220,10 +220,15 @@ func runUninstall(args []string) int {
 	// Windowed: started from Windows' Installed apps, which starts this elevated in a console of its
 	// own that closes the moment this exits; there the question and the outcome are windows. Never
 	// with -yes: that is the quiet form a package manager or a script runs, with nobody there to
-	// close a window.
-	win := !*yes && windowed()
+	// close a window. The quiet form in a console of its own is that package manager's run, and
+	// shows no window at all.
+	alone := windowed()
+	win := !*yes && alone
 	if win {
 		noQuickEdit()
+	}
+	if *yes && alone {
+		hideConsole()
 	}
 	if win && !elevated() {
 		tell("Briard was not uninstalled: "+uninstallElevate+".", true)
@@ -263,8 +268,8 @@ func runUninstall(args []string) int {
 		*deleteData = del
 	}
 	if !elevated() {
-		fmt.Fprintf(os.Stderr, "briard uninstall: %s\n", uninstallElevate)
-		return 1
+		// Windows asks for the rights through UAC, as the installer does; elsewhere it refuses.
+		return uninstallElevated(args)
 	}
 	var said []string
 	say := func(format string, a ...any) {

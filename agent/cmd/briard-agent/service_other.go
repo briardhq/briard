@@ -31,6 +31,12 @@ const (
 	systemUnits      = "systemd services"
 )
 
+// uninstallElevated refuses off Windows: root is the caller's to take (sudo).
+func uninstallElevated([]string) int {
+	fmt.Fprintf(os.Stderr, "briard uninstall: %s\n", uninstallElevate)
+	return 1
+}
+
 // windowed is false off Windows: a terminal is where `briard uninstall` runs, and its text stays
 // there. The window functions are never reached.
 func windowed() bool                                             { return false }
@@ -38,6 +44,7 @@ func confirmUninstall(string, string, string, bool) (bool, bool) { return false,
 func confirmDelete(string) bool                                  { return false }
 func tell(string, bool)                                          {}
 func noQuickEdit()                                               {}
+func hideConsole()                                               {}
 
 // runWarden refuses off Windows: systemd's own watchdog is the agent's outside watcher there.
 func runWarden() int {

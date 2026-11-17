@@ -212,7 +212,8 @@ var commands = []command{
 			"(state under that folder on Windows) -- the data volume and this machine's identity -- is\n" +
 			"KEPT, so installing again picks up where it left off.\n\n" +
 			"-delete-data deletes it as well, which cannot be undone. Without -yes it only says what it\n" +
-			"would do. Needs root, or an administrator on Windows, where a restart finishes it.",
+			"would do. Needs root; on Windows it asks for an administrator's rights through UAC, and\n" +
+			"a restart finishes it.",
 		// run: nil -- main() intercepts this word like `run`: it undoes what the host agent built,
 		// from the host agent's own config, which this package does not link.
 	},

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -298,6 +299,79 @@ const (
 	systemUnits      = "Windows services"
 )
 
+// exitCancelled is ERROR_CANCELLED: the UAC prompt was declined.
+const exitCancelled = 1223
+
+var procShellExecuteExW = windows.NewLazySystemDLL("shell32.dll").NewProc("ShellExecuteExW")
+
+// shellExecuteInfo is SHELLEXECUTEINFOW.
+type shellExecuteInfo struct {
+	size       uint32
+	mask       uint32
+	hwnd       uintptr
+	verb       *uint16
+	file       *uint16
+	parameters *uint16
+	directory  *uint16
+	show       int32
+	instApp    uintptr
+	idList     uintptr
+	class      *uint16
+	keyClass   uintptr
+	hotKey     uint32
+	icon       uintptr
+	process    windows.Handle
+}
+
+const (
+	seeMaskNoCloseProcess = 0x40
+	seeMaskNoAsync        = 0x100
+)
+
+// uninstallElevated runs `briard uninstall args` again through UAC, as the installer elevates
+// itself, waits for it, and returns its exit code. This is how a package manager's quiet uninstall
+// works from a terminal that is not elevated: winget runs the quiet form unelevated, whatever the
+// install needed. The elevated run has a console of its own, hidden -- the quiet form shows no
+// window -- so what it says is not seen here; its outcome is.
+func uninstallElevated(args []string) int {
+	self, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "briard uninstall: %v\n", err)
+		return 1
+	}
+	params := []string{"uninstall"}
+	for _, a := range args {
+		params = append(params, windows.EscapeArg(a))
+	}
+	fmt.Println("briard: asking for administrator rights to uninstall ...")
+	verb, _ := windows.UTF16PtrFromString("runas")
+	file, _ := windows.UTF16PtrFromString(self)
+	p, _ := windows.UTF16PtrFromString(strings.Join(params, " "))
+	sei := shellExecuteInfo{mask: seeMaskNoCloseProcess | seeMaskNoAsync, verb: verb, file: file, parameters: p, show: windows.SW_HIDE}
+	sei.size = uint32(unsafe.Sizeof(sei))
+	if r, _, err := procShellExecuteExW.Call(uintptr(unsafe.Pointer(&sei))); r == 0 {
+		if errors.Is(err, windows.ERROR_CANCELLED) {
+			fmt.Fprintln(os.Stderr, "briard uninstall: not uninstalled: the administrator prompt was declined")
+			return exitCancelled
+		}
+		fmt.Fprintf(os.Stderr, "briard uninstall: could not ask for administrator rights (%v); %s\n", err, uninstallElevate)
+		return 1
+	}
+	defer windows.CloseHandle(sei.process)
+	var code uint32
+	if _, err := windows.WaitForSingleObject(sei.process, windows.INFINITE); err != nil {
+		code = 1
+	} else if err := windows.GetExitCodeProcess(sei.process, &code); err != nil {
+		code = 1
+	}
+	if code != 0 {
+		fmt.Fprintf(os.Stderr, "briard uninstall: the uninstall did not finish (exit %d); %s to see why\n", code, uninstallElevate)
+		return int(code)
+	}
+	fmt.Println("briard: uninstalled")
+	return 0
+}
+
 var procGetConsoleProcessList = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetConsoleProcessList")
 
 // windowed reports whether this process is alone in a console Windows opened for it -- started
@@ -328,6 +402,20 @@ func noQuickEdit() {
 		return
 	}
 	_ = windows.SetConsoleMode(in, mode&^windows.ENABLE_QUICK_EDIT_MODE|windows.ENABLE_EXTENDED_FLAGS)
+}
+
+var (
+	procGetConsoleWindow = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetConsoleWindow")
+	procShowWindow       = windows.NewLazySystemDLL("user32.dll").NewProc("ShowWindow")
+)
+
+// hideConsole hides the console this process has to itself (windowed): the quiet uninstall a
+// package manager starts is a console program Windows gives a window of its own, and the quiet
+// form shows none.
+func hideConsole() {
+	if h, _, _ := procGetConsoleWindow.Call(); h != 0 {
+		procShowWindow.Call(h, windows.SW_HIDE)
+	}
 }
 
 // idYes is what MessageBox returns for Yes.
