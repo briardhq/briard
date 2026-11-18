@@ -55,18 +55,35 @@
       # it, the Go packages the firmware links (listed by name; internal/arch asserts the list
       # against `go list -deps ./agent/cmd/briard-guest-firmware`, so a new import cannot silently
       # fall outside the hash), the module files and the nixpkgs pin, so a toolchain bump counts,
-      # correctly (it can change the bytes the firmware runs). `builtins.path` copies each into the
-      # store, whose path name is its content hash; test files are excluded, since they never
-      # reach the image.
+      # correctly (it can change the bytes the firmware runs). Each file is hashed under its path;
+      # test files are excluded, since they never reach the image.
+      #
+      # A .nix or .go file is hashed without its comment-only and blank lines, so an edit to prose
+      # alone republishes nothing: a 400 MB image and a guest reboot on every node is the price of
+      # a new id, and a comment buys nothing with it. Kept: `#!` (an interpreter, not a comment) and
+      # `//go:` (a build directive). Not seen, deliberately: a comment at the end of a code line or
+      # in `/* */`, which still moves the image (conservative, harmless), and a blank or
+      # comment-shaped line inside a multi-line string, which would not (no input has one where it
+      # means anything; shell and unit text treat `#` as a comment too). Other files hash raw.
       guestInputPackages = [
         "agent/cmd/briard-guest-firmware" "agent/guestfirmware" "shared/sdnotify"
       ];
       guestInputDirs = [ "guest-image" ] ++ guestInputPackages; # every other briard binary is pushed, not baked
-      noTests = path: type: !(lib.hasSuffix "_test.go" (baseNameOf path)) && baseNameOf path != "testdata";
-      inputPath = p: toString (builtins.path { path = ./. + "/${p}"; name = builtins.replaceStrings [ "/" ] [ "-" ] p; filter = noTests; });
+      prose = f: l:
+        builtins.match "[[:space:]]*" l != null
+        || (lib.hasSuffix ".nix" f && builtins.match "[[:space:]]*#.*" l != null && builtins.match "[[:space:]]*#!.*" l == null)
+        || (lib.hasSuffix ".go" f && builtins.match "[[:space:]]*//.*" l != null && builtins.match "[[:space:]]*//go:.*" l == null);
+      inputHash = rel:
+        let text = builtins.readFile (./. + "/${rel}");
+        in rel + " " + builtins.hashString "sha256" (
+          if lib.hasSuffix ".nix" rel || lib.hasSuffix ".go" rel
+          then lib.concatStringsSep "\n" (lib.filter (l: !(prose rel l)) (lib.splitString "\n" text))
+          else text);
+      inputFiles = dir: lib.sort lib.lessThan (map (f: lib.removePrefix (toString ./. + "/") (toString f))
+        (lib.filter (f: !(lib.hasSuffix "_test.go" (toString f)) && !(lib.hasInfix "/testdata/" (toString f)))
+          (lib.filesystem.listFilesRecursive (./. + "/${dir}"))));
       guestInputs = builtins.hashString "sha256" (lib.concatStringsSep "\n" (
-        map inputPath guestInputDirs
-        ++ map (f: toString (builtins.path { path = ./. + "/${f}"; name = baseNameOf f; })) [ "go.mod" "go.sum" "vendor-hash.nix" "agent/package.nix" ]
+        map inputHash (lib.concatMap inputFiles guestInputDirs ++ [ "go.mod" "go.sum" "vendor-hash.nix" "agent/package.nix" ])
         ++ [ (nixpkgs.rev or "dirty") ]
       ));
       guestVersion = "guest-build." + builtins.substring 0 12 guestInputs;
