@@ -120,7 +120,7 @@ func runInternal(args []string) {
 	stageManifest := fs.String("stage-manifest", "", "describe the artifacts in <dir> into <dir>/manifest.json and exit -- the release pipeline's manifest writer (with --chain, --platform, --release)")
 	stageChain := fs.String("chain", "", "with --stage-manifest: the release chain the directory belongs to (briard, vm)")
 	stagePlatform := fs.String("platform", "", "with --stage-manifest: the platform arm within the chain (linux-amd64, windows-amd64 on briard; amd64 on vm)")
-	stageRelease := fs.String("release", "", "with --stage-manifest: the release id the directory is (e.g. v3.20260905.abc1234)")
+	stageRelease := fs.String("release", "", "with --stage-manifest: the release id the directory is (e.g. v5.26111809.abc1234)")
 	stageSystem := fs.String("system", "", "with --stage-manifest --chain vm: the store path of the NixOS toplevel the image boots (Manifest.System)")
 	stageMinBriard := fs.String("min-briard", "", "with --stage-manifest --chain vm: the oldest briard release this VM tolerates (Manifest.MinBriard)")
 	stageVM := fs.String("vm", "", "with --stage-manifest --chain briard: the vm release this briard release is published beside")

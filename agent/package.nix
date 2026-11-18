@@ -16,7 +16,7 @@
 # hour YYMMDDHH in UTC), computed in flake.nix from `self`: derived from the tree, never from a
 # build counter, so the same commit yields the same version and store path, which makes a
 # released artifact re-derivable from its tag. The default is the dev sentinel. A dirty tree has
-# no release id (flake.nix emits `v3.dirty`, which the publish script refuses): a build nobody
+# no release id (flake.nix emits `v<epoch>.dirty`, which the publish script refuses): a build nobody
 # can reproduce must not be publishable.
 #
 # CGO_ENABLED=0: the binary must be static. A cgo nixpkgs Go build links glibc with a /nix/store

@@ -33,7 +33,7 @@
 #                                       outside both chains (`setup`)
 #
 # A chain is a release line with its own version series: the briard bundle moves as
-# `v3.<date>.<rev>` on every publish, the guest OS as `vm.<date>.<inputs>` and only when its
+# `v<epoch>.<date>.<rev>` on every publish, the guest OS as `vm.<date>.<inputs>` and only when its
 # inputs change. The guest image is a function of its inputs (flake.nix guestInputs: the image
 # recipe, the packages built into it, the Go packages the guest binary links, the module files,
 # the nixpkgs pin) with no commit-derived stamp, so `stage` asks the live channel for a release
@@ -129,7 +129,7 @@
 # it trusts releases of the new key. `verify` accepts a signature of any key in it.
 #
 # A dirty tree is refused. The version is derived from the tree (flake.nix: epoch + commit
-# date + short rev) and a dirty tree has no rev, so it stamps `v3.dirty`. A build nobody can
+# date + short rev) and a dirty tree has no rev, so it stamps `v<epoch>.dirty`. A build nobody can
 # reproduce must not be publishable — the reproducibility acceptance test is precisely
 # "re-derive this artifact from its tag", which a working directory can never satisfy.
 #
@@ -248,7 +248,7 @@ release_version() {
 	local v
 	v=$(nix eval --raw .#artifacts.agent.version) || die "cannot read the release version"
 	case "$v" in
-		v3.dirty|*dirty*) die "refusing a DIRTY tree (version=$v) — commit first; a build nobody can reproduce must not be published" ;;
+		*dirty*) die "refusing a DIRTY tree (version=$v) — commit first; a build nobody can reproduce must not be published" ;;
 		"") die "empty version" ;;
 	esac
 	# The pushed-main gate. Every tier that tests this code -- CI, the nightly's VM and fleet
@@ -259,7 +259,7 @@ release_version() {
 	git merge-base --is-ancestor HEAD origin/main ||
 		die "refusing HEAD $(git rev-parse --short HEAD) (version=$v): it is not on origin/main — push it to main first; the suites test pushed main, so anything else would ship untested code"
 	# The stale-commit floor keeps ids unique although `gc` deletes. An id is
-	# `v3.<commit-hour>.<shortrev>`, so minting one twice means publishing the same commit twice,
+	# `v<epoch>.<commit-hour>.<shortrev>`, so minting one twice means publishing the same commit twice,
 	# which `publish` catches by asking the bucket — exactly the question a deleted release makes
 	# unanswerable. Everything `gc` removes is past the floor by publish date, and a commit is
 	# never younger than its own publish, so refusing a commit older than the floor closes that
@@ -1039,7 +1039,7 @@ gc)
 	need nix; need curl; need jq
 	[ -n "${RELEASE_WRITE:-}" ] || die "set RELEASE_WRITE to the channel's write URL"
 	# gc deletes, and that is safe because nothing needs the old bytes, only the old code, which
-	# git has. With ids `v3.<commit-hour>.<shortrev>`, a client depends on "an id never names two
+	# git has. With ids `v<epoch>.<commit-hour>.<shortrev>`, a client depends on "an id never names two
 	# different byte-sets", not "bytes live forever"; shipping old code is a revert commit, a new
 	# rev under a new id, which satisfies that trivially. `release_version`'s stale-commit floor is
 	# the other half.

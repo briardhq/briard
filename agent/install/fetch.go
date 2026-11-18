@@ -69,7 +69,7 @@ import (
 // version series. The manifest names its chain and platform so a crossed wire (a vm manifest where
 // a briard one was expected, a Windows bundle where the Linux one should be) is refused by the
 // signed content, not compared by eye. The chain is a field rather than the version id's first
-// token because that token is the epoch (`v3.`), which moves forward: a series check keyed on it
+// token because that token is the epoch (`v5.`), which moves forward: a series check keyed on it
 // would refuse every update across an epoch boundary, fleet-wide.
 const (
 	ChainBriard = "briard" // briard-agent, briard-net-wrap, qemu-bundle.tar.zst, guest-bundle.tar.zst — per OS and CPU

@@ -19,7 +19,7 @@ import (
 )
 
 // The vm chain. The guest OS is its own release line (`vm.<date>.<inputs>` beside briard's
-// `v3.<date>.<rev>`), and its signed manifest names the closure the image boots (Manifest.System)
+// `v<epoch>.<date>.<rev>`), and its signed manifest names the closure the image boots (Manifest.System)
 // and the oldest briard that tolerates it (Manifest.MinBriard). Resolving a vm release: fetch and
 // verify the target's manifest, refuse it if the installed briard is older than it needs, compare
 // its closure with what the guest runs, stage the release's image, and hand it to the image

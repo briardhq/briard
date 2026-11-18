@@ -22,10 +22,11 @@
         overlays = [ self.overlays.default ];
       };
       # The release id, derived from the tree: `<epoch>.<commit-hour>.<short-rev>`, e.g.
-      # `v3.26080614.92d4eee`. The epoch carries the only high-level semantics we have (an epoch
-      # scheme, not semver); the commit hour, YYMMDDHH in UTC, is quasi-incremental and readable
-      # at a glance (two commits in one hour share it, which is fine); the short rev makes it
-      # unique and, unlike a commit count, survives a history rewrite.
+      # `v5.26111809.92d4eee`. The epoch carries the only high-level semantics we have (an epoch
+      # scheme, not semver) and moves when one closes; nothing orders on it, so a bump is free. The
+      # commit hour, YYMMDDHH in UTC, is quasi-incremental and readable at a glance (two commits in
+      # one hour share it, which is fine); the short rev makes it unique and, unlike a commit count,
+      # survives a history rewrite.
       #
       # YYMMDDHH, not YYYYMMDD: installed nodes order releases on this field alone, as a number,
       # so with a date alone two releases in one day would be one release and a same-day fix would
@@ -35,13 +36,14 @@
       #
       # Deliberately not a build counter: the same commit must yield the same version and store
       # path, or a released artifact could never be re-derived from its tag, which is exactly the
-      # release pipeline's acceptance test. A dirty tree has no rev, so it stamps `v3.dirty`, which
-      # the publish script refuses (a build nobody can reproduce must not be publishable); dev
-      # builds still work, labelled as what they are, which the startup banner reports.
+      # release pipeline's acceptance test. A dirty tree has no rev, so it stamps `v<epoch>.dirty`,
+      # which the publish script refuses (a build nobody can reproduce must not be publishable);
+      # dev builds still work, labelled as what they are, which the startup banner reports.
+      epoch = "5";
       agentVersion =
         if self ? shortRev
-        then "v3.${builtins.substring 2 8 self.lastModifiedDate}.${self.shortRev}"
-        else "v3.dirty";
+        then "v${epoch}.${builtins.substring 2 8 self.lastModifiedDate}.${self.shortRev}"
+        else "v${epoch}.dirty";
       # The guest image version is a function of its inputs, not of the commit, and its inputs are
       # the push protocol. `publish-release.sh stage` re-stages the 400 MB guest chain only when
       # the live channel serves no image with these inputs; that is honest because the image bakes
