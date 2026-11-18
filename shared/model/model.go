@@ -20,16 +20,24 @@ const (
 )
 
 // QuorumState is this node's serving state (is it the write authority for the home's data right
-// now, and is it allowed to be), read as ground truth: the agent follows it and never overrides
-// it. On a flock it is DRBD's view (role and quorum, `drbdsetup status`), hence the names. It is
-// computed in one place, the guest's node-status verb (`drbd.status`), and readers ask Serving()
-// for "does this node hold the house" rather than spelling the answer from the fields, so a node
-// that runs no DRBD (a lone anchor) is made to read as Primary (its chain target active) and
-// quorate by that verb alone, and no reader learns a second shape.
+// now, is it allowed to be, and is the promoter chain running on it), read as ground truth: the
+// agent follows it and never overrides it. On a flock the role and quorum are DRBD's view
+// (`drbdsetup status`), hence the names. It is computed in one place, the guest's node-status
+// verb (`drbd.status`), and readers ask Serving() for "does this node hold the house" rather than
+// spelling the answer from the fields. A node that runs no DRBD (a lone anchor) holds its disk by
+// construction, so that verb makes it read as Primary and quorate always, and its chain target
+// answers ChainDown exactly as the reactor's does on a flock: no reader learns a second shape.
 type QuorumState struct {
-	Primary   bool `json:"primary"`   // is this node the write authority (on a flock: the DRBD primary)?
+	Primary   bool `json:"primary"`   // is this node the write authority (on a flock: the DRBD primary; alone: always)?
 	Quorate   bool `json:"quorate"`   // is it allowed to write (on a flock: does it have quorum)?
 	Connected int  `json:"connected"` // peers connected right now
+	// ChainDown: the promoter chain's target is not active on this node -- still starting, stopped
+	// by a hold, or never started. The role comes first and the chain after it (the volume is
+	// mounted, then the address claimed, then the apps converged), so a Primary whose chain is
+	// down holds the disk and serves nothing yet. Negative so that its zero value is the reading
+	// a guest that does not fill it always gave: a dress the guest refused leaves an older guest
+	// agent answering a newer host, and that node must not read as serving nothing.
+	ChainDown bool `json:"chain_down"`
 	// This node's own storage, in the same terms PeerState reports for everyone else: whether it
 	// is itself a viable failover target, not only whether a peer is. The OS-upgrade gate asks a
 	// Secondary this rather than the VIP, which on a Secondary the peer answers. Same sample, same
@@ -38,15 +46,18 @@ type QuorumState struct {
 	UpToDate bool `json:"uptodate"` // every volume this node carries is UpToDate
 }
 
-// Serving reports whether this node holds the house right now: it is the write authority and
-// allowed to write. It is the one predicate for "is this node serving": readers ask here rather
-// than spelling Primary ∧ Quorate or reading Primary alone to mean it, so the answer is derived
-// once and the lone-node branch lives in the verb that fills the fields, never at a call site.
-// A Primary that has lost quorum is not serving: DRBD refuses its writes (on-no-quorum=io-error)
-// and the reactor demotes it. Narrower questions stay on the fields: Quorate alone is
-// participation (a standby's whole job), Diskful/UpToDate are what the node carries, and
-// Primary alone is the role, which single-primary and minority-refuses are invariants of.
-func (q QuorumState) Serving() bool { return q.Primary && q.Quorate }
+// Serving reports whether this node holds the house right now: it is the write authority, allowed
+// to write, and its promoter chain is up. It is the one predicate for "is this node serving":
+// readers ask here rather than spelling it from the fields or reading Primary alone to mean it,
+// so the answer is derived once and the lone-node branch lives in the verb that fills the fields,
+// never at a call site. A Primary that has lost quorum is not serving: DRBD refuses its writes
+// (on-no-quorum=io-error) and the reactor demotes it. Nor is a Primary whose chain is down: the
+// volume may not be mounted yet, and an app installed into that moment is stopped again by the
+// promotion's own converge, which read the volume before it. Narrower questions stay on the
+// fields: Quorate alone is participation (a standby's whole job), Diskful/UpToDate are what the
+// node carries, and Primary alone is the role, which single-primary and minority-refuses are
+// invariants of.
+func (q QuorumState) Serving() bool { return q.Primary && q.Quorate && !q.ChainDown }
 
 // PeerState is one peer as *this* node sees it, read from the same
 // `drbdsetup status --json` that yields QuorumState. It answers a question

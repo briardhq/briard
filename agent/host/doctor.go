@@ -204,6 +204,9 @@ func judgeDoctor(f doctorFacts) []reportcard.Check {
 		add("role", reportcard.Pass, "serving your home (a lone node, nothing to replicate to)", "")
 	case serving:
 		add("role", reportcard.Pass, "serving your home (DRBD Primary, quorate)", "")
+	case cl.Primary && cl.Quorate:
+		add("role", reportcard.Refuse, "holds your home's data but is not serving it: it is taking over, or something stopped it",
+			"ask again in a minute; if it still says this, `briard alerts` and `briard logs` say why")
 	case cl.Primary:
 		add("role", reportcard.Refuse, "DRBD Primary without quorum: it refuses writes until a peer or the witness returns",
 			"bring the other machine back; this is the node protecting your data, not a fault in it")

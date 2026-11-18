@@ -1007,7 +1007,15 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 			}
 			// The fuller view. QuorumState is embedded, so a reader that wants only the
 			// summary reads this response unchanged.
-			return drbd.ParseCluster(out, req.Resource)
+			c, err := drbd.ParseCluster(out, req.Resource)
+			if err != nil {
+				return nil, err
+			}
+			// The chain is the reactor's target for the resource, which it reaches only once
+			// every member has started: DRBD turns Primary first, so the role alone would answer
+			// "serving" for as long as the chain takes to mount, claim and converge.
+			c.ChainDown = !unitActive(ctx, x, "drbd-services@"+req.Resource+".target")
+			return c, nil
 		case verbCertWrite:
 			var req certWriteRequest
 			if err := json.Unmarshal(payload, &req); err != nil {
@@ -3622,21 +3630,26 @@ func systemState(ctx context.Context, x Executor) SystemState {
 }
 
 // loneCluster is the node status of a node that runs no DRBD: the second branch of the one
-// predicate, and the only place it lives. The node reads as "Primary, quorate" when its chain
-// target is active, so every reader of Serving(), and every narrower field read, keeps its
-// meaning: Primary is "holds the volume" (the chain is up; a hold takes it down), Quorate is
-// "allowed to write" (always: there is no peer to lose a majority to), Diskful and UpToDate are
-// what the node carries (its only copy, current by definition), and Connected and Peers are
-// nobody, so a standby rule that asks PeerCanTakeOver() hears no, the truth about a lone node
-// that is not serving.
+// predicate, and the only place it lives. Every field keeps the meaning it has on a flock:
+// Primary is "holds the disk", which a lone node does by construction (nobody else could);
+// Quorate is "allowed to write" (always: there is no peer to lose a majority to); ChainDown is
+// its chain target, the reactor's as the flock branch reads it (a hold stops it, and so does a
+// bring-up that has not started it yet); Diskful and UpToDate are what the node carries (its
+// only copy, current by definition); and Connected and Peers are nobody, so a standby rule that
+// asks PeerCanTakeOver() hears no, the truth about a lone node that is not serving.
 func loneCluster(ctx context.Context, x Executor) model.Cluster {
-	out, err := x.Run(ctx, "systemctl", "is-active", chainTarget)
-	active := err == nil && strings.TrimSpace(string(out)) == "active"
-	return model.Cluster{QuorumState: model.QuorumState{Primary: active, Quorate: true, Diskful: true, UpToDate: true}}
+	return model.Cluster{QuorumState: model.QuorumState{Primary: true, Quorate: true, ChainDown: !unitActive(ctx, x, chainTarget), Diskful: true, UpToDate: true}}
 }
 
-// WaitPrimary polls Status until this node is serving -- i.e. bring-up has converged:
-// on a flock, drbd-reactor promoted once quorum formed. interval is the poll cadence;
+// unitActive asks systemd whether one unit is active. `is-active` exits non-zero for every other
+// state, so the exit status and the word must both agree.
+func unitActive(ctx context.Context, x Executor, unit string) bool {
+	out, err := x.Run(ctx, "systemctl", "is-active", unit)
+	return err == nil && strings.TrimSpace(string(out)) == "active"
+}
+
+// WaitPrimary polls Status until this node is serving -- i.e. bring-up has converged and the
+// chain is up (on a flock, drbd-reactor promoted once quorum formed). interval is the poll cadence;
 // the caller bounds the total wait via ctx. Transient Status errors (guest still
 // coming up) are ignored until ctx expires.
 func (g *Client) WaitPrimary(ctx context.Context, resource string, interval time.Duration) error {

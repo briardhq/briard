@@ -2273,7 +2273,7 @@ func (cfg Config) snapshot(ctx context.Context, r statusReader, vip guest.VIPRea
 		// anchor with no such peer is a house nobody holds, the free-tier owner's whole picture,
 		// so it must read unhealthy. (A guest reporting no peers at all falls on the unhealthy
 		// side; the alpha ships host and guest together, so that is not a shape to be soft on.)
-		st.Healthy = !cl.Serving() && cl.Quorate && cl.UpToDate && cl.PeerCanTakeOver()
+		st.Healthy = !cl.Primary && cl.Quorate && cl.UpToDate && cl.PeerCanTakeOver()
 	} else {
 		probe = url
 		// Prefer the in-guest probe (the app-health verb) so the health signal survives a substrate

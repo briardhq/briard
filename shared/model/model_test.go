@@ -27,17 +27,19 @@ func TestServingUnit(t *testing.T) {
 	}
 }
 
-// Serving is THE "does this node hold the house" predicate, and both conjuncts are load-bearing:
+// Serving is THE "does this node hold the house" predicate, and every conjunct is load-bearing:
 // a Primary that has lost quorum is refused its writes and about to be demoted, so it is not
-// serving; a quorate Secondary is participating, not serving. Pinned so no reader is tempted
-// to use Primary alone.
+// serving; a quorate Secondary is participating, not serving; a quorate Primary whose chain is
+// down holds the disk with nothing yet mounted, claimed or converged on it. Pinned so no reader
+// is tempted to use Primary alone.
 func TestServing(t *testing.T) {
 	cases := []struct {
 		name string
 		qs   QuorumState
 		want bool
 	}{
-		{"quorate primary serves", QuorumState{Primary: true, Quorate: true}, true},
+		{"quorate primary with its chain up serves", QuorumState{Primary: true, Quorate: true}, true},
+		{"quorate primary with its chain down does not", QuorumState{Primary: true, Quorate: true, ChainDown: true}, false},
 		{"primary without quorum does not", QuorumState{Primary: true}, false},
 		{"quorate secondary participates, does not serve", QuorumState{Quorate: true}, false},
 		{"nothing serves nothing", QuorumState{}, false},

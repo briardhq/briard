@@ -71,6 +71,7 @@ func TestDoctorFailures(t *testing.T) {
 		{"guest silent", func(f *doctorFacts) { f.GuestErr = errors.New("timeout") }, "guest"},
 		{"primary without quorum", func(f *doctorFacts) { f.Peers = 1; f.Cluster.Quorate = false }, "role"},
 		{"nobody holds the home", func(f *doctorFacts) { f.Cluster.Primary = false }, "role"},
+		{"the disk held, the chain down", func(f *doctorFacts) { f.Cluster.ChainDown = true }, "role"},
 		{"serving with no address", func(f *doctorFacts) { f.Probe = "" }, "address"},
 		{"reverse proxy silent", func(f *doctorFacts) { f.Healthy = false }, "address"},
 		{"standby holding the address", func(f *doctorFacts) {
@@ -261,5 +262,16 @@ func TestDoctorNamesAnOfferedUpdate(t *testing.T) {
 	c := checkNamed(t, judgeDoctor(f), "update")
 	if c.Status != reportcard.Pass || c.Detail != "Home Assistant 2026.10.1 is available" || !strings.Contains(c.Fix, "sudo briard app install home-assistant") {
 		t.Errorf("update check = %+v", c)
+	}
+}
+
+// A node that holds the disk with its chain down is quorate: the doctor says what it is (taking
+// over, or stopped), never that quorum is missing, which would send the household after the
+// other machine for nothing.
+func TestDoctorNamesAChainDownForWhatItIs(t *testing.T) {
+	f := servingLone()
+	f.Cluster.ChainDown = true
+	if c := checkNamed(t, judgeDoctor(f), "role"); strings.Contains(c.Detail, "quorum") || !strings.Contains(c.Detail, "not serving") {
+		t.Errorf("role = %+v, want the chain-down wording", c)
 	}
 }

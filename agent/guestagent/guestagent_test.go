@@ -814,17 +814,21 @@ func TestReactorStartLandsTheSnippet(t *testing.T) {
 	}
 }
 
-// The full stack: Client.Status -> channel -> Handler -> drbdsetup -> ParseStatus.
+// The full stack: Client.Status -> channel -> Handler -> drbdsetup -> ParseStatus, plus the
+// reactor's target. The role is DRBD's and stays DRBD's whatever the chain does; Serving follows
+// the chain, so a node the reactor has promoted reads as holding the disk and serving nothing
+// until its target is reached.
 func TestStatusParsesQuorumState(t *testing.T) {
-	f := &fakeExec{output: []byte(`[{"name":"r0","role":"Primary",` +
-		`"devices":[{"quorum":true}],"connections":[{"connection-state":"Connected"}]}]`)}
-	g := dial(t, f)
-	qs, err := g.Status(context.Background(), "r0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !qs.Primary || !qs.Quorate || qs.Connected != 1 {
-		t.Errorf("QuorumState = %+v; want Primary=true Quorate=true Connected=1", qs)
+	for _, chainUp := range []bool{true, false} {
+		f := &fakeExec{runFn: reactorAt(statusPrimary, chainUp)}
+		g := dial(t, f)
+		qs, err := g.Status(context.Background(), "r0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !qs.Primary || !qs.Quorate || qs.Connected != 1 || qs.ChainDown == chainUp || qs.Serving() != chainUp {
+			t.Errorf("chain up=%t: QuorumState = %+v; want Primary Quorate Connected=1 ChainDown=%t", chainUp, qs, !chainUp)
+		}
 	}
 }
 
@@ -1399,15 +1403,36 @@ const (
 	statusPrimary   = `[{"name":"r0","role":"Primary","devices":[{"quorum":true}],"connections":[{"connection-state":"Connected"}]}]`
 )
 
-// WaitPrimary polls until the reactor has promoted this node (Secondary -> Primary).
+// reactorAt answers the flock branch of the status verb's two reads: drbdsetup with status, and
+// the reactor's target for r0 as up or not. Everything else answers status too, as the plain
+// fake does.
+func reactorAt(status string, chainUp bool) func(string, []string) ([]byte, error) {
+	return func(name string, args []string) ([]byte, error) {
+		if name == "systemctl" && len(args) == 2 && args[0] == "is-active" && args[1] == "drbd-services@r0.target" {
+			if !chainUp {
+				return []byte("inactive\n"), errors.New("exit status 3")
+			}
+			return []byte("active\n"), nil
+		}
+		return []byte(status), nil
+	}
+}
+
+// WaitPrimary polls until the reactor has promoted this node (Secondary -> Primary) AND its chain
+// is up: a Primary whose chain is still mounting, claiming and converging is not yet serving.
 func TestWaitPrimaryPollsUntilConverged(t *testing.T) {
 	polls := 0
-	f := &fakeExec{runFn: func(_ string, _ []string) ([]byte, error) {
-		polls++
-		if polls < 3 {
-			return []byte(statusSecondary), nil // not promoted yet
+	f := &fakeExec{runFn: func(name string, args []string) ([]byte, error) {
+		if name == "drbdsetup" {
+			polls++
 		}
-		return []byte(statusPrimary), nil // reactor promoted
+		switch {
+		case polls < 3:
+			return reactorAt(statusSecondary, false)(name, args) // not promoted yet
+		case polls < 5:
+			return reactorAt(statusPrimary, false)(name, args) // promoted, chain still starting
+		}
+		return reactorAt(statusPrimary, true)(name, args) // chain up
 	}}
 	g := dial(t, f)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1415,8 +1440,8 @@ func TestWaitPrimaryPollsUntilConverged(t *testing.T) {
 	if err := g.WaitPrimary(ctx, "r0", time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	if polls < 3 {
-		t.Errorf("converged after %d polls, expected >= 3", polls)
+	if polls < 5 {
+		t.Errorf("converged after %d polls, expected >= 5 (it took the role for the chain)", polls)
 	}
 }
 
@@ -1440,7 +1465,7 @@ func TestBringUpGuestOverUnixSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	f := &fakeExec{output: []byte(statusPrimary)} // already primary -> WaitPrimary returns at once
+	f := &fakeExec{runFn: reactorAt(statusPrimary, true)} // already serving -> WaitPrimary returns at once
 	go func() {
 		if conn, err := ln.Accept(); err == nil {
 			Serve(context.Background(), conn, f)
@@ -1990,9 +2015,10 @@ func TestBringUpLoneNode(t *testing.T) {
 	}
 }
 
-// ★ The second branch of the one predicate: a lone node reads as Primary and quorate
-// when its chain target is active, Diskful and UpToDate always, with nobody connected -- so
-// Serving() follows the chain and the standby rule's PeerCanTakeOver() says no.
+// ★ The second branch of the one predicate: a lone node holds its disk by construction, so it
+// reads as Primary and quorate always, Diskful and UpToDate always, with nobody connected; its
+// chain target answers ChainDown -- so Serving() follows the chain exactly as the reactor's
+// target makes it on a flock, and the standby rule's PeerCanTakeOver() says no.
 func TestStatusLoneNodeReadsFromTheChain(t *testing.T) {
 	for _, tc := range []struct {
 		state   string
@@ -2017,7 +2043,7 @@ func TestStatusLoneNodeReadsFromTheChain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("chain %s: %v", tc.state, err)
 		}
-		if cl.Serving() != tc.serving || !cl.Quorate || !cl.Diskful || !cl.UpToDate || cl.Connected != 0 || cl.PeerCanTakeOver() {
+		if cl.Serving() != tc.serving || cl.ChainDown == tc.serving || !cl.Primary || !cl.Quorate || !cl.Diskful || !cl.UpToDate || cl.Connected != 0 || cl.PeerCanTakeOver() {
 			t.Errorf("chain %s: status = %+v", tc.state, cl)
 		}
 	}
