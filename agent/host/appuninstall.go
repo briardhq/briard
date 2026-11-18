@@ -51,6 +51,11 @@ func (cfg Config) applyAppUninstall(ctx context.Context, g appInstaller, d api.D
 	if err != nil {
 		return failed(fmt.Sprintf("read machine status: %v", err))
 	}
+	// Taking over (or stopped) with the disk held: forgetting here would drop what the volume
+	// still runs. Refused, as an install is, for the admin to ask again.
+	if !qs.Serving() && qs.Primary && qs.Quorate {
+		return failed("this machine holds your data but is not serving it yet; uninstall again in a moment")
+	}
 	if !qs.Serving() {
 		cfg.forgetApp(name, logf)
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: name + " forgotten on this machine (not serving)"}

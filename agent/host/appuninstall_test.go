@@ -101,6 +101,24 @@ func TestUninstallNowAndNotInstalled(t *testing.T) {
 	}
 }
 
+// An uninstall on a node taking over is refused, not answered as a standby's: a standby forgets
+// the app's cached manifest, and forgetting it here would drop what the volume still runs.
+func TestUninstallRefusesWhileTakingOver(t *testing.T) {
+	cfg := catalogFor(t, testManifest())
+	cfg.AppCache = t.TempDir()
+	if err := cfg.cacheApp("home-assistant", []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	g := &uninstallGuest{fakeInstaller: &fakeInstaller{primary: true, chainDown: true, active: true, prior: mustPrior(t)}}
+	o := uninstall(cfg, g, nil, "home-assistant")
+	if o.State != api.OutcomeFailed || stepAt(g.steps, "uninstall:") >= 0 || stepAt(g.steps, "stop:") >= 0 {
+		t.Fatalf("outcome %+v after %v, want a refusal that touched nothing", o, g.steps)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.AppCache, "home-assistant.json")); err != nil {
+		t.Errorf("the cached manifest was forgotten: %v", err)
+	}
+}
+
 // A failed uninstall converges, so an app whose manifest still stands is started again.
 func TestAFailedUninstallStartsTheAppAgain(t *testing.T) {
 	cfg := catalogFor(t, testManifest())

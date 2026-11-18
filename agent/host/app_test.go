@@ -43,6 +43,7 @@ type fakeInstaller struct {
 	hold       func() error // blocks inside the budget (see beat_test.go)
 	steps      []string
 	primary    bool
+	chainDown  bool // the node holds the disk with its promoter chain down: taking over
 	active     bool
 	healthy    bool
 	// prior is the volume's recorded manifests, keyed by app name — absent = fresh install.
@@ -139,7 +140,7 @@ func (f *fakeInstaller) HassNudge(context.Context) (bool, error) {
 
 func (f *fakeInstaller) Status(context.Context, string) (model.QuorumState, error) {
 	f.steps = append(f.steps, "status")
-	return model.QuorumState{Primary: f.primary, Quorate: true}, nil
+	return model.QuorumState{Primary: f.primary, Quorate: true, ChainDown: f.chainDown}, nil
 }
 
 func (f *fakeInstaller) AppRender(_ context.Context, _ map[string]string, stale []string) error {
@@ -678,6 +679,23 @@ func TestInstallOnSecondaryRendersButDoesNotProvision(t *testing.T) {
 	for _, forbidden := range []string{"provision", "stage:", "pause", "adjust"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("secondary ran %q: %v", forbidden, f.steps)
+		}
+	}
+}
+
+// TestInstallRefusesWhileTakingOver: a node that holds the disk with its chain down is neither a
+// standby nor serving. Answering "units rendered (not serving)" there would tell the admin it was
+// done while nothing was provisioned anywhere, so the install fails, visibly, before it touches the
+// volume.
+func TestInstallRefusesWhileTakingOver(t *testing.T) {
+	f := &fakeInstaller{primary: true, chainDown: true, active: true, healthy: true}
+	o := installApp(catalogFor(t, testManifest()), f)
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "not serving it yet") {
+		t.Fatalf("outcome = %+v, want a refusal naming the takeover", o)
+	}
+	for _, forbidden := range []string{"provision", "stage:", "pause", "adjust"} {
+		if strings.Contains(strings.Join(f.steps, ","), forbidden) {
+			t.Fatalf("a node taking over ran %q: %v", forbidden, f.steps)
 		}
 	}
 }

@@ -429,6 +429,12 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	if err != nil {
 		return failed(fmt.Sprintf("read machine status: %v", err))
 	}
+	// A node that holds the disk with its chain down is taking over (or was stopped): the volume
+	// may not be mounted, and the promotion's own converge would stop what an install starts
+	// now. Refused, never answered as a standby: the admin who asked sees it and asks again.
+	if !qs.Serving() && qs.Primary && qs.Quorate {
+		return failed("this machine holds your data but is not serving it yet; install again in a moment")
+	}
 	if !qs.Serving() {
 		logf("app install %s: units rendered; not serving, so no provisioning here", m.Name)
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "units rendered (not serving)"}
