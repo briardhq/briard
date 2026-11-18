@@ -420,6 +420,13 @@ in
       drbd-fence = import ./drbd-fence.nix { inherit pkgs fixture guestModule; };
       drbd-witness = import ./drbd-witness.nix { inherit pkgs fixture guestModule; };
       drbd-witness-loss = import ./drbd-witness-loss.nix { inherit pkgs fixture guestModule; };
+      # Can the last diskful node restart while its peer is still absent? Act 1 (crash the
+      # primary, the survivor promotes) is the control; act 2 restarts the survivor, cleanly and
+      # then by a crash. A diskless witness can keep quorum but never grant it, so the node comes
+      # back on the quorum its own meta data recorded: a property of the pinned DRBD (9.2.19
+      # leaves the crashed node without quorum), which is why a pin change has to pass here.
+      # Vanilla DRBD: no agent, no nesting, config baked into the image.
+      drbd-survivor-restart = import ./drbd-survivor-restart.nix { inherit pkgs fixture guestModule; };
       single-node-chain = import ./single-node-chain.nix { inherit pkgs fixture guestModule; }; # a lone node runs no DRBD
       app-memory-limit = import ./app-memory-limit.nix { inherit pkgs guestModule; }; # a leak is OOM-killed inside its own app
       backup = import ./backup.nix { inherit pkgs fixture guestModule; }; # a ring member, through the real store, into a folder a person owns
@@ -540,21 +547,15 @@ in
         inherit pkgs;
         variants.next = { version = "0.0.0-bad"; env = { BRIARD_BROKEN = "1"; }; };
       });
-      # Can the last diskful node restart while its peer is still absent? Act 1 (crash the
-      # primary, the survivor promotes) is the control; act 2 restarts the survivor, cleanly and
-      # then by a crash. A diskless witness can keep quorum but never grant it, so the node comes
-      # back on the quorum its own meta data recorded. Green on the pinned DRBD; on 9.2.19 the
-      # crash leaves it without quorum. Vanilla DRBD (no agent, no nesting, config baked into the
-      # image); in `debug` as a probe of the DRBD release, run by hand when the pin moves.
-      drbd-survivor-restart = import ./drbd-survivor-restart.nix { inherit pkgs fixture guestModule; };
-      # The mirror of the one above. That is the gain side of the tiebreaker guard (a restarted
-      # survivor has no runtime `quorum[NOW]`, so it can never gain quorum from a diskless node);
-      # this is the keep side: a broken link between the two anchors leaves `quorum[NOW]` true on
-      # both, so both keep quorum (by design), and a demote landing during the split leaves the
-      # stale survivor UpToDate. Green on the pinned DRBD, where the tiebreaker refuses that
-      # node's promotion; in `debug` as a probe of the DRBD release, run by hand when the pin
-      # moves. The one fault shape `block()`/`crash()` cannot express: nothing leaves the cluster,
-      # only the edge between the data nodes fails, and the witness stays reachable from both.
+      # The mirror of `drbd-survivor-restart` in the `drbd` tag. That is the gain side of the
+      # tiebreaker guard (a restarted survivor has no runtime `quorum[NOW]`, so it can never gain
+      # quorum from a diskless node); this is the keep side: a broken link between the two
+      # anchors leaves `quorum[NOW]` true on both, so both keep quorum (by design), and a demote
+      # landing during the split leaves the stale survivor UpToDate. Green on the pinned DRBD,
+      # where the tiebreaker refuses that node's promotion; in `debug` as a probe of the DRBD
+      # release, run by hand when the pin moves. The one fault shape `block()`/`crash()` cannot
+      # express: nothing leaves the cluster, only the edge between the data nodes fails, and the
+      # witness stays reachable from both.
       drbd-link-split = import ./drbd-link-split.nix { inherit pkgs guestModule; };
       # The companion spike (acts (a)+(b)): the same bad sector on a node that has a peer. (a)
       # proves the silent fallback in its purest form (the read of the broken sector succeeds,
