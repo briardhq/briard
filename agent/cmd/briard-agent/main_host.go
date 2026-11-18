@@ -18,6 +18,7 @@ import (
 	"briard.io/agent/platform"
 	"briard.io/agent/reportcard"
 	"briard.io/agent/selfupdate"
+	"briard.io/shared/api"
 )
 
 // runHost is the host agent: boot the guest, drive bring-up, observe status (host.Run, which
@@ -134,6 +135,23 @@ func runUpdate(ctx context.Context, target string) (string, error) {
 		},
 		SelfTest: selfTest,
 		Stopped:  func(context.Context) (bool, error) { return platform.ServiceStopped(selfupdate.DefaultAgentUnit) },
+		// The image, through the running agent's admin socket: the agent applies the rule for
+		// whose OS this is, and a node it does not apply to answers done. Two answers are "not
+		// now" rather than failures, deferred to the next run: another act in flight, and an agent
+		// that cannot be asked at all (down, or crashed), whose state its own alerts cannot report
+		// either, so failing this run over it would name the wrong fault.
+		Guest: func(ctx context.Context, target string) (string, error) {
+			o, err := host.Submit(ctx, cfg.AdminSock, api.Directive{Kind: install.DirectiveUpdateVMAuto, Payload: target})
+			switch {
+			case err != nil:
+				return "not asked, the agent did not answer (" + err.Error() + "); the next run asks again", nil
+			case o.State == api.OutcomeDone:
+				return o.Detail, nil
+			case o.State == api.OutcomeFailed && strings.HasPrefix(o.Detail, host.BusyPrefix):
+				return "deferred to the next run (" + o.Detail + ")", nil
+			}
+			return "", errors.New(o.Detail)
+		},
 	}
 	line, err := u.Run(ctx, target)
 	if err != nil && install.Unreachable(err) {

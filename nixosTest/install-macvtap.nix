@@ -1381,7 +1381,7 @@ pkgs.testers.runNixOSTest {
     publish_pin(V2, "/root/bundle2")
     inv = agent_invocation()
     out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V2}").strip()
-    assert out == f"updated to {V2} (agent, qemu)", f"briard update said: {out!r}"   # net-wrap unchanged: not fetched
+    assert out.startswith(f"updated to {V2} (agent, qemu); vm: "), f"briard update said: {out!r}"   # net-wrap unchanged: not fetched
     assert agent_invocation() != inv, "the agent was not stopped and started by the update"
     host.succeed("systemctl is-active briard-agent.service")
     host.succeed("journalctl -u briard-update | grep -q 'qemu smoke test: scratch machine running'")
@@ -1531,7 +1531,7 @@ pkgs.testers.runNixOSTest {
     publish_pin(V4, "/root/bundle2", "/root/gbundle4")
     trials_before = console_count("briard-bin-exec: briard-guest-agent: TRIAL")
     out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V4}").strip()
-    assert out == f"updated to {V4} (agent, guest)", f"briard update said: {out!r}"   # qemu unchanged since V2: not fetched
+    assert out.startswith(f"updated to {V4} (agent, guest); vm: "), f"briard update said: {out!r}"   # qemu unchanged since V2: not fetched
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest bundle: PUSH REFUSED'", timeout=300)
     host.succeed("journalctl -u briard-agent | grep 'PUSH REFUSED' | grep -q 'briard-dashboard failed its test launch'")
     host.succeed(f"test \"$(cat /opt/briard/agent/guest.reverted)\" = {V4}")
@@ -1560,7 +1560,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("printf '#!/bin/sh\\ncase \"$1\" in --test-launch) echo ok; exit 0;; esac\\necho \"reverse-proxy: not today\" >&2\\nexit 1\\n' > /root/gbundle5/bin/briard-reverse-proxy && chmod 755 /root/gbundle5/bin/*")
     publish_pin(V5, "/root/bundle2", "/root/gbundle5")
     out = host.succeed(f"/opt/briard/agent/briard-agent update -to {V5}").strip()
-    assert out == f"updated to {V5} (agent, guest)", f"briard update said: {out!r}"
+    assert out.startswith(f"updated to {V5} (agent, guest); vm: "), f"briard update said: {out!r}"
     assert host.succeed("readlink /opt/briard/agent/guest").strip() == f"guest-{V5}", "the guest link did not move on commit"
     host.wait_until_succeeds(f"journalctl -u briard-agent | grep -q 'guest bundle: {V5} staged, proven and activated'", timeout=300)
     host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest bundle: PUSH REVERTED'", timeout=300)
@@ -1663,8 +1663,9 @@ pkgs.testers.runNixOSTest {
     out = host.succeed("/opt/briard/agent/briard-agent update -vm").strip()
     assert f"already running {GV}" in out, f"briard update -vm said: {out!r}"
     # A guest release this host is too old for is refused before anything is staged, naming the
-    # remedy: the support window closing on a node must never be silent. And the check can fail:
-    # an unknown pin fails too.
+    # remedy to whoever asked, and alerting nobody: the nightly update takes the agent before the
+    # image, so on its own this is an agent update that failed, which that run reports. And the
+    # check can fail: an unknown pin fails too.
     GNEW = "vm.99123100.b86d0000"
     d = f"/srv/vm/{GNEW}/amd64"
     host.succeed(f"mkdir -p {d} && echo not-an-image > {d}/nixos.qcow2.zst")  # a real file (the writer skips links); never fetched, the refusal comes first
@@ -1678,14 +1679,18 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds("journalctl -u briard-agent | grep 'status node=' | tail -1 | grep -q 'healthy=true'", timeout=120)
     # The refusal's own words, not just a non-zero exit, so it cannot pass for the wrong reason: an
     # unreachable agent, a mistyped release, a verb that no longer exists all fail here.
+    alerted = lambda: int(host.succeed("journalctl -u briard-agent | grep -c 'guest OS update.*failed; nothing changed' || true").strip())
+    before = alerted()
     out = host.fail(f"/opt/briard/agent/briard-agent update -vm -to {GNEW} 2>&1")
     assert "older than the vm release requires" in out, f"the verb failed, but not on min_briard: {out!r}"
-    # And the escalation reached the journal -- a refusal the owner never hears about is the
-    # failure mode the alert exists for.
-    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'guest OS update.*failed; nothing changed.*older than the vm release requires'", timeout=30)
+    # And no alert: the refusal is logged and answered, never escalated. Counted against a
+    # baseline taken just before (an earlier escalation in this run would match), once the
+    # refusal's own log line proves the journal holds this refusal.
+    host.wait_until_succeeds("journalctl -u briard-agent | grep -q 'directive update-vm refused:.*older than the vm release requires'", timeout=30)
+    assert alerted() == before, "a min_briard refusal alerted"
     host.fail("/opt/briard/agent/briard-agent update -vm -to vm.99010100.nothere")
     host.succeed("cmp /opt/briard/guest-image/manifest.json /var/lib/briard/guest-release.json")  # the record never moved
-    print("the shipped node resolves its vm chain: already running the installed release; a release needing a newer briard is refused loudly")
+    print("the shipped node resolves its vm chain: already running the installed release; a release needing a newer briard is refused to whoever asked, and alerts nobody")
 
     # ---- Convergence restores drift, it does not undo an act -----------------------------------
     # An administratively down device stays down. Not a nicety: a fault harness severs a DRBD link

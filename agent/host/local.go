@@ -173,9 +173,10 @@ func (cfg Config) updates() []AppUpdate {
 
 // updateKinds are the acts the tray calls an update.
 var updateKinds = map[string]bool{
-	api.DirectiveAgentUpdate:   true,
-	install.DirectiveUpdateVM:  true,
-	api.DirectiveUpgradeSystem: true,
+	api.DirectiveAgentUpdate:      true,
+	install.DirectiveUpdateVM:     true,
+	install.DirectiveUpdateVMAuto: true,
+	api.DirectiveUpgradeSystem:    true,
 }
 
 func (cfg Config) applyStatus(d api.Directive, n notify.Notifier) api.DirectiveOutcome {

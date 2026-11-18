@@ -243,6 +243,11 @@ type Update struct {
 	// Stopped reports whether the agent's OS service is down and staying down -- `briard stop` -- in
 	// which case the run defers. nil never defers.
 	Stopped func(ctx context.Context) (bool, error)
+	// Guest, once the agent is current, asks the running agent to take the guest OS image the
+	// release now in place pairs with (DirectiveUpdateVMAuto), and returns that answer's line; an
+	// error is the run's. The two chains then move in one sequence, the agent first, so an image
+	// never meets the agent older than its min_briard on its way in. nil skips the step.
+	Guest func(ctx context.Context, target string) (string, error)
 }
 
 // Deferred is the line a run ends on when briard was stopped: an answer, so the update's result
@@ -293,7 +298,7 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 		return "", err
 	}
 	if !d.Install {
-		return d.Reason, nil
+		return u.thenGuest(ctx, target, want, d.Reason)
 	}
 	logf("update: %s", d.Reason)
 
@@ -522,7 +527,26 @@ func (u *Update) Run(ctx context.Context, target string) (string, error) {
 		// .prev left behind is finished by the next run's reconcile (Commit is idempotent).
 		logf("update: %s is running, but the commit did not finish (%v); the next run finishes it", want.Version, err)
 	}
-	return fmt.Sprintf("updated to %s (%s)", want.Version, strings.Join(staged, ", ")), nil
+	return u.thenGuest(ctx, target, want, fmt.Sprintf("updated to %s (%s)", want.Version, strings.Join(staged, ", ")))
+}
+
+// thenGuest is the run's last step, once the agent is current: the image the release in place
+// pairs with. A pointer names its pair on both chains (`latest`, `promote` and `dev` move them
+// together), so the run's own target word; an exact release id names it in its manifest's `vm`.
+// The image's line joins the agent's, and its failure is the run's, so the one verdict covers both.
+func (u *Update) thenGuest(ctx context.Context, target string, want Manifest, line string) (string, error) {
+	vm := target
+	if !IsPointer(target) {
+		vm = want.VM
+	}
+	if u.Guest == nil || vm == "" {
+		return line, nil
+	}
+	g, err := u.Guest(ctx, vm)
+	if err != nil {
+		return "", fmt.Errorf("%s; vm: %w", line, err)
+	}
+	return line + "; vm: " + g, nil
 }
 
 // revert puts the committed release back after a candidate that did not start (or a swap that
@@ -717,6 +741,12 @@ func (u *Update) installed(logf func(string, ...any)) *Manifest {
 // here, not in agent/host, so the CLI and the host share one spelling. ⚠️ Fleet tests also read
 // that spelling: they wait on `directive update-vm` in the journal by text.
 const DirectiveUpdateVM = "update-vm"
+
+// DirectiveUpdateVMAuto is the update run's ask once the agent is current (Update.Guest): the
+// same operation as update-vm, which the agent applies only where this node moves its own OS. The
+// rule is the agent's because only it knows the node's role now (a pairing changes it at
+// runtime); a node it does not apply to answers done, unchanged.
+const DirectiveUpdateVMAuto = "update-vm-auto"
 
 // ErrBriardTooOld is the min_briard refusal: the installed briard predates what a vm release
 // tolerates.

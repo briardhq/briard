@@ -182,8 +182,10 @@ var commands = []command{
 			"binary this machine runs, inside the VM as well as out: it starts the same update unit the\n" +
 			"nightly timer and the cloud use and prints how it ended: already at the target, updated\n" +
 			"(the agent is stopped once it finishes what it is doing, swapped, started and kept only if it\n" +
-			"starts), or refused and why; it works even when the agent is down. -vm asks the\n" +
-			"agent to move the OS to the release's closure, health-gated, and reports the outcome.",
+			"starts), or refused and why; it works even when the agent is down. Then, on a machine that\n" +
+			"updates its own OS (no peers, no orchestrator), it takes the VM image that release pairs\n" +
+			"with, and says so on the same line. -vm moves only the VM: it asks the agent to move the OS\n" +
+			"to the release's closure, health-gated, and reports the outcome.",
 		run: runUpdate, probe: []string{"-h"},
 	},
 	{

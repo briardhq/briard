@@ -65,37 +65,43 @@ func newActLane() *actLane {
 	return &actLane{results: make(chan actResult, 16), sent: map[string]bool{}, moved: make(chan struct{})}
 }
 
+// BusyPrefix begins the refusal of an act asked for while another is in flight: the one answer a
+// caller may read as "not now" rather than "no" (the update run defers its image step on it).
+const BusyPrefix = "busy: "
+
 // offLoopActs are the kinds that run off the loop one at a time; offLoopPulls the kinds that run
 // off the loop whenever asked; relaunchers the acts that replace the control channel, which Run
 // waits for instead of recovering. Every other kind runs on the loop (the comment above says why).
 var (
 	relaunchers = map[string]bool{
-		install.DirectiveUpdateVM:  true,
-		api.DirectiveUpgradeSystem: true,
-		api.DirectiveConfigSet:     true,
-		api.DirectivePair:          true,
-		api.DirectiveUnpair:        true,
-		api.DirectiveRescue:        true,
-		leaseRelaunch:              true, // internal: the guest takes a new address (lease.go)
+		install.DirectiveUpdateVM:     true,
+		install.DirectiveUpdateVMAuto: true,
+		api.DirectiveUpgradeSystem:    true,
+		api.DirectiveConfigSet:        true,
+		api.DirectivePair:             true,
+		api.DirectiveUnpair:           true,
+		api.DirectiveRescue:           true,
+		leaseRelaunch:                 true, // internal: the guest takes a new address (lease.go)
 	}
 	offLoopActs = map[string]bool{
-		api.DirectiveAppInstall:    true,
-		api.DirectiveAppPrewarm:    true,
-		api.DirectiveAppRestore:    true,
-		api.DirectiveAppCacheEmpty: true, // stops the app and starts it again, as a restore does
-		api.DirectiveAppUninstall:  true, // stops the app and removes it
-		api.DirectiveBackupRestore: true, // a restic restore then an app restore: an act, like the one it ends in
-		api.DirectiveHandover:      true,
-		api.DirectiveSync:          true,
-		api.DirectiveCert:          true,
-		api.DirectiveAgentUpdate:   true,
-		install.DirectiveUpdateVM:  true,
-		api.DirectiveUpgradeSystem: true,
-		api.DirectiveConfigSet:     true,
-		api.DirectiveBackupFolder:  true, // a read, then config.env written: one at a time, as config-set
-		api.DirectivePair:          true,
-		api.DirectiveUnpair:        true,
-		api.DirectiveRescue:        true,
+		api.DirectiveAppInstall:       true,
+		api.DirectiveAppPrewarm:       true,
+		api.DirectiveAppRestore:       true,
+		api.DirectiveAppCacheEmpty:    true, // stops the app and starts it again, as a restore does
+		api.DirectiveAppUninstall:     true, // stops the app and removes it
+		api.DirectiveBackupRestore:    true, // a restic restore then an app restore: an act, like the one it ends in
+		api.DirectiveHandover:         true,
+		api.DirectiveSync:             true,
+		api.DirectiveCert:             true,
+		api.DirectiveAgentUpdate:      true,
+		install.DirectiveUpdateVM:     true,
+		install.DirectiveUpdateVMAuto: true,
+		api.DirectiveUpgradeSystem:    true,
+		api.DirectiveConfigSet:        true,
+		api.DirectiveBackupFolder:     true, // a read, then config.env written: one at a time, as config-set
+		api.DirectivePair:             true,
+		api.DirectiveUnpair:           true,
+		api.DirectiveRescue:           true,
 	}
 	offLoopPulls = map[string]bool{
 		api.DirectiveDoctor:     true,
@@ -176,7 +182,7 @@ func (cfg Config) run(ctx context.Context, d api.Directive, o origin, rq *localR
 		if held, ok := a.claim(d.Kind); !ok {
 			logf("directive kind=%s refused: busy with %s", d.Kind, held)
 			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed,
-				Detail: "busy: a " + held + " is in progress on this machine; try again when it finishes"}, true
+				Detail: BusyPrefix + "a " + held + " is in progress on this machine; try again when it finishes"}, true
 		}
 	}
 	a.mu.Lock()

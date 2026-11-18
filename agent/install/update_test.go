@@ -259,6 +259,64 @@ func TestUpdateSwapsStartsAndCommits(t *testing.T) {
 	assertNoOrphans(t, l)
 }
 
+// The run's last step is the image, asked of the agent once that agent is current: after an
+// update (the new agent already started), and after a run with nothing to install, both with the
+// run's own target word. Its line joins the run's, and its failure is the run's, with the agent's
+// part of the line kept so the verdict says what did happen.
+func TestUpdateTakesTheImageOnceTheAgentIsCurrent(t *testing.T) {
+	c := goodChannel(t)
+	u, _, f := updateFixture(t, c, nil)
+	var asked []string
+	startsAtAsk := -1
+	u.Guest = func(_ context.Context, target string) (string, error) {
+		asked, startsAtAsk = append(asked, target), f.starts
+		return "now running vm.x", nil
+	}
+	line, err := u.Run(context.Background(), TargetLatest)
+	if err != nil || line != "updated to "+testVersion+" (agent); vm: now running vm.x" {
+		t.Fatalf("update = %q, %v", line, err)
+	}
+	if startsAtAsk != 1 {
+		t.Errorf("the image was asked for with the agent started %d times, want after its start", startsAtAsk)
+	}
+	line, err = u.Run(context.Background(), TargetLatest)
+	if err != nil || !strings.Contains(line, "already at "+testVersion) || !strings.HasSuffix(line, "; vm: now running vm.x") {
+		t.Fatalf("second run = %q, %v", line, err)
+	}
+	if len(asked) != 2 || asked[0] != TargetLatest || asked[1] != TargetLatest {
+		t.Errorf("asked %v, want latest twice", asked)
+	}
+
+	u.Guest = func(context.Context, string) (string, error) { return "", errors.New("vm.x did not start; reverted") }
+	_, err = u.Run(context.Background(), TargetLatest)
+	if err == nil || !strings.Contains(err.Error(), "already at "+testVersion) || !strings.Contains(err.Error(), "; vm: vm.x did not start") {
+		t.Errorf("a failed image = %v, want the run failing with both parts", err)
+	}
+}
+
+// What the step asks for: a pointer is its own pair on the vm chain, an exact release id names
+// its pair in its manifest, and a release that names none, or a run with no Guest, asks nothing.
+func TestTheImageStepAsksForTheReleasesPair(t *testing.T) {
+	var asked string
+	u := &Update{Guest: func(_ context.Context, target string) (string, error) { asked = target; return "ok", nil }}
+	for _, tc := range []struct{ target, vm, want string }{
+		{TargetStable, "vm.26111720.97790f1", TargetStable},
+		{TargetDev, "", TargetDev},
+		{"v5.26111809.b3cba06", "vm.26111809.79a6a1b", "vm.26111809.79a6a1b"},
+		{"v5.26111809.b3cba06", "", ""},
+	} {
+		asked = ""
+		line, err := u.thenGuest(context.Background(), tc.target, Manifest{VM: tc.vm}, "agent")
+		if err != nil || asked != tc.want || (tc.want == "" && line != "agent") {
+			t.Errorf("%s (vm %q): asked %q, line %q, err %v; want %q", tc.target, tc.vm, asked, line, err, tc.want)
+		}
+	}
+	u.Guest = nil
+	if line, _ := u.thenGuest(context.Background(), TargetStable, Manifest{}, "agent"); line != "agent" {
+		t.Errorf("no Guest: line %q", line)
+	}
+}
+
 // A candidate that does not start is reverted whole: the committed release goes back, the old
 // agent is started, and the reason waits for it to escalate.
 func TestUpdateRevertsACandidateThatDoesNotStart(t *testing.T) {

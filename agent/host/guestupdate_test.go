@@ -17,10 +17,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/klauspost/compress/zstd"
 
+	"briard.io/agent/drbd"
 	"briard.io/agent/install"
 	"briard.io/shared/api"
 )
@@ -147,8 +147,9 @@ func guestCfg(t *testing.T, c *guestChannel, key []byte) Config {
 	}
 }
 
-// Refusals that must leave the node untouched: a briard below min_briard (escalated -- it is the
-// support window closing), a release the channel does not carry, a tampered manifest, no
+// Refusals that must leave the node untouched, and that no household hears about: a briard below
+// min_briard (the update run takes the agent first, so this follows a failed agent update, which
+// that run reports; it is never alerted on its own), a release the channel does not carry, a tampered manifest, no
 // keyring, and an exact pin below stable.
 func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 	c, key := newGuestChannel(t)
@@ -171,8 +172,11 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 		{"no keyring", install.TargetStable, "no release keyring", func() Config { c := cfg; c.UpdateKeyring = nil; return c }()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			up := &fakeUpgrader{}
-			o := tc.cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM, Payload: tc.target}, running, up, nil, t.Logf)
+			up, n := &fakeUpgrader{}, &fakeNotifier{}
+			o := tc.cfg.applyGuestUpdate(context.Background(), api.Directive{Kind: install.DirectiveUpdateVM, Payload: tc.target}, running, up, n, t.Logf)
+			if len(n.alerts) != 0 {
+				t.Errorf("a refusal alerted: %+v", n.alerts)
+			}
 			if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, tc.want) {
 				t.Errorf("outcome = %+v, want failed mentioning %q", o, tc.want)
 			}
@@ -194,25 +198,43 @@ func TestUpdateGuestRefusesWithoutTouchingTheNode(t *testing.T) {
 	}
 }
 
-// The nightly tick lands in the small hours, tomorrow if today's have passed, never more than
-// two hours past three.
-func TestNextGuestUpdateTick(t *testing.T) {
-	loc := time.FixedZone("test", 2*3600)
-	for _, now := range []time.Time{
-		time.Date(2026, 9, 6, 1, 0, 0, 0, loc),  // before the window: today
-		time.Date(2026, 9, 6, 3, 0, 0, 0, loc),  // at it: tomorrow
-		time.Date(2026, 9, 6, 15, 0, 0, 0, loc), // after: tomorrow
+// The update run's ask (update-vm-auto) is honoured only where this node moves its own OS. A
+// managed node, a node with peers and no orchestrator, and a node with no VM answer it done and
+// unchanged, before reading the channel; a lone node acts on it as on update-vm, which the
+// refusal below proves (it got as far as deciding).
+func TestUpdateGuestAutoFollowsTheRule(t *testing.T) {
+	c, key := newGuestChannel(t)
+	c.publish(t, guestMan("vm.20260906.ccccccc", "/nix/store/c-nixos-system", ""), install.TargetStable)
+	c.publish(t, guestMan("vm.20260910.nnnnnnn", "/nix/store/n-nixos-system", "v3.20270101.zzzzzzz"), install.TargetLatest)
+	lone := guestCfg(t, c, key)
+	managed := lone
+	managed.ControllerURL = "http://10.99.0.1:9099"
+	peered := lone
+	peered.Resource.Peers = []drbd.Peer{{Name: "n1"}, {Name: "n2"}}
+	running := stubSystem{"/nix/store/x-nixos-system"}
+	auto := api.Directive{Kind: install.DirectiveUpdateVMAuto, Payload: install.TargetLatest}
+
+	for _, tc := range []struct {
+		name  string
+		cfg   Config
+		up    upgrader
+		state string
+		want  string
+	}{
+		{"managed", managed, &fakeUpgrader{}, api.OutcomeDone, "orchestrator"},
+		{"peers and no orchestrator", peered, &fakeUpgrader{}, api.OutcomeDone, "peers and no orchestrator"},
+		{"no VM", lone, nil, api.OutcomeDone, "no VM"},
+		{"lone", lone, &fakeUpgrader{}, api.OutcomeFailed, "older than the vm release requires"},
 	} {
-		got := nextGuestUpdateTick(now, loc)
-		if !got.After(now) {
-			t.Errorf("tick %s is not after %s", got, now)
-		}
-		if h := got.In(loc).Hour(); h < 3 || h >= 5 {
-			t.Errorf("tick %s is outside 03:00-05:00", got.In(loc))
-		}
-		if got.Sub(now) > 27*time.Hour {
-			t.Errorf("tick %s is more than a day past %s", got, now)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			o := tc.cfg.applyGuestUpdate(context.Background(), auto, running, tc.up, nil, t.Logf)
+			if o.State != tc.state || !strings.Contains(o.Detail, tc.want) {
+				t.Errorf("outcome = %+v, want %s mentioning %q", o, tc.state, tc.want)
+			}
+			if f, ok := tc.up.(*fakeUpgrader); ok && f.imageTarget.Version != "" {
+				t.Errorf("touched the node: %+v", f)
+			}
+		})
 	}
 }
 

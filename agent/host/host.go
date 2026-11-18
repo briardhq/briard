@@ -868,7 +868,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	//
 	// The guest chain's nightly timer -- a standalone node converging its OS to stable through
 	// the same door; it schedules nothing on a managed or paired node.
-	go cfg.guestUpdateTimer(ctx, local, n, logf)
+	go cfg.announceOSUpdates(ctx, n, logf)
 	// The briard chain's nightly has no such door: its timer starts the frozen
 	// update unit directly, so a failed run's verdict reaches nobody. This watches that unit and
 	// tells the household when this node has stopped updating.
@@ -1910,7 +1910,7 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 		}
 		return cfg.applyAppInstall(ctx, i, d, n, logf)
 	}
-	if d.Kind == install.DirectiveUpdateVM || d.Kind == api.DirectiveUpgradeSystem {
+	if d.Kind == install.DirectiveUpdateVM || d.Kind == install.DirectiveUpdateVMAuto || d.Kind == api.DirectiveUpgradeSystem {
 		// The guest chain: a release resolved on the channel, then the image swap.
 		// The cloud's `upgrade-system` and the local `update-vm` are the same operation with
 		// two spellings of the target -- an exact release id from the cloud, a target word or

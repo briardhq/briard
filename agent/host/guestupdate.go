@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +54,16 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 	failed := func(detail string) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: detail}
 	}
+	// The update run's ask (update-vm-auto) is honoured only where this node moves its own OS;
+	// anywhere else it is answered done and unchanged, which is the run's whole verdict on it.
+	if d.Kind == install.DirectiveUpdateVMAuto {
+		if why := cfg.osUpdatesNotOurs(); why != "" {
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: why}
+		}
+		if up == nil {
+			return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "no VM on this machine"}
+		}
+	}
 	target := d.Payload
 	// An empty payload is `stable`, not `latest`. Every update target on every path
 	// defaults to the promoted pointer; `latest` is proven by a canary that names it on purpose.
@@ -95,11 +104,10 @@ func (cfg Config) applyGuestUpdate(ctx context.Context, d api.Directive, r syste
 	have := cfg.cachedGuestRelease(logf)
 	dec, err := decideGuest(target, want, have, stable, running, cfg.Version)
 	if err != nil {
-		if errors.Is(err, install.ErrBriardTooOld) {
-			// The one refusal an owner must hear about: it is the support window closing on
-			// this node, and the remedy (update briard, or reinstall) is theirs to take.
-			escalate(ctx, n, logf, "this machine", "guest OS update", want.Version, afterUnchanged, err)
-		}
+		// No alert, min_briard included: the update run takes the agent first, so an agent below an
+		// image's min_briard is one whose own update failed, which that run reports as this node
+		// having stopped updating; and no published agent meeting it is the publisher's fault, with
+		// nothing for a household to do about it.
 		logf("directive update-vm refused: %v", err)
 		return failed(err.Error())
 	}
@@ -243,21 +251,31 @@ func (cfg Config) rememberGuestRelease(raw []byte, logf func(string, ...any)) {
 	}
 }
 
-// guestUpdateTimer is the third trigger: once a night, in the small hours and jittered, the
-// agent converges its guest to `stable` through the same directive the CLI submits, over the
-// same channel (so it serialises with the observe loop like every admin operation). It runs
-// only on a standalone node:
+// osUpdatesNotOurs says why this node does not move its own OS, "" when it does. Only a
+// standalone node does, at the end of its update run (DirectiveUpdateVMAuto), and the rule is
+// here, in the agent, because only the agent knows the node's role now:
 //
 //   - A managed node's OS is the cloud's to move (it sequences a flock one node at a time,
 //     serving node last, inside the home's window); a second driver on the node would race it.
 //     So the presence of a controller switches this off, with no knob.
 //   - A node with peers and no orchestrator: each node deciding to reboot on its own is a
-//     correlated outage. Automatic OS updates disable themselves and say so, derived from the
-//     mesh like every other statement about role.
-//
-// Failures are the upgrade path's own (escalated there); this only logs the outcome.
-func (cfg Config) guestUpdateTimer(ctx context.Context, local chan<- localRequest, n notify.Notifier, logf func(string, ...any)) {
-	if cfg.ControllerURL == "" && len(cfg.Resource.Peers) > 1 {
+//     correlated outage. Automatic OS updates disable themselves and say so (announceOSUpdates),
+//     derived from the mesh like every other statement about role.
+func (cfg Config) osUpdatesNotOurs() string {
+	switch {
+	case cfg.ControllerURL != "":
+		return "automatic OS updates are the orchestrator's on this machine"
+	case len(cfg.Resource.Peers) > 1:
+		return "automatic OS updates are off on this machine: it has peers and no orchestrator"
+	}
+	return ""
+}
+
+// announceOSUpdates says at start whether this node's OS is updated without a human: off, and
+// why, on a node with peers and no orchestrator; on again (which ends that alert) on a lone node
+// or one with an orchestrator.
+func (cfg Config) announceOSUpdates(ctx context.Context, n notify.Notifier, logf func(string, ...any)) {
+	if cfg.ControllerURL == "" && cfg.osUpdatesNotOurs() != "" {
 		fireAlert(ctx, n, logf, notify.Alert{
 			Key:      "os-updates",
 			Kind:     notify.Open,
@@ -267,55 +285,10 @@ func (cfg Config) guestUpdateTimer(ctx context.Context, local chan<- localReques
 		})
 		return
 	}
-	// A lone node, or one with an orchestrator: its OS is updated, which ends the alert if an
-	// earlier mesh had switched the automatic path off.
 	fireAlert(ctx, n, logf, notify.Alert{
 		Key:   "os-updates",
 		Kind:  notify.Resolved,
 		Title: "Briard: OS updates are on again on this machine",
 		Body:  fmt.Sprintf("%s's OS is updated again, on its own schedule or by its orchestrator.", cfg.Node),
 	})
-	if cfg.ControllerURL != "" {
-		return
-	}
-
-	loc := time.Local
-	if tz := localTimezone("/"); tz != "" {
-		if l, err := time.LoadLocation(tz); err == nil {
-			loc = l
-		}
-	}
-	for {
-		next := nextGuestUpdateTick(time.Now(), loc)
-		logf("guest update: next automatic check of vm/stable at %s", next.Format(time.RFC3339))
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Until(next)):
-		}
-		resp := make(chan api.DirectiveOutcome, 1)
-		select {
-		case <-ctx.Done():
-			return
-		case local <- localRequest{d: api.Directive{Kind: install.DirectiveUpdateVM, Payload: install.TargetStable}, resp: resp}:
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case o := <-resp:
-			logf("guest update (nightly): %s %s", o.State, o.Detail)
-		}
-	}
-}
-
-// nextGuestUpdateTick is the next 03:00 local after now, plus up to two hours of jitter -- inside
-// the host chain's timer window (03:00 plus up to three hours), so one household's two nightly
-// checks land in the same quiet hours and a fleet does not hit the channel as one.
-func nextGuestUpdateTick(now time.Time, loc *time.Location) time.Time {
-	n := now.In(loc)
-	at := time.Date(n.Year(), n.Month(), n.Day(), 3, 0, 0, 0, loc)
-	if !at.After(n) {
-		at = at.AddDate(0, 0, 1)
-	}
-	return at.Add(time.Duration(rand.Int64N(int64(2 * time.Hour))))
 }

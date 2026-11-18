@@ -189,7 +189,7 @@ pkgs.testers.runNixOSTest {
     #        agent, sees READY and commits. One blocking `systemctl start`. ===
     inv = invocation()
     machine.succeed("systemctl start briard-update.service")
-    assert verdict() == f"ok updated to {V4} (agent, net-wrap, qemu)", f"unexpected verdict: {verdict()!r}"
+    assert verdict().startswith(f"ok updated to {V4} (agent, net-wrap, qemu); vm: not asked, the agent did not answer"), f"unexpected verdict: {verdict()!r}"
     machine.succeed("cmp ${agentBin} ${readyV4}")                     # the versioned artifact, not the bootstrap
     machine.succeed(f"cmp ${manifest} /srv/briard/{V4}/linux-amd64/manifest.json")
     machine.succeed("cmp ${netWrap} /root/net-wrap")
