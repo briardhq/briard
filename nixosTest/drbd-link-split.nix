@@ -173,6 +173,10 @@ pkgs.testers.runNixOSTest {
     # briard-node-storage runs on every node, which is why one call covers both.
     witness.succeed("briard-test-storage")
     node1.wait_until_succeeds("test $(drbdadm cstate r0 | grep -c Connected) -ge 2")
+    # The seed syncs its joiner for real. A cut that lands mid-resync finds node2 Inconsistent,
+    # and a survivor that holds the only good copy is right to go UpToDate and promote: act 1
+    # would then report a stale promotion that is no such thing.
+    node2.wait_until_succeeds("drbdadm dstate r0 | grep -q '^UpToDate'", timeout=300)
 
     def status(m):
         return json.loads(m.succeed("drbdsetup status r0 --json"))[0]
