@@ -158,7 +158,7 @@ in
     #
     # Pinned ahead of nixpkgs, for good: nixos-26.05 ships 9.2.16 for the channel's life,
     # nixpkgs does not track the 9.2 maintenance line, and unstable has jumped to the 9.3
-    # feature branch, so no channel bump is coming. Three 9.2 releases are worth having:
+    # feature branch, so no channel bump is coming. Five 9.2 releases are worth having:
     #
     #   9.2.17  DRBD asks the kernel for BLK_FEAT_STABLE_WRITES again, after kernel-side
     #           changes silently dropped it. DRBD needs it structurally: the same page feeds
@@ -176,6 +176,15 @@ in
     #           settles, gap-free, so it cannot declare itself authoritative before learning
     #           whether a peer holds a write it is missing. Plus the silent-divergence family
     #           of fixes.
+    #   9.2.20  A node that held quorum alone beside the tiebreaker restores it after a crash,
+    #           from its own meta data: the last diskful node of a degraded pair comes back
+    #           from a power cut and serves. 9.2.19 restores only after a clean shutdown.
+    #   9.2.21  A diskless tiebreaker refuses the promotion of a node whose data is older than
+    #           the generation the tiebreaker saw served. A Secondary whose peer wrote and
+    #           demoted across a failed replication link still comes out of the loss UpToDate
+    #           on stale data (LINBIT/drbd#167); on 9.2.19 it then promotes and the pair forks
+    #           for good, on 9.2.21 the tiebreaker stops it for as long as it stays connected.
+    #           Plus a long list of lost-write and stuck-resync fixes.
     #
     # Deliberately not 9.3.x, though it is the same `overrideAttrs` away: 9.3 is where new
     # functionality lands, and it makes resync-without-replication the default -- a rewrite of
@@ -187,10 +196,10 @@ in
     # `nix hash convert --hash-algo sha256 --to sri <base32>`.
     boot.extraModulePackages = [
       (config.boot.kernelPackages.drbd.overrideAttrs (_: {
-        version = "9.2.19";
+        version = "9.2.21";
         src = pkgs.fetchurl {
-          url = "https://pkg.linbit.com//downloads/drbd/9/drbd-9.2.19.tar.gz";
-          hash = "sha256-bhmvViC/m03IgP/g6kBHkCLJx6D8PKXK7oa9Uy57XcE=";
+          url = "https://pkg.linbit.com//downloads/drbd/9/drbd-9.2.21.tar.gz";
+          hash = "sha256-9y40cHvpNeI/sxD/9vwjPLLQZ+D1Gk2n1W0GRAI6jLU=";
         };
       }))
     ];

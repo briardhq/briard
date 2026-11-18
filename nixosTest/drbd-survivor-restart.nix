@@ -17,10 +17,16 @@
 #           restarts. Runtime quorum state is gone, so it must gain quorum rather than keep it,
 #           and the implementation notes of LINBIT say "a partition of half of the nodes with
 #           storage can never gain quorum when it establishes connections to diskless nodes".
+#           The tiebreaker never grants it. What brings it back is the node's own meta data: its
+#           last write there says it was quorate with no other node holding a disk in the
+#           membership, and DRBD restores that quorum at attach.
 #
 # Act 2b, the crash, asserts the outcome we want (the node comes back and serves); act 2a, the
-# clean reboot, is printed, not asserted. If DRBD really cannot do that, this test fails -- the
-# finding, stated in the one place that cannot be blamed on our own plumbing.
+# clean reboot, is printed, not asserted. Both pass on the pinned DRBD (9.2.21). The restore after
+# a crash arrived in 9.2.20 ("restore quorum after reboot despite diskless members"): 9.2.19
+# restores only when the node was the sole member, so there act 2b fails with the survivor at
+# "1 of 2 nodes visible, need 2 for quorum". Stated in the one place that cannot be blamed on our
+# own plumbing.
 { pkgs, guestModule, fixture }:
 
 let
@@ -121,7 +127,8 @@ pkgs.testers.runNixOSTest {
     print(survivor.succeed("journalctl -k --no-pager | grep -iE 'quorum|nodes visible|Restored' | tail -5 || true"))
 
     ### Act 2b — a crash of the survivor (a power cut), peer still absent.
-    # Same node, same topology, one variable changed: nothing gets the chance to record anything.
+    # Same node, same topology, one variable changed: nothing is recorded on the way down, so
+    # the restore has only what the meta data held while the node was running.
     survivor.crash()
     survivor.start()
     bring_drbd_back(survivor)

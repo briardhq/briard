@@ -1,10 +1,12 @@
-# A demote landing during a link split between the two anchors forks the pair: the hermetic,
-# briard-free reproduction backing the upstream report, and the half of a system-roll fork that is
-# not ours to fix. DRBD's tiebreaker licenses a stale node to promote when a demote lands during
-# the split, on a plain packet cut (no loss, no asymmetry, no orchestrator). The full analysis,
-# measured windows and upstream plan live with the upstream report; this test is their evidence
-# and doubles as the pin-bump probe: if a later DRBD outdates the survivor correctly, it goes green
-# and the pin can move.
+# A demote landing during a link split between the two anchors leaves the survivor UpToDate on
+# data it never received: the hermetic, briard-free reproduction backing the upstream report
+# (LINBIT/drbd#167), and the half of a system-roll fork that is not ours to fix. DRBD's lost-peer
+# decision licenses a stale node to promote when a demote lands during the split, on a plain
+# packet cut (no loss, no asymmetry, no orchestrator). The pinned DRBD (9.2.21) stops that node
+# one step later, at the promotion, and that is what this test asserts: the stale node must not
+# take the house, and the pair must rejoin. The full analysis and the per-release results are in
+# the upstream report. It doubles as the probe for the next pin: a DRBD that outdates the survivor
+# at the decision passes through the `held` branch of act 2.
 #
 # The fault shape is the one the rest of the DRBD net does not cover. Every other test cuts a node
 # off (`drbd-witness-loss` blocks the witness, `drbd-fence` isolates the primary, `drbd-failover`
@@ -38,11 +40,19 @@
 # applies: deliberate, we never silently discard a side's writes). So fact 1 below (the
 # double-keep) is a precondition for the race, not a property violation.
 #
+# ⚠️ Where the releases differ is the step after the decision. 9.2.19 lets the stale node promote,
+# and the fork above follows. 9.2.21 makes the same decision and refuses the promotion: the
+# tiebreaker saw the evictor's newer generation served and declines (`Refusing promotion, peer's
+# data is older than ...`), the survivor is outdated when the link returns, and the pair resyncs.
+# The refusal is the tiebreaker's memory of what it saw, so it holds only while that tiebreaker
+# stays connected: take it down in good order and both anchors promote.
+#
 # Pairs with `drbd-survivor-restart` as its mirror image. That test is the gain side of the same
 # guard: a restarted survivor has no runtime quorum state, so `device->quorum[NOW]` is false and a
-# diskless node can never grant it quorum. This is the keep side: with the term true on both
-# anchors at once, the guard refuses nobody. The tiebreaker is safe only when exactly one side was
-# quorate a moment ago, which a node failure guarantees and a link failure does not.
+# diskless node can never grant it quorum (it comes back on its own meta data). This is the keep
+# side: with the term true on both anchors at once, the guard refuses nobody. The tiebreaker is
+# safe only when exactly one side was quorate a moment ago, which a node failure guarantees and a
+# link failure does not.
 #
 # Two acts, one variable: when the demote lands.
 #
@@ -115,11 +125,11 @@
 # prepare can arrive and be aborted), retries a lost race up to three times, and aborts loudly
 # rather than reporting a void as an outcome.
 #
-# ⚠️ This test is expected to fail on DRBD 9.2.19: it asserts the property, not the behaviour (an
-# assertion has to be able to fail). It lives in the `debug` tag for the reason
-# `drbd-survivor-restart` does, stated at its entry in outputs.nix: the nightly must stay a
-# statement about what works, and a gate red for a known reason trains you to stop reading it. It
-# goes green the day the pinned DRBD outdates the survivor despite the relayed demote.
+# ⚠️ What a pass means on the pinned DRBD: act 2 still races (the survivor's own decision is
+# `UpToDate`, printed in the log), its promotion is refused, and nothing forks. The assertion can
+# fail: on 9.2.19 the same script promotes the stale node and ends in split-brain on both. It lives
+# in the `debug` tag as a probe of the DRBD release, run by hand when the pin moves: the timers are
+# ordered on purpose, and the result is a statement about the module, not about our code.
 { pkgs, guestModule }:
 
 let
