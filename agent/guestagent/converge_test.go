@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"briard.io/agent/hass"
 	"briard.io/shared/routes"
@@ -310,6 +311,42 @@ func TestConvergeStopOnANodeThatNeverConverged(t *testing.T) {
 	x := &convergeExec{}
 	if err := ConvergeStop(context.Background(), x); err != nil {
 		t.Fatalf("stopping a node that never converged must be a no-op, got: %v", err)
+	}
+}
+
+// A converge, and a converge's stop, wait for one in flight in another process: the promotion's
+// converge (briard-apps) and an install's (the agent) each render the volume as they found it at
+// their start, so interleaved, the one that read it first stops what the other just started as
+// no longer rendered. The lock held here stands in for the other process.
+func TestConvergeWaitsForOneInFlight(t *testing.T) {
+	for name, run := range map[string]func(Executor) error{
+		"converge":      func(x Executor) error { _, err := Converge(context.Background(), x, ""); return err },
+		"converge stop": func(x Executor) error { return ConvergeStop(context.Background(), x) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			unlock, err := lockFile(convergeLock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			x := &convergeExec{}
+			done := make(chan error, 1)
+			go func() { done <- run(x) }()
+			select {
+			case err := <-done:
+				unlock()
+				t.Fatalf("%s ran while another held the lock (err %v)", name, err)
+			case <-time.After(200 * time.Millisecond):
+			}
+			unlock()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%s did not run once the lock was released", name)
+			}
+		})
 	}
 }
 

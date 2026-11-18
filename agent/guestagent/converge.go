@@ -61,6 +61,14 @@ const startedFile = "/run/briard/apps.started"
 // carrying it and no others: a file a user put there is theirs, and must survive.
 const unitPrefix = "briard-"
 
+// convergeLock serialises converges, and a converge with its stop, across processes. The
+// promotion's converge runs as briard-apps, a process of its own, while an install or an
+// uninstall converges inside the agent; each renders what the volume says at its start, so two
+// interleaved converges let the one that read the volume first stop what the other just started
+// as no longer rendered. One at a time, whichever runs second reads the volume the first left.
+// A variable so a test can move it.
+var convergeLock = "/run/briard/converge.lock"
+
 // Converge makes this node run what the replicated volume says it should: render -> write units
 // -> reload -> warm images -> start. Idempotent: re-running it against an unchanged volume
 // rewrites identical bytes and starts already-active units, which lets an install re-converge in
@@ -93,6 +101,11 @@ const unitPrefix = "briard-"
 // manifest is rendered for that app, and every other staged app is left out entirely --
 // not rendered, not started, its stale units stopped -- until the host's undo puts its data back.
 func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
+	unlock, err := lockFile(convergeLock)
+	if err != nil {
+		return nil, fmt.Errorf("converge: %w", err)
+	}
+	defer unlock()
 	svcs, err := renderVolume(ctx, x, live)
 	if err != nil {
 		return nil, err
@@ -287,6 +300,13 @@ func stopUnrendered(ctx context.Context, x Executor, all quadlet.Rendered) {
 // stop, must not fail the demote, because a failed ExecStop would leave briard-apps active,
 // blocking the unmount behind it — strictly worse than a container that outlives its data.
 func ConvergeStop(ctx context.Context, x Executor) error {
+	// After any converge in flight, so what it starts is in the record this reads. Best-effort
+	// like the rest: a lock that cannot be taken is logged and the stop goes on without it.
+	if unlock, err := lockFile(convergeLock); err != nil {
+		log.Printf("converge stop: %v (continuing unlocked)", err)
+	} else {
+		defer unlock()
+	}
 	// Files' view first: every bind in it holds the volume, which is unmounted after this.
 	if err := tearDownFilesView(ctx, x); err != nil {
 		log.Printf("converge stop: %v (continuing)", err)

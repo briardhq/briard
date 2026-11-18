@@ -56,9 +56,9 @@ type viewBind struct {
 // refreshFilesView brings the view to what the volume says now. A failure names what failed and
 // leaves the rest of the view as good as it got; nothing here may fail what called it.
 func refreshFilesView(ctx context.Context, x Executor) error {
-	unlock, err := lockFilesView()
+	unlock, err := lockFile(filesViewLock)
 	if err != nil {
-		return err
+		return fmt.Errorf("files view: %w", err)
 	}
 	defer unlock()
 	want, err := filesViewWanted(ctx, x)
@@ -71,9 +71,9 @@ func refreshFilesView(ctx context.Context, x Executor) error {
 // tearDownFilesView unbinds the whole view: the volume is about to be unmounted, and a bind left
 // behind would hold it.
 func tearDownFilesView(ctx context.Context, x Executor) error {
-	unlock, err := lockFilesView()
+	unlock, err := lockFile(filesViewLock)
 	if err != nil {
-		return err
+		return fmt.Errorf("files view: %w", err)
 	}
 	defer unlock()
 	return reconcileFilesView(ctx, x, nil)
