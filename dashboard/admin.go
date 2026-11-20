@@ -14,7 +14,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -38,8 +37,15 @@ type adminPort interface {
 // ID -- a virtio-serial port has one opener, an install's request is open for minutes, and the app
 // page's History and Storage are reads the host answers beside it. One reader hands each answer
 // to the request that sent its fresh ID and skips any other line (the host deliberately answers a
-// stale half-line from a dashboard that died mid-write with an ID-less failure). When the wire
-// ends, every waiting request hears so, and the next one reopens it.
+// stale half-line from a dashboard that died mid-write with an ID-less failure).
+//
+// The host end goes away whenever the host agent restarts (an update, a crash), for as long as
+// its bring-up takes. The guest sees an end of file on the port, and a write made meanwhile waits
+// in the guest's kernel for whichever host connects next. So a request is written outside the
+// lock: at the end of file the reader tells every waiting request and closes the wire, and the
+// close cancels a write still waiting, unsent. A request asked while the host is away fails at
+// once and never reaches the next host; one the host had and left unanswered is reported as
+// possibly not done. The next request reopens the wire.
 type serialPort struct {
 	path string
 	// open is how the wire is reached: the character device by default; a test dials a socket.
@@ -52,6 +58,13 @@ type serialPort struct {
 // errNoAdminPort is a host that offers no port: an older host agent, or a guest not launched by
 // briard's own qemu (the hermetic rigs). Surfaced as such; the CLI is the same request typed.
 var errNoAdminPort = errors.New("this node's host offers no admin port")
+
+// errHostAway is a request written while the host agent was away: nothing reached the host.
+// errHostLeft is one the host had and left without answering: it may or may not have been done.
+var (
+	errHostAway = errors.New("Briard is restarting and did not get this; try again in a moment")
+	errHostLeft = errors.New("Briard restarted before it answered, so this may not have happened; check, then try again")
+)
 
 func (p *serialPort) openDevice() (io.ReadWriteCloser, error) {
 	f, err := os.OpenFile(p.path, os.O_RDWR, 0)
@@ -91,20 +104,22 @@ func (p *serialPort) Submit(ctx context.Context, d api.Directive) (api.Directive
 		p.f, p.wait = f, map[string]chan api.DirectiveOutcome{}
 		go p.read(f)
 	}
+	f := p.f
 	p.wait[d.ID] = answer
-	// A leading newline ends whatever a previous writer left unfinished on the line.
-	_, err = p.f.Write(append(append([]byte{'\n'}, raw...), '\n'))
-	if err != nil {
-		delete(p.wait, d.ID)
-	}
 	p.mu.Unlock()
-	if err != nil {
-		return api.DirectiveOutcome{}, fmt.Errorf("write to the admin port: %w", err)
+	// A leading newline ends whatever a previous writer left unfinished on the line. A failed
+	// write sent nothing: the line is one write, and the reader's close cancels it while it waits.
+	if _, err := f.Write(append(append([]byte{'\n'}, raw...), '\n')); err != nil {
+		p.mu.Lock()
+		delete(p.wait, d.ID)
+		p.mu.Unlock()
+		log.Printf("dashboard: write to the admin port: %v", err)
+		return api.DirectiveOutcome{}, errHostAway
 	}
 	select {
 	case o, ok := <-answer:
 		if !ok {
-			return api.DirectiveOutcome{}, errors.New("the admin port closed before the host answered")
+			return api.DirectiveOutcome{}, errHostLeft
 		}
 		return o, nil
 	case <-ctx.Done():
@@ -119,7 +134,8 @@ func (p *serialPort) Submit(ctx context.Context, d api.Directive) (api.Directive
 }
 
 // read is the wire's one reader: every answer to the request that sent its ID, until the wire
-// ends -- then every request still waiting is told, and the next request opens it again.
+// ends -- the host left -- then every request still waiting is told, the wire is closed (which
+// cancels a write still waiting for a host), and the next request opens it again.
 func (p *serialPort) read(f io.ReadWriteCloser) {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)

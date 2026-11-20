@@ -385,3 +385,160 @@ func TestSerialPortCarriesAReadBesideAnInstall(t *testing.T) {
 		t.Errorf("outcome after reopening = %+v", o)
 	}
 }
+
+// virtioPort is what the guest sees of a virtio-serial port, as measured on a VM (qemu's
+// socket chardev, the host end dropped and re-dialled as an agent restart does): a read with
+// nothing waiting is an end of file while no host is connected; a write waits for a host and goes
+// to whichever connects next; closing the device cancels a write still waiting.
+type virtioPort struct {
+	mu      sync.Mutex
+	cond    *sync.Cond
+	host    bool
+	sent    []string // the IDs that reached a host, in order
+	toGuest []byte
+}
+
+type virtioOpener struct {
+	p      *virtioPort
+	closed bool
+}
+
+func newVirtioPort() *virtioPort {
+	p := &virtioPort{}
+	p.cond = sync.NewCond(&p.mu)
+	return p
+}
+
+func (p *virtioPort) set(host bool) {
+	p.mu.Lock()
+	p.host = host
+	p.cond.Broadcast()
+	p.mu.Unlock()
+}
+
+func (p *virtioPort) answer(id string) {
+	b, _ := json.Marshal(api.DirectiveOutcome{ID: id, State: api.OutcomeDone})
+	p.mu.Lock()
+	p.toGuest = append(append(p.toGuest, b...), '\n')
+	p.cond.Broadcast()
+	p.mu.Unlock()
+}
+
+func (p *virtioPort) reached(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, s := range p.sent {
+		if s == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *virtioOpener) Read(b []byte) (int, error) {
+	p := o.p
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for {
+		switch {
+		case o.closed:
+			return 0, os.ErrClosed
+		case len(p.toGuest) > 0:
+			n := copy(b, p.toGuest)
+			p.toGuest = p.toGuest[n:]
+			return n, nil
+		case !p.host:
+			return 0, io.EOF
+		}
+		p.cond.Wait()
+	}
+}
+
+func (o *virtioOpener) Write(b []byte) (int, error) {
+	p := o.p
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for !p.host && !o.closed {
+		p.cond.Wait()
+	}
+	if o.closed {
+		return 0, os.ErrClosed
+	}
+	var d api.Directive
+	if json.Unmarshal([]byte(strings.TrimSpace(string(b))), &d) == nil {
+		p.sent = append(p.sent, d.ID)
+	}
+	p.cond.Broadcast()
+	return len(b), nil
+}
+
+func (o *virtioOpener) Close() error {
+	o.p.mu.Lock()
+	o.closed = true
+	o.p.cond.Broadcast()
+	o.p.mu.Unlock()
+	return nil
+}
+
+// A host agent restarting under the dashboard: a request the old host held is reported
+// as possibly not done; one asked while no host is there fails at once and never reaches the next
+// host, which would otherwise run it while the page says it failed; and once the host is back the
+// next request runs.
+func TestSerialPortAcrossAHostRestart(t *testing.T) {
+	port := newVirtioPort()
+	port.set(true)
+	p := &serialPort{open: func() (io.ReadWriteCloser, error) { return &virtioOpener{p: port}, nil }}
+	submit := func(id string) <-chan error {
+		done := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := p.Submit(ctx, api.Directive{ID: id, Kind: api.DirectiveBackupList})
+			done <- err
+		}()
+		return done
+	}
+	waitSent := func(id string) {
+		for deadline := time.Now().Add(5 * time.Second); !port.reached(id); time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s never reached the host", id)
+			}
+		}
+	}
+
+	before := submit("before")
+	waitSent("before")
+	port.answer("before")
+	if err := <-before; err != nil {
+		t.Fatalf("with the host there: %v", err)
+	}
+
+	held := submit("held")
+	waitSent("held")
+	port.set(false) // the old agent leaves with it unanswered
+	if err := <-held; err != errHostLeft {
+		t.Errorf("a request the leaving host held = %v; want errHostLeft", err)
+	}
+
+	away := submit("away")
+	time.AfterFunc(300*time.Millisecond, func() { port.set(true) }) // the new agent dials
+	select {
+	case err := <-away:
+		if err != errHostAway {
+			t.Errorf("a request with no host = %v; want errHostAway", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a request with no host never returned")
+	}
+	time.Sleep(400 * time.Millisecond)
+	if port.reached("away") {
+		t.Error("a request the page reported unsent reached the next host")
+	}
+
+	after := submit("after")
+	waitSent("after")
+	port.answer("after")
+	if err := <-after; err != nil {
+		t.Errorf("after the host came back: %v", err)
+	}
+}
