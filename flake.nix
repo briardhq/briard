@@ -181,6 +181,10 @@
         ssign = pkgs.callPackage ./scripts/ssign.nix { };
         # The catalog check (catalog/package.nix): catalog/catalog_test.go over the `catalog` input.
         catalog-test = pkgs.callPackage ./catalog/package.nix { inherit catalog; };
+        # The Samba image Files' pod runs (catalog/samba-image.nix): a script that writes the
+        # image to stdout, for `skopeo copy docker-archive:/dev/stdin ...`. No CI builds it: it
+        # compiles Samba.
+        samba-image = pkgs.callPackage ./catalog/samba-image.nix { nixpkgsRev = nixpkgs.rev or "unknown"; };
       });
 
       # The guest VM image: NixOS + DRBD 9 + drbd-reactor and no workload (an app is installed at
