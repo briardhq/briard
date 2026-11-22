@@ -245,6 +245,13 @@ const verbSetHostname = "sys.hostname"
 // /etc/localtime unmanaged and free to set at runtime.
 const verbSetTimezone = "sys.timezone"
 
+// verbSetDriveAccount hands the guest the password the host opens the drive with
+// (agent/files/drive.go): the one account of the Samba server in Files' pod. A node-scoped fact
+// the host holds and pushes at every bring-up, since the accounts file lives under /run and ends
+// with the boot. It is pushed whether or not Files is installed, so a Files installed later finds
+// its account in place.
+const verbSetDriveAccount = "files.drive-account"
+
 // Upgrade/rollback verbs, driven by the host's guest.Manager. Data snapshot/restore cut at the
 // app's btrfs subvolume (per-app scope, not the whole volume). os.system reads the code identity
 // (the closure store path, node-independent, not a generation number); the image the host boots is
@@ -531,7 +538,7 @@ const dataMountRoot = "/var/lib/briard"
 // dispatch switch; a verb absent here is invisible to a capability-checking host even if
 // the switch handles it. (A drift guard test asserts a representative subset is present.)
 var guestCapabilities = []string{
-	verbSetHostname, verbSetTimezone, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
+	verbSetHostname, verbSetTimezone, verbSetDriveAccount, verbNodeStorage, verbAdjust, verbReactor, verbChainStart, verbStatus, verbNetConfigure, verbNetVIP, verbNetVIPForget,
 	verbNetMDNSName, verbNetMDNSPublished, verbNetMDNSOther,
 	verbAppStart, verbAppStop, verbAppActive, verbAppHealth, verbAppHealthOf,
 	verbFilesTick, verbFilesTickResult,
@@ -903,6 +910,12 @@ func dispatch(x Executor) guestfirmware.DispatchFunc {
 				return nil, err
 			}
 			return nil, setTimezone(ctx, x, run, req.Zone)
+		case verbSetDriveAccount:
+			var req driveAccountRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			return nil, setDriveAccount(ctx, x, req.Password)
 		case verbSetHostname:
 			var req hostnameRequest
 			if err := json.Unmarshal(payload, &req); err != nil {

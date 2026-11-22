@@ -81,13 +81,20 @@ type Executor interface {
 	ReadFile(path string) ([]byte, error)
 }
 
-// Volumes is the bind Files' container needs beyond its own: the view, with slave propagation so
-// that what the agent binds into it after the container started is seen inside.
+// Volumes is the bind each of Files' containers needs beyond its own: the view, with slave
+// propagation so that what the agent binds into it after the container started is seen inside.
+// The drive's container gets its own directory with it; the browser's comes from the product's
+// general shape (agent/apps).
 func Volumes(m manifest.Manifest, c manifest.Container) []string {
-	if m.Name != Name || !c.Primary {
+	switch {
+	case m.Name != Name:
 		return nil
+	case c.Primary:
+		return []string{ViewDir + ":" + ViewMount + ":rslave"}
+	case c.Name == DriveContainer:
+		return []string{ViewDir + ":" + ViewMount + ":rslave", DriveDir + ":" + driveMount + ":ro"}
 	}
-	return []string{ViewDir + ":" + ViewMount + ":rslave"}
+	return nil
 }
 
 // Prepare materialises Files' directory and the view's root on this node, before the container
@@ -120,7 +127,13 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 	if err := write(ctx, x, faviconPath, favicon, "0644"); err != nil {
 		return err
 	}
-	return write(ctx, x, cssPath, stylesheet, "0644")
+	if err := write(ctx, x, cssPath, stylesheet, "0644"); err != nil {
+		return err
+	}
+	if hasDrive(m) {
+		return prepareDrive(ctx, x)
+	}
+	return nil
 }
 
 // secret is the boot's signing secret: the one already written, or a new one.
