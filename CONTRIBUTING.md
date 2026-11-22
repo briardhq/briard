@@ -138,8 +138,10 @@ These further rules are not machine-checked but are equally load-bearing:
   installer configures only what never changes — where files live, which units exist; every
   per-machine decision is the agent's, re-asked at every start, and the node's identity is
   minted by the agent, never the script.
-- **The alpha is reinstall-only.** No compatibility path protects an installed node. A change
-  that would need one says so, and the release floor makes older nodes reinstall.
+- **Updates must work.** Briard is in beta, and an installed node updates itself in place. A
+  change to a format, a layout or anything two releases must agree on carries its own migration
+  and is tested by updating from the current stable release. The release floor, which makes a
+  node reinstall, is for nodes too old to carry, never the routine answer.
 
 ## What a good change looks like
 

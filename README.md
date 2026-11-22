@@ -6,7 +6,7 @@ undoes a change, and your data stays home.
 
 What it does, and why: **[briard.io](https://briard.io)**.
 
-> **Status: alpha.** It has run on only a few machines outside our own. Please
+> **Status: beta.** It has run on only a few machines outside our own. Please
 > [tell us what broke](https://github.com/briardhq/briard/issues).
 
 ## Install
