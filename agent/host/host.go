@@ -1206,8 +1206,10 @@ func (cfg Config) bringUp(ctx context.Context, qspec platform.QEMUSpec, logf fun
 	}
 	// The household's timezone, for what the guest renders for people. Every bring-up, because the
 	// guest's /etc forgets it with the boot; it warns rather than fails (pushTimezone).
+	// The drive's password beside it, on the same terms (pushDriveAccount).
 	if err == nil {
 		pushTimezone(bringup, client, localTimezone("/"), logf)
+		pushDriveAccount(bringup, client, cfg.driveKey, logf)
 	}
 	// The service address: the household's if it named one, else -- on a single-anchor substrate --
 	// the lease the host holds for the flock, asked for before the guest is told (lease.go). A fresh
