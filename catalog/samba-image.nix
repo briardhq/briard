@@ -58,7 +58,10 @@ dockerTools.streamLayeredImage {
       "org.opencontainers.image.title" = "samba";
       "org.opencontainers.image.version" = smbd.version;
       "org.opencontainers.image.licenses" = "GPL-3.0-or-later";
-      "org.opencontainers.image.source" = "https://github.com/briardhq/briard";
+      # The registry files the image under the repository this names: the catalog's, where the
+      # version file that pins it lives. The recipe is named beside it.
+      "org.opencontainers.image.source" = "https://github.com/briardhq/catalog";
+      "io.briard.recipe" = "https://github.com/briardhq/briard/blob/main/catalog/samba-image.nix";
       "io.briard.nixpkgs" = nixpkgsRev;
     };
   };
