@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -187,6 +188,10 @@ type tray struct {
 	launchAt    time.Time
 	launchStart int // 0 none yet, 1 under way, 2 returned
 	launchNoted bool
+
+	// The drive (drive.go): what the icon mapped, and whether a step is under way.
+	drive   driveMap
+	driving atomic.Bool
 }
 
 var t *tray
@@ -577,6 +582,9 @@ func (t *tray) poll(exe string, self os.FileInfo) {
 		t.launchStep(r)
 		t.mu.Unlock()
 		postMessage.Call(uintptr(t.wnd), msgRead, 0, 0)
+		if r.err == nil {
+			t.driveStep()
+		}
 		if now, err := os.Stat(exe); err == nil && self != nil && !os.SameFile(self, now) && !exists(l.PrevPath()) {
 			t.relaunch = true
 			postMessage.Call(uintptr(t.wnd), wmClose, 0, 0)
