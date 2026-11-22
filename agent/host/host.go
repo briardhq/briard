@@ -414,6 +414,9 @@ type Config struct {
 	// healthy is the last tick's st.Healthy, which the status directive answers from (local.go).
 	// Machinery like beat; nil-safe. Set by Run, written by the observe loop only.
 	healthy *atomic.Bool
+	// held is the address the guest's service NIC held at the last tick, "" when it held none or
+	// did not answer; the drive directive answers from it (drive.go). Machinery like healthy.
+	held *atomic.Pointer[string]
 	// down starts the node's shutdown (stop.go): it cancels Run's context with ErrShutdown. Set by
 	// Run; nil in tests that build a Config by hand.
 	down context.CancelCauseFunc
@@ -895,6 +898,7 @@ func Run(ctx context.Context, cfg Config, logf func(string, ...any)) (runErr err
 	var pendingOutcomes []api.DirectiveOutcome
 	cfg.acts = newActLane() // outlives any one observe(), like pendingOutcomes: an act spans a channel bounce
 	cfg.healthy = new(atomic.Bool)
+	cfg.held = new(atomic.Pointer[string])
 	// A stop ends between acts: from here the loop and its acts run until the stop and the act in
 	// flight have both happened, and no act starts once the stop has (acts.go, stopAfter).
 	ctx = cfg.acts.stopAfter(ctx, logf)
@@ -1496,6 +1500,12 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 		// one failed read they all see the same way.
 		cfg.beat.Beat()
 		vip := cfg.readVIP(ctx, r)
+		// Kept here, ahead of every return below: a guest that stopped answering holds no address,
+		// and the drive must not be offered at one it held a tick ago.
+		if cfg.held != nil {
+			addr := wantVIPRoute(vip.cidr, vip.err)
+			cfg.held.Store(&addr)
+		}
 		st, cl, probe, err := cfg.snapshot(ctx, r, vip, sys)
 		// Ahead of the channel-down return, and that placement is the load-bearing part: a dead
 		// channel is precisely when the local guest may have stopped serving and a peer may have
@@ -1810,6 +1820,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveConfigSet:     true, // ...and changes its own settings: the address, the backup's
 	api.DirectiveStop:          true, // ...and brings its own node down
 	api.DirectiveStatus:        true, // ...and asks how it is, as doctor does
+	api.DirectiveDrive:         true, // ...and asks where its files are as a drive, and what opens them
 	api.DirectiveAlertDismiss:  true, // ...and says it has seen an alert
 }
 
@@ -1830,6 +1841,9 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectiveStatus {
 		return cfg.applyStatus(d, n)
+	}
+	if d.Kind == api.DirectiveDrive {
+		return cfg.applyDrive(d, logf)
 	}
 	if d.Kind == api.DirectiveAlertDismiss {
 		return applyAlertDismiss(d, n)

@@ -527,6 +527,12 @@ const (
 	//                        so a poll costs the loop nothing. Outcome Detail = a JSON
 	//                        host.LocalStatus. Local-only: the answer is for the person at the
 	//                        machine, like doctor's.
+	DirectiveDrive = "drive" // Payload empty. Where this machine finds the household's files as a
+	//                        drive, and the account it opens them with. Outcome Detail = a JSON
+	//                        host.LocalDrive. Answered from what the host already holds, like
+	//                        status. Local-only, and of the local doors only this machine's own
+	//                        socket: the answer carries a password, which is for the machine
+	//                        that mounts the drive and for nothing inside the guest.
 	DirectiveAlertDismiss = "alert-dismiss" // Payload = a JSON AlertDismiss. The household has seen
 	//                        one alert: its record in the node's alert store is marked dismissed, so
 	//                        it no longer needs attention. Nothing resolves and nothing is

@@ -2,12 +2,19 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"briard.io/agent/files"
+	"briard.io/agent/quadlet"
+	"briard.io/shared/api"
+	"briard.io/shared/manifest"
 )
 
 // driveCfg is a node whose pet state is dir.
@@ -125,5 +132,83 @@ func TestTheGuestIsHandedTheDrivesPassword(t *testing.T) {
 		if strings.Contains(l, password) {
 			t.Errorf("the password is in a log line: %q", l)
 		}
+	}
+}
+
+// TestTheDriveIsUpOnlyWithAnAddressFilesWithSambaAndAPassword enumerates the three things the
+// answer depends on. Anything missing is "not up", and a not-up answer carries no password.
+func TestTheDriveIsUpOnlyWithAnAddressFilesWithSambaAndAPassword(t *testing.T) {
+	const addr, password = "192.168.1.50", "0123456789abcdef0123456789abcdef"
+	withSamba := []string{"briard-files-pod.service", "briard-files-app.service", driveUnit}
+	browserOnly := []string{"briard-files-pod.service", "briard-files-app.service"}
+	for _, tc := range []struct {
+		name     string
+		addr     string
+		units    []string
+		password string
+		up       bool
+	}{
+		{"everything there", addr, withSamba, password, true},
+		{"the guest holds no address", "", withSamba, password, false},
+		{"Files is not installed", addr, nil, password, false},
+		{"Files runs no Samba", addr, browserOnly, password, false},
+		{"no password", addr, withSamba, "", false},
+		{"nothing at all", "", nil, "", false},
+	} {
+		got := driveAnswer(tc.addr, tc.units, tc.password)
+		if got.Up != tc.up {
+			t.Errorf("%s: up=%v, want %v", tc.name, got.Up, tc.up)
+		}
+		if !tc.up && got != (LocalDrive{}) {
+			t.Errorf("%s: a drive that is not up answered %+v, want nothing", tc.name, got)
+		}
+		if tc.up && (got.Address != addr || got.Share != files.DriveShare || got.User != files.DriveUser || got.Password != password) {
+			t.Errorf("%s: answered %+v", tc.name, got)
+		}
+	}
+}
+
+// TestTheDriveUnitIsTheOneTheRendererNames: the host recognises a Files that runs Samba by its
+// container's unit, so the name here has to be the one a rendered manifest carries.
+func TestTheDriveUnitIsTheOneTheRendererNames(t *testing.T) {
+	m := manifest.Manifest{Name: files.Name, Version: "2.0.2-4.25.1", Network: "private", Ports: []int{files.DrivePort},
+		Containers: []manifest.Container{
+			{Name: "app", Image: "docker.io/gtstef/filebrowser@sha256:1111111111111111111111111111111111111111111111111111111111111111", Primary: true, Port: 80, HealthPath: "/health"},
+			{Name: files.DriveContainer, Image: "ghcr.io/briardhq/catalog/samba@sha256:2222222222222222222222222222222222222222222222222222222222222222"},
+		}}
+	r, err := quadlet.Render(m, "192.168.1.50")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(r.Units, driveUnit) {
+		t.Fatalf("the renderer names no %s: %v", driveUnit, r.Units)
+	}
+}
+
+// TestTheDrivesAnswerLeavesByThisMachinesSocketAlone: the answer carries a password, so the
+// cloud may not ask for it and neither may anything in the guest, the dashboard included.
+func TestTheDrivesAnswerLeavesByThisMachinesSocketAlone(t *testing.T) {
+	if !localOnlyKinds[api.DirectiveDrive] {
+		t.Error("the cloud's down-channel may carry the drive directive")
+	}
+	if guestMayAsk(api.Directive{Kind: api.DirectiveDrive}) {
+		t.Error("the guest's admin port may ask for the drive's password")
+	}
+}
+
+// TestApplyDriveAnswersFromWhatTheHostHolds: no address held, so not up, and the password stays
+// home; the answer is a LocalDrive either way.
+func TestApplyDriveAnswersFromWhatTheHostHolds(t *testing.T) {
+	cfg := driveCfg(t.TempDir())
+	o := cfg.applyDrive(api.Directive{ID: "d1", Kind: api.DirectiveDrive}, func(string, ...any) {})
+	if o.State != api.OutcomeDone || o.ID != "d1" {
+		t.Fatalf("outcome %+v", o)
+	}
+	var got LocalDrive
+	if err := json.Unmarshal([]byte(o.Detail), &got); err != nil || got != (LocalDrive{}) {
+		t.Fatalf("a node whose guest holds no address answered %q (%v)", o.Detail, err)
+	}
+	if key, _ := cfg.driveKey(); key == "" || strings.Contains(o.Detail, key) {
+		t.Fatalf("the password is in a not-up answer, or was never minted: %q", o.Detail)
 	}
 }

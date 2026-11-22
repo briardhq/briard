@@ -4,13 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"briard.io/agent/files"
+	"briard.io/shared/api"
 	"briard.io/shared/atomicfile"
 )
 
@@ -90,4 +94,48 @@ func pushDriveAccount(ctx context.Context, g driveAccountSetter, key func() (str
 		}
 		logf("drive: the guest holds this host's account")
 	}
+}
+
+// LocalDrive is DirectiveDrive's answer: whether the drive is there to be mounted, and when it
+// is, where and as whom. Up false carries nothing else, the password least of all.
+type LocalDrive struct {
+	Up       bool   `json:"up"`
+	Address  string `json:"address,omitempty"` // the guest's service address, as it held it at the last tick
+	Share    string `json:"share,omitempty"`
+	User     string `json:"user,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
+// driveUnit is the unit of the Samba container in Files' pod, as the renderer names it.
+const driveUnit = "briard-" + files.Name + "-" + files.DriveContainer + ".service"
+
+// driveAnswer decides the answer from what the host holds: the address the guest held at the
+// last tick, the units of the installed Files, and the password. The drive is up when the guest
+// holds an address, the installed Files runs the Samba container, and there is a password to
+// open it with; the node's health is not asked, because Home Assistant being down takes no
+// file away.
+func driveAnswer(addr string, filesUnits []string, password string) LocalDrive {
+	if addr == "" || password == "" || !slices.Contains(filesUnits, driveUnit) {
+		return LocalDrive{}
+	}
+	return LocalDrive{Up: true, Address: addr, Share: files.DriveShare, User: files.DriveUser, Password: password}
+}
+
+// applyDrive answers DirectiveDrive, from the host's own state and with no guest round trip.
+func (cfg Config) applyDrive(d api.Directive, logf func(string, ...any)) api.DirectiveOutcome {
+	var addr string
+	if cfg.held != nil {
+		if p := cfg.held.Load(); p != nil {
+			addr = *p
+		}
+	}
+	password, err := cfg.driveKey()
+	if err != nil {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: err.Error()}
+	}
+	b, err := json.Marshal(driveAnswer(addr, cfg.installedByName(logf)[files.Name].Units, password))
+	if err != nil {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: err.Error()}
+	}
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: string(b)}
 }
