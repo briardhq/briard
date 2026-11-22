@@ -183,7 +183,8 @@ func TestHomeAssistantEntryMatchesWhatTheProductAssumes(t *testing.T) {
 
 // Files' entry is what agent/files configures: it reads the config written into its own
 // directory, keeps its state in its cache (its index and users are disposable), owns no data of
-// its own, and answers only inside its pod -- the reverse proxy is the one way in, and it signs.
+// its own, and its browser answers only inside its pod -- the reverse proxy is the one way in,
+// and it signs.
 func TestFilesEntryMatchesWhatTheProductAssumes(t *testing.T) {
 	m, _, err := manifest.Parse(current(t, files.Name))
 	if err != nil {
@@ -198,8 +199,20 @@ func TestFilesEntryMatchesWhatTheProductAssumes(t *testing.T) {
 			t.Errorf("Files mounts %v; its own state is disposable and belongs in the cache", mt)
 		}
 	}
-	if m.HostNetwork() || len(m.Ports) != 0 {
-		t.Errorf("Files is reachable other than through the reverse proxy: network %q, ports %v", m.Network, m.Ports)
+	if m.HostNetwork() {
+		t.Errorf("Files is on host networking: network %q", m.Network)
+	}
+	// The drive is the one thing Files publishes, and only a version that runs it: the same view
+	// over SMB, on the drive's port, by a container the agent has to configure. Such a version
+	// names the oldest briard that can, so an older one refuses it.
+	drive := slices.ContainsFunc(m.Containers, func(c manifest.Container) bool { return c.Name == files.DriveContainer })
+	switch {
+	case !drive && len(m.Ports) != 0:
+		t.Errorf("Files publishes %v and runs no drive: the reverse proxy is its one way in", m.Ports)
+	case drive && !slices.Equal(m.Ports, []int{files.DrivePort}):
+		t.Errorf("Files with the drive publishes %v, want the drive's port %d alone", m.Ports, files.DrivePort)
+	case drive && m.MinBriard == "":
+		t.Error("Files with the drive names no minBriard: a briard that predates the drive would start a Samba it cannot configure")
 	}
 }
 

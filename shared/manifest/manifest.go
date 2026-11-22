@@ -53,6 +53,10 @@ import (
 // naming "../../etc/systemd/system/anything" or a unit that collides with ours.
 var slug = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`)
 
+// releaseID is a release id of the release channel: the epoch, the commit hour as eight digits,
+// and the short revision. MinBriard is one, and is compared on the middle field.
+var releaseID = regexp.MustCompile(`^v[0-9]+\.[0-9]{8}\.[0-9a-f]{7,40}$`)
+
 // ValidName reports whether name has the shape of a catalog name, for a reader that receives
 // one from outside the catalog and must not hold anything else.
 func ValidName(name string) bool { return slug.MatchString(name) }
@@ -105,6 +109,16 @@ type Manifest struct {
 	// container's memory limit (agent/quadlet). Zero means the entry does not say (the app counts
 	// for nothing until it needs more, and has no limit).
 	MinMemoryMB int `json:"minMemoryMB,omitempty"`
+	// MinBriard is the oldest briard release that can run this version, as a release id of the
+	// release channel (`v5.26112015.d76f0bc`); empty means any. A version that needs something
+	// of the agent that an older one lacks, a container the agent has to configure, says so
+	// here, and an older agent refuses it and names the remedy, where it would otherwise start
+	// a pod it only half understands. The agent updates first, then what it manages.
+	//
+	// Here and not on the list's line: the floor is a fact about this version's contents, and it
+	// travels with the manifest wherever one is kept. An agent that predates the field cannot
+	// read a version that carries it, and refuses that version too.
+	MinBriard string `json:"minBriard,omitempty"`
 	// Network is the pod's networking mode: "host" or "private". Silence means private, which is
 	// property 2 in the small: omission yields the less capable shape, a pod that can reach
 	// nothing but itself and whatever the node deliberately routes or publishes to it.
@@ -259,6 +273,9 @@ func (m Manifest) Validate() error {
 	}
 	if err := safeValue("version", m.Version); err != nil {
 		return err
+	}
+	if m.MinBriard != "" && !releaseID.MatchString(m.MinBriard) {
+		return fmt.Errorf("%w: minBriard %q is not a release id", ErrInvalid, m.MinBriard)
 	}
 	switch m.Network {
 	case "", NetworkPrivate, NetworkHost:

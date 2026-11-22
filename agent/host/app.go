@@ -17,6 +17,7 @@ import (
 	"briard.io/agent/guestagent"
 	"briard.io/agent/guestfirmware"
 	"briard.io/agent/hass"
+	"briard.io/agent/install"
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/platform"
 	"briard.io/agent/quadlet"
@@ -204,6 +205,10 @@ func (cfg Config) applyAppPrewarm(ctx context.Context, g appInstaller, d api.Dir
 		logf("app prewarm %s: %v", d.Payload, err)
 		return failed(err.Error())
 	}
+	if why := cfg.briardTooOldFor(m); why != "" {
+		logf("app prewarm %s: %s", d.Payload, why)
+		return failed(why)
+	}
 	// Images only: a prewarm may run on a node that is not serving, which has not allocated this
 	// app an address — and does not need one to hold its images.
 	rendered, err := quadlet.Images(m)
@@ -327,6 +332,10 @@ func (cfg Config) applyOneAppInstall(ctx context.Context, g appInstaller, d api.
 	if err != nil {
 		logf("app install %s: %v", d.Payload, err)
 		return failed(err.Error())
+	}
+	if why := cfg.briardTooOldFor(m); why != "" {
+		logf("app install %s: %s", d.Payload, why)
+		return failed(why)
 	}
 	// The manifest says how long its pull may take; an install must not expire
 	// before the pull it waits on is allowed to. Re-budgeted from the parent, and the deferred
@@ -1170,6 +1179,27 @@ func (cfg Config) awaitHealthy(ctx context.Context, g *appInstaller, app string,
 		case <-time.After(5 * time.Second):
 		}
 	}
+}
+
+// briardTooOldFor is why this briard cannot run a version, "" when it can: the version names
+// the oldest release that can (manifest.MinBriard), and this one is older. Asked of every
+// manifest fetched to be installed, updated to or warmed, before anything is pulled or written,
+// so a refusal costs nothing and leaves the node as it was. A version already installed is
+// never asked: it was adopted by a briard that could run it.
+//
+// The words are for the household, who pressed Install or Update and can do the one thing that
+// helps. A briard whose own release id has no date (a build of no release) is too old for every
+// floor, as it is for a VM's.
+func (cfg Config) briardTooOldFor(m manifest.Manifest) string {
+	err := install.BriardSatisfies(m.MinBriard, cfg.Version)
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, install.ErrBriardTooOld):
+		return fmt.Sprintf("%s %s needs a newer Briard than this one: it needs %s and this is %s. Update Briard first, then try again.",
+			m.Name, m.Version, m.MinBriard, cfg.Version)
+	}
+	return err.Error()
 }
 
 // fetchManifest pulls the named app's signed manifest from the catalog and returns it with

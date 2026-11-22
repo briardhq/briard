@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -310,5 +311,24 @@ func TestMountsInEveryTier(t *testing.T) {
 	m.Containers = m.Containers[:1]
 	if m.UsesTier(TierCache) {
 		t.Error("UsesTier(cache) = true for an app that mounts no cache")
+	}
+}
+
+// TestMinBriardIsAReleaseID: the floor a version may carry is a release id of the release
+// channel, compared on its date field, so anything without one is refused at parse and never
+// reaches a node as a floor nothing can satisfy. No floor is the ordinary case.
+func TestMinBriardIsAReleaseID(t *testing.T) {
+	doc := func(floor string) []byte {
+		return []byte(`{"name":"x","version":"1","minBriard":"` + floor + `","containers":[{"name":"a","image":"example.org/a@sha256:` +
+			strings.Repeat("1", 64) + `","primary":true,"port":80,"healthPath":"/"}]}`)
+	}
+	m, _, err := Parse(doc("v5.26112015.d76f0bc"))
+	if err != nil || m.MinBriard != "v5.26112015.d76f0bc" {
+		t.Fatalf("a release id as the floor: %q, %v", m.MinBriard, err)
+	}
+	for _, bad := range []string{"5.26112015.d76f0bc", "v5.2611201.d76f0bc", "v5.dirty", "v5.26112015", "latest", "v5.26112015.d76f0bc; rm -rf /"} {
+		if _, _, err := Parse(doc(bad)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("minBriard %q was accepted (%v)", bad, err)
+		}
 	}
 }
