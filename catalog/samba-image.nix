@@ -15,6 +15,11 @@
 # their passwords are rendered outside and mounted at /briard, so the image is the same in
 # every home and a rebuild changes no household's settings.
 #
+# Without that mount it still starts, on a /briard of its own: the same global settings, no
+# share and no account, so it admits nobody and serves nothing. A catalog version cannot say
+# which agent it needs, and an agent that predates the drive mounts nothing here; the pod it
+# starts must idle, not restart forever.
+#
 # The override is never in the public binary cache: every build compiles Samba.
 #
 # nixpkgsRev is stamped on the image as a label, so an image says which nixpkgs it was built
@@ -39,6 +44,9 @@ let
       ++ [ "--disable-python" "--without-systemd" ];
     postFixup = lib.replaceStrings [ "wrapPythonPrograms" ] [ "" ] old.postFixup;
   });
+  # The global section of the configuration the agent renders (agent/files/smb.conf), which is
+  # everything above its first share.
+  closedConf = builtins.toFile "smb.conf" (lib.head (lib.splitString "\n[" (builtins.readFile ../agent/files/smb.conf)) + "\n");
 in
 dockerTools.streamLayeredImage {
   name = "samba";
@@ -50,6 +58,9 @@ dockerTools.streamLayeredImage {
     chmod 1777 tmp
     ln -s /briard/passwd etc/passwd
     printf 'root:x:0:\nnogroup:x:65534:\n' > etc/group
+    mkdir -p briard
+    cp ${closedConf} briard/smb.conf
+    printf 'root:x:0:0:root:/:/noshell\nnobody:x:65534:65534::/:/noshell\n' > briard/passwd
   '';
   config = {
     Entrypoint = [ "${smbd}/bin/smbd" "--foreground" "--no-process-group" "--debug-stdout" "--configfile=/briard/smb.conf" ];
