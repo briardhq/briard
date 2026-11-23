@@ -1,4 +1,4 @@
-# `nix build .#catalog-test`: catalog/catalog_test.go over the published catalog (its own
+# `nix build .#catalog-test`: catalog/catalog_test.go over the app catalog (its own
 # repository, the `catalog` flake input). This lays the catalog/ directory and its image hashes
 # (catalog-images.json) beside the test and runs it, so overriding the input
 # (`--override-input catalog path:.` in the catalog checkout, or its `main`) checks that catalog

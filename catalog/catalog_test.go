@@ -1,6 +1,6 @@
 //go:build catalog
 
-// Package catalog checks the published catalog (its own repository), laid here by `nix build
+// Package catalog checks the app catalog (its own repository), laid here by `nix build
 // .#catalog-test` from the pinned `catalog` flake input or one given with --override-input. It
 // has no code: the test is the point. The build tag keeps a plain `go test ./...` from compiling
 // it, so a checkout without the files reports nothing rather than an unearned pass.
@@ -29,8 +29,10 @@ import (
 	"briard.io/shared/manifest"
 )
 
-// list is the list a node reads.
-const list = "latest.json"
+// list is the list as the catalog holds it, main.json: each app's newest version there, which
+// is what the tests run. latest.json beside it is the catalog's copy of the list nodes are
+// served, checked where it is signed.
+const list = "main.json"
 
 // versionFiles is every published version of every app: `<app>/<version>.json`.
 func versionFiles(t *testing.T) []string {

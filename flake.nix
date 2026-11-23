@@ -2,7 +2,8 @@
   description = "Briard — managed, highly-available home automation";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
-  # The app catalog, its own repository: the version files and the list a node reads, and the
+  # The app catalog, its own repository: the version files, the list of each app's newest (main.json,
+  # what the tests run), a copy of the list nodes are served (latest.json), and the
   # image hashes the test fixtures pull by. The tests read it from here (outputs.nix, `.#catalog-test`);
   # a node never does -- it fetches the published copy from get.briard.io. Moving this pin is
   # housekeeping: whoever tests what is about to ship overrides it with the catalog's `main`.

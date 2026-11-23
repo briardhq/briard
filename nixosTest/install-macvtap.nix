@@ -85,7 +85,7 @@ let
   # beside it: the page offers what the list says is installable, and the install that follows
   # fails closed on the manifest it cannot get.
   channelEnv = "BRIARD_CHANNEL_URL=http://127.0.0.1:8099 BRIARD_UPDATE_KEYRING=/root/keyring.pem BRIARD_CATALOG_URL=http://127.0.0.1:8099/catalog/latest.json";
-  catalogIndex = "${catalog}/catalog/latest.json";
+  catalogIndex = "${catalog}/catalog/main.json";
   installScript = ../scripts/install.sh;
 in
 pkgs.testers.runNixOSTest {

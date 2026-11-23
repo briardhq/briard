@@ -241,10 +241,12 @@ let
     ];
     variants.bad = { version = "0.0.0-bad"; env = { BRIARD_BROKEN = "1"; }; };
   };
-  # An app's edge, its previous version to the candidate (app-edge.nix): one test per catalogued
-  # app with a version below the listed one, so an app gains its edge with its second version
-  # file and needs nothing here. Run per app by the catalog run, never by the nightly: it tests
-  # an upstream release, which the night's verdict must not depend on.
+  # An app's edge, its published version to the listed one (app-edge.nix): one test per catalogued
+  # app whose edge fixture evaluates, so an app gains its edge when its listed version moves past
+  # the published one by what an upstream release moves, and needs nothing here. A listed version
+  # that differs by more (a container somebody added) has none. Run per app by the catalog run,
+  # never by the nightly: it tests an upstream release, which the night's verdict must not
+  # depend on.
   edgeTest = fixture: import ./app-edge.nix {
     inherit pkgs netWrap dressBase fixture;
     agent = agentPkg;
@@ -253,9 +255,10 @@ let
       stageImages = [ fixture.image fixture.variants.next.image ] ++ fixture.extraImages;
     };
   };
+  edgeFixture = a: import ./catalog-fixture.nix { inherit pkgs catalog; app = a.name; edge = true; };
   edgeApps = pkgs.lib.filter
-    (a: a.available or false && pkgs.lib.length (pkgs.lib.attrNames (builtins.readDir "${catalog}/catalog/${a.name}")) > 1)
-    (pkgs.lib.importJSON "${catalog}/catalog/latest.json").apps;
+    (a: a.available or false && (builtins.tryEval (builtins.seq (edgeFixture a) true)).success)
+    (pkgs.lib.importJSON "${catalog}/catalog/main.json").apps;
   agentInstallUndo = import ./agent-install-undo.nix {
     inherit pkgs netWrap dressBase;
     agent = agentPkg;
@@ -534,7 +537,7 @@ in
     # (manifest.nix), run by name by the catalog run for the apps it proposes.
     edge = builtins.listToAttrs (map (a: {
       name = "app-edge-${a.name}";
-      value = edgeTest (import ./catalog-fixture.nix { inherit pkgs catalog; app = a.name; edge = true; });
+      value = edgeTest (edgeFixture a);
     }) edgeApps);
 
     # Debug harnesses, deliberately excluded from the curated set the nightly runs (the manifest

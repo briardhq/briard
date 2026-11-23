@@ -1,13 +1,13 @@
 # A catalogued app's fixture, read from the version the catalog's list names: the `catalog` flake
-# input's catalog/<app>/<version>.json, as catalog/latest.json names it, is the one place an
+# input's catalog/<app>/<version>.json, as catalog/main.json names it, is the one place an
 # app's name, version, networking, container, mounts, port, health path, memory and sizes are
-# written, so a test runs what the catalog ships and a version bump touches nothing here.
+# written, so a test runs what the catalog holds and a version bump touches nothing here.
 #
-# The edge (`edge = true`): the fixture is the app's previous version (the next lower version file
-# beside the listed one), with the listed one as its variant `next`, so a test can install one and
-# upgrade to the other (app-edge.nix). The two files may differ only where an upstream release
-# moves them (version, image, size, installedSize); anything else is a change somebody made, and
-# evaluation refuses it.
+# The edge (`edge = true`): the fixture is the app's published version (the one named by
+# catalog/latest.json, the catalog's copy of the list nodes are served), with the listed one as
+# its variant `next`, so a test can install one and upgrade to the other (app-edge.nix). The two
+# files may differ only where an upstream release moves them (version, image, size,
+# installedSize); anything else is a change somebody made, and evaluation refuses it.
 #
 # The image is pulled by the entry's own digest. The catalog pins the multi-arch index; pullImage
 # copies with `--override-arch`, so the amd64 image under it is resolved, never stored. The hash
@@ -33,20 +33,21 @@ let
   inherit (pkgs) lib;
   line = lib.findFirst (a: a.name == app && a.available or false)
     (throw "catalog-fixture: the catalog lists no installable version of ${app}")
-    (lib.importJSON "${catalog}/catalog/latest.json").apps;
+    (lib.importJSON "${catalog}/catalog/main.json").apps;
   entry = v: lib.importJSON "${catalog}/catalog/${app}/${v}.json";
   current = entry line.version;
-  # The next lower version file: what a household upgrading to the listed version runs now.
+  # The published version: what a household upgrading to the listed version runs now. Not the
+  # next lower version file: an app whose listed version waits to be published has two lines of
+  # versions in its directory, and the next lower file can be the other line's.
   previous =
     let
-      lower = lib.filter (v: builtins.compareVersions v line.version < 0) (
-        map (lib.removeSuffix ".json") (lib.attrNames (builtins.readDir "${catalog}/catalog/${app}"))
-      );
+      was = lib.findFirst (a: a.name == app && a.available or false) null
+        (lib.importJSON "${catalog}/catalog/latest.json").apps;
     in
-    if lower == [ ] then
-      throw "catalog-fixture: ${app} has no version below ${line.version}; its edge needs a previous"
+    if was == null || was.version == line.version then
+      throw "catalog-fixture: ${app} ${line.version} is the published version, or the app has none; its edge needs one to upgrade from"
     else
-      entry (lib.last (lib.sort (a: b: builtins.compareVersions a b < 0) lower));
+      entry was.version;
   m = if edge then previous else current;
   c = lib.head m.containers;
   hashes = lib.importJSON "${catalog}/catalog-images.json";
