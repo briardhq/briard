@@ -180,7 +180,8 @@ pkgs.testers.runNixOSTest {
     host.succeed(
         "(printf '\\n'; sleep 2; printf 'id\\n'; sleep 2; "
         "printf 'journalctl -b -u systemd-journald -o cat --no-pager | grep -i \"system journal\"\\n'; sleep 5; "
-        "printf 'readlink /etc/localtime; date +%%z\\n'; sleep 2; printf '\\035') "
+        "printf 'readlink /etc/localtime; date +%%z\\n'; sleep 2; "
+        "printf 'stat -c drive-account-is-%%a /run/briard/files-drive/smbpasswd\\n'; sleep 2; printf '\\035') "
         "| briard-agent debug shell > /tmp/debug-shell.out 2>&1"
     )
     shell_out = host.succeed("cat /tmp/debug-shell.out")
@@ -197,6 +198,12 @@ pkgs.testers.runNixOSTest {
     assert "/etc/zoneinfo/Asia/Tokyo" in shell_out, f"the guest's /etc/localtime is not the host's zone:\n{shell_out}"
     assert "+0900" in shell_out, f"the guest's clock does not read the host's zone:\n{shell_out}"
     host.succeed("journalctl -u briard-agent | grep -q 'timezone: the guest runs on Asia/Tokyo'")
+    # The drive's account, handed over at bring-up whether or not Files is installed: the guest
+    # holds it where Samba will read it, closed to everyone else, and the host kept the password
+    # it minted. The mode is not in what was typed.
+    assert "drive-account-is-600" in shell_out, f"the guest holds no drive account:\n{shell_out}"
+    assert host.succeed("stat -c %a /var/lib/briard/drive-key").strip() == "600"
+    host.succeed("journalctl -u briard-agent | grep -q 'drive: the guest holds this host'")
     # Closed again on the way out; the socket is the only record, so if it survives the verb a
     # node stays open after a support call.
     host.fail("test -e /run/briard/qmp/console.sock")

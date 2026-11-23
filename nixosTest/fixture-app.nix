@@ -66,6 +66,11 @@
   # pin the registry digest.
   imageFile ? null,
   imageName ? null,
+  # Further containers in the pod, after the primary, each an image the caller supplies:
+  # `[ { name = "samba"; imageFile = <docker-archive>; imageName = "<repo>"; } ]`, with `mounts`
+  # and `env` as the manifest says them where it has any. Each is pinned as the primary is, by
+  # its archive's digest. A variant may carry its own list; without one it runs the base's.
+  extraContainers ? [ ],
   # Further versions of the same app, one per attribute, for a harness whose subject is a
   # version change rather than an install: `{ v1 = { version = "1.0.0"; }; bad = { version =
   # "0.0.0-bad"; env = { BRIARD_BROKEN = "1"; }; }; }`. Each is emitted under
@@ -136,6 +141,7 @@ let
       image = base;
       inherit version;
       env = env;
+      extra = extraContainers;
     }
   ]
   ++ lib.mapAttrsToList (label: v: {
@@ -143,7 +149,18 @@ let
     image = variantImages.${label};
     inherit (v) version;
     env = v.env or { };
+    extra = v.extraContainers or extraContainers;
   }) variants;
+  # Every archive a published version names, each once: the primary's and the further
+  # containers', which versions usually share.
+  archives = lib.unique (
+    lib.concatMap (p: [ "${p.image.tarball}" ] ++ map (k: "${k.imageFile}") p.extra) published
+  );
+  # A further container's fields beyond its name and image, as they follow in its manifest entry.
+  extraFields =
+    k:
+    lib.optionalString (k ? mounts) '',"mounts":${builtins.toJSON k.mounts}''
+    + envJSON (k.env or { });
   # The podman store, prebuilt: every archive is `podman load`ed once, here, and the store ships
   # as a read-only disk the node mounts as an additional image store. Loading on every node at
   # every boot costs, for the 2.4 GB HA archive, ~8 GB of host disk writes and ~100 s per node,
@@ -197,9 +214,9 @@ let
           mkdir -p /mnt/storage /mnt/tmp
           export TMPDIR=/mnt/tmp
           cp ${policy} /etc/containers/policy.json
-          ${lib.concatMapStrings (p: ''
-            ${podman} load -i ${p.image.tarball}
-          '') published}
+          ${lib.concatMapStrings (a: ''
+            ${podman} load -i ${a}
+          '') archives}
           ${podman} images --digests
           mkdir -p $out
           mkfs.erofs --quiet $out/store.erofs /mnt/storage
@@ -213,8 +230,13 @@ let
     digest=$(skopeo --policy ${policy} --tmpdir "$TMPDIR" inspect docker-archive:${p.image.tarball} --format '{{.Digest}}')
     ref="${p.image.repo}@$digest"
     printf '%s' "$ref" > $out/${p.dir}/ref
+    extra=""
+    ${lib.concatMapStrings (k: ''
+      d=$(skopeo --policy ${policy} --tmpdir "$TMPDIR" inspect docker-archive:${k.imageFile} --format '{{.Digest}}')
+      extra="$extra",${lib.escapeShellArg ''{"name":"${k.name}","image":"${k.imageName}@''}"$d"${lib.escapeShellArg ''"${extraFields k}}''}
+    '') p.extra}
     cat > $out/${p.dir}/manifest.json <<EOF
-    {"name":"${name}","version":"${p.version}","network":"${network}"${portsJSON ports},"containers":[{"name":"${container}","image":"$ref","mounts":${builtins.toJSON mounts},"primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}]${minMemJSON}${sizeJSON}}
+    {"name":"${name}","version":"${p.version}","network":"${network}"${portsJSON ports},"containers":[{"name":"${container}","image":"$ref","mounts":${builtins.toJSON mounts},"primary":true,"port":${toString port},"healthPath":"${healthPath}"${envJSON p.env}}$extra]${minMemJSON}${sizeJSON}}
     EOF
     # The heredoc is indented for readability; the manifest bytes are its identity, so strip the
     # indentation rather than ship it into the content hash.
@@ -249,6 +271,9 @@ pkgs.runCommand "briard-fixture-${name}"
       # hermetic test, by the lib.nix fixture wiring) so a node rolls onto one without a pull.
       variants = lib.mapAttrs (label: img: { image = img.tarball; }) variantImages;
       variantLabels = lib.attrNames variants;
+      # The further containers' archives, every version's, for a guest disk to stage beside
+      # `image` and the variants'.
+      extraImages = lib.unique (lib.concatMap (p: map (k: "${k.imageFile}") p.extra) published);
     };
   }
   ''

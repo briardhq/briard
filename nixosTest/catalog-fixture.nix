@@ -19,7 +19,7 @@
 #
 # The fixture names the archive's digest, not the registry's (fixture-app.nix says why), so a
 # test proves the entry's fields, not its exact bytes. A variant carries its own version, env and
-# image but the base's sizes.
+# images but the base's sizes.
 {
   pkgs,
   # The catalog (the flake input) and the app in it.
@@ -50,33 +50,54 @@ let
   m = if edge then previous else current;
   c = lib.head m.containers;
   hashes = lib.importJSON "${catalog}/catalog-images.json";
-  repoOf = e: lib.head (lib.splitString "@" (lib.head e.containers).image);
-  pull =
-    e:
-    let
-      img = (lib.head e.containers).image;
-    in
+  repoOfC = k: lib.head (lib.splitString "@" k.image);
+  repoOf = e: repoOfC (lib.head e.containers);
+  # A version names one part per container, in their order, joined by `-`: `2.0.2-4.25.1` is
+  # Files 2.0.2 with Samba 4.25.1. Each image is tagged with its own part and not the whole
+  # version: the archive's hash covers the tag, and an image two versions share (the other part
+  # moved) must keep the one hash its ref is recorded under.
+  partsOf = e: lib.splitString "-" e.version;
+  # Container `i`'s image, of version `e`.
+  pullC =
+    e: i: k:
     pkgs.dockerTools.pullImage {
-      imageName = repoOf e;
-      imageDigest = lib.last (lib.splitString "@" img);
-      sha256 = hashes.${img}.amd64 or lib.fakeHash;
-      finalImageName = repoOf e;
-      finalImageTag = e.version;
+      imageName = repoOfC k;
+      imageDigest = lib.last (lib.splitString "@" k.image);
+      sha256 = hashes.${k.image}.amd64 or lib.fakeHash;
+      finalImageName = repoOfC k;
+      finalImageTag = lib.elemAt (partsOf e) i;
       os = "linux";
       arch = "amd64";
     };
+  pull = e: pullC e 0 (lib.head e.containers);
+  # The containers after the first, as fixture-app.nix takes them: each pulled by its own digest,
+  # its other fields as the entry says them.
+  extraOf =
+    e:
+    lib.imap1 (
+      i: k:
+      removeAttrs k [ "image" ]
+      // {
+        imageFile = pullC e i k;
+        imageName = repoOfC k;
+      }
+    ) (lib.tail e.containers);
+  onePartEach = e: lib.length (partsOf e) == lib.length e.containers;
   # What an upstream release may move; the rest of the two files must be equal.
   upstreamless = e: removeAttrs e [ "version" "size" "installedSize" ] // {
     containers = map (k: removeAttrs k [ "image" ]) e.containers;
   };
 in
-assert lib.assertMsg (lib.length m.containers == 1)
-  "catalog-fixture: ${m.name} has ${toString (lib.length m.containers)} containers; a fixture is one";
-assert lib.assertMsg (lib.length (lib.splitString "@" c.image) == 2) "catalog-fixture: ${c.image} is not pinned by digest";
+assert lib.assertMsg (c.primary or false)
+  "catalog-fixture: ${m.name}'s first container, ${c.name}, is not its primary; a fixture takes the primary first";
+assert lib.assertMsg (lib.all (k: lib.length (lib.splitString "@" k.image) == 2) m.containers)
+  "catalog-fixture: ${m.name} has a container not pinned by digest";
+assert lib.assertMsg (onePartEach m && (!edge || onePartEach current))
+  "catalog-fixture: ${app}'s version must name one part per container, joined by -";
 assert lib.assertMsg (!edge || upstreamless previous == upstreamless current)
   "catalog-fixture: ${app} ${previous.version} -> ${current.version} differs in more than version, image, size and installedSize";
-assert lib.assertMsg (!edge || repoOf previous == repoOf current)
-  "catalog-fixture: ${app} ${current.version} moved its image from ${repoOf previous} to ${repoOf current}";
+assert lib.assertMsg (!edge || map repoOfC previous.containers == map repoOfC current.containers)
+  "catalog-fixture: ${app} ${current.version} pulls from ${toString (map repoOfC current.containers)}, where ${previous.version} pulled from ${toString (map repoOfC previous.containers)}";
 import ./fixture-app.nix {
   inherit pkgs;
   inherit (m) name version;
@@ -91,6 +112,7 @@ import ./fixture-app.nix {
   installedSize = m.installedSize or 0;
   imageName = repoOf m;
   imageFile = pull m;
+  extraContainers = extraOf m;
   variants =
     variants
     // lib.optionalAttrs edge {
@@ -99,6 +121,7 @@ import ./fixture-app.nix {
         env = (lib.head current.containers).env or { };
         imageFile = pull current;
         imageName = repoOf current;
+        extraContainers = extraOf current;
       };
     };
 }

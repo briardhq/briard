@@ -15,6 +15,11 @@
 #      through the reverse proxy: a stranger is sent to the dashboard, a trusted browser is signed
 #      in with no login of the app's own, and a forged token is refused at the pod and the proxy;
 #   6. the view lets go of the volume when the chain stops.
+#   7. where this version of Files runs the drive, the same view is a share on the address the
+#      household's machines reach: nobody is admitted before the host hands its password over,
+#      the account the agent then writes admits a real client and nothing else does, a write
+#      lands on the volume as Files' own do, a read-only tier refuses one, and the restored copy
+#      is what the share reads.
 #
 # node2 is the household's other machine: every browser request is made from it, to the VIP.
 { pkgs, guestModule, fixture, filesFixture }:
@@ -28,13 +33,18 @@ let
       { name = "node2"; id = 1; }
     ];
   };
+  # The household's other machine reads the drive with Samba's own client.
+  withClient = {
+    imports = [ node ];
+    environment.systemPackages = [ pkgs.samba ];
+  };
 in
 pkgs.testers.runNixOSTest {
   name = "files";
 
   nodes = {
-    node1 = node;
-    node2 = node;
+    node1 = withClient;
+    node2 = withClient;
   };
 
   testScript = ''
@@ -169,6 +179,45 @@ pkgs.testers.runNixOSTest {
     name = primary.succeed("date -d 2026-11-05T13:00:00Z '+%Y-%m-%d %a %H.%M'").strip()
     primary.succeed(f"podman exec briard-files-app cat {shlex.quote('/srv/Dummy/Versions/' + name + '/media/song.txt')} | grep -qx media")
     primary.fail(f"podman exec briard-files-app touch {shlex.quote('/srv/Dummy/Versions/' + name + '/media/x')}")
+
+    # (7) The drive, in a version of Files that runs one: the view as a share, on the address the
+    # other machine reaches. The password is drawn here, as a host draws its own.
+    if "briard-files-samba.service" in fixture_units(primary, app="files"):
+        pw = primary.succeed("head -c 24 /dev/urandom | base64 | tr -d '/+='").strip()
+        def smb(cmd, password=None, proto="SMB3"):
+            who = f"-U host%{password}" if password else "-N"
+            return f"smbclient //{VIP}/Briard {who} -m {proto} -c {shlex.quote(cmd)} 2>&1"
+        browser.wait_until_succeeds(f"timeout 5 bash -c '</dev/tcp/{VIP}/445'", timeout=120)
+        # Before the host hands its password over there is no account, and nobody gets in.
+        out = browser.fail(smb("ls", pw))
+        assert "NT_STATUS_LOGON_FAILURE" in out, out
+        # The account as the agent writes it admits a real client, with no restart of Samba.
+        samba_started = primary.succeed("systemctl show -p ActiveEnterTimestampMonotonic briard-files-samba.service").strip()
+        primary.succeed(f"briard-guest-agent --drive-account {pw}")
+        assert primary.succeed("stat -c %a /run/briard/files-drive/smbpasswd").strip() == "600"
+        out = browser.succeed(smb("ls", pw))
+        assert "Dummy" in out, f"the share's top is:\n{out}"
+        # It reads what (3) restored, through a view bound after it started.
+        browser.succeed(smb("get Dummy/app/hello.txt /tmp/hello.txt", pw))
+        got = browser.succeed("cat /tmp/hello.txt").strip()
+        assert got == "edited", f"the drive reads {got!r}, want the restored 'edited'"
+        # A write lands on the volume as Files' own do; the read-only tier takes none.
+        browser.succeed("echo from-the-drive > /tmp/up.txt")
+        browser.succeed(smb("put /tmp/up.txt Dummy/app/from-the-drive.txt", pw))
+        primary.succeed("grep -qx from-the-drive /var/lib/briard/data/dummy/app/from-the-drive.txt")
+        mode = primary.succeed("stat -c '%U %a' /var/lib/briard/data/dummy/app/from-the-drive.txt").strip()
+        assert mode == "root 644", f"a file written through the drive is {mode}"
+        print(browser.execute(smb("put /tmp/up.txt Dummy/media/from-the-drive.txt", pw))[1])
+        primary.fail("test -e /var/lib/briard/files/dummy/media/from-the-drive.txt")
+        # Nothing else is a way in: another password, no password, a protocol below SMB 3.
+        out = browser.fail(smb("ls", pw + "x"))
+        assert "NT_STATUS_LOGON_FAILURE" in out, out
+        for refused in [smb("ls"), smb("ls", pw, proto="SMB2_10")]:
+            out = browser.fail(refused)
+            print(out)
+            assert "NT_STATUS_" in out, f"not refused by the server:\n{out}"
+        assert primary.succeed("systemctl show -p ActiveEnterTimestampMonotonic briard-files-samba.service").strip() == samba_started, \
+            "Samba was restarted to take the account"
 
     # (6) The chain stops, and the view lets go: no bind under the view holds the volume.
     primary.succeed("systemctl stop briard-apps.service")

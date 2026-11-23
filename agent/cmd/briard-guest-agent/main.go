@@ -38,6 +38,7 @@ import (
 	"syscall"
 	"time"
 
+	"briard.io/agent/files"
 	"briard.io/agent/guestagent"
 	"briard.io/agent/guestfirmware"
 	"briard.io/shared/sdnotify"
@@ -135,6 +136,7 @@ func runInternal(args []string) {
 	restoreSnapshot := fs.String("snapshot", "latest", "with -backup-restore: the night, a snapshot id or latest")
 	backupAdopt := fs.String("backup-adopt", "", "add the volume's key to the repository at this REST URL, opened once with -key -- an internal flag a harness invokes; the product drives this verb from the host")
 	adoptKey := fs.String("key", "", "with -backup-adopt: the key that opens the repository")
+	driveAccount := fs.String("drive-account", "", "make this the password that opens the drive -- an internal flag a harness invokes; the product drives this verb from the host")
 	appStopped := fs.String("app-stopped", "", "record whether this app's data was flushed by a clean stop; the rendered container unit's ExecStopPost")
 	_ = fs.Parse(args)
 
@@ -260,6 +262,16 @@ func runInternal(args []string) {
 	if *backupAdopt != "" {
 		if err := guestagent.AdoptBackup(ctx, guestagent.NewOSExecutor(), *backupAdopt, *adoptKey); err != nil {
 			log.Fatalf("backup-adopt: %v", err)
+		}
+		return
+	}
+
+	if *driveAccount != "" {
+		// For a guest with no host, like --backup: the product's host hands the password over at
+		// every bring-up; an agent-less rig writes the account through here, so what a real
+		// client is admitted with is the file the product writes.
+		if err := files.SetDriveAccount(ctx, guestagent.NewOSExecutor(), *driveAccount, time.Now()); err != nil {
+			log.Fatalf("drive-account: %v", err)
 		}
 		return
 	}

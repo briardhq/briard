@@ -250,7 +250,7 @@ let
     agent = agentPkg;
     guestDisk = import ../guest-image/disk-image.nix {
       inherit nixpkgs pkgs overlay; agentVersion = guestVersion;
-      stageImages = [ fixture.image fixture.variants.next.image ];
+      stageImages = [ fixture.image fixture.variants.next.image ] ++ fixture.extraImages;
     };
   };
   edgeApps = pkgs.lib.filter
