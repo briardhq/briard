@@ -1,12 +1,14 @@
 # Third-party components we redistribute
 
-Briard's own code is Apache-2.0 ([LICENSE](LICENSE)). The release channel also carries software
-other people wrote, under their own licenses — most of it copyleft. Those licenses ask that whoever
-receives the binaries can get the corresponding source; everything here is built from public
-sources, so this file's job is to say **which** sources, precisely enough to be useful.
+Briard's own code is Apache-2.0 ([LICENSE](LICENSE)). The release channel, and one container image
+the catalog names, also carry software other people wrote, under their own licenses — most of it
+copyleft. Those licenses ask that whoever receives the binaries can get the corresponding source;
+everything here is built from public sources, so this file's job is to say **which** sources,
+precisely enough to be useful.
 
 Nothing below is a separate download you have to trust: each artifact is named by the signed
-release manifest, and each is either built by this repository or pinned in it by hash.
+release manifest (the Samba image by the signed catalog), and each is either built by this
+repository or pinned in it by hash.
 
 ## The guest OS image — `nixos.qcow2`
 
@@ -55,6 +57,28 @@ installer (`scripts/install.ps1`) checks the same hash before running it. A kern
 by whoever Microsoft attests, which is OpenVPN, so the bytes are never rebuilt or re-signed here.
 Source: <https://github.com/OpenVPN/tap-windows6> · releases at
 <https://build.openvpn.net/downloads/releases/>.
+
+## The Samba image — GPL-3.0
+
+The Files app's drive is served by Samba, in a container image we build and publish at
+`ghcr.io/briardhq/catalog/samba`; the catalog pins it by digest, and a node pulls it as it pulls
+any app's image. It is not on the release channel. **We build it from this repository**: the
+recipe is [`catalog/samba-image.nix`](catalog/samba-image.nix), Samba as nixpkgs packages it
+(nixpkgs' patches are in nixpkgs), configured as a file server only. It is built against the head
+of the nixpkgs channel this repository follows, not the revision `flake.lock` pins, so every image
+names the revision it was built from, in its label `io.briard.nixpkgs`:
+
+```sh
+skopeo inspect docker://ghcr.io/briardhq/catalog/samba@<digest> | jq -r '.Labels["io.briard.nixpkgs"]'
+nix build .#samba-image --override-input nixpkgs github:NixOS/nixpkgs/<revision>   # the image again
+nix build github:NixOS/nixpkgs/<revision>#samba.src                                 # Samba's source
+```
+
+The image also holds the libraries Samba links (glibc, GnuTLS and others), from that same revision
+and under their own licenses; `github:NixOS/nixpkgs/<revision>#<pkg>.src` fetches each one's source.
+
+Samba's upstream source: <https://www.samba.org/samba/download/> ·
+<https://gitlab.com/samba-team/samba>
 
 ## Go modules compiled into our binaries
 
