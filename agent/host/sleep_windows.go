@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -95,18 +96,30 @@ func fastStartup(since time.Time) bool {
 	return err == nil && strings.Contains(string(out), "<Data Name='BootType'>1</Data>")
 }
 
-// coldBootSince reports whether Windows has cold-booted since t: a Kernel-Boot 27 of boot type 0.
-// A Fast Startup power-on (1) and a hibernate's resume (2) are not boots of the bridge
-// (restart.go), so neither counts. The inverse of fastStartup's query, every event since t rather
-// than the last, and here a failed read is an error, never a no: the gate proceeds on it.
-func coldBootSince(t time.Time) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	q := "/q:*[System[Provider[@Name='Microsoft-Windows-Kernel-Boot'] and EventID=27 and TimeCreated[@SystemTime>='" +
-		t.UTC().Format("2006-01-02T15:04:05.000Z") + "']]]"
-	out, err := exec.CommandContext(ctx, "wevtutil", "qe", "System", q, "/f:xml").Output()
-	if err != nil {
-		return false, fmt.Errorf("wevtutil: %w", err)
+// kernelStart is when the Windows kernel now running started: now less the interrupt time, which
+// counts from the kernel's start and on through every sleep and hibernation.
+func kernelStart() (time.Time, error) {
+	if err := procQueryInterruptTime.Find(); err != nil {
+		return time.Time{}, err
 	}
-	return strings.Contains(string(out), "<Data Name='BootType'>0</Data>"), nil
+	var up uint64
+	procQueryInterruptTime.Call(uintptr(unsafe.Pointer(&up)))
+	if up == 0 {
+		return time.Time{}, errors.New("the interrupt time reads zero")
+	}
+	return time.Now().Add(-time.Duration(up) * 100), nil
+}
+
+// coldBootSince reports whether Windows has cold-booted since t: whether the kernel now running
+// started after it. A Restart and a power-on from off start a new kernel. A Fast Startup power-on
+// and a hibernate's resume bring the old one back, its start where it was, and are not boots of
+// the bridge (restart.go), so neither counts. The kernel's start and not the event log's boot
+// events, because an agent that starts with the machine can ask before the log holds the boot it
+// is running in. A failed read is an error, never a no: the gate proceeds on it.
+func coldBootSince(t time.Time) (bool, error) {
+	start, err := kernelStart()
+	if err != nil {
+		return false, fmt.Errorf("reading when Windows started: %w", err)
+	}
+	return start.After(t), nil
 }

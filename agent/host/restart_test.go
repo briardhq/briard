@@ -156,7 +156,7 @@ func TestRestartGate(t *testing.T) {
 		if err := keepBuiltBridge(path, off, built); err != nil {
 			t.Fatal(err)
 		}
-		b.err = errors.New("wevtutil: access denied")
+		b.err = errors.New("reading when Windows started: the interrupt time reads zero")
 		refused, n := gate(cfg, b)
 		if refused || b.asked != 1 || len(n.alerts) != 0 {
 			t.Fatalf("a failed read: refused=%v asked=%d alerts=%+v, want a start, no alert", refused, b.asked, n.alerts)
