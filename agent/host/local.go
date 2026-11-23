@@ -105,7 +105,11 @@ func handleLocal(ctx context.Context, conn net.Conn, reqs chan<- localRequest, l
 		writeOutcome(conn, api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "directive has no kind"})
 		return
 	}
-	logf("admin socket: directive kind=%s submitted locally", d.Kind)
+	// What is asked through the door is a line in the log, so an act can be dated. The two reads a
+	// tray polls every few seconds change nothing, and a line each would be most of the log.
+	if d.Kind != api.DirectiveStatus && d.Kind != api.DirectiveDrive {
+		logf("admin socket: directive kind=%s submitted locally", d.Kind)
+	}
 	// Buffered so the observe loop's send never blocks, even if the CLI hung up mid-op.
 	resp := make(chan api.DirectiveOutcome, 1)
 	select {

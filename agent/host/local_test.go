@@ -3,12 +3,14 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -308,5 +310,39 @@ func TestStatusCarriesOfferedUpdates(t *testing.T) {
 	}
 	if got := offer(string(id)); got.Updates != nil {
 		t.Errorf("the index names what runs, yet updates = %+v", got.Updates)
+	}
+}
+
+// TestServeLocalLogsActsNotPolls: a directive through the door is a line in the log, except the
+// two reads the tray polls, which would otherwise be most of it.
+func TestServeLocalLogsActsNotPolls(t *testing.T) {
+	sock := filepath.Join(testsock.Dir(t), "admin.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	var lines []string
+	logf := func(f string, a ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if l := fmt.Sprintf(f, a...); strings.Contains(l, "submitted locally") {
+			lines = append(lines, l)
+		}
+	}
+	reqs := make(chan localRequest)
+	go serveLocal(ctx, sock, "", reqs, logf)
+	go func() {
+		for rq := range reqs {
+			rq.resp <- api.DirectiveOutcome{ID: rq.d.ID, State: api.OutcomeDone}
+		}
+	}()
+
+	for _, kind := range []string{api.DirectiveStatus, api.DirectiveDrive, api.DirectiveStop} {
+		dialAdmin(t, sock, api.Directive{Kind: kind})
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := "admin socket: directive kind=" + api.DirectiveStop + " submitted locally"
+	if len(lines) != 1 || lines[0] != want {
+		t.Fatalf("the door logged %q, want only %q", lines, want)
 	}
 }
