@@ -262,7 +262,8 @@ pkgs.runCommand "briard-fixture-${name}"
         healthPath
         ;
       # The data mount's directory in the app's data area: where a test finds what the app keeps.
-      dataDir = (pkgs.lib.findFirst (m: m.tier == "data") null mounts).dir;
+      # Null for an app that keeps no data of its own.
+      dataDir = (pkgs.lib.findFirst (m: m.tier == "data") { dir = null; } mounts).dir;
       name = name;
       appName = name;
       image = base.tarball;

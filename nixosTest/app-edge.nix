@@ -2,7 +2,8 @@
 # takes the update. One test per catalogued app, from two of its version files (catalog-fixture.nix
 # `edge`): install the previous version, mark its data, upgrade through the real health gate,
 # check the marker, then `briard app undo` to the point the upgrade took and check the data is
-# from before it.
+# from before it. An app that keeps no data of its own (Files shows other apps') has nowhere for
+# a marker: its edge is the same install, upgrade and undo, read from the version that runs.
 #
 # It proves the release, not Briard (the platform's upgrade and undo are proven elsewhere:
 # agent-install-undo, hass-upgrade): does this upstream version come up healthy over that one's
@@ -89,7 +90,8 @@ pkgs.testers.runNixOSTest {
     import re
 
     svc = "${fixture.appName}"
-    data = f"/var/lib/briard/data/{svc}/${fixture.dataDir}"
+    # Where the app keeps its data, or None for an app that keeps none.
+    data = ${if fixture.dataDir == null then "None" else "f\"/var/lib/briard/data/{svc}/${fixture.dataDir}\""}
     prev_id = open("${fixture}/catalog/${fixture.appName}.identity").read().strip()
     next_id = open("${fixture}/variants/next/catalog/${fixture.appName}.identity").read().strip()
 
@@ -176,23 +178,25 @@ pkgs.testers.runNixOSTest {
     # === The previous version, installed and healthy, with data of its own. ===
     assert install() == 0, "installing the previous version failed"
     running(prev_id)
-    guest(f"echo before > {data}/.briard-edge-before; sync -f /var/lib/briard; echo D\"\"ONE")
-    assert markers() == ("before", ""), f"the marker did not land in the app's data: {markers()}"
+    if data:
+        guest(f"echo before > {data}/.briard-edge-before; sync -f /var/lib/briard; echo D\"\"ONE")
+        assert markers() == ("before", ""), f"the marker did not land in the app's data: {markers()}"
     print(f"{svc}: the previous version runs ({prev_id})")
 
     # === The candidate, through the real health gate. ===
     publish("${fixture}/variants/next/catalog")
     assert install() == 0, "the upgrade to the candidate did not pass its health gate"
     running(next_id)
-    # The upgrade stopped the previous version cleanly, and the stop hook recorded it: the member
-    # taken as the candidate started reads quiesced. A hook that cannot run leaves it crash.
-    out = guest(f"echo C=$(ls -t /var/lib/briard/data/.snapshots/{svc}-start-*.json | head -1 | xargs grep -o \"consistency[^,]*\")")
-    m = re.search(r"C=consistency\W+(\w+)", out)
-    assert m and m.group(1) == "quiesced", f"the candidate's start member is not quiesced -- the stop hook did not record the clean stop:\n{out}"
-    assert markers() == ("before", ""), f"the upgrade lost the previous version's data: {markers()}"
-    guest(f"echo after > {data}/.briard-edge-after; sync -f /var/lib/briard; echo D\"\"ONE")
-    assert markers() == ("before", "after"), f"the candidate's marker did not land: {markers()}"
-    print(f"{svc}: the candidate runs over the previous version's data ({next_id})")
+    if data:
+        # The upgrade stopped the previous version cleanly, and the stop hook recorded it: the member
+        # taken as the candidate started reads quiesced. A hook that cannot run leaves it crash.
+        out = guest(f"echo C=$(ls -t /var/lib/briard/data/.snapshots/{svc}-start-*.json | head -1 | xargs grep -o \"consistency[^,]*\")")
+        m = re.search(r"C=consistency\W+(\w+)", out)
+        assert m and m.group(1) == "quiesced", f"the candidate's start member is not quiesced -- the stop hook did not record the clean stop:\n{out}"
+        assert markers() == ("before", ""), f"the upgrade lost the previous version's data: {markers()}"
+        guest(f"echo after > {data}/.briard-edge-after; sync -f /var/lib/briard; echo D\"\"ONE")
+        assert markers() == ("before", "after"), f"the candidate's marker did not land: {markers()}"
+    print(f"{svc}: the candidate runs over the previous version ({next_id})")
 
     # === And back: the point the upgrade took, restored. ===
     history = host.succeed(f"briard-agent app history {svc}")
@@ -203,7 +207,8 @@ pkgs.testers.runNixOSTest {
     print(f"app undo {points[-1]}: rc={rc}\n{out}")
     assert rc == 0, "the undo failed"
     running(prev_id)
-    assert markers() == ("before", ""), f"the undo did not put the previous data back: {markers()}"
-    print(f"{svc}: undone to the previous version and its data")
+    if data:
+        assert markers() == ("before", ""), f"the undo did not put the previous data back: {markers()}"
+    print(f"{svc}: undone to the previous version")
   '';
 }
