@@ -212,7 +212,7 @@ func TestDiskAlerterWarnsOncePerEpisode(t *testing.T) {
 	free, reads := 0, 0
 	a := &diskAlerter{read: func(path string) int {
 		reads++
-		if path != "/var/lib/briard" {
+		if path != filepath.FromSlash("/var/lib/briard") {
 			t.Errorf("read %q, want the state disk's directory", path)
 		}
 		return free
@@ -231,7 +231,7 @@ func TestDiskAlerterWarnsOncePerEpisode(t *testing.T) {
 	at(2, 1000) // still low: no fatigue
 	at(3, 2200) // above the reserve but under the margin: neither cleared nor re-warned
 	at(4, 0)    // unreadable: nothing
-	if len(fn.alerts) != 1 || fn.alerts[0].Kind != notify.Open || !strings.Contains(fn.alerts[0].Body, "n1") || !strings.Contains(fn.alerts[0].Body, "/var/lib/briard") {
+	if len(fn.alerts) != 1 || fn.alerts[0].Kind != notify.Open || !strings.Contains(fn.alerts[0].Body, "n1") || !strings.Contains(fn.alerts[0].Body, filepath.FromSlash("/var/lib/briard")) {
 		t.Fatalf("want one warning naming the node and the disk, got %+v", fn.alerts)
 	}
 	at(5, 3*1024) // back above the margin: recovered
@@ -256,7 +256,7 @@ func TestSMARTAlerterWarnsOnGrowthAndFailure(t *testing.T) {
 	release := make(chan struct{})
 	a := &smartAlerter{
 		disks: func(path string) ([]string, error) {
-			if path != "/var/lib/briard" {
+			if path != filepath.FromSlash("/var/lib/briard") {
 				t.Errorf("resolved %q, want the data disk's directory", path)
 			}
 			return []string{"/dev/sda"}, nil

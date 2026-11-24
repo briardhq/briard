@@ -1,6 +1,12 @@
 package host
 
-import "testing"
+import (
+	"testing"
+
+	// The zone database, for the tests alone: Windows has none Go can read, and the recorder
+	// check's fixtures are in a named zone. The agent itself never loads one there (localTimezone).
+	_ "time/tzdata"
+)
 
 // TestWindowsZonesMapToIANA asks the machine's own icu.dll, so it proves the call itself: the
 // argument order, the UTF-16 in and out, and the status check. A wrong length or capacity reads

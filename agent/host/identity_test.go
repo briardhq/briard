@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"testing"
 )
 
@@ -47,7 +48,7 @@ func TestMintIdentityGivesAVirginNodeAllThree(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s was not recorded: %v", c.name, err)
 		}
-		if perm := fi.Mode().Perm(); perm != c.mode {
+		if perm := fi.Mode().Perm(); runtime.GOOS != "windows" && perm != c.mode { // no Unix modes on Windows
 			t.Errorf("%s is mode %04o, want %04o", c.name, perm, c.mode)
 		}
 	}

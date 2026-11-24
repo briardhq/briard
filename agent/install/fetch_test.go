@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -73,6 +74,15 @@ func newChannel(t *testing.T, arts []Entry, bytesByName map[string][]byte) *chan
 	}
 	return newChannelSignedBy(t, priv, arts, bytesByName)
 }
+
+// otherPlatform is a platform this host is not: the crossed-wire tests serve this host's genuine
+// manifest under it, and expect the refusal.
+var otherPlatform = func() string {
+	if PlatformHost == "windows-amd64" {
+		return "linux-amd64"
+	}
+	return "windows-amd64"
+}()
 
 // newChannelSignedBy is newChannel with the signing key given.
 func newChannelSignedBy(t *testing.T, priv ed25519.PrivateKey, arts []Entry, bytesByName map[string][]byte) *channel {
@@ -193,7 +203,7 @@ func TestFetchVerifiedStagesTheSignedSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o755 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o755 { // no Unix modes on Windows
 		t.Errorf("agent mode = %o, want 0755", fi.Mode().Perm())
 	}
 	if _, err := os.Stat(filepath.Join(dest, "nixos.qcow2")); err != nil {
@@ -484,7 +494,11 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 		t.Fatalf("manifest lists %d artifacts, want 2: %+v", len(man.Artifacts), man.Artifacts)
 	}
 	// The mode round-trips as a number the reader applies, and is omitted at the 0644 default.
+	// Not on Windows, which has no Unix modes to read off the tree.
 	for _, a := range man.Artifacts {
+		if runtime.GOOS == "windows" {
+			break
+		}
 		if a.Name == "briard-agent" && a.Mode != 0o755 {
 			t.Errorf("agent mode = %o, want 0755", a.Mode)
 		}
@@ -538,7 +552,7 @@ func TestManifestRoundTripsThroughFetchVerified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o755 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o755 { // no Unix modes on Windows
 		t.Errorf("round-tripped agent mode = %o, want 0755", fi.Mode().Perm())
 	}
 }
@@ -613,16 +627,16 @@ func TestFetchVerifiedAcceptsAnExactVersionTarget(t *testing.T) {
 	}
 }
 
-// The platform is the second half of the crossed-wire check: the Linux manifest (genuine,
-// signed, chain "briard") served under the windows arm is refused, because the bundle it names
-// cannot run there and a host that installed it would find out at the next guest launch.
+// The platform is the second half of the crossed-wire check: this host's manifest (genuine,
+// signed, chain "briard") served under another platform's arm is refused, because the bundle it
+// names cannot run there and a host that installed it would find out at the next guest launch.
 func TestFetchVerifiedRefusesWrongPlatform(t *testing.T) {
 	c := goodChannel(t)
 	for _, n := range []string{ManifestName, ManifestName + sigSuffix} {
-		c.bodies[ChainBriard+"/"+TargetLatest+"/windows-amd64/"+n] = c.bodies[pointerPath(n)]
+		c.bodies[ChainBriard+"/"+TargetLatest+"/"+otherPlatform+"/"+n] = c.bodies[pointerPath(n)]
 	}
 	dest := stagedFresh(t)
-	f := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: "windows-amd64", Keyring: c.kr}
+	f := &Fetcher{BaseURL: c.serve(), Chain: ChainBriard, Platform: otherPlatform, Keyring: c.kr}
 	assertRefused(t, dest, f.FetchVerified(context.Background(), TargetLatest, dest), ErrWrongChain)
 	// And a fetch naming no platform at all is refused before any request: every chain has the
 	// level, so an empty one is a caller's bug, never a flat directory to look in.
@@ -731,7 +745,7 @@ func TestVerifyAgent(t *testing.T) {
 	if err := VerifyAgent(c.kr, verifyDir(t, c, good)); err != nil {
 		t.Fatalf("the signed agent was refused: %v", err)
 	}
-	other, err := json.Marshal(Manifest{Chain: ChainBriard, Platform: "windows-amd64", Version: testVersion,
+	other, err := json.Marshal(Manifest{Chain: ChainBriard, Platform: otherPlatform, Version: testVersion,
 		Artifacts: []Entry{{Name: artifactAgent, SHA256: sha(good), Size: int64(len(good))}}})
 	if err != nil {
 		t.Fatal(err)

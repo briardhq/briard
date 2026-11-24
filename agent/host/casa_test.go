@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -235,7 +236,7 @@ func TestCasaClaimRegisterAddressCertificateRenew(t *testing.T) {
 		t.Fatalf("cloud saw %+v", r.cloud.claims)
 	}
 	dir := filepath.Dir(r.cfg.AssignmentCache)
-	if st, err := os.Stat(filepath.Join(dir, casaKeyName)); err != nil || st.Mode().Perm() != 0o600 {
+	if st, err := os.Stat(filepath.Join(dir, casaKeyName)); err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o600) { // no Unix modes on Windows
 		t.Fatalf("casa key file: %v %v", st, err)
 	}
 

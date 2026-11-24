@@ -2,6 +2,7 @@ package host
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,23 @@ import (
 
 	"briard.io/agent/nic"
 )
+
+// loopback is this host's loopback interface: a real device every host has, whatever its OS calls
+// it (lo, Loopback Pseudo-Interface 1), readable to a usable fingerprint (127.0.0.1/8).
+func loopback(t *testing.T) string {
+	t.Helper()
+	ifs, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range ifs {
+		if i.Flags&net.FlagLoopback != 0 {
+			return i.Name
+		}
+	}
+	t.Fatal("this host has no loopback interface")
+	return ""
+}
 
 // The tiers, and the one that is not a duration: "different subnet" is an explicit operator action
 // rather than a longer wait, because a paired node that rebuilds itself on a LAN its peer is not on
@@ -75,7 +93,7 @@ func TestReparenterResetsWhenTheParentComesBack(t *testing.T) {
 	}
 
 	// Present again -- a real device this host certainly has. The clock must clear.
-	cfg.net.Parent = "lo"
+	cfg.net.Parent = loopback(t)
 	if dev, _ := r.consider(t.Context(), cfg, t0.Add(time.Minute), discard); dev != "" {
 		t.Fatalf("re-parented onto %q while the parent was present", dev)
 	}
@@ -114,13 +132,13 @@ func TestNetworkRecordRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{
 		AssignmentCache: filepath.Join(dir, "assignment.json"),
-		net:             &nic.Spec{Parent: "lo"},
+		net:             &nic.Spec{Parent: loopback(t)},
 	}
 	cfg.recordNetwork(t.Context(), discard)
 
 	back := cfg.recordedNetwork()
-	if back.Parent != "lo" {
-		t.Errorf("recorded parent = %q, want lo", back.Parent)
+	if back.Parent != loopback(t) {
+		t.Errorf("recorded parent = %q, want %q", back.Parent, loopback(t))
 	}
 	// It is written where the other node-local caches live, not somewhere of its own.
 	if _, err := os.Stat(filepath.Join(dir, "network.json")); err != nil {
@@ -140,7 +158,7 @@ func TestNetworkRecordRoundTrip(t *testing.T) {
 	}
 
 	// A config with no pet state dir writes nothing and reads nothing, rather than guessing a path.
-	if got := (Config{net: &nic.Spec{Parent: "lo"}}).recordedNetwork(); got != (nic.Fingerprint{}) {
+	if got := (Config{net: &nic.Spec{Parent: loopback(t)}}).recordedNetwork(); got != (nic.Fingerprint{}) {
 		t.Errorf("read %+v with no state dir configured", got)
 	}
 
@@ -198,7 +216,7 @@ func TestVIPRouterFallsBackToTheRecord(t *testing.T) {
 // would leave every future re-parent decision Unknown, which refuses silently and forever.
 func TestNetworkRecordIsTheShapeOnDisk(t *testing.T) {
 	dir := t.TempDir()
-	cfg := Config{AssignmentCache: filepath.Join(dir, "assignment.json"), net: &nic.Spec{Parent: "lo"}}
+	cfg := Config{AssignmentCache: filepath.Join(dir, "assignment.json"), net: &nic.Spec{Parent: loopback(t)}}
 	cfg.recordNetwork(t.Context(), discard)
 	b, err := os.ReadFile(filepath.Join(dir, "network.json"))
 	if err != nil {
@@ -259,7 +277,7 @@ func TestNetworkRecordLearnsTheGatewayMAC(t *testing.T) {
 	// Through the file: a record with a MAC survives recordNetwork reading the device blind.
 	// lo has an address and no gateway, which is exactly a reading with no MAC.
 	dir := t.TempDir()
-	cfg := Config{AssignmentCache: filepath.Join(dir, "assignment.json"), net: &nic.Spec{Parent: "lo"}}
+	cfg := Config{AssignmentCache: filepath.Join(dir, "assignment.json"), net: &nic.Spec{Parent: loopback(t)}}
 	cfg.recordNetwork(t.Context(), discard)
 	rec := cfg.recordedNetwork()
 	if !rec.Usable() || rec.GatewayMAC != "" {

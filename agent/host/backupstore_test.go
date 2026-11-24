@@ -2,6 +2,7 @@ package host
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"io/fs"
 	"net/http"
@@ -51,6 +52,23 @@ func restic(t *testing.T, url string, args ...string) string {
 	return string(out)
 }
 
+// restoredAt is where restic restores a snapshot of src under target: the path below it on Linux,
+// and on Windows the drive letter as a directory (C:\x restores to target\C\x).
+func restoredAt(target, src string) string {
+	vol := filepath.VolumeName(src)
+	return filepath.Join(target, strings.TrimSuffix(vol, ":"), src[len(vol):])
+}
+
+// jsonString is s as it appears inside restic's JSON: a Windows path's backslashes doubled.
+func jsonString(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Trim(string(b), `"`)
+}
+
 // TestRealResticRoundTripsThroughTheStore: init, two backups, a full data check, forget + prune
 // (deletes), and a restore that matches -- the protocol as restic itself speaks it, v2 listings
 // and Range reads included. And every file it left in the folder was given the folder's owner.
@@ -77,7 +95,7 @@ func TestRealResticRoundTripsThroughTheStore(t *testing.T) {
 	dst := t.TempDir()
 	restic(t, srv.URL, "restore", "latest", "--target", dst)
 	for name, want := range map[string]string{"a": strings.Repeat("first ", 100000), "b": "changed"} {
-		got, err := os.ReadFile(filepath.Join(dst, src, name))
+		got, err := os.ReadFile(filepath.Join(restoredAt(dst, src), name))
 		if err != nil || string(got) != want {
 			t.Fatalf("restored %s: %v (%d bytes, want %d)", name, err, len(got), len(want))
 		}
@@ -321,8 +339,8 @@ func TestRealResticMovesByStartingFreshOrContinuing(t *testing.T) {
 	}
 
 	carried := filepath.Join(t.TempDir(), "moved")
-	if out, err := exec.Command("cp", "-a", old, carried).CombinedOutput(); err != nil {
-		t.Fatalf("cp: %v %s", err, out)
+	if err := os.CopyFS(carried, os.DirFS(old)); err != nil {
+		t.Fatalf("move the repository: %v", err)
 	}
 	s.folder = func() string { return carried }
 	restic(t, srv.URL, "cat", "config")
@@ -364,7 +382,7 @@ func TestTheCandidateRootIsReadOnly(t *testing.T) {
 		t.Errorf("no candidate set: GET config = %d, want 404", got)
 	}
 	candidate = repo
-	if out := restic(t, csrv.URL+"/candidate", "--no-lock", "snapshots", "--json"); !strings.Contains(out, src) {
+	if out := restic(t, csrv.URL+"/candidate", "--no-lock", "snapshots", "--json"); !strings.Contains(out, jsonString(t, src)) {
 		t.Errorf("the candidate's snapshots do not read: %s", out)
 	}
 	keys, _ := os.ReadDir(filepath.Join(repo, "keys"))

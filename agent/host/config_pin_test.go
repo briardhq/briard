@@ -3,40 +3,15 @@ package host
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
-// ⚠️ The one duplicated default in the product, pinned here because it is deliberate and therefore
-// easy to let drift (owner's call). scripts/agent/briard-update is frozen, agent-independent
-// shell: it replaces the agent, so it must not ask the agent anything. Its unit hands it config.env
-// as an EnvironmentFile, but config.env carries a key only when an operator named one, so on an
-// ordinary install the script needs its own answer for the two values it cannot do without.
-//
-// Two literals, one meaning, kept one by this test: a release that moves the channel or the
-// keyring in config.go and forgets the script would leave every node updating from the old place,
-// the failure an update cannot fix.
-func TestUpdateScriptDefaultsMatchTheAgents(t *testing.T) {
-	// Cleared, so the agent's default is compared rather than this process's environment.
-	os.Unsetenv("CHANNEL_URL")
-	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "agent", "briard-update"))
-	if err != nil {
-		t.Fatalf("read the shipped updater: %v", err)
-	}
-	script := string(b)
-	for _, c := range []struct{ what, want string }{
-		{"channel", `CHANNEL="${CHANNEL_URL:-` + ConfigFromEnv().ChannelURL + `}"`},
-		{"keyring", `KEYRING="${UPDATE_KEYRING:-` + prefixDir + `/keyring.pem}"`},
-	} {
-		if !strings.Contains(script, c.want) {
-			t.Errorf("briard-update's %s default has drifted from the agent's; want the line %q", c.what, c.want)
-		}
-	}
-}
-
-// The Windows twin, briard-update.ps1, carries the same second copy for the same reason. Its
-// keyring default derives from the Windows prefix, a constant this test cannot see off Windows, so
-// the channel is what is compared.
+// The Windows twin of briard-update (config_pin_linux_test.go), briard-update.ps1, carries the same
+// second copy for the same reason. Its keyring default derives from the Windows prefix, a constant
+// that is this package's prefixDir only on Windows: the channel is compared everywhere, the prefix
+// where it can be.
 func TestWindowsUpdateScriptDefaultsMatchTheAgents(t *testing.T) {
 	os.Unsetenv("CHANNEL_URL")
 	b, err := os.ReadFile(filepath.Join("..", "..", "scripts", "agent", "briard-update.ps1"))
@@ -44,9 +19,13 @@ func TestWindowsUpdateScriptDefaultsMatchTheAgents(t *testing.T) {
 		t.Fatalf("read the shipped updater: %v", err)
 	}
 	script := string(b)
-	for _, c := range []struct{ what, want string }{
+	cases := []struct{ what, want string }{
 		{"channel", `else { '` + ConfigFromEnv().ChannelURL + `' }`},
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		cases = append(cases, struct{ what, want string }{"prefix", `$Prefix = '` + prefixDir + `'`})
+	}
+	for _, c := range cases {
 		if !strings.Contains(script, c.want) {
 			t.Errorf("briard-update.ps1's %s default has drifted from the agent's; want %q", c.what, c.want)
 		}

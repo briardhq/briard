@@ -22,6 +22,8 @@ jobs:
   fast:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      go: ${{ steps.go.outputs.version }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -57,18 +59,24 @@ jobs:
       - name: Go checks (fmt, vet, unit + architecture guards)
         run: nix develop --command bash -c 'test -z "$(gofmt -l .)" && go vet ./... && go test ./...'
 
+      # The dev shell's Go, for the windows job below: one pin, the flake's, on both systems.
+      - name: The Go the dev shell carries
+        id: go
+        run: echo "version=$(nix develop --command go env GOVERSION | sed 's/^go//')" >> "$GITHUB_OUTPUT"
+
       # The catalog: its files live in briardhq/catalog, and this lays the pinned input beside
       # catalog/catalog_test.go and runs it (the `catalog` build tag keeps the plain `go test` above
       # from compiling it on a checkout with no files). A Go test, not a VM.
       - name: Catalog check
         run: nix build --print-build-logs .#catalog-test
 
-      # The GOOS seam is only a seam while something re-runs this. A cross-compile, not a test
-      # run: a Windows test binary cannot execute here and need not, since what decays is a shared
-      # file quietly growing a Linux-only symbol, which the compiler sees. `vet` is the
-      # load-bearing half: it type-checks _test.go files too, and the plain build does not. The
-      # other half of the seam — exec.Command("systemctl", …), which compiles everywhere — is
-      # internal/arch TestHostOSCallsStayBehindTheSeam, which the step above already runs.
+      # The GOOS seam is only a seam while something re-runs this. A cross-compile: what decays is
+      # a shared file quietly growing a Linux-only symbol, which the compiler sees here in seconds
+      # rather than in the windows job's minutes. `vet` is the load-bearing half: it type-checks
+      # _test.go files too, and the plain build does not. The other half of the seam —
+      # exec.Command("systemctl", …), which compiles everywhere — is internal/arch
+      # TestHostOSCallsStayBehindTheSeam, which the step above already runs. Running the tests on
+      # Windows is the windows job's.
       - name: Go builds for Windows (the GOOS seam)
         run: nix develop --command bash -c 'GOOS=windows go build ./... && GOOS=windows go build -tags guest ./... && GOOS=windows go vet ./...'
 
@@ -76,3 +84,43 @@ jobs:
       # `nix flake check` (see the header — it OOMs a hosted runner).
       - name: Nix syntax check (parse only)
         run: git ls-files '*.nix' | xargs -P4 -n1 nix-instantiate --parse >/dev/null
+
+  # The agent's shared code runs on Windows too, under Windows' file semantics -- a read-only
+  # attribute that refuses a writable open, open files that cannot be renamed over, `\` paths, a
+  # chmod that sets next to nothing -- which nothing on Linux can see. So the unit tests of every
+  # package the Windows agent is built from run here, on Windows, with the dev shell's Go. The
+  # guest's own packages are left out: they run on Linux only. A test of Linux behaviour lives in
+  # a _linux_test.go file; one that only spells a path or a mode says so where it asserts.
+  windows:
+    needs: fast
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Before the checkout: Git for Windows turns LF into CRLF by default, and the tests read
+      # fixtures and the repo's own files byte for byte.
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ needs.fast.outputs.go }}
+
+      # restic, the client the backup store's tests drive against the store, which on Windows
+      # serves from the host. The dev shell's version, pinned by its release's SHA256SUMS.
+      - name: restic
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP restic.zip
+          Invoke-WebRequest https://github.com/restic/restic/releases/download/v0.18.1/restic_0.18.1_windows_amd64.zip -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne '0C1A713440578CB400D2E76208FEB24F1B339426B075A21F73B6B2132692515D') { throw 'restic: the download does not match its pinned hash' }
+          $dir = Join-Path $env:RUNNER_TEMP restic
+          Expand-Archive $zip -DestinationPath $dir
+          Rename-Item (Get-ChildItem $dir -Filter 'restic_*.exe').FullName restic.exe
+          Add-Content $env:GITHUB_PATH $dir
+
+      - name: Go unit tests on Windows
+        run: go list ./agent/... ./shared/... | grep -v '/agent/guestagent' | xargs go test

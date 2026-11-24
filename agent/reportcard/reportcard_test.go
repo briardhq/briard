@@ -11,7 +11,9 @@ import (
 // capable is the baseline "green" host: everything present, plenty of RAM, wired ethernet.
 func capable() HostFacts {
 	return HostFacts{
+		// Each OS's hard requirements, both sets: Assess asks only its own (platform_<os>.go).
 		DevKVM: true, VirtFlags: true, DevNetTun: true, TunModule: true,
+		Elevated: true, Hypervisor: true, TAP: true,
 		HasIP: true, SystemdBooted: true, MemTotalMB: 16 * 1024,
 		// The device the guest's L2 hangs off: wired, holding the default route, and proven able
 		// to parent a macvtap (the probe ran and passed) -- the machine we expect to admit, not
@@ -55,20 +57,19 @@ func TestAssessCapableAdmits(t *testing.T) {
 	}
 }
 
+// refusal is one way a host is refused: the mutation, the check that refuses, and a substring
+// its fix must carry. The OS's own requirements are platformRefusals, in platform_<os>_test.go.
+type refusal struct {
+	name    string // scenario
+	mutate  func(*HostFacts)
+	check   string // which check should refuse
+	fixHint string // substring the fix must contain (the actionable remedy)
+}
+
 // Each refusal path must fire with an actionable fix and block admission: the card refuses the
 // unfit with the fix named.
 func TestAssessRefusalsCarryFixes(t *testing.T) {
-	cases := []struct {
-		name    string // scenario
-		mutate  func(*HostFacts)
-		check   string // which check should refuse
-		fixHint string // substring the fix must contain (the actionable remedy)
-	}{
-		{"virt disabled in BIOS", func(f *HostFacts) { f.DevKVM = false; f.VirtFlags = false }, "kvm", "BIOS"},
-		{"kvm module not loaded", func(f *HostFacts) { f.DevKVM = false; f.VirtFlags = true }, "kvm", "modprobe"},
-		{"no tun driver", func(f *HostFacts) { f.DevNetTun = false; f.TunModule = false }, "tun", "CONFIG_TUN"},
-		{"no iproute2", func(f *HostFacts) { f.HasIP = false }, "iproute2", "iproute2"},
-		{"not booted with systemd", func(f *HostFacts) { f.SystemdBooted = false }, "systemd", "systemd units"},
+	cases := []refusal{
 		{"below RAM floor", func(f *HostFacts) { f.MemTotalMB = 2048 }, "memory", "4 GB"},
 		// The three ways the guest's L2 has nowhere to hang. Each names the override: a user who
 		// disagrees with our selection needs the way to say so on the refusal's screen.
@@ -84,7 +85,7 @@ func TestAssessRefusalsCarryFixes(t *testing.T) {
 		}, "network", "BRIARD_NIC -- this machine has: eth0"},
 		{"below disk floor", func(f *HostFacts) { f.DiskFreeMB = 5 * 1024 }, "disk", "4 GB data volume"},
 	}
-	for _, tc := range cases {
+	for _, tc := range append(cases, platformRefusals...) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := capable()
 			tc.mutate(&f)

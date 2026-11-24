@@ -994,7 +994,7 @@ func TestWriteManifestCarriesTheInstaller(t *testing.T) {
 	}
 	// The mode matters as much as the hash: a 0644 installer is one a node cannot run, and the
 	// manifest records a mode only when it is not the default, so an omitted one is a real bug.
-	if got.Mode != 0o755 {
+	if runtime.GOOS != "windows" && got.Mode != 0o755 { // no Unix modes on Windows
 		t.Errorf("install.sh mode = %#o, want 0755 (the manifest records the executable bit)", got.Mode)
 	}
 	if got.SHA256 == "" || got.Size == 0 {

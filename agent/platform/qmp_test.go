@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -132,7 +133,7 @@ func TestSecureQMPDirIsOwnerOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o700 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o700 { // no Unix modes on Windows: the prefix's ACL contains it there
 		t.Errorf("QMP dir mode = %o, want 700 (anyone who can connect owns the VM)", fi.Mode().Perm())
 	}
 	// No socket configured is not an error -- most launches want no monitor at all.
@@ -307,7 +308,7 @@ func TestDebugConsolePathIsBesideTheMonitor(t *testing.T) {
 		{"/run/elsewhere/qmp/guest.sock", "/run/elsewhere/qmp/" + DebugConsoleName},
 		{"/tmp/t/mon.sock", "/tmp/t/" + DebugConsoleName},
 	} {
-		if got := DebugConsolePath(tc.qmp); got != tc.want {
+		if got := DebugConsolePath(tc.qmp); got != filepath.FromSlash(tc.want) {
 			t.Errorf("DebugConsolePath(%q) = %q, want %q", tc.qmp, got, tc.want)
 		}
 	}

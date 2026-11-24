@@ -3,6 +3,7 @@ package platform
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -71,7 +72,7 @@ func TestPrepareSerialLogTightensAnExistingMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := fi.Mode().Perm(); perm != 0o640 {
+	if perm := fi.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o640 { // no Unix modes on Windows
 		t.Errorf("mode = %04o, want 0640 -- the console is world-readable", perm)
 	}
 }

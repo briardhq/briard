@@ -3,12 +3,17 @@ package host
 import (
 	"context"
 	"errors"
+	"runtime"
 	"slices"
 	"testing"
 
 	"briard.io/shared/model"
 	"briard.io/shared/telemetry"
 )
+
+// measuresSelf: the agent's own footprint is read from /proc/self on Linux; Windows has no reader
+// (resources_windows.go), and its zero is the "unmeasured" the leak signal already takes.
+var measuresSelf = runtime.GOOS != "windows"
 
 // resources() composes the appliance telemetry from the guest with the agent's own
 // footprint measured in-process. The agent fields are always present (this process really
@@ -27,10 +32,10 @@ func TestResourcesComposesAgentAndAppliance(t *testing.T) {
 	if len(got.Payloads) != 1 || got.Payloads[0].RSSKB != 88000 || got.SnapshotCount != 3 || got.VolumeUsedKB != 4200 {
 		t.Errorf("appliance fields not carried through: %+v", got)
 	}
-	if got.AgentRSSKB <= 0 {
+	if measuresSelf && got.AgentRSSKB <= 0 {
 		t.Errorf("agent RSS should be measured from /proc/self, got %d", got.AgentRSSKB)
 	}
-	if got.AgentFDs <= 0 {
+	if measuresSelf && got.AgentFDs <= 0 {
 		t.Errorf("agent fd count should be measured from /proc/self, got %d", got.AgentFDs)
 	}
 }
@@ -48,7 +53,7 @@ func TestResourcesGuestErrorDegradesToAgentOnly(t *testing.T) {
 	if len(got.Payloads) != 0 || got.VolumeUsedKB != 0 {
 		t.Errorf("appliance fields should be zero on guest error, got %+v", got)
 	}
-	if got.AgentRSSKB <= 0 {
+	if measuresSelf && got.AgentRSSKB <= 0 {
 		t.Errorf("agent footprint should still be measured, got %d", got.AgentRSSKB)
 	}
 }
@@ -77,7 +82,7 @@ func TestResourcesZeroAppNodeStillReadsTheAppliance(t *testing.T) {
 	if len(r.gotApps) != 0 {
 		t.Errorf("asked the guest about %v, want no apps named", r.gotApps)
 	}
-	if got.AgentRSSKB <= 0 {
+	if measuresSelf && got.AgentRSSKB <= 0 {
 		t.Errorf("the agent footprint should still be measured, got %d", got.AgentRSSKB)
 	}
 }
