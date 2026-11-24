@@ -137,6 +137,29 @@ func TestValidateHoldsAGateHeaderToAHeaderBesideAGate(t *testing.T) {
 	}
 }
 
+// A gate by address stands alone, never beside a secret; an open path is a clean directory of a
+// gated app, never "/" and never a bare prefix that would open more than it names.
+func TestValidateHoldsOpenPathsToCleanDirectoriesOfAGatedApp(t *testing.T) {
+	ok := App{Name: "navidrome", GateByAddress: true, Open: []string{"/rest/", "/a/b/"}}
+	if err := (Table{Apps: []App{ok}}).Validate(); err != nil {
+		t.Fatalf("open paths of an app gated by address were refused: %v", err)
+	}
+	for _, a := range []App{
+		{Name: "navidrome", GateByAddress: true, Gate: "/run/s"},
+		{Name: "navidrome", GateByAddress: true, Gate: "/run/s", GateHeader: "X-Secret"},
+		{Name: "navidrome", Open: []string{"/rest/"}},
+		{Name: "navidrome", GateByAddress: true, Open: []string{"/"}},
+		{Name: "navidrome", GateByAddress: true, Open: []string{"/rest"}},
+		{Name: "navidrome", GateByAddress: true, Open: []string{"rest/"}},
+		{Name: "navidrome", GateByAddress: true, Open: []string{"/rest/../"}},
+		{Name: "navidrome", GateByAddress: true, Open: []string{"/rest//"}},
+	} {
+		if err := (Table{Apps: []App{a}}).Validate(); err == nil {
+			t.Errorf("%+v validated", a)
+		}
+	}
+}
+
 // An unknown listener is refused, never skipped: a route the reverse proxy silently drops is an
 // app unreachable with nothing saying why, which looks like a user error. It also makes adding
 // `tls:<port>` a change nobody can half-deploy.

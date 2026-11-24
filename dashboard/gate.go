@@ -47,7 +47,7 @@ func gatedApps(routesPath string) map[string]routes.App {
 	}
 	out := map[string]routes.App{}
 	for _, s := range t.Apps {
-		if _, ok := s.Route(routes.ListenName); ok && s.Gate != "" && len(s.Hosts) > 0 {
+		if _, ok := s.Route(routes.ListenName); ok && s.Gated() && len(s.Hosts) > 0 {
 			out[s.Name] = s
 		}
 	}

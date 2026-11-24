@@ -107,7 +107,7 @@ type App struct {
 	// stopped being the Primary.
 	Announce []Announcement `json:"announce,omitempty"`
 	// Gate, when set, is the file holding the secret the reverse proxy signs the household into
-	// this app with, and its presence is what makes the app gated: the reverse proxy lets a browser
+	// this app with, and its presence (or GateByAddress's) is what makes the app gated: the reverse proxy lets a browser
 	// through only with the household dashboard's session, and tells the app who it is in a
 	// short-lived token signed with this secret, which the app verifies on every request. Empty is
 	// an app with a login of its own, forwarded as it is. A path, never the secret: this table is
@@ -118,6 +118,35 @@ type App struct {
 	// username in X-Forwarded-User, and the secret itself in this header, which the app compares
 	// with its own copy. Empty is the signed token.
 	GateHeader string `json:"gateHeader,omitempty"`
+	// GateByAddress, set instead of Gate, is the third way: for an app that reads its user from a
+	// reverse proxy's header and checks no secret, only that the request comes from an address it
+	// trusts, the reverse proxy's own on the pod network. The username goes in X-Forwarded-User
+	// and nothing beside it. Whatever else connects from that address can sign in too, which is
+	// accepted wherever an app is given this.
+	GateByAddress bool `json:"gateByAddress,omitempty"`
+	// Open are the paths of a gated app the reverse proxy forwards without the dashboard's
+	// session, each a prefix ending in "/": an API a client app calls with the app's own
+	// credential, which a redirect to the dashboard would only break. On them the reverse proxy
+	// signs nobody in and takes off the dashboard's cookie and the sign-in headers, so a client
+	// cannot bring its own.
+	Open []string `json:"open,omitempty"`
+}
+
+// Gated reports whether the reverse proxy admits only the dashboard's session to this app.
+func (a App) Gated() bool { return a.Gate != "" || a.GateByAddress }
+
+// IsOpen reports whether a request path is under one of the app's open paths. Only a clean path
+// is: "/rest/../app/" names the app's pages, whatever its first segment says.
+func (a App) IsOpen(p string) bool {
+	if c := path.Clean(p); c != p && c+"/" != p {
+		return false
+	}
+	for _, o := range a.Open {
+		if strings.HasPrefix(p, o) {
+			return true
+		}
+	}
+	return false
 }
 
 // Announcement is one mDNS service record: the label a browser shows, the type it browses for,
@@ -277,6 +306,17 @@ func (t Table) Validate() error {
 		}
 		if s.GateHeader != "" && (s.Gate == "" || !headerName(s.GateHeader)) {
 			return fmt.Errorf("routes: app %q has a gate header %q that is not a header name beside a gate", s.Name, s.GateHeader)
+		}
+		if s.GateByAddress && s.Gate != "" {
+			return fmt.Errorf("routes: app %q is gated both by a secret and by address", s.Name)
+		}
+		for _, o := range s.Open {
+			// An open path on an app nobody gates means nothing; "/" would open all of it; a path
+			// that is not clean or not a directory prefix ("/rest" opens "/restore") opens more
+			// than it says.
+			if !s.Gated() || o == "/" || !path.IsAbs(o) || !strings.HasSuffix(o, "/") || path.Clean(o)+"/" != o {
+				return fmt.Errorf("routes: app %q has an open path %q that is not a clean directory under a gated app", s.Name, o)
+			}
 		}
 		if (s.Health != "" || len(s.Routes) > 0) && s.Address == "" {
 			return fmt.Errorf("routes: app %q has endpoints but no address to resolve them against", s.Name)

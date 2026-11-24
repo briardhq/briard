@@ -388,3 +388,97 @@ func TestAHeaderGatedAppGetsTheUserAndTheSecret(t *testing.T) {
 		t.Fatal("the dashboard's session token reached the app")
 	}
 }
+
+// An app gated by address gets the user alone, in place of whatever a client sent, and no token,
+// no secret and no dashboard cookie; a browser without a session is still sent to the dashboard.
+func TestAnAddressGatedAppGetsTheUserAlone(t *testing.T) {
+	var seen *http.Request
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = r }))
+	t.Cleanup(app.Close)
+	dash := newGateDashboard(t)
+	dash.valid["tok-1"] = true
+	s := fronted("navidrome", "briard-navidrome.local", app.URL)
+	s.GateByAddress = true
+	du, _ := url.Parse(dash.srv.URL)
+	proxy := httptest.NewServer(newRouter(fixed(routes.Table{Apps: []routes.App{s}}), du))
+	t.Cleanup(proxy.Close)
+	r := &gateRig{proxy: proxy, dash: dash}
+
+	if resp := r.do(t, "GET", "/app/", "briard-navidrome.local"); resp.StatusCode != http.StatusSeeOther || seen != nil {
+		t.Fatalf("a stranger got %d, reached the app: %v", resp.StatusCode, seen != nil)
+	}
+	req, _ := http.NewRequest("GET", proxy.URL+"/app/", nil)
+	req.Host = "briard-navidrome.local"
+	req.Header.Set("X-Forwarded-User", "admin")
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "tok-1"})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || seen == nil {
+		t.Fatalf("status %d, reached the app: %v", resp.StatusCode, seen != nil)
+	}
+	if u := seen.Header.Values("X-Forwarded-User"); !slices.Equal(u, []string{"kostas"}) {
+		t.Fatalf("the app was told user %v; want only kostas", u)
+	}
+	if seen.Header.Get(assertionHeader) != "" {
+		t.Fatal("an address-gated app was handed a token")
+	}
+	if _, err := seen.Cookie(sessionCookie); err == nil {
+		t.Fatal("the dashboard's session token reached the app")
+	}
+}
+
+// An open path reaches the app with no session and nobody signed in: a client's own user header,
+// token and the dashboard's cookie are taken off, and the dashboard is not asked. A path that
+// only looks open is gated.
+func TestAnOpenPathPassesUnsignedAndStripped(t *testing.T) {
+	var seen *http.Request
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = r }))
+	t.Cleanup(app.Close)
+	dash := newGateDashboard(t)
+	dash.valid["tok-1"] = true
+	s := fronted("navidrome", "briard-navidrome.local", app.URL)
+	s.GateByAddress, s.Open = true, []string{"/rest/"}
+	du, _ := url.Parse(dash.srv.URL)
+	proxy := httptest.NewServer(newRouter(fixed(routes.Table{Apps: []routes.App{s}}), du))
+	t.Cleanup(proxy.Close)
+
+	req, _ := http.NewRequest("GET", proxy.URL+"/rest/ping.view?u=owner&jwt=forged", nil)
+	req.Host = "briard-navidrome.local"
+	req.Header.Set("X-Forwarded-User", "admin")
+	req.Header.Set(assertionHeader, "forged")
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "tok-1"})
+	req.AddCookie(&http.Cookie{Name: "apps-own", Value: "kept"})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || seen == nil {
+		t.Fatalf("status %d, reached the app: %v", resp.StatusCode, seen != nil)
+	}
+	if u := seen.Header.Get("X-Forwarded-User"); u != "" {
+		t.Fatalf("a client's user header %q reached the app on an open path", u)
+	}
+	if seen.Header.Get(assertionHeader) != "" || seen.URL.Query().Has(assertionQuery) {
+		t.Fatal("a client's token reached the app on an open path")
+	}
+	if _, err := seen.Cookie(sessionCookie); err == nil {
+		t.Fatal("the dashboard's session token reached the app on an open path")
+	}
+	if c, err := seen.Cookie("apps-own"); err != nil || c.Value != "kept" || seen.URL.Query().Get("u") != "owner" {
+		t.Fatal("the client's own credential did not reach the app")
+	}
+	if len(dash.asked) != 0 {
+		t.Fatalf("the dashboard was asked about %q for an open path", dash.asked)
+	}
+	r := &gateRig{proxy: proxy, dash: dash}
+	for _, p := range []string{"/rest/../app/", "/restore", "/rest"} {
+		seen = nil
+		if resp := r.do(t, "GET", p, "briard-navidrome.local"); resp.StatusCode != http.StatusSeeOther || seen != nil {
+			t.Fatalf("%s got %d, reached the app: %v; want the dashboard", p, resp.StatusCode, seen != nil)
+		}
+	}
+}

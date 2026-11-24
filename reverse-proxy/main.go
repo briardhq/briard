@@ -246,8 +246,14 @@ func (p *router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, fmt.Sprintf("%s does not answer HTTP; reach it on its own port\n", r.name), http.StatusNotImplemented)
 		return
 	}
-	if r.gate != "" && !p.gate.admit(w, req, r) {
-		return
+	if r.app.Gated() {
+		if r.app.IsOpen(req.URL.Path) {
+			// The app's own credential is the way in here; the dashboard's session and every
+			// sign-in header a client brings are taken off, so none of them reaches the app.
+			unsigned(req, r)
+		} else if !p.gate.admit(w, req, r) {
+			return
+		}
 	}
 	p.proxy.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), backendKey{}, r)))
 }
@@ -280,16 +286,13 @@ type routing struct {
 type route struct {
 	name string
 	to   *url.URL
-	gate string // the app's signing secret's file; "" for an app forwarded as it is
-	// gateHeader is the header the secret itself goes in, beside the username, for an app that
-	// reads its user from a proxy's header; "" is the signed token.
-	gateHeader string
+	app  routes.App // its entry in the table: how it is gated, and where it is open
 }
 
 func newRouting(t routes.Table) *routing {
 	r := &routing{table: t, byHost: make(map[string]route, len(t.Apps))}
 	for _, s := range t.Apps {
-		e := route{name: s.Name, gate: s.Gate, gateHeader: s.GateHeader}
+		e := route{name: s.Name, app: s}
 		// An app with no route on this listener keeps its name and gets no destination here.
 		// The reverse proxy is never handed an address it must be trusted not to use: with nothing
 		// to forward to, there is nothing to get wrong. mosquitto is the live case — its address is

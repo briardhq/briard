@@ -1,7 +1,8 @@
 package main
 
-// The gate signs the user into an app with no login of its own worth trusting (a route with a
-// Gate, shared/routes); Files (signed token) and Mealie (header) are the live cases.
+// The gate signs the user into an app with no login of its own worth trusting (a gated route,
+// shared/routes); Files (signed token), Mealie (header and secret) and Navidrome (header, by
+// address) are the live cases.
 //
 // The session is the dashboard's, carried to the app's name. A browser without the dashboard's
 // cookie for that name is sent to the dashboard's /open/<app>, which, on a browser it trusts,
@@ -19,7 +20,13 @@ package main
 // can sign in without the key, which only root on this node can read. Or by header, for an app
 // that reads its user from a reverse proxy (Mealie): the username in X-Forwarded-User, the secret
 // itself in the route's GateHeader, compared with the app's copy -- a standing bearer rather than
-// a minute's signature, as safe as its file, which nothing off this node reads.
+// a minute's signature, as safe as its file, which nothing off this node reads. Or by the header
+// alone, for an app that checks no secret but the address the request comes from (Navidrome):
+// this proxy's own on the pod network, which every app on the guest's own network shares, so
+// those can sign in to it too.
+//
+// A gated app's open paths (routes.App.Open) pass with no session: a client app calls them with
+// the app's own credential, and nobody is signed in on them.
 //
 // The dashboard's token never reaches the app: the cookie is the household's credential for the
 // dashboard itself, so it is taken off every request forwarded to a gated app.
@@ -155,18 +162,25 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 		http.Redirect(w, req, openURL(req, r.name, g.certified != nil && g.certified()), http.StatusSeeOther)
 		return false
 	}
-	key, err := g.key(r.gate)
+	if r.app.GateByAddress {
+		// The app trusts this proxy's address and nothing else, so the username is all it is
+		// sent. Set, never added, so a client's own copy never reaches the app.
+		dropCookie(req, sessionCookie)
+		req.Header.Set(userHeader, user)
+		return true
+	}
+	key, err := g.key(r.app.Gate)
 	if err != nil {
 		log.Printf("reverse-proxy: %s: %v", r.name, err)
 		http.Error(w, "this app cannot be signed in to right now\n", http.StatusServiceUnavailable)
 		return false
 	}
 	dropCookie(req, sessionCookie)
-	if r.gateHeader != "" {
+	if r.app.GateHeader != "" {
 		// The app's own reverse-proxy sign-in: who, and the secret that says the reverse proxy sent
 		// it. Set, never added, so a client's own copy of either header never reaches the app.
 		req.Header.Set(userHeader, user)
-		req.Header.Set(r.gateHeader, string(key))
+		req.Header.Set(r.app.GateHeader, string(key))
 		return true
 	}
 	if q.Has(assertionQuery) {
@@ -175,6 +189,21 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 	}
 	req.Header.Set(assertionHeader, sign(key, user, g.now()))
 	return true
+}
+
+// unsigned readies a request on one of a gated app's open paths (routes.App.Open): no session, no
+// user and no secret reach the app, whoever sent them, and no token either.
+func unsigned(req *http.Request, r route) {
+	dropCookie(req, sessionCookie)
+	req.Header.Del(userHeader)
+	req.Header.Del(assertionHeader)
+	if r.app.GateHeader != "" {
+		req.Header.Del(r.app.GateHeader)
+	}
+	if q := req.URL.Query(); q.Has(assertionQuery) {
+		q.Del(assertionQuery)
+		req.URL.RawQuery = q.Encode()
+	}
 }
 
 // openURL is where a browser without a session for an app is sent: the dashboard under the name
