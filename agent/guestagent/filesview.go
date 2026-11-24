@@ -5,7 +5,8 @@ package guestagent
 // person reads. Files (agent/files) mounts the root once, with slave propagation, so the binds
 // made here reach the running container and it never restarts for another app's sake. The data
 // and unversioned tiers are bound read-write, the household's to edit; files and its Versions
-// read-only; the cache not at all, being the app's to throw away.
+// read-only, but for a files-tier folder the household fills and its app only reads (agent/apps:
+// HouseholdWrites); the cache not at all, being the app's to throw away.
 //
 // A bind is kept true by asking, not by hooking every act that replaces an area. A bind holds the
 // directory it was made from, so after a restore swaps an app's area it shows the old, deleted
@@ -28,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"briard.io/agent/apps"
 	"briard.io/agent/files"
 	"briard.io/agent/quadlet"
 	"briard.io/shared/dashboard"
@@ -125,7 +127,9 @@ func filesViewWanted(ctx context.Context, x Executor) (map[string]viewBind, erro
 					log.Printf("files view: %s mounts %q in two tiers; showing the first", m.Name, d)
 					continue
 				}
-				want[p] = viewBind{src: quadlet.Area(tier, m.Name) + "/" + d, ro: tier == manifest.TierFiles}
+				// A files-tier folder is its app's to write, so read-only here, unless the household
+				// fills it and the app only reads it (agent/apps).
+				want[p] = viewBind{src: quadlet.Area(tier, m.Name) + "/" + d, ro: tier == manifest.TierFiles && !apps.HouseholdWrites(m, d)}
 				if tier == manifest.TierFiles {
 					filesDirs = append(filesDirs, d)
 				}

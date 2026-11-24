@@ -12,6 +12,7 @@ import (
 	"briard.io/agent/hass"
 	"briard.io/agent/mealie"
 	"briard.io/agent/mosquitto"
+	"briard.io/agent/navidrome"
 	"briard.io/shared/manifest"
 )
 
@@ -48,7 +49,7 @@ func TestAnUnknownAppGetsNothing(t *testing.T) {
 		t.Errorf("an unknown app was handed binds: %v", v)
 	}
 	x := &noopExec{}
-	if err := Prepare(context.Background(), x, m); err != nil {
+	if err := Prepare(context.Background(), x, m, ""); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if x.runs != 0 {
@@ -364,7 +365,7 @@ func TestPrepareMintsAFreshInboundToken(t *testing.T) {
 	// Prepare's per-app work fails on this stub, deliberately unasserted: the mint runs ahead of
 	// the switch on the app name, so a failed preparation leaves nothing half-identified. Converge
 	// never starts that container either, so the unused token simply rotates next time.
-	_ = Prepare(context.Background(), f, ha)
+	_ = Prepare(context.Background(), f, ha, "")
 	first := f.files[InboundTokenPath("home-assistant")]
 	if len(first) < 32 {
 		t.Fatalf("token = %q, want a credential rather than an identifier", first)
@@ -372,13 +373,13 @@ func TestPrepareMintsAFreshInboundToken(t *testing.T) {
 	if !f.ran("chmod", "0600", InboundTokenPath("home-assistant")) {
 		t.Errorf("the token was left world-readable on /run: %v", f.runs)
 	}
-	_ = Prepare(context.Background(), f, ha)
+	_ = Prepare(context.Background(), f, ha, "")
 	if f.files[InboundTokenPath("home-assistant")] == first {
 		t.Error("the token did not rotate on the second converge")
 	}
 	// An app that gets no channel gets no token: the credential exists only where it is used.
 	mq := manifest.Manifest{Name: "mosquitto", Containers: []manifest.Container{{Name: "broker", Primary: true}}}
-	_ = Prepare(context.Background(), f, mq)
+	_ = Prepare(context.Background(), f, mq, "")
 	if _, ok := f.files[InboundTokenPath("mosquitto")]; ok {
 		t.Error("mosquitto was minted an inbound token it cannot use")
 	}
@@ -440,6 +441,7 @@ func TestNoBindNestsInsideAnother(t *testing.T) {
 		{Name: "home-assistant", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "app", Path: "/config"}}}}},
 		{Name: "mosquitto", Containers: []manifest.Container{{Name: "broker", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "broker", Path: "/data"}}}}},
 		{Name: "files", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierCache, Dir: "state", Path: "/home/filebrowser/data"}}}}},
+		{Name: "navidrome", Containers: []manifest.Container{{Name: "app", Primary: true, Mounts: []manifest.Mount{{Tier: manifest.TierData, Dir: "data", Path: "/data"}, {Tier: manifest.TierFiles, Dir: "music", Path: "/music"}, {Tier: manifest.TierCache, Dir: "cache", Path: "/cache"}}}}},
 	} {
 		for _, c := range m.Containers {
 			var dests []string
@@ -481,6 +483,7 @@ func TestAppDirMatchesTheRegistry(t *testing.T) {
 		{hass.Name, hass.Dir},
 		{mosquitto.Name, mosquitto.Dir},
 		{files.Name, files.Dir},
+		{navidrome.Name, navidrome.Dir},
 	} {
 		if want := defaultRunDir + "/" + c.name; c.dir != want {
 			t.Errorf("%s's package declares %q, the registry derives %q", c.name, c.dir, want)
@@ -497,6 +500,33 @@ func TestStartingIsSettledAsUnhealthy(t *testing.T) {
 	} {
 		if got := h.Settled(); got != want {
 			t.Errorf("%q.Settled() = %q, want %q", h, got, want)
+		}
+	}
+}
+
+// Navidrome is gated by address alone, with no secret, its Subsonic API open; its library is the
+// one files-tier folder the household writes; and it gets its own directory for its settings.
+// No other app gets any of it.
+func TestNavidromeIsGatedByAddressAndItsLibraryIsTheHouseholds(t *testing.T) {
+	m := svc(navidrome.Name, 4533)
+	if !GateByAddress(m) || Gate(m) != "" || GateHeader(m) != "" {
+		t.Errorf("Navidrome's gate: by address %v, secret %q, header %q; want by address alone", GateByAddress(m), Gate(m), GateHeader(m))
+	}
+	if o := Open(m); !slices.Equal(o, []string{"/rest/"}) {
+		t.Errorf("Open(navidrome) = %v", o)
+	}
+	if !HouseholdWrites(m, navidrome.Music) || HouseholdWrites(m, "data") {
+		t.Error("Navidrome's household-written folder is not its library alone")
+	}
+	if v := Volumes(m, m.Containers[0]); !slices.Contains(v, AppDir(navidrome.Name)+":"+AppMount+":ro") {
+		t.Errorf("Navidrome lacks its own directory: %v", v)
+	}
+	if u := User(m, m.Containers[0]); u != "" {
+		t.Errorf("User(navidrome) = %q, want the image's own", u)
+	}
+	for _, o := range []manifest.Manifest{svc(files.Name, 80), svc(mealie.Name, 9000), svc(hass.Name, 8123), svc("something-else", 8080)} {
+		if GateByAddress(o) || Open(o) != nil || HouseholdWrites(o, navidrome.Music) {
+			t.Errorf("%s was given Navidrome's gate, open paths or library", o.Name)
 		}
 	}
 }

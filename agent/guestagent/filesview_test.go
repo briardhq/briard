@@ -160,6 +160,24 @@ func TestFilesAndTheirVersionsAreReadOnlyUnderAbsoluteNames(t *testing.T) {
 	}
 }
 
+// Navidrome's library is the household's to fill, so it is bound read-write; another files-tier
+// folder of Navidrome's, and its Versions, stay read-only.
+func TestTheMusicLibraryIsTheHouseholdsToWrite(t *testing.T) {
+	w := homeAssistantAndFiles(t)
+	w.install(t, "navidrome",
+		manifest.Mount{Tier: manifest.TierFiles, Dir: "music", Path: "/music"},
+		manifest.Mount{Tier: manifest.TierFiles, Dir: "other", Path: "/other"})
+	member := "navidrome-clock-20261105T130000Z"
+	w.f.dirs[filesVersionsDir()] = []string{member, member + ".json"}
+	w.dir(filesVersionsDir() + "/" + member + "/music")
+	w.refresh(t)
+	for _, want := range []string{"Navidrome/music rw", "Navidrome/other ro", "Navidrome/Versions/2026-11-05 Thu 13.00/music ro"} {
+		if !slices.Contains(w.view(), want) {
+			t.Errorf("the view lacks %q: %v", want, w.view())
+		}
+	}
+}
+
 // A restore swaps an area underneath its bind, and the next refresh binds the new one -- the
 // stale copy is exactly what an edit would otherwise vanish into.
 func TestARestoreUnderneathIsBoundAgain(t *testing.T) {

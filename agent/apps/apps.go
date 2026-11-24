@@ -30,6 +30,7 @@ import (
 	"briard.io/agent/hass"
 	"briard.io/agent/mealie"
 	"briard.io/agent/mosquitto"
+	"briard.io/agent/navidrome"
 	"briard.io/shared/api"
 	"briard.io/shared/manifest"
 	"briard.io/shared/routes"
@@ -346,8 +347,9 @@ func ResetPhrase(resets []string) string {
 // Prepare materialises whatever Volumes promised, on this node, before the container starts.
 // Called by converge, which contains a failure here to the one app: the rendered unit names bind
 // sources this writes, and podman creates a missing source as a root-owned directory, so an app
-// that cannot be prepared must not be started at all.
-func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
+// that cannot be prepared must not be started at all. podGateway is the address the reverse proxy
+// reaches the pod network from, "" on a node with none.
+func Prepare(ctx context.Context, x Executor, m manifest.Manifest, podGateway string) error {
 	// The inbound token, for any app that gets the channel. Minted here because Prepare is the
 	// one step that runs on every converge (the installing primary, the survivor promoting into
 	// an app it was never told about, and every guest reboot), exactly the set of moments the
@@ -374,6 +376,10 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 		return files.Prepare(ctx, x, m)
 	case mealie.Name:
 		return mealie.Prepare(ctx, x, m)
+	case navidrome.Name:
+		// The address the reverse proxy reaches the pod network from is the one Navidrome trusts
+		// to name its user. Converge knows the pool; nothing in an app package does.
+		return navidrome.Prepare(ctx, x, m, podGateway)
 	}
 	return nil
 }
@@ -414,7 +420,8 @@ func Capabilities(m manifest.Manifest, c manifest.Container) string {
 // through only with the household dashboard's session, and then tells the app who it is in a way
 // the app checks against the secret. Files and Mealie are gated: Files holds every app's data,
 // and Mealie has no sign-in of its own briard would not have to tell the user a password for.
-// Home Assistant keeps its own login because its companion app has no browser session to bring.
+// Navidrome is gated with no secret (GateByAddress). Home Assistant keeps its own login because its
+// companion app has no browser session to bring.
 func Gate(m manifest.Manifest) string {
 	switch m.Name {
 	case files.Name:
@@ -432,6 +439,30 @@ func GateHeader(m manifest.Manifest) string {
 		return mealie.SecretHeader
 	}
 	return ""
+}
+
+// GateByAddress reports whether an app is gated with no secret at all: it trusts the address the
+// reverse proxy reaches the pod network from, and the reverse proxy names the user alone.
+// Navidrome is, having no way to check a secret; what else shares that address can sign in to it
+// too, which is accepted for a music server (agent/navidrome).
+func GateByAddress(m manifest.Manifest) bool {
+	return m.Name == navidrome.Name
+}
+
+// Open are a gated app's paths the reverse proxy forwards without the dashboard's session: an API
+// a client app calls with the app's own credential. Navidrome's Subsonic API is the one.
+func Open(m manifest.Manifest) []string {
+	if m.Name == navidrome.Name {
+		return navidrome.Open
+	}
+	return nil
+}
+
+// HouseholdWrites reports whether a files-tier folder of an app is the household's to write, in
+// Files' view and the drive, where every other files-tier folder is read-only because its app
+// writes it. Navidrome's library is: the household fills it, and Navidrome only reads it.
+func HouseholdWrites(m manifest.Manifest, dir string) bool {
+	return m.Name == navidrome.Name && dir == navidrome.Music
 }
 
 // Reach is the sentence `briard app install` ends on: where the household now finds the
@@ -592,8 +623,9 @@ func mintInboundToken(ctx context.Context, x Executor, app string) error {
 }
 
 // NeedsAppDir reports whether a container gets its app's own directory at AppMount.
-// True for anything the product hands something to: Home Assistant's control channel, Files'
-// config, or the inbound token. An app needing none of these gets no directory and no mount.
+// True for anything the product hands something to: Home Assistant's control channel, Files' and
+// Navidrome's config, or the inbound token. An app needing none of these gets no directory and no
+// mount.
 func NeedsAppDir(m manifest.Manifest, c manifest.Container) bool {
-	return ((m.Name == hass.Name || m.Name == files.Name) && c.Primary) || WantsInbound(m, c)
+	return ((m.Name == hass.Name || m.Name == files.Name || m.Name == navidrome.Name) && c.Primary) || WantsInbound(m, c)
 }

@@ -112,6 +112,9 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 	}
 	// The pod network, before any unit is written that names it. Only when something actually
 	// wants one: a node with zero apps, or only host-networked ones, creates nothing.
+	// podGateway is the network's own address on the guest side, the one the reverse proxy (and
+	// everything else on the guest's own network) reaches a pod from.
+	podGateway := ""
 	if needsPodNetwork(svcs) {
 		pool := podPool(x)
 		if pool == "" {
@@ -120,6 +123,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 		if err := ensurePodNetwork(ctx, x, pool); err != nil {
 			return nil, err
 		}
+		podGateway = pool + ".1"
 	}
 	all := merged(svcs)
 	stopUnrendered(ctx, x, all)
@@ -160,7 +164,7 @@ func Converge(ctx context.Context, x Executor, live string) ([]string, error) {
 	// (agent/hass). Never starting the unit keeps podman from making that directory at all.
 	var skipped []string
 	for i := range svcs {
-		if err := apps.Prepare(ctx, x, svcs[i].m); err != nil {
+		if err := apps.Prepare(ctx, x, svcs[i].m, podGateway); err != nil {
 			log.Printf("converge: %s cannot be prepared (%v); it is NOT being started, the node is serving what it can", svcs[i].name, err)
 			svcs[i].skip = true
 			skipped = append(skipped, svcs[i].name)
@@ -772,7 +776,8 @@ func routesFor(flock string, svcs []convergedApp) routes.Table {
 				To:     fmt.Sprintf("http://:%d", p.Port),
 			}}
 			// Gated: the reverse proxy admits the household's dashboard session and signs it in.
-			e.Gate, e.GateHeader = apps.Gate(s.m), apps.GateHeader(s.m)
+			e.Gate, e.GateHeader, e.GateByAddress = apps.Gate(s.m), apps.GateHeader(s.m), apps.GateByAddress(s.m)
+			e.Open = apps.Open(s.m)
 		}
 		t.Apps = append(t.Apps, e)
 	}
