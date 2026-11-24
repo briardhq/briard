@@ -188,7 +188,12 @@ func newRouter(current func() *routing, fallback *url.URL) *router {
 			// working behind one: Home Assistant answers 400 to the header from a proxy it has
 			// not been told to trust. Rewrite (not Director) strips every inbound X-Forwarded-*
 			// first, so the value is always the peer this proxy saw: the reverse proxy is the
-			// edge, and a client's own claim is never passed on.
+			// edge, and a client's own claim is never passed on. Nor in the other headers that make
+			// the same claim, which Rewrite leaves: an app that trusts this proxy believes them
+			// over X-Forwarded-For (Navidrome keys its sign-in limit on them), so a client could
+			// otherwise pick the address it is limited as.
+			r.Out.Header.Del("X-Real-IP")
+			r.Out.Header.Del("True-Client-IP")
 			if rt.name != "" && p.trust.allows(rt.name) {
 				if ip, _, err := net.SplitHostPort(r.In.RemoteAddr); err == nil {
 					r.Out.Header.Set("X-Forwarded-For", ip)

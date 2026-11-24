@@ -357,6 +357,33 @@ func TestProxyPassesTheClientHostAndNoForwardedHeaders(t *testing.T) {
 	}
 }
 
+// A client's own claim to an address never reaches an app, in any header that makes one: an app
+// that trusts this proxy believes X-Real-IP and True-Client-IP over the address it sees.
+func TestProxyDropsAClientsOwnAddressHeaders(t *testing.T) {
+	var seen http.Header
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = r.Header.Clone() }))
+	defer backend.Close()
+	srv := httptest.NewServer(bareRouter(fixed(routes.Table{Apps: []routes.App{
+		fronted("fixture", "home.example.test", backend.URL),
+	}})))
+	defer srv.Close()
+	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
+	req.Host = "home.example.test"
+	for _, h := range []string{"X-Real-IP", "True-Client-IP", "X-Forwarded-For"} {
+		req.Header.Set(h, "203.0.113.9")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	for _, h := range []string{"X-Real-IP", "True-Client-IP", "X-Forwarded-For"} {
+		if v := seen.Values(h); len(v) != 0 {
+			t.Errorf("the app was handed the client's %s %v", h, v)
+		}
+	}
+}
+
 // genCert writes a self-signed cert/key (with the given serial, to tell reloads apart) to
 // the paths, stamped with mtime mt so the reloader's mtime check is deterministic.
 func genCert(t *testing.T, certPath, keyPath string, serial int64, mt time.Time) {
