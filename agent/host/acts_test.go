@@ -166,6 +166,33 @@ func TestAStopFinishesTheActInFlight(t *testing.T) {
 	}
 }
 
+// The end of that stop, forced: the act's result is waiting on the lane and the stop is already
+// in, so both are ready when the loop next waits. It answers the asker before it ends. Without the
+// drain the select picks either, so the rounds make a dropped answer all but certain to show.
+func TestAStopAnswersTheResultWaitingBesideIt(t *testing.T) {
+	for round := range 32 {
+		cfg := loopConfig(t)
+		cfg.acts = newActLane()
+		d := api.Directive{ID: "sync-1", Kind: api.DirectiveSync}
+		resp := make(chan api.DirectiveOutcome, 1)
+		cfg.acts.results <- actResult{d: d, o: api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: "flushed"}, rq: &localRequest{d: d, resp: resp}}
+		ctx, stop := context.WithCancel(context.Background())
+		stop()
+		g := fakeStatus{qs: model.QuorumState{Primary: true, Quorate: true}}
+		if err := cfg.observe(ctx, g, nil, nil, nil, nil, nil, nil, "", make(chan localRequest), &[]api.DirectiveOutcome{}, func(string, ...any) {}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case o := <-resp:
+			if o.State != api.OutcomeDone || o.Detail != "flushed" {
+				t.Fatalf("round %d: the answer = %+v, want the act's done/flushed", round, o)
+			}
+		default:
+			t.Fatalf("round %d: the loop ended with the finished act's asker unanswered", round)
+		}
+	}
+}
+
 // With nothing in flight a stop ends the loop at once.
 func TestAStopWithNothingInFlightIsImmediate(t *testing.T) {
 	a := newActLane()

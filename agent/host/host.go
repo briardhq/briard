@@ -1733,7 +1733,19 @@ func (cfg Config) observe(ctx context.Context, r guestReader, up upgrader, alert
 	wait:
 		select {
 		case <-ctx.Done():
-			return nil
+			// A stop ends the loop only once the act in flight has finished (acts.go, stopAfter),
+			// and that act's result reaches the lane before its end does: the two can be ready
+			// together, and the select picks either. Finished here, so the act's asker has the
+			// answer the act earned rather than a loop that ended beside it.
+			for {
+				select {
+				case res := <-cfg.acts.ch():
+					cfg.acts.drained(res.d.ID)
+					cfg.finish(res, pending, logf)
+				default:
+					return nil
+				}
+			}
 		case <-lc:
 			// Windows reported an interface change: a carrier edge mirrored now, not at the next
 			// tick (linkmirror.go). It runs the mirror and nothing else, then waits on, so a
