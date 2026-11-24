@@ -122,5 +122,10 @@ jobs:
           Rename-Item (Get-ChildItem $dir -Filter 'restic_*.exe').FullName restic.exe
           Add-Content $env:GITHUB_PATH $dir
 
+      # In PowerShell with System32 first, as on a node: Git's bash puts GNU tar ahead of Windows'
+      # own, and GNU tar reads the drive letter of C:\... as a remote host.
       - name: Go unit tests on Windows
-        run: go list ./agent/... ./shared/... | grep -v '/agent/guestagent' | xargs go test
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:SystemRoot\System32;$env:PATH"
+          go test @(go list ./agent/... ./shared/... | Where-Object { $_ -notlike '*/agent/guestagent*' })

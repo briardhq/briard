@@ -260,10 +260,13 @@ func TestARelauncherOffTheLoopIsWhatRunWaitsFor(t *testing.T) {
 	if !ok || kind != api.DirectiveRescue {
 		t.Fatalf("relaunching() = (%q, %v) with a rescue held open; want the rescue", kind, ok)
 	}
+	// Waited for, not slept on: a loaded runner can go tens of milliseconds between two ticks, and
+	// a loop held by the rescue never ticks again however long it is given.
 	before := atomic.LoadInt32(&cycles)
-	time.Sleep(20 * time.Millisecond)
-	if now := atomic.LoadInt32(&cycles); now <= before {
-		t.Fatalf("the loop stopped ticking behind a held rescue: %d cycles then, %d now", before, now)
+	for deadline := time.Now().Add(time.Second); atomic.LoadInt32(&cycles) <= before; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the loop stopped ticking behind a held rescue: %d cycles then, %d a second later", before, atomic.LoadInt32(&cycles))
+		}
 	}
 	if o := await(t, "an act beside the rescue", submit(local, api.DirectiveSync), time.Second); o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "busy") {
 		t.Fatalf("an act while a rescue runs = %+v, want refused busy", o)
