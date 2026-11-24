@@ -190,3 +190,29 @@ func TestTheHomeListsTheAppsAndSuggestsMore(t *testing.T) {
 		t.Error("Home Assistant's card is not on the Apps page alone")
 	}
 }
+
+// An app gated by address opens from its card like any gated app, and Navidrome's card says where
+// the household sets the password its phone app signs in with.
+func TestNavidromesCardOpensItAndSaysWhereThePhonePasswordIs(t *testing.T) {
+	r := newRig(t)
+	raw, _ := os.ReadFile(filepath.Join(r.dir, "routes.json"))
+	var tbl routes.Table
+	must(t, json.Unmarshal(raw, &tbl))
+	tbl.Apps = append(tbl.Apps, routes.App{
+		Name: "navidrome", Hosts: routes.HostNames("brave-elf", "navidrome"), Address: "10.12.7.3",
+		Health: "http://:4533/ping", Routes: []routes.Route{{Listen: routes.ListenName, To: "http://:4533"}},
+		GateByAddress: true, Open: []string{"/rest/"},
+	})
+	raw, _ = json.Marshal(tbl)
+	must(t, os.WriteFile(filepath.Join(r.dir, "routes.json"), raw, 0o644))
+	c := r.trust()
+	_, body := get(t, r, "/apps", c)
+	for _, want := range []string{`href="/open/navidrome" target="_blank"`, "leaving “Current Password” empty the first time", "signs in as owner"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Navidrome's card lacks %q", want)
+		}
+	}
+	if strings.Count(body, "“Current Password”") != 1 {
+		t.Error("the phone password's note is on another app's card too")
+	}
+}
