@@ -176,7 +176,7 @@ var commands = []command{
 		run: runRescue, probe: []string{"-h"},
 	},
 	{
-		name: "update", args: "[-vm]", group: groupRepair,
+		name: "update", args: "[-vm | -catalog]", group: groupRepair,
 		synopsis: "update briard's own software, or with -vm the VM it runs apps in, from the release channel now",
 		detail: "Both resolve `stable` (-to takes latest, dev or an exact id). Bare, it updates every briard\n" +
 			"binary this machine runs, inside the VM as well as out: it starts the same update unit the\n" +
@@ -185,7 +185,8 @@ var commands = []command{
 			"starts), or refused and why; it works even when the agent is down. Then, on a machine that\n" +
 			"updates its own OS (no peers, no orchestrator), it takes the VM image that release pairs\n" +
 			"with, and says so on the same line. -vm moves only the VM: it asks the agent to move the OS\n" +
-			"to the release's closure, health-gated, and reports the outcome.",
+			"to the release's closure, health-gated, and reports the outcome. -catalog moves nothing: it\n" +
+			"reads the catalog's list of apps now rather than at its daily read, and says what it lists.",
 		run: runUpdate, probe: []string{"-h"},
 	},
 	{

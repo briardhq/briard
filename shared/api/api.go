@@ -409,6 +409,11 @@ const (
 	//                        tells the household from its own dashboard and alerts when a wished
 	//                        app gains a manifest. Local-only: a wish is the household's, asked
 	//                        from its dashboard. A new wish is also counted with us (Wish).
+	DirectiveCatalogRead = "catalog-read" // No payload. The node reads the catalog's list now,
+	//                                       whatever the age of the copy it holds, and answers with
+	//                                       what it lists; a failed read keeps the copy. For an app
+	//                                       published since the last daily read. Local-only, like
+	//                                       the wish.
 
 	DirectivePair = "pair" // Payload = a JSON MeshSpec: reconcile this node's DRBD to a target mesh
 	//                        (runtime anchor pairing). The serving primary adjusts in place

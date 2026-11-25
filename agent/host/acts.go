@@ -114,6 +114,7 @@ var (
 		api.DirectiveDashboard:   true,
 		api.DirectiveCasaClaim:   true,
 		api.DirectiveCasaRecheck: true,
+		api.DirectiveCatalogRead: true, // one read of the list: up to catalogReadBudget
 		api.DirectiveDebugArm:    true,
 		api.DirectiveDebugDisarm: true,
 	}

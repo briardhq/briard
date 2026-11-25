@@ -65,9 +65,13 @@ var catalogFirstRetry = []time.Duration{10 * time.Second, 30 * time.Second, time
 var wishRetry = []time.Duration{30 * time.Second, 5 * time.Minute}
 
 // catalogCache is the file's shape: the verified bytes kept whole (parsed again on load, so a
-// corrupt cache is an empty one rather than a half-list), and when they were read.
+// corrupt cache is an empty one rather than a half-list), when they were read and from where. The
+// URL is what makes a node pointed at another list read that one at the next tick rather than
+// keep showing the old one for a day; a cache with none was read before it was kept, and is read
+// again once.
 type catalogCache struct {
 	Fetched time.Time       `json:"fetched"`
+	URL     string          `json:"url,omitempty"`
 	Index   json.RawMessage `json:"index"`
 }
 
@@ -154,7 +158,7 @@ func (s *catalogState) refresh(ctx context.Context) {
 	s.mu.Lock()
 	s.load()
 	first := s.c.Fetched.IsZero()
-	due := first || s.now().Sub(s.c.Fetched) >= catalogRefreshEvery
+	due := first || s.c.URL != s.cat.URL || s.now().Sub(s.c.Fetched) >= catalogRefreshEvery
 	s.mu.Unlock()
 	if !due {
 		return
@@ -163,7 +167,7 @@ func (s *catalogState) refresh(ctx context.Context) {
 	if first {
 		waits = s.firstRetry
 	}
-	for i := 0; !s.read(ctx); i++ {
+	for i := 0; s.read(ctx) != nil; i++ {
 		if i >= len(waits) {
 			return
 		}
@@ -176,36 +180,53 @@ func (s *catalogState) refresh(ctx context.Context) {
 	}
 }
 
-// read is one read of the index, kept on success; it reports whether the read landed.
-func (s *catalogState) read(ctx context.Context) bool {
+// read is one read of the index, kept on success; it returns why the read did not land.
+func (s *catalogState) read(ctx context.Context) error {
 	rctx, cancel := context.WithTimeout(ctx, catalogReadBudget)
 	defer cancel()
 	idx, raw, err := s.cat.FetchIndex(rctx)
 	if err != nil {
 		s.logf("catalog: index: %v (keeping what was read before)", err)
-		return false
+		return err
 	}
-	c := catalogCache{Fetched: s.now(), Index: raw}
+	c := catalogCache{Fetched: s.now(), URL: s.cat.URL, Index: raw}
 	out, err := json.Marshal(c)
 	if err != nil {
 		s.logf("catalog: %v", err)
-		return false
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.load() // a read before the first refresh must not be overwritten by the old file later
 	if err := atomicfile.Write(filepath.Join(s.dir, catalogCacheName), out, 0o600, 0o700); err != nil {
 		s.logf("catalog: cache: %v", err)
-		return false
+		return err
 	}
 	s.c, s.idx = c, idx
+	s.logf("catalog: index read: %s", s.listed())
+	return nil
+}
+
+// listed says what the index held: how many apps, how many installable. Held under s.mu.
+func (s *catalogState) listed() string {
 	installable := 0
-	for _, a := range idx.Apps {
+	for _, a := range s.idx.Apps {
 		if a.Available {
 			installable++
 		}
 	}
-	s.logf("catalog: index read: %d apps listed, %d installable", len(idx.Apps), installable)
-	return true
+	return fmt.Sprintf("%d apps listed, %d installable", len(s.idx.Apps), installable)
+}
+
+// readNow is `briard update -catalog`: one read of the list whatever the copy's age, for an app
+// published since the last daily read. A failed read keeps the copy, and says so.
+func (s *catalogState) readNow(ctx context.Context, d api.Directive) api.DirectiveOutcome {
+	if err := s.read(ctx); err != nil {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: fmt.Sprintf("%v (the list read before stands)", err)}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeDone, Detail: fmt.Sprintf("read %s: %s", s.c.URL, s.listed())}
 }
 
 // toggle is the household's "I want this", and its second press: the wish recorded when
@@ -378,6 +399,14 @@ func (cfg Config) applyWish(d api.Directive) api.DirectiveOutcome {
 		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this machine reads no catalog"}
 	}
 	return cfg.catalog.toggle(d)
+}
+
+// applyCatalogRead is the directive's door (dispatch), likewise.
+func (cfg Config) applyCatalogRead(ctx context.Context, d api.Directive) api.DirectiveOutcome {
+	if cfg.catalog == nil {
+		return api.DirectiveOutcome{ID: d.ID, State: api.OutcomeFailed, Detail: "this machine reads no catalog"}
+	}
+	return cfg.catalog.readNow(ctx, d)
 }
 
 // newCatalog builds the node's catalog state where it can exist: a state directory to cache in

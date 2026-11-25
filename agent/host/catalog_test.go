@@ -132,18 +132,121 @@ func TestCatalogRefreshReadsTheIndexAndWhatIsInstallable(t *testing.T) {
 		t.Errorf("the index's text must reach the view: %+v", appOf(t, v, "paperless-ngx"))
 	}
 
-	// The same directory, a catalog that cannot be reached: the cache answers, and nothing is
-	// asked for until the cache is a day old.
-	off := newCatalogState(s.dir, &manifest.Catalog{URL: "http://127.0.0.1:1/catalog/latest.json", Verifier: indexRing{}}, s.logf)
+	// The same directory and list, a catalog that cannot be reached: the cache answers, and
+	// nothing is asked for until the cache is a day old.
+	asked := 0
+	down := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		asked++
+		return nil, errors.New("unreachable")
+	})}
+	off := newCatalogState(s.dir, &manifest.Catalog{URL: cat.URL, Verifier: indexRing{}, Client: down}, s.logf)
 	off.now = s.now
 	off.refresh(ctx)
 	if v2 := off.view(nil); len(v2.Apps) != 2 || !appOf(t, v2, "home-assistant").Available {
 		t.Errorf("the cache must answer with the catalog unreachable: %+v", v2)
 	}
+	if asked != 0 {
+		t.Errorf("a cache under a day old asked the catalog %d times", asked)
+	}
 	*now = now.Add(catalogRefreshEvery)
 	off.refresh(ctx) // due, fails, keeps what it had
+	if asked == 0 {
+		t.Error("a day-old cache must be read again")
+	}
 	if v2 := off.view(nil); len(v2.Apps) != 2 {
 		t.Errorf("a failed read must keep the last index: %+v", v2)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A node pointed at another list reads that one at the next tick, not a day later: the copy says
+// which list it is. A copy kept before it said so is read again once.
+func TestCatalogReadsAgainWhenItsListChanges(t *testing.T) {
+	_, cat1 := newFakeCatalog(t)
+	s, _ := newTestCatalog(t, cat1)
+	ctx := context.Background()
+	s.refresh(ctx)
+	if appOf(t, s.view(nil), "paperless-ngx").Available {
+		t.Fatal("the first list does not offer paperless-ngx")
+	}
+
+	f2, cat2 := newFakeCatalog(t)
+	f2.publish("paperless-ngx")
+	moved := newCatalogState(s.dir, cat2, s.logf)
+	moved.now = s.now
+	moved.refresh(ctx) // the same hour: due only because the list changed
+	if f2.count() != 1 || !appOf(t, moved.view(nil), "paperless-ngx").Available {
+		t.Fatalf("a node pointed at another list must read it at once: %d reads, %+v", f2.count(), moved.view(nil).Apps)
+	}
+	moved.refresh(ctx)
+	if f2.count() != 1 {
+		t.Errorf("once read, the new list waits for its day like any other: %d reads", f2.count())
+	}
+
+	// A copy from before the URL was kept: read again once, then left for its day.
+	raw, err := os.ReadFile(filepath.Join(s.dir, catalogCacheName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := strings.Replace(string(raw), `"url":"`+cat2.URL+`",`, "", 1)
+	if old == string(raw) {
+		t.Fatalf("the copy does not name its list: %s", raw[:80])
+	}
+	if err := os.WriteFile(filepath.Join(s.dir, catalogCacheName), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := f2.count()
+	again := newCatalogState(s.dir, cat2, s.logf)
+	again.now = s.now
+	again.refresh(ctx)
+	again.refresh(ctx)
+	if f2.count() != before+1 {
+		t.Errorf("a copy that names no list is read again once: %d reads", f2.count()-before)
+	}
+}
+
+// `briard update -catalog` reads the list whatever the copy's age and says what it holds; a failed
+// read says why and keeps the copy. Local-only, like the wish.
+func TestCatalogReadNow(t *testing.T) {
+	f, cat := newFakeCatalog(t)
+	s, _ := newTestCatalog(t, cat)
+	ctx := context.Background()
+	s.refresh(ctx)
+	f.publish("paperless-ngx")
+	s.refresh(ctx)
+	if appOf(t, s.view(nil), "paperless-ngx").Available {
+		t.Fatal("a fresh copy is not read again on its own; this test would prove nothing")
+	}
+
+	cfg := Config{catalog: s}
+	o := cfg.dispatch(ctx, api.Directive{ID: "c1", Kind: api.DirectiveCatalogRead}, originLocal, nil, nil, nil, nil, nil, nil, s.logf)
+	if o.State != api.OutcomeDone || o.ID != "c1" || !strings.Contains(o.Detail, "2 apps listed, 2 installable") || !strings.Contains(o.Detail, cat.URL) {
+		t.Fatalf("read now = %+v", o)
+	}
+	if !appOf(t, s.view(nil), "paperless-ngx").Available {
+		t.Error("the list read now must be the one the page shows")
+	}
+
+	f.mu.Lock()
+	f.fail = 1
+	f.mu.Unlock()
+	o = cfg.dispatch(ctx, api.Directive{ID: "c2", Kind: api.DirectiveCatalogRead}, originLocal, nil, nil, nil, nil, nil, nil, s.logf)
+	if o.State != api.OutcomeFailed || !strings.Contains(o.Detail, "the list read before stands") {
+		t.Errorf("a failed read now = %+v", o)
+	}
+	if !appOf(t, s.view(nil), "paperless-ngx").Available {
+		t.Error("a failed read must keep the copy")
+	}
+
+	o = Config{}.dispatch(ctx, api.Directive{ID: "c3", Kind: api.DirectiveCatalogRead}, originLocal, nil, nil, nil, nil, nil, nil, s.logf)
+	if o.State != api.OutcomeFailed || o.Detail != "this machine reads no catalog" {
+		t.Errorf("a node without a catalog = %+v", o)
+	}
+	if !localOnlyKinds[api.DirectiveCatalogRead] || !offLoopPulls[api.DirectiveCatalogRead] {
+		t.Error("catalog-read is the household's, asked off the loop")
 	}
 }
 
@@ -457,4 +560,11 @@ func TestCatalogViewOffersAnUpdate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// count is how many reads of the list the catalog has answered.
+func (f *fakeCatalog) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
 }

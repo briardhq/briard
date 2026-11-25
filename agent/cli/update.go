@@ -12,7 +12,8 @@ import (
 	"briard.io/shared/api"
 )
 
-// runUpdate is `briard update` and `briard update -vm`: the human trigger of each release chain.
+// runUpdate is `briard update` and `briard update -vm`: the human trigger of each release chain;
+// and `briard update -catalog` (readCatalog), the list of apps read now.
 //
 // The verb names the chain, and the chain is the upgrade unit, not the side. Every briard binary
 // the machine runs -- the agent, net-wrap, qemu and the guest's own binaries -- rides the briard
@@ -51,17 +52,21 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs := flag.NewFlagSet("briard update", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	vm := fs.Bool("vm", false, "update the VM briard runs apps in, instead of briard itself")
+	catalog := fs.Bool("catalog", false, "read the catalog's list of apps now, instead of updating briard")
 	base := fs.String("base", envOr("UPDATE_BASE", selfupdate.DefaultBase), "briard: where the committed agent lives")
 	run := fs.String("run", envOr("UPDATE_RUN_DIR", selfupdate.DefaultRunDir), "briard: the dir the update messages pass through")
 	unit := fs.String("unit", selfupdate.DefaultUpdateUnit, "briard: the update unit to start")
-	sock := fs.String("sock", sockDefault(), "-vm: the agent's admin socket")
+	sock := fs.String("sock", sockDefault(), "-vm, -catalog: the agent's admin socket")
 	target := fs.String("to", install.TargetStable, "the release to converge to: stable, latest, dev, or an exact id")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage: briard update [-vm] [options]\n\nOptions:\n")
+		fmt.Fprintf(stderr, "Usage: briard update [-vm | -catalog] [options]\n\nOptions:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *catalog {
+		return readCatalog(ctx, fs, *vm, *sock, stdout, stderr)
 	}
 	// No positional word at all: the chain is the flag, so a word here (`self`, `vm`, `host`,
 	// `guest`) is refused rather than guessed at.
@@ -101,6 +106,39 @@ func runUpdate(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintf(stderr, "briard update -vm: %s\n", o.Detail)
 		return 1
 	}
+}
+
+// readCatalog is `briard update -catalog`: the list the node reads once a day, read now. It has no
+// release to converge to -- which list a node reads is its CATALOG_URL, a setting, not something
+// one update moves -- so -to is refused rather than ignored, as is -vm beside it.
+func readCatalog(ctx context.Context, fs *flag.FlagSet, vm bool, sock string, stdout, stderr io.Writer) int {
+	bad := ""
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "to" {
+			bad = "-catalog reads the list this machine is set to read; it takes no -to"
+		}
+	})
+	switch {
+	case vm:
+		bad = "-catalog and -vm are two updates; ask for one at a time"
+	case fs.NArg() != 0:
+		bad = fmt.Sprintf("unexpected argument %q", fs.Arg(0))
+	}
+	if bad != "" {
+		fmt.Fprintf(stderr, "briard update: %s\n", bad)
+		return 2
+	}
+	o, err := submit(ctx, sock, api.Directive{Kind: api.DirectiveCatalogRead})
+	if err != nil {
+		fmt.Fprintf(stderr, "briard: %v\n", err)
+		return 1
+	}
+	if o.State != api.OutcomeDone {
+		fmt.Fprintf(stderr, "briard update -catalog: %s\n", o.Detail)
+		return 1
+	}
+	fmt.Fprintln(stdout, o.Detail)
+	return 0
 }
 
 func envOr(key, def string) string {

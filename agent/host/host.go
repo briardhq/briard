@@ -1829,6 +1829,7 @@ var localOnlyKinds = map[string]bool{
 	api.DirectiveCasaClaim:     true, // the household claims its own name; the cloud never does
 	api.DirectiveCasaRecheck:   true, // ...and asks again whether its network resolves it
 	api.DirectiveWish:          true, // ...and wishes for an app from its own page; the cloud only counts it
+	api.DirectiveCatalogRead:   true, // ...and reads the catalog's list now
 	api.DirectiveConfigSet:     true, // ...and changes its own settings: the address, the backup's
 	api.DirectiveStop:          true, // ...and brings its own node down
 	api.DirectiveStatus:        true, // ...and asks how it is, as doctor does
@@ -1893,6 +1894,9 @@ func (cfg Config) dispatch(ctx context.Context, d api.Directive, o origin, r gue
 	}
 	if d.Kind == api.DirectiveWish {
 		return cfg.applyWish(d)
+	}
+	if d.Kind == api.DirectiveCatalogRead {
+		return cfg.applyCatalogRead(ctx, d)
 	}
 	if d.Kind == api.DirectiveBackupNow {
 		return cfg.applyBackupNow(ctx, d)
