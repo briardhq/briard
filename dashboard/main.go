@@ -217,6 +217,9 @@ type app struct {
 	// Mealie's container in a test, podman otherwise.
 	mealieMu   sync.Mutex
 	mealieExec func(ctx context.Context, stdin string, args ...string) ([]byte, error)
+	// navidromeExec runs a command in Navidrome's container in a test, podman otherwise
+	// (navidrome.go).
+	navidromeExec func(ctx context.Context, args ...string) ([]byte, error)
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {

@@ -207,7 +207,7 @@ func TestNavidromesCardOpensItAndSaysWhereThePhonePasswordIs(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(r.dir, "routes.json"), raw, 0o644))
 	c := r.trust()
 	_, body := get(t, r, "/apps", c)
-	for _, want := range []string{`href="/open/navidrome" target="_blank"`, "leaving “Current Password” empty the first time", "signs in as owner"} {
+	for _, want := range []string{`href="/open/navidrome" target="_blank"`, "leaving “Current Password” empty the first time", "signs in with that username"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Navidrome's card lacks %q", want)
 		}

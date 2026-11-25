@@ -40,6 +40,10 @@ const (
 // through Files or the drive.
 const Music = "music"
 
+// Container is the catalog's name for Navidrome's one container, which the dashboard runs
+// Navidrome's own tool in to read its accounts.
+const Container = "app"
+
 // Open are the paths the reverse proxy forwards without the dashboard's session: the Subsonic
 // API, which a phone's client calls with the username and Navidrome's own password. Never /auth,
 // where anyone could make the first admin of a Navidrome with no user yet, and never /share,

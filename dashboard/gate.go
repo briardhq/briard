@@ -27,6 +27,7 @@ import (
 
 	"briard.io/agent/files"
 	"briard.io/agent/mealie"
+	"briard.io/agent/navidrome"
 	"briard.io/shared/casa"
 	"briard.io/shared/routes"
 )
@@ -128,10 +129,10 @@ func (a *app) gateRedeem(w http.ResponseWriter, r *http.Request) {
 
 // gateCheck says whether a session token is still a trusted device's, and whose, for the app the
 // reverse proxy names: 200 with the username the reverse proxy signs into the app -- the one
-// fixed name (agent/files) for Files and Navidrome, or the one Mealie's accounts say (mealie.go);
-// 401 not a trusted device; 409 a trusted device with no record, which only an open writes and
-// Mealie's first account takes its name from; 503 an app still starting, or with no account of
-// the user's to open.
+// fixed name (agent/files) for Files, or the one the app's own accounts say for Mealie
+// (mealie.go) and Navidrome (navidrome.go); 401 not a trusted device; 409 a trusted device with
+// no record, which only an open writes and an app's first account takes its name from; 503 an
+// app still starting, or with no account of the user's to open.
 func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 	if viaProxy(r) {
 		http.NotFound(w, r)
@@ -145,16 +146,21 @@ func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	// Mealie's user is the one Mealie's own accounts say, read at every check (mealie.go).
+	// Mealie's and Navidrome's user is the one the app's own accounts say, read at every check
+	// (mealie.go, navidrome.go).
 	user := files.User
-	if app := r.URL.Query().Get("app"); app == mealie.Name {
-		if s, ok := gatedApps(a.routesPath)[app]; ok {
-			var err error
-			if user, err = a.mealieUser(r.Context(), s); err != nil {
-				log.Printf("dashboard: find the user's account in Mealie: %v", err)
-				http.Error(w, err.Error(), http.StatusServiceUnavailable)
-				return
-			}
+	app := r.URL.Query().Get("app")
+	if s, ok := gatedApps(a.routesPath)[app]; ok && (app == mealie.Name || app == navidrome.Name) {
+		var err error
+		if app == mealie.Name {
+			user, err = a.mealieUser(r.Context(), s)
+		} else {
+			user, err = a.navidromeUser(r.Context())
+		}
+		if err != nil {
+			log.Printf("dashboard: find the user's account in %s: %v", app, err)
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
 		}
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
