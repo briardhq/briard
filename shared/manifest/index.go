@@ -14,8 +14,10 @@ import (
 
 // The catalog's list is what a household can see: the apps it can install today and the ones it
 // may ask for. A node reads one, `latest.json` (each app's newest version), at its CATALOG_URL,
-// with a detached signature over the same bytes made by the release key; rigs read `dev.json`,
-// the same shape. It is the only signed document in the catalog: a line names an app's version
+// with a detached signature over the same bytes made by the release key. Two more lists have the
+// same shape and are signed by a development key no shipped keyring holds: `candidates.json`,
+// which the catalog's test rigs install from, and `dev.json`, which a developer's machine reads.
+// A list is the only signed document in the catalog: a line names an app's version
 // file beside it, `<name>/<version>.json`, by the sha256 of its exact bytes, so a mirror that
 // cannot forge the signature can forge neither the list nor any manifest it names.
 //
