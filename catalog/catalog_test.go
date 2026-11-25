@@ -26,6 +26,7 @@ import (
 	"briard.io/agent/hass"
 	"briard.io/agent/mealie"
 	"briard.io/agent/mosquitto"
+	"briard.io/agent/navidrome"
 	"briard.io/shared/manifest"
 )
 
@@ -242,6 +243,39 @@ func TestMealieEntryMatchesWhatTheProductAssumes(t *testing.T) {
 		for _, owned := range []string{"ALLOW_PASSWORD_LOGIN", "REVERSE_PROXY_AUTH", "BASE_URL", "OIDC_", "LDAP_", "ALLOW_SIGNUP"} {
 			if strings.HasPrefix(k, owned) {
 				t.Errorf("Mealie's entry sets %s, which would overrule what briard tells it", k)
+			}
+		}
+	}
+}
+
+// Navidrome's entry is what agent/navidrome configures: it reads the settings file written into
+// its own directory, its library is the files-tier folder the registry names as the household's,
+// and it is reached only through the reverse proxy, which it trusts by address -- so private, with
+// nothing published. None of the settings briard writes is set in the entry, because Navidrome
+// lets an environment variable win over its settings file. And it names the oldest briard that
+// configures it: an older one would run it ungated, its first-admin form open to the LAN.
+func TestNavidromeEntryMatchesWhatTheProductAssumes(t *testing.T) {
+	m, _, err := manifest.Parse(current(t, navidrome.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.HostNetwork() || len(m.Ports) != 0 {
+		t.Errorf("Navidrome is reachable other than through the reverse proxy: network %q, ports %v", m.Network, m.Ports)
+	}
+	if m.MinBriard == "" {
+		t.Error("Navidrome names no minBriard: a briard that predates it would run it ungated")
+	}
+	p := m.Primary()
+	if got, want := p.Env["ND_CONFIGFILE"], apps.AppMount+"/navidrome.toml"; got != want || navidrome.ConfigPath != apps.AppDir(navidrome.Name)+"/navidrome.toml" {
+		t.Errorf("Navidrome reads its settings from %q; agent/navidrome writes them at %q", got, navidrome.ConfigPath)
+	}
+	if !slices.Contains(p.Mounts, manifest.Mount{Tier: manifest.TierFiles, Dir: navidrome.Music, Path: "/music"}) || p.Env["ND_MUSICFOLDER"] != "" {
+		t.Errorf("Navidrome's library is not the files-tier %q at the image's /music: %v", navidrome.Music, p.Mounts)
+	}
+	for k := range p.Env {
+		for _, owned := range []string{"ND_EXTAUTH", "ND_REVERSEPROXY", "ND_ENABLEINSIGHTSCOLLECTOR", "ND_ENABLESHARING"} {
+			if strings.HasPrefix(k, owned) {
+				t.Errorf("Navidrome's entry sets %s, which would overrule what briard tells it", k)
 			}
 		}
 	}

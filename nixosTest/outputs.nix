@@ -128,6 +128,11 @@ let
   # ordinary Mealie.
   mealieFixture = import ./catalog-fixture.nix { inherit pkgs catalog; app = "mealie"; };
   mealieTest = import ./mealie.nix { inherit pkgs guestModule mealieFixture; };
+  # Navidrome as a catalogued app, on a lone node with a LAN host beside it: its settings from its
+  # own directory, the user signed in by header from the reverse proxy's address alone, its
+  # Subsonic API open to its own password, and its library filled from outside the container.
+  navidromeFixture = import ./catalog-fixture.nix { inherit pkgs catalog; app = "navidrome"; };
+  navidromeTest = import ./navidrome.nix { inherit pkgs guestModule navidromeFixture; };
   # Two apps on one node: both converge, upgrading one leaves the other alone, the rollback
   # point restores only what moved, and a failover carries both.
   appsPair = import ./apps-pair.nix {
@@ -467,6 +472,7 @@ in
       apps-pair = appsPair; # two apps: upgrade one, the other keeps serving
       files = filesTest; # every app's directories, through the reverse proxy, signed in by the dashboard
       mealie = mealieTest; # recipes, signed in by the reverse proxy by header, never locked in
+      navidrome = navidromeTest; # music, signed in by the reverse proxy's address, its API open to phones
     };
     # Each app's contract: the tests of Briard's own code for one catalogued app (agent/hass,
     # agent/mosquitto, its agent/apps entry), on the entry the catalog ships. The tier runs them
@@ -481,6 +487,9 @@ in
     };
     app-files = {
       files = filesTest;
+    };
+    app-navidrome = {
+      navidrome = navidromeTest;
     };
     app-mealie = {
       mealie = mealieTest;
