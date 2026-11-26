@@ -510,7 +510,7 @@ var galleryStates = []galleryState{
 			notInstalled(t, r)
 			return apps(t, r, c, port)
 		}},
-	{"apps-wished", "A coming-soon app the household asked for: the wish recorded, the button now takes it back.",
+	{"apps-wished", "A coming-soon app the household asked for: its I want this pressed (filled), which pressed again takes the wish back; the other one not.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			r.wished(t, "paperless-ngx", true)

@@ -90,7 +90,7 @@ func TestCardsAreBuiltFromTheIndex(t *testing.T) {
 	body := html.UnescapeString(r.get(t, "/apps", c)) // the data URI's + is an entity in the attribute, as a browser reads it back
 	for _, want := range []string{"Smart home control", "Smart device messaging", "The message broker many smart devices",
 		`<img class="app-icon" src="` + testIcon + `"`, "Coming soon", "Document management system", "I want this",
-		"tells the Briard team which app you want", `href="https://docs.paperless-ngx.com"`} {
+		`aria-pressed="false">I want this</button>`, `href="https://docs.paperless-ngx.com"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("apps page lacks %q", want)
 		}
@@ -107,8 +107,9 @@ func TestCardsAreBuiltFromTheIndex(t *testing.T) {
 }
 
 // "I want this" relays one wish directive to the host, waits for the view it pushes back, and
-// answers the one card -- recorded -- when the page's script asks; the second press is the same
-// relay and the card returns to its first state. Without the script the page is reloaded.
+// answers the one card -- its button pressed -- and the dialog that says where the wish went, when
+// the page's script asks; the second press is the same relay and the card returns to its first
+// state. Without the script the page is reloaded.
 func TestComingSoonWishIsRelayedAndTheCardFollowsTheHost(t *testing.T) {
 	r := newRig(t)
 	r.app.viewWait = 2 * time.Second
@@ -133,7 +134,7 @@ func TestComingSoonWishIsRelayedAndTheCardFollowsTheHost(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || strings.Contains(card, "<html") {
 		t.Fatalf("the hx answer = %d, a whole page? %s", resp.StatusCode, card)
 	}
-	for _, want := range []string{"Your wish is recorded. Briard will notify you when this app becomes available.", "Never mind", "Paperless-ngx"} {
+	for _, want := range []string{`aria-pressed="true">I want this</button>`, "Paperless-ngx", `<dialog class="dialog" aria-labelledby="wish-title">`, "Your wish was sent to the Briard team. Briard will notify you when this app becomes available."} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the wished card lacks %q: %s", want, card)
 		}
@@ -144,9 +145,9 @@ func TestComingSoonWishIsRelayedAndTheCardFollowsTheHost(t *testing.T) {
 	if len(asked) != 1 || asked[0].Kind != api.DirectiveWish || asked[0].Payload != "paperless-ngx" {
 		t.Fatalf("asked the host %+v; want one wish for paperless-ngx", asked)
 	}
-	// The whole page agrees with the card.
-	if body := r.get(t, "/apps", c); !strings.Contains(body, "Your wish is recorded") {
-		t.Error("the apps page does not show the wish")
+	// The whole page agrees with the card, and says the wish once only: the dialog was the answer's.
+	if body := r.get(t, "/apps", c); strings.Count(body, `aria-pressed="true"`) != 1 || strings.Contains(body, "<dialog") || strings.Contains(body, "anonymous code") {
+		t.Error("the apps page does not show the wish as the pressed button alone")
 	}
 	// The second press, as a plain form post: the host removes it, the page reloads.
 	go func() {
@@ -159,7 +160,7 @@ func TestComingSoonWishIsRelayedAndTheCardFollowsTheHost(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("a plain press = %d; want 303 back to the page", resp.StatusCode)
 	}
-	if body := r.get(t, "/apps", c); strings.Contains(body, "Your wish is recorded") || !strings.Contains(body, "I want this") {
+	if body := r.get(t, "/apps", c); strings.Contains(body, `aria-pressed="true"`) || !strings.Contains(body, "I want this") {
 		t.Error("the apps page still shows the wish after the second press")
 	}
 	// An app the index does not list has no button to press.
@@ -182,7 +183,7 @@ func TestAWishTheHostRefusedChangesNothing(t *testing.T) {
 	resp, err := noRedirect.Do(req)
 	must(t, err)
 	card := bodyOf(t, resp)
-	if strings.Contains(card, "Your wish is recorded") || !strings.Contains(card, "I want this") {
+	if strings.Contains(card, `aria-pressed="true"`) || strings.Contains(card, "<dialog") || !strings.Contains(card, "I want this") {
 		t.Errorf("a refused wish shows as recorded: %s", card)
 	}
 }
@@ -314,5 +315,28 @@ func TestAnOfferedUpdateIsShownPressedAndTaken(t *testing.T) {
 	r.hostLists(t, offering(false))
 	if body = r.page(c); strings.Contains(body, "Update available") || strings.Contains(body, "The update did not finish") {
 		t.Errorf("once the host's view drops the offer the card is the ordinary one: %s", body)
+	}
+}
+
+// The browser's half of a wish: "I want this" pressed on the Apps page comes back as the card with
+// its button pressed and, beside it, the dialog that says where the wish went, which the page's
+// dialog line opens over the page. Skipped unless DASHBOARD_BROWSER names a chromium.
+func TestAWishOpensItsDialogInABrowser(t *testing.T) {
+	chromium := os.Getenv("DASHBOARD_BROWSER")
+	if chromium == "" {
+		t.Skip("set DASHBOARD_BROWSER=<chromium> to prove the wish's dialog in a browser")
+	}
+	press := `document.querySelector('form[action="/wish/paperless-ngx"] button').click()`
+	dom := dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)})`,
+		func(r *rig, port *fakePort) {
+			r.app.viewWait = 2 * time.Second
+			go func() {
+				<-port.waiting
+				r.wished(t, "paperless-ngx", true)
+				port.answer <- api.DirectiveOutcome{State: api.OutcomeDone, Detail: "the wish for Paperless-ngx is recorded"}
+			}()
+		})
+	if !strings.Contains(dom, `<dialog class="dialog" aria-labelledby="wish-title" open="">`) || !strings.Contains(dom, `aria-pressed="true">I want this</button>`) {
+		t.Errorf("the wish did not come back as the pressed button and an open dialog: %s", dom)
 	}
 }

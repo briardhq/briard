@@ -35,10 +35,11 @@ const drawerScript = "var s=document.querySelector('.sidebar'),m=matchMedia('(mi
 	"s.addEventListener('click',function(e){if(e.target===s)fit()});" +
 	"document.addEventListener('keydown',function(e){if(e.key==='Escape')fit()})"
 
-// dialogScript opens a dialog htmx adds to the page ("On your phone", phone.go) as a modal --
-// over the page, closed by its button, Escape or a click outside it (a click on the backdrop is
-// the dialog's own) -- and takes it off the page once closed, so the next press adds a fresh
-// one. Without it the button's form posts and the fields are a page.
+// dialogScript opens a dialog htmx adds to the page ("On your phone", phone.go; a new wish,
+// catalog.go) as a modal -- over the page, closed by its button, Escape or a click outside it (a
+// click on the backdrop is the dialog's own) -- and takes it off the page once closed, so the
+// next press adds a fresh one. Without it the button's form posts, and "On your phone"'s fields
+// are a page.
 const dialogScript = "document.addEventListener('htmx:load',function(e){var d=e.detail.elt;if(d.tagName!=='DIALOG')return;" +
 	"d.addEventListener('close',function(){d.remove()});d.addEventListener('click',function(e){if(e.target===d)d.close()});d.showModal()})"
 

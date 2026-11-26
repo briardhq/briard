@@ -287,11 +287,11 @@ func TestOnYourPhoneOpensADialogInABrowser(t *testing.T) {
 	// Once the dialog is on the page and open (the page's own line runs first): a click on it, not
 	// on what it holds, is a click on the backdrop.
 	outside := `document.addEventListener('htmx:load',function(e){var d=e.detail.elt;if(d.tagName==='DIALOG')setTimeout(function(){document.body.setAttribute('data-clicked',d.open);d.dispatchEvent(new MouseEvent('click',{bubbles:true}))},100)});`
-	dom := dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)})`)
+	dom := dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)})`, nil)
 	if !strings.Contains(dom, `<h2 class="group-title">Installed</h2>`) || !strings.Contains(dom, `<dialog class="dialog" aria-labelledby="phone-title" open="">`) || len(keys(dom)) != 3 {
 		t.Errorf("the Apps page has no open dialog with the three fields: %s", dom)
 	}
-	dom = dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)});`+outside)
+	dom = dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)});`+outside, nil)
 	// Closed, not yet gone: headless chromium on a virtual clock never fires a dialog's close
 	// event, which takes it off the page, so the dump still holds it, shut.
 	if !strings.Contains(dom, `<h2 class="group-title">Installed</h2>`) || !strings.Contains(dom, `data-clicked="true"`) || strings.Contains(dom, `open=""`) {
@@ -300,12 +300,16 @@ func TestOnYourPhoneOpensADialogInABrowser(t *testing.T) {
 }
 
 // dialogInBrowser is the Apps page, with Navidrome installed, as a browser leaves it once script
-// has run in it, under the page's own policy and script's hash.
-func dialogInBrowser(t *testing.T, chromium, script string) string {
+// has run in it, under the page's own policy and script's hash; host, when given, plays the host
+// behind the admin port.
+func dialogInBrowser(t *testing.T, chromium, script string, host func(*rig, *fakePort)) string {
 	t.Helper()
-	r, _, _ := galleryRig(t)
+	r, _, port := galleryRig(t)
 	everyday(t, r)
 	installNavidrome(t, r)
+	if host != nil {
+		host(r, port)
+	}
 	// The browser redeems its own code: a fresh handoff, since the rig's cookie spent the first.
 	raw, _ := json.Marshal(dashboard.Handoff{Code: "browser-code", Issued: r.app.now()})
 	must(t, os.WriteFile(r.app.handoffPath, raw, 0o600))

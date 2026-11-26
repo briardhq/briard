@@ -82,7 +82,8 @@ func (a *app) appTitle(name string) string {
 
 // requestWish is the button on a coming-soon card, and its second press: one wish directive to
 // the host, then the view it pushed back, then the card as it stands now. With the page's
-// script running (an htmx request) the answer is the one card; without it the page reloads.
+// script running (an htmx request) the answer is the one card, and a new wish's dialog beside it;
+// without it the page reloads.
 func (a *app) requestWish(w http.ResponseWriter, r *http.Request, name string) {
 	before := a.listed(name)
 	if before == nil {
@@ -119,6 +120,14 @@ func (a *app) requestWish(w http.ResponseWriter, r *http.Request, name string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := page.ExecuteTemplate(w, tmpl, av); err != nil {
 		log.Printf("dashboard: wish card: %v", err)
+	}
+	// A wish just recorded is said once, in a dialog beside the card, which the page's dialog line
+	// opens as htmx adds it: where the wish went and what comes of it. A wish taken back, or one the
+	// host did not record, is answered by the card alone.
+	if tmpl == "soon-card" && av.Wished && !before.Wished {
+		if err := page.ExecuteTemplate(w, "wish-dialog", av); err != nil {
+			log.Printf("dashboard: wish dialog: %v", err)
+		}
 	}
 }
 

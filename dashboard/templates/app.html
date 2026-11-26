@@ -96,16 +96,17 @@
     {{with .Homepage}}<a class="btn" data-variant="ghost" href="{{.}}" target="_blank" rel="noopener">About</a>{{end}}</footer></div>
 {{end}}
 
-{{/* THE COMING-SOON CARD: an app the catalog lists and cannot install yet. One button records
-     the household's wish on this machine and counts it with us; pressed again, it takes the wish
-     back. The line before the press says what is sent, because the press sends it. */}}
+{{/* THE COMING-SOON CARD: an app the catalog lists and cannot install yet. "I want this" records
+     the household's wish on this machine and counts it with us; it stays pressed (filled) while
+     the wish stands, and pressed again it takes the wish back. A new wish is answered with the
+     dialog below as well (catalog.go), which says where it went. */}}
 {{define "soon-card"}}
   <div class="card"><header><h2>{{template "app-title" .}}</h2>{{with .Functionality}}<p>{{.}}</p>{{end}}</header>
-    <section><p>{{.Description}}</p>
-    {{if .Wished}}<p class="ok">Your wish is recorded. Briard will notify you when this app becomes available.</p>{{else}}<p class="note">Pressing it also tells the Briard team which app you want, with an anonymous code that counts your home once.</p>{{end}}</section>
-    <footer><form method="post" action="/wish/{{.Name}}" hx-post="/wish/{{.Name}}" hx-target="closest .card" hx-swap="outerHTML"><button type="submit" class="btn" data-variant="{{if .Wished}}ghost{{else}}outline{{end}}">{{if .Wished}}Never mind{{else}}I want this{{end}}</button></form>
+    <section><p>{{.Description}}</p></section>
+    <footer><form method="post" action="/wish/{{.Name}}" hx-post="/wish/{{.Name}}" hx-target="closest .card" hx-swap="outerHTML"><button type="submit" class="btn"{{if .Wished}} aria-pressed="true"{{else}} data-variant="outline" aria-pressed="false"{{end}}>I want this</button></form>
     {{with .Homepage}}<a class="btn" data-variant="ghost" href="{{.}}" target="_blank" rel="noopener">About</a>{{end}}</footer></div>
 {{end}}
+{{define "wish-dialog"}}<dialog class="dialog" aria-labelledby="wish-title"><div><header><h2 id="wish-title">{{.Title}}</h2></header><section><p>Your wish was sent to the Briard team. Briard will notify you when this app becomes available.</p></section><footer><form method="dialog"><button type="submit" class="btn" autofocus>Done</button></form></footer></div></dialog>{{end}}
 
 {{/* THE APP PAGE: the card as the home shows it, what the app is, and its history. */}}
 {{define "app-page"}}{{template "head" (shell "apps" false)}}
