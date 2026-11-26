@@ -487,6 +487,24 @@ var galleryStates = []galleryState{
 			everyday(t, r)
 			return apps(t, r, c, port)
 		}},
+	{"home-phone", "Navidrome installed beside Home Assistant: its row has the phone between Open and the chevron, and Home Assistant's keeps the phone's place, so the chevrons line up.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			installNavidrome(t, r)
+			return home(t, r, c, port)
+		}},
+	{"apps-phone", "The apps page with Navidrome: On your phone beside its Open.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			installNavidrome(t, r)
+			return apps(t, r, c, port)
+		}},
+	{"phone", "On your phone without a script: the address, username and password as a page (with one, the same fields are a dialog over the page). The first press replaced Navidrome's generated password with three words.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			installNavidrome(t, r)
+			return "/phone/navidrome?", c
+		}},
 	{"apps-first-run", "The apps page before anything is installed: both available, two coming soon.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			notInstalled(t, r)
@@ -704,9 +722,9 @@ func TestGallery(t *testing.T) {
 			path, cookie := s.render(t, r, c, port)
 			method := "GET"
 			var body io.Reader
-			if p, form, ok := strings.Cut(path, "?"); ok && (p == "/undo" || p == "/uninstall") {
-				// A confirm page answers a POST; the form is carried in the query here only
-				// to keep the table's shape.
+			if p, form, ok := strings.Cut(path, "?"); ok && (p == "/undo" || p == "/uninstall" || strings.HasPrefix(p, "/phone/")) {
+				// A confirm page and On your phone answer a POST; the form is carried in the
+				// query here only to keep the table's shape.
 				method, body, path = "POST", strings.NewReader(form), p
 			}
 			req, _ := http.NewRequest(method, r.srv.URL+path, body)

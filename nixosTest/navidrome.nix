@@ -15,7 +15,9 @@
 #      gateway's), Navidrome refuses it and says from where;
 #   4. the Subsonic API is open and signs nobody in: through the reverse proxy the user header is
 #      taken off (at the pod, from the gateway, it would sign in), and Navidrome's own password,
-#      set in its profile without the current one, is what a phone's client signs in with;
+#      as the dashboard's "On your phone" shows it (the generated one replaced by three words, read
+#      back off Navidrome's database by the sqlite3 in its container, through its API from the guest),
+#      is what a phone's client signs in with;
 #   5. music written into the library from another mount namespace, as the drive writes it, is in
 #      the library within seconds, without a full scan;
 #   6. a rename inside Navidrome is followed: once the reverse proxy's answer has run out, its next
@@ -150,15 +152,18 @@ pkgs.testers.runNixOSTest {
     code, _, body = through_proxy(ping, app_cookie, "-H 'X-Forwarded-User: kostas'")
     assert code == 200 and status(body) == "failed", f"the open path signed someone in: {code} {body}"
 
-    # (4) The phone's password, set in Navidrome's profile without the current one.
-    users = json.loads(through_proxy("/api/user", app_cookie)[2])
-    me = next(u for u in users if u["userName"] == "kostas")
-    put = json.dumps({"id": me["id"], "userName": "kostas", "name": me["name"], "email": me["email"], "isAdmin": True, "password": "phone-pass-1"})
-    code, _, body = through_proxy(f"/api/user/{me['id']}", app_cookie, f"-X PUT -H 'Content-Type: application/json' -d {shlex.quote(put)}")
-    assert code == 200, f"setting the password answered {code}: {body}"
+    # (4) The phone's password, as the dashboard's "On your phone" shows it: the one Navidrome
+    # generated replaced by three words and read back off its database, the same at the next press.
+    press = lambda: through_proxy("/phone/navidrome", session, "-X POST -H 'HX-Request: true'", host="briard.local")
+    code, _, body = press()
+    keys = re.findall(r'<p class="key">([^<]*)</p>', body)
+    assert code == 200 and len(keys) == 3 and keys[:2] == ["http://" + ND, "kostas"], f"On your phone answered {code}: {body}"
+    phone_pass = keys[2]
+    assert re.fullmatch(r"[a-z]+(-[a-z]+){2,3}", phone_pass), f"the password is not three words: {phone_pass!r}"
+    assert re.findall(r'<p class="key">([^<]*)</p>', press()[2]) == keys, "a second press showed something else"
     salt = "c19b2d"
-    token = hashlib.md5(("phone-pass-1" + salt).encode()).hexdigest()
-    for creds in ["u=kostas&p=phone-pass-1", f"u=kostas&t={token}&s={salt}"]:
+    token = hashlib.md5((phone_pass + salt).encode()).hexdigest()
+    for creds in [f"u=kostas&p={phone_pass}", f"u=kostas&t={token}&s={salt}"]:
         code, _, body = through_proxy(ping + "&" + creds)
         assert code == 200 and status(body) == "ok", f"{creds}: {code} {body}"
     code, _, body = through_proxy(ping + "&u=kostas&p=wrong")
@@ -167,11 +172,12 @@ pkgs.testers.runNixOSTest {
     # (5) An album written from another mount namespace is in the library within seconds.
     music = "/var/lib/briard/files/navidrome/music"
     node1.succeed(f"podman run --rm -v {music}:/out --entrypoint sh {image} -c 'mkdir -p /out/Briard && ffmpeg -loglevel error -f lavfi -i sine=d=3 -metadata title=Hello -metadata artist=Briard -metadata album=Test /out/Briard/hello.mp3'")
-    search = "/rest/search3.view?v=1.16.1&c=test&f=json&u=kostas&p=phone-pass-1&query=Hello"
+    search = f"/rest/search3.view?v=1.16.1&c=test&f=json&u=kostas&p={phone_pass}&query=Hello"
     node1.wait_until_succeeds(f"curl -fsS -H 'Host: {ND}' 'http://{VIP}{search}' | grep -q '\"title\":\"Hello\"'", timeout=60)
 
     # (6) A rename inside Navidrome is followed once the reverse proxy's answer has run out (half
     # a minute), with the same cookie, and no account is made on the way.
+    me = next(u for u in json.loads(through_proxy("/api/user", app_cookie)[2]) if u["userName"] == "kostas")
     put = json.dumps({"id": me["id"], "userName": "kc", "name": me["name"], "email": me["email"], "isAdmin": True})
     code, _, body = through_proxy(f"/api/user/{me['id']}", app_cookie, f"-X PUT -H 'Content-Type: application/json' -d {shlex.quote(put)}")
     assert code == 200, f"the rename answered {code}: {body}"

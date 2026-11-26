@@ -19,7 +19,7 @@
 // writes, as the reverse proxy does, so the two cannot disagree about where an app is.
 //
 // Deliberately plain: templates, one stylesheet and one loaded script (htmx, which polls a card
-// while it moves) beside two inline lines (fragment.go), built ahead of time (static/build.sh)
+// while it moves) beside three inline lines (fragment.go), built ahead of time (static/build.sh)
 // and embedded, nothing fetched at run time -- it has to render on a node with no internet, and
 // it is a supervisor next to Home Assistant, not a rival to it.
 package main
@@ -85,7 +85,7 @@ const htmxPath = "/htmx-2.0.11.min.js"
 var images embed.FS
 
 var page = template.Must(template.New("").Funcs(template.FuncMap{
-	"shell": shellOf, "theme": theme, "drawer": drawer, "htmx": func() string { return htmxPath },
+	"shell": shellOf, "theme": theme, "drawer": drawer, "dialog": dialog, "htmx": func() string { return htmxPath },
 }).ParseFS(pageFS, "templates/*.html"))
 
 // shellView is what the shell renders around a page: the section the sidebar marks current
@@ -218,8 +218,10 @@ type app struct {
 	mealieMu   sync.Mutex
 	mealieExec func(ctx context.Context, stdin string, args ...string) ([]byte, error)
 	// navidromeExec runs a command in Navidrome's container in a test, podman otherwise
-	// (navidrome.go).
+	// (navidrome.go). navidromeMu holds a second "On your phone" while the first reads or
+	// replaces the password, so two presses never set two passwords and show one.
 	navidromeExec func(ctx context.Context, args ...string) ([]byte, error)
+	navidromeMu   sync.Mutex
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
@@ -346,6 +348,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.showApp(w, r, d, name)
+	case strings.HasPrefix(r.URL.Path, "/phone/") && r.Method == http.MethodPost:
+		if _, ok := a.session(r); !ok {
+			a.refuse(w, r)
+			return
+		}
+		a.phone(w, r, strings.TrimPrefix(r.URL.Path, "/phone/"))
 	case r.URL.Path == "/undo" && r.Method == http.MethodPost:
 		if _, ok := a.session(r); !ok {
 			a.refuse(w, r)
@@ -917,6 +925,12 @@ func (v view) HomeApps() []*appView {
 	return v.pick(func(a *appView) bool { return a.Installed || a.Install != nil && a.Install.Running })
 }
 
+// PhoneSlot says the home page's rows keep a place for the phone button: some row has one, so a
+// row without it keeps its Details where every other row has it.
+func (v view) PhoneSlot() bool {
+	return slices.ContainsFunc(v.HomeApps(), func(a *appView) bool { return a.Phone })
+}
+
 // AppsTitle names the list for what is in it.
 func (v view) AppsTitle() string {
 	switch {
@@ -1015,6 +1029,7 @@ type appView struct {
 	Available, Wished bool
 	Installed         bool    // the routes table lists it
 	Gated             bool    // the reverse proxy signs the household into it: it opens from here (gate.go)
+	Phone             bool    // a client on a phone signs in to it with what "On your phone" shows (phone.go)
 	Preselected       bool    // the first run's chooser ticks it: the apps most homes start with
 	HA                *haView // Home Assistant's own states, on its card alone
 	// Running is the version this machine runs (the host's word, "" when it has none); Offer the
@@ -1159,6 +1174,7 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 			av.HA = ha
 		}
 		_, av.Gated = gated[av.Name]
+		av.Phone = av.Gated && phoneApps[av.Name]
 		av.Preselected = av.Name == hass.Name || av.Name == files.Name
 		av.Install = a.installState(av.Name, av.Installed, av.Offer != "")
 		if av.Install != nil && av.Install.Updated {

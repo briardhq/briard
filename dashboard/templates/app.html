@@ -32,8 +32,7 @@
   <section>
     {{if and .Install .Install.Running}}{{with .Install}}<p>{{with .Progress}}Updating · {{.DoneGB}} of {{.TotalGB}} downloaded ({{.Percent}}%){{else}}Updating · downloading it, then checking that it works{{end}}</p>{{with .Progress}}<progress max="100" value="{{.Percent}}"></progress>{{end}}<p class="note">Started at {{.Since}}. {{$.Title}} is away for a few minutes; if it does not start and work, Briard puts it back by itself.</p>{{end}}
     {{else}}{{with .HA}}<p>{{if not .Reachable}}Starting…{{else if .Onboarded}}Running at <a href="{{.URL}}" target="_blank" rel="noopener">{{.Host}}</a>{{else if .Running}}Ready for its first open.{{else}}Almost ready — Home Assistant is still starting.{{end}}</p>{{else}}<p>Installed and running.</p>{{end}}
-    {{with .HA}}{{if and .Reachable .Onboarded}}<p class="note">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.URL}}config/person" target="_blank" rel="noopener">Settings → People</a>, your name, “Change password” — no old password is needed.</p>{{end}}{{end}}
-    {{if and (eq .Name "navidrome") .Installed}}<p class="note">Opening from here signs you in. For a music app on your phone, set a password in Navidrome: the person icon → Users → your username, then “Change Password?”, leaving “Current Password” empty the first time. The phone app signs in with that username and password, at briard-navidrome.local.</p>{{end}}{{end}}
+    {{with .HA}}{{if and .Reachable .Onboarded}}<p class="note">Opening from here signs you in. For the companion app, set your own password in Home Assistant: <a href="{{.URL}}config/person" target="_blank" rel="noopener">Settings → People</a>, your name, “Change password” — no old password is needed.</p>{{end}}{{end}}{{end}}
     {{with .Install}}{{if and .Update .Failed}}<p class="note">The update did not finish, and {{$.Title}} is as it was: {{.Detail}}</p>{{end}}{{end}}
     {{if .Offering}}<p>{{if eq .Offer .Running}}A revision of {{.Offer}} is available.{{else}}{{.Offer}} is available{{with .Running}}; you have {{.}}{{end}}.{{end}} You can undo the update afterwards from its History.</p>
     {{if .Here}}<p class="note">Briard checks that {{.Title}} starts and works after the update, and puts it back by itself if not. {{.Title}} is away for a few minutes while it updates.</p>{{end}}{{end}}
@@ -42,22 +41,40 @@
     {{if .Offering}}<form method="post" action="/update/{{.Name}}"><button type="submit" class="btn" data-variant="outline">{{if and .Install .Install.Failed}}Try again{{else}}Update{{end}}</button></form>{{end}}
     {{with .HA}}{{if .Reachable}}<form method="post" action="/open/home-assistant" target="_blank"><button type="submit" class="btn"{{if not .Running}} disabled{{end}}>Open Home Assistant</button></form>{{end}}{{end}}
     {{if and .Gated .Installed (not (and .Install .Install.Running))}}<a class="btn" href="/open/{{.Name}}" target="_blank" rel="noopener">Open {{.Title}}</a>{{end}}
+    {{if and .Phone .Installed (not (and .Install .Install.Running))}}<form method="post" action="/phone/{{.Name}}" hx-post="/phone/{{.Name}}" hx-target="body" hx-swap="beforeend"><button type="submit" class="btn" data-variant="outline">{{template "icon-phone"}}On your phone</button></form>{{end}}
     {{if not .Here}}<a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a>{{else if and .Installed (not (and .Install .Install.Running))}}<form method="post" action="/uninstall"><input type="hidden" name="app" value="{{.Name}}"><button type="submit" class="btn" data-variant="ghost">Uninstall</button></form>{{end}}
   </footer></div>
 {{end}}
 
 {{/* THE APPS: the home page's list, one row per app installed or on its way in -- its mark, a badge
-     when something is happening to it, Open for an app with a page of its own, and Details, where
-     its card says the rest. An app on its way has its phase for a badge and the install's bar
-     under its line. The list refreshes itself while a row is moving. */}}
+     when something is happening to it, Open for an app with a page of its own, the phone for one
+     a phone's app signs in to, and the chevron to its Details, where its card says the rest. The
+     phone keeps its place on a row without one, so every row's buttons line up. An app on its way
+     has its phase for a badge and the install's bar under its line. The list refreshes itself
+     while a row is moving. */}}
 {{define "apps-running"}}
   <div class="card"{{if .AppsMoving}} hx-get="/f/apps-running" hx-trigger="every 5s" hx-swap="outerHTML"{{end}}><header><h2>{{.AppsTitle}}</h2></header><section><div class="item-group">
     {{range $i, $a := .HomeApps}}{{if $i}}<hr>{{end}}{{if and .Install .Install.Running (not .Install.Update)}}<div class="item"><section><h3>{{template "app-title" .}} <span class="badge" data-variant="secondary">{{.Install.Phase}}</span></h3>{{with .Functionality}}<p>{{.}}</p>{{end}}{{template "install-bar" .Install}}</section></div>{{else}}<div class="item"><section><h3>{{template "app-title" .}}{{if and .Install .Install.Running}} <span class="badge" data-variant="secondary">Updating</span>{{else if and .Install .Install.Failed .Install.Update}} <span class="badge" data-variant="destructive">Update did not finish</span>{{else if .Offering}} <span class="badge" data-variant="secondary">Update available</span>{{else if and .HA (not .HA.Running)}} <span class="badge" data-variant="secondary">Starting</span>{{end}}</h3>{{with .Functionality}}<p>{{.}}</p>{{end}}</section><aside>
       {{with .HA}}{{if .Reachable}}<form method="post" action="/open/home-assistant" target="_blank"><button type="submit" class="btn" aria-label="Open Home Assistant" title="Open Home Assistant"{{if not .Running}} disabled{{end}}>Open</button></form>{{end}}{{end}}
       {{if and .Gated (not (and .Install .Install.Running))}}<a class="btn" href="/open/{{.Name}}" target="_blank" rel="noopener" aria-label="Open {{.Title}}" title="Open {{.Title}}">Open</a>{{end}}
-      <a class="btn" data-variant="ghost" href="/apps/{{.Name}}">Details</a></aside></div>{{end}}{{end}}
+      {{if and .Phone (not (and .Install .Install.Running))}}<form method="post" action="/phone/{{.Name}}" hx-post="/phone/{{.Name}}" hx-target="body" hx-swap="beforeend"><button type="submit" class="btn" data-variant="ghost" data-size="icon" aria-label="{{.Title}} on your phone" title="On your phone">{{template "icon-phone"}}</button></form>{{else if $.PhoneSlot}}<span class="slot"></span>{{end}}
+      <a class="btn" data-variant="ghost" data-size="icon" href="/apps/{{.Name}}" aria-label="{{.Title}}: details" title="Details">{{template "icon-chevron"}}</a></aside></div>{{end}}{{end}}
   </div></section></div>
 {{end}}
+
+{{/* ON YOUR PHONE: what a phone's app signs in with, to copy -- in a dialog over the page, or a page
+     of its own without a script (phone.go). Each value selects whole with one click: the page is
+     plain http, where the clipboard API is not offered. */}}
+{{define "phone-fields"}}{{with .Error}}<p>{{.}}</p>{{else}}<div class="item-group">
+    <div class="item"><section><h3>Address</h3><p class="key">{{.Address}}</p></section></div>
+    <div class="item"><section><h3>Username</h3><p class="key">{{.Username}}</p></section></div>
+    <div class="item"><section><h3>Password</h3><p class="key">{{.Password}}</p></section></div>
+  </div>{{end}}{{end}}
+{{define "phone-dialog"}}<dialog class="dialog" aria-labelledby="phone-title"><div><header><h2 id="phone-title">{{.Title}} on your phone</h2></header><section>{{template "phone-fields" .}}</section><footer><form method="dialog"><button type="submit" class="btn">Done</button></form></footer></div></dialog>{{end}}
+{{define "phone-page"}}{{template "head" (shell "apps" false)}}
+<header class="page-head"><h1>{{.Title}} on your phone</h1></header>
+<div class="tiles"><div class="card"><section>{{template "phone-fields" .}}</section><footer><a class="btn" href="/apps/{{.Name}}">Done</a></footer></div></div>
+{{template "foot" (shell "apps" false)}}{{end}}
 
 {{/* SUGGESTED APPS: a few the machine could run next, each one click away; the rest under Apps. */}}
 {{define "suggested"}}

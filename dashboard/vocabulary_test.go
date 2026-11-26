@@ -18,7 +18,7 @@ import (
 var components = map[string]bool{
 	"sidebar": true, "btn": true, "card": true, "alert": true, "badge": true,
 	"field": true, "label": true, "input": true, "table": true, "table-container": true,
-	"item": true, "item-group": true,
+	"item": true, "item-group": true, "dialog": true,
 }
 
 // parts is Briard's own: the shell, the page, and the few things inside a card that Basecoat
@@ -26,7 +26,7 @@ var components = map[string]bool{
 var parts = map[string]bool{
 	"topbar": true, "page": true, "page-head": true, "tiles": true, "wide": true, "group-title": true,
 	"note": true, "ok": true, "when": true, "key": true, "code": true, "app-icon": true,
-	"history": true, "what": true, "bad": true, "undo": true,
+	"history": true, "what": true, "bad": true, "undo": true, "slot": true,
 }
 
 var (

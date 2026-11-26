@@ -35,12 +35,18 @@ const drawerScript = "var s=document.querySelector('.sidebar'),m=matchMedia('(mi
 	"s.addEventListener('click',function(e){if(e.target===s)fit()});" +
 	"document.addEventListener('keydown',function(e){if(e.key==='Escape')fit()})"
 
-// csp is every page's Content-Security-Policy: scripts from this origin and the two inline
+// dialogScript opens a dialog htmx adds to the page ("On your phone", phone.go) as a modal --
+// over the page, closed by its button or Escape -- and takes it off the page once closed, so the
+// next press adds a fresh one. Without it the button's form posts and the fields are a page.
+const dialogScript = "document.addEventListener('htmx:load',function(e){var d=e.detail.elt;if(d.tagName!=='DIALOG')return;" +
+	"d.addEventListener('close',function(){d.remove()});d.showModal()})"
+
+// csp is every page's Content-Security-Policy: scripts from this origin and the three inline
 // lines, by hash. The dashboard is the whole security budget of the home's browser, so nothing
 // else may run.
 var csp = func() string {
 	p := "script-src 'self'"
-	for _, s := range []string{themeScript, drawerScript} {
+	for _, s := range []string{themeScript, drawerScript, dialogScript} {
 		sum := sha256.Sum256([]byte(s))
 		p += " 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
 	}
@@ -49,6 +55,7 @@ var csp = func() string {
 
 func theme() template.JS  { return template.JS(themeScript) }
 func drawer() template.JS { return template.JS(drawerScript) }
+func dialog() template.JS { return template.JS(dialogScript) }
 
 // fragment is /f/<part>?app=<name>: the partial for one moving part, or HX-Refresh once it has
 // stopped moving. A part that is not one of these, or an app the dashboard does not offer,
