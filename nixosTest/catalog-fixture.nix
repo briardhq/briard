@@ -58,6 +58,10 @@ let
   # version: the archive's hash covers the tag, and an image two versions share (the other part
   # moved) must keep the one hash its ref is recorded under.
   partsOf = e: lib.splitString "-" e.version;
+  # A part's release, its first three numbers, is the tag: a fourth is a change made by hand under
+  # the same upstreams (a rebuild, or how the entry runs), and where it shares the image it must
+  # keep that image's one hash.
+  releaseOf = p: lib.concatStringsSep "." (lib.take 3 (lib.splitString "." p));
   # Container `i`'s image, of version `e`.
   pullC =
     e: i: k:
@@ -66,7 +70,7 @@ let
       imageDigest = lib.last (lib.splitString "@" k.image);
       sha256 = hashes.${k.image}.amd64 or lib.fakeHash;
       finalImageName = repoOfC k;
-      finalImageTag = lib.elemAt (partsOf e) i;
+      finalImageTag = releaseOf (lib.elemAt (partsOf e) i);
       os = "linux";
       arch = "amd64";
     };
