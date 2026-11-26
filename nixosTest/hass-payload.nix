@@ -931,8 +931,8 @@ pkgs.testers.runNixOSTest {
     assert q.get("auth_callback") == ["1"] and q.get("code"), loc
     assert _zj.loads(_b64.b64decode(q["state"][0])) == {"hassUrl": origin, "clientId": client_id}, loc
     first = {"auth_code": q["code"][0]}
-    # The password is generated and forgotten: nothing of it on the volume. Every later open is
-    # minted (below), and the household sets its own in HA's People settings.
+    # The password is kept by the integration in Home Assistant's own storage ("On your phone",
+    # below): nothing of it on briard's side of the volume. Every later open is minted (below).
     node1.fail("ls /var/lib/briard/dashboard | grep -qi password")
 
     # The owner flag, read from the store on the volume rather than asked of HA: the household's
@@ -1051,12 +1051,74 @@ pkgs.testers.runNixOSTest {
     )
     print("later open minted for the owner: " + owner_id)
 
+    # ON YOUR PHONE: the companion app signs in on HA's own login page, with the owner's username
+    # and the four words the first open set and the integration keeps, in HA's own storage beside
+    # the auth store. Proven the only way a password can be: HA's own login flow, through the
+    # reverse proxy as the app reaches it.
+    import re as _re
+    def on_phone(new=False):
+        """The dialog's three values as the dashboard shows them, and the dialog."""
+        path = "/phone/home-assistant?new" if new else "/phone/home-assistant"
+        body = node1.succeed(
+            f"curl -fsS -X POST -H 'Host: {node_name}' -H 'Cookie: {cookie}' -H 'HX-Request: true' "
+            f"'http://192.168.1.100{path}'"
+        )
+        return _re.findall(r'<p class="key">([^<]*)</p>', body), body
+    def login(pw):
+        """HA's own username/password flow; the flow's final result."""
+        flow = _zj.loads(through_proxy("/auth/login_flow", post={
+            "client_id": client_id, "handler": ["homeassistant", None], "redirect_uri": origin + "/",
+        }))
+        return _zj.loads(through_proxy(f"/auth/login_flow/{flow['flow_id']}", post={
+            "client_id": client_id, "username": "kostas", "password": pw,
+        }))
+    shown, dialog = on_phone()
+    assert len(shown) == 3 and shown[1] == "kostas" and len(shown[2].split("-")) == 4, f"the dialog: {dialog}"
+    kept = shown[2]
+    signed = login(kept)
+    assert signed.get("type") == "create_entry" and signed.get("result"), f"the kept words do not sign in: {signed}"
+    phone_store = auth_store.rsplit("/", 1)[0] + "/briard.phone"
+    node1.succeed(f"grep -qF {_sx.quote(kept)} {phone_store}")
+
+    # They outlive a restart: read again from HA's storage at its next start. The crossing is
+    # waited for, not assumed: the control channel's access token dies with the old process.
+    system = exchange(node1.succeed("cat /run/briard/home-assistant/token").strip())
+    node1.wait_until_succeeds(
+        f"curl -fsS -H 'Authorization: Bearer {system}' ${ha}/api/config | grep -qE '\"state\": ?\"RUNNING\"'",
+        timeout=300,
+    )
+    node1.succeed(f"curl -fsS -X POST -H 'Authorization: Bearer {system}' ${ha}/api/services/homeassistant/restart")
+    node1.wait_until_fails(f"curl -fsS -o /dev/null -H 'Authorization: Bearer {system}' ${ha}/api/config", timeout=300)
+    token_now = node1.succeed("cat /run/briard/home-assistant/token").strip()
+    node1.wait_until_succeeds(
+        f"curl -fsS -o /dev/null -X POST ${ha}/auth/token -d grant_type=refresh_token -d refresh_token={token_now}",
+        timeout=300,
+    )
+    system = exchange(token_now)
+    node1.wait_until_succeeds(
+        f"curl -fsS -H 'Authorization: Bearer {system}' ${ha}/api/config | grep -qE '\"state\": ?\"RUNNING\"'",
+        timeout=300,
+    )
+    shown, dialog = on_phone()
+    assert shown == ["http://briard-home-assistant.local", "kostas", kept], f"after a restart the dialog shows {shown}: {dialog}"
+    assert login(kept).get("type") == "create_entry", "the kept words stopped signing in at a restart"
+
+    # New password: four new words that sign in, the old ones refused, and no session ended --
+    # the later open's refresh token still exchanges.
+    shown, dialog = on_phone(new=True)
+    assert len(shown) == 3 and len(shown[2].split("-")) == 4 and shown[2] != kept, f"New password: {dialog}"
+    assert login(shown[2]).get("type") == "create_entry", "the new words do not sign in"
+    old = login(kept)
+    assert old.get("type") == "form" and old.get("errors"), f"the replaced words still sign in: {old}"
+    through_proxy("/auth/token", form={"grant_type": "refresh_token", "refresh_token": landed_later["refresh_token"], "client_id": client_id})
+    assert on_phone()[0] == shown, "the next open does not show the new words"
+    print("on your phone: the kept words sign in, outlive a restart, and a new password ends no session")
+
     # The device list and revoke: the Trusted devices page lists this browser and points at HA's
     # own profile for the session it holds there. Revoking takes it out of briard's registry and
     # nothing else (HA's store keeps every refresh token it held; registry-only by decision); the
     # cookie is refused after, on the page and the button; the way back is a fresh code, as at
     # install.
-    import re as _re
     trusted_page = node1.succeed(f"curl -fsS -H 'Host: {node_name}' -H 'Cookie: {cookie}' http://192.168.1.100/devices")
     assert "this device" in trusted_page and f'href="{origin}/profile/security"' in trusted_page, trusted_page
     ids = _re.findall(r'name="id" value="([0-9a-f]+)"', trusted_page)

@@ -270,5 +270,63 @@ func MintLogin(ctx context.Context, base, access, clientID string) (string, erro
 	return out.AuthCode, nil
 }
 
+// PhoneSignIn asks the in-HA integration what the companion app signs in with: the owner's
+// username, and the password kept for it while that still signs in ("" when it does not, or when
+// none was kept). It changes nothing. The refusals are MintLogin's, by the same names.
+func PhoneSignIn(ctx context.Context, base, access string) (username, password string, err error) {
+	var out struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := phoneCall(ctx, http.MethodGet, base, access, nil, &out); err != nil {
+		return "", "", err
+	}
+	return out.Username, out.Password, nil
+}
+
+// SetPhonePassword sets `password` on the owner's login through the in-HA integration, which
+// keeps it for PhoneSignIn, and returns the username it belongs to. It revokes no session, like
+// HA's own admin_change_password. The refusals are MintLogin's, by the same names.
+func SetPhonePassword(ctx context.Context, base, access, password string) (string, error) {
+	body, _ := json.Marshal(map[string]string{"password": password})
+	var out struct {
+		Username string `json:"username"`
+	}
+	if err := phoneCall(ctx, http.MethodPost, base, access, body, &out); err != nil {
+		return "", err
+	}
+	return out.Username, nil
+}
+
+// phoneCall is one call on the integration's phone view: a body is a POST's, nil a GET's.
+func phoneCall(ctx context.Context, method, base, access string, body []byte, out any) error {
+	req, err := http.NewRequestWithContext(ctx, method, base+"/api/briard/phone", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("hass: build phone request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Authorization", "Bearer "+access)
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("hass: phone sign-in: %w", err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return ErrNoMinter
+	case http.StatusConflict:
+		return ErrNoOwner
+	default:
+		return fmt.Errorf("hass: phone sign-in: HTTP %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("hass: decode phone response: %w", err)
+	}
+	return nil
+}
+
 // ClientID is HA's `genClientId()` for an origin: the origin with a trailing slash.
 func ClientID(origin string) string { return origin + "/" }

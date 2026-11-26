@@ -141,3 +141,51 @@ func TestCreateUserAndMarkAnalytics(t *testing.T) {
 		t.Errorf("analytics bearer = %q", bearer)
 	}
 }
+
+// The companion app's sign-in: read with a GET that sends nothing, set with a POST of the
+// password, both on the control channel's bearer, and the same two refusals as the minter.
+func TestPhoneSignIn(t *testing.T) {
+	kept := ""
+	var bearer, method string
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/briard/phone" {
+			http.NotFound(w, r)
+			return
+		}
+		bearer, method = r.Header.Get("Authorization"), r.Method
+		w.WriteHeader(status)
+		if status != http.StatusOK {
+			return
+		}
+		if r.Method == http.MethodPost {
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			kept = in["password"]
+			json.NewEncoder(w).Encode(map[string]string{"username": "kostas"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"username": "kostas", "password": kept})
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+	if u, p, err := PhoneSignIn(ctx, srv.URL, "tok"); err != nil || u != "kostas" || p != "" || method != http.MethodGet || bearer != "Bearer tok" {
+		t.Fatalf("nothing kept: PhoneSignIn = %q, %q, %v by %s %q", u, p, err, method, bearer)
+	}
+	if u, err := SetPhonePassword(ctx, srv.URL, "tok", "one-two-three-four"); err != nil || u != "kostas" || method != http.MethodPost {
+		t.Fatalf("SetPhonePassword = %q, %v by %s", u, err, method)
+	}
+	if u, p, err := PhoneSignIn(ctx, srv.URL, "tok"); err != nil || u != "kostas" || p != "one-two-three-four" {
+		t.Fatalf("kept: PhoneSignIn = %q, %q, %v", u, p, err)
+	}
+	status = http.StatusConflict
+	if _, _, err := PhoneSignIn(ctx, srv.URL, "tok"); err != ErrNoOwner {
+		t.Errorf("409 -> %v; want ErrNoOwner", err)
+	}
+	if _, err := SetPhonePassword(ctx, srv.URL, "tok", "one-two-three-four"); err != ErrNoOwner {
+		t.Errorf("409 on a set -> %v; want ErrNoOwner", err)
+	}
+	if _, _, err := PhoneSignIn(ctx, srv.URL+"/elsewhere", "tok"); err != ErrNoMinter {
+		t.Errorf("404 -> %v; want ErrNoMinter", err)
+	}
+}

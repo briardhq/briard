@@ -157,7 +157,7 @@ func (a *app) navidromeSignIn(ctx context.Context, s routes.App) (user, password
 	if err := api.do(ctx, http.MethodGet, "/api/user/"+url.PathEscape(id), nil, &rec); err != nil {
 		return "", "", fmt.Errorf("read your account in Navidrome: %w", err)
 	}
-	words, err := passphrase()
+	words, err := passphrase(3)
 	if err != nil {
 		return "", "", err
 	}

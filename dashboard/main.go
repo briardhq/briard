@@ -817,6 +817,7 @@ type homeAssistant struct {
 	// casaHost is its name under the household's (home-assistant.<flock>.briard.casa), which
 	// a page served on that name links instead; "" when the table lists none.
 	casaHost string
+	app      routes.App // its entry in the table, for the address "On your phone" shows (phone.go)
 }
 
 // hostFor is the name a page links Home Assistant by: its casa name when the page itself came
@@ -856,7 +857,7 @@ func (a *app) findHomeAssistant() *homeAssistant {
 		// The bare alias, which HostNames put in Hosts beside the flock-scoped name: it is what
 		// the household types and every other print site shows, so the link matches them. The
 		// casa name is the one entry under casa.Zone.
-		ha := &homeAssistant{base: u.String(), port: port, host: routes.BareHostName(s.Name)}
+		ha := &homeAssistant{base: u.String(), port: port, host: routes.BareHostName(s.Name), app: s}
 		for _, h := range s.Hosts {
 			if strings.HasSuffix(h, "."+casa.Zone) {
 				ha.casaHost = h
@@ -1168,8 +1169,9 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 			av.HA = ha
 		}
 		_, av.Gated = gated[av.Name]
+		// Home Assistant's once it has an owner to sign in as: it is not gated, it signs in itself.
 		_, phone := phoneApps[av.Name]
-		av.Phone = av.Gated && phone
+		av.Phone = phone && (av.Gated || av.HA != nil && av.HA.Reachable && av.HA.Onboarded)
 		av.Preselected = av.Name == hass.Name || av.Name == files.Name
 		av.Install = a.installState(av.Name, av.Installed, av.Offer != "")
 		if av.Install != nil && av.Install.Updated {
@@ -1252,7 +1254,7 @@ func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Home Assistant's first user is made from your Briard profile, which is not written yet; run `briard open` on the machine\n", http.StatusConflict)
 		return
 	}
-	pw, err := newPassword()
+	pw, err := passphrase(4)
 	if err != nil {
 		http.Error(w, "could not generate a password\n", http.StatusInternalServerError)
 		return
@@ -1261,15 +1263,18 @@ func (a *app) openHomeAssistant(w http.ResponseWriter, r *http.Request) {
 		Name: acct.Name, Username: acct.Username, Password: pw,
 		ClientID: hass.ClientID(origin), Language: acct.Language,
 	}
-	// The password is generated and forgotten: every later open is minted, so no session ever
-	// depends on it, and the household sets its own -- for the companion app -- in Home
-	// Assistant's People settings, where the owner needs no old password. briard keeps no copy:
-	// one it could not keep current would only ever lie.
 	code, err := hass.CreateUser(ctx, ha.base, u)
 	if err != nil {
 		log.Printf("dashboard: user step: %v", err)
 		http.Error(w, "Home Assistant refused the first user; it may already be set up\n", http.StatusBadGateway)
 		return
+	}
+	// The password is four words the companion app signs in with, from "On your phone"; every
+	// later open is minted, so no browser depends on it. The integration keeps it, in Home
+	// Assistant's own storage, and shows it only while it still signs in. Not fatal: the dialog
+	// then offers a new one.
+	if _, err := hass.SetPhonePassword(ctx, ha.base, access, pw); err != nil {
+		log.Printf("dashboard: keep the companion app's password: %v (On your phone offers a new one)", err)
 	}
 	if err := hass.MarkAnalytics(ctx, ha.base, access); err != nil {
 		// Not fatal: HA then shows its analytics page, whose toggles default to off.
@@ -1316,9 +1321,9 @@ func scheme(r *http.Request) string {
 	return "http"
 }
 
-// newPassword is a password briard generates and forgets -- Home Assistant's first user's, and the
-// one that replaces Mealie's shipped password (mealie.go): 20 characters from a set with no
-// look-alikes. Nothing signs in with it; the household sets its own inside the app.
+// newPassword is a password briard generates and forgets -- the one that replaces Mealie's shipped
+// password (mealie.go): 20 characters from a set with no look-alikes. Nothing signs in with it;
+// the household sets its own inside the app.
 func newPassword() (string, error) {
 	const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
 	var b [20]byte

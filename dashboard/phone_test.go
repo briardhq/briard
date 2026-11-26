@@ -243,7 +243,7 @@ func TestOnYourPhoneIsAPageWithoutAScriptAndRefusesTheRest(t *testing.T) {
 	if resp, _ := get(t, r, "/phone/navidrome", c); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("GET = %d, want 404: a page load never changes the password", resp.StatusCode)
 	}
-	for _, app := range []string{"home-assistant", "files", "nothing"} {
+	for _, app := range []string{"files", "nothing"} {
 		if status, _ := press(t, r, "/phone/"+app, c, true); status != http.StatusNotFound {
 			t.Errorf("%s = %d, want 404", app, status)
 		}
@@ -344,4 +344,133 @@ func dialogInBrowser(t *testing.T, chromium, script string, host func(*rig, *fak
 		"--user-data-dir="+t.TempDir(), "--window-size=1200,900", "--virtual-time-budget=5000", "--dump-dom", srv.URL+"/go").Output()
 	must(t, err)
 	return string(out)
+}
+
+// haPhoneRig is a dashboard whose Home Assistant was set up from it: the first open made the
+// owner with four words and handed them to the integration to keep; then the rest of onboarding.
+func haPhoneRig(t *testing.T) (*rig, *http.Cookie) {
+	r := newRig(t)
+	c := r.trust()
+	if resp := r.do("POST", "/open/home-assistant", c, nil); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("first open = %d", resp.StatusCode)
+	}
+	r.ha.mu.Lock()
+	for k := range r.ha.done {
+		r.ha.done[k] = true
+	}
+	r.ha.mu.Unlock()
+	return r, c
+}
+
+// fourWords says whether a password is four of the list's words.
+func fourWords(p string) bool {
+	parts := strings.Split(p, "-")
+	return len(parts) == 4 && !slices.ContainsFunc(parts, func(w string) bool { return !slices.Contains(words, w) })
+}
+
+// The words the first open set are what the dialog shows, while they still sign in: the owner's
+// username, the `.local` address and the link to the companion apps; the card has the button once
+// Home Assistant has its owner, and opening the dialog changes nothing.
+func TestOnYourPhoneShowsHomeAssistantsKeptWords(t *testing.T) {
+	r := newRig(t)
+	c := r.trust()
+	if _, apps := get(t, r, "/apps", c); strings.Contains(apps, `action="/phone/home-assistant"`) {
+		t.Error("the card offers the phone before Home Assistant has an owner")
+	}
+	r, c = haPhoneRig(t)
+	if _, apps := get(t, r, "/apps", c); !strings.Contains(apps, `action="/phone/home-assistant"`) {
+		t.Error("a set-up Home Assistant's card has no On your phone")
+	}
+	status, body := press(t, r, "/phone/home-assistant", c, true)
+	r.ha.mu.Lock()
+	first, sets := r.ha.user["password"], r.ha.phoneSets
+	r.ha.mu.Unlock()
+	if got := keys(body); status != http.StatusOK || !slices.Equal(got, []string{"http://briard-home-assistant.local", "kostas", first}) || !fourWords(first) {
+		t.Fatalf("dialog = %d %q, want the .local address, the owner and the first open's four words %q", status, got, first)
+	}
+	if !strings.Contains(body, `<a href="https://companion.home-assistant.io/" target="_blank" rel="noopener">Companion apps</a>`) || strings.Contains(body, "New password") {
+		t.Errorf("the dialog is not the kept words with the link to the companion apps: %s", body)
+	}
+	if _, again := press(t, r, "/phone/home-assistant", c, true); !slices.Equal(keys(again), keys(body)) || r.ha.phoneSets != sets {
+		t.Errorf("a second open shows %q after %d sets, want the same after %d", keys(again), r.ha.phoneSets, sets)
+	}
+}
+
+// A password changed in Home Assistant, or none ever kept (a node set up before this), is a
+// button; the button sets four new words, the dialog shows them in place, and the next open
+// shows the same ones.
+func TestOnYourPhoneGivesHomeAssistantANewPassword(t *testing.T) {
+	r, c := haPhoneRig(t)
+	r.ha.mu.Lock()
+	r.ha.ownerPassword = "changed in Home Assistant"
+	r.ha.mu.Unlock()
+	_, body := press(t, r, "/phone/home-assistant", c, true)
+	button := `<form method="post" action="/phone/home-assistant?new" hx-post="/phone/home-assistant?new" hx-target="closest dialog" hx-swap="outerHTML"><button type="submit" class="btn" data-variant="outline">New password</button></form>`
+	if got := keys(body); !slices.Equal(got, []string{"http://briard-home-assistant.local", "kostas"}) || !strings.Contains(body, button) {
+		t.Fatalf("a changed password = %q %s, want the button in the password's place", got, body)
+	}
+	if r.ha.ownerPassword != "changed in Home Assistant" {
+		t.Error("opening the dialog changed the password")
+	}
+	_, body = press(t, r, "/phone/home-assistant?new", c, true)
+	got := keys(body)
+	if len(got) != 3 || !fourWords(got[2]) || got[2] != r.ha.ownerPassword || !strings.HasPrefix(body, `<dialog class="dialog"`) {
+		t.Fatalf("after New password = %q (HA holds %q): %s", got, r.ha.ownerPassword, body)
+	}
+	if _, again := press(t, r, "/phone/home-assistant", c, true); !slices.Equal(keys(again), got) {
+		t.Errorf("the next open shows %q, want %q", keys(again), got)
+	}
+	// Without a script the button's POST is the page again, with the new words.
+	r.ha.mu.Lock()
+	r.ha.kept = ""
+	r.ha.mu.Unlock()
+	if status, page := press(t, r, "/phone/home-assistant?new", c, false); status != http.StatusOK || !strings.Contains(page, "<h1>Home Assistant on your phone</h1>") || len(keys(page)) != 3 || !fourWords(keys(page)[2]) {
+		t.Errorf("the page after New password = %d %s", status, page)
+	}
+}
+
+// What the integration refuses is said, with no fields: no owner, and a Home Assistant still
+// running an integration from before the view (it loads the new one when it next starts).
+func TestOnYourPhoneSaysWhyHomeAssistantsSignInCannotBeRead(t *testing.T) {
+	r, c := haPhoneRig(t)
+	r.ha.mu.Lock()
+	r.ha.noOwner = true
+	r.ha.mu.Unlock()
+	if _, body := press(t, r, "/phone/home-assistant", c, true); len(keys(body)) != 0 || !strings.Contains(body, "Could not read the sign-in from Home Assistant: it has no owner account") {
+		t.Errorf("no owner = %s", body)
+	}
+	r.ha.mu.Lock()
+	r.ha.noOwner, r.ha.noMinter = false, true
+	r.ha.mu.Unlock()
+	if _, body := press(t, r, "/phone/home-assistant", c, true); len(keys(body)) != 0 || !strings.Contains(body, "not running Briard&#39;s integration") {
+		t.Errorf("an integration without the view = %s", body)
+	}
+}
+
+// The browser's half of New password: the button's htmx POST puts the dialog with the new words in
+// place of the open one, open over the page, and leaves no second dialog behind. Skipped unless
+// DASHBOARD_BROWSER names a chromium, as above.
+func TestHomeAssistantsNewPasswordReplacesTheDialogInABrowser(t *testing.T) {
+	chromium := os.Getenv("DASHBOARD_BROWSER")
+	if chromium == "" {
+		t.Skip("set DASHBOARD_BROWSER=<chromium> to prove the dialog in a browser")
+	}
+	press := `document.querySelector('form[action="/phone/home-assistant"] button').click()`
+	renew := `document.addEventListener('htmx:load',function(e){var b=e.detail.elt.tagName==='DIALOG'&&e.detail.elt.querySelector('form[action$="?new"] button');if(b)setTimeout(function(){b.click()},100)});`
+	var ha *fakeHA
+	dom := dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)});`+renew, func(r *rig, _ *fakePort) {
+		ha = r.ha
+		r.ha.mu.Lock()
+		r.ha.user, r.ha.ownerPassword = map[string]string{"username": "kostas"}, "changed in Home Assistant"
+		r.ha.mu.Unlock()
+	})
+	got := keys(dom)
+	if strings.Count(dom, "<dialog") != 1 || !strings.Contains(dom, `<h2 id="phone-title">Home Assistant on your phone</h2>`) || !strings.Contains(dom, `open=""`) || len(got) != 3 || !fourWords(got[2]) {
+		t.Fatalf("after New password the page holds %d dialogs, fields %q: %s", strings.Count(dom, "<dialog"), got, dom)
+	}
+	ha.mu.Lock()
+	defer ha.mu.Unlock()
+	if ha.ownerPassword != got[2] || ha.phoneSets != 1 {
+		t.Errorf("Home Assistant holds %q after %d sets; the dialog shows %q", ha.ownerPassword, ha.phoneSets, got[2])
+	}
 }

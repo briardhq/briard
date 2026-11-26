@@ -29,6 +29,7 @@ import logging
 import socket
 from urllib.parse import quote
 
+from homeassistant.auth.providers import homeassistant as auth_ha
 from homeassistant.components.auth import create_auth_code
 from homeassistant.components.http import KEY_HASS, KEY_HASS_USER, HomeAssistantView
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature
@@ -39,10 +40,15 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.discovery import async_load_platform
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.start import async_at_started
+from homeassistant.helpers.storage import Store
 
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "briard"
+
+# Where PhoneView keeps the password: Home Assistant's own storage, written the way its auth
+# store is (private, atomic).
+PHONE_STORE = "briard.phone"
 
 class LoginView(HomeAssistantView):
     """POST /api/briard/login — an auth code that logs a browser in as Home Assistant's OWNER.
@@ -85,6 +91,83 @@ class LoginView(HomeAssistantView):
         if credential is None:
             return self.json_message("the owner has no credential to log in with", HTTPStatus.CONFLICT, "no_credential")
         return self.json({"auth_code": create_auth_code(hass, client_id, credential)})
+
+class PhoneView(HomeAssistantView):
+    """GET/POST /api/briard/phone — what the companion app signs in with: the owner's username and
+    the password kept for it.
+
+    WHY A PASSWORD IS KEPT AT ALL. The companion app signs in only on Home Assistant's own login
+    page, so a code minted here (LoginView) cannot reach it, and Home Assistant keeps a bcrypt hash
+    nobody can read back. So the password the dashboard sets is kept, here, in Home Assistant's
+    own storage beside the auth store: a restore, an undo, a backup and a failover carry them
+    together, and an uninstall takes both. It exposes nothing new: the auth store beside it holds
+    every refresh token in the clear.
+
+    GET answers the username, and the kept password while it still signs the owner in, checked
+    with the provider's own check; otherwise the password is "" (the household changed it, or
+    nothing was ever kept). It changes nothing. POST sets the given password on the owner and keeps
+    it; like Home Assistant's own admin_change_password it revokes no session, so every browser and
+    phone already signed in stays so.
+
+    The owner and only the owner, behind HA's auth and gated on admin, exactly like LoginView.
+    """
+
+    url = "/api/briard/phone"
+    name = "api:briard:phone"
+    requires_auth = True
+
+    def __init__(self, store):
+        self._store = store
+        # One change at a time: two interleaved could keep one password and set the other.
+        self._lock = asyncio.Lock()
+
+    async def get(self, request):
+        """The owner's username, and the kept password while it signs in."""
+        if not request[KEY_HASS_USER].is_admin:
+            return self.json_message("admin only", HTTPStatus.FORBIDDEN)
+        provider, username, refusal = await self._owner(request)
+        if refusal is not None:
+            return refusal
+        kept = (await self._store.async_load() or {}).get("password")
+        password = ""
+        if isinstance(kept, str) and kept:
+            try:
+                await provider.async_validate_login(username, kept)
+                password = kept
+            except auth_ha.InvalidAuth:
+                pass
+        return self.json({"username": username, "password": password})
+
+    async def post(self, request):
+        """Set the given password on the owner's login, and keep it."""
+        if not request[KEY_HASS_USER].is_admin:
+            return self.json_message("admin only", HTTPStatus.FORBIDDEN)
+        try:
+            body = await request.json()
+        except ValueError:
+            return self.json_message("invalid JSON", HTTPStatus.BAD_REQUEST)
+        password = body.get("password") if isinstance(body, dict) else None
+        if not isinstance(password, str) or len(password) < 8:
+            return self.json_message("password required (8+ characters)", HTTPStatus.BAD_REQUEST)
+        provider, username, refusal = await self._owner(request)
+        if refusal is not None:
+            return refusal
+        async with self._lock:
+            await provider.async_change_password(username, password)
+            await self._store.async_save({"password": password})
+        return self.json({"username": username})
+
+    async def _owner(self, request):
+        """The password provider and the owner's username on it, or the refusal to answer."""
+        hass = request.app[KEY_HASS]
+        owner = await hass.auth.async_get_owner()
+        if owner is None:
+            return None, None, self.json_message("Home Assistant has no owner account", HTTPStatus.CONFLICT, "no_owner")
+        provider = auth_ha.async_get_provider(hass)
+        username = provider.async_get_username(owner)
+        if username is None:
+            return None, None, self.json_message("the owner has no password login", HTTPStatus.CONFLICT, "no_credential")
+        return provider, username, None
 
 class QuiesceView(HomeAssistantView):
     """POST /api/briard/quiesce — hold the recorder still while the node takes a ring member.
@@ -201,8 +284,10 @@ async def async_setup(hass, config):
             return
         await _reconsider()
 
-    # The login minter, from the moment HA serves: it needs nothing loaded but the auth manager.
+    # The login minter and the companion app's sign-in, from the moment HA serves: they need
+    # nothing loaded but the auth manager.
     hass.http.register_view(LoginView())
+    hass.http.register_view(PhoneView(Store(hass, 1, PHONE_STORE, private=True, atomic_writes=True)))
     # And the recorder hold, for the same reason: it resolves the recorder per request, so it is
     # correct from the moment HA serves and stays correct if the recorder is reloaded under it.
     hass.http.register_view(QuiesceView())

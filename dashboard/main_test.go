@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +34,10 @@ type fakeHA struct {
 	noMinter, noOwner bool
 	mintClient        string // the client_id the minter was asked for
 	mintBearer        string // the bearer it was asked with
+	// The integration's phone view: the owner's password as HA holds it (the user step's, or
+	// one set since) and the one the view keeps, shown only while the two agree.
+	ownerPassword, kept string
+	phoneSets           int // passwords set through the view
 }
 
 func newFakeHA() *fakeHA {
@@ -57,6 +62,7 @@ func (f *fakeHA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var u map[string]string
 		json.NewDecoder(r.Body).Decode(&u)
 		f.user = u
+		f.ownerPassword = u["password"]
 		f.done["user"] = true
 		json.NewEncoder(w).Encode(map[string]string{"auth_code": "code-for-the-browser"})
 	case "/api/onboarding/analytics":
@@ -91,6 +97,29 @@ func (f *fakeHA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]string{"auth_code": "code-for-the-owner"})
+	case "/api/briard/phone":
+		switch {
+		case f.noMinter:
+			http.NotFound(w, r)
+			return
+		case f.noOwner || !f.done["user"]:
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Home Assistant has no owner account", "code": "no_owner"})
+			return
+		}
+		if r.Method == http.MethodPost {
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			f.ownerPassword, f.kept = body["password"], body["password"]
+			f.phoneSets++
+			json.NewEncoder(w).Encode(map[string]string{"username": f.user["username"]})
+			return
+		}
+		shown := ""
+		if f.kept != "" && f.kept == f.ownerPassword {
+			shown = f.kept
+		}
+		json.NewEncoder(w).Encode(map[string]string{"username": f.user["username"], "password": shown})
 	default:
 		http.NotFound(w, r)
 	}
@@ -310,14 +339,20 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	if u["name"] != "Kostas" || u["username"] != "kostas" || u["language"] != "el" || u["client_id"] != state.ClientID {
 		t.Errorf("user step got %v; want the handed-over account bound to the browser's client_id", u)
 	}
-	if len(u["password"]) < 16 {
-		t.Errorf("password %q is too short", u["password"])
+	if parts := strings.Split(u["password"], "-"); len(parts) != 4 || slices.ContainsFunc(parts, func(w string) bool { return !slices.Contains(words, w) }) {
+		t.Errorf("password %q is not four of the list's words", u["password"])
 	}
 	if an != "Bearer sys-access" {
 		t.Errorf("analytics was marked with %q; want the control channel's token", an)
 	}
-	// The password is generated and forgotten: nothing on the volume, nothing on the
-	// page. Every later open is minted, and the household sets its own in HA's People settings.
+	// The password is kept by the integration, in Home Assistant's own storage, for "On your
+	// phone": nothing of it on the volume, nothing on the page. Every later open is minted.
+	r.ha.mu.Lock()
+	kept, sets := r.ha.kept, r.ha.phoneSets
+	r.ha.mu.Unlock()
+	if kept != u["password"] || sets != 1 {
+		t.Errorf("the integration keeps %q after %d sets; want the user step's password, once", kept, sets)
+	}
 	entries, _ := os.ReadDir(filepath.Join(r.dir, "state"))
 	for _, e := range entries {
 		if strings.Contains(e.Name(), "password") {
@@ -841,9 +876,9 @@ func TestQuickConnectExpiresAndIsBounded(t *testing.T) {
 	}
 }
 
-// Every way into Home Assistant opens a new tab, and the password pointer is the People page
-// (/config/person -- the short list of people, not /config/users, which also shows briard's own
-// system user). The dashboard stays open in its tab; Home Assistant is a separate app.
+// Every way into Home Assistant opens a new tab; the dashboard stays open in its tab, and Home
+// Assistant is a separate app. The companion app's password is "On your phone"'s, so the card
+// points nowhere inside Home Assistant to set one.
 func TestHomeAssistantOpensInANewTab(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
@@ -856,13 +891,14 @@ func TestHomeAssistantOpensInANewTab(t *testing.T) {
 	for _, want := range []string{
 		`action="/open/home-assistant" target="_blank"`,
 		`<a href="http://briard-home-assistant.local/" target="_blank" rel="noopener">`,
-		`<a href="http://briard-home-assistant.local/config/person" target="_blank" rel="noopener">Settings → People</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the set-up page lacks %q", want)
 		}
 	}
-	if strings.Contains(body, "config/users") {
-		t.Error("the page still points at /config/users")
+	for _, never := range []string{"config/person", "config/users"} {
+		if strings.Contains(body, never) {
+			t.Errorf("the page still points at /%s", never)
+		}
 	}
 }

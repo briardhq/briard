@@ -2,10 +2,12 @@ package main
 
 // "On your phone": what a client app on another device signs in to an app with -- its address, a
 // username and a password -- shown in a dialog to copy, beside the app's Open, with a link to the
-// clients the app's project lists. Only Navidrome has one (navidrome.go): a phone's music app
-// speaks its Subsonic API, on the one path the reverse proxy leaves open. The dialog holds the
-// three fields, the link and no prose; the button is a POST, because the first press may change
-// the password, so no page load ever does.
+// clients the app's project lists. Two apps have one. Navidrome (navidrome.go): a phone's music
+// app speaks its Subsonic API, on the one path the reverse proxy leaves open. Home Assistant: its
+// companion app signs in on Home Assistant's own login page, with the owner's username and four
+// words the in-HA integration keeps (agent/hass). The dialog holds the three fields, the link and
+// no prose; the button is a POST, because the first press may change Navidrome's password, so no
+// page load ever does.
 //
 // The address is the household's casa name once it resolves with a certificate, the one a phone
 // reaches from away too; the app's `.local` name before that.
@@ -14,12 +16,15 @@ import (
 	"context"
 	"crypto/rand"
 	_ "embed"
+	"errors"
+	"fmt"
 	"log"
 	"math/big"
 	"net/http"
 	"strings"
 	"time"
 
+	"briard.io/agent/hass"
 	"briard.io/agent/navidrome"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
@@ -31,34 +36,54 @@ import (
 // signing in, and the app's own project keeps that list current.
 var phoneApps = map[string]phoneClients{
 	navidrome.Name: {"Compatible players", "https://www.navidrome.org/apps/"},
+	hass.Name:      {"Companion apps", "https://companion.home-assistant.io/"},
 }
 
 // phoneClients is the link to an app's clients: its words and where it goes.
 type phoneClients struct{ Label, URL string }
 
 // phoneView is the dialog: the app, what its client signs in with or why it could not be read, and
-// the link to its clients.
+// the link to its clients. Replace is Home Assistant's password row as a button: no kept password
+// signs in any more.
 type phoneView struct {
 	Name, Title                 string
 	Address, Username, Password string
+	Replace                     bool
 	Error                       string
 	Clients                     phoneClients
 }
 
 // phone answers the button: the dialog for htmx, which adds it to the page and opens it
-// (fragment.go), or the same fields as a page of their own without a script.
+// (fragment.go), or the same fields as a page of their own without a script. For Home Assistant,
+// `?new` is the dialog's "New password", which sets four new words first.
 func (a *app) phone(w http.ResponseWriter, r *http.Request, name string) {
-	s, ok := gatedApps(a.routesPath)[name]
-	clients, phone := phoneApps[name]
-	if !ok || !phone {
+	clients, ok := phoneApps[name]
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	v := phoneView{Name: name, Title: a.appTitle(name), Address: a.phoneAddress(s), Clients: clients}
+	v := phoneView{Name: name, Title: a.appTitle(name), Clients: clients}
 	var err error
-	v.Username, v.Password, err = a.navidromeSignIn(ctx, s)
+	if name == hass.Name {
+		ha := a.findHomeAssistant()
+		if ha == nil {
+			http.NotFound(w, r)
+			return
+		}
+		v.Address = a.phoneAddress(ha.app)
+		v.Username, v.Password, err = a.homeAssistantSignIn(ctx, ha, r.URL.Query().Has("new"))
+		v.Replace = err == nil && v.Password == ""
+	} else {
+		s, ok := gatedApps(a.routesPath)[name]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		v.Address = a.phoneAddress(s)
+		v.Username, v.Password, err = a.navidromeSignIn(ctx, s)
+	}
 	if err != nil {
 		log.Printf("dashboard: %s on a phone: %v", name, err)
 		v.Username, v.Password, v.Error = "", "", "Could not read the sign-in from "+v.Title+": "+err.Error()
@@ -72,6 +97,39 @@ func (a *app) phone(w http.ResponseWriter, r *http.Request, name string) {
 	if err := page.ExecuteTemplate(w, tmpl, v); err != nil {
 		log.Printf("dashboard: render %s: %v", tmpl, err)
 	}
+}
+
+// homeAssistantSignIn is the owner's username and the words kept for them while they still sign
+// in, "" when they do not; `replace` first sets four new words on the owner, which the integration
+// keeps. The password returned is read back from Home Assistant after any change, never the one
+// briard meant to set.
+func (a *app) homeAssistantSignIn(ctx context.Context, ha *homeAssistant, replace bool) (user, password string, err error) {
+	_, access, err := hass.SystemAccess(ctx, a.exec(), ha.port)
+	if err != nil {
+		return "", "", fmt.Errorf("its control channel is not up yet: %w", err)
+	}
+	if replace {
+		words, err := passphrase(4)
+		if err != nil {
+			return "", "", err
+		}
+		if _, err := hass.SetPhonePassword(ctx, ha.base, access, words); err != nil {
+			return "", "", homeAssistantRefusal(err)
+		}
+	}
+	user, password, err = hass.PhoneSignIn(ctx, ha.base, access)
+	return user, password, homeAssistantRefusal(err)
+}
+
+// homeAssistantRefusal says the integration's two refusals in the dialog's words.
+func homeAssistantRefusal(err error) error {
+	switch {
+	case errors.Is(err, hass.ErrNoOwner):
+		return errors.New("it has no owner account")
+	case errors.Is(err, hass.ErrNoMinter):
+		return errors.New("it is not running Briard's integration, which it loads when it next starts")
+	}
+	return err
 }
 
 // phoneAddress is where a client reaches the app: the casa name, by https, once the household's
@@ -104,14 +162,16 @@ var words = func() []string {
 	return out
 }()
 
-// passphrase is three words of the list, joined by hyphens: about 31 bits, typed on a phone
-// once. Guessing is held off by the app's own sign-in limit, and the app is reached only from
-// the home's network or a private network into it.
-func passphrase() (string, error) {
-	n := big.NewInt(int64(len(words)))
+// passphrase is `n` words of the list, joined by hyphens, about 10.3 bits a word, typed on a
+// phone once. Navidrome's are three (about 31 bits), behind its own sign-in limit. Home
+// Assistant's are four (about 41 bits): it limits nothing unless the household sets it, so the
+// brake is its bcrypt hash alone, about a quarter second of one core per guess, from the home's
+// network and from away alike.
+func passphrase(n int) (string, error) {
+	size := big.NewInt(int64(len(words)))
 	var picked []string
-	for range 3 {
-		i, err := rand.Int(rand.Reader, n)
+	for range n {
+		i, err := rand.Int(rand.Reader, size)
 		if err != nil {
 			return "", err
 		}

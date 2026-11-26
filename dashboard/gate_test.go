@@ -186,7 +186,7 @@ func TestTheHomeListsTheAppsAndSuggestsMore(t *testing.T) {
 		t.Errorf("the idle list's fragment = %d, HX-Refresh %q", resp.StatusCode, resp.Header.Get("HX-Refresh"))
 	}
 	// The Apps page keeps the cards.
-	if _, apps := get(t, r, "/apps", c); !strings.Contains(apps, "Opening from here signs you in.") || strings.Contains(home, "Opening from here signs you in.") {
+	if _, apps := get(t, r, "/apps", c); !strings.Contains(apps, `action="/phone/home-assistant"`) || strings.Contains(home, `action="/phone/home-assistant"`) {
 		t.Error("Home Assistant's card is not on the Apps page alone")
 	}
 }
