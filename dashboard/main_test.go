@@ -890,15 +890,15 @@ func TestHomeAssistantOpensInANewTab(t *testing.T) {
 	body := r.page(c)
 	for _, want := range []string{
 		`action="/open/home-assistant" target="_blank"`,
-		`<a href="http://briard-home-assistant.local/" target="_blank" rel="noopener">`,
+		"<p>Installed and running.</p>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the set-up page lacks %q", want)
 		}
 	}
-	for _, never := range []string{"config/person", "config/users"} {
+	for _, never := range []string{"config/person", "config/users", `href="http://briard-home-assistant.local/"`} {
 		if strings.Contains(body, never) {
-			t.Errorf("the page still points at /%s", never)
+			t.Errorf("the page still carries %q", never)
 		}
 	}
 }
