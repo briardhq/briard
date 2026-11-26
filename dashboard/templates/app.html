@@ -59,15 +59,17 @@
   </div></section></div>
 {{end}}
 
-{{/* ON YOUR PHONE: what a phone's app signs in with, to copy -- in a dialog over the page, or a page
-     of its own without a script (phone.go). Each value selects whole with one click: the page is
-     plain http, where the clipboard API is not offered. */}}
+{{/* ON YOUR PHONE: what a phone's client signs in with, to copy, and the link to where the app's
+     project lists its clients -- in a dialog over the page, or a page of its own without a script
+     (phone.go). Each value selects whole with one click: the page is plain http, where the
+     clipboard API is not offered. */}}
 {{define "phone-fields"}}{{with .Error}}<p>{{.}}</p>{{else}}<div class="item-group">
     <div class="item"><section><h3>Address</h3><p class="key">{{.Address}}</p></section></div>
     <div class="item"><section><h3>Username</h3><p class="key">{{.Username}}</p></section></div>
     <div class="item"><section><h3>Password</h3><p class="key">{{.Password}}</p></section></div>
+    {{with $.Clients.URL}}<div class="item"><section><p><a href="{{.}}" target="_blank" rel="noopener">{{$.Clients.Label}}</a></p></section></div>{{end}}
   </div>{{end}}{{end}}
-{{define "phone-dialog"}}<dialog class="dialog" aria-labelledby="phone-title"><div><header><h2 id="phone-title">{{.Title}} on your phone</h2></header><section>{{template "phone-fields" .}}</section><footer><form method="dialog"><button type="submit" class="btn">Done</button></form></footer></div></dialog>{{end}}
+{{define "phone-dialog"}}<dialog class="dialog" aria-labelledby="phone-title"><div><header><h2 id="phone-title">{{.Title}} on your phone</h2></header><section>{{template "phone-fields" .}}</section><footer><form method="dialog"><button type="submit" class="btn" autofocus>Done</button></form></footer></div></dialog>{{end}}
 {{define "phone-page"}}{{template "head" (shell "apps" false)}}
 <header class="page-head"><h1>{{.Title}} on your phone</h1></header>
 <div class="tiles"><div class="card"><section>{{template "phone-fields" .}}</section><footer><a class="btn" href="/apps/{{.Name}}">Done</a></footer></div></div>

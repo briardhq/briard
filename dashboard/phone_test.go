@@ -194,8 +194,9 @@ func TestOnYourPhoneReplacesTheGeneratedPasswordOnce(t *testing.T) {
 	if len(f.puts) != 1 || f.puts[0]["isAdmin"] != true || f.puts[0]["userName"] != "kostas" {
 		t.Errorf("the change sent %v, want the account's own record with the password", f.puts)
 	}
-	if strings.Contains(body, "<script") || strings.Contains(body, "Navidrome on your phone</h2>") == false {
-		t.Errorf("the dialog is not the fields under its title: %s", body)
+	link := `<a href="https://www.navidrome.org/apps/" target="_blank" rel="noopener">Compatible players</a>`
+	if strings.Contains(body, "<script") || !strings.Contains(body, "Navidrome on your phone</h2>") || !strings.Contains(body, link) {
+		t.Errorf("the dialog is not the fields under its title, with the link to the players: %s", body)
 	}
 	if _, again := press(t, r, "/phone/navidrome", c, true); !slices.Equal(keys(again), got) || len(f.puts) != 1 {
 		t.Errorf("a second press shows %q after %d changes, want %q after one", keys(again), len(f.puts), got)
@@ -229,7 +230,7 @@ func TestOnYourPhoneIsAPageWithoutAScriptAndRefusesTheRest(t *testing.T) {
 	r, c, f := phoneRig(t)
 	f.accounts = []map[string]any{{"id": "id-1", "userName": "kc", "name": "kc", "isAdmin": true}}
 	f.password["id-1"] = "my own one"
-	if status, body := press(t, r, "/phone/navidrome", c, false); status != http.StatusOK || !strings.Contains(body, "<h1>Navidrome on your phone</h1>") || len(keys(body)) != 3 || strings.Contains(body, "<dialog") {
+	if status, body := press(t, r, "/phone/navidrome", c, false); status != http.StatusOK || !strings.Contains(body, "<h1>Navidrome on your phone</h1>") || len(keys(body)) != 3 || !strings.Contains(body, `href="https://www.navidrome.org/apps/"`) || strings.Contains(body, "<dialog") {
 		t.Errorf("the page = %d %s", status, body)
 	}
 	f.readErr = errors.New("exit status 1: no such table: user")

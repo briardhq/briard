@@ -1168,7 +1168,8 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 			av.HA = ha
 		}
 		_, av.Gated = gated[av.Name]
-		av.Phone = av.Gated && phoneApps[av.Name]
+		_, phone := phoneApps[av.Name]
+		av.Phone = av.Gated && phone
 		av.Preselected = av.Name == hass.Name || av.Name == files.Name
 		av.Install = a.installState(av.Name, av.Installed, av.Offer != "")
 		if av.Install != nil && av.Install.Updated {

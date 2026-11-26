@@ -48,7 +48,7 @@
    with the neighbour's. */
 .card > footer { @apply flex-wrap gap-2 mt-auto; }
 .card > section > * + * { @apply mt-3; }
-.page a:not(.btn):not(.item) { @apply underline underline-offset-4; }
+.page a:not(.btn):not(.item), .dialog a:not(.btn) { @apply underline underline-offset-4; }
 .item p { @apply line-clamp-none; }
 /* Rows in a card: closer than Basecoat sets them, so a list of four is one glance. */
 .item-group { @apply gap-1; }
