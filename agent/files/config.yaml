@@ -58,10 +58,6 @@ frontend:
     disableEventThemes: true
     customCSS: "/briard/briard.css"
 userDefaults:
-  preview:
-    # Off until the app makes square thumbnails without copying the whole image: a JPEG or PNG
-    # thumbnail decodes the full picture, and a folder of phone photos is several hundred MB.
-    disablePreviewExt: "jpg,jpeg,png"
   ui:
     themeColor: "oklch(.42 .06 170)"
     # The app's theme is a stored choice per user, with no "follow the system" setting; light is
