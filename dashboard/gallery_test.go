@@ -487,17 +487,17 @@ var galleryStates = []galleryState{
 			everyday(t, r)
 			return apps(t, r, c, port)
 		}},
-	{"home-phone", "Navidrome installed beside Home Assistant: its row has the phone between Open and the chevron, and Home Assistant's keeps the phone's place, so the chevrons line up.",
-		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
-			everyday(t, r)
-			installNavidrome(t, r)
-			return home(t, r, c, port)
-		}},
 	{"apps-phone", "The apps page with Navidrome: On your phone beside its Open.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			everyday(t, r)
 			installNavidrome(t, r)
 			return apps(t, r, c, port)
+		}},
+	{"app-phone", "Navidrome's own page: its card stretched to About's height, Open and On your phone at its foot.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			installNavidrome(t, r)
+			return "/apps/navidrome", c
 		}},
 	{"phone", "On your phone without a script: the address, username and password as a page (with one, the same fields are a dialog over the page). The first press replaced Navidrome's generated password with three words.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {

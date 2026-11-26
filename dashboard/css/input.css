@@ -44,7 +44,9 @@
 .note { @apply text-sm text-muted-foreground; }
 .ok { @apply text-sm; }
 .ok::before { content: "✓ "; color: var(--primary); }
-.card > footer { @apply flex-wrap gap-2; }
+/* A card stretched to its neighbour's height in a row of tiles keeps its buttons at its foot, level
+   with the neighbour's. */
+.card > footer { @apply flex-wrap gap-2 mt-auto; }
 .card > section > * + * { @apply mt-3; }
 .page a:not(.btn):not(.item) { @apply underline underline-offset-4; }
 .item p { @apply line-clamp-none; }
@@ -68,6 +70,9 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 /* THE KEY: one click selects the whole of it -- the page is plain http, where the clipboard
    API is not offered. The join code is the same shape, larger. */
 .key { @apply font-mono text-base tracking-wide select-all break-all text-foreground; }
+/* THE DIALOG ("On your phone"): wide enough that a casa address stays on one line, and never
+   wider than the screen less Basecoat's margin. */
+.dialog > * { max-width: min(calc(100% - 2rem), var(--container-xl)); }
 /* An icon in a line of text -- the browser's warning sign, the address's padlock -- sits on the
    text's baseline at its size. */
 .card p > svg, .card strong > svg { @apply inline size-[1em] -mt-1 mr-1; }
@@ -77,9 +82,6 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 /* In a row the title line is a centred flex line that clips what leaves it, so the mark needs no
    lift there -- with one, its top is cut off. */
 .item .app-icon { @apply mt-0; }
-/* THE SLOT: the place a row's phone button takes, kept on a row without one, so the buttons of
-   every row line up. The size of an icon button. */
-.slot { @apply size-9 shrink-0; }
 /* A card that is a choice (the first run's chooser): its checkbox on the title's line, before the mark. */
 .card > header > h2 > input { @apply inline-block align-middle -mt-1 mr-2; }
 .code { @apply font-mono text-4xl font-bold tracking-widest my-4 select-all; }

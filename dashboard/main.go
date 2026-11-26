@@ -925,12 +925,6 @@ func (v view) HomeApps() []*appView {
 	return v.pick(func(a *appView) bool { return a.Installed || a.Install != nil && a.Install.Running })
 }
 
-// PhoneSlot says the home page's rows keep a place for the phone button: some row has one, so a
-// row without it keeps its Details where every other row has it.
-func (v view) PhoneSlot() bool {
-	return slices.ContainsFunc(v.HomeApps(), func(a *appView) bool { return a.Phone })
-}
-
 // AppsTitle names the list for what is in it.
 func (v view) AppsTitle() string {
 	switch {

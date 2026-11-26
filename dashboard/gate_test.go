@@ -151,9 +151,8 @@ func TestAGatedAppsCardOpensIt(t *testing.T) {
 }
 
 // The home lists the apps: one card, a row per installed app with Open where it has a page and
-// the chevron to Details where its card lives, and a few suggestions, Files first while it is not
-// installed. The per-app cards are the Apps page's and each app's own. With no app a phone signs
-// in to, no row keeps a place for the phone.
+// Details where its card lives, and a few suggestions, Files first while it is not
+// installed. The per-app cards are the Apps page's and each app's own.
 func TestTheHomeListsTheAppsAndSuggestsMore(t *testing.T) {
 	r := newRig(t)
 	c := r.trust()
@@ -166,7 +165,7 @@ func TestTheHomeListsTheAppsAndSuggestsMore(t *testing.T) {
 	cat.Apps = append(cat.Apps, dashboard.CatalogApp{App: manifest.App{Name: "files", Title: "Files", Functionality: "Web file browser", Description: "Every app's files.", Icon: testIcon, Homepage: "https://example.org", Available: true}})
 	r.hostLists(t, cat)
 	_, home := get(t, r, "/", c)
-	for _, want := range []string{"<h2>Apps running</h2>", `action="/open/home-assistant" target="_blank"`, `href="/apps/home-assistant" aria-label="Home Assistant: details" title="Details">`, "<h2>Suggested apps</h2>", `action="/install/files"`, `action="/install/mosquitto"`} {
+	for _, want := range []string{"<h2>Apps running</h2>", `action="/open/home-assistant" target="_blank"`, `href="/apps/home-assistant">Details</a>`, "<h2>Suggested apps</h2>", `action="/install/files"`, `action="/install/mosquitto"`} {
 		if !strings.Contains(home, want) {
 			t.Errorf("the home lacks %q", want)
 		}
@@ -174,7 +173,7 @@ func TestTheHomeListsTheAppsAndSuggestsMore(t *testing.T) {
 	if i, j := strings.Index(home, `action="/install/files"`), strings.Index(home, `action="/install/mosquitto"`); i < 0 || j < i {
 		t.Error("Files is not the first suggestion")
 	}
-	for _, never := range []string{`hx-get="/f/app?app=`, `action="/install/home-assistant"`, `action="/install/paperless-ngx"`, `class="slot"`, `action="/phone/`} {
+	for _, never := range []string{`hx-get="/f/app?app=`, `action="/install/home-assistant"`, `action="/install/paperless-ngx"`} {
 		if strings.Contains(home, never) {
 			t.Errorf("the home has %q: a per-app card, an installed app suggested, or one with no manifest", never)
 		}
@@ -193,8 +192,8 @@ func TestTheHomeListsTheAppsAndSuggestsMore(t *testing.T) {
 }
 
 // An app gated by address opens from its card like any gated app, and Navidrome's card has "On your
-// phone" beside Open, with no paragraph. On the home its row has the phone between Open and the
-// chevron, and Home Assistant's row, with no phone, keeps its place, so the chevrons line up.
+// phone" beside Open, with no paragraph, on the Apps page and its own; the home's list keeps Open
+// and Details.
 func TestNavidromesCardOpensItAndShowsWhatThePhoneSignsInWith(t *testing.T) {
 	r := newRig(t)
 	raw, _ := os.ReadFile(filepath.Join(r.dir, "routes.json"))
@@ -216,15 +215,11 @@ func TestNavidromesCardOpensItAndShowsWhatThePhoneSignsInWith(t *testing.T) {
 	if strings.Count(body, `action="/phone/`) != 1 || strings.Contains(body, "Current Password") {
 		t.Error("another app's card has the phone, or Navidrome's still has its paragraph")
 	}
-	_, home := get(t, r, "/", c)
-	ha, nd := strings.Index(home, `href="/apps/home-assistant" aria-label`), strings.Index(home, `href="/apps/navidrome" aria-label`)
-	if ha < 0 || nd < 0 {
-		t.Fatalf("the home lacks a chevron per app: %s", home)
+	// Its own page has the card, the button with it; the home's row is Open and Details alone.
+	if _, page := get(t, r, "/apps/navidrome", c); strings.Count(page, `action="/phone/navidrome"`) != 1 {
+		t.Errorf("Navidrome's page lacks On your phone: %s", page)
 	}
-	if row := home[strings.LastIndex(home[:ha], "<aside>"):ha]; !strings.Contains(row, `<span class="slot"></span>`) || strings.Contains(row, "/phone/") {
-		t.Errorf("Home Assistant's row keeps no place for the phone: %s", row)
-	}
-	if row := home[strings.LastIndex(home[:nd], "<aside>"):nd]; !strings.Contains(row, `aria-label="Navidrome on your phone"`) || strings.Contains(row, "slot") {
-		t.Errorf("Navidrome's row has no phone: %s", row)
+	if _, home := get(t, r, "/", c); !strings.Contains(home, `href="/apps/navidrome">Details</a>`) || strings.Contains(home, "/phone/") {
+		t.Errorf("the home's row for Navidrome is not Open and Details alone: %s", home)
 	}
 }

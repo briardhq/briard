@@ -271,26 +271,54 @@ func TestThePassphraseListIsTheEFFShortList(t *testing.T) {
 	}
 }
 
-// The browser's half: on the home page the phone's button opens the dialog over the page, by
-// htmx and the dialog line under the page's own policy, rather than leaving for the page without a
-// script. The one thing added is the click, by its hash. Skipped unless DASHBOARD_BROWSER names a
-// chromium (a test tool's switch, like the gallery's).
+// The browser's half: on the Apps page the phone's button opens the dialog over the page, by htmx
+// and the dialog line under the page's own policy, rather than leaving for the page without a
+// script; and a click outside it, on the backdrop, closes it. The one thing added is the
+// clicking, by its hash. Skipped unless DASHBOARD_BROWSER names a chromium (a test tool's
+// switch, like the gallery's).
 func TestOnYourPhoneOpensADialogInABrowser(t *testing.T) {
 	chromium := os.Getenv("DASHBOARD_BROWSER")
 	if chromium == "" {
 		t.Skip("set DASHBOARD_BROWSER=<chromium> to prove the dialog in a browser")
 	}
+	// After htmx has read the page (it does at DOMContentLoaded, after the body's own scripts).
+	press := `document.querySelector('form[action="/phone/navidrome"] button').click()`
+	// Once the dialog is on the page and open (the page's own line runs first): a click on it, not
+	// on what it holds, is a click on the backdrop.
+	outside := `document.addEventListener('htmx:load',function(e){var d=e.detail.elt;if(d.tagName==='DIALOG')setTimeout(function(){document.body.setAttribute('data-clicked',d.open);d.dispatchEvent(new MouseEvent('click',{bubbles:true}))},100)});`
+	dom := dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)})`)
+	if !strings.Contains(dom, `<h2 class="group-title">Installed</h2>`) || !strings.Contains(dom, `<dialog class="dialog" aria-labelledby="phone-title" open="">`) || len(keys(dom)) != 3 {
+		t.Errorf("the Apps page has no open dialog with the three fields: %s", dom)
+	}
+	dom = dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)});`+outside)
+	// Closed, not yet gone: headless chromium on a virtual clock never fires a dialog's close
+	// event, which takes it off the page, so the dump still holds it, shut.
+	if !strings.Contains(dom, `<h2 class="group-title">Installed</h2>`) || !strings.Contains(dom, `data-clicked="true"`) || strings.Contains(dom, `open=""`) {
+		t.Errorf("a click outside the dialog left it open: %s", dom)
+	}
+}
+
+// dialogInBrowser is the Apps page, with Navidrome installed, as a browser leaves it once script
+// has run in it, under the page's own policy and script's hash.
+func dialogInBrowser(t *testing.T, chromium, script string) string {
+	t.Helper()
 	r, _, _ := galleryRig(t)
 	everyday(t, r)
 	installNavidrome(t, r)
 	// The browser redeems its own code: a fresh handoff, since the rig's cookie spent the first.
 	raw, _ := json.Marshal(dashboard.Handoff{Code: "browser-code", Issued: r.app.now()})
 	must(t, os.WriteFile(r.app.handoffPath, raw, 0o600))
-	// After htmx has read the page (it does at DOMContentLoaded, after the body's own scripts).
-	const click = `addEventListener('DOMContentLoaded',function(){setTimeout(function(){document.querySelector('form[action="/phone/navidrome"] button').click()},100)})`
-	sum := sha256.Sum256([]byte(click))
+	sum := sha256.Sum256([]byte(script))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/" || req.URL.Query().Has("code") {
+		if req.URL.Path == "/go" {
+			// The code is redeemed at the home page; the browser is sent on to the Apps page.
+			rec := httptest.NewRecorder()
+			r.app.ServeHTTP(rec, httptest.NewRequest("GET", "/?code=browser-code", nil))
+			w.Header()["Set-Cookie"] = rec.Header()["Set-Cookie"]
+			http.Redirect(w, req, "/apps", http.StatusSeeOther)
+			return
+		}
+		if req.URL.Path != "/apps" {
 			r.app.ServeHTTP(w, req)
 			return
 		}
@@ -302,16 +330,13 @@ func TestOnYourPhoneOpensADialogInABrowser(t *testing.T) {
 		w.Header().Del("Content-Length")
 		w.Header().Set("Content-Security-Policy", csp+" 'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'")
 		w.WriteHeader(rec.Code)
-		_, _ = io.WriteString(w, strings.Replace(rec.Body.String(), "</body>", "<script>"+click+"</script></body>", 1))
+		_, _ = io.WriteString(w, strings.Replace(rec.Body.String(), "</body>", "<script>"+script+"</script></body>", 1))
 	}))
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, chromium, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-		"--user-data-dir="+t.TempDir(), "--window-size=1200,900", "--virtual-time-budget=5000", "--dump-dom", srv.URL+"/?code=browser-code").Output()
+		"--user-data-dir="+t.TempDir(), "--window-size=1200,900", "--virtual-time-budget=5000", "--dump-dom", srv.URL+"/go").Output()
 	must(t, err)
-	dom := string(out)
-	if !strings.Contains(dom, "Apps running") || !strings.Contains(dom, `<dialog class="dialog" aria-labelledby="phone-title" open="">`) || len(keys(dom)) != 3 {
-		t.Errorf("the home page has no open dialog with the three fields: %s", dom)
-	}
+	return string(out)
 }

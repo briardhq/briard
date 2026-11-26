@@ -114,8 +114,8 @@ The household dashboard's one stylesheet, `dashboard/static/app.css`, and its on
 - [Tailwind CSS](https://tailwindcss.com) v4 (MIT) — the build tool and the utilities the parts in
   `dashboard/css/input.css` are made of; nixpkgs' `tailwindcss_4` at the revision pinned in
   [`flake.lock`](flake.lock).
-- [Lucide](https://lucide.dev) (ISC) — the six sidebar icons, the alert's, and an app row's phone
-  and chevron, inline in `dashboard/templates/shell.html`.
+- [Lucide](https://lucide.dev) (ISC) — the six sidebar icons, the alert's, and the phone of "On your
+  phone", inline in `dashboard/templates/shell.html`.
 - [htmx](https://htmx.org) 2.0.11 (0BSD) — `dashboard/static/htmx-2.0.11.min.js`, the one script on the
   page, which polls a card while it moves; fetched from npm by the hash pinned in the script.
 
