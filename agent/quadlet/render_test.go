@@ -317,10 +317,32 @@ func TestDeterministic(t *testing.T) {
 // to something the catalog never wrote. Silent corruption of what the app was told.
 func TestSpecifiersEscaped(t *testing.T) {
 	m := ha()
-	m.Containers[0].Env = map[string]string{"FMT": "100%done %n"}
+	m.Containers[0].Env = map[string]string{"FMT": "100%done%n"}
 	r := mustRender(t, m)
-	if !strings.Contains(r.Files["briard-home-assistant-ha.container"], "Environment=FMT=100%%done %%n") {
+	if !strings.Contains(r.Files["briard-home-assistant-ha.container"], "Environment=FMT=100%%done%%n\n") {
 		t.Fatalf("percent not escaped:\n%s", r.Files["briard-home-assistant-ha.container"])
+	}
+}
+
+// TestEnvValuesAreOneAssignment: systemd splits an unquoted Environment= line at whitespace, so a
+// value of several words (FreshRSS's install options) would reach the app as its first word. Such
+// a value, or one with a quote or a backslash, is one quoted assignment; a plain value is written
+// bare, as it always was, so no installed app's unit changes.
+func TestEnvValuesAreOneAssignment(t *testing.T) {
+	for v, want := range map[string]string{
+		"--user owner":       `Environment="K=--user owner"`,
+		"a\tb":               "Environment=\"K=a\tb\"",
+		`say "hi"`:           `Environment="K=say \"hi\""`,
+		`C:\x`:               `Environment="K=C:\\x"`,
+		"it's":               `Environment="K=it's"`,
+		"100% done":          `Environment="K=100%% done"`,
+		"Europe/Athens":      "Environment=K=Europe/Athens",
+		"1,31":               "Environment=K=1,31",
+		"http://:8123/x?a=b": "Environment=K=http://:8123/x?a=b",
+	} {
+		if got := envLine("K", v); got != want {
+			t.Errorf("envLine(%q) = %s, want %s", v, got, want)
+		}
 	}
 }
 

@@ -226,7 +226,7 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 			lines = append(lines, "AddCapability="+cp)
 		}
 		for _, k := range sortedKeys(c.Env) {
-			lines = append(lines, "Environment="+k+"="+escape(c.Env[k]))
+			lines = append(lines, envLine(k, c.Env[k]))
 		}
 		// The container supervises itself: quadlet passes a [Service] section through verbatim and
 		// emits Restart= only for the pod, not a container (measured against podman 5.8.2's own
@@ -590,9 +590,23 @@ func sortedKeys(m map[string]string) []string {
 // escape neutralises systemd's specifier syntax. A literal '%' in a value would otherwise be
 // read as a specifier (%n, %i, ...) and expanded to something the catalog never wrote —
 // harmless-looking in an env var, and a silent corruption of what the app was told. The
-// manifest already forbids newlines (that check is the anti-injection boundary); this is the
-// remaining way a legal value can mean something other than itself.
+// manifest already forbids newlines (that check is the anti-injection boundary); envLine handles
+// the other way a legal value can mean something other than itself.
 func escape(v string) string { return strings.ReplaceAll(v, "%", "%%") }
+
+// envLine is one Environment= line. systemd, and quadlet after it, split an unquoted line at
+// whitespace into several assignments and read quotes and backslashes as syntax, so a value of
+// several words would reach the app as its first word, the rest dropped as malformed
+// assignments. A value holding whitespace, a quote or a backslash is therefore written as one
+// double-quoted assignment, with `"` and `\` escaped; any other value is written bare, so the
+// unit of an app whose values hold none of them reads as it always has.
+func envLine(k, v string) string {
+	v = escape(v)
+	if !strings.ContainsAny(v, " \t\"'\\") {
+		return "Environment=" + k + "=" + v
+	}
+	return `Environment="` + k + "=" + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(v) + `"`
+}
 
 // String renders the file set in a stable order, for logs and test diffing.
 func (r Rendered) String() string {
