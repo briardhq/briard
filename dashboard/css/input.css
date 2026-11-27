@@ -75,6 +75,9 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 /* "On your phone" is wider, so the longest address it gives, the casa name with a path after it
    (FreshRSS's Google Reader API), stays on one line. */
 .phone > * { max-width: min(calc(100% - 2rem), var(--container-3xl)); }
+/* THE QR CODE under "On your phone"'s fields: large enough for a phone's camera across a desk,
+   crisp at any scale, on the white it carries in both themes. */
+.qr { @apply mt-2 size-48 rounded-md; image-rendering: pixelated; }
 /* An icon in a line of text -- the browser's warning sign, the address's padlock -- sits on the
    text's baseline at its size. */
 .card p > svg, .card strong > svg { @apply inline size-[1em] -mt-1 mr-1; }

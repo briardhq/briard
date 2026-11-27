@@ -19,6 +19,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"html/template"
 	"log"
 	"math/big"
 	"net/http"
@@ -47,13 +48,15 @@ type phoneClients struct{ Label, URL string }
 
 // phoneView is the dialog: the app, what its client signs in with or why it could not be read, and
 // the link to its clients. Replace is Home Assistant's or FreshRSS's password row as a button: no
-// kept password signs in any more.
+// kept password signs in any more. QR is the code of the phone's copy page for these fields
+// (copy.go), "" when there are none.
 type phoneView struct {
 	Name, Title                 string
 	Address, Username, Password string
 	Replace                     bool
 	Error                       string
 	Clients                     phoneClients
+	QR                          template.URL
 }
 
 // phone answers the button: the dialog for htmx, which adds it to the page and opens it
@@ -98,6 +101,7 @@ func (a *app) phone(w http.ResponseWriter, r *http.Request, name string) {
 		log.Printf("dashboard: %s on a phone: %v", name, err)
 		v.Username, v.Password, v.Error = "", "", "Could not read the sign-in from "+v.Title+": "+err.Error()
 	}
+	v.QR = a.copyQR(v)
 	tmpl := "phone-page"
 	if r.Header.Get("HX-Request") == "true" {
 		tmpl = "phone-dialog"

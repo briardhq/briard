@@ -505,6 +505,21 @@ var galleryStates = []galleryState{
 			installNavidrome(t, r)
 			return "/phone/navidrome?", c
 		}},
+	{"phone-freshrss", "On your phone for FreshRSS on a household with its casa name: the Google Reader address on one line, three kept words, and the QR code of the phone's copy page.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			installFreshRSS(t, r)
+			galleryCasa(t, r)
+			return "/phone/freshrss?", c
+		}},
+	{"copy", "The phone's copy page, opened from that QR code with no session: one title, each value with its Copy button, the link to the readers.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			installFreshRSS(t, r)
+			galleryCasa(t, r)
+			_, tok := pressForCopy(t, r, c)
+			return "/copy/" + tok, nil
+		}},
 	{"apps-first-run", "The apps page before anything is installed: both available, two coming soon.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			notInstalled(t, r)

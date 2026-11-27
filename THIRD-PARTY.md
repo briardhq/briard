@@ -91,6 +91,7 @@ firmware the guest image bakes, the reverse proxy and the dashboard are Go progr
   Apache-2.0 and MIT parts; see its LICENSE) — decompressing the release artifacts.
 - [`github.com/pion/mdns/v2`](https://github.com/pion/mdns) (MIT) and its dependency
   `github.com/pion/logging` (MIT) — the reverse proxy's `.local` names.
+- [`rsc.io/qr`](https://github.com/rsc/qr) (BSD-3-Clause) — the QR code "On your phone" shows.
 - `golang.org/x/net`, `golang.org/x/crypto`, `golang.org/x/sys` (BSD-3-Clause).
 
 Under Nix the module set is vendored from those exact versions (`vendor-hash.nix` pins it), so the

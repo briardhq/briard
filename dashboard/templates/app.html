@@ -68,12 +68,29 @@
     <div class="item"><section><h3>Username</h3><p class="key">{{.Username}}</p></section></div>
     <div class="item"><section><h3>Password</h3>{{if .Replace}}<form method="post" action="/phone/{{.Name}}?new" hx-post="/phone/{{.Name}}?new" hx-target="closest dialog" hx-swap="outerHTML"><button type="submit" class="btn" data-variant="outline">New password</button></form>{{else}}<p class="key">{{.Password}}</p>{{end}}</section></div>
     {{with $.Clients.URL}}<div class="item"><section><p><a href="{{.}}" target="_blank" rel="noopener">{{$.Clients.Label}}</a></p></section></div>{{end}}
+    {{with $.QR}}<div class="item"><section><h3>Scan to copy and paste on your phone</h3><img class="qr" src="{{.}}" alt="A code that opens these settings on your phone"></section></div>{{end}}
   </div>{{end}}{{end}}
 {{define "phone-dialog"}}<dialog class="dialog phone" aria-labelledby="phone-title"><div><header><h2 id="phone-title">{{.Title}} on your phone</h2></header><section>{{template "phone-fields" .}}</section><footer><form method="dialog"><button type="submit" class="btn" autofocus>Done</button></form></footer></div></dialog>{{end}}
 {{define "phone-page"}}{{template "head" (shell "apps" false)}}
 <header class="page-head"><h1>{{.Title}} on your phone</h1></header>
 <div class="tiles"><div class="card"><section>{{template "phone-fields" .}}</section><footer><a class="btn" href="/apps/{{.Name}}">Done</a></footer></div></div>
 {{template "foot" (shell "apps" false)}}{{end}}
+
+{{/* THE PHONE'S COPY PAGE: the fields "On your phone" showed, opened from its QR code on a phone
+     with no session (copy.go). One title says what to do; each value has its Copy button. No
+     sidebar and nothing else about the home: the token opens these fields and nothing more. */}}
+{{define "copy-field"}}<div class="item"><section><h3>{{.Label}}</h3><p class="key" id="{{.ID}}">{{.Value}}</p></section><aside><button type="button" class="btn" data-variant="outline" data-copy="{{.ID}}">Copy</button></aside></div>{{end}}
+{{define "copy"}}{{template "head" (shell "" false)}}
+{{if .Gone}}<header class="page-head"><h1>This code has expired</h1><p>Open "On your phone" on the dashboard again.</p></header>
+{{else}}<header class="page-head"><h1>Copy these settings into your {{.Title}} client</h1></header>
+<div class="card"><section><div class="item-group">
+  {{template "copy-field" (copyField "address" "Address" .Address)}}
+  {{template "copy-field" (copyField "username" "Username" .Username)}}
+  {{with .Password}}{{template "copy-field" (copyField "password" "Password" .)}}{{end}}
+  {{with .Clients.URL}}<div class="item"><section><p><a href="{{.}}" target="_blank" rel="noopener noreferrer">{{$.Clients.Label}}</a></p></section></div>{{end}}
+</div></section></div>
+<script>{{copy}}</script>{{end}}
+{{template "foot" (shell "" false)}}{{end}}
 
 {{/* SUGGESTED APPS: a few the machine could run next, each one click away; the rest under Apps. */}}
 {{define "suggested"}}

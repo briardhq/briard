@@ -43,12 +43,12 @@ const drawerScript = "var s=document.querySelector('.sidebar'),m=matchMedia('(mi
 const dialogScript = "document.addEventListener('htmx:load',function(e){var d=e.detail.elt;if(d.tagName!=='DIALOG')return;" +
 	"d.addEventListener('close',function(){d.remove()});d.addEventListener('click',function(e){if(e.target===d)d.close()});d.showModal()})"
 
-// csp is every page's Content-Security-Policy: scripts from this origin and the three inline
+// csp is every page's Content-Security-Policy: scripts from this origin and the four inline
 // lines, by hash. The dashboard is the whole security budget of the home's browser, so nothing
 // else may run.
 var csp = func() string {
 	p := "script-src 'self'"
-	for _, s := range []string{themeScript, drawerScript, dialogScript} {
+	for _, s := range []string{themeScript, drawerScript, dialogScript, copyScript} {
 		sum := sha256.Sum256([]byte(s))
 		p += " 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
 	}

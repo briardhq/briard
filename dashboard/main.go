@@ -85,7 +85,7 @@ const htmxPath = "/htmx-2.0.11.min.js"
 var images embed.FS
 
 var page = template.Must(template.New("").Funcs(template.FuncMap{
-	"shell": shellOf, "theme": theme, "drawer": drawer, "dialog": dialog, "htmx": func() string { return htmxPath },
+	"shell": shellOf, "theme": theme, "drawer": drawer, "dialog": dialog, "copy": copyJS, "copyField": copyField, "htmx": func() string { return htmxPath },
 }).ParseFS(pageFS, "templates/*.html"))
 
 // shellView is what the shell renders around a page: the section the sidebar marks current
@@ -227,11 +227,14 @@ type app struct {
 	// password, as navidromeMu does.
 	freshrssExec func(ctx context.Context, stdin string, args ...string) ([]byte, error)
 	freshrssMu   sync.Mutex
+	// copyPages are the live tokens of the phone's copy page (copy.go), under copyMu.
+	copyMu    sync.Mutex
+	copyPages map[string]copyPage
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
 	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now, viewWait: 15 * time.Second,
-		pending: map[string]*pending{}, hops: map[string]hop{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
+		pending: map[string]*pending{}, hops: map[string]hop{}, copyPages: map[string]copyPage{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
 		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths, casaPath: dashboard.CasaPath,
 		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath, backupPath: dashboard.BackupPath, backupKeyPath: dashboard.BackupKeyPath, backupKeySavedPath: dashboard.BackupKeySavedPath, catalogPath: dashboard.CatalogPath, snapshotsPath: quadlet.SnapshotsDir}
 }
@@ -277,6 +280,10 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.fragment(w, r, d, strings.TrimPrefix(r.URL.Path, "/f/"))
 	case r.URL.Path == "/" && r.Method == http.MethodGet && r.URL.Query().Get("code") != "":
 		a.redeem(w, r, r.URL.Query().Get("code"))
+	case strings.HasPrefix(r.URL.Path, copyPath) && r.Method == http.MethodGet:
+		// The phone's copy page, the one page served without a session: its token is the key
+		// (copy.go).
+		a.serveCopy(w, r, strings.TrimPrefix(r.URL.Path, copyPath))
 	case r.URL.Path == "/hop" && r.Method == http.MethodGet:
 		a.serveHop(w, r)
 	case sections[r.URL.Path].tmpl != "" && r.Method == http.MethodGet:

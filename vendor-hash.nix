@@ -14,4 +14,4 @@
 # shape are load-bearing: this file must stay at the repo root and evaluate to the hash string
 # alone. Move it or wrap it in an attrset and the sibling build breaks (loudly, since it imports
 # rather than greps, but it breaks).
-"sha256-jcMD0leD8MtoCWaiLKu2zuEVPpCxgpn9agOqxtx9zlk="
+"sha256-SlRdQFPUCDMNC1At6B1lN6YC6TgdBvsGKJYt7AKYbIo="

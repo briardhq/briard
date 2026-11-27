@@ -7,6 +7,7 @@ require (
 	github.com/pion/mdns/v2 v2.2.1
 	golang.org/x/net v0.52.0
 	golang.org/x/sys v0.43.0
+	rsc.io/qr v0.2.0
 )
 
 require github.com/pion/logging v0.2.4 // indirect
