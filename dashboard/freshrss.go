@@ -143,15 +143,32 @@ func (a *app) freshrssSignIn(ctx context.Context, s routes.App, replace bool) (u
 	if _, err := a.inFreshRSS(ctx, words, "sh", "-c", `umask 077 && cat > "$1.new" && mv -f "$1.new" "$1" && sync -f "$1"`, "sh", kept); err != nil {
 		return "", "", fmt.Errorf("keep your password in FreshRSS: %w", err)
 	}
-	ok, err = freshrssSignsIn(ctx, base.String(), user, words)
-	if err != nil {
-		return "", "", err
+	// FreshRSS reads the user's settings through PHP's opcache, which FreshRSS's image has look
+	// at a file again only every two seconds: until then its sign-in still checks the old hash.
+	// So a refusal is asked again until freshrssSettles has passed, and only then believed.
+	deadline := time.Now().Add(freshrssSettles)
+	for {
+		ok, err := freshrssSignsIn(ctx, base.String(), user, words)
+		if err != nil {
+			return "", "", err
+		}
+		if ok {
+			return user, words, nil
+		}
+		if time.Now().After(deadline) {
+			return "", "", errors.New("FreshRSS did not take the new password")
+		}
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
-	if !ok {
-		return "", "", errors.New("FreshRSS did not take the new password")
-	}
-	return user, words, nil
 }
+
+// freshrssSettles is how long a new password may take to reach FreshRSS's sign-in: its image's
+// opcache.revalidate_freq, two seconds, with room.
+var freshrssSettles = 5 * time.Second
 
 // freshrssSignsIn asks FreshRSS's Google Reader API whether a username and password sign in: the
 // sign-in a phone's reader makes, by the reader's own request.

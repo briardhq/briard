@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"briard.io/shared/routes"
 )
@@ -25,7 +26,9 @@ type fakeFreshRSS struct {
 	apiPassword string
 	kept        string
 	setTo       []string // every password update-user was given
+	lag         int      // sign-ins after a change that still check the old password, as opcache makes them
 	logins      int
+	stale       int
 }
 
 func (f *fakeFreshRSS) exec(_ context.Context, stdin string, args ...string) ([]byte, error) {
@@ -39,6 +42,7 @@ func (f *fakeFreshRSS) exec(_ context.Context, stdin string, args ...string) ([]
 		if i := slices.Index(args, "--api-password"); i > 0 {
 			f.apiPassword = args[i+1]
 			f.setTo = append(f.setTo, args[i+1])
+			f.stale = f.lag
 		}
 		return nil, nil
 	case len(args) >= 2 && args[0] == "php":
@@ -64,6 +68,11 @@ func (f *fakeFreshRSS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.logins++
+	if f.stale > 0 {
+		f.stale--
+		http.Error(w, "Unauthorized!", http.StatusUnauthorized)
+		return
+	}
 	if r.FormValue("Email") == "owner" && f.apiPassword != "" && r.FormValue("Passwd") == f.apiPassword {
 		w.Write([]byte("SID=owner/x\nAuth=owner/x\n"))
 		return
@@ -120,10 +129,13 @@ func TestTheCheckNamesFreshRSSsDefaultUser(t *testing.T) {
 
 // A user with no API password is given three of the list's words at the first press, kept beside
 // the user and checked by FreshRSS's own sign-in; the dialog gives the Google Reader API's address
-// and the link to FreshRSS's readers. The next press shows the same words and sets nothing.
+// and the link to FreshRSS's readers, once its sign-in takes them, which right after the change
+// it may not yet. The next press shows the same words and sets nothing.
 func TestOnYourPhoneGivesFreshRSSThreeKeptWords(t *testing.T) {
 	r := newRig(t)
 	f := installFreshRSS(t, r)
+	// FreshRSS still checks the old password for its first sign-ins after a change.
+	f.lag = 3
 	c := r.trust()
 	_, body := press(t, r, "/phone/freshrss", c, true)
 	got := keys(body)
@@ -163,5 +175,20 @@ func TestOnYourPhoneOffersFreshRSSANewPasswordWhenTheKeptOneFails(t *testing.T) 
 	got := keys(body)
 	if len(got) != 3 || len(f.setTo) != 1 || f.setTo[0] != got[2] || f.kept != got[2] {
 		t.Errorf("New password: dialog %q, set %q, kept %q", got, f.setTo, f.kept)
+	}
+}
+
+// Words FreshRSS's sign-in never takes are said, not shown: a password nobody can sign in with is
+// worse than none.
+func TestOnYourPhoneSaysWhenFreshRSSNeverTakesTheWords(t *testing.T) {
+	r := newRig(t)
+	f := installFreshRSS(t, r)
+	f.lag = 1 << 30
+	settles := freshrssSettles
+	freshrssSettles = 300 * time.Millisecond
+	t.Cleanup(func() { freshrssSettles = settles })
+	_, body := press(t, r, "/phone/freshrss", r.trust(), true)
+	if got := keys(body); len(got) != 0 || !strings.Contains(body, "FreshRSS did not take the new password") {
+		t.Errorf("dialog %q: %s", got, body)
 	}
 }
