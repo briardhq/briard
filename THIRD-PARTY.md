@@ -124,5 +124,5 @@ The household dashboard's one stylesheet, `dashboard/static/app.css`, and its on
 `dashboard/eff_short_wordlist_1.txt` is the Electronic Frontier Foundation's
 [short word list](https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases)
 (`eff_short_wordlist_1.txt`), unmodified, licensed
-[CC BY 3.0 US](https://creativecommons.org/licenses/by/3.0/us/). The dashboard picks three of its
-words for the password a phone's music app signs in to Navidrome with.
+[CC BY 3.0 US](https://creativecommons.org/licenses/by/3.0/us/). The dashboard picks its words for
+the passwords a phone's client signs in to Navidrome, FreshRSS and Home Assistant with.

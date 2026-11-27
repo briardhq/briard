@@ -1,8 +1,9 @@
 package main
 
 // The gate's dashboard half (reverse-proxy/gate.go is the reverse proxy's). A gated app -- Files,
-// Mealie, Navidrome -- has no login of its own; the household reaches it with this dashboard's
-// session, carried to the app's own name the way the hop carries it between the dashboard's names:
+// Mealie, Navidrome, FreshRSS -- has no login of its own; the household reaches it with this
+// dashboard's session, carried to the app's own name the way the hop carries it between the
+// dashboard's names:
 //
 //   - GET /open/<app>, on a browser this dashboard trusts, mints a one-time code for the device's
 //     own token and sends the browser to the app's name with it; an untrusted browser gets the
@@ -26,6 +27,7 @@ import (
 	"strings"
 
 	"briard.io/agent/files"
+	"briard.io/agent/freshrss"
 	"briard.io/agent/mealie"
 	"briard.io/agent/navidrome"
 	"briard.io/shared/casa"
@@ -130,9 +132,9 @@ func (a *app) gateRedeem(w http.ResponseWriter, r *http.Request) {
 // gateCheck says whether a session token is still a trusted device's, and whose, for the app the
 // reverse proxy names: 200 with the username the reverse proxy signs into the app -- the one
 // fixed name (agent/files) for Files, or the one the app's own accounts say for Mealie
-// (mealie.go) and Navidrome (navidrome.go); 401 not a trusted device; 409 a trusted device with
-// no record, which only an open writes and an app's first account takes its name from; 503 an
-// app still starting, or with no account of the user's to open.
+// (mealie.go), Navidrome (navidrome.go) and FreshRSS (freshrss.go); 401 not a trusted device; 409 a
+// trusted device with no record, which only an open writes and an app's first account takes its
+// name from; 503 an app still starting, or with no account of the user's to open.
 func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 	if viaProxy(r) {
 		http.NotFound(w, r)
@@ -146,16 +148,19 @@ func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	// Mealie's and Navidrome's user is the one the app's own accounts say, read at every check
-	// (mealie.go, navidrome.go).
+	// Mealie's, Navidrome's and FreshRSS's user is the one the app's own accounts say, read at
+	// every check (mealie.go, navidrome.go, freshrss.go).
 	user := files.User
 	app := r.URL.Query().Get("app")
-	if s, ok := gatedApps(a.routesPath)[app]; ok && (app == mealie.Name || app == navidrome.Name) {
+	if s, ok := gatedApps(a.routesPath)[app]; ok && (app == mealie.Name || app == navidrome.Name || app == freshrss.Name) {
 		var err error
-		if app == mealie.Name {
+		switch app {
+		case mealie.Name:
 			user, err = a.mealieUser(r.Context(), s)
-		} else {
+		case navidrome.Name:
 			user, err = a.navidromeUser(r.Context())
+		default:
+			user, err = a.freshrssUser(r.Context())
 		}
 		if err != nil {
 			log.Printf("dashboard: find the user's account in %s: %v", app, err)

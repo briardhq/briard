@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"briard.io/agent/files"
+	"briard.io/agent/freshrss"
 	"briard.io/agent/hass"
 	"briard.io/agent/mealie"
 	"briard.io/agent/mosquitto"
@@ -484,6 +485,7 @@ func TestAppDirMatchesTheRegistry(t *testing.T) {
 		{mosquitto.Name, mosquitto.Dir},
 		{files.Name, files.Dir},
 		{navidrome.Name, navidrome.Dir},
+		{freshrss.Name, freshrss.Dir},
 	} {
 		if want := defaultRunDir + "/" + c.name; c.dir != want {
 			t.Errorf("%s's package declares %q, the registry derives %q", c.name, c.dir, want)
@@ -527,6 +529,30 @@ func TestNavidromeIsGatedByAddressAndItsLibraryIsTheHouseholds(t *testing.T) {
 	for _, o := range []manifest.Manifest{svc(files.Name, 80), svc(mealie.Name, 9000), svc(hass.Name, 8123), svc("something-else", 8080)} {
 		if GateByAddress(o) || Open(o) != nil || HouseholdWrites(o, navidrome.Music) {
 			t.Errorf("%s was given Navidrome's gate, open paths or library", o.Name)
+		}
+	}
+}
+
+// FreshRSS is gated by address alone, as Navidrome is, its Google Reader API open. It gets its
+// Apache file over the image's hook and not the app directory at /briard, which it would not read.
+// No other app gets its gate, its open paths or its file.
+func TestFreshRSSIsGatedByAddressWithItsFileOverTheHook(t *testing.T) {
+	m := svc(freshrss.Name, 80)
+	if !GateByAddress(m) || Gate(m) != "" || GateHeader(m) != "" {
+		t.Errorf("FreshRSS's gate: by address %v, secret %q, header %q; want by address alone", GateByAddress(m), Gate(m), GateHeader(m))
+	}
+	if o := Open(m); !slices.Equal(o, []string{"/api/greader.php/"}) {
+		t.Errorf("Open(freshrss) = %v", o)
+	}
+	if v := Volumes(m, m.Containers[0]); !slices.Equal(v, []string{freshrss.ConfigPath + ":" + freshrss.Hook + ":ro"}) {
+		t.Errorf("FreshRSS's binds: %v", v)
+	}
+	if u := User(m, m.Containers[0]); u != "" {
+		t.Errorf("User(freshrss) = %q, want the image's own", u)
+	}
+	for _, o := range []manifest.Manifest{svc(files.Name, 80), svc(mealie.Name, 9000), svc(hass.Name, 8123), svc("something-else", 8080)} {
+		if GateByAddress(o) || Open(o) != nil || slices.Contains(Volumes(o, o.Containers[0]), freshrss.ConfigPath+":"+freshrss.Hook+":ro") {
+			t.Errorf("%s was given FreshRSS's gate, open paths or file", o.Name)
 		}
 	}
 }

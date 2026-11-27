@@ -222,6 +222,11 @@ type app struct {
 	// replaces the password, so two presses never set two passwords and show one.
 	navidromeExec func(ctx context.Context, args ...string) ([]byte, error)
 	navidromeMu   sync.Mutex
+	// freshrssExec runs one of FreshRSS's tools in its container in a test, podman otherwise
+	// (freshrss.go). freshrssMu holds a second "On your phone" while the first reads or sets the
+	// password, as navidromeMu does.
+	freshrssExec func(ctx context.Context, stdin string, args ...string) ([]byte, error)
+	freshrssMu   sync.Mutex
 }
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {

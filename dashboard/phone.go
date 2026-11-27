@@ -2,12 +2,13 @@ package main
 
 // "On your phone": what a client app on another device signs in to an app with -- its address, a
 // username and a password -- shown in a dialog to copy, beside the app's Open, with a link to the
-// clients the app's project lists. Two apps have one. Navidrome (navidrome.go): a phone's music
-// app speaks its Subsonic API, on the one path the reverse proxy leaves open. Home Assistant: its
-// companion app signs in on Home Assistant's own login page, with the owner's username and four
-// words the in-HA integration keeps (agent/hass). The dialog holds the three fields, the link and
-// no prose; the button is a POST, because the first press may change Navidrome's password, so no
-// page load ever does.
+// clients the app's project lists. Three apps have one. Navidrome (navidrome.go): a phone's music
+// app speaks its Subsonic API, on the one path the reverse proxy leaves open. FreshRSS
+// (freshrss.go): a phone's feed reader speaks its Google Reader API, likewise, with three words
+// kept in FreshRSS's data. Home Assistant: its companion app signs in on Home Assistant's own
+// login page, with the owner's username and four words the in-HA integration keeps (agent/hass).
+// The dialog holds the three fields, the link and no prose; the button is a POST, because the
+// first press may set Navidrome's or FreshRSS's password, so no page load ever does.
 //
 // The address is the household's casa name once it resolves with a certificate, the one a phone
 // reaches from away too; the app's `.local` name before that.
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"briard.io/agent/freshrss"
 	"briard.io/agent/hass"
 	"briard.io/agent/navidrome"
 	"briard.io/shared/casa"
@@ -37,14 +39,15 @@ import (
 var phoneApps = map[string]phoneClients{
 	navidrome.Name: {"Compatible players", "https://www.navidrome.org/apps/"},
 	hass.Name:      {"Companion apps", "https://companion.home-assistant.io/"},
+	freshrss.Name:  {"Compatible readers", "https://github.com/FreshRSS/FreshRSS#apis--native-apps"},
 }
 
 // phoneClients is the link to an app's clients: its words and where it goes.
 type phoneClients struct{ Label, URL string }
 
 // phoneView is the dialog: the app, what its client signs in with or why it could not be read, and
-// the link to its clients. Replace is Home Assistant's password row as a button: no kept password
-// signs in any more.
+// the link to its clients. Replace is Home Assistant's or FreshRSS's password row as a button: no
+// kept password signs in any more.
 type phoneView struct {
 	Name, Title                 string
 	Address, Username, Password string
@@ -54,8 +57,8 @@ type phoneView struct {
 }
 
 // phone answers the button: the dialog for htmx, which adds it to the page and opens it
-// (fragment.go), or the same fields as a page of their own without a script. For Home Assistant,
-// `?new` is the dialog's "New password", which sets four new words first.
+// (fragment.go), or the same fields as a page of their own without a script. For Home Assistant
+// and FreshRSS, `?new` is the dialog's "New password", which sets new words first.
 func (a *app) phone(w http.ResponseWriter, r *http.Request, name string) {
 	clients, ok := phoneApps[name]
 	if !ok {
@@ -74,7 +77,6 @@ func (a *app) phone(w http.ResponseWriter, r *http.Request, name string) {
 		}
 		v.Address = a.phoneAddress(ha.app)
 		v.Username, v.Password, err = a.homeAssistantSignIn(ctx, ha, r.URL.Query().Has("new"))
-		v.Replace = err == nil && v.Password == ""
 	} else {
 		s, ok := gatedApps(a.routesPath)[name]
 		if !ok {
@@ -82,8 +84,16 @@ func (a *app) phone(w http.ResponseWriter, r *http.Request, name string) {
 			return
 		}
 		v.Address = a.phoneAddress(s)
-		v.Username, v.Password, err = a.navidromeSignIn(ctx, s)
+		if name == freshrss.Name {
+			// A Google Reader client is given the API's own address, as FreshRSS's profile page
+			// gives it.
+			v.Address += freshrssAPI
+			v.Username, v.Password, err = a.freshrssSignIn(ctx, s, r.URL.Query().Has("new"))
+		} else {
+			v.Username, v.Password, err = a.navidromeSignIn(ctx, s)
+		}
 	}
+	v.Replace = err == nil && v.Password == ""
 	if err != nil {
 		log.Printf("dashboard: %s on a phone: %v", name, err)
 		v.Username, v.Password, v.Error = "", "", "Could not read the sign-in from "+v.Title+": "+err.Error()
@@ -164,9 +174,11 @@ var words = func() []string {
 
 // passphrase is `n` words of the list, joined by spaces, about 10.3 bits a word, typed on a
 // phone once: a space is on a phone keyboard's first page, a hyphen is not. Navidrome's are
-// three (about 31 bits), behind its own sign-in limit. Home Assistant's are four (about 41
-// bits): it limits nothing unless the household sets it, so the brake is its bcrypt hash alone,
-// about a quarter second of one core per guess, from the home's network and from away alike.
+// three (about 31 bits), behind its own sign-in limit. FreshRSS's are three too: it limits
+// nothing, and its bcrypt hash costs about 20 ms of a core per guess, but they open a feed reader
+// and nothing else. Home Assistant's are four (about 41 bits): it limits nothing unless the
+// household sets it, so the brake is its bcrypt hash alone, about a quarter second of one core
+// per guess, from the home's network and from away alike.
 func passphrase(n int) (string, error) {
 	size := big.NewInt(int64(len(words)))
 	var picked []string

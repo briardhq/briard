@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"briard.io/agent/files"
+	"briard.io/agent/freshrss"
 	"briard.io/agent/hass"
 	"briard.io/agent/mealie"
 	"briard.io/agent/mosquitto"
@@ -126,6 +127,8 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 		out = files.Volumes(m, c)
 	case mealie.Name:
 		out = mealie.Volumes(m, c)
+	case freshrss.Name:
+		out = freshrss.Volumes(m, c)
 	}
 	// The app's own directory, read-only, and it is the product's general shape rather than
 	// one app's arrangement -- which is why it lives here and not in agent/hass. Everything
@@ -380,6 +383,9 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest, podGateway st
 		// The address the reverse proxy reaches the pod network from is the one Navidrome trusts
 		// to name its user. Converge knows the pool; nothing in an app package does.
 		return navidrome.Prepare(ctx, x, m, podGateway)
+	case freshrss.Name:
+		// The same address, for the same reason: FreshRSS trusts it to name its user.
+		return freshrss.Prepare(ctx, x, m, podGateway)
 	}
 	return nil
 }
@@ -420,7 +426,7 @@ func Capabilities(m manifest.Manifest, c manifest.Container) string {
 // through only with the household dashboard's session, and then tells the app who it is in a way
 // the app checks against the secret. Files and Mealie are gated: Files holds every app's data,
 // and Mealie has no sign-in of its own briard would not have to tell the user a password for.
-// Navidrome is gated with no secret (GateByAddress). Home Assistant keeps its own login because its
+// Navidrome and FreshRSS are gated with no secret (GateByAddress). Home Assistant keeps its own login because its
 // companion app has no browser session to bring.
 func Gate(m manifest.Manifest) string {
 	switch m.Name {
@@ -443,17 +449,22 @@ func GateHeader(m manifest.Manifest) string {
 
 // GateByAddress reports whether an app is gated with no secret at all: it trusts the address the
 // reverse proxy reaches the pod network from, and the reverse proxy names the user alone.
-// Navidrome is, having no way to check a secret; what else shares that address can sign in to it
-// too, which is accepted for a music server (agent/navidrome).
+// Navidrome and FreshRSS are, having no way to check a secret; what else shares that address can
+// sign in to them too, which is accepted for a music server and a feed reader (agent/navidrome,
+// agent/freshrss).
 func GateByAddress(m manifest.Manifest) bool {
-	return m.Name == navidrome.Name
+	return m.Name == navidrome.Name || m.Name == freshrss.Name
 }
 
 // Open are a gated app's paths the reverse proxy forwards without the dashboard's session: an API
-// a client app calls with the app's own credential. Navidrome's Subsonic API is the one.
+// a client app calls with the app's own credential: Navidrome's Subsonic API, FreshRSS's Google
+// Reader API.
 func Open(m manifest.Manifest) []string {
-	if m.Name == navidrome.Name {
+	switch m.Name {
+	case navidrome.Name:
 		return navidrome.Open
+	case freshrss.Name:
+		return freshrss.Open
 	}
 	return nil
 }
