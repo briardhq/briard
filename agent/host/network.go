@@ -26,9 +26,10 @@ import (
 // converge, a rebuild).
 const netTick = 10 * time.Second
 
-// netSettle bounds how long a cold start holds its choice for a NIC whose lease is still in
-// flight. Thirty seconds covers a home router's DHCP at boot with room to spare, and is what a
-// NIC that never gets a gateway costs each cold start.
+// netSettle bounds how long a cold start holds its choice (coldStartHold): for a NIC whose lease
+// is still in flight, or for the parent last served on to appear. Thirty seconds covers a home
+// router's DHCP at boot with room to spare, and is what a NIC that never gets a gateway, or a
+// parent that is gone for good, costs each cold start.
 const netSettle = 30 * time.Second
 
 // netCheckTicks is how many status ticks apart the observe loop runs its network checks (the
@@ -197,17 +198,13 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 		logf("network: %v", err)
 	}
 	// The cold start, the one moment the parent is chosen afresh. The parent last served on is
-	// preferred on a tie, so a restart that finds two equal uplinks stays where it was.
+	// waited for while it is missing (coldStartHold) and preferred on a tie, so a restart that
+	// finds two equal uplinks stays where it was.
 	var said, held string // the last degradation said, and the last settle (not a degradation)
 	settled := time.Now().Add(netSettle)
 	prefer := cfg.recordedNetwork().Parent
 	for {
-		// Hold the choice while a NIC has a link and no default route yet (DHCP still in flight
-		// at boot), so a boot picks neither the radio that associated first nor nothing. Bounded,
-		// because a NIC with no gateway by design (a storage link) holds it every cold start, and
-		// waived for BRIARD_NIC, which needs no ranking.
-		if d := nic.Settling(); d != "" && cfg.NICOverride == "" && time.Now().Before(settled) {
-			why := d + " has a link and no default route yet; waiting for it before choosing"
+		if why := coldStartHold(cfg.NICOverride, prefer, nic.Exists, nic.Settling); why != "" && time.Now().Before(settled) {
 			if why != held {
 				logf("network: %s", why)
 				held = why
@@ -271,6 +268,33 @@ func (cfg Config) awaitNetwork(ctx context.Context, local <-chan localRequest, d
 			return cfg, werr
 		}
 	}
+}
+
+// coldStartHold says why a cold start should not choose yet, "" when it may. The caller bounds it
+// (netSettle), and BRIARD_NIC waives it, since a named device needs no ranking. Two reasons:
+//
+// The parent last served on is not here yet. Whatever manages the host's network may still be
+// building it: a bridge, a bond or a VLAN appears only when its manager runs, and the agent has
+// no ordering against that manager. Choosing in that window takes whichever device holds a
+// default route, and a NIC can hold one before its manager runs (an initrd that unlocked the disk
+// over the network leaves its address behind). Children on that NIC make it busy, the manager
+// cannot make it the bridge's port, and the host itself is off the network with nothing to undo
+// it: the chosen parent never goes away, so nothing re-selects.
+//
+// A NIC has a link and no default route yet (DHCP still in flight at boot), so a boot picks
+// neither the radio that associated first nor nothing. A NIC with no gateway by design (a storage
+// link) holds it every cold start, which is what the bound is for.
+func coldStartHold(override, prefer string, exists func(string) bool, settling func() string) string {
+	if override != "" {
+		return ""
+	}
+	if prefer != "" && !exists(prefer) {
+		return prefer + ", the device this node last served on, is not here yet; waiting for it before choosing"
+	}
+	if d := settling(); d != "" {
+		return d + " has a link and no default route yet; waiting for it before choosing"
+	}
+	return ""
 }
 
 // netSwap bounds a member swap: the leaving member's exit and the arriving one's join are each

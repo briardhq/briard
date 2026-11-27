@@ -130,6 +130,36 @@ func TestAwaitNetworkReturnsWhenThereIsNoNetworkToOwn(t *testing.T) {
 	}
 }
 
+// A cold start holds while the parent it last served on is missing, ahead of the lease check: at
+// boot a NIC can hold a default route before the manager that makes it a bridge port has run, and
+// choosing it then takes the host off its own network.
+func TestColdStartHold(t *testing.T) {
+	present := func(devs ...string) func(string) bool {
+		return func(d string) bool { return slices.Contains(devs, d) }
+	}
+	settling := func(d string) func() string { return func() string { return d } }
+	const missing = "vmbr2, the device this node last served on, is not here yet; waiting for it before choosing"
+	const leasing = "eno1 has a link and no default route yet; waiting for it before choosing"
+	for _, tc := range []struct {
+		name, override, prefer string
+		exists                 func(string) bool
+		settling               func() string
+		want                   string
+	}{
+		{"recorded bridge not built yet, its port holding the route", "", "vmbr2", present("eno1"), settling(""), missing},
+		{"recorded parent missing outranks a NIC mid-lease", "", "vmbr2", present("eno1"), settling("eno1"), missing},
+		{"recorded parent here, a NIC mid-lease", "", "vmbr2", present("vmbr2", "eno1"), settling("eno1"), leasing},
+		{"recorded parent here, nothing settling", "", "vmbr2", present("vmbr2", "eno1"), settling(""), ""},
+		{"no record, a NIC mid-lease", "", "", present("eno1"), settling("eno1"), leasing},
+		{"no record, nothing settling", "", "", present("eno1"), settling(""), ""},
+		{"BRIARD_NIC waives both", "vmbr2", "vmbr2", present("eno1"), settling("eno1"), ""},
+	} {
+		if got := coldStartHold(tc.override, tc.prefer, tc.exists, tc.settling); got != tc.want {
+			t.Errorf("%s: coldStartHold = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // degradedClient records what a degraded node sent and hands back directives to be refused.
 type degradedClient struct {
 	got  []api.ReportRequest
