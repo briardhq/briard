@@ -23,6 +23,7 @@ import (
 
 	"briard.io/agent/apps"
 	"briard.io/agent/files"
+	"briard.io/agent/freshrss"
 	"briard.io/agent/hass"
 	"briard.io/agent/mealie"
 	"briard.io/agent/mosquitto"
@@ -276,6 +277,46 @@ func TestNavidromeEntryMatchesWhatTheProductAssumes(t *testing.T) {
 		for _, owned := range []string{"ND_EXTAUTH", "ND_REVERSEPROXY", "ND_ENABLEINSIGHTSCOLLECTOR", "ND_ENABLESHARING"} {
 			if strings.HasPrefix(k, owned) {
 				t.Errorf("Navidrome's entry sets %s, which would overrule what briard tells it", k)
+			}
+		}
+	}
+}
+
+// FreshRSS's entry is what agent/freshrss and the dashboard assume: installed by its image's own
+// entrypoint in HTTP sign-in with the API on and `owner` as the default user, its state in the
+// data tier where the dashboard reads and keeps it, and reached only through the reverse proxy,
+// which it trusts by the address agent/freshrss's file names -- so private, with nothing
+// published, and no trust, sign-in or OIDC of the entry's own. It names the oldest briard that
+// writes that file: an older one would start it with the image's own trust and no hook, its pages
+// refusing everyone and its installer's user nobody's.
+func TestFreshRSSEntryMatchesWhatTheProductAssumes(t *testing.T) {
+	m, _, err := manifest.Parse(current(t, freshrss.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.HostNetwork() || len(m.Ports) != 0 {
+		t.Errorf("FreshRSS is reachable other than through the reverse proxy: network %q, ports %v", m.Network, m.Ports)
+	}
+	if m.MinBriard == "" {
+		t.Error("FreshRSS names no minBriard: a briard that predates it would start it with no hook")
+	}
+	p := m.Primary()
+	if p.Name != freshrss.Container {
+		t.Errorf("FreshRSS's container is %q; the dashboard runs FreshRSS's tools in %q", p.Name, freshrss.Container)
+	}
+	if !slices.Contains(p.Mounts, manifest.Mount{Tier: manifest.TierData, Dir: "data", Path: freshrss.Data}) {
+		t.Errorf("FreshRSS's state is not the data tier at %s: %v", freshrss.Data, p.Mounts)
+	}
+	install := " " + p.Env["FRESHRSS_INSTALL"] + " "
+	for _, want := range []string{" --auth-type http_auth ", " --default-user owner ", " --api-enabled "} {
+		if !strings.Contains(install, want) {
+			t.Errorf("FreshRSS's install lacks %q: %q", strings.TrimSpace(want), p.Env["FRESHRSS_INSTALL"])
+		}
+	}
+	for k := range p.Env {
+		for _, owned := range []string{"TRUSTED_PROXY", "OIDC_", "LISTEN"} {
+			if strings.HasPrefix(k, owned) {
+				t.Errorf("FreshRSS's entry sets %s, which would overrule what briard tells it", k)
 			}
 		}
 	}

@@ -133,6 +133,11 @@ let
   # Subsonic API open to its own password, and its library filled from outside the container.
   navidromeFixture = import ./catalog-fixture.nix { inherit pkgs catalog; app = "navidrome"; };
   navidromeTest = import ./navidrome.nix { inherit pkgs guestModule navidromeFixture; };
+  # FreshRSS as a catalogued app, on a lone node with a LAN host beside it: its Apache file over the
+  # image's hook, the user signed in by header from the reverse proxy's address alone, and its
+  # Google Reader API open to the API password "On your phone" keeps.
+  freshrssFixture = import ./catalog-fixture.nix { inherit pkgs catalog; app = "freshrss"; };
+  freshrssTest = import ./freshrss.nix { inherit pkgs guestModule freshrssFixture; };
   # Two apps on one node: both converge, upgrading one leaves the other alone, the rollback
   # point restores only what moved, and a failover carries both.
   appsPair = import ./apps-pair.nix {
@@ -473,6 +478,7 @@ in
       files = filesTest; # every app's directories, through the reverse proxy, signed in by the dashboard
       mealie = mealieTest; # recipes, signed in by the reverse proxy by header, never locked in
       navidrome = navidromeTest; # music, signed in by the reverse proxy's address, its API open to phones
+      freshrss = freshrssTest; # feeds, signed in by the reverse proxy's address, its Google Reader API open to phones
     };
     # Each app's contract: the tests of Briard's own code for one catalogued app (agent/hass,
     # agent/mosquitto, its agent/apps entry), on the entry the catalog ships. The tier runs them
@@ -487,6 +493,9 @@ in
     };
     app-files = {
       files = filesTest;
+    };
+    app-freshrss = {
+      freshrss = freshrssTest;
     };
     app-navidrome = {
       navidrome = navidromeTest;

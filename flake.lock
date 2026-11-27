@@ -3,11 +3,11 @@
     "catalog": {
       "flake": false,
       "locked": {
-        "lastModified": 1795610700,
-        "narHash": "sha256-cG++h4p55Qz+t3YSx32sW8oV/hGTKGHLILzjATkZEQU=",
+        "lastModified": 1795799492,
+        "narHash": "sha256-Y0JR47/ICF8x0xmnJXb5So9Kuj78ZqkhRi4cnliWTOs=",
         "owner": "briardhq",
         "repo": "catalog",
-        "rev": "ddcad37ed3663d4650654975625251ba33d4a3d0",
+        "rev": "71c057ba6ed1c3710839c6c9d3428ee056e69672",
         "type": "github"
       },
       "original": {
