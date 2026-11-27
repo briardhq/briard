@@ -704,6 +704,18 @@ pkgs.testers.runNixOSTest {
         "| grep -q '\"external_url\": *\"https://home-assistant.brave-elf.briard.casa\"'",
         timeout=120,
     )
+    # And HA's own mDNS record carries it now, with no restart: HA builds that record once at boot,
+    # so without the integration's re-announce it would still hand phones the internal URL.
+    casa_url = "https://home-assistant.brave-elf.briard.casa"
+    for _ in range(12):
+        txt = _zj.loads(node1.succeed(
+            "podman exec -i briard-home-assistant-app python3 - < ${h.haAdvertProbe}"
+        ))["txt"]
+        if txt.get("base_url") == casa_url:
+            break
+        node1.sleep(5)
+    assert txt.get("external_url") == casa_url and txt.get("base_url") == casa_url, f"HA's record still announces {txt}"
+    print(f"HA's record announces the external URL with no restart: {txt}")
     offer("https://home-assistant.other.briard.casa")
     node1.sleep(35)
     assert ext_url() == "https://home-assistant.brave-elf.briard.casa", f"the set external URL was overwritten: {ext_url()}"

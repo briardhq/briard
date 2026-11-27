@@ -30,6 +30,7 @@ import socket
 from urllib.parse import quote
 
 from homeassistant.auth.providers import homeassistant as auth_ha
+from homeassistant.components import zeroconf as ha_zeroconf
 from homeassistant.components.auth import create_auth_code
 from homeassistant.components.http import KEY_HASS, KEY_HASS_USER, HomeAssistantView
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature
@@ -41,6 +42,7 @@ from homeassistant.helpers.discovery import async_load_platform
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
+from zeroconf.asyncio import AsyncServiceInfo
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -310,13 +312,15 @@ async def async_setup(hass, config):
     async_at_started(hass, _mirror)
     async_track_time_interval(hass, _mirror, ALERTS_EVERY)
 
-    # The household's casa name as Home Assistant's external URL: at start, then on the same slow
-    # poll, because the name is usually confirmed while Home Assistant is already running.
+    # The household's casa name as Home Assistant's external URL, and that URL in its mDNS record:
+    # at start, then on the same slow poll, because the name is usually confirmed while Home
+    # Assistant is already running.
     async def _external(_now=None):
         try:
             await _offer_external_url(hass)
+            await _announce_external_url(hass)
         except Exception:  # noqa: BLE001 — nothing in here may cost a household its Home Assistant
-            _LOGGER.warning("briard: could not set Home Assistant's external URL", exc_info=True)
+            _LOGGER.warning("briard: could not set or announce Home Assistant's external URL", exc_info=True)
 
     async_at_started(hass, _external)
     async_track_time_interval(hass, _external, EXTERNAL_URL_EVERY)
@@ -512,6 +516,41 @@ async def _offer_external_url(hass):
         return
     await hass.config.async_update(external_url=url)
     _LOGGER.info("briard: set Home Assistant's external URL to %s", url)
+
+# Home Assistant's own mDNS record carries its URLs, and the companion app's discovery hands a
+# phone the record's base_url. Home Assistant builds the record once, at boot, before this
+# integration loads, and never again, so a URL set while it runs, ours or the household's, would
+# reach phones only after a restart. On each poll a record whose external URL is not the one set
+# is replaced, with the same name, host, addresses and port, carrying what Home Assistant itself
+# would announce at its next start: a set external URL is both external_url and base_url.
+# Compared on the poll rather than done once when the URL is set, because Home Assistant
+# registers the record a moment after its frontend loads and the first poll may come first.
+# Only where Home Assistant runs its zeroconf at all (asking for the instance otherwise would
+# start one), and never for a URL longer than a TXT value holds, which Home Assistant would
+# announce as "".
+HA_ZEROCONF_TYPE = "_home-assistant._tcp.local."
+TXT_VALUE_MAX = 255
+
+async def _announce_external_url(hass):
+    """Make Home Assistant's own mDNS record carry its external URL."""
+    url = hass.config.external_url
+    if not url or len(url.encode()) > TXT_VALUE_MAX or ha_zeroconf.DOMAIN not in hass.config.components:
+        return
+    aio_zc = await ha_zeroconf.async_get_async_instance(hass)
+    for info in aio_zc.zeroconf.registry.async_get_infos_type(HA_ZEROCONF_TYPE):
+        properties = dict(info.decoded_properties)
+        if properties.get("external_url") == url:
+            continue
+        properties["external_url"] = properties["base_url"] = url
+        await aio_zc.async_update_service(AsyncServiceInfo(
+            info.type,
+            info.name,
+            port=info.port,
+            properties=properties,
+            server=info.server,
+            parsed_addresses=info.parsed_addresses(),
+        ))
+        _LOGGER.info("briard: announced %s in Home Assistant's mDNS record", url)
 
 def _broker_listening():
     """Is there actually a broker on the node? Blocking; called in the executor."""

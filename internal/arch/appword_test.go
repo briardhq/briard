@@ -28,8 +28,8 @@ func TestAppIsTheWord(t *testing.T) {
 		regexp.MustCompile(`(?i)service[ -]?(address(es)?|nics?|macs?|taps?|ip|vip|child|identity|network|net|segment|side|link|cidr)\b|\w*Service(Tap|MAC|NIC|Netdev|Link|Address)\w*|\w*service(MAC|Netdev)\b|service[/+ ]+system|system[/+ ]+service|service on net2|service\(eth2\)`),
 		// DNS-SD (mDNS) service types, records and instances.
 		regexp.MustCompile(`(?i)service[- ]?(types?|records?|instances?|labels?|names? on the lan)\b|ServiceInstance|ServiceType|serviceType|mdnsService|_[a-z-]+\._(tcp|udp)`),
-		// python-zeroconf's API, which the rigs' mDNS probes implement.
-		regexp.MustCompile(`ServiceBrowser|ServiceListener|ServiceInfo|\b(add|update|remove)_service\b`),
+		// python-zeroconf's API, which the rigs' mDNS probes implement and the HA integration calls.
+		regexp.MustCompile(`ServiceBrowser|ServiceListener|ServiceInfo|\b(async_)?(add|update|remove)_service\b`),
 		// HTTP 503, ACME's terms, and the cloud's offerings.
 		regexp.MustCompile(`StatusServiceUnavailable|Service Unavailable|TermsOfService\w*|Google Trust Services|netbird service|"\$NB" service run|(?i)name service|managed services?|web services?|cloud services?|paid services?`),
 		// Home Assistant's own services (its service calls and its s6 service tree).
