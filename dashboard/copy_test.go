@@ -7,6 +7,8 @@ import (
 	"errors"
 	"html"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -54,7 +56,7 @@ func TestOnYourPhonesQRCodeOpensACopyPage(t *testing.T) {
 	installFreshRSS(t, r)
 	body, tok := pressForCopy(t, r, r.trust())
 	m := qrImage.FindStringSubmatch(body)
-	if m == nil || !strings.Contains(body, "Scan to copy and paste on your phone") {
+	if m == nil || !strings.Contains(body, `<div class="scan"><p>Scan with your phone`) {
 		t.Fatalf("the dialog has no QR code with its caption: %s", body)
 	}
 	want, err := qr.Encode("http://briard.local/copy/"+tok, qr.M)
@@ -70,20 +72,20 @@ func TestOnYourPhonesQRCodeOpensACopyPage(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("the copy page answered %d: %s", resp.StatusCode, page)
 	}
-	if !strings.Contains(page, "<h1>Copy these settings into your "+r.app.appTitle("freshrss")+" client</h1>") {
-		t.Errorf("the page lacks its title: %s", page)
+	if !strings.Contains(page, "<h1>"+r.app.appTitle("freshrss")+" on your phone</h1>") || !strings.Contains(page, "<h3>Install a reader</h3>") || !strings.Contains(page, "<h3>Copy these settings into it</h3>") {
+		t.Errorf("the page lacks its title or its two steps: %s", page)
 	}
 	dialog := keys(body)
-	if got := pageKeys(page); len(got) != 3 || got[0] != dialog[0] || got[1] != dialog[1] || got[2] != dialog[2] {
+	if got := keys(page); len(got) != 3 || got[0] != dialog[0] || got[1] != dialog[1] || got[2] != dialog[2] {
 		t.Errorf("the page shows %q, the dialog %q", got, dialog)
 	}
 	for _, id := range []string{"address", "username", "password"} {
-		if !strings.Contains(page, `id="`+id+`"`) || !strings.Contains(page, `data-copy="`+id+`"`) {
+		if !strings.Contains(page, `id="copy-`+id+`"`) || !strings.Contains(page, `data-copy="copy-`+id+`"`) {
 			t.Errorf("%s has no Copy button", id)
 		}
 	}
-	if !strings.Contains(page, `href="https://github.com/FreshRSS/FreshRSS#apis--native-apps"`) {
-		t.Error("the page lacks the link to the readers")
+	if !strings.Contains(page, `<a href="https://capyreader.com/" target="_blank" rel="noopener noreferrer">Capy Reader for Android</a>`) || !strings.Contains(page, `>Other readers</a>`) {
+		t.Error("the page lacks the recommended reader and the others")
 	}
 	for _, leak := range []string{"Trusted devices", "Backup", "hx-"} {
 		if strings.Contains(page, leak) {
@@ -115,7 +117,7 @@ func TestACopyPageEndsWithTheNextPressOrItsTime(t *testing.T) {
 		t.Fatal("the second press reused the token")
 	}
 	resp, page := open(t, r, first)
-	if resp.StatusCode != http.StatusNotFound || !strings.Contains(page, "This code has expired") || len(pageKeys(page)) != 0 {
+	if resp.StatusCode != http.StatusNotFound || !strings.Contains(page, "This code has expired") || len(keys(page)) != 0 {
 		t.Errorf("the replaced token answered %d: %s", resp.StatusCode, page)
 	}
 	if resp, _ := open(t, r, second); resp.StatusCode != http.StatusOK {
@@ -123,7 +125,7 @@ func TestACopyPageEndsWithTheNextPressOrItsTime(t *testing.T) {
 	}
 	now := time.Now()
 	r.app.now = func() time.Time { return now.Add(copyFor + time.Second) }
-	if resp, page := open(t, r, second); resp.StatusCode != http.StatusNotFound || len(pageKeys(page)) != 0 {
+	if resp, page := open(t, r, second); resp.StatusCode != http.StatusNotFound || len(keys(page)) != 0 {
 		t.Errorf("a token past its time answered %d", resp.StatusCode)
 	}
 	if resp, _ := open(t, r, "never-was"); resp.StatusCode != http.StatusNotFound {
@@ -144,8 +146,8 @@ func TestTheQRCodeIsOnEveryDialogWithFields(t *testing.T) {
 	if !qrImage.MatchString(body) {
 		t.Fatalf("the New password dialog has no QR code: %s", body)
 	}
-	if _, page := open(t, r, tok); len(pageKeys(page)) != 2 || strings.Contains(page, `data-copy="password"`) {
-		t.Errorf("the page of a dialog with no password shows %q", pageKeys(page))
+	if _, page := open(t, r, tok); len(keys(page)) != 2 || strings.Contains(page, `data-copy="copy-password"`) {
+		t.Errorf("the page of a dialog with no password shows %q", keys(page))
 	}
 
 	r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: "brave-elf.briard.casa", Resolves: dashboard.CasaResolves, CertUntil: time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC)})
@@ -164,21 +166,58 @@ func TestTheQRCodeIsOnEveryDialogWithFields(t *testing.T) {
 	}
 }
 
-var pageKey = regexp.MustCompile(`<p class="key"[^>]*>([^<]*)</p>`)
-
-// pageKeys are the copy page's values, in order.
-func pageKeys(page string) []string {
-	var out []string
-	for _, m := range pageKey.FindAllStringSubmatch(page, -1) {
-		out = append(out, html.UnescapeString(m[1]))
-	}
-	return out
-}
-
 // galleryCasa gives the rig a registered, resolving, certified casa name, the household the
 // gallery's FreshRSS pages show.
 func galleryCasa(t *testing.T, r *rig) {
 	t.Helper()
 	r.app.casaPath = filepath.Join(r.dir, "casa.json")
 	r.hostSays(t, dashboard.Casa{State: casa.ClaimRegistered, Name: "brave-elf.briard.casa", Resolves: dashboard.CasaResolves, CertUntil: time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC)})
+}
+
+// The dialog carries its turn button, which only the dialog's script reads; after New password it
+// opens on its settings, whose new words the person came for. The copy page carries the seconds
+// its token has left and the expired text it clears into, and no New password button, which
+// posts with a session the phone does not have.
+func TestTheDialogTurnsAndThePageCountsDown(t *testing.T) {
+	r := newRig(t)
+	f := installFreshRSS(t, r)
+	c := r.trust()
+	body, tok := pressForCopy(t, r, c)
+	if !strings.Contains(body, `data-turn>Show settings</button>`) || strings.Contains(body, `data-start=`) {
+		t.Errorf("the dialog's turn button, or a start it should not have: %s", body)
+	}
+	_, page := open(t, r, tok)
+	if m := regexp.MustCompile(`<div data-left="(\d+)">`).FindStringSubmatch(page); m == nil || m[1] < "1190" || m[1] > "1200" || !strings.Contains(page, `<template id="gone"><header class="page-head"><h1>This code has expired</h1>`) {
+		t.Errorf("the page lacks its twenty minutes or its expired text: %s", page)
+	}
+	f.apiPassword, f.kept = "their own", ""
+	_, body = press(t, r, "/phone/freshrss", c, true)
+	_, body = press(t, r, "/phone/freshrss?new", c, true)
+	if !strings.Contains(body, `data-start="settings"`) {
+		t.Errorf("after New password the dialog does not open on its settings: %s", body)
+	}
+	f.apiPassword, f.kept = "their own", ""
+	_, tok = pressForCopy(t, r, c)
+	if _, page := open(t, r, tok); strings.Contains(page, "New password") || strings.Contains(page, "/phone/") {
+		t.Errorf("the page offers New password, which needs a session: %s", page)
+	}
+}
+
+// In a browser the page clears itself when its token runs out, into the expired text. Skipped
+// unless DASHBOARD_BROWSER names a chromium, as the dialog's own browser test is.
+func TestTheCopyPageClearsItselfInABrowser(t *testing.T) {
+	chromium := os.Getenv("DASHBOARD_BROWSER")
+	if chromium == "" {
+		t.Skip("set DASHBOARD_BROWSER=<chromium> to prove the page's countdown in a browser")
+	}
+	r := newRig(t)
+	installFreshRSS(t, r)
+	_, tok := pressForCopy(t, r, r.trust())
+	at := time.Now().Add(copyFor - 2*time.Second)
+	r.app.now = func() time.Time { return at }
+	dom, err := exec.Command(chromium, "--headless=new", "--no-sandbox", "--user-data-dir="+t.TempDir(), "--virtual-time-budget=5000", "--dump-dom", r.srv.URL+"/copy/"+tok).Output()
+	must(t, err)
+	if !strings.Contains(string(dom), "This code has expired") || len(keys(string(dom))) != 0 {
+		t.Errorf("the page did not clear itself: %s", dom)
+	}
 }

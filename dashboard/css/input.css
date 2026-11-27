@@ -75,9 +75,15 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 /* "On your phone" is wider, so the longest address it gives, the casa name with a path after it
    (FreshRSS's Google Reader API), stays on one line. */
 .phone > * { max-width: min(calc(100% - 2rem), var(--container-3xl)); }
-/* THE QR CODE under "On your phone"'s fields: large enough for a phone's camera across a desk,
-   crisp at any scale, on the white it carries in both themes. */
-.qr { @apply mt-2 size-48 rounded-md; image-rendering: pixelated; }
+/* "ON YOUR PHONE"'s two views: the QR code, centred under its one line, and the settings as
+   numbered steps. In the dialog one shows at a time (data-view, set by its script); without a
+   script both do. The QR code is large enough for a phone's camera across a desk, crisp at any
+   scale, on the white it carries in both themes. */
+.scan { @apply flex flex-col items-center gap-3 text-center; }
+.qr { @apply size-48 rounded-md; image-rendering: pixelated; }
+.steps { @apply list-decimal pl-5 space-y-6; }
+.steps > li > h3 { @apply font-medium mb-2; }
+.phone[data-view="scan"] .settings, .phone[data-view="settings"] .scan { display: none; }
 /* An icon in a line of text -- the browser's warning sign, the address's padlock -- sits on the
    text's baseline at its size. */
 .card p > svg, .card strong > svg { @apply inline size-[1em] -mt-1 mr-1; }

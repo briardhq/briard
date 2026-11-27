@@ -39,8 +39,12 @@ const drawerScript = "var s=document.querySelector('.sidebar'),m=matchMedia('(mi
 // catalog.go) as a modal -- over the page, closed by its button, Escape or a click outside it (a
 // click on the backdrop is the dialog's own) -- and takes it off the page once closed, so the
 // next press adds a fresh one. Without it the button's form posts, and "On your phone"'s fields
-// are a page.
+// are a page. A dialog with a turn button ("On your phone"'s Show settings / Show QR) shows one
+// view at a time: the settings where the pointer is a finger (a phone has no use for a code of
+// itself), the QR code where it is a mouse, and the settings after New password (data-start).
 const dialogScript = "document.addEventListener('htmx:load',function(e){var d=e.detail.elt;if(d.tagName!=='DIALOG')return;" +
+	"var t=d.querySelector('[data-turn]');if(t){var v=function(s){d.dataset.view=s;t.textContent=s==='scan'?'Show settings':'Show QR'};" +
+	"v(d.dataset.start||(matchMedia('(pointer: coarse)').matches?'settings':'scan'));t.addEventListener('click',function(){v(d.dataset.view==='scan'?'settings':'scan')})}" +
 	"d.addEventListener('close',function(){d.remove()});d.addEventListener('click',function(e){if(e.target===d)d.close()});d.showModal()})"
 
 // csp is every page's Content-Security-Policy: scripts from this origin and the four inline

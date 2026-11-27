@@ -1,9 +1,10 @@
 package main
 
-// The phone's copy page: "On your phone" (phone.go) shows a QR code beside its fields, and the
-// phone that scans it opens a page of the same fields, each with a Copy button, so nothing is
-// typed on a phone's keyboard. No client app takes its settings from a QR code in any standard
-// way, so the page is for the person, and it serves every app the dialog does.
+// The phone's copy page: "On your phone" (phone.go) shows a QR code of it, and the phone that scans
+// it opens the dialog's two steps -- the client to install, then the fields, each with a Copy
+// button -- so nothing is typed on a phone's keyboard. No client app takes its settings from a QR
+// code in any standard way, so the page is for the person, and it serves every app the dialog
+// does.
 //
 // The page is the one thing the dashboard serves without a session: the phone that scans it is
 // rarely a trusted device. So its address carries a bearer token, 192 random bits, minted when the
@@ -15,7 +16,8 @@ package main
 // ends them.
 //
 // The page goes out with no-store and no referrer, so neither a cache nor the link to the app's
-// clients carries the token anywhere.
+// clients carries the token anywhere, and it clears itself on the phone when the token runs out,
+// so a phone left on it stops showing the password when the server would stop serving it.
 
 import (
 	"crypto/rand"
@@ -33,7 +35,7 @@ import (
 )
 
 // copyFor is how long a copy page stays open after the dialog that drew it.
-const copyFor = 10 * time.Minute
+const copyFor = 20 * time.Minute
 
 // copyPath is where the copy pages are served, a token after it.
 const copyPath = "/copy/"
@@ -45,15 +47,17 @@ type copyPage struct {
 	until time.Time
 }
 
-// copyScript is the Copy buttons: the clipboard API where the page is https, and the older
-// copy command where it is not (the `.local` name, plain http), which a phone's browser still
-// offers. The button says it worked.
+// copyScript is the Copy buttons, in the dialog and on the copy page: the clipboard API where the
+// page is https, and the older copy command where it is not (the `.local` name, plain http), which
+// a phone's browser still offers. The button says it worked. On the copy page it also clears the
+// page when the token runs out (data-left, its seconds), into the page's own expired text.
 const copyScript = "document.addEventListener('click',function(e){var b=e.target.closest('[data-copy]');if(!b)return;" +
 	"var t=document.getElementById(b.dataset.copy).textContent;" +
 	"function ok(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1500)}" +
 	"if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t).then(ok);return}" +
 	"var a=document.createElement('textarea');a.value=t;a.setAttribute('readonly','');a.style.position='fixed';a.style.opacity='0';" +
-	"document.body.appendChild(a);a.select();document.execCommand('copy');a.remove();ok()})"
+	"document.body.appendChild(a);a.select();document.execCommand('copy');a.remove();ok()});" +
+	"var g=document.querySelector('[data-left]');if(g)setTimeout(function(){g.innerHTML=document.getElementById('gone').innerHTML},g.dataset.left*1000)"
 
 func copyJS() template.JS { return template.JS(copyScript) }
 
@@ -81,7 +85,11 @@ func (a *app) copyQR(v phoneView) template.URL {
 			delete(a.copyPages, t)
 		}
 	}
-	a.copyPages[tok] = copyPage{app: v.Name, view: v, until: now.Add(copyFor)}
+	// The page has no session, so it has no New password button (which posts as one) and no QR
+	// code of itself.
+	pv := v
+	pv.Replace, pv.Settings, pv.QR = false, false, ""
+	a.copyPages[tok] = copyPage{app: v.Name, view: pv, until: now.Add(copyFor)}
 	a.copyMu.Unlock()
 	return template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(code.PNG()))
 }
@@ -97,10 +105,12 @@ func (a *app) copyBase() string {
 	return "http://" + routes.BareFlockHostName
 }
 
-// copyView is the page: the dialog's fields, or Gone for a token that is spent or never was.
+// copyView is the page: the dialog's fields and the seconds its token has left, or Gone for a
+// token that is spent or never was.
 type copyView struct {
 	phoneView
 	Gone bool
+	Left int
 }
 
 // serveCopy answers a copy page, with no session asked for.
@@ -116,7 +126,7 @@ func (a *app) serveCopy(w http.ResponseWriter, r *http.Request, tok string) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Robots-Tag", "noindex")
-	v := copyView{phoneView: p.view}
+	v := copyView{phoneView: p.view, Left: int(p.until.Sub(a.now()).Seconds())}
 	if !ok || strings.ContainsAny(tok, "/?#") {
 		v = copyView{Gone: true}
 		w.WriteHeader(http.StatusNotFound)

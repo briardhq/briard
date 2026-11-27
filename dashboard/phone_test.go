@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -163,11 +165,13 @@ func press(t *testing.T, r *rig, path string, c *http.Cookie, htmx bool) (int, s
 // keys are the dialog's three values, in order.
 func keys(body string) []string {
 	var out []string
-	for _, part := range strings.Split(body, `<p class="key">`)[1:] {
-		out = append(out, part[:strings.Index(part, "</p>")])
+	for _, m := range keyValue.FindAllStringSubmatch(body, -1) {
+		out = append(out, html.UnescapeString(m[1]))
 	}
 	return out
 }
+
+var keyValue = regexp.MustCompile(`<p class="key"[^>]*>([^<]*)</p>`)
 
 // A Navidrome nobody opened is given its account, the way opening it would, as the record's
 // username; its generated password is replaced through Navidrome's API by three of the list's
@@ -194,9 +198,9 @@ func TestOnYourPhoneReplacesTheGeneratedPasswordOnce(t *testing.T) {
 	if len(f.puts) != 1 || f.puts[0]["isAdmin"] != true || f.puts[0]["userName"] != "kostas" {
 		t.Errorf("the change sent %v, want the account's own record with the password", f.puts)
 	}
-	link := `<a href="https://www.navidrome.org/apps/" target="_blank" rel="noopener">Compatible players</a>`
+	link := `<a href="https://eddyizm.github.io/tempus/" target="_blank" rel="noopener noreferrer">Tempus for Android</a> · <a href="https://apps.apple.com/app/amperfy-music/id1530145038" target="_blank" rel="noopener noreferrer">Amperfy for iPhone</a> · <a href="https://www.navidrome.org/apps/" target="_blank" rel="noopener noreferrer">Other players</a>`
 	if strings.Contains(body, "<script") || !strings.Contains(body, "Navidrome on your phone</h2>") || !strings.Contains(body, link) {
-		t.Errorf("the dialog is not the fields under its title, with the link to the players: %s", body)
+		t.Errorf("the dialog is not the fields under its title, with the players to install: %s", body)
 	}
 	if _, again := press(t, r, "/phone/navidrome", c, true); !slices.Equal(keys(again), got) || len(f.puts) != 1 {
 		t.Errorf("a second press shows %q after %d changes, want %q after one", keys(again), len(f.puts), got)
@@ -288,8 +292,17 @@ func TestOnYourPhoneOpensADialogInABrowser(t *testing.T) {
 	// on what it holds, is a click on the backdrop.
 	outside := `document.addEventListener('htmx:load',function(e){var d=e.detail.elt;if(d.tagName==='DIALOG')setTimeout(function(){document.body.setAttribute('data-clicked',d.open);d.dispatchEvent(new MouseEvent('click',{bubbles:true}))},100)});`
 	dom := dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)})`, nil)
-	if !strings.Contains(dom, `<h2 class="group-title">Installed</h2>`) || !strings.Contains(dom, `<dialog class="dialog phone" aria-labelledby="phone-title" open="">`) || len(keys(dom)) != 3 {
-		t.Errorf("the Apps page has no open dialog with the three fields: %s", dom)
+	if !strings.Contains(dom, `<h2 class="group-title">Installed</h2>`) || !strings.Contains(dom, `<dialog class="dialog phone" aria-labelledby="phone-title" data-view="scan" open="">`) || len(keys(dom)) != 3 {
+		t.Errorf("the Apps page has no open dialog with the three fields, on its QR code where the pointer is a mouse: %s", dom)
+	}
+	if !strings.Contains(dom, `data-turn="">Show settings</button>`) {
+		t.Errorf("the dialog's turn button does not offer the settings: %s", dom)
+	}
+	// Its button turns it to the settings, and says it turns back.
+	turn := `document.addEventListener('htmx:load',function(e){var d=e.detail.elt;if(d.tagName==='DIALOG')setTimeout(function(){d.querySelector('[data-turn]').click()},100)});`
+	dom = dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)});`+turn, nil)
+	if !strings.Contains(dom, `data-view="settings"`) || !strings.Contains(dom, `data-turn="">Show QR</button>`) {
+		t.Errorf("the turn button did not turn the dialog to its settings: %s", dom)
 	}
 	dom = dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)});`+outside, nil)
 	// Closed, not yet gone: headless chromium on a virtual clock never fires a dialog's close
@@ -388,7 +401,7 @@ func TestOnYourPhoneShowsHomeAssistantsKeptWords(t *testing.T) {
 	if got := keys(body); status != http.StatusOK || !slices.Equal(got, []string{"http://briard-home-assistant.local", "kostas", first}) || !fourWords(first) {
 		t.Fatalf("dialog = %d %q, want the .local address, the owner and the first open's four words %q", status, got, first)
 	}
-	if !strings.Contains(body, `<a href="https://companion.home-assistant.io/" target="_blank" rel="noopener">Companion apps</a>`) || strings.Contains(body, "New password") {
+	if !strings.Contains(body, `<h3>Install Home Assistant</h3>`) || !strings.Contains(body, `<a href="https://apps.apple.com/app/home-assistant/id1099568401" target="_blank" rel="noopener noreferrer">iPhone</a>`) || strings.Contains(body, "New password") {
 		t.Errorf("the dialog is not the kept words with the link to the companion apps: %s", body)
 	}
 	if _, again := press(t, r, "/phone/home-assistant", c, true); !slices.Equal(keys(again), keys(body)) || r.ha.phoneSets != sets {

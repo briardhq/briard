@@ -126,7 +126,7 @@ func TestFragmentsPollOnlyWhileMovingThenRefreshThePage(t *testing.T) {
 	}
 }
 
-// The script budget: htmx from this origin on trusted pages, the inline theme, drawer and dialog
+// The script budget: htmx from this origin on trusted pages, the inline theme, drawer, dialog and Copy
 // lines by their hashes, and a policy on every answer that allows nothing else.
 func TestThePageCarriesOneScriptAndAPolicyThatAllowsNothingElse(t *testing.T) {
 	r, c, _ := galleryRig(t)
@@ -135,8 +135,8 @@ func TestThePageCarriesOneScriptAndAPolicyThatAllowsNothingElse(t *testing.T) {
 			t.Errorf("%s: Content-Security-Policy = %q", path, got)
 		}
 	}
-	if body := r.page(c); strings.Count(body, "<script") != 4*6 || !strings.Contains(body, `<script src="`+htmxPath+`"></script>`) || !strings.Contains(body, "<script>"+themeScript+"</script>") || !strings.Contains(body, "<script>"+drawerScript+"</script>") || !strings.Contains(body, "<script>"+dialogScript+"</script>") {
-		t.Errorf("a trusted page's scripts are not htmx, the theme line, the drawer line and the dialog line: %s", body)
+	if body := r.page(c); strings.Count(body, "<script") != 5*6 || !strings.Contains(body, "<script>"+copyScript+"</script>") || !strings.Contains(body, `<script src="`+htmxPath+`"></script>`) || !strings.Contains(body, "<script>"+themeScript+"</script>") || !strings.Contains(body, "<script>"+drawerScript+"</script>") || !strings.Contains(body, "<script>"+dialogScript+"</script>") {
+		t.Errorf("a trusted page's scripts are not htmx, the theme line, the drawer line, the dialog line and the Copy line: %s", body)
 	}
 	if _, body := get(t, r, "/", nil); strings.Contains(body, htmxPath) || strings.Contains(body, drawerScript) || strings.Contains(body, dialogScript) || !strings.Contains(body, "<script>"+themeScript+"</script>") {
 		t.Errorf("an untrusted page loads htmx, the drawer or the dialog, or lost its theme line: %s", body)

@@ -58,37 +58,38 @@
   </div></section></div>
 {{end}}
 
-{{/* ON YOUR PHONE: what a phone's client signs in with, to copy, and the link to where the app's
-     project lists its clients -- in a dialog over the page, or a page of its own without a script
-     (phone.go). Each value selects whole with one click: the page is plain http, where the
-     clipboard API is not offered. A password no longer kept is a button that sets a new one, in
-     place of the dialog or as the page again. */}}
-{{define "phone-fields"}}{{with .Error}}<p>{{.}}</p>{{else}}<div class="item-group">
-    <div class="item"><section><h3>Address</h3><p class="key">{{.Address}}</p></section></div>
-    <div class="item"><section><h3>Username</h3><p class="key">{{.Username}}</p></section></div>
-    <div class="item"><section><h3>Password</h3>{{if .Replace}}<form method="post" action="/phone/{{.Name}}?new" hx-post="/phone/{{.Name}}?new" hx-target="closest dialog" hx-swap="outerHTML"><button type="submit" class="btn" data-variant="outline">New password</button></form>{{else}}<p class="key">{{.Password}}</p>{{end}}</section></div>
-    {{with $.Clients.URL}}<div class="item"><section><p><a href="{{.}}" target="_blank" rel="noopener">{{$.Clients.Label}}</a></p></section></div>{{end}}
-    {{with $.QR}}<div class="item"><section><h3>Scan to copy and paste on your phone</h3><img class="qr" src="{{.}}" alt="A code that opens these settings on your phone"></section></div>{{end}}
-  </div>{{end}}{{end}}
-{{define "phone-dialog"}}<dialog class="dialog phone" aria-labelledby="phone-title"><div><header><h2 id="phone-title">{{.Title}} on your phone</h2></header><section>{{template "phone-fields" .}}</section><footer><form method="dialog"><button type="submit" class="btn" autofocus>Done</button></form></footer></div></dialog>{{end}}
+{{/* ON YOUR PHONE (phone.go): what a phone's client signs in with, as two steps -- the client to
+     install, then the fields to copy, each with its Copy button -- and the QR code of the phone's
+     copy page (copy.go), which shows the same steps. In a dialog over the page, one view at a time
+     with a button to turn between them; as a page of its own without a script, both. A password no
+     longer kept is a button that sets a new one, in place of the dialog or as the page again. */}}
+{{define "copy-field"}}<div class="item"><section><h3>{{.Label}}</h3><p class="key" id="{{.ID}}">{{.Value}}</p></section><aside><button type="button" class="btn" data-variant="outline" data-copy="{{.ID}}">Copy</button></aside></div>{{end}}
+{{define "phone-steps"}}{{with .Error}}<p>{{.}}</p>{{else}}<ol class="steps">
+    <li><h3>Install {{.Clients.Noun}}</h3><p>{{range $i, $c := .Clients.Recommended}}{{if $i}} · {{end}}<a href="{{$c.URL}}" target="_blank" rel="noopener noreferrer">{{$c.Label}}</a>{{end}}{{with .Clients.Others}} · <a href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.Label}}</a>{{end}}</p></li>
+    <li><h3>Copy these settings into it</h3><div class="item-group">
+      {{template "copy-field" (copyField "copy-address" "Address" .Address)}}
+      {{template "copy-field" (copyField "copy-username" "Username" .Username)}}
+      {{if .Replace}}<div class="item"><section><h3>Password</h3><form method="post" action="/phone/{{.Name}}?new" hx-post="/phone/{{.Name}}?new" hx-target="closest dialog" hx-swap="outerHTML"><button type="submit" class="btn" data-variant="outline">New password</button></form></section></div>
+      {{else}}{{with .Password}}{{template "copy-field" (copyField "copy-password" "Password" .)}}{{end}}{{end}}
+    </div></li>
+  </ol>{{end}}{{end}}
+{{define "phone-scan"}}{{with .QR}}<div class="scan"><p>Scan with your phone's camera</p><img class="qr" src="{{.}}" alt="A code that opens these settings on your phone"></div>{{end}}{{end}}
+{{define "phone-dialog"}}<dialog class="dialog phone" aria-labelledby="phone-title"{{if .Settings}} data-start="settings"{{end}}><div><header><h2 id="phone-title">{{.Title}} on your phone</h2></header><section>{{template "phone-scan" .}}<div class="settings">{{template "phone-steps" .}}</div></section><footer>{{if .QR}}<button type="button" class="btn" data-variant="outline" data-turn>Show settings</button>{{end}}<form method="dialog"><button type="submit" class="btn" autofocus>Done</button></form></footer></div></dialog>{{end}}
 {{define "phone-page"}}{{template "head" (shell "apps" false)}}
 <header class="page-head"><h1>{{.Title}} on your phone</h1></header>
-<div class="tiles"><div class="card"><section>{{template "phone-fields" .}}</section><footer><a class="btn" href="/apps/{{.Name}}">Done</a></footer></div></div>
+<div class="tiles"><div class="card"><section>{{template "phone-scan" .}}{{template "phone-steps" .}}</section><footer><a class="btn" href="/apps/{{.Name}}">Done</a></footer></div></div>
 {{template "foot" (shell "apps" false)}}{{end}}
 
-{{/* THE PHONE'S COPY PAGE: the fields "On your phone" showed, opened from its QR code on a phone
-     with no session (copy.go). One title says what to do; each value has its Copy button. No
-     sidebar and nothing else about the home: the token opens these fields and nothing more. */}}
-{{define "copy-field"}}<div class="item"><section><h3>{{.Label}}</h3><p class="key" id="{{.ID}}">{{.Value}}</p></section><aside><button type="button" class="btn" data-variant="outline" data-copy="{{.ID}}">Copy</button></aside></div>{{end}}
+{{/* THE PHONE'S COPY PAGE: the dialog's two steps, opened from its QR code on a phone with no
+     session (copy.go). No sidebar and nothing else about the home: the token opens these fields
+     and nothing more. It clears itself into the expired text when the token runs out. */}}
+{{define "copy-gone"}}<header class="page-head"><h1>This code has expired</h1><p>Scan the code again from the dashboard.</p></header>{{end}}
 {{define "copy"}}{{template "head" (shell "" false)}}
-{{if .Gone}}<header class="page-head"><h1>This code has expired</h1><p>Open "On your phone" on the dashboard again.</p></header>
-{{else}}<header class="page-head"><h1>Copy these settings into your {{.Title}} client</h1></header>
-<div class="card"><section><div class="item-group">
-  {{template "copy-field" (copyField "address" "Address" .Address)}}
-  {{template "copy-field" (copyField "username" "Username" .Username)}}
-  {{with .Password}}{{template "copy-field" (copyField "password" "Password" .)}}{{end}}
-  {{with .Clients.URL}}<div class="item"><section><p><a href="{{.}}" target="_blank" rel="noopener noreferrer">{{$.Clients.Label}}</a></p></section></div>{{end}}
-</div></section></div>
+{{if .Gone}}{{template "copy-gone"}}{{else}}<div data-left="{{.Left}}">
+<header class="page-head"><h1>{{.Title}} on your phone</h1></header>
+<div class="card"><section>{{template "phone-steps" .}}</section></div>
+<template id="gone">{{template "copy-gone"}}</template>
+</div>
 <script>{{copy}}</script>{{end}}
 {{template "foot" (shell "" false)}}{{end}}
 

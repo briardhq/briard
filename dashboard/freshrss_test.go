@@ -149,8 +149,8 @@ func TestOnYourPhoneGivesFreshRSSThreeKeptWords(t *testing.T) {
 	if f.apiPassword != got[2] || f.kept != got[2] {
 		t.Errorf("FreshRSS checks %q and %q is kept; the dialog shows %q", f.apiPassword, f.kept, got[2])
 	}
-	if !strings.Contains(body, `<a href="https://github.com/FreshRSS/FreshRSS#apis--native-apps" target="_blank" rel="noopener">Compatible readers</a>`) {
-		t.Errorf("the dialog lacks the link to the readers: %s", body)
+	if !strings.Contains(body, `<a href="https://netnewswire.com/" target="_blank" rel="noopener noreferrer">NetNewsWire for iPhone</a>`) || !strings.Contains(body, `<a href="https://github.com/FreshRSS/FreshRSS#apis--native-apps" target="_blank" rel="noopener noreferrer">Other readers</a>`) {
+		t.Errorf("the dialog lacks the recommended readers and the others: %s", body)
 	}
 	if _, again := press(t, r, "/phone/freshrss", c, true); !slices.Equal(keys(again), got) || len(f.setTo) != 1 {
 		t.Errorf("a second press shows %q after %d changes, want %q after one", keys(again), len(f.setTo), got)

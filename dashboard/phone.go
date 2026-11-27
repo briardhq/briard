@@ -7,8 +7,11 @@ package main
 // (freshrss.go): a phone's feed reader speaks its Google Reader API, likewise, with three words
 // kept in FreshRSS's data. Home Assistant: its companion app signs in on Home Assistant's own
 // login page, with the owner's username and four words the in-HA integration keeps (agent/hass).
-// The dialog holds the three fields, the link and no prose; the button is a POST, because the
-// first press may set Navidrome's or FreshRSS's password, so no page load ever does.
+// The dialog has two views, the QR code of the phone's copy page (copy.go) and the settings: two
+// steps, the client to install and the three fields, each with its Copy button. It opens on the
+// QR code where the pointer is a mouse and on the settings where it is a finger, and one button
+// turns from one to the other; without a script both show. The button that opens it is a POST,
+// because the first press may set Navidrome's or FreshRSS's password, so no page load ever does.
 //
 // The address is the household's casa name once it resolves with a certificate, the one a phone
 // reaches from away too; the app's `.local` name before that.
@@ -34,22 +37,41 @@ import (
 	"briard.io/shared/routes"
 )
 
-// phoneApps are the apps with sign-in details for a client on another device, each with where its
-// clients are listed: a link in the dialog, since which client to install is the step before
-// signing in, and the app's own project keeps that list current.
+// phoneApps are the apps with sign-in details for a client on another device, each with the client
+// to install, the step before signing in: one recommended for Android and one for iPhone, each
+// free and open source and from the list the app's own project keeps, and that list for the rest.
+// Home Assistant's is its own companion app, in each store.
 var phoneApps = map[string]phoneClients{
-	navidrome.Name: {"Compatible players", "https://www.navidrome.org/apps/"},
-	hass.Name:      {"Companion apps", "https://companion.home-assistant.io/"},
-	freshrss.Name:  {"Compatible readers", "https://github.com/FreshRSS/FreshRSS#apis--native-apps"},
+	navidrome.Name: {"a player", []phoneLink{
+		{"Tempus for Android", "https://eddyizm.github.io/tempus/"},
+		{"Amperfy for iPhone", "https://apps.apple.com/app/amperfy-music/id1530145038"},
+	}, &phoneLink{"Other players", "https://www.navidrome.org/apps/"}},
+	freshrss.Name: {"a reader", []phoneLink{
+		{"Capy Reader for Android", "https://capyreader.com/"},
+		{"NetNewsWire for iPhone", "https://netnewswire.com/"},
+	}, &phoneLink{"Other readers", "https://github.com/FreshRSS/FreshRSS#apis--native-apps"}},
+	hass.Name: {"Home Assistant", []phoneLink{
+		{"Android", "https://play.google.com/store/apps/details?id=io.homeassistant.companion.android"},
+		{"iPhone", "https://apps.apple.com/app/home-assistant/id1099568401"},
+	}, nil},
 }
 
-// phoneClients is the link to an app's clients: its words and where it goes.
-type phoneClients struct{ Label, URL string }
+// phoneClients is what the first step installs: its words ("Install a reader"), the recommended
+// clients, and the link to the others, nil for none.
+type phoneClients struct {
+	Noun        string
+	Recommended []phoneLink
+	Others      *phoneLink
+}
+
+// phoneLink is one link: its words and where it goes.
+type phoneLink struct{ Label, URL string }
 
 // phoneView is the dialog: the app, what its client signs in with or why it could not be read, and
 // the link to its clients. Replace is Home Assistant's or FreshRSS's password row as a button: no
 // kept password signs in any more. QR is the code of the phone's copy page for these fields
-// (copy.go), "" when there are none.
+// (copy.go), "" when there are none. Settings opens the dialog on its settings, as after New
+// password, whose words the person came for; otherwise the pointer decides.
 type phoneView struct {
 	Name, Title                 string
 	Address, Username, Password string
@@ -57,6 +79,7 @@ type phoneView struct {
 	Error                       string
 	Clients                     phoneClients
 	QR                          template.URL
+	Settings                    bool
 }
 
 // phone answers the button: the dialog for htmx, which adds it to the page and opens it
@@ -97,6 +120,7 @@ func (a *app) phone(w http.ResponseWriter, r *http.Request, name string) {
 		}
 	}
 	v.Replace = err == nil && v.Password == ""
+	v.Settings = r.URL.Query().Has("new")
 	if err != nil {
 		log.Printf("dashboard: %s on a phone: %v", name, err)
 		v.Username, v.Password, v.Error = "", "", "Could not read the sign-in from "+v.Title+": "+err.Error()
