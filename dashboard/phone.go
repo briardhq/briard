@@ -2,7 +2,8 @@ package main
 
 // "On your phone": what a client app on another device signs in to an app with -- its address, a
 // username and a password -- shown in a dialog to copy, beside the app's Open, with a link to the
-// clients the app's project lists. Three apps have one. Navidrome (navidrome.go): a phone's music
+// clients the app's project lists. Three apps have one, and two web apps a different dialog
+// (below). Navidrome (navidrome.go): a phone's music
 // app speaks its Subsonic API, on the one path the reverse proxy leaves open. FreshRSS
 // (freshrss.go): a phone's feed reader speaks its Google Reader API, likewise, with three words
 // kept in FreshRSS's data. Home Assistant: its companion app signs in on Home Assistant's own
@@ -15,6 +16,12 @@ package main
 //
 // The address is the household's casa name once it resolves with a certificate, the one a phone
 // reaches from away too; the app's `.local` name before that.
+//
+// Mealie and Files are web apps a phone installs from their own page, with no client worth
+// recommending over them. Their steps are to open the app on the phone -- signed in by a session
+// of that app alone, minted from the copy page (copy.go) -- and to add it to the home screen, one
+// line per phone, since no page can start that for the person. An app with clients of its own
+// (Navidrome, FreshRSS) gives those only: a native client is the better app on a phone.
 
 import (
 	"context"
@@ -29,11 +36,12 @@ import (
 	"strings"
 	"time"
 
+	"briard.io/agent/files"
 	"briard.io/agent/freshrss"
 	"briard.io/agent/hass"
+	"briard.io/agent/mealie"
 	"briard.io/agent/navidrome"
 	"briard.io/shared/casa"
-	"briard.io/shared/dashboard"
 	"briard.io/shared/routes"
 )
 
@@ -45,23 +53,26 @@ var phoneApps = map[string]phoneClients{
 	navidrome.Name: {"a player", []phoneLink{
 		{"Tempus for Android", "https://eddyizm.github.io/tempus/"},
 		{"Amperfy for iPhone", "https://apps.apple.com/app/amperfy-music/id1530145038"},
-	}, &phoneLink{"Other players", "https://www.navidrome.org/apps/"}},
+	}, &phoneLink{"Other players", "https://www.navidrome.org/apps/"}, false},
 	freshrss.Name: {"a reader", []phoneLink{
 		{"Capy Reader for Android", "https://capyreader.com/"},
 		{"NetNewsWire for iPhone", "https://netnewswire.com/"},
-	}, &phoneLink{"Other readers", "https://github.com/FreshRSS/FreshRSS#apis--native-apps"}},
+	}, &phoneLink{"Other readers", "https://github.com/FreshRSS/FreshRSS#apis--native-apps"}, false},
 	hass.Name: {"Home Assistant", []phoneLink{
 		{"Android", "https://play.google.com/store/apps/details?id=io.homeassistant.companion.android"},
 		{"iPhone", "https://apps.apple.com/app/home-assistant/id1099568401"},
-	}, nil},
+	}, nil, false},
+	mealie.Name: {Web: true},
+	files.Name:  {Web: true},
 }
 
 // phoneClients is what the first step installs: its words ("Install a reader"), the recommended
-// clients, and the link to the others, nil for none.
+// clients, and the link to the others, nil for none. Web is a web app's, which has none.
 type phoneClients struct {
 	Noun        string
 	Recommended []phoneLink
 	Others      *phoneLink
+	Web         bool
 }
 
 // phoneLink is one link: its words and where it goes.
@@ -71,7 +82,9 @@ type phoneLink struct{ Label, URL string }
 // the link to its clients. Replace is Home Assistant's or FreshRSS's password row as a button: no
 // kept password signs in any more. QR is the code of the phone's copy page for these fields
 // (copy.go), "" when there are none. Settings opens the dialog on its settings, as after New
-// password, whose words the person came for; otherwise the pointer decides.
+// password, whose words the person came for; otherwise the pointer decides. Copy is the copy
+// page's token, on that page alone: its Open posts to it. A web app's Address is where Open goes,
+// and the steps do not show it.
 type phoneView struct {
 	Name, Title                 string
 	Address, Username, Password string
@@ -80,6 +93,7 @@ type phoneView struct {
 	Clients                     phoneClients
 	QR                          template.URL
 	Settings                    bool
+	Copy                        string
 }
 
 // phone answers the button: the dialog for htmx, which adds it to the page and opens it
@@ -110,16 +124,23 @@ func (a *app) phone(w http.ResponseWriter, r *http.Request, name string) {
 			return
 		}
 		v.Address = a.phoneAddress(s)
-		if name == freshrss.Name {
+		switch {
+		case clients.Web:
+			// Installed from https only, so offered only there (view).
+			if !strings.HasPrefix(v.Address, "https://") {
+				http.NotFound(w, r)
+				return
+			}
+		case name == freshrss.Name:
 			// A Google Reader client is given the API's own address, as FreshRSS's profile page
 			// gives it.
 			v.Address += freshrssAPI
 			v.Username, v.Password, err = a.freshrssSignIn(ctx, s, r.URL.Query().Has("new"))
-		} else {
+		default:
 			v.Username, v.Password, err = a.navidromeSignIn(ctx, s)
 		}
 	}
-	v.Replace = err == nil && v.Password == ""
+	v.Replace = err == nil && v.Password == "" && !clients.Web
 	v.Settings = r.URL.Query().Has("new")
 	if err != nil {
 		log.Printf("dashboard: %s on a phone: %v", name, err)
@@ -173,8 +194,7 @@ func homeAssistantRefusal(err error) error {
 // phoneAddress is where a client reaches the app: the casa name, by https, once the household's
 // network resolves it and a certificate is in place; the `.local` name, by http, otherwise.
 func (a *app) phoneAddress(s routes.App) string {
-	h := a.hostCasa()
-	if h.State == casa.ClaimRegistered && h.Resolves == dashboard.CasaResolves && !h.CertUntil.IsZero() {
+	if a.casaCertified() {
 		for _, host := range s.Hosts {
 			if strings.HasSuffix(host, "."+casa.Zone) {
 				return "https://" + host

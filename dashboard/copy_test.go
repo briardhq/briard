@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"html"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,8 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/agent/files"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
+	"briard.io/shared/routes"
 	"rsc.io/qr"
 )
 
@@ -219,5 +223,124 @@ func TestTheCopyPageClearsItselfInABrowser(t *testing.T) {
 	must(t, err)
 	if !strings.Contains(string(dom), "This code has expired") || len(keys(string(dom))) != 0 {
 		t.Errorf("the page did not clear itself: %s", dom)
+	}
+}
+
+// pressForWebApp presses "On your phone" for Files, a web app, and returns the dialog and its
+// copy page's token.
+func pressForWebApp(t *testing.T, r *rig, c *http.Cookie) (string, string) {
+	t.Helper()
+	_, body := press(t, r, "/phone/files", c, true)
+	r.app.copyMu.Lock()
+	defer r.app.copyMu.Unlock()
+	for tok, p := range r.app.copyPages {
+		if p.app == "files" {
+			return body, tok
+		}
+	}
+	t.Fatalf("no copy page after the press: %s", body)
+	return "", ""
+}
+
+// A web app's steps are Open and the line that adds it to the home screen, with nothing to copy.
+// In the dialog Open is the app's own (the browser is a trusted device); on the copy page it is a
+// POST that spends the page on a session of Files alone, carried to Files' name by the gate's
+// one-time code. That session opens Files, and not Mealie, the dashboard or the page again; it is
+// listed in Trusted devices as Files' alone, under a key an older dashboard never compares, and
+// revoked there like a device.
+func TestAWebAppsPageOpensItWithASessionOfItsOwn(t *testing.T) {
+	r := gateRig(t)
+	galleryCasa(t, r)
+	c := r.trust()
+	body, tok := pressForWebApp(t, r, c)
+	if !qrImage.MatchString(body) || !strings.Contains(body, `<a class="btn" href="/open/files" target="_blank" rel="noopener">Open</a>`) || !strings.Contains(body, "<h3>Add it to your home screen</h3>") || len(keys(body)) != 0 {
+		t.Fatalf("the dialog lacks its QR code or its two steps, or has fields: %s", body)
+	}
+	_, page := open(t, r, tok)
+	if !strings.Contains(page, `<form method="post" action="/copy/`+tok+`"><button type="submit" class="btn">Open</button></form>`) || strings.Contains(page, "/open/files") || !strings.Contains(page, "iPhone: Share › Add to Home Screen") {
+		t.Fatalf("the page's Open is not its own POST: %s", page)
+	}
+
+	resp, err := noRedirect.Post(r.srv.URL+"/copy/"+tok, "application/x-www-form-urlencoded", nil)
+	must(t, err)
+	resp.Body.Close()
+	loc, _ := url.Parse(resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusSeeOther || loc.Scheme != "https" || loc.Host != "files.brave-elf.briard.casa" || loc.Path != "/" {
+		t.Fatalf("Open = %d %q, want https://files.brave-elf.briard.casa/", resp.StatusCode, loc)
+	}
+	status, session := r.loopback("POST", "/gate/redeem", "", url.Values{"code": {loc.Query().Get(gateHopParam)}})
+	if status != http.StatusOK || session == "" || session == c.Value {
+		t.Fatalf("redeem = %d %q, want a session of its own", status, session)
+	}
+	if status, user := r.loopback("GET", "/gate/check?app=files", session, nil); status != http.StatusOK || user != files.User {
+		t.Errorf("Files' session at Files = %d %q", status, user)
+	}
+	if status, _ := r.loopback("GET", "/gate/check?app=mealie", session, nil); status != http.StatusUnauthorized {
+		t.Errorf("Files' session at Mealie = %d, want 401", status)
+	}
+	if resp := r.on(routes.BareFlockHostName, "/", &http.Cookie{Name: cookieName, Value: session}); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Files' session opened the dashboard: %d", resp.StatusCode)
+	}
+	if resp, _ := open(t, r, tok); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("the page after its Open answered %d, want the expired page", resp.StatusCode)
+	}
+	if resp, err := noRedirect.Post(r.srv.URL+"/copy/"+tok, "application/x-www-form-urlencoded", nil); err != nil || resp.StatusCode != http.StatusNotFound {
+		t.Errorf("a second Open: %v %v", resp.StatusCode, err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(r.dir, "state", devicesFile))
+	must(t, err)
+	var rows []map[string]any
+	var reg struct{ Devices *[]map[string]any }
+	reg.Devices = &rows
+	must(t, json.Unmarshal(raw, &reg))
+	var id string
+	for _, d := range rows {
+		if d["app"] == "files" {
+			id, _ = d["id"].(string)
+			if _, has := d["hash"]; has || d["appHash"] == "" {
+				t.Errorf("Files' session's row has a whole device's key: %v", d)
+			}
+		}
+	}
+	if id == "" {
+		t.Fatalf("no row for Files' session: %s", raw)
+	}
+	if devices := r.get(t, "/devices", c); !strings.Contains(devices, `<span class="badge" data-variant="outline">`+r.app.appTitle("files")+` only</span>`) {
+		t.Errorf("Trusted devices does not say the session is Files' alone: %s", devices)
+	}
+	if resp := r.form("/devices/revoke", c, url.Values{"id": {id}}); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("revoke = %d", resp.StatusCode)
+	}
+	if status, _ := r.loopback("GET", "/gate/check?app=files", session, nil); status != http.StatusUnauthorized {
+		t.Errorf("a revoked session still opens Files: %d", status)
+	}
+}
+
+// A web app is installed on a phone from https only, so its "On your phone" waits for a certified
+// casa name; and a page with settings to copy has no Open to spend it on.
+func TestAWebAppWaitsForTheNameAndOnlyItsPageOpens(t *testing.T) {
+	r := gateRig(t)
+	installFreshRSS(t, r)
+	c := r.trust()
+	if card := r.get(t, "/apps/files", c); strings.Contains(card, `action="/phone/files"`) {
+		t.Errorf("Files offers On your phone with no certified name: %s", card)
+	}
+	if status, _ := press(t, r, "/phone/files", c, true); status != http.StatusNotFound {
+		t.Errorf("Files' dialog with no certified name = %d, want 404", status)
+	}
+	galleryCasa(t, r)
+	if card := r.get(t, "/apps/files", c); !strings.Contains(card, `action="/phone/files"`) {
+		t.Errorf("Files does not offer On your phone with a certified name: %s", card)
+	}
+	_, tok := pressForCopy(t, r, c)
+	resp, err := noRedirect.Post(r.srv.URL+"/copy/"+tok, "application/x-www-form-urlencoded", nil)
+	must(t, err)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || len(r.registry().Devices) != 1 {
+		t.Errorf("FreshRSS's page opened something: %d, %d devices", resp.StatusCode, len(r.registry().Devices))
+	}
+	if resp, _ := open(t, r, tok); resp.StatusCode != http.StatusOK {
+		t.Errorf("FreshRSS's page after a refused Open answered %d", resp.StatusCode)
 	}
 }

@@ -59,12 +59,16 @@
 {{end}}
 
 {{/* ON YOUR PHONE (phone.go): what a phone's client signs in with, as two steps -- the client to
-     install, then the fields to copy, each with its Copy button -- and the QR code of the phone's
-     copy page (copy.go), which shows the same steps. In a dialog over the page, one view at a time
+     install, then the fields to copy, each with its Copy button; for a web app, Open and the line
+     that adds it to the home screen -- and the QR code of the phone's copy page (copy.go), which
+     shows the same steps, its Open spending the page on a session of that app alone. In a dialog over the page, one view at a time
      with a button to turn between them; as a page of its own without a script, both. A password no
      longer kept is a button that sets a new one, in place of the dialog or as the page again. */}}
 {{define "copy-field"}}<div class="item"><section><h3>{{.Label}}</h3><p class="key" id="{{.ID}}">{{.Value}}</p></section><aside><button type="button" class="btn" data-variant="outline" data-copy="{{.ID}}">Copy</button></aside></div>{{end}}
-{{define "phone-steps"}}{{with .Error}}<p>{{.}}</p>{{else}}<ol class="steps">
+{{define "phone-steps"}}{{if .Error}}<p>{{.Error}}</p>{{else if .Clients.Web}}<ol class="steps">
+    <li><h3>Open {{.Title}}</h3>{{if .Copy}}<form method="post" action="/copy/{{.Copy}}"><button type="submit" class="btn">Open</button></form>{{else}}<a class="btn" href="/open/{{.Name}}" target="_blank" rel="noopener">Open</a>{{end}}</li>
+    <li><h3>Add it to your home screen</h3><p>Android: ⋮ › Add to home screen</p><p>iPhone: Share › Add to Home Screen</p></li>
+  </ol>{{else}}<ol class="steps">
     <li><h3>Install {{.Clients.Noun}}</h3><p>{{range $i, $c := .Clients.Recommended}}{{if $i}} · {{end}}<a href="{{$c.URL}}" target="_blank" rel="noopener noreferrer">{{$c.Label}}</a>{{end}}{{with .Clients.Others}} · <a href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.Label}}</a>{{end}}</p></li>
     <li><h3>Copy these settings into it</h3><div class="item-group">
       {{template "copy-field" (copyField "copy-address" "Address" .Address)}}

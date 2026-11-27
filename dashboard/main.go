@@ -284,6 +284,9 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// The phone's copy page, the one page served without a session: its token is the key
 		// (copy.go).
 		a.serveCopy(w, r, strings.TrimPrefix(r.URL.Path, copyPath))
+	case strings.HasPrefix(r.URL.Path, copyPath) && r.Method == http.MethodPost:
+		// Its Open, for a web app: the same token, spent (copy.go).
+		a.openCopy(w, r, strings.TrimPrefix(r.URL.Path, copyPath))
 	case r.URL.Path == "/hop" && r.Method == http.MethodGet:
 		a.serveHop(w, r)
 	case sections[r.URL.Path].tmpl != "" && r.Method == http.MethodGet:
@@ -500,7 +503,7 @@ func (a *app) redeem(w http.ResponseWriter, r *http.Request, code string) {
 		http.Error(w, "could not mint a session\n", http.StatusInternalServerError)
 		return
 	}
-	if err := a.addDevice(tok, r.UserAgent(), sessionToken(r)); err != nil {
+	if err := a.addDevice(tok, r.UserAgent(), sessionToken(r), ""); err != nil {
 		log.Printf("dashboard: register device: %v", err)
 		http.Error(w, "could not register this device\n", http.StatusInternalServerError)
 		return
@@ -525,13 +528,15 @@ func sessionToken(r *http.Request) string {
 	return c.Value
 }
 
-// session says whether the request carries a registered device's token, and which device.
+// session says whether the request carries a registered device's token, and which device. One
+// app's session (device.App) is not one: it opens its app and nothing of the dashboard's.
 func (a *app) session(r *http.Request) (device, bool) {
-	return a.deviceOf(sessionToken(r))
+	return a.deviceOf(sessionToken(r), "")
 }
 
-// deviceOf is the registered device a session token belongs to, if any.
-func (a *app) deviceOf(tok string) (device, bool) {
+// deviceOf is the registered device a session token belongs to, if any: a whole device's, or,
+// for an app named, that app's own session.
+func (a *app) deviceOf(tok, app string) (device, bool) {
 	if tok == "" {
 		return device{}, false
 	}
@@ -544,6 +549,9 @@ func (a *app) deviceOf(tok string) (device, bool) {
 		if subtle.ConstantTimeCompare([]byte(d.Hash), []byte(want)) == 1 {
 			return d, true
 		}
+		if app != "" && d.App == app && subtle.ConstantTimeCompare([]byte(d.AppHash), []byte(want)) == 1 {
+			return d, true
+		}
 	}
 	return device{}, false
 }
@@ -554,9 +562,15 @@ type registry struct {
 	Devices []device `json:"devices"`
 }
 
+// device is one trusted browser, or one app's session on a phone ("On your phone" for a web app,
+// copy.go): App names the app and AppHash is its token's hash, with Hash empty. The hash sits
+// under a key of its own so that a dashboard older than the field, which compares Hash alone,
+// never reads an app's session as a whole device.
 type device struct {
 	ID      string    `json:"id"`
-	Hash    string    `json:"hash"`
+	Hash    string    `json:"hash,omitempty"`
+	App     string    `json:"app,omitempty"`
+	AppHash string    `json:"appHash,omitempty"`
 	Agent   string    `json:"agent,omitempty"`
 	Created time.Time `json:"created"`
 }
@@ -564,8 +578,9 @@ type device struct {
 // addDevice registers a session. `replaces` is the session the same browser was carrying, if any:
 // a browser holds one cookie, so the replaced session is retired in the same write rather than
 // left on the list forever. A browser is listed exactly once, and a household using the `briard
-// open` link as a bookmark grows no Trusted devices rows nothing can ever present again.
-func (a *app) addDevice(tok, agent, replaces string) error {
+// open` link as a bookmark grows no Trusted devices rows nothing can ever present again. `only`
+// names the one app the session opens, "" for a whole device.
+func (a *app) addDevice(tok, agent, replaces, only string) error {
 	var reg registry
 	if err := a.readState(devicesFile, &reg); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -585,7 +600,11 @@ func (a *app) addDevice(tok, agent, replaces string) error {
 		}
 		reg.Devices = kept
 	}
-	reg.Devices = append(reg.Devices, device{ID: id[:16], Hash: hashToken(tok), Agent: agent, Created: a.now()})
+	d := device{ID: id[:16], Hash: hashToken(tok), Agent: agent, Created: a.now()}
+	if only != "" {
+		d.Hash, d.App, d.AppHash = "", only, hashToken(tok)
+	}
+	reg.Devices = append(reg.Devices, d)
 	return a.writeState(devicesFile, reg)
 }
 
@@ -760,7 +779,7 @@ func (a *app) approve(w http.ResponseWriter, r *http.Request) {
 	// Nothing is replaced: this request's cookie is the approver's, which keeps its own row, and
 	// the device being registered is the asker's -- untrusted by definition, or it would not be
 	// at the form.
-	if err := a.addDevice(tok, p.agent, ""); err != nil {
+	if err := a.addDevice(tok, p.agent, "", ""); err != nil {
 		log.Printf("dashboard: register approved device: %v", err)
 		http.Error(w, "could not register the device\n", http.StatusInternalServerError)
 		return
@@ -1059,6 +1078,7 @@ type deviceView struct {
 	ID, Label, Agent string
 	Added            string
 	This             bool
+	Only             string // the app an app's session opens, by title; "" for a whole device
 }
 
 // deviceLabel is the browser and the OS, read off the user agent the device registered with --
@@ -1122,7 +1142,11 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 	var reg registry
 	if err := a.readState(devicesFile, &reg); err == nil {
 		for _, d := range reg.Devices {
-			v.Devices = append(v.Devices, deviceView{ID: d.ID, Label: deviceLabel(d.Agent), Agent: d.Agent, Added: d.Created.In(zone()).Format("2 Jan 2006"), This: d.ID == self.ID})
+			dv := deviceView{ID: d.ID, Label: deviceLabel(d.Agent), Agent: d.Agent, Added: d.Created.In(zone()).Format("2 Jan 2006"), This: d.ID == self.ID}
+			if d.App != "" {
+				dv.Only = a.appTitle(d.App)
+			}
+			v.Devices = append(v.Devices, dv)
 		}
 	}
 	routed := a.installedApps()
@@ -1175,6 +1199,7 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 		}
 	}
 	gated := gatedApps(a.routesPath)
+	certified := a.casaCertified()
 	var waiting []string
 	for _, av := range cards {
 		if av.Name == hass.Name {
@@ -1182,8 +1207,9 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 		}
 		_, av.Gated = gated[av.Name]
 		// Home Assistant's once it has an owner to sign in as: it is not gated, it signs in itself.
-		_, phone := phoneApps[av.Name]
-		av.Phone = phone && (av.Gated || av.HA != nil && av.HA.Reachable && av.HA.Onboarded)
+		// A web app's only once its name has a certificate: the phone installs it from https.
+		clients, phone := phoneApps[av.Name]
+		av.Phone = phone && (av.Gated && (!clients.Web || certified) || av.HA != nil && av.HA.Reachable && av.HA.Onboarded)
 		av.Preselected = av.Name == hass.Name || av.Name == files.Name
 		av.Install = a.installState(av.Name, av.Installed, av.Offer != "")
 		if av.Install != nil && av.Install.Updated {

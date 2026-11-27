@@ -129,8 +129,8 @@ func (a *app) gateRedeem(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, h.token)
 }
 
-// gateCheck says whether a session token is still a trusted device's, and whose, for the app the
-// reverse proxy names: 200 with the username the reverse proxy signs into the app -- the one
+// gateCheck says whether a session token is still a trusted device's, or that app's own session,
+// and whose, for the app the reverse proxy names: 200 with the username the reverse proxy signs into the app -- the one
 // fixed name (agent/files) for Files, or the one the app's own accounts say for Mealie
 // (mealie.go), Navidrome (navidrome.go) and FreshRSS (freshrss.go); 401 not a trusted device; 409 a
 // trusted device with no record, which only an open writes and an app's first account takes its
@@ -140,7 +140,9 @@ func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, ok := a.deviceOf(r.Header.Get("X-Briard-Session")); !ok {
+	// A whole device's session opens every app; one app's session (copy.go) opens that app alone.
+	app := r.URL.Query().Get("app")
+	if _, ok := a.deviceOf(r.Header.Get("X-Briard-Session"), app); !ok {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -151,7 +153,6 @@ func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 	// Mealie's, Navidrome's and FreshRSS's user is the one the app's own accounts say, read at
 	// every check (mealie.go, navidrome.go, freshrss.go).
 	user := files.User
-	app := r.URL.Query().Get("app")
 	if s, ok := gatedApps(a.routesPath)[app]; ok && (app == mealie.Name || app == navidrome.Name || app == freshrss.Name) {
 		var err error
 		switch app {

@@ -21,6 +21,13 @@ import (
 // gateRig is the dashboard rig with Files in its routing table, gated.
 func gateRig(t *testing.T) *rig {
 	r := newRig(t)
+	routeFiles(t, r)
+	return r
+}
+
+// routeFiles puts Files in the rig's routing table, gated.
+func routeFiles(t *testing.T, r *rig) {
+	t.Helper()
 	raw, _ := os.ReadFile(filepath.Join(r.dir, "routes.json"))
 	var tbl routes.Table
 	must(t, json.Unmarshal(raw, &tbl))
@@ -31,7 +38,6 @@ func gateRig(t *testing.T) *rig {
 	})
 	raw, _ = json.Marshal(tbl)
 	must(t, os.WriteFile(filepath.Join(r.dir, "routes.json"), raw, 0o644))
-	return r
 }
 
 // loopback is the reverse proxy asking: no X-Forwarded-Proto, which the reverse proxy sets on all

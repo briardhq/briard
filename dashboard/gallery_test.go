@@ -520,6 +520,19 @@ var galleryStates = []galleryState{
 			_, tok := pressForCopy(t, r, c)
 			return "/copy/" + tok, nil
 		}},
+	{"phone-files", "On your phone for Files, a web app: the QR code of its copy page, and two steps, Open and the line per phone that adds it to the home screen.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			routeFiles(t, r)
+			return "/phone/files?", c
+		}},
+	{"copy-files", "Files' copy page on the phone: its Open, which signs this phone in to Files alone, and the line that adds it to the home screen.",
+		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
+			everyday(t, r)
+			routeFiles(t, r)
+			_, tok := pressForWebApp(t, r, c)
+			return "/copy/" + tok, nil
+		}},
 	{"apps-first-run", "The apps page before anything is installed: both available, two coming soon.",
 		func(t *testing.T, r *rig, c *http.Cookie, port *fakePort) (string, *http.Cookie) {
 			notInstalled(t, r)

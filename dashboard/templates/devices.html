@@ -3,7 +3,7 @@
 <header class="page-head"><h1>Trusted devices</h1><p>The browsers that can open this page. Lost one? Revoke it; a new device gets in only when you approve its code here.</p></header>
 <div class="tiles">
   <div class="card wide"><header><h2>Devices</h2></header><section><div class="table-container"><table class="table"><thead><tr><th>Device</th><th>Added</th><th></th></tr></thead><tbody>
-    {{range .Devices}}<tr><td><span title="{{.Agent}}">{{.Label}}</span>{{if .This}} <span class="badge" data-variant="secondary">this device</span>{{end}}</td><td>{{.Added}}</td><td><form method="post" action="/devices/revoke"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn" data-variant="outline" data-size="sm">{{if .This}}Sign out{{else}}Revoke{{end}}</button></form></td></tr>{{end}}
+    {{range .Devices}}<tr><td><span title="{{.Agent}}">{{.Label}}</span>{{with .Only}} <span class="badge" data-variant="outline">{{.}} only</span>{{end}}{{if .This}} <span class="badge" data-variant="secondary">this device</span>{{end}}</td><td>{{.Added}}</td><td><form method="post" action="/devices/revoke"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn" data-variant="outline" data-size="sm">{{if .This}}Sign out{{else}}Revoke{{end}}</button></form></td></tr>{{end}}
   </tbody></table></div>
   {{range .Apps}}{{with .HA}}<p class="note">Revoking here does not sign a device out of Home Assistant; end those sessions in <a href="{{.URL}}profile/security" target="_blank" rel="noopener">your Home Assistant profile</a>.</p>{{end}}{{end}}
   </section></div>

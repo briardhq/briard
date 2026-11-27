@@ -18,6 +18,13 @@ package main
 // The page goes out with no-store and no referrer, so neither a cache nor the link to the app's
 // clients carries the token anywhere, and it clears itself on the phone when the token runs out,
 // so a phone left on it stops showing the password when the server would stop serving it.
+//
+// A web app's page (Mealie, Files: installed on the phone from its own page, with no client and
+// nothing to copy) has an Open button instead. The press, a POST that no preview sends, spends the
+// token on a session of that app alone, listed in Trusted devices beside the browsers and revoked
+// the same way, and the gate's one-time code carries it to the app's name (gate.go). The phone then
+// has the app and nothing of the dashboard's. A web app's page exists only where the casa name has
+// a certificate, since a phone installs a web app only from https.
 
 import (
 	"crypto/rand"
@@ -88,7 +95,7 @@ func (a *app) copyQR(v phoneView) template.URL {
 	// The page has no session, so it has no New password button (which posts as one) and no QR
 	// code of itself.
 	pv := v
-	pv.Replace, pv.Settings, pv.QR = false, false, ""
+	pv.Replace, pv.Settings, pv.QR, pv.Copy = false, false, "", tok
 	a.copyPages[tok] = copyPage{app: v.Name, view: pv, until: now.Add(copyFor)}
 	a.copyMu.Unlock()
 	return template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(code.PNG()))
@@ -98,11 +105,53 @@ func (a *app) copyQR(v phoneView) template.URL {
 // network resolves it and a certificate is in place, as "On your phone" decides for an app's
 // address; the alias by http otherwise.
 func (a *app) copyBase() string {
-	h := a.hostCasa()
-	if h.State == casa.ClaimRegistered && h.Resolves == dashboard.CasaResolves && !h.CertUntil.IsZero() && h.Name != "" {
-		return "https://" + h.Name
+	if a.casaCertified() {
+		return "https://" + a.hostCasa().Name
 	}
 	return "http://" + routes.BareFlockHostName
+}
+
+// casaCertified says the household's casa name resolves on its network and has a certificate in
+// place: the name a phone is given, by https.
+func (a *app) casaCertified() bool {
+	h := a.hostCasa()
+	return h.State == casa.ClaimRegistered && h.Resolves == dashboard.CasaResolves && !h.CertUntil.IsZero() && h.Name != ""
+}
+
+// openCopy is a web app's Open on its copy page: the page's token, spent on one session of that
+// app alone, carried to the app's name as an open from the dashboard carries a device's (gate.go).
+// Anything else -- a spent or unknown token, a page with settings to copy -- is the expired page.
+func (a *app) openCopy(w http.ResponseWriter, r *http.Request, tok string) {
+	a.copyMu.Lock()
+	p, ok := a.copyPages[tok]
+	ok = ok && a.now().Before(p.until) && phoneApps[p.app].Web && strings.HasPrefix(p.view.Address, "https://")
+	if ok {
+		delete(a.copyPages, tok)
+	}
+	a.copyMu.Unlock()
+	if !ok {
+		a.serveCopy(w, r, "")
+		return
+	}
+	session, err := newSecret()
+	code, err2 := newSecret()
+	if err != nil || err2 != nil {
+		http.Error(w, "could not open the app\n", http.StatusInternalServerError)
+		return
+	}
+	a.mu.Lock()
+	err = a.addDevice(session, r.UserAgent(), "", p.app)
+	if err == nil {
+		a.sweepHops()
+		a.hops[code] = hop{token: session, at: a.now()}
+	}
+	a.mu.Unlock()
+	if err != nil {
+		log.Printf("dashboard: %s's session on a phone: %v", p.app, err)
+		http.Error(w, "could not open the app\n", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, p.view.Address+"/?"+gateHopParam+"="+code, http.StatusSeeOther)
 }
 
 // copyView is the page: the dialog's fields and the seconds its token has left, or Gone for a
@@ -113,7 +162,8 @@ type copyView struct {
 	Left int
 }
 
-// serveCopy answers a copy page, with no session asked for.
+// serveCopy answers a copy page, with no session asked for; the token "" is never one, so it is
+// the expired page.
 func (a *app) serveCopy(w http.ResponseWriter, r *http.Request, tok string) {
 	a.copyMu.Lock()
 	p, ok := a.copyPages[tok]
