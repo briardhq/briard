@@ -159,11 +159,13 @@ pkgs.testers.runNixOSTest {
     keys = re.findall(r'<p class="key">([^<]*)</p>', body)
     assert code == 200 and len(keys) == 3 and keys[:2] == ["http://" + ND, "kostas"], f"On your phone answered {code}: {body}"
     phone_pass = keys[2]
-    assert re.fullmatch(r"[a-z]+(-[a-z]+){2,3}", phone_pass), f"the password is not three words: {phone_pass!r}"
+    assert re.fullmatch(r"[a-z]+( [a-z]+){2,3}", phone_pass), f"the password is not three words: {phone_pass!r}"
     assert re.findall(r'<p class="key">([^<]*)</p>', press()[2]) == keys, "a second press showed something else"
     salt = "c19b2d"
     token = hashlib.md5((phone_pass + salt).encode()).hexdigest()
-    for creds in [f"u=kostas&p={phone_pass}", f"u=kostas&t={token}&s={salt}"]:
+    # Spaces and all, URL-encoded as a Subsonic client sends it.
+    phone_q = urllib.parse.quote(phone_pass)
+    for creds in [f"u=kostas&p={phone_q}", f"u=kostas&t={token}&s={salt}"]:
         code, _, body = through_proxy(ping + "&" + creds)
         assert code == 200 and status(body) == "ok", f"{creds}: {code} {body}"
     code, _, body = through_proxy(ping + "&u=kostas&p=wrong")
@@ -172,7 +174,7 @@ pkgs.testers.runNixOSTest {
     # (5) An album written from another mount namespace is in the library within seconds.
     music = "/var/lib/briard/files/navidrome/music"
     node1.succeed(f"podman run --rm -v {music}:/out --entrypoint sh {image} -c 'mkdir -p /out/Briard && ffmpeg -loglevel error -f lavfi -i sine=d=3 -metadata title=Hello -metadata artist=Briard -metadata album=Test /out/Briard/hello.mp3'")
-    search = f"/rest/search3.view?v=1.16.1&c=test&f=json&u=kostas&p={phone_pass}&query=Hello"
+    search = f"/rest/search3.view?v=1.16.1&c=test&f=json&u=kostas&p={phone_q}&query=Hello"
     node1.wait_until_succeeds(f"curl -fsS -H 'Host: {ND}' 'http://{VIP}{search}' | grep -q '\"title\":\"Hello\"'", timeout=60)
 
     # (6) A rename inside Navidrome is followed once the reverse proxy's answer has run out (half

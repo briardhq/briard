@@ -184,7 +184,7 @@ func TestOnYourPhoneReplacesTheGeneratedPasswordOnce(t *testing.T) {
 	if len(got) != 3 || got[0] != "http://briard-navidrome.local" || got[1] != "kostas" {
 		t.Fatalf("dialog = %q, want the .local address, the record's username and a password", got)
 	}
-	parts := strings.Split(got[2], "-")
+	parts := strings.Split(got[2], " ")
 	if len(parts) != 3 || !slices.Contains(words, parts[0]) || !slices.Contains(words, parts[1]) || !slices.Contains(words, parts[2]) {
 		t.Errorf("password %q is not three of the list's words", got[2])
 	}
@@ -364,7 +364,7 @@ func haPhoneRig(t *testing.T) (*rig, *http.Cookie) {
 
 // fourWords says whether a password is four of the list's words.
 func fourWords(p string) bool {
-	parts := strings.Split(p, "-")
+	parts := strings.Split(p, " ")
 	return len(parts) == 4 && !slices.ContainsFunc(parts, func(w string) bool { return !slices.Contains(words, w) })
 }
 

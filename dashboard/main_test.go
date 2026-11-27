@@ -339,7 +339,7 @@ func TestOpenLandsOnHomeAssistantsOnboardingWithTheCode(t *testing.T) {
 	if u["name"] != "Kostas" || u["username"] != "kostas" || u["language"] != "el" || u["client_id"] != state.ClientID {
 		t.Errorf("user step got %v; want the handed-over account bound to the browser's client_id", u)
 	}
-	if parts := strings.Split(u["password"], "-"); len(parts) != 4 || slices.ContainsFunc(parts, func(w string) bool { return !slices.Contains(words, w) }) {
+	if parts := strings.Split(u["password"], " "); len(parts) != 4 || slices.ContainsFunc(parts, func(w string) bool { return !slices.Contains(words, w) }) {
 		t.Errorf("password %q is not four of the list's words", u["password"])
 	}
 	if an != "Bearer sys-access" {

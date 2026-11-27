@@ -1085,7 +1085,7 @@ pkgs.testers.runNixOSTest {
             "client_id": client_id, "username": "kostas", "password": pw,
         }))
     shown, dialog = on_phone()
-    assert len(shown) == 3 and shown[1] == "kostas" and len(shown[2].split("-")) == 4, f"the dialog: {dialog}"
+    assert len(shown) == 3 and shown[1] == "kostas" and len(shown[2].split(" ")) == 4, f"the dialog: {dialog}"
     kept = shown[2]
     signed = login(kept)
     assert signed.get("type") == "create_entry" and signed.get("result"), f"the kept words do not sign in: {signed}"
@@ -1118,7 +1118,7 @@ pkgs.testers.runNixOSTest {
     # New password: four new words that sign in, the old ones refused, and no session ended --
     # the later open's refresh token still exchanges.
     shown, dialog = on_phone(new=True)
-    assert len(shown) == 3 and len(shown[2].split("-")) == 4 and shown[2] != kept, f"New password: {dialog}"
+    assert len(shown) == 3 and len(shown[2].split(" ")) == 4 and shown[2] != kept, f"New password: {dialog}"
     assert login(shown[2]).get("type") == "create_entry", "the new words do not sign in"
     old = login(kept)
     assert old.get("type") == "form" and old.get("errors"), f"the replaced words still sign in: {old}"

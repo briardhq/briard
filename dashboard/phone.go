@@ -162,11 +162,11 @@ var words = func() []string {
 	return out
 }()
 
-// passphrase is `n` words of the list, joined by hyphens, about 10.3 bits a word, typed on a
-// phone once. Navidrome's are three (about 31 bits), behind its own sign-in limit. Home
-// Assistant's are four (about 41 bits): it limits nothing unless the household sets it, so the
-// brake is its bcrypt hash alone, about a quarter second of one core per guess, from the home's
-// network and from away alike.
+// passphrase is `n` words of the list, joined by spaces, about 10.3 bits a word, typed on a
+// phone once: a space is on a phone keyboard's first page, a hyphen is not. Navidrome's are
+// three (about 31 bits), behind its own sign-in limit. Home Assistant's are four (about 41
+// bits): it limits nothing unless the household sets it, so the brake is its bcrypt hash alone,
+// about a quarter second of one core per guess, from the home's network and from away alike.
 func passphrase(n int) (string, error) {
 	size := big.NewInt(int64(len(words)))
 	var picked []string
@@ -177,5 +177,5 @@ func passphrase(n int) (string, error) {
 		}
 		picked = append(picked, words[i.Int64()])
 	}
-	return strings.Join(picked, "-"), nil
+	return strings.Join(picked, " "), nil
 }
