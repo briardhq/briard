@@ -19,6 +19,8 @@
 #   5. the Google Reader API is open, and only it: the API password "On your phone" sets (three
 #      words, kept beside the user and shown again at the next press) signs a phone's reader in
 #      through the reverse proxy, a wrong one does not, and the Fever API stays behind the gate.
+#   6. the QR code "On your phone" shows, read as a phone's camera reads it, opens the copy page
+#      through the reverse proxy with no session: the same values, never cached, no referrer.
 { pkgs, guestModule, freshrssFixture }:
 
 let
@@ -37,6 +39,8 @@ pkgs.testers.runNixOSTest {
     {
       imports = [ node ];
       virtualisation.memorySize = 1024;
+      # zbarimg reads the dialog's QR code, as a phone's camera would.
+      environment.systemPackages = [ pkgs.zbar ];
     };
   # A household machine on the LAN, with nothing of briard's. Named to sort after node1, whose
   # node number lib.nix ties to its address.
@@ -48,7 +52,7 @@ pkgs.testers.runNixOSTest {
 
   testScript = ''
     ${h.fixtureHelpers}
-    import json, re, shlex, urllib.parse
+    import html, json, re, shlex, urllib.parse
     VIP = "192.168.1.100"
     FR = "briard-freshrss.local"
     CTR = "briard-freshrss-app"
@@ -149,13 +153,26 @@ pkgs.testers.runNixOSTest {
     # kept, and the same at the next.
     press = lambda: through_proxy("/phone/freshrss", session, "-X POST -H 'HX-Request: true'", host="briard.local")
     code, _, body = press()
-    keys = re.findall(r'<p class="key">([^<]*)</p>', body)
+    keys = re.findall(r'<p class="key"[^>]*>([^<]*)</p>', body)
     assert code == 200 and len(keys) == 3 and keys[:2] == ["http://" + FR + "/api/greader.php", "owner"], f"On your phone answered {code}: {body}"
     phone_pass = keys[2]
     assert re.fullmatch(r"[a-z]+ [a-z]+ [a-z]+", phone_pass), f"the password is not three words: {phone_pass!r}"
-    assert re.findall(r'<p class="key">([^<]*)</p>', press()[2]) == keys, "a second press showed something else"
+    again = press()[2]
+    assert re.findall(r'<p class="key"[^>]*>([^<]*)</p>', again) == keys, "a second press showed something else"
     kept = node1.succeed(f"podman exec --user apache {CTR} cat /var/www/FreshRSS/data/users/owner/briard-phone")
     assert kept == phone_pass, f"kept {kept!r}, shown {phone_pass!r}"
+
+    # (6) The dialog's QR code, read as a phone's camera reads it, opens the copy page through
+    # the reverse proxy with no session: the same three values, never cached, no referrer.
+    m = re.search(r'<img class="qr" src="data:image/png;base64,([^"]+)"', again)
+    assert m, f"the dialog has no QR code: {again}"
+    qr = html.unescape(m.group(1))
+    node1.succeed(f"echo {qr} | base64 -d > /tmp/qr.png")
+    url = node1.succeed("zbarimg -q --raw /tmp/qr.png").strip()
+    assert url.startswith("http://briard.local/copy/"), f"the QR code reads {url!r}"
+    code, hd, page = through_proxy(url[len("http://briard.local"):], host="briard.local")
+    assert code == 200 and re.findall(r'<p class="key"[^>]*>([^<]*)</p>', page) == keys, f"the copy page answered {code}: {page}"
+    assert header(hd, "Cache-Control") == "no-store" and header(hd, "Referrer-Policy") == "no-referrer", hd
 
     # (5) The Google Reader API, through the reverse proxy, as a phone's reader signs in.
     login = lambda pw: through_proxy("/api/greader.php/accounts/ClientLogin", extra="-X POST --data-urlencode Email=owner --data-urlencode " + shlex.quote("Passwd=" + pw))

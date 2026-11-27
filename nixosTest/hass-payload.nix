@@ -1075,7 +1075,7 @@ pkgs.testers.runNixOSTest {
             f"curl -fsS -X POST -H 'Host: {node_name}' -H 'Cookie: {cookie}' -H 'HX-Request: true' "
             f"'http://192.168.1.100{path}'"
         )
-        return _re.findall(r'<p class="key">([^<]*)</p>', body), body
+        return _re.findall(r'<p class="key"[^>]*>([^<]*)</p>', body), body
     def login(pw):
         """HA's own username/password flow; the flow's final result."""
         flow = _zj.loads(through_proxy("/auth/login_flow", post={

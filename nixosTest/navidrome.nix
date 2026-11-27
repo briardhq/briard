@@ -156,11 +156,11 @@ pkgs.testers.runNixOSTest {
     # generated replaced by three words and read back off its database, the same at the next press.
     press = lambda: through_proxy("/phone/navidrome", session, "-X POST -H 'HX-Request: true'", host="briard.local")
     code, _, body = press()
-    keys = re.findall(r'<p class="key">([^<]*)</p>', body)
+    keys = re.findall(r'<p class="key"[^>]*>([^<]*)</p>', body)
     assert code == 200 and len(keys) == 3 and keys[:2] == ["http://" + ND, "kostas"], f"On your phone answered {code}: {body}"
     phone_pass = keys[2]
     assert re.fullmatch(r"[a-z]+( [a-z]+){2,3}", phone_pass), f"the password is not three words: {phone_pass!r}"
-    assert re.findall(r'<p class="key">([^<]*)</p>', press()[2]) == keys, "a second press showed something else"
+    assert re.findall(r'<p class="key"[^>]*>([^<]*)</p>', press()[2]) == keys, "a second press showed something else"
     salt = "c19b2d"
     token = hashlib.md5((phone_pass + salt).encode()).hexdigest()
     # Spaces and all, URL-encoded as a Subsonic client sends it.
