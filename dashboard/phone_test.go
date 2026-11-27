@@ -177,7 +177,7 @@ func keys(body string) []string {
 func TestOnYourPhoneReplacesTheGeneratedPasswordOnce(t *testing.T) {
 	r, c, f := phoneRig(t)
 	status, body := press(t, r, "/phone/navidrome", c, true)
-	if status != http.StatusOK || !strings.HasPrefix(body, `<dialog class="dialog"`) {
+	if status != http.StatusOK || !strings.HasPrefix(body, `<dialog class="dialog phone"`) {
 		t.Fatalf("press = %d %s, want the dialog", status, body)
 	}
 	got := keys(body)
@@ -288,7 +288,7 @@ func TestOnYourPhoneOpensADialogInABrowser(t *testing.T) {
 	// on what it holds, is a click on the backdrop.
 	outside := `document.addEventListener('htmx:load',function(e){var d=e.detail.elt;if(d.tagName==='DIALOG')setTimeout(function(){document.body.setAttribute('data-clicked',d.open);d.dispatchEvent(new MouseEvent('click',{bubbles:true}))},100)});`
 	dom := dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)})`, nil)
-	if !strings.Contains(dom, `<h2 class="group-title">Installed</h2>`) || !strings.Contains(dom, `<dialog class="dialog" aria-labelledby="phone-title" open="">`) || len(keys(dom)) != 3 {
+	if !strings.Contains(dom, `<h2 class="group-title">Installed</h2>`) || !strings.Contains(dom, `<dialog class="dialog phone" aria-labelledby="phone-title" open="">`) || len(keys(dom)) != 3 {
 		t.Errorf("the Apps page has no open dialog with the three fields: %s", dom)
 	}
 	dom = dialogInBrowser(t, chromium, `addEventListener('DOMContentLoaded',function(){setTimeout(function(){`+press+`},100)});`+outside, nil)
@@ -414,7 +414,7 @@ func TestOnYourPhoneGivesHomeAssistantANewPassword(t *testing.T) {
 	}
 	_, body = press(t, r, "/phone/home-assistant?new", c, true)
 	got := keys(body)
-	if len(got) != 3 || !fourWords(got[2]) || got[2] != r.ha.ownerPassword || !strings.HasPrefix(body, `<dialog class="dialog"`) {
+	if len(got) != 3 || !fourWords(got[2]) || got[2] != r.ha.ownerPassword || !strings.HasPrefix(body, `<dialog class="dialog phone"`) {
 		t.Fatalf("after New password = %q (HA holds %q): %s", got, r.ha.ownerPassword, body)
 	}
 	if _, again := press(t, r, "/phone/home-assistant", c, true); !slices.Equal(keys(again), got) {

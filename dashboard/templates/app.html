@@ -69,7 +69,7 @@
     <div class="item"><section><h3>Password</h3>{{if .Replace}}<form method="post" action="/phone/{{.Name}}?new" hx-post="/phone/{{.Name}}?new" hx-target="closest dialog" hx-swap="outerHTML"><button type="submit" class="btn" data-variant="outline">New password</button></form>{{else}}<p class="key">{{.Password}}</p>{{end}}</section></div>
     {{with $.Clients.URL}}<div class="item"><section><p><a href="{{.}}" target="_blank" rel="noopener">{{$.Clients.Label}}</a></p></section></div>{{end}}
   </div>{{end}}{{end}}
-{{define "phone-dialog"}}<dialog class="dialog" aria-labelledby="phone-title"><div><header><h2 id="phone-title">{{.Title}} on your phone</h2></header><section>{{template "phone-fields" .}}</section><footer><form method="dialog"><button type="submit" class="btn" autofocus>Done</button></form></footer></div></dialog>{{end}}
+{{define "phone-dialog"}}<dialog class="dialog phone" aria-labelledby="phone-title"><div><header><h2 id="phone-title">{{.Title}} on your phone</h2></header><section>{{template "phone-fields" .}}</section><footer><form method="dialog"><button type="submit" class="btn" autofocus>Done</button></form></footer></div></dialog>{{end}}
 {{define "phone-page"}}{{template "head" (shell "apps" false)}}
 <header class="page-head"><h1>{{.Title}} on your phone</h1></header>
 <div class="tiles"><div class="card"><section>{{template "phone-fields" .}}</section><footer><a class="btn" href="/apps/{{.Name}}">Done</a></footer></div></div>
