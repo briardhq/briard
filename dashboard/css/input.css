@@ -72,9 +72,10 @@ progress:indeterminate::-moz-progress-bar { background: transparent; }
 .key { @apply font-mono text-base tracking-wide select-all break-all text-foreground; }
 /* A DIALOG: never wider than the screen less Basecoat's margin. */
 .dialog > * { max-width: min(calc(100% - 2rem), var(--container-xl)); }
-/* "On your phone" is wider, so the longest address it gives, the casa name with a path after it
-   (FreshRSS's Google Reader API), stays on one line. */
-.phone > * { max-width: min(calc(100% - 2rem), var(--container-3xl)); }
+/* "On your phone" is as wide as what it shows, up to wide enough that the longest address it gives,
+   the casa name with a path after it (FreshRSS's Google Reader API), stays on one line: narrow for
+   the QR code, wider for the settings. Basecoat makes a dialog the full width it may have. */
+.phone > * { width: fit-content; max-width: min(calc(100% - 2rem), var(--container-3xl)); }
 /* "ON YOUR PHONE"'s two views: the QR code, centred under its one line, and the settings as
    numbered steps. In the dialog one shows at a time (data-view, set by its script); without a
    script both do. The QR code is large enough for a phone's camera across a desk, crisp at any
