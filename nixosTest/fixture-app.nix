@@ -115,7 +115,9 @@ let
   policy = pkgs.writeText "policy.json" (builtins.toJSON {
     default = [ { type = "insecureAcceptAnything"; } ];
   });
-  envJSON = e: if e == { } then "" else '',"env":${builtins.toJSON e}'';
+  # A `$` is escaped for the heredoc the manifest is written through, so a value reaches the
+  # manifest as the caller wrote it.
+  envJSON = e: if e == { } then "" else '',"env":${builtins.replaceStrings [ "$" ] [ "\\$" ] (builtins.toJSON e)}'';
   # Published ports, omitted when empty so a host-networked fixture keeps its exact manifest
   # bytes; the schema refuses `ports` alongside host networking.
   portsJSON = ps: if ps == [ ] then "" else '',"ports":${builtins.toJSON ps}'';

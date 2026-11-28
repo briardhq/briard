@@ -242,6 +242,15 @@ func Render(m manifest.Manifest, addr string) (Rendered, error) {
 		// crash-loop retries indefinitely instead of latching to `failed` on a transient cause, and
 		// stays visible: NRestarts climbs, and the resource telemetry reads it per app.
 		lines = append(lines, "", "[Service]", "Restart=always", "RestartSec=5")
+		// The user's name, for a container whose env names it (manifest.UserPlaceholder): systemd
+		// replaces the placeholder in the command line quadlet makes of the env, from this file,
+		// when the unit starts, so the unit's text is the same on every node. Only for such a
+		// container, since a unit naming a file that is not there does not start, and the file is
+		// there only once the node has a user. ⚠️ No leading `-`: forgiving its absence would start
+		// the app with an empty name.
+		if c.NamesUser() {
+			lines = append(lines, "EnvironmentFile="+apps.UserEnv())
+		}
 		// A leak stays in its own app. The guest grows when it runs short, so a leaking app would
 		// be fed DIMM after DIMM up to the host's ceiling, squeezing everything beside it. The
 		// limit is relaxed on purpose (MemoryLimitFactor times the declared minimum, room for real
@@ -591,7 +600,8 @@ func sortedKeys(m map[string]string) []string {
 // read as a specifier (%n, %i, ...) and expanded to something the catalog never wrote —
 // harmless-looking in an env var, and a silent corruption of what the app was told. The
 // manifest already forbids newlines (that check is the anti-injection boundary); envLine handles
-// the other way a legal value can mean something other than itself.
+// the other way a legal value can mean something other than itself. A `$` is left as written: the
+// manifest allows it only as the user's placeholder, which systemd is meant to expand.
 func escape(v string) string { return strings.ReplaceAll(v, "%", "%%") }
 
 // envLine is one Environment= line. systemd, and quadlet after it, split an unquoted line at

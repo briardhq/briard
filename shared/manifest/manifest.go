@@ -169,7 +169,8 @@ type Container struct {
 	// handing it a directory it will never write. There is no access to a tier as a whole: a
 	// tier is what the node does with a directory, and the manifest names the directories.
 	Mounts []Mount `json:"mounts,omitempty"`
-	// Env is the container's environment. Values are opaque; only newlines are forbidden.
+	// Env is the container's environment. A value is opaque but for UserPlaceholder, the one
+	// meaning a `$` may carry; newlines are forbidden.
 	Env map[string]string `json:"env,omitempty"`
 	// Primary marks the container the reverse proxy forwards to and the health gate probes.
 	// Exactly one container carries it, because "is the app serving?" must have one answer.
@@ -224,6 +225,28 @@ func (m Manifest) UsesTier(tier string) bool {
 // UsesTier reports whether the container mounts the tier.
 func (c Container) UsesTier(tier string) bool {
 	return slices.ContainsFunc(c.Mounts, func(mt Mount) bool { return mt.Tier == tier })
+}
+
+// UserPlaceholder, in a container's env value, stands for the username of the person the node
+// belongs to. The node resolves it when the container starts, so one manifest names a first
+// account after whoever installed it. It is the only variable a value may name: a username is
+// letters, digits, `_` and `-`, which is safe wherever an app puts it, and a value that could
+// name anything else would be a catalog entry reading the node's environment.
+const UserPlaceholder = "${BRIARD_USERNAME}"
+
+// NamesUser reports whether any container of the app names the user in its env.
+func (m Manifest) NamesUser() bool {
+	return slices.ContainsFunc(m.Containers, Container.NamesUser)
+}
+
+// NamesUser reports whether the container's env names the user.
+func (c Container) NamesUser() bool {
+	for _, v := range c.Env {
+		if strings.Contains(v, UserPlaceholder) {
+			return true
+		}
+	}
+	return false
 }
 
 // Identity is the manifest's content hash — the app identity (property 3 above). It is
@@ -366,6 +389,11 @@ func (m Manifest) Validate() error {
 			}
 			if err := safeValue("env "+k, v); err != nil {
 				return err
+			}
+			// The node's init system expands a `$` in a unit's command line, so one left in a value
+			// would reach the app as something the entry never wrote.
+			if strings.Contains(strings.ReplaceAll(v, UserPlaceholder, ""), "$") {
+				return fmt.Errorf("%w: container %q env %s holds a $ that is not %s", ErrInvalid, c.Name, k, UserPlaceholder)
 			}
 		}
 		if c.Primary {

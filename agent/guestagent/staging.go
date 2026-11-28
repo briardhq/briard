@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log"
 	"strings"
+
+	apps "briard.io/agent/apps"
+	"briard.io/shared/manifest"
 )
 
 // Stage, then commit: an app install is not the volume's identity until its health gate says so.
@@ -98,6 +101,14 @@ func stageApp(ctx context.Context, x Executor, run func(string, ...string) error
 	}
 	if req.Rollback != "" && strings.ContainsAny(req.Rollback, "\n") {
 		return fmt.Errorf("app.stage: rollback point %q is not one line", req.Rollback)
+	}
+	// An app whose env names the user has no name to take on a node nobody has opened. Refused
+	// here, before anything is written, with the reason: left to converge it would be one more
+	// app that could not be prepared, and only this node's log would say why.
+	if m, _, err := manifest.Parse([]byte(req.Manifest)); err == nil && m.NamesUser() {
+		if _, err := apps.Username(x); err != nil {
+			return fmt.Errorf("app.stage: %s takes the user's name: %w", req.Name, err)
+		}
 	}
 	if err := ensureAppData(ctx, x, run, req.DataDir, req.Subdirs); err != nil {
 		return err

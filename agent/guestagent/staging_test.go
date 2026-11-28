@@ -5,6 +5,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"briard.io/shared/dashboard"
+	"briard.io/shared/manifest"
 )
 
 const dummyManifestStaged = `{"name":"dummy","version":"2","network":"host","containers":[{"name":"app",` +
@@ -185,5 +188,28 @@ func TestConvergeFreshStagedInstall(t *testing.T) {
 		if !x.ran("systemctl", "start", "briard-dummy-app.service") {
 			t.Fatalf("live=%q: the accepted app beside it was not started", live)
 		}
+	}
+}
+
+// An app whose env names the user is refused at the stage on a node nobody has opened, before
+// anything is written and with the reason: the install then fails saying `briard open`, where
+// converge alone would only log an app it could not prepare. With a record it stages as any other.
+func TestStageRefusesAnAppNamedAfterTheUserWithNoRecord(t *testing.T) {
+	x := dummyNode(t)
+	g := dial(t, x)
+	named := strings.Replace(dummyManifestStaged, `"primary":true`, `"env":{"WHO":"--user `+manifest.UserPlaceholder+`"},"primary":true`, 1)
+	err := g.AppStage(context.Background(), "dummy", "/var/lib/briard/data/dummy", nil, named, "")
+	if err == nil || !strings.Contains(err.Error(), "briard open") {
+		t.Fatalf("AppStage with no record = %v, want a refusal naming `briard open`", err)
+	}
+	if _, staged := x.fakeExec.files[stagedPath("dummy")]; staged {
+		t.Fatal("the refused install was staged")
+	}
+	x.fakeExec.files[dashboard.AccountPath] = `{"id":"abcdefghijklmnop","username":"kostas"}`
+	if err := g.AppStage(context.Background(), "dummy", "/var/lib/briard/data/dummy", nil, named, ""); err != nil {
+		t.Fatal(err)
+	}
+	if x.fakeExec.files[stagedPath("dummy")] != named {
+		t.Fatal("with a record the install was not staged")
 	}
 }

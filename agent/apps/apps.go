@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"briard.io/agent/appdir"
 	"briard.io/agent/files"
 	"briard.io/agent/freshrss"
 	"briard.io/agent/hass"
@@ -36,6 +37,7 @@ import (
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/navidrome"
 	"briard.io/shared/api"
+	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
 	"briard.io/shared/routes"
 )
@@ -101,6 +103,33 @@ func AppDir(app string) string { return RunDir() + "/" + app }
 // InboundSocket is the one listener, owned by the long-running guest agent. Beside the app
 // directories rather than inside any of them: it is the agent's, shared by every caller.
 func InboundSocket() string { return RunDir() + "/agent.sock" }
+
+// UserEnv is the file a container whose env names the user (manifest.UserPlaceholder) takes the
+// username from, when it starts: one line, written by Prepare from the user's record. The unit
+// names it only for such a container, and a container whose file is missing does not start.
+func UserEnv() string { return RunDir() + "/user.env" }
+
+// userEnvName is the variable manifest.UserPlaceholder names.
+var userEnvName = strings.TrimSuffix(strings.TrimPrefix(manifest.UserPlaceholder, "${"), "}")
+
+// Username is the username in the user's record, for an app whose first account is named after
+// the user. A node nobody has opened has no record and so no name to give. A record whose
+// username is not the shape every record is written in is refused: the name is put where an
+// app's own start reads it, and nothing wider than that shape is safe there.
+func Username(x Executor) (string, error) {
+	raw, err := x.ReadFile(dashboard.AccountPath)
+	if err != nil {
+		return "", dashboard.ErrNoAccount
+	}
+	acct, err := dashboard.ParseAccount(raw)
+	if err != nil {
+		return "", err
+	}
+	if !dashboard.ValidUsername(acct.Username) {
+		return "", fmt.Errorf("the user record's username %q is not one an app can be given", acct.Username)
+	}
+	return acct.Username, nil
+}
 
 // InboundTokenPath is where one app's token lives on the node.
 func InboundTokenPath(app string) string { return AppDir(app) + "/" + InboundTokenName }
@@ -500,6 +529,22 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest, podGateway st
 	if WantsInboundAny(m) {
 		if err := mintInboundToken(ctx, x, m.Name); err != nil {
 			return fmt.Errorf("apps: mint %s's inbound token: %w", m.Name, err)
+		}
+	}
+	// The user's name, for an app whose env names it. Here for the token's reason: every converge
+	// reads it from the record again, so the file never outlives what it was read from. Written
+	// whole or not at all, since a file without the line would start the app with an empty name;
+	// with no record the app is not started, which is what an app with no name to take needs.
+	if m.NamesUser() {
+		user, err := Username(x)
+		if err != nil {
+			return fmt.Errorf("apps: %s takes the user's name: %w", m.Name, err)
+		}
+		if _, err := x.Run(ctx, "mkdir", "-p", RunDir()); err != nil {
+			return fmt.Errorf("apps: %s: %w", RunDir(), err)
+		}
+		if err := appdir.Write(ctx, x, UserEnv(), []byte(userEnvName+"="+user+"\n"), "", "0644"); err != nil {
+			return fmt.Errorf("apps: the user's name for %s: %w", m.Name, err)
 		}
 	}
 	if e := known[m.Name]; e.prepare != nil {

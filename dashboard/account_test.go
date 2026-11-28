@@ -22,6 +22,8 @@ func TestTheUsersRecordFromItsSeed(t *testing.T) {
 		{"the display name is only the username (os/user's fallback)", dashboard.Handoff{Username: "ana", Name: "ana"}, "ana", "Ana", "en"},
 		{"root says nothing about the person", dashboard.Handoff{Username: "root", Name: "System administrator", Language: "en"}, "owner", "Owner", "en"},
 		{"nothing known", dashboard.Handoff{}, "owner", "Owner", "en"},
+		{"a name an app seeds for itself is not taken", dashboard.Handoff{Username: "admin", Name: "Ana Silva", Language: "pt"}, "owner", "Ana Silva", "pt"},
+		{"nor is the name of briard's own account in an app", dashboard.Handoff{Username: "briard-admin"}, "owner", "Owner", "en"},
 		{"a username in another script keeps its real name", dashboard.Handoff{Username: "Κώστας", Name: "Κώστας Χ.", Language: "el"}, "owner", "Κώστας Χ.", "el"},
 		{"what apps refuse is dropped, a letter first", dashboard.Handoff{Username: "9John.Doe-2_x"}, "johndoe-2_x", "Johndoe-2_x", "en"},
 		{"a language that is not two letters", dashboard.Handoff{Username: "bo", Language: "eng"}, "bo", "Bo", "en"},

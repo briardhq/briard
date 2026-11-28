@@ -112,6 +112,9 @@ func TestValidateRejects(t *testing.T) {
 			m.Containers[0].Mounts = append(m.Containers[0].Mounts, Mount{Tier: TierCache, Dir: "c", Path: "/config"})
 		}},
 		{"bad env key", func(m *Manifest) { m.Containers[0].Env = map[string]string{"a b": "c"} }},
+		{"env naming a variable", func(m *Manifest) { m.Containers[0].Env = map[string]string{"K": "--user ${HOME}"} }},
+		{"env with a bare dollar", func(m *Manifest) { m.Containers[0].Env = map[string]string{"K": "costs $5"} }},
+		{"env with a doubled dollar", func(m *Manifest) { m.Containers[0].Env = map[string]string{"K": "$" + UserPlaceholder} }},
 		{"port zero", func(m *Manifest) { m.Containers[0].Port = 0 }},
 		{"port too high", func(m *Manifest) { m.Containers[0].Port = 70000 }},
 		{"health path relative", func(m *Manifest) { m.Containers[0].HealthPath = "healthz" }},
@@ -330,5 +333,21 @@ func TestMinBriardIsAReleaseID(t *testing.T) {
 		if _, _, err := Parse(doc(bad)); !errors.Is(err, ErrInvalid) {
 			t.Errorf("minBriard %q was accepted (%v)", bad, err)
 		}
+	}
+}
+
+// The user's placeholder is the one `$` an env value may hold: the node expands it when the
+// container starts, and any other would be expanded or emptied the same way, unasked.
+func TestAnEnvValueMayNameTheUser(t *testing.T) {
+	m := good()
+	if m.NamesUser() {
+		t.Fatal("a manifest with no placeholder is read as naming the user")
+	}
+	m.Containers[0].Env = map[string]string{"INSTALL": "--default-user " + UserPlaceholder + " --api", "TZ": "Europe/Athens"}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate refused the placeholder: %v", err)
+	}
+	if !m.NamesUser() || !m.Containers[0].NamesUser() {
+		t.Fatal("a manifest holding the placeholder is not read as naming the user")
 	}
 }

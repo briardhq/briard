@@ -442,6 +442,7 @@ in
       drbd-survivor-restart = import ./drbd-survivor-restart.nix { inherit pkgs fixture guestModule; };
       single-node-chain = import ./single-node-chain.nix { inherit pkgs fixture guestModule; }; # a lone node runs no DRBD
       app-memory-limit = import ./app-memory-limit.nix { inherit pkgs guestModule; }; # a leak is OOM-killed inside its own app
+      app-user-name = import ./app-user-name.nix { inherit pkgs guestModule; }; # an app named after the user takes the name at start, and never starts without one
       backup = import ./backup.nix { inherit pkgs fixture guestModule; }; # a ring member, through the real store, into a folder a person owns
       # The exit assertion of the lone node running no DRBD: one bad sector under a data file
       # costs one file, and the node keeps serving (under DRBD on a lone node it measured as a

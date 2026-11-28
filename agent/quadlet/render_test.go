@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	apps "briard.io/agent/apps"
 	"briard.io/shared/manifest"
 )
 
@@ -653,5 +654,31 @@ func TestContainerMemoryLimitFollowsTheDeclaredMinimum(t *testing.T) {
 	c = mustRender(t, ha()).Files["briard-home-assistant-ha.container"]
 	if strings.Contains(c, "MemoryMax=") || strings.Contains(c, "MemorySwapMax=") {
 		t.Errorf("an app with no declared minimum was capped:\n%s", c)
+	}
+}
+
+// TestTheUsersNameComesFromAFileAtStart: the placeholder reaches the unit as the catalog wrote
+// it, so the unit's text is the same on every node, and the unit names the file systemd takes
+// the name from. Only on a container that names the user: a unit naming a file that is not
+// there does not start, and a node has the file only once it has a user. Never with the `-`
+// that forgives a missing file, which would start the app with an empty name.
+func TestTheUsersNameComesFromAFileAtStart(t *testing.T) {
+	m := ha()
+	plain := mustRender(t, m).Files["briard-home-assistant-ha.container"]
+	if strings.Contains(plain, "EnvironmentFile") {
+		t.Fatalf("a container that does not name the user waits on the user's file:\n%s", plain)
+	}
+	m.Containers[0].Env = map[string]string{"INSTALL": "--default-user " + manifest.UserPlaceholder}
+	unit := mustRender(t, m).Files["briard-home-assistant-ha.container"]
+	for _, want := range []string{
+		`Environment="INSTALL=--default-user ${BRIARD_USERNAME}"` + "\n",
+		"\nEnvironmentFile=" + apps.UserEnv() + "\n",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("the unit lacks %q:\n%s", want, unit)
+		}
+	}
+	if strings.Index(unit, "EnvironmentFile=") < strings.Index(unit, "[Service]") {
+		t.Errorf("the file is named outside [Service], where quadlet reads it as a key of its own:\n%s", unit)
 	}
 }

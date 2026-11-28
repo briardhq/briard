@@ -15,33 +15,18 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base32"
-	"errors"
 	"fmt"
 	"strings"
 
+	"briard.io/agent/mealie"
 	"briard.io/shared/dashboard"
 )
 
-// account is the record: who every app is told it is talking to.
-type account struct {
-	// ID is sixteen lowercase base32 characters, minted with the record and never changed: the
-	// only thing briard's own state names a user by. Never shown -- it is no one's name for
-	// themselves.
-	ID string `json:"id"`
-	// Username is fixed once written: Home Assistant's first user. No gated app finds the user by
-	// it -- Files signs in by one fixed name (agent/files), Mealie and Navidrome by the account read
-	// off the app itself (agent/mealie, agent/navidrome) -- so a record a restore brings strands no app's
-	// account. Navidrome's first account is made with it, since Navidrome makes none of its own.
-	Username string `json:"username"`
-	// Name and Language are seeds: each app keeps its own copy from its first sign-in, and nothing
-	// is synced either way.
-	Name     string `json:"name"`
-	Language string `json:"language"`
-}
+// account is the record (shared/dashboard, which the guest agent reads it through too).
+type account = dashboard.Account
 
-// The defaults, applied when the record is written and nowhere else. Not `admin`: that is the
-// account many apps seed for themselves, so a user of that name would meet theirs. Owner is
-// Home Assistant's word for this person.
+// The defaults, applied when the record is written and nowhere else. Owner is Home Assistant's
+// word for this person.
 const (
 	defaultUsername = "owner"
 	defaultName     = "Owner"
@@ -49,7 +34,7 @@ const (
 )
 
 // errNoAccount is a dashboard with no record yet: no open has been redeemed since it was made.
-var errNoAccount = errors.New("no user record yet; run `briard open` on the machine")
+var errNoAccount = dashboard.ErrNoAccount
 
 // account is the record on the volume. A file without an id is no record.
 func (a *app) account() (account, error) {
@@ -72,9 +57,17 @@ func (a *app) keepAccount(seed dashboard.Handoff) error {
 	return a.writeState(accountFile, acct)
 }
 
+// taken says an OS account's name is one an app keeps for an account of its own, so a user of
+// that name would meet theirs: `admin`, which many apps seed for themselves, and the account
+// briard makes for itself in Mealie.
+func taken(username string) bool {
+	return username == "admin" || username == mealie.OwnUser
+}
+
 // newAccount is the record a seed makes: the username normalised, `root` read as nothing known (a
-// root shell without sudo says nothing about the person), the name the capitalised username when
-// the OS account had none -- or only its own username -- and a two-letter language.
+// root shell without sudo says nothing about the person) and so is a name an app keeps for
+// itself (taken), the name the capitalised username when the OS account had none -- or only its
+// own username -- and a two-letter language.
 func newAccount(seed dashboard.Handoff) (account, error) {
 	var b [10]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -89,7 +82,7 @@ func newAccount(seed dashboard.Handoff) (account, error) {
 	if acct.Username == "root" {
 		acct.Name = ""
 	}
-	if acct.Username == "" || acct.Username == "root" {
+	if acct.Username == "" || acct.Username == "root" || taken(acct.Username) {
 		acct.Username = defaultUsername
 	}
 	if acct.Name == "" || strings.EqualFold(acct.Name, strings.TrimSpace(seed.Username)) {

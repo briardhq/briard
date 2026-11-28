@@ -2,6 +2,7 @@ package apps
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"briard.io/agent/mealie"
 	"briard.io/agent/mosquitto"
 	"briard.io/agent/navidrome"
+	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
 )
 
@@ -554,5 +556,53 @@ func TestFreshRSSIsGatedByAddressWithItsFileOverTheHook(t *testing.T) {
 		if GateByAddress(o) || Open(o) != nil || slices.Contains(Volumes(o, o.Containers[0]), freshrss.ConfigPath+":"+freshrss.Hook+":ro") {
 			t.Errorf("%s was given FreshRSS's gate, open paths or file", o.Name)
 		}
+	}
+}
+
+// TestPrepareWritesTheUsersNameFromTheRecord: an app whose env names the user is handed the
+// record's username in the file its unit reads at start, at every converge. With no record, or
+// one whose username is not the shape a record is written in, the app is not prepared and the
+// file is not written, so the unit cannot start with an empty name or with a name an app's own
+// start would read as something else. An app that does not name the user needs no record.
+func TestPrepareWritesTheUsersNameFromTheRecord(t *testing.T) {
+	named := manifest.Manifest{Name: "reader", Containers: []manifest.Container{{Name: "app", Primary: true,
+		Env: map[string]string{"INSTALL": "--default-user " + manifest.UserPlaceholder}}}}
+	plain := manifest.Manifest{Name: "reader", Containers: []manifest.Container{{Name: "app", Primary: true,
+		Env: map[string]string{"TZ": "Europe/Athens"}}}}
+
+	f := &tokenExec{files: map[string]string{}}
+	if err := Prepare(context.Background(), f, plain, ""); err != nil {
+		t.Fatalf("an app that does not name the user was held for the record: %v", err)
+	}
+	err := Prepare(context.Background(), f, named, "")
+	if !errors.Is(err, dashboard.ErrNoAccount) {
+		t.Fatalf("with no record Prepare = %v, want the error that names `briard open`", err)
+	}
+	for _, record := range []string{
+		`{"username":"kostas"}`, // no id: no record
+		`{"id":"abcdefghijklmnop","username":"k; id"}`,
+		`{"id":"abcdefghijklmnop","username":"$(id)"}`,
+		`{"id":"abcdefghijklmnop","username":""}`,
+		`{"id":"abcdefghijklmnop","username":"Kostas"}`,
+		`{"id":"abcdefghijklmnop","username":"9lives"}`,
+	} {
+		f.files[dashboard.AccountPath] = record
+		if err := Prepare(context.Background(), f, named, ""); err == nil {
+			t.Errorf("Prepare took the record %s", record)
+		}
+	}
+	if _, ok := f.files[UserEnv()+".new"]; ok || f.ran("mv", "-f", UserEnv()+".new", UserEnv()) {
+		t.Fatalf("a file was written with no name to put in it: %v", f.runs)
+	}
+
+	f.files[dashboard.AccountPath] = `{"id":"abcdefghijklmnop","username":"kostas","name":"Kostas","language":"el"}`
+	if err := Prepare(context.Background(), f, named, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.files[UserEnv()+".new"]; got != "BRIARD_USERNAME=kostas\n" {
+		t.Fatalf("the file holds %q", got)
+	}
+	if !f.ran("mv", "-f", UserEnv()+".new", UserEnv()) {
+		t.Errorf("the file was not renamed into place whole: %v", f.runs)
 	}
 }
