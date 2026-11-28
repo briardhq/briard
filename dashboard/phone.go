@@ -48,9 +48,11 @@ import (
 // phoneApps are the apps with sign-in details for a client on another device, each with the client
 // to install, the step before signing in: one recommended for Android and one for iPhone, each
 // free and open source and from the list the app's own project keeps, and that list for the rest.
-// Home Assistant's is its own companion app, in each store.
+// Navidrome's Android players are two: Symfonium, the one its users recommend most (paid), and
+// Tempus, free. Home Assistant's is its own companion app, in each store.
 var phoneApps = map[string]phoneClients{
 	navidrome.Name: {"a player", []phoneLink{
+		{"Symfonium for Android", "https://symfonium.app/"},
 		{"Tempus for Android", "https://eddyizm.github.io/tempus/"},
 		{"Amperfy for iPhone", "https://apps.apple.com/app/amperfy-music/id1530145038"},
 	}, &phoneLink{"Other players", "https://www.navidrome.org/apps/"}, false},

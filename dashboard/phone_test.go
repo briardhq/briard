@@ -198,7 +198,7 @@ func TestOnYourPhoneReplacesTheGeneratedPasswordOnce(t *testing.T) {
 	if len(f.puts) != 1 || f.puts[0]["isAdmin"] != true || f.puts[0]["userName"] != "kostas" {
 		t.Errorf("the change sent %v, want the account's own record with the password", f.puts)
 	}
-	link := `<a href="https://eddyizm.github.io/tempus/" target="_blank" rel="noopener noreferrer">Tempus for Android</a> · <a href="https://apps.apple.com/app/amperfy-music/id1530145038" target="_blank" rel="noopener noreferrer">Amperfy for iPhone</a> · <a href="https://www.navidrome.org/apps/" target="_blank" rel="noopener noreferrer">Other players</a>`
+	link := `<a href="https://symfonium.app/" target="_blank" rel="noopener noreferrer">Symfonium for Android</a> · <a href="https://eddyizm.github.io/tempus/" target="_blank" rel="noopener noreferrer">Tempus for Android</a> · <a href="https://apps.apple.com/app/amperfy-music/id1530145038" target="_blank" rel="noopener noreferrer">Amperfy for iPhone</a> · <a href="https://www.navidrome.org/apps/" target="_blank" rel="noopener noreferrer">Other players</a>`
 	if strings.Contains(body, "<script") || !strings.Contains(body, "Navidrome on your phone</h2>") || !strings.Contains(body, link) {
 		t.Errorf("the dialog is not the fields under its title, with the players to install: %s", body)
 	}
