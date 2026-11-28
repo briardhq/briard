@@ -25,8 +25,8 @@ package freshrss
 import (
 	"context"
 	"fmt"
-	"strings"
 
+	"briard.io/agent/appdir"
 	"briard.io/shared/manifest"
 )
 
@@ -105,14 +105,8 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest, trusted strin
 	if _, err := x.Run(ctx, "mkdir", "-p", Dir); err != nil {
 		return fmt.Errorf("freshrss: %s: %w", Dir, err)
 	}
-	tmp := ConfigPath + ".new"
-	if err := x.WriteFile(tmp, []byte(Config(trusted))); err != nil {
-		return fmt.Errorf("freshrss: write %s: %w", tmp, err)
-	}
-	for _, args := range [][]string{{"chmod", "0644", tmp}, {"mv", "-f", tmp, ConfigPath}} {
-		if out, err := x.Run(ctx, args[0], args[1:]...); err != nil {
-			return fmt.Errorf("freshrss: %s %s: %w: %s", args[0], ConfigPath, err, strings.TrimSpace(string(out)))
-		}
+	if err := appdir.Write(ctx, x, ConfigPath, []byte(Config(trusted)), "", "0644"); err != nil {
+		return fmt.Errorf("freshrss: %w", err)
 	}
 	return nil
 }

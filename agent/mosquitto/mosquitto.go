@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 
+	"briard.io/agent/appdir"
 	"briard.io/shared/manifest"
 )
 
@@ -144,15 +145,8 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 // write installs a file atomically-enough for /run: write beside, chmod, rename over. The rename
 // is what keeps a container that starts mid-Prepare from binding a half-written config.
 func write(ctx context.Context, x Executor, path, content, mode string) error {
-	tmp := path + ".new"
-	if err := x.WriteFile(tmp, []byte(content)); err != nil {
-		return fmt.Errorf("mosquitto: write %s: %w", tmp, err)
-	}
-	if out, err := x.Run(ctx, "chmod", mode, tmp); err != nil {
-		return fmt.Errorf("mosquitto: %s permissions: %w: %s", tmp, err, strings.TrimSpace(string(out)))
-	}
-	if out, err := x.Run(ctx, "mv", "-f", tmp, path); err != nil {
-		return fmt.Errorf("mosquitto: install %s: %w: %s", path, err, strings.TrimSpace(string(out)))
+	if err := appdir.Write(ctx, x, path, []byte(content), "", mode); err != nil {
+		return fmt.Errorf("mosquitto: %w", err)
 	}
 	return nil
 }

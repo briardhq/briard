@@ -19,13 +19,12 @@ package mealie
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 
+	"briard.io/agent/appdir"
 	"briard.io/shared/manifest"
 )
 
@@ -101,44 +100,17 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 			return fmt.Errorf("mealie: %s %s: %w: %s", args[0], SettingsDir, err, strings.TrimSpace(string(out)))
 		}
 	}
-	key, err := secret(x)
+	// The boot's secret: the one already written, or a new one.
+	key, _, err := appdir.Secret(x, KeyPath, 32)
 	if err != nil {
-		return err
+		return fmt.Errorf("mealie: %w", err)
 	}
 	all := map[string]string{"REVERSE_PROXY_AUTH_SECRET": key}
 	maps.Copy(all, settings)
 	for _, k := range slices.Sorted(maps.Keys(all)) {
-		if err := write(ctx, x, SettingsDir+"/"+k, all[k]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// secret is the boot's secret: the one already written, or a new one.
-func secret(x Executor) (string, error) {
-	if raw, err := x.ReadFile(KeyPath); err == nil {
-		if k := strings.TrimSpace(string(raw)); len(k) == 64 {
-			return k, nil
-		}
-	}
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("mealie: mint the secret: %w", err)
-	}
-	return hex.EncodeToString(buf), nil
-}
-
-// write installs one setting: written beside, owned by Mealie's uid and readable by it alone,
-// renamed over, so a container that starts mid-Prepare never reads a half-written file.
-func write(ctx context.Context, x Executor, path, value string) error {
-	tmp := path + ".new"
-	if err := x.WriteFile(tmp, []byte(value)); err != nil {
-		return fmt.Errorf("mealie: write %s: %w", tmp, err)
-	}
-	for _, args := range [][]string{{"chown", uid + ":" + uid, tmp}, {"chmod", "0400", tmp}, {"mv", "-f", tmp, path}} {
-		if out, err := x.Run(ctx, args[0], args[1:]...); err != nil {
-			return fmt.Errorf("mealie: %s %s: %w: %s", args[0], path, err, strings.TrimSpace(string(out)))
+		// Each setting is owned by Mealie's uid and readable by it alone.
+		if err := appdir.Write(ctx, x, SettingsDir+"/"+k, []byte(all[k]), uid+":"+uid, "0400"); err != nil {
+			return fmt.Errorf("mealie: %w", err)
 		}
 	}
 	return nil

@@ -48,15 +48,14 @@ package hass
 
 import (
 	"context"
-	"crypto/rand"
 	_ "embed"
-	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"briard.io/agent/appdir"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
@@ -335,14 +334,14 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest, mqttPort int)
 // would break every consumer until something restarted HA. Rotation comes from tmpfs instead — a
 // guest reboot clears /run, and nothing is running then either.
 func ensureToken(ctx context.Context, x Executor) error {
-	if raw, err := x.ReadFile(TokenPath); err == nil && len(strings.TrimSpace(string(raw))) >= 2*tokenBytes {
+	token, fresh, err := appdir.Secret(x, TokenPath, tokenBytes)
+	if err != nil {
+		return fmt.Errorf("hass: %w", err)
+	}
+	if !fresh {
 		return nil
 	}
-	buf := make([]byte, tokenBytes)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Errorf("hass: generate token: %w", err)
-	}
-	return write(ctx, x, TokenPath, hex.EncodeToString(buf)+"\n", "0600")
+	return write(ctx, x, TokenPath, token+"\n", "0600")
 }
 
 // extractOriginal copies the image's own `run` out of the pinned image, every time, because the
@@ -424,15 +423,8 @@ func describeLayout(ctx context.Context, x Executor) string {
 // write puts content at path atomically, with the mode given. See Prepare on why every
 // write here is a rename.
 func write(ctx context.Context, x Executor, path, content, mode string) error {
-	tmp := path + ".new"
-	if err := x.WriteFile(tmp, []byte(content)); err != nil {
-		return fmt.Errorf("hass: write %s: %w", tmp, err)
-	}
-	if out, err := x.Run(ctx, "chmod", mode, tmp); err != nil {
-		return fmt.Errorf("hass: %s permissions: %w: %s", tmp, err, strings.TrimSpace(string(out)))
-	}
-	if out, err := x.Run(ctx, "mv", "-f", tmp, path); err != nil {
-		return fmt.Errorf("hass: install %s: %w: %s", path, err, strings.TrimSpace(string(out)))
+	if err := appdir.Write(ctx, x, path, []byte(content), "", mode); err != nil {
+		return fmt.Errorf("hass: %w", err)
 	}
 	return nil
 }

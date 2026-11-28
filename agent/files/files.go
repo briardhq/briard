@@ -22,12 +22,11 @@ package files
 
 import (
 	"context"
-	"crypto/rand"
 	_ "embed"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
+	"briard.io/agent/appdir"
 	"briard.io/shared/manifest"
 )
 
@@ -138,34 +137,23 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest) error {
 
 // secret is the boot's signing secret: the one already written, or a new one.
 func secret(ctx context.Context, x Executor) (string, error) {
-	if raw, err := x.ReadFile(KeyPath); err == nil {
-		if k := strings.TrimSpace(string(raw)); len(k) == 64 {
-			return k, nil
+	k, fresh, err := appdir.Secret(x, KeyPath, 32)
+	if err != nil {
+		return "", fmt.Errorf("files: %w", err)
+	}
+	if fresh {
+		if err := write(ctx, x, KeyPath, []byte(k), "0600"); err != nil {
+			return "", err
 		}
-	}
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("files: mint the signing secret: %w", err)
-	}
-	k := hex.EncodeToString(buf)
-	if err := write(ctx, x, KeyPath, []byte(k), "0600"); err != nil {
-		return "", err
 	}
 	return k, nil
 }
 
-// write installs a file: written beside, its mode set, renamed over, so a container that starts
-// mid-Prepare never binds a half-written file.
+// write installs a file with its mode, so a container that starts mid-Prepare never binds a
+// half-written one (appdir.Write).
 func write(ctx context.Context, x Executor, path string, content []byte, mode string) error {
-	tmp := path + ".new"
-	if err := x.WriteFile(tmp, content); err != nil {
-		return fmt.Errorf("files: write %s: %w", tmp, err)
-	}
-	if out, err := x.Run(ctx, "chmod", mode, tmp); err != nil {
-		return fmt.Errorf("files: %s permissions: %w: %s", tmp, err, strings.TrimSpace(string(out)))
-	}
-	if out, err := x.Run(ctx, "mv", "-f", tmp, path); err != nil {
-		return fmt.Errorf("files: install %s: %w: %s", path, err, strings.TrimSpace(string(out)))
+	if err := appdir.Write(ctx, x, path, content, "", mode); err != nil {
+		return fmt.Errorf("files: %w", err)
 	}
 	return nil
 }
