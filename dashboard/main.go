@@ -212,21 +212,11 @@ type app struct {
 	// viewWait is how long an act's answer waits for the host to push the view it changed
 	// (awaitView, awaitCatalog, awaitDismissed): a few of the host's ticks.
 	viewWait time.Duration
-	// mealieMu holds a second check of Mealie while the first reads or takes over its accounts
-	// (mealie.go), so the two never race through its password change; mealieExec runs a command in
-	// Mealie's container in a test, podman otherwise.
-	mealieMu   sync.Mutex
-	mealieExec func(ctx context.Context, stdin string, args ...string) ([]byte, error)
-	// navidromeExec runs a command in Navidrome's container in a test, podman otherwise
-	// (navidrome.go). navidromeMu holds a second "On your phone" while the first reads or
-	// replaces the password, so two presses never set two passwords and show one.
-	navidromeExec func(ctx context.Context, args ...string) ([]byte, error)
-	navidromeMu   sync.Mutex
-	// freshrssExec runs one of FreshRSS's tools in its container in a test, podman otherwise
-	// (freshrss.go). freshrssMu holds a second "On your phone" while the first reads or sets the
-	// password, as navidromeMu does.
-	freshrssExec func(ctx context.Context, stdin string, args ...string) ([]byte, error)
-	freshrssMu   sync.Mutex
+	// appLocks is a lock per app, held while its accounts are read or changed (appLock, apps.go);
+	// appExec runs a command in an app's container in a test, by the app's name, podman
+	// otherwise (inContainer).
+	appLocks sync.Map
+	appExec  map[string]func(ctx context.Context, stdin string, args ...string) ([]byte, error)
 	// copyPages are the live tokens of the phone's copy page (copy.go), under copyMu.
 	copyMu    sync.Mutex
 	copyPages map[string]copyPage
@@ -234,7 +224,7 @@ type app struct {
 
 func newApp(routesPath, handoffPath, statePath, tokenPath string) *app {
 	return &app{routesPath: routesPath, handoffPath: handoffPath, statePath: statePath, tokenPath: tokenPath, now: time.Now, viewWait: 15 * time.Second,
-		pending: map[string]*pending{}, hops: map[string]hop{}, copyPages: map[string]copyPage{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
+		pending: map[string]*pending{}, hops: map[string]hop{}, appExec: map[string]func(context.Context, string, ...string) ([]byte, error){}, copyPages: map[string]copyPage{}, installs: map[string]*install{}, restores: map[string]*restoreOp{},
 		port: &serialPort{path: dashboard.AdminPortDev}, pulls: defaultPullPaths, casaPath: dashboard.CasaPath,
 		alertsPath: dashboard.AlertsPath, contactPath: dashboard.ContactStampPath, backupPath: dashboard.BackupPath, backupKeyPath: dashboard.BackupKeyPath, backupKeySavedPath: dashboard.BackupKeySavedPath, catalogPath: dashboard.CatalogPath, snapshotsPath: quadlet.SnapshotsDir}
 }
@@ -1206,7 +1196,7 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 		}
 		_, av.Gated = gated[av.Name]
 		// Home Assistant's once it has an owner to sign in as: it is not gated, it signs in itself.
-		_, phone := phoneApps[av.Name]
+		phone := appEntries[av.Name].clients != nil
 		av.Phone = phone && (av.Gated || av.HA != nil && av.HA.Reachable && av.HA.Onboarded)
 		av.Preselected = av.Name == hass.Name || av.Name == files.Name
 		av.Install = a.installState(av.Name, av.Installed, av.Offer != "")
@@ -1358,7 +1348,7 @@ func scheme(r *http.Request) string {
 }
 
 // newPassword is a password briard generates and forgets -- the one that replaces Mealie's shipped
-// password (mealie.go): 20 characters from a set with no look-alikes. Nothing signs in with it;
+// password (agent/mealie): 20 characters from a set with no look-alikes. Nothing signs in with it;
 // the household sets its own inside the app.
 func newPassword() (string, error) {
 	const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"

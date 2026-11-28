@@ -132,6 +132,11 @@ type App struct {
 	Open []string `json:"open,omitempty"`
 }
 
+// UserHeader is the header the reverse proxy names the user in, to an app that reads its user
+// from a reverse proxy: one name, which the reverse proxy sends and every such app is told to
+// read.
+const UserHeader = "X-Forwarded-User"
+
 // Gated reports whether the reverse proxy admits only the dashboard's session to this app.
 func (a App) Gated() bool { return a.Gate != "" || a.GateByAddress }
 

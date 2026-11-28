@@ -17,11 +17,12 @@ import (
 	"testing"
 	"time"
 
+	"rsc.io/qr"
+
 	"briard.io/agent/files"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/routes"
-	"rsc.io/qr"
 )
 
 var qrImage = regexp.MustCompile(`<img class="qr" src="data:image/png;base64,([^"]+)"`)

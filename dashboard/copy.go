@@ -124,7 +124,7 @@ func (a *app) casaCertified() bool {
 func (a *app) openCopy(w http.ResponseWriter, r *http.Request, tok string) {
 	a.copyMu.Lock()
 	p, ok := a.copyPages[tok]
-	ok = ok && a.now().Before(p.until) && phoneApps[p.app].Web
+	ok = ok && a.now().Before(p.until) && webApp(p.app)
 	if ok {
 		delete(a.copyPages, tok)
 	}

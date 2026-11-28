@@ -28,6 +28,7 @@ import (
 
 	"briard.io/agent/appdir"
 	"briard.io/shared/manifest"
+	"briard.io/shared/routes"
 )
 
 // Name is FreshRSS's catalog slug. Everything in this package is keyed on it.
@@ -59,10 +60,7 @@ const (
 // Open are the paths the reverse proxy forwards without the dashboard's session: the Google Reader
 // API, which a phone's reader calls with the username and the user's API password. Never the
 // pages, nor the rest of /api/: the Fever API, a user query shared by its token, WebSub.
-var Open = []string{"/api/greader.php/"}
-
-// userHeader is the header the reverse proxy names the user in.
-const userHeader = "X-Forwarded-User"
+var Open = []string{API + "/"}
 
 // Executor is the guest-side command runner Prepare needs.
 type Executor interface {
@@ -89,7 +87,7 @@ func Config(trusted string) string {
 SetEnv TRUSTED_PROXY %s/32
 RequestHeader unset X-WebAuth-User
 RequestHeader set Remote-User "expr=%%{req:%s}"
-`, trusted, userHeader)
+`, trusted, routes.UserHeader)
 }
 
 // Prepare writes the Apache file on this node, before the container starts. trusted is the address

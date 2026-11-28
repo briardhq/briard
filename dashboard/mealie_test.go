@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"briard.io/agent/mealie"
 	"briard.io/shared/routes"
 )
 
@@ -44,7 +45,7 @@ type fakeUser struct {
 
 func newFakeMealie() *fakeMealie {
 	f := &fakeMealie{secret: "proxy-secret"}
-	f.add("admin", mealieFirstEmail, "Change Me", mealieFirstPassword, "Mealie", true)
+	f.add("admin", mealie.FirstEmail, "Change Me", mealie.FirstPassword, "Mealie", true)
 	return f
 }
 
@@ -89,7 +90,7 @@ func (f *fakeMealie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.URL.Path == "/api/app/about/startup-info":
-		_ = json.NewEncoder(w).Encode(map[string]bool{"isFirstLogin": f.find(func(u *fakeUser) string { return u.email }, mealieFirstEmail) != nil, "isDemo": false})
+		_ = json.NewEncoder(w).Encode(map[string]bool{"isFirstLogin": f.find(func(u *fakeUser) string { return u.email }, mealie.FirstEmail) != nil, "isDemo": false})
 	case r.URL.Path == "/api/auth/token" && r.Method == http.MethodPost:
 		f.pwLogins++
 		u := f.user(r.FormValue("username"))
@@ -184,7 +185,7 @@ func mealieRig(t *testing.T) (*rig, *fakeMealie) {
 	f := newFakeMealie()
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
-	r.app.mealieExec = f.makeAdmin
+	r.app.appExec[mealie.Name] = f.makeAdmin
 	u, _ := url.Parse(srv.URL)
 	secret := filepath.Join(r.dir, "REVERSE_PROXY_AUTH_SECRET")
 	must(t, os.WriteFile(secret, []byte(f.secret), 0o400))
@@ -223,10 +224,10 @@ func TestTheCheckTakesOverMealiesFirstAccount(t *testing.T) {
 	if first.username != "admin" || first.fullName != "Kostas" || first.email != "kostas@briard.local" || !first.admin || first.authMethod != "Mealie" {
 		t.Fatalf("Mealie's first account is %+v, want the record's", *first)
 	}
-	if first.password == mealieFirstPassword || len(first.password) < 20 {
+	if first.password == mealie.FirstPassword || len(first.password) < 20 {
 		t.Fatalf("the first account's password is %q, want a generated one", first.password)
 	}
-	if own := f.user(mealieOwnUser); own == nil || !own.admin || len(f.users) != 2 {
+	if own := f.user(mealie.OwnUser); own == nil || !own.admin || len(f.users) != 2 {
 		t.Fatalf("briard's own account is %+v among %d", own, len(f.users))
 	}
 	logins := f.pwLogins
@@ -253,11 +254,11 @@ func TestTheCheckFollowsMealiesAccounts(t *testing.T) {
 	if status, user := check(r, c); status != http.StatusOK || user != "kchatzi" {
 		t.Fatalf("after a rename in Mealie, check = %d %q", status, user)
 	}
-	f.users = slices.DeleteFunc(f.users, func(u *fakeUser) bool { return u.username == mealieOwnUser })
+	f.users = slices.DeleteFunc(f.users, func(u *fakeUser) bool { return u.username == mealie.OwnUser })
 	if status, user := check(r, c); status != http.StatusOK || user != "kchatzi" {
 		t.Fatalf("after briard's own account was deleted, check = %d %q", status, user)
 	}
-	own := f.user(mealieOwnUser)
+	own := f.user(mealie.OwnUser)
 	if own == nil || !own.admin {
 		t.Fatalf("briard's own account is %+v, want it made again, an admin", own)
 	}
@@ -299,7 +300,7 @@ func TestAMealieBackAtItsFirstAccountIsTakenOverAgain(t *testing.T) {
 	}
 	fresh := newFakeMealie()
 	f.users, f.made = fresh.users, 100
-	if status, user := check(r, c); status != http.StatusOK || user != "admin" || f.users[0].password == mealieFirstPassword {
+	if status, user := check(r, c); status != http.StatusOK || user != "admin" || f.users[0].password == mealie.FirstPassword {
 		t.Fatalf("check on a Mealie back at its first account = %d %q", status, user)
 	}
 }
@@ -313,7 +314,7 @@ func TestATakeoverCutShortIsFinishedByTheNextCheck(t *testing.T) {
 	if status, _ := check(r, c); status != http.StatusServiceUnavailable {
 		t.Fatalf("check with a failed rename = %d, want 503", status)
 	}
-	if f.users[0].password == mealieFirstPassword {
+	if f.users[0].password == mealie.FirstPassword {
 		t.Fatal("the rename was tried before the password changed")
 	}
 	f.failRename = false
@@ -339,7 +340,7 @@ func TestAPasswordChangeBeatenToItFinishesTheTakeover(t *testing.T) {
 	if status, body := check(r, c); status != http.StatusServiceUnavailable || !strings.Contains(body, "change the password") {
 		t.Fatalf("check whose password change failed = %d %q, want 503", status, body)
 	}
-	if f.users[0].password != mealieFirstPassword || f.users[0].email != mealieFirstEmail {
+	if f.users[0].password != mealie.FirstPassword || f.users[0].email != mealie.FirstEmail {
 		t.Fatalf("a failed password change went on to the rename: %+v", *f.users[0])
 	}
 }
@@ -350,12 +351,12 @@ func TestACheckTheProxyStoppedWaitingForStillFinishes(t *testing.T) {
 	r, f := mealieRig(t)
 	r.trust()
 	ctx, cancel := context.WithCancel(context.Background())
-	r.app.mealieExec = func(c context.Context, stdin string, args ...string) ([]byte, error) {
+	r.app.appExec[mealie.Name] = func(c context.Context, stdin string, args ...string) ([]byte, error) {
 		cancel()
 		return f.makeAdmin(c, stdin, args...)
 	}
-	user, err := r.app.mealieUser(ctx, gatedApps(r.app.routesPath)["mealie"])
-	if err != nil || user != "admin" || f.users[0].password == mealieFirstPassword || f.users[0].email != "kostas@briard.local" {
+	user, err := r.app.userIn(ctx, "mealie")
+	if err != nil || user != "admin" || f.users[0].password == mealie.FirstPassword || f.users[0].email != "kostas@briard.local" {
 		t.Fatalf("a check the reverse proxy stopped waiting for = %q, %v; first account %+v", user, err, *f.users[0])
 	}
 }
@@ -373,8 +374,8 @@ func TestAMealieWithNoAccountOfTheUsersRefusesTheCheck(t *testing.T) {
 		t.Fatalf("check with no admin of the user's = %d %q", status, body)
 	}
 	f.users[0].admin = true
-	f.user(mealieOwnUser).admin = false
-	r.app.mealieExec = func(context.Context, string, ...string) ([]byte, error) {
+	f.user(mealie.OwnUser).admin = false
+	r.app.appExec[mealie.Name] = func(context.Context, string, ...string) ([]byte, error) {
 		return []byte("boom"), errors.New("exit status 1")
 	}
 	if status, body := check(r, c); status != http.StatusServiceUnavailable || !strings.Contains(body, "boom") {

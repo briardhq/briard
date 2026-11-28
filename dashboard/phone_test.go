@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/agent/navidrome"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/routes"
@@ -56,7 +57,7 @@ func (f *fakeNavidrome) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if acct < 0 {
 			id := fmt.Sprintf("id-%d", len(f.accounts)+1)
 			f.accounts = append(f.accounts, map[string]any{"id": id, "userName": user, "name": user, "isAdmin": len(f.accounts) == 0})
-			f.password[id] = navidromeGenerated + "0ldwjrjMRAt8udZfm7Af02"
+			f.password[id] = navidrome.Generated + "0ldwjrjMRAt8udZfm7Af02"
 		}
 		fmt.Fprint(w, "<html>Navidrome</html>")
 	case acct < 0:
@@ -68,7 +69,7 @@ func (f *fakeNavidrome) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.puts = append(f.puts, body)
 		id := strings.TrimPrefix(r.URL.Path, "/api/user/")
-		if !strings.HasPrefix(f.password[id], navidromeGenerated) {
+		if !strings.HasPrefix(f.password[id], navidrome.Generated) {
 			http.Error(w, `{"errors":{"currentPassword":"ra.validation.passwordDoesNotMatch"}}`, http.StatusBadRequest)
 			return
 		}
@@ -81,7 +82,7 @@ func (f *fakeNavidrome) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // exec answers the two commands the dashboard runs in Navidrome's container: its own `user list`
 // and sqlite3's read of a row, with the password encrypted as Navidrome stores it.
-func (f *fakeNavidrome) exec(_ context.Context, args ...string) ([]byte, error) {
+func (f *fakeNavidrome) exec(_ context.Context, _ string, args ...string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch args[0] {
@@ -111,7 +112,7 @@ func (f *fakeNavidrome) exec(_ context.Context, args ...string) ([]byte, error) 
 
 // navidromeEncrypt is Navidrome's encryption, for the fake's rows.
 func navidromeEncrypt(plain string) string {
-	block, _ := aes.NewCipher(navidromeKey[:])
+	block, _ := aes.NewCipher(navidrome.Key[:])
 	gcm, _ := cipher.NewGCM(block)
 	nonce := make([]byte, gcm.NonceSize())
 	_, _ = io.ReadFull(rand.Reader, nonce)
@@ -143,7 +144,7 @@ func installNavidrome(t *testing.T, r *rig) *fakeNavidrome {
 	})
 	raw, _ = json.Marshal(tbl)
 	must(t, os.WriteFile(filepath.Join(r.dir, "routes.json"), raw, 0o644))
-	r.app.navidromeExec = f.exec
+	r.app.appExec[navidrome.Name] = f.exec
 	return f
 }
 
@@ -257,10 +258,10 @@ func TestOnYourPhoneIsAPageWithoutAScriptAndRefusesTheRest(t *testing.T) {
 // What Navidrome 0.64.2 itself stored for the password "test-pass-one", set through its API: the
 // dashboard reads it with Navidrome's default key.
 func TestNavidromesOwnCiphertextDecrypts(t *testing.T) {
-	if got, err := navidromeDecrypt("W8VLsN0V5fY5soWlXYhK4XjLdp5lmI349wuLgG31XZIJCgMRsonqd6k="); err != nil || got != "test-pass-one" {
+	if got, err := navidrome.Decrypt("W8VLsN0V5fY5soWlXYhK4XjLdp5lmI349wuLgG31XZIJCgMRsonqd6k="); err != nil || got != "test-pass-one" {
 		t.Errorf("decrypt = %q, %v", got, err)
 	}
-	if _, err := navidromeDecrypt(navidromeEncrypt("x")[:10]); err == nil {
+	if _, err := navidrome.Decrypt(navidromeEncrypt("x")[:10]); err == nil {
 		t.Error("a truncated row decrypted")
 	}
 }

@@ -63,8 +63,6 @@ const (
 	assertionQuery  = "jwt"
 	// adminGroup is the group the token puts the user in: the admin, in the app's config too.
 	adminGroup = "admin"
-	// userHeader names the user to an app gated by header (a route with a GateHeader).
-	userHeader = "X-Forwarded-User"
 	// assertionLife is how long a signed token is good for: one request's worth, with room for a
 	// clock that is a little off.
 	assertionLife = time.Minute
@@ -166,7 +164,7 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 		// The app trusts this proxy's address and nothing else, so the username is all it is
 		// sent. Set, never added, so a client's own copy never reaches the app.
 		dropCookie(req, sessionCookie)
-		req.Header.Set(userHeader, user)
+		req.Header.Set(routes.UserHeader, user)
 		return true
 	}
 	key, err := g.key(r.app.Gate)
@@ -179,7 +177,7 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 	if r.app.GateHeader != "" {
 		// The app's own reverse-proxy sign-in: who, and the secret that says the reverse proxy sent
 		// it. Set, never added, so a client's own copy of either header never reaches the app.
-		req.Header.Set(userHeader, user)
+		req.Header.Set(routes.UserHeader, user)
 		req.Header.Set(r.app.GateHeader, string(key))
 		return true
 	}
@@ -195,7 +193,7 @@ func (g *gate) admit(w http.ResponseWriter, req *http.Request, r route) bool {
 // user and no secret reach the app, whoever sent them, and no token either.
 func unsigned(req *http.Request, r route) {
 	dropCookie(req, sessionCookie)
-	req.Header.Del(userHeader)
+	req.Header.Del(routes.UserHeader)
 	req.Header.Del(assertionHeader)
 	if r.app.GateHeader != "" {
 		req.Header.Del(r.app.GateHeader)

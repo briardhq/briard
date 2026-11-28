@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"briard.io/agent/files"
+	"briard.io/agent/navidrome"
 	"briard.io/shared/routes"
 )
 
@@ -30,7 +31,7 @@ func navidromeRig(t *testing.T) (*rig, *http.Cookie, *string, *error, *[][]strin
 	raw, _ = json.Marshal(tbl)
 	must(t, os.WriteFile(filepath.Join(r.dir, "routes.json"), raw, 0o644))
 	list, fail, calls := new(string), new(error), new([][]string)
-	r.app.navidromeExec = func(_ context.Context, args ...string) ([]byte, error) {
+	r.app.appExec[navidrome.Name] = func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		*calls = append(*calls, args)
 		if *fail != nil {
 			return nil, *fail

@@ -229,3 +229,34 @@ func TestNavidromesCardOpensItAndShowsWhatThePhoneSignsInWith(t *testing.T) {
 		t.Errorf("the home's row for Navidrome is not Open and Details alone: %s", home)
 	}
 }
+
+// An app the routing table gates and this dashboard has no entry for is refused, at the reverse
+// proxy's check and at "On your phone": it is given no other app's user and no other app's
+// sign-in.
+func TestAGatedAppWithNoEntryIsRefused(t *testing.T) {
+	r := gateRig(t)
+	raw, _ := os.ReadFile(filepath.Join(r.dir, "routes.json"))
+	var tbl routes.Table
+	must(t, json.Unmarshal(raw, &tbl))
+	tbl.Apps = append(tbl.Apps, routes.App{
+		Name: "newcomer", Hosts: routes.HostNames("brave-elf", "newcomer"), Address: "10.12.7.9",
+		Health: "http://:80/", Routes: []routes.Route{{Listen: routes.ListenName, To: "http://:80"}},
+		GateByAddress: true,
+	})
+	raw, _ = json.Marshal(tbl)
+	must(t, os.WriteFile(filepath.Join(r.dir, "routes.json"), raw, 0o644))
+	c := r.trust()
+	if _, ok := gatedApps(r.app.routesPath)["newcomer"]; !ok {
+		t.Fatal("the routing table does not gate the app this test is about")
+	}
+	if status, user := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || user != "owner" {
+		t.Fatalf("Files' check = %d %q", status, user)
+	}
+	status, body := r.loopback("GET", "/gate/check?app=newcomer", c.Value, nil)
+	if status != http.StatusServiceUnavailable || !strings.Contains(body, "no sign-in for newcomer") {
+		t.Errorf("the check for an app with no entry = %d %q", status, body)
+	}
+	if status, body := press(t, r, "/phone/newcomer", c, true); status != http.StatusNotFound {
+		t.Errorf("On your phone for an app with no entry = %d %q", status, body)
+	}
+}

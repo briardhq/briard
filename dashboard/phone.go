@@ -3,9 +3,9 @@ package main
 // "On your phone": what a client app on another device signs in to an app with -- its address, a
 // username and a password -- shown in a dialog to copy, beside the app's Open, with a link to the
 // clients the app's project lists. Three apps have one, and two web apps a different dialog
-// (below). Navidrome (navidrome.go): a phone's music
+// (below). Navidrome (agent/navidrome): a phone's music
 // app speaks its Subsonic API, on the one path the reverse proxy leaves open. FreshRSS
-// (freshrss.go): a phone's feed reader speaks its Google Reader API, likewise, with three words
+// (agent/freshrss): a phone's feed reader speaks its Google Reader API, likewise, with three words
 // kept in FreshRSS's data. Home Assistant: its companion app signs in on Home Assistant's own
 // login page, with the owner's username and four words the in-HA integration keeps (agent/hass).
 // The dialog has two views, the QR code of the phone's copy page (copy.go) and the settings: two
@@ -36,40 +36,14 @@ import (
 	"strings"
 	"time"
 
-	"briard.io/agent/files"
-	"briard.io/agent/freshrss"
 	"briard.io/agent/hass"
-	"briard.io/agent/mealie"
-	"briard.io/agent/navidrome"
 	"briard.io/shared/casa"
 	"briard.io/shared/routes"
 )
 
-// phoneApps are the apps with sign-in details for a client on another device, each with the client
-// to install, the step before signing in: one recommended for Android and one for iPhone, each
-// free and open source and from the list the app's own project keeps, and that list for the rest.
-// Navidrome's Android players are two: Symfonium, the one its users recommend most (paid), and
-// Tempus, free. Home Assistant's is its own companion app, in each store.
-var phoneApps = map[string]phoneClients{
-	navidrome.Name: {"a player", []phoneLink{
-		{"Symfonium for Android", "https://symfonium.app/"},
-		{"Tempus for Android", "https://eddyizm.github.io/tempus/"},
-		{"Amperfy for iPhone", "https://apps.apple.com/app/amperfy-music/id1530145038"},
-	}, &phoneLink{"Other players", "https://www.navidrome.org/apps/"}, false},
-	freshrss.Name: {"a reader", []phoneLink{
-		{"Capy Reader for Android", "https://capyreader.com/"},
-		{"NetNewsWire for iPhone", "https://netnewswire.com/"},
-	}, &phoneLink{"Other readers", "https://github.com/FreshRSS/FreshRSS#apis--native-apps"}, false},
-	hass.Name: {"Home Assistant", []phoneLink{
-		{"Android", "https://play.google.com/store/apps/details?id=io.homeassistant.companion.android"},
-		{"iPhone", "https://apps.apple.com/app/home-assistant/id1099568401"},
-	}, nil, false},
-	mealie.Name: {Web: true},
-	files.Name:  {Web: true},
-}
-
 // phoneClients is what the first step installs: its words ("Install a reader"), the recommended
-// clients, and the link to the others, nil for none. Web is a web app's, which has none.
+// clients, and the link to the others, nil for none. Web is a web app's, which has none. Each
+// app's are in its entry (apps.go).
 type phoneClients struct {
 	Noun        string
 	Recommended []phoneLink
@@ -104,41 +78,30 @@ type phoneView struct {
 // (fragment.go), or the same fields as a page of their own without a script. For Home Assistant
 // and FreshRSS, `?new` is the dialog's "New password", which sets new words first.
 func (a *app) phone(w http.ResponseWriter, r *http.Request, name string) {
-	clients, ok := phoneApps[name]
-	if !ok {
+	e := appEntries[name]
+	if e.clients == nil || (e.phone == nil && !e.clients.Web) {
 		http.NotFound(w, r)
 		return
 	}
+	clients := *e.clients
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	v := phoneView{Name: name, Title: a.appTitle(name), Clients: clients}
 	var err error
-	if name == hass.Name {
-		ha := a.findHomeAssistant()
-		if ha == nil {
-			http.NotFound(w, r)
-			return
-		}
-		v.Address = a.phoneAddress(ha.app)
-		v.Username, v.Password, err = a.homeAssistantSignIn(ctx, ha, r.URL.Query().Has("new"))
-	} else {
+	if clients.Web {
 		s, ok := gatedApps(a.routesPath)[name]
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
+		// Nothing to copy: the app is opened, then installed where its address is https.
 		v.Address = a.phoneAddress(s)
-		switch {
-		case clients.Web:
-			// Nothing to copy: the app is opened, then installed where its address is https.
-			v.HTTPS = strings.HasPrefix(v.Address, "https://")
-		case name == freshrss.Name:
-			// A Google Reader client is given the API's own address, as FreshRSS's profile page
-			// gives it.
-			v.Address += freshrssAPI
-			v.Username, v.Password, err = a.freshrssSignIn(ctx, s, r.URL.Query().Has("new"))
-		default:
-			v.Username, v.Password, err = a.navidromeSignIn(ctx, s)
+		v.HTTPS = strings.HasPrefix(v.Address, "https://")
+	} else {
+		v.Address, v.Username, v.Password, err = e.phone(a, ctx, r.URL.Query().Has("new"))
+		if errors.Is(err, errNotInstalled) {
+			http.NotFound(w, r)
+			return
 		}
 	}
 	v.Replace = err == nil && v.Password == "" && !clients.Web

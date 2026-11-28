@@ -11,7 +11,7 @@ package main
 //   - The reverse proxy redeems the code at /gate/redeem and sets the token as the app name's
 //     cookie, then asks /gate/check whether a token still stands for the app before it signs
 //     anyone in. That question precedes every way in (an open, an address typed, a page left
-//     open), so it is where an app is made ready for the user (Mealie's first account, mealie.go).
+//     open), so it is where an app is made ready for the user (Mealie's first account, agent/mealie).
 //
 // Both answers are the reverse proxy's alone, over loopback: it never forwards /gate/ from a
 // browser, and refusing a request that came through it (it always says the scheme) is the second
@@ -26,10 +26,6 @@ import (
 	"slices"
 	"strings"
 
-	"briard.io/agent/files"
-	"briard.io/agent/freshrss"
-	"briard.io/agent/mealie"
-	"briard.io/agent/navidrome"
 	"briard.io/shared/casa"
 	"briard.io/shared/routes"
 )
@@ -130,11 +126,11 @@ func (a *app) gateRedeem(w http.ResponseWriter, r *http.Request) {
 }
 
 // gateCheck says whether a session token is still a trusted device's, or that app's own session,
-// and whose, for the app the reverse proxy names: 200 with the username the reverse proxy signs into the app -- the one
-// fixed name (agent/files) for Files, or the one the app's own accounts say for Mealie
-// (mealie.go), Navidrome (navidrome.go) and FreshRSS (freshrss.go); 401 not a trusted device; 409 a
-// trusted device with no record, which only an open writes and an app's first account takes its
-// name from; 503 an app still starting, or with no account of the user's to open.
+// and whose, for the app the reverse proxy names: 200 with the username the reverse proxy signs
+// into the app, which the app's own accounts say (userIn, apps.go); 401 not a trusted device; 409
+// a trusted device with no record, which only an open writes and an app's first account takes its
+// name from; 503 an app still starting, one with no account of the user's to open, or one this
+// dashboard has no sign-in for.
 func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 	if viaProxy(r) {
 		http.NotFound(w, r)
@@ -150,24 +146,11 @@ func (a *app) gateCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	// Mealie's, Navidrome's and FreshRSS's user is the one the app's own accounts say, read at
-	// every check (mealie.go, navidrome.go, freshrss.go).
-	user := files.User
-	if s, ok := gatedApps(a.routesPath)[app]; ok && (app == mealie.Name || app == navidrome.Name || app == freshrss.Name) {
-		var err error
-		switch app {
-		case mealie.Name:
-			user, err = a.mealieUser(r.Context(), s)
-		case navidrome.Name:
-			user, err = a.navidromeUser(r.Context())
-		default:
-			user, err = a.freshrssUser(r.Context())
-		}
-		if err != nil {
-			log.Printf("dashboard: find the user's account in %s: %v", app, err)
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
+	user, err := a.userIn(r.Context(), app)
+	if err != nil {
+		log.Printf("dashboard: find the user's account in %s: %v", app, err)
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprint(w, user)

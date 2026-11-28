@@ -30,7 +30,7 @@ type account struct {
 	ID string `json:"id"`
 	// Username is fixed once written: Home Assistant's first user. No gated app finds the user by
 	// it -- Files signs in by one fixed name (agent/files), Mealie and Navidrome by the account read
-	// off the app itself (mealie.go, navidrome.go) -- so a record a restore brings strands no app's
+	// off the app itself (agent/mealie, agent/navidrome) -- so a record a restore brings strands no app's
 	// account. Navidrome's first account is made with it, since Navidrome makes none of its own.
 	Username string `json:"username"`
 	// Name and Language are seeds: each app keeps its own copy from its first sign-in, and nothing

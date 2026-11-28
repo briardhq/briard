@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"briard.io/agent/freshrss"
 	"briard.io/shared/routes"
 )
 
@@ -97,7 +98,7 @@ func installFreshRSS(t *testing.T, r *rig) *fakeFreshRSS {
 	})
 	raw, _ = json.Marshal(tbl)
 	must(t, os.WriteFile(filepath.Join(r.dir, "routes.json"), raw, 0o644))
-	r.app.freshrssExec = f.exec
+	r.app.appExec[freshrss.Name] = f.exec
 	return f
 }
 
@@ -184,9 +185,9 @@ func TestOnYourPhoneSaysWhenFreshRSSNeverTakesTheWords(t *testing.T) {
 	r := newRig(t)
 	f := installFreshRSS(t, r)
 	f.lag = 1 << 30
-	settles := freshrssSettles
-	freshrssSettles = 300 * time.Millisecond
-	t.Cleanup(func() { freshrssSettles = settles })
+	settles := freshrss.Settles
+	freshrss.Settles = 300 * time.Millisecond
+	t.Cleanup(func() { freshrss.Settles = settles })
 	_, body := press(t, r, "/phone/freshrss", r.trust(), true)
 	if got := keys(body); len(got) != 0 || !strings.Contains(body, "FreshRSS did not take the new password") {
 		t.Errorf("dialog %q: %s", got, body)

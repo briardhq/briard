@@ -8,7 +8,7 @@
 // Gate, GateHeader). Nothing reaching Mealie's address without the reverse proxy holds the
 // secret, which only root and Mealie's own uid on this node can read. Signing up by header is on,
 // for one account: briard's own, which the dashboard signs in as to find the user's
-// (dashboard/mealie.go) and makes again whenever it is gone. The reverse proxy sends no name
+// (accounts.go) and makes again whenever it is gone. The reverse proxy sends no name
 // other than one the dashboard read off Mealie's own list of accounts.
 //
 // Its settings are files: Mealie reads any setting from a file of that name in /run/secrets, so

@@ -50,9 +50,6 @@ const Container = "app"
 // which is off.
 var Open = []string{"/rest/"}
 
-// userHeader is the header the reverse proxy names the user in.
-const userHeader = "X-Forwarded-User"
-
 // logoutURL is where Navidrome's logout goes: the dashboard, since signing out of Navidrome alone
 // would sign straight back in through the gate.
 const logoutURL = "http://" + routes.BareFlockHostName + "/"
@@ -76,7 +73,7 @@ EnableSharing = false
 TrustedSources = "%s/32"
 UserHeader = "%s"
 LogoutURL = "%s"
-`, trusted, userHeader, logoutURL)
+`, trusted, routes.UserHeader, logoutURL)
 }
 
 // Prepare writes Navidrome's settings on this node, before the container starts. trusted is the
