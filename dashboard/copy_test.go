@@ -19,7 +19,6 @@ import (
 
 	"rsc.io/qr"
 
-	"briard.io/agent/files"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/routes"
@@ -273,7 +272,7 @@ func TestAWebAppsPageOpensItWithASessionOfItsOwn(t *testing.T) {
 	if status != http.StatusOK || session == "" || session == c.Value {
 		t.Fatalf("redeem = %d %q, want a session of its own", status, session)
 	}
-	if status, user := r.loopback("GET", "/gate/check?app=files", session, nil); status != http.StatusOK || user != files.User {
+	if status, user := r.loopback("GET", "/gate/check?app=files", session, nil); status != http.StatusOK || user != "kostas" {
 		t.Errorf("Files' session at Files = %d %q", status, user)
 	}
 	if status, _ := r.loopback("GET", "/gate/check?app=mealie", session, nil); status != http.StatusUnauthorized {

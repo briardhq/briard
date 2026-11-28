@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"briard.io/agent/files"
 	"briard.io/shared/casa"
 	"briard.io/shared/dashboard"
 	"briard.io/shared/manifest"
@@ -83,10 +82,10 @@ func TestOpeningAGatedAppCarriesTheSessionToItsName(t *testing.T) {
 	if status, _ := r.loopback("POST", "/gate/redeem", "", url.Values{"code": {code}}); status != http.StatusNotFound {
 		t.Fatalf("a spent code redeemed again: %d", status)
 	}
-	// The check names the user the reverse proxy signs in: Files' one fixed name, never the
-	// record's (kostas).
-	if status, user := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || user != files.User {
-		t.Fatalf("check on a trusted device's token = %d %q, want 200 %s", status, user, files.User)
+	// The check names the user the reverse proxy signs in: at Files, which keeps no account worth
+	// reading, the record's username.
+	if status, user := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || user != "kostas" {
+		t.Fatalf("check on a trusted device's token = %d %q, want 200 kostas", status, user)
 	}
 	// A trusted device with no record (one that could not be written) is a conflict, not a stranger.
 	if err := os.Remove(filepath.Join(r.dir, "state", accountFile)); err != nil {
@@ -249,7 +248,7 @@ func TestAGatedAppWithNoEntryIsRefused(t *testing.T) {
 	if _, ok := gatedApps(r.app.routesPath)["newcomer"]; !ok {
 		t.Fatal("the routing table does not gate the app this test is about")
 	}
-	if status, user := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || user != "owner" {
+	if status, user := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || user != "kostas" {
 		t.Fatalf("Files' check = %d %q", status, user)
 	}
 	status, body := r.loopback("GET", "/gate/check?app=newcomer", c.Value, nil)

@@ -15,9 +15,15 @@
 // so the binds are the agent's to keep true, and Files never restarts for another app's sake.
 //
 // Signed in by the dashboard: the reverse proxy lets a browser through to Files only with the
-// dashboard's own session, then signs the user in, as User, with a short-lived token made with
-// KeyPath's secret. Files verifies it on every request; nothing without the key can make one,
-// wherever on the network it sits.
+// dashboard's own session, then signs the user in with a short-lived token made with KeyPath's
+// secret. Files verifies it on every request; nothing without the key can make one, wherever on
+// the network it sits.
+//
+// The name in the token is the dashboard's to give: the username of the user's record, the same
+// in every app. Files matches its account on the name alone and makes one, an admin, for a name
+// it does not know, and all an account holds (preferences, share links) lives in its cache area,
+// which no undo or restore brings back. So there is no account worth reading the name off: one
+// Files lost with that area is made again by the next sign-in.
 package files
 
 import (
@@ -32,13 +38,6 @@ import (
 
 // Name is Files' catalog slug. Everything in this package is keyed on it.
 const Name = "files"
-
-// User is the one account Files has, the name the reverse proxy signs the household in as. Fixed,
-// deliberately not the record's: Files matches its account on the name alone and makes one for a
-// name it does not know, and all an account holds (preferences, share links) lives in its cache
-// area, which no undo or restore brings back. A name that never changes is one Files never loses
-// the user by, whatever record a restore brings.
-const User = "owner"
 
 // Dir is Files' own directory on the guest, mounted read-only at /briard in its container: its
 // config, its mark, and the signing secret. /run, so every boot re-derives it.

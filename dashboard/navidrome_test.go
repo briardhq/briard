@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"briard.io/agent/files"
 	"briard.io/agent/navidrome"
 	"briard.io/shared/routes"
 )
@@ -61,7 +60,7 @@ func TestTheCheckNamesNavidromesOldestAdmin(t *testing.T) {
 		t.Fatalf("check = %d %q, want 200 kc, the oldest admin", status, user)
 	}
 	// Files' check asks Navidrome nothing.
-	if status, user := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || user != files.User || len(*calls) != 2 {
+	if status, user := r.loopback("GET", "/gate/check?app=files", c.Value, nil); status != http.StatusOK || user != "kostas" || len(*calls) != 2 {
 		t.Fatalf("Files' check = %d %q after %d reads of Navidrome", status, user, len(*calls))
 	}
 }

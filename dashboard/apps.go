@@ -6,10 +6,10 @@ package main
 // dashboard finds the app on this node, and the rule every app shares.
 //
 // The rule (userIn): the gate signs the user in as the account the app's own data names as its
-// admin, read at every check and never kept. An app with no account yet is given the first
-// account's name, which makes it. An app whose accounts hold no admin has none of the user's to
-// open, and says so. An app with no entry is refused: nothing here falls through to another
-// app's answer.
+// admin, read at every check and never kept. An app with no account yet, or one that keeps none
+// worth reading, is given the record's username, which makes the account. An app whose accounts
+// hold no admin has none of the user's to open, and says so. An app with no entry is refused:
+// nothing here falls through to another app's answer.
 
 import (
 	"context"
@@ -36,10 +36,8 @@ type appEntry struct {
 	gated bool
 	// admin reads the username of the app's admin account off the app itself: none for an app
 	// with no account at all yet, "" for one whose accounts hold no admin. nil for an app that
-	// keeps no account worth reading, which is always signed in under the first account's name.
+	// keeps no account worth reading, which is always signed in under the record's username.
 	admin func(a *app, ctx context.Context, s routes.App, acct account) (user string, none bool, err error)
-	// first is the name the first account is made under, "" for the record's username.
-	first string
 	// clients is the "On your phone" dialog's first step, nil for an app with no dialog. phone
 	// is what a client signs in with, the address it is given included; nil for a web app,
 	// which a phone opens and has nothing to copy. `replace` sets a new password first, for an
@@ -67,7 +65,6 @@ func init() {
 		},
 		files.Name: {
 			gated:   true,
-			first:   files.User,
 			clients: &phoneClients{Web: true},
 		},
 		mealie.Name: {
@@ -134,8 +131,6 @@ func (a *app) userIn(ctx context.Context, name string) (string, error) {
 	case !none:
 		title := a.appTitle(name)
 		return "", fmt.Errorf("%s has no admin account, so there is no account of yours to open; undo %s to before it lost yours, or reinstall it", title, title)
-	case e.first != "":
-		return e.first, nil
 	}
 	return acct.Username, nil
 }
