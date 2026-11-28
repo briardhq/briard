@@ -253,11 +253,11 @@ func TestAWebAppsPageOpensItWithASessionOfItsOwn(t *testing.T) {
 	galleryCasa(t, r)
 	c := r.trust()
 	body, tok := pressForWebApp(t, r, c)
-	if !qrImage.MatchString(body) || !strings.Contains(body, `<a class="btn" href="/open/files" target="_blank" rel="noopener">Open</a>`) || !strings.Contains(body, "<h3>Add it to your home screen</h3>") || len(keys(body)) != 0 {
+	if !qrImage.MatchString(body) || !strings.Contains(body, `<a class="btn" href="/open/files" target="_blank" rel="noopener">Open</a>`) || !strings.Contains(body, "<h3>Install on your home screen</h3>") || len(keys(body)) != 0 {
 		t.Fatalf("the dialog lacks its QR code or its two steps, or has fields: %s", body)
 	}
 	_, page := open(t, r, tok)
-	if !strings.Contains(page, `<form method="post" action="/copy/`+tok+`"><button type="submit" class="btn">Open</button></form>`) || strings.Contains(page, "/open/files") || !strings.Contains(page, "iPhone: Share › Add to Home Screen") {
+	if !strings.Contains(page, `<form method="post" action="/copy/`+tok+`"><button type="submit" class="btn">Open</button></form>`) || strings.Contains(page, "/open/files") || !strings.Contains(page, "Android: ⋮ › Install and create shortcut › Install") || !strings.Contains(page, "iPhone: Share › Add to Home Screen") {
 		t.Fatalf("the page's Open is not its own POST: %s", page)
 	}
 
@@ -317,27 +317,47 @@ func TestAWebAppsPageOpensItWithASessionOfItsOwn(t *testing.T) {
 	}
 }
 
-// A web app is installed on a phone from https only, so its "On your phone" waits for a certified
-// casa name; and a page with settings to copy has no Open to spend it on.
-func TestAWebAppWaitsForTheNameAndOnlyItsPageOpens(t *testing.T) {
+// By the `.local` name a web app's "On your phone" opens it as by the casa name, over http, and in
+// place of the install lines says that a phone installs it only by https, linking the dialog to
+// the casa name's page (the copy page has no session to follow it with). And a page with settings
+// to copy has no Open to spend it on.
+func TestAWebAppOpensByTheLocalNameAndOnlyItsPageOpens(t *testing.T) {
 	r := gateRig(t)
 	installFreshRSS(t, r)
 	c := r.trust()
-	if card := r.get(t, "/apps/files", c); strings.Contains(card, `action="/phone/files"`) {
-		t.Errorf("Files offers On your phone with no certified name: %s", card)
-	}
-	if status, _ := press(t, r, "/phone/files", c, true); status != http.StatusNotFound {
-		t.Errorf("Files' dialog with no certified name = %d, want 404", status)
-	}
-	galleryCasa(t, r)
 	if card := r.get(t, "/apps/files", c); !strings.Contains(card, `action="/phone/files"`) {
-		t.Errorf("Files does not offer On your phone with a certified name: %s", card)
+		t.Errorf("Files does not offer On your phone by the .local name: %s", card)
 	}
-	_, tok := pressForCopy(t, r, c)
+	body, tok := pressForWebApp(t, r, c)
+	if !strings.Contains(body, `<p>Not supported without encryption. <a href="/secure">Get a .casa address</a> to enable it.</p>`) || strings.Contains(body, "Android:") {
+		t.Errorf("the dialog by .local offers the install or does not say why not: %s", body)
+	}
+	_, page := open(t, r, tok)
+	if !strings.Contains(page, "<p>Not supported without encryption. Get a .casa address to enable it.</p>") || strings.Contains(page, "Android:") {
+		t.Errorf("the page by .local offers the install or does not say why not: %s", page)
+	}
 	resp, err := noRedirect.Post(r.srv.URL+"/copy/"+tok, "application/x-www-form-urlencoded", nil)
 	must(t, err)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound || len(r.registry().Devices) != 1 {
+	loc, _ := url.Parse(resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusSeeOther || loc.Scheme != "http" || loc.Host != routes.BareHostName("files") || loc.Path != "/" {
+		t.Fatalf("Open by .local = %d %q, want http://%s/", resp.StatusCode, loc, routes.BareHostName("files"))
+	}
+	status, session := r.loopback("POST", "/gate/redeem", "", url.Values{"code": {loc.Query().Get(gateHopParam)}})
+	if status != http.StatusOK || session == "" {
+		t.Fatalf("redeem = %d %q", status, session)
+	}
+	if status, _ := r.loopback("GET", "/gate/check?app=files", session, nil); status != http.StatusOK {
+		t.Errorf("Files' session by .local at Files = %d", status)
+	}
+
+	galleryCasa(t, r)
+	_, tok = pressForCopy(t, r, c)
+	devices := len(r.registry().Devices)
+	resp, err = noRedirect.Post(r.srv.URL+"/copy/"+tok, "application/x-www-form-urlencoded", nil)
+	must(t, err)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || len(r.registry().Devices) != devices {
 		t.Errorf("FreshRSS's page opened something: %d, %d devices", resp.StatusCode, len(r.registry().Devices))
 	}
 	if resp, _ := open(t, r, tok); resp.StatusCode != http.StatusOK {

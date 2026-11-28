@@ -94,6 +94,8 @@ type phoneView struct {
 	QR                          template.URL
 	Settings                    bool
 	Copy                        string
+	// HTTPS is a web app's address by https, the only one a phone installs a web app from.
+	HTTPS bool
 }
 
 // phone answers the button: the dialog for htmx, which adds it to the page and opens it
@@ -126,11 +128,8 @@ func (a *app) phone(w http.ResponseWriter, r *http.Request, name string) {
 		v.Address = a.phoneAddress(s)
 		switch {
 		case clients.Web:
-			// Installed from https only, so offered only there (view).
-			if !strings.HasPrefix(v.Address, "https://") {
-				http.NotFound(w, r)
-				return
-			}
+			// Nothing to copy: the app is opened, then installed where its address is https.
+			v.HTTPS = strings.HasPrefix(v.Address, "https://")
 		case name == freshrss.Name:
 			// A Google Reader client is given the API's own address, as FreshRSS's profile page
 			// gives it.

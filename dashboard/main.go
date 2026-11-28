@@ -1199,7 +1199,6 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 		}
 	}
 	gated := gatedApps(a.routesPath)
-	certified := a.casaCertified()
 	var waiting []string
 	for _, av := range cards {
 		if av.Name == hass.Name {
@@ -1207,9 +1206,8 @@ func (a *app) view(ctx context.Context, r *http.Request, self device) view {
 		}
 		_, av.Gated = gated[av.Name]
 		// Home Assistant's once it has an owner to sign in as: it is not gated, it signs in itself.
-		// A web app's only once its name has a certificate: the phone installs it from https.
-		clients, phone := phoneApps[av.Name]
-		av.Phone = phone && (av.Gated && (!clients.Web || certified) || av.HA != nil && av.HA.Reachable && av.HA.Onboarded)
+		_, phone := phoneApps[av.Name]
+		av.Phone = phone && (av.Gated || av.HA != nil && av.HA.Reachable && av.HA.Onboarded)
 		av.Preselected = av.Name == hass.Name || av.Name == files.Name
 		av.Install = a.installState(av.Name, av.Installed, av.Offer != "")
 		if av.Install != nil && av.Install.Updated {

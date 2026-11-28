@@ -23,8 +23,8 @@ package main
 // nothing to copy) has an Open button instead. The press, a POST that no preview sends, spends the
 // token on a session of that app alone, listed in Trusted devices beside the browsers and revoked
 // the same way, and the gate's one-time code carries it to the app's name (gate.go). The phone then
-// has the app and nothing of the dashboard's. A web app's page exists only where the casa name has
-// a certificate, since a phone installs a web app only from https.
+// has the app and nothing of the dashboard's. It opens by the `.local` name too, but a phone
+// installs a web app only from https, so there the page says the casa name is what installs it.
 
 import (
 	"crypto/rand"
@@ -124,7 +124,7 @@ func (a *app) casaCertified() bool {
 func (a *app) openCopy(w http.ResponseWriter, r *http.Request, tok string) {
 	a.copyMu.Lock()
 	p, ok := a.copyPages[tok]
-	ok = ok && a.now().Before(p.until) && phoneApps[p.app].Web && strings.HasPrefix(p.view.Address, "https://")
+	ok = ok && a.now().Before(p.until) && phoneApps[p.app].Web
 	if ok {
 		delete(a.copyPages, tok)
 	}
