@@ -11,9 +11,11 @@
 //
 // The default is always nothing: an unknown name gets no binds, no preparation and the plain
 // HTTP reach line, exactly what its manifest describes. An entry here is how an app gets more;
-// nothing here can take anything away. Deliberately a switch and not a plugin system: four
-// entries is not a framework, the set is small by design, and a table keyed on strings that
-// anyone can extend is the shape that turns a curated catalog into an expression language.
+// nothing here can take anything away. One table in this file holds one entry per app, so what
+// the product knows about an app is read in one place, and the functions below read it.
+// Deliberately closed and not a plugin system: nothing outside this file adds an entry, the set
+// is small by design, and a table keyed on strings that anyone can extend is the shape that
+// turns a curated catalog into an expression language.
 package apps
 
 import (
@@ -23,6 +25,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -102,6 +105,119 @@ func InboundSocket() string { return RunDir() + "/agent.sock" }
 // InboundTokenPath is where one app's token lives on the node.
 func InboundTokenPath(app string) string { return AppDir(app) + "/" + InboundTokenName }
 
+// entry is what the product knows about one app beyond its manifest. Every field's zero value
+// is nothing, which is all an app with no entry gets. The functions that read each field say
+// what it means and why it is the product's to hold.
+type entry struct {
+	// volumes are the app's own binds, per container, and prepare writes what they name, on
+	// this node, before the container starts (Volumes, Prepare). podGateway is the address the
+	// reverse proxy reaches the pod network from.
+	volumes func(m manifest.Manifest, c manifest.Container) []string
+	prepare func(ctx context.Context, x Executor, m manifest.Manifest, podGateway string) error
+	// appDir gives the primary container the app's own directory at AppMount (NeedsAppDir);
+	// inbound gives it the inbound channel, and that directory with it (WantsInbound).
+	appDir, inbound bool
+	// user is who the primary container runs as (User), and capabilities what it gets beyond
+	// podman's default set (Capabilities).
+	user, capabilities string
+	// How the reverse proxy signs the user in. gate is the file of the secret it signs with
+	// (Gate), gateHeader the header an app takes the secret itself in (GateHeader),
+	// gateByAddress an app that checks no secret but the sender's address (GateByAddress); open
+	// are the paths forwarded without the dashboard's session (Open).
+	gate, gateHeader string
+	gateByAddress    bool
+	open             []string
+	// householdWrites are the files-tier folders the household fills (HouseholdWrites).
+	householdWrites []string
+	// unfronted keeps the reverse proxy from serving the app under its name (Fronted); protocol
+	// is what a client speaks to its published port (Reach); announce is what the app says of
+	// itself on the household LAN, the instance name filled in when asked (Announce).
+	unfronted bool
+	protocol  string
+	announce  []routes.Announcement
+	// What the history asks of an app: to hold still for a member (Quiesce), its own health
+	// check (HealthOverride), the files that say a restore of its own is in flight
+	// (RestoreMarkers), what changed between two members (Detect), what a new member keeps
+	// (Sampled), and what it set aside as undecodable (Corrupt).
+	quiesce        func(ctx context.Context, x Executor, port int, container string) (release func(context.Context) (bool, error), err error)
+	health         func(ctx context.Context, x Executor, port int) Health
+	restoreMarkers func(m manifest.Manifest) []string
+	detect         func(ctx context.Context, x Executor, m manifest.Manifest, prev, next string, running bool) (changed string, resets []string, err error)
+	sampled        func(ctx context.Context, x Executor, m manifest.Manifest, ring []RingMember, member RingMember) error
+	corrupt        func(ctx context.Context, x Executor, m manifest.Manifest, root string) []string
+}
+
+// known is the registry: one entry per app the product knows something about, keyed on its
+// catalog name.
+var known = map[string]entry{
+	hass.Name: {
+		volumes: hass.Volumes,
+		// The broker's port travels from one app's package to the other's here, the only place
+		// that sees both: Home Assistant needs to be told where the broker is, and neither
+		// package may reach into the other (agent/hass would then carry mosquitto knowledge, and
+		// a second copy of the port is a second thing to keep in step with the catalog).
+		prepare: func(ctx context.Context, x Executor, m manifest.Manifest, _ string) error {
+			return hass.Prepare(ctx, x, m, mosquitto.MQTTPort)
+		},
+		appDir:         true,
+		inbound:        true,
+		capabilities:   "NET_RAW NET_ADMIN",
+		quiesce:        hassQuiesce,
+		health:         hassHealth,
+		restoreMarkers: hassRestoreMarkers,
+		detect:         hassDetect,
+		sampled:        hassSampled,
+		corrupt:        hassCorrupt,
+	},
+	mosquitto.Name: {
+		volumes: mosquitto.Volumes,
+		prepare: func(ctx context.Context, x Executor, m manifest.Manifest, _ string) error {
+			return mosquitto.Prepare(ctx, x, m)
+		},
+		unfronted: true,
+		protocol:  mosquitto.Protocol,
+		announce:  []routes.Announcement{{Type: mosquitto.ServiceType, Port: mosquitto.MQTTPort}},
+		quiesce:   mosquittoQuiesce,
+	},
+	files.Name: {
+		volumes: files.Volumes,
+		prepare: func(ctx context.Context, x Executor, m manifest.Manifest, _ string) error {
+			return files.Prepare(ctx, x, m)
+		},
+		appDir: true,
+		user:   "0",
+		gate:   files.KeyPath,
+	},
+	mealie.Name: {
+		volumes: mealie.Volumes,
+		prepare: func(ctx context.Context, x Executor, m manifest.Manifest, _ string) error {
+			return mealie.Prepare(ctx, x, m)
+		},
+		gate:       mealie.KeyPath,
+		gateHeader: mealie.SecretHeader,
+	},
+	navidrome.Name: {
+		// The address the reverse proxy reaches the pod network from is the one Navidrome trusts
+		// to name its user. Converge knows the pool; nothing in an app package does.
+		prepare: func(ctx context.Context, x Executor, m manifest.Manifest, podGateway string) error {
+			return navidrome.Prepare(ctx, x, m, podGateway)
+		},
+		appDir:          true,
+		gateByAddress:   true,
+		open:            navidrome.Open,
+		householdWrites: []string{navidrome.Music},
+	},
+	freshrss.Name: {
+		volumes: freshrss.Volumes,
+		// The same address, for the same reason: FreshRSS trusts it to name its user.
+		prepare: func(ctx context.Context, x Executor, m manifest.Manifest, podGateway string) error {
+			return freshrss.Prepare(ctx, x, m, podGateway)
+		},
+		gateByAddress: true,
+		open:          freshrss.Open,
+	},
+}
+
 // WantsInbound reports whether an app's container gets the inbound channel. Opt-in, per app, and
 // narrow on purpose: the socket is a channel from a workload to the agent, so every container
 // that gets one widens what a compromised app can reach. Home Assistant has it because it
@@ -109,7 +225,7 @@ func InboundTokenPath(app string) string { return AppDir(app) + "/" + InboundTok
 // restarts. An app with no such boundary needs none, and the generic container-start hook
 // already covers it.
 func WantsInbound(m manifest.Manifest, c manifest.Container) bool {
-	return m.Name == hass.Name && c.Primary
+	return known[m.Name].inbound && c.Primary
 }
 
 // Volumes returns the host binds one container of one app needs beyond its own data. Called by
@@ -118,17 +234,8 @@ func WantsInbound(m manifest.Manifest, c manifest.Container) bool {
 // than of anything a publisher wrote.
 func Volumes(m manifest.Manifest, c manifest.Container) []string {
 	var out []string
-	switch m.Name {
-	case hass.Name:
-		out = hass.Volumes(m, c)
-	case mosquitto.Name:
-		out = mosquitto.Volumes(m, c)
-	case files.Name:
-		out = files.Volumes(m, c)
-	case mealie.Name:
-		out = mealie.Volumes(m, c)
-	case freshrss.Name:
-		out = freshrss.Volumes(m, c)
+	if e := known[m.Name]; e.volumes != nil {
+		out = e.volumes(m, c)
 	}
 	// The app's own directory, read-only, and it is the product's general shape rather than
 	// one app's arrangement -- which is why it lives here and not in agent/hass. Everything
@@ -168,19 +275,26 @@ func Volumes(m manifest.Manifest, c manifest.Container) []string {
 // guest's loopback, and the primary container because that is what a signal is sent to; only
 // the manifest knows either.
 func Quiesce(ctx context.Context, x Executor, m manifest.Manifest, port int, container string) (release func(context.Context) (bool, error), err error) {
-	switch m.Name {
-	case hass.Name:
-		if err := hass.Hold(ctx, x, port); err != nil {
-			return nil, err
-		}
-		return func(ctx context.Context) (bool, error) { return hass.Release(ctx, x, port) }, nil
-	case mosquitto.Name:
-		if err := mosquitto.Flush(ctx, x, container); err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("apps: %s flushed its persistence database; it has no way to hold still", m.Name)
+	if e := known[m.Name]; e.quiesce != nil {
+		return e.quiesce(ctx, x, port, container)
 	}
 	return nil, fmt.Errorf("apps: %s has no way to hold still", m.Name)
+}
+
+// hassQuiesce holds Home Assistant's writes, and its release lets them go.
+func hassQuiesce(ctx context.Context, x Executor, port int, _ string) (func(context.Context) (bool, error), error) {
+	if err := hass.Hold(ctx, x, port); err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context) (bool, error) { return hass.Release(ctx, x, port) }, nil
+}
+
+// mosquittoQuiesce flushes the broker, which is all it can do.
+func mosquittoQuiesce(ctx context.Context, x Executor, _ int, container string) (func(context.Context) (bool, error), error) {
+	if err := mosquitto.Flush(ctx, x, container); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("apps: %s flushed its persistence database; it has no way to hold still", mosquitto.Name)
 }
 
 // Health is app health: whether the app works. It is one notion, asked by the status report, the
@@ -222,18 +336,24 @@ func (h Health) Settled() Health {
 // our token, because recovery mode keeps its healthPath answering while the app is down (measured
 // by probe; agent/hass/health.go says what each answer means).
 func HealthOverride(ctx context.Context, x Executor, m manifest.Manifest, port int) (h Health, ok bool) {
-	if m.Name != hass.Name {
+	e := known[m.Name]
+	if e.health == nil {
 		return HealthUnknown, false
 	}
+	return e.health(ctx, x, port), true
+}
+
+// hassHealth is Home Assistant's own answer, in this package's words.
+func hassHealth(ctx context.Context, x Executor, port int) Health {
 	switch hass.Health(ctx, x, port) {
 	case hass.VerdictHealthy:
-		return Healthy, true
+		return Healthy
 	case hass.VerdictStarting:
-		return Starting, true
+		return Starting
 	case hass.VerdictUnhealthy:
-		return Unhealthy, true
+		return Unhealthy
 	}
-	return HealthUnknown, true
+	return HealthUnknown
 }
 
 // RestoreMarkers names the files an app writes inside its own data to say "a restore of my
@@ -248,9 +368,13 @@ func HealthOverride(ctx context.Context, x Executor, m manifest.Manifest, port i
 // a verb carrying absolute paths would be a verb that names a path, which is the thing the
 // inbound channel's trust rules forbid.
 func RestoreMarkers(m manifest.Manifest) []string {
-	if m.Name != hass.Name {
-		return nil
+	if e := known[m.Name]; e.restoreMarkers != nil {
+		return e.restoreMarkers(m)
 	}
+	return nil
+}
+
+func hassRestoreMarkers(m manifest.Manifest) []string {
 	if _, dir, ok := hass.ConfigDir(m); ok {
 		return []string{dir + "/" + hass.RestoreMarker}
 	}
@@ -268,9 +392,13 @@ func RestoreMarkers(m manifest.Manifest) []string {
 // renames' paths in Corrupt's form. The caller phrases those (ResetPhrase), because a start's
 // boot adds renames of its own that no member holds.
 func Detect(ctx context.Context, x Executor, m manifest.Manifest, prev, next string, running bool) (changed string, resets []string, err error) {
-	if m.Name != hass.Name {
-		return "", nil, nil
+	if e := known[m.Name]; e.detect != nil {
+		return e.detect(ctx, x, m, prev, next, running)
 	}
+	return "", nil, nil
+}
+
+func hassDetect(ctx context.Context, x Executor, m manifest.Manifest, prev, next string, running bool) (changed string, resets []string, err error) {
 	_, dir, ok := hass.ConfigDir(m)
 	if !ok {
 		return "", nil, nil
@@ -303,9 +431,13 @@ type RingMember struct {
 // members, the new one among them. The default is nothing; Home Assistant retains a quiesced
 // sample every few hours as a restore candidate for its recorder database (agent/hass/dbcheck.go).
 func Sampled(ctx context.Context, x Executor, m manifest.Manifest, ring []RingMember, member RingMember) error {
-	if m.Name != hass.Name {
-		return nil
+	if e := known[m.Name]; e.sampled != nil {
+		return e.sampled(ctx, x, m, ring, member)
 	}
+	return nil
+}
+
+func hassSampled(ctx context.Context, x Executor, m manifest.Manifest, ring []RingMember, member RingMember) error {
 	_, dir, ok := hass.ConfigDir(m)
 	if !ok {
 		return nil
@@ -323,9 +455,13 @@ func Sampled(ctx context.Context, x Executor, m manifest.Manifest, ring []RingMe
 // Corrupt names what the app has set aside as undecodable under root -- a member, or the live
 // data root -- as paths relative to it, each under its mount's directory.
 func Corrupt(ctx context.Context, x Executor, m manifest.Manifest, root string) []string {
-	if m.Name != hass.Name {
-		return nil
+	if e := known[m.Name]; e.corrupt != nil {
+		return e.corrupt(ctx, x, m, root)
 	}
+	return nil
+}
+
+func hassCorrupt(ctx context.Context, x Executor, m manifest.Manifest, root string) []string {
 	_, dir, ok := hass.ConfigDir(m)
 	if !ok {
 		return nil
@@ -366,26 +502,8 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest, podGateway st
 			return fmt.Errorf("apps: mint %s's inbound token: %w", m.Name, err)
 		}
 	}
-	switch m.Name {
-	case hass.Name:
-		// The broker's port travels from one app's package to the other's here, the only place
-		// that sees both: Home Assistant needs to be told where the broker is, and neither
-		// package may reach into the other (agent/hass would then carry mosquitto knowledge, and
-		// a second copy of the port is a second thing to keep in step with the catalog).
-		return hass.Prepare(ctx, x, m, mosquitto.MQTTPort)
-	case mosquitto.Name:
-		return mosquitto.Prepare(ctx, x, m)
-	case files.Name:
-		return files.Prepare(ctx, x, m)
-	case mealie.Name:
-		return mealie.Prepare(ctx, x, m)
-	case navidrome.Name:
-		// The address the reverse proxy reaches the pod network from is the one Navidrome trusts
-		// to name its user. Converge knows the pool; nothing in an app package does.
-		return navidrome.Prepare(ctx, x, m, podGateway)
-	case freshrss.Name:
-		// The same address, for the same reason: FreshRSS trusts it to name its user.
-		return freshrss.Prepare(ctx, x, m, podGateway)
+	if e := known[m.Name]; e.prepare != nil {
+		return e.prepare(ctx, x, m, podGateway)
 	}
 	return nil
 }
@@ -396,8 +514,8 @@ func Prepare(ctx context.Context, x Executor, m manifest.Manifest, podGateway st
 // none of it -- and a file Files saves keeps the owner its app gave it only when Files writes as
 // that owner.
 func User(m manifest.Manifest, c manifest.Container) string {
-	if m.Name == files.Name && c.Primary {
-		return "0"
+	if c.Primary {
+		return known[m.Name].user
 	}
 	return ""
 }
@@ -415,8 +533,8 @@ func User(m manifest.Manifest, c manifest.Container) string {
 // something broken. Home Assistant OS runs Core fully privileged, so this is far short of what it
 // is tested under.
 func Capabilities(m manifest.Manifest, c manifest.Container) string {
-	if m.Name == hass.Name && c.Primary {
-		return "NET_RAW NET_ADMIN"
+	if c.Primary {
+		return known[m.Name].capabilities
 	}
 	return ""
 }
@@ -428,52 +546,29 @@ func Capabilities(m manifest.Manifest, c manifest.Container) string {
 // and Mealie has no sign-in of its own briard would not have to tell the user a password for.
 // Navidrome and FreshRSS are gated with no secret (GateByAddress). Home Assistant keeps its own login because its
 // companion app has no browser session to bring.
-func Gate(m manifest.Manifest) string {
-	switch m.Name {
-	case files.Name:
-		return files.KeyPath
-	case mealie.Name:
-		return mealie.KeyPath
-	}
-	return ""
-}
+func Gate(m manifest.Manifest) string { return known[m.Name].gate }
 
 // GateHeader is the header a gated app takes the secret itself in, beside the username, for an app
 // that reads its user from a reverse proxy's header; "" is Files' signed token.
-func GateHeader(m manifest.Manifest) string {
-	if m.Name == mealie.Name {
-		return mealie.SecretHeader
-	}
-	return ""
-}
+func GateHeader(m manifest.Manifest) string { return known[m.Name].gateHeader }
 
 // GateByAddress reports whether an app is gated with no secret at all: it trusts the address the
 // reverse proxy reaches the pod network from, and the reverse proxy names the user alone.
 // Navidrome and FreshRSS are, having no way to check a secret; what else shares that address can
 // sign in to them too, which is accepted for a music server and a feed reader (agent/navidrome,
 // agent/freshrss).
-func GateByAddress(m manifest.Manifest) bool {
-	return m.Name == navidrome.Name || m.Name == freshrss.Name
-}
+func GateByAddress(m manifest.Manifest) bool { return known[m.Name].gateByAddress }
 
 // Open are a gated app's paths the reverse proxy forwards without the dashboard's session: an API
 // a client app calls with the app's own credential: Navidrome's Subsonic API, FreshRSS's Google
 // Reader API.
-func Open(m manifest.Manifest) []string {
-	switch m.Name {
-	case navidrome.Name:
-		return navidrome.Open
-	case freshrss.Name:
-		return freshrss.Open
-	}
-	return nil
-}
+func Open(m manifest.Manifest) []string { return known[m.Name].open }
 
 // HouseholdWrites reports whether a files-tier folder of an app is the household's to write, in
 // Files' view and the drive, where every other files-tier folder is read-only because its app
 // writes it. Navidrome's library is: the household fills it, and Navidrome only reads it.
 func HouseholdWrites(m manifest.Manifest, dir string) bool {
-	return m.Name == navidrome.Name && dir == navidrome.Music
+	return slices.Contains(known[m.Name].householdWrites, dir)
 }
 
 // Reach is the sentence `briard app install` ends on: where the household now finds the
@@ -535,12 +630,7 @@ func Reach(m manifest.Manifest, flock string) string {
 // say. Keyed on the app name, in the same place and for the same reason as Prepare's switch:
 // this is the one file that may hold knowledge of both apps, and a protocol is a fact about an
 // app rather than about the manifest that describes it.
-func protocol(m manifest.Manifest) string {
-	if m.Name == mosquitto.Name {
-		return mosquitto.Protocol
-	}
-	return ""
-}
+func protocol(m manifest.Manifest) string { return known[m.Name].protocol }
 
 // Fronted reports whether the reverse proxy may serve this app under its own name. It decides
 // whether converge emits a route for the app, not a flag the reverse proxy then has to honour: an
@@ -565,9 +655,7 @@ func protocol(m manifest.Manifest) string {
 // product-side, code we ship and review, as for everything else in this package: a manifest can
 // declare its networking and its published ports but never this, deliberately, because a
 // publisher must not be able to hand itself the reverse proxy.
-func Fronted(m manifest.Manifest) bool {
-	return m.Name != mosquitto.Name
-}
+func Fronted(m manifest.Manifest) bool { return !known[m.Name].unfronted }
 
 // Announce is what this app wants said about itself on the household LAN: the mDNS
 // service records converge writes into the routing table for the reverse proxy's mDNS responder
@@ -592,11 +680,12 @@ func Announce(m manifest.Manifest, flock string) []routes.Announcement {
 		// the app's own A record.
 		return nil
 	}
-	switch m.Name {
-	case mosquitto.Name:
-		return []routes.Announcement{{Name: name, Type: mosquitto.ServiceType, Port: mosquitto.MQTTPort}}
+	var out []routes.Announcement
+	for _, a := range known[m.Name].announce {
+		a.Name = name
+		out = append(out, a)
 	}
-	return nil
+	return out
 }
 
 // WantsInboundAny reports whether any container of an app wants the inbound channel -- what
@@ -638,5 +727,5 @@ func mintInboundToken(ctx context.Context, x Executor, app string) error {
 // Navidrome's config, or the inbound token. An app needing none of these gets no directory and no
 // mount.
 func NeedsAppDir(m manifest.Manifest, c manifest.Container) bool {
-	return ((m.Name == hass.Name || m.Name == files.Name || m.Name == navidrome.Name) && c.Primary) || WantsInbound(m, c)
+	return (known[m.Name].appDir && c.Primary) || WantsInbound(m, c)
 }
